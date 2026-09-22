@@ -252,7 +252,7 @@ pub(in crate::services::stack) async fn fail_and_clear_stack(
 ) -> String {
     publish_stderr(
         ctx,
-        format!("Launch failed: {reason}"),
+        format!("{} failed: {reason}", ctx.action),
         LaunchFeedbackStep::LauncherStep,
     )
     .await;

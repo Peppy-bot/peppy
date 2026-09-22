@@ -152,6 +152,10 @@ impl StackGoal for core_node_api::encoding::LaunchGoal {
     const OPERATION: &'static str = "Launch";
 }
 
+impl StackGoal for core_node_api::encoding::StackBuildGoal {
+    const OPERATION: &'static str = "Build";
+}
+
 impl StackGoal for core_node_api::encoding::StackJoinGoal {
     const OPERATION: &'static str = "Join";
 }

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use clap::Subcommand;
 use tracing::info;
 
-use core_node_api::encoding::DEFAULT_IDLE_TIMEOUT_SECS;
+use core_node_api::encoding::{DEFAULT_IDLE_TIMEOUT_SECS, LaunchGoal, StackBuildGoal};
 
 use super::Command;
 use super::node::DEFAULT_BUILD_IDLE_TIMEOUT_SECS;
@@ -25,32 +25,16 @@ use crate::{context::AppContext, error::Error as CommandError};
 #[derive(Subcommand)]
 pub enum StackCommands {
     /// Launch a stack from a launcher, replacing the current node stack.
-    Launch {
-        /// The launcher to run: a repository launcher's name, or a path to a
-        /// `launcher/v1` file.
-        #[arg(value_name = "LAUNCHER")]
-        launcher_config_path: PathBuf,
-        /// Wire a placement link to a real federated core node:
-        /// `NAME@<core-node>`, with NAME a `core_nodes` placeholder the
-        /// launcher declares or the name of a copy it deploys. Repeatable,
-        /// once per link; `self` names the daemon this command is sent to.
-        #[arg(long = "place", value_name = "NAME@CORE_NODE", value_parser = parse_place)]
-        place: Vec<(String, String)>,
-        /// Wire every declared core node link to this daemon, so a
-        /// multi-machine launcher runs unmodified on one box. How you develop
-        /// against a federated topology with no second machine.
-        #[arg(long)]
-        local: bool,
-        #[command(flatten)]
-        with: WithWords,
-        #[command(flatten)]
-        timeouts: StackTimeouts,
-        /// Build every node from its staged sources even when a cached
-        /// artifact built from byte-identical sources exists. Applies to
-        /// each node build of the launch, on this daemon and on every peer.
-        #[arg(long)]
-        rebuild: bool,
-    },
+    Launch(LauncherArgs),
+    /// Build every node a launch would run, replacing the node stack, and start none.
+    ///
+    /// Each node is built on the machine the launch places it on. Takes every
+    /// argument `stack launch` takes, so a later `stack launch` with the same
+    /// launcher, placement and `--with` words starts from these builds. Run it
+    /// on the machine whose disk you image; every machine booted from that
+    /// image launches without building, once each has its own
+    /// `core_node_name` in `~/.peppy/conf/peppy_config.json5`.
+    Build(LauncherArgs),
     /// Add a copy of one of the launcher's options to the running stack.
     ///
     /// The copy's instances are minted as NAME_<instance-id>, the way
@@ -165,10 +149,24 @@ fn parse_copy_name(raw: &str) -> Result<config::runtime::Name, String> {
     Ok(config::runtime::Name::new(placement.into_string()).expect("a core node name is a name"))
 }
 
-/// `--place NAME@CORE_NODE` on launch: NAME is a core node link the flat
-/// launcher carries, which every copy's name is one of.
-fn parse_place(raw: &str) -> Result<(String, String), String> {
-    crate::commands::node::parse_key_at_target(raw, "--place", "NAME@CORE_NODE")
+/// What `stack launch` and `stack build` take.
+#[derive(clap::Args)]
+pub struct LauncherArgs {
+    /// The launcher: a repository launcher's name, or a path to a
+    /// `launcher/v1` file.
+    #[arg(value_name = "LAUNCHER")]
+    pub launcher_config_path: PathBuf,
+    #[command(flatten)]
+    pub placement: launch::PlacementArgs,
+    #[command(flatten)]
+    pub with: WithWords,
+    #[command(flatten)]
+    pub timeouts: StackTimeouts,
+    /// Build every node from its staged sources even when a cached
+    /// artifact built from byte-identical sources exists. Applies to
+    /// each node build of the launch, on this daemon and on every peer.
+    #[arg(long)]
+    pub rebuild: bool,
 }
 
 /// The phase budgets a launch or a join runs under, each idle budget a
@@ -205,12 +203,12 @@ impl StackTimeouts {
     }
 }
 
-/// The `--with` words, shared by launch, join, and resolve.
+/// The `--with` words, shared by launch, build, join, and resolve.
 #[derive(clap::Args, Default)]
 pub struct WithWords {
     /// Select one option of a `components` axis: `option` or `axis=option`.
-    /// Repeatable and comma-separated. At launch the words swap what the
-    /// launcher deploys on its `one` axes and turn `zero_or_one` axes on,
+    /// Repeatable and comma-separated. At launch and build the words swap what
+    /// the launcher deploys on its `one` axes and turn `zero_or_one` axes on,
     /// reaching the axes of the fragments those selections run, and
     /// `NAME.option` or `NAME.axis=option` selects the own axis of the copy
     /// NAME the file deploys; at join they select the copied option's own
@@ -236,8 +234,8 @@ fn parse_with_word(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(format!(
-            "a --with entry is `option`, `axis=option` or, at launch, `NAME.option` or \
-             `NAME.axis=option`, never blank (check for a stray comma in {raw:?})"
+            "a --with entry is `option`, `axis=option` or, at launch and build, `NAME.option` \
+             or `NAME.axis=option`, never blank (check for a stray comma in {raw:?})"
         ));
     }
     Ok(trimmed.to_owned())
@@ -266,26 +264,13 @@ impl Command for StackCommand {
                 with,
                 join,
             } => resolve::resolve(launcher_config_path, with.words, join),
-            StackCommands::Launch {
-                launcher_config_path,
-                place,
-                local,
-                with,
-                timeouts,
-                rebuild,
-            } => {
+            StackCommands::Launch(args) => {
                 info!("Launching stack...");
-                launch::launch(
-                    ctx,
-                    launcher_config_path,
-                    launch::PlacementArgs {
-                        places: place,
-                        local,
-                    },
-                    with.words,
-                    timeouts.budgets(),
-                    rebuild,
-                )
+                launch::launch::<LaunchGoal>(ctx, args)
+            }
+            StackCommands::Build(args) => {
+                info!("Building stack...");
+                launch::launch::<StackBuildGoal>(ctx, args)
             }
             StackCommands::Benchmark {
                 samples,

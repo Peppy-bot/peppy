@@ -17,7 +17,9 @@
 
 use peppy::commands::Command;
 use peppy::commands::mcp::mcp_catalog_rendered;
-use peppy::commands::stack::{StackCommand, StackCommands, StackTimeouts, list_nodes_collecting};
+use peppy::commands::stack::{
+    LauncherArgs, StackCommand, StackCommands, StackTimeouts, list_nodes_collecting,
+};
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 
@@ -774,12 +776,7 @@ impl Stack {
         super::common::seed_docs_repo(&serve, &ctx, hub);
 
         let log_capture = peppy::test_support::LogCapture::new();
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .without_time()
-            .with_writer(log_capture.clone())
-            .finish();
-        let log_guard = tracing::subscriber::set_default(subscriber);
+        let log_guard = log_capture.install();
 
         Self {
             serve,
@@ -806,10 +803,9 @@ impl Stack {
         )
         .expect("write launcher");
         StackCommand {
-            command: StackCommands::Launch {
+            command: StackCommands::Launch(LauncherArgs {
                 rebuild: false,
-                place: Vec::new(),
-                local: false,
+                placement: Default::default(),
                 with: Default::default(),
                 launcher_config_path: launcher_path,
                 timeouts: StackTimeouts {
@@ -818,7 +814,7 @@ impl Stack {
                     node_run_idle_timeout_secs: 120,
                     max_timeout_secs: Some(900),
                 },
-            },
+            }),
         }
         .execute(&self.ctx)
     }

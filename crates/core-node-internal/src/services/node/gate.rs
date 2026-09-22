@@ -288,7 +288,7 @@ impl std::fmt::Display for StackBusy {
 /// goals beside each other.
 #[derive(Debug, Default)]
 pub(crate) struct StackState {
-    /// Stack changes (launch, join, remove, reset, a peer's slice) hold the
+    /// Stack changes (launch, build, join, remove, reset, a peer's slice) hold the
     /// write guard; node goals hold read guards to completion.
     mutation: Arc<tokio::sync::RwLock<()>>,
     cancellation: Mutex<CancellationToken>,

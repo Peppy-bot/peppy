@@ -114,7 +114,7 @@ fn node_add_command_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = rt.block_on(stack_graph(&messenger_handle, &core_node_name));
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
     // Verify the node is in the graph with 0 instances (since run=false)
     let added_node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
@@ -250,7 +250,7 @@ fn node_add_command_with_run_arg_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = rt.block_on(stack_graph(&messenger_handle, &core_node_name));
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
     // Verify the node is in the graph with 1 instance (since run=true)
     let added_node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
@@ -412,7 +412,7 @@ fn node_add_after_failed_sync_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = rt.block_on(stack_graph(&messenger_handle, &core_node_name));
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
     // Verify the node is in the graph
     let added_node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
@@ -551,7 +551,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = rt.block_on(stack_graph(&messenger_handle, &core_node_name));
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
     let node_before = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
@@ -593,7 +593,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     .expect("second node add command with force should succeed");
 
     // Verify the instance was stopped and node was re-added with 0 instances
-    let graph = rt.block_on(stack_graph(&messenger_handle, &core_node_name));
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
     let node_after = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
@@ -725,7 +725,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = rt.block_on(stack_graph(&messenger_handle, &core_node_name));
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
     let node_before = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
@@ -799,7 +799,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     .expect("second node add from git should succeed through confirmation path");
 
     // Step 5: Verify the existing instance was stopped and node was re-added
-    let graph = rt.block_on(stack_graph(&messenger_handle, &core_node_name));
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
     let node_after = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(

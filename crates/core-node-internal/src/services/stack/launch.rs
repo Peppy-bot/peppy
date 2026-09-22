@@ -19,7 +19,7 @@ use self::preflight::preflight_change;
 use self::resolve::{ParsedLaunch, parse_launcher_config, resolve_deployments};
 use self::start::start_node_instances;
 use self::watchers::{LifecycleWatchers, lifecycle_watchers};
-use super::action::StackChangeContext;
+use super::action::{StackAction, StackChangeContext};
 use super::container_mounts::{LocalMounts, hosts_container_nodes, prepare_local_container_mounts};
 use super::state::{ActiveLaunch, StackCopy};
 use config::runtime::{CoreNodeName, Name};
@@ -178,10 +178,13 @@ pub(super) struct PlannedDeployment {
 /// 3. Validate dependencies and compute order, then mint the doc pins
 /// 4. Federated preflight, carrying the pins
 /// 5. Snapshot and clear stack
-/// 6. Add nodes in dependency order
+/// 6. Add and build nodes in dependency order
 /// 7. Prepare this machine's container host mounts
 /// 8. Start instances in dependency order
+///
+/// A build ends after step 6: every node is built and no instance starts.
 pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) -> LaunchResult {
+    let builds_only = ctx.action == StackAction::Build;
     // Step 1: Parse the launcher and bind its core node links to machines.
     let ParsedLaunch {
         prepared,
@@ -222,9 +225,18 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     };
 
     // A launch that starts nothing records the launcher and stops: its
-    // copies arrive by stack join.
+    // copies arrive by stack join. A build of it has nothing to build.
     if planned.is_empty() {
         teardown_and_reset_stack(&ctx).await;
+        if builds_only {
+            publish_stdout(
+                &ctx,
+                "Nothing to build: the launcher deploys no node",
+                LaunchFeedbackStep::LauncherStep,
+            )
+            .await;
+            return LaunchResult::success(&ctx.log_path);
+        }
         ctx.slice_ownership
             .record_slice(LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node));
         *ctx.slice_ownership.active.lock() = Some(
@@ -287,7 +299,9 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             return LaunchResult::failure(&ctx.log_path, reason);
         }
     };
-    announce_clock_domains(&ctx, &clocks).await;
+    if !builds_only {
+        announce_clock_domains(&ctx, &clocks).await;
+    }
     let watchers = match lifecycle_watchers(&planned_observations, &placements) {
         Ok(watchers) => watchers,
         Err(reason) => {
@@ -319,14 +333,23 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // Step 5: The commit point. Every participant is reserved and the whole
     // plan is validated, so now, and only now, do stacks get replaced. Peers
     // first: if one refuses, this daemon still has its own stack. Each one is
-    // handed the bind sources its slice needs, to prepare while it is empty.
+    // handed the bind sources its slice needs, to prepare while it is empty,
+    // and the machines watching each instance it will host. A build starts no
+    // instance, so it registers no watcher and prepares no bind source.
+    let no_mounts = HashMap::new();
+    let no_watchers = LifecycleWatchers::new();
+    let (mounts, watchers_to_register) = if builds_only {
+        (&no_mounts, &no_watchers)
+    } else {
+        (&change.mounts, &watchers)
+    };
     let participants = change.reserved.core_nodes();
     if let Err(refusal) = federated::begin_participant_slices(
         &ctx,
         &goal.launch_id,
         &participants,
-        &change.mounts,
-        &watchers,
+        mounts,
+        watchers_to_register,
         &placements,
         false,
     )
@@ -406,6 +429,10 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         )
         .await?;
 
+        if builds_only {
+            return Ok(());
+        }
+
         // Step 7: Prepare this machine's Lima host mounts before the first
         // container starts. Updating Lima's mount table can restart the VM;
         // doing it lazily during a later instance start would kill containers
@@ -454,8 +481,15 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         return release_and_fail(change.reserved, launch_result).await;
     }
 
-    *ctx.slice_ownership.active.lock() = Some(active);
-    publish_stdout(&ctx, "Launch complete", LaunchFeedbackStep::LauncherStep).await;
+    // The launcher record is what `stack join` and `stack remove` act on;
+    // after a build nothing runs for a copy to join.
+    let summary = if builds_only {
+        "Build complete; no instance started"
+    } else {
+        *ctx.slice_ownership.active.lock() = Some(active);
+        "Launch complete"
+    };
+    publish_stdout(&ctx, summary, LaunchFeedbackStep::LauncherStep).await;
     // Release every participant now that the launch is done. The SLICE record
     // stays: the reservation guards the launch, the slice describes its result,
     // and rediscovery needs the latter long after the former is gone.

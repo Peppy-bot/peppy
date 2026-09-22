@@ -383,6 +383,80 @@ mod tests {
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 
+    /// `stack build` takes every argument `stack launch` takes, so a launch
+    /// line runs as a build by swapping the subcommand alone. Both variants
+    /// carry one `LauncherArgs`, so what this parses is that every flag
+    /// reaches it.
+    #[test]
+    fn stack_build_takes_every_stack_launch_argument() {
+        let command_line = [
+            "peppy",
+            "stack",
+            "build",
+            "openarm_simulation",
+            "--place",
+            "robot_onboard@self",
+            "--with",
+            "mujoco,extras=on",
+            "--with",
+            "alpha.xr_commander",
+            "--node-add-idle-timeout-secs",
+            "5",
+            "--node-build-idle-timeout-secs",
+            "6",
+            "--node-run-idle-timeout-secs",
+            "7",
+            "--max-timeout-secs",
+            "8",
+            "--rebuild",
+        ];
+        let cli = match Cli::try_parse_from(command_line) {
+            Ok(cli) => cli,
+            Err(error) => panic!("`stack build` should take every launch argument: {error}"),
+        };
+
+        let Commands::Stack {
+            command: stack::StackCommands::Build(build),
+        } = cli.command
+        else {
+            panic!("`stack build` parses as a build");
+        };
+        assert_eq!(
+            build.launcher_config_path,
+            std::path::Path::new("openarm_simulation")
+        );
+        assert_eq!(
+            build.placement.places,
+            [("robot_onboard".to_owned(), "self".to_owned())]
+        );
+        assert!(!build.placement.local);
+        assert!(build.rebuild);
+        assert_eq!(
+            build.with.words,
+            ["mujoco", "extras=on", "alpha.xr_commander"]
+        );
+        assert_eq!(build.timeouts.node_add_idle_timeout_secs, 5);
+        assert_eq!(build.timeouts.node_build_idle_timeout_secs, 6);
+        assert_eq!(build.timeouts.node_run_idle_timeout_secs, 7);
+        assert_eq!(build.timeouts.max_timeout_secs, Some(8));
+    }
+
+    /// `--local` is the other half of the placement grammar, and a build
+    /// takes it exactly as a launch does.
+    #[test]
+    fn stack_build_takes_local_placement() {
+        let cli = Cli::try_parse_from(["peppy", "stack", "build", "openarm_simulation", "--local"])
+            .expect("`stack build --local` parses");
+        let Commands::Stack {
+            command: stack::StackCommands::Build(build),
+        } = cli.command
+        else {
+            panic!("`stack build` parses as a build");
+        };
+        assert!(build.placement.local);
+        assert!(build.placement.places.is_empty());
+    }
+
     /// `stack list --json` parses, and the flag is off by default.
     #[test]
     fn stack_list_json_flag_parses() {

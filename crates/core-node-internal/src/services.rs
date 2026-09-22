@@ -681,34 +681,35 @@ impl CoreNode {
     /// not-hosted-here escape. EXHAUSTIVE — no wildcard arm.
     fn action_task<'a>(&'a self, id: ActionId, ctx: &ListenerCtx<'a>) -> ListenerSetup<'a> {
         match id {
-            ActionId::StackLaunch | ActionId::StackJoin | ActionId::StackRemove => {
-                stack::listen_for_stack_action(
-                    id,
-                    &self.messenger,
-                    ctx.core_node_name,
-                    self.instance_id(),
-                    self.node_name(),
-                    Arc::clone(&self.node_stack),
-                    self.peppy_dirs.clone(),
-                    stack::StackChangeDefaults {
-                        timeouts: stack::StackChangeTimeouts {
-                            node_startup: self.node_startup_timeout,
-                            node_start_health: self.node_start_health_timeout,
-                            health_monitor: self.health_monitor,
-                        },
-                        daemon_defaults: node::DaemonDefaults::from_peppy_config(
-                            &self.peppy_config,
-                            self.namespace.clone(),
-                            self.host_addresses.clone(),
-                        ),
-                        shutdown_token: self.shutdown_token.clone(),
-                        slice_ownership: Arc::clone(&self.slice_ownership),
-                        peppy_version: CORE_NODE_TAG.to_owned(),
+            ActionId::StackLaunch
+            | ActionId::StackBuild
+            | ActionId::StackJoin
+            | ActionId::StackRemove => stack::listen_for_stack_action(
+                id,
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
+                stack::StackChangeDefaults {
+                    timeouts: stack::StackChangeTimeouts {
+                        node_startup: self.node_startup_timeout,
+                        node_start_health: self.node_start_health_timeout,
+                        health_monitor: self.health_monitor,
                     },
-                    ctx.relationships.clone(),
-                )
-                .boxed()
-            }
+                    daemon_defaults: node::DaemonDefaults::from_peppy_config(
+                        &self.peppy_config,
+                        self.namespace.clone(),
+                        self.host_addresses.clone(),
+                    ),
+                    shutdown_token: self.shutdown_token.clone(),
+                    slice_ownership: Arc::clone(&self.slice_ownership),
+                    peppy_version: CORE_NODE_TAG.to_owned(),
+                },
+                ctx.relationships.clone(),
+            )
+            .boxed(),
             ActionId::StackBenchmark => stack::listen_for_stack_benchmark(
                 &self.messenger,
                 ctx.core_node_name,

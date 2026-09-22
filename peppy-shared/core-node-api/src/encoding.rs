@@ -62,7 +62,7 @@ pub use stack::join::{ArgumentOverride, ArgumentOverrideError, JoinPlacement, St
 pub use stack::launch::{
     InstanceEndpoints, LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse,
     LaunchResult, LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
-    PlacementSpec,
+    PlacementSpec, StackBuildGoal,
 };
 pub use stack::list::{
     CopyInfo, LaunchIdentity, SetMember, StackListRequest, StackListResponse,
