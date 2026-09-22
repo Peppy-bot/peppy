@@ -3,8 +3,6 @@ use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node_api::SerializedNodeGraph;
-use core_node_api::encoding::StackListRequest;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
@@ -13,10 +11,7 @@ use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
-use peppylib::core_node::transport::poll;
-
-use super::common::test_node_target;
-const CALLER_INSTANCE_ID: &str = "peppy-test";
+use super::common::{stack_graph, test_node_target};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_command_succeeds() {
@@ -44,12 +39,7 @@ async fn node_stop_command_succeeds() {
 
     // Set up logging
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // First, create a node using the init command
     NodeCommand {
@@ -136,19 +126,7 @@ async fn node_stop_command_succeeds() {
     .expect("node shutdown service should start");
 
     // Verify the node was added with 0 instances
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the added node. Got: {:?}",
@@ -188,19 +166,7 @@ async fn node_stop_command_succeeds() {
     .expect("node run command should succeed");
 
     // Verify the node now has 1 instance
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the added node. Got: {:?}",
@@ -266,19 +232,7 @@ async fn node_stop_command_succeeds() {
         .expect("kill task should not panic");
 
     // Verify the node now has 0 instances again
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the added node. Got: {:?}",

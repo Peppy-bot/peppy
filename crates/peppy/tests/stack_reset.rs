@@ -1,20 +1,15 @@
+use super::common::stack_graph;
 use peppy::test_support::ServeCommandEmulation;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use core_node_api::SerializedNodeGraph;
-use core_node_api::encoding::StackListRequest;
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::AppContext;
-
-use peppylib::core_node::transport::poll;
-const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 fn write_node_config(
     nodes_directory: &Path,
@@ -127,19 +122,7 @@ async fn service_reset_command_resets_node_stack() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
 
     assert!(
         graph
@@ -156,19 +139,7 @@ async fn service_reset_command_resets_node_stack() {
     .execute(&ctx)
     .expect("service reset command should succeed");
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete after reset");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse after reset");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
 
     assert_eq!(
         graph.nodes.len(),

@@ -197,12 +197,7 @@ async fn node_list_command_succeeds() {
 
     // Set up logging
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // Create both nodes using the init command
     NodeCommand {
@@ -686,12 +681,7 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Init {

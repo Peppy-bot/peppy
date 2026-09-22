@@ -94,12 +94,7 @@ fn dropping_the_daemon_kills_the_instances_it_spawned() {
     ));
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
     node_run_command(instance_id, node_name, Vec::new(), Vec::new())
         .execute(&ctx)
         .expect("node run should succeed");
