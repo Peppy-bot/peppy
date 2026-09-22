@@ -84,6 +84,9 @@ pub enum PublishError {
     },
     /// The frame's encoding label names a layout this runtime cannot decode.
     UnsupportedEncoding { encoding: String },
+    /// A `z16` depth frame arrived on a representation that declares no
+    /// `depth_range`, so there is no scale to render its readings on.
+    DepthRangeMissing,
     /// The frame bytes do not decode under their declared encoding and
     /// dimensions.
     BadFrame { detail: String },
@@ -106,6 +109,10 @@ impl fmt::Display for PublishError {
             Self::UnsupportedEncoding { encoding } => {
                 write!(f, "cannot transcode frames with encoding `{encoding}`")
             }
+            Self::DepthRangeMissing => write!(
+                f,
+                "cannot render z16 depth frames: the representation declares no `depth_range`"
+            ),
             Self::BadFrame { detail } => write!(f, "frame does not decode: {detail}"),
             Self::Oversize { size, limit } => {
                 write!(

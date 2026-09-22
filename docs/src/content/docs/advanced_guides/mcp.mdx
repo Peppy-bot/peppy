@@ -152,10 +152,13 @@ representation: {
     width: "width",       // `u8`, `u16`, or `u32`
     height: "height",     // `u8`, `u16`, or `u32`
   },
+  depth_range: { near: 100, far: 10000 },  // `jpeg` only; how a `z16` depth frame renders
 }
 ```
 
 All four fields must refer to required, non-`$optional` top-level members of the correct type. The runtime needs all four values to interpret a frame. If a frame already uses the requested codec, the server returns it without transcoding. `on_oversize: "downscale"` requires a `jpeg` representation because the server must re-encode the image at a smaller size.
+
+A `jpeg` representation renders `rgb8` and `bgr8` frames in colour, and `z16` depth frames (one little-endian `u16` reading per pixel, 0 for a pixel with no reading) as a greyscale picture. `depth_range` sets the readings that picture spans, in the frame's own counts, so one shade means one distance on every frame a client reads: a reading at `near` or nearer renders white, one at `far` or farther black, readings between them in linear proportion, and 0 black. `near` must be above 0 and below `far`. A `z16` frame that arrives on a representation without a `depth_range` is refused, and a `depth_range` on a `raw` representation is a parse error.
 
 ### Service policies
 
@@ -371,6 +374,7 @@ Parsing catches document-level errors before these checks. Examples include:
 - A blank `title`, `instructions`, or `description` value.
 - A zero deadline or a `max_hz` value that is not positive and finite.
 - A `quality` value on a `raw` representation.
+- A `depth_range` on a `raw` representation, or one whose `near` is 0 or not below `far`.
 - `on_oversize` without `max_result_bytes`.
 - `downscale` without a `jpeg` representation.
 - A `restrict` entry with neither bound, or with `min` above `max`.
