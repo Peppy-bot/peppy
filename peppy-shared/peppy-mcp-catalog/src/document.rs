@@ -332,6 +332,14 @@ impl TopicExposure {
                 "{context}: `quality` applies only to the `jpeg` image representation"
             ));
         }
+        if let Some(representation) = &self.representation
+            && representation.depth_range.is_some()
+            && representation.image != ImageCodec::Jpeg
+        {
+            return Err(format!(
+                "{context}: `depth_range` applies only to the `jpeg` image representation"
+            ));
+        }
         if self.on_oversize.is_some() && self.max_result_bytes.is_none() {
             return Err(format!(
                 "{context}: `on_oversize` requires `max_result_bytes` to set the size it acts on"
@@ -943,6 +951,36 @@ mod tests {
         let err = parse_err(&doc);
         assert!(
             err.contains("`quality` applies only to the `jpeg`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parses_a_depth_range_on_a_jpeg_representation() {
+        let doc = camera_and_recording().replace(
+            "quality: 80,",
+            "quality: 80, depth_range: { near: 100, far: 10000 },",
+        );
+        let exposure = parse(&doc).expect("a jpeg representation carries a depth range");
+        let representation = exposure.targets["front_camera"].topics[0]
+            .representation
+            .as_ref()
+            .expect("representation");
+        assert_eq!(
+            representation.depth_range,
+            Some(crate::policy::DepthRange::new(100, 10000).expect("valid range"))
+        );
+    }
+
+    #[test]
+    fn rejects_depth_range_on_a_raw_representation() {
+        let doc = camera_and_recording()
+            .replace(r#"image: "jpeg""#, r#"image: "raw""#)
+            .replace("quality: 80,", "depth_range: { near: 100, far: 10000 },")
+            .replace(r#"on_oversize: "downscale""#, r#"on_oversize: "reject""#);
+        let err = parse_err(&doc);
+        assert!(
+            err.contains("`depth_range` applies only to the `jpeg`"),
             "{err}"
         );
     }

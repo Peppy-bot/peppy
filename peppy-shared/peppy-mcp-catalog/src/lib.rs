@@ -44,8 +44,8 @@ pub use document::{
     RestrictBounds, ServerIdentity, ServiceExposure, TopicExposure,
 };
 pub use policy::{
-    ActionOperation, FreshnessPolicy, ImageCodec, ImageFieldMap, ImageRepresentation, JpegQuality,
-    MaxHz, OversizePolicy, ServiceOperation, UpdatePolicy,
+    ActionOperation, DepthRange, FreshnessPolicy, ImageCodec, ImageFieldMap, ImageRepresentation,
+    JpegQuality, MaxHz, OversizePolicy, ServiceOperation, UpdatePolicy,
 };
 pub use schema::{MaxSerializedSize, max_serialized_json_bytes, message_format_to_json_schema};
 pub use validate::{

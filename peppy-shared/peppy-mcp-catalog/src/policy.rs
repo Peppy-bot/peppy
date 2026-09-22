@@ -62,7 +62,9 @@ pub enum OversizePolicy {
 
 /// Interpret an image-carrying topic through named members of its derived
 /// schema and publish it in the declared codec. Frames whose encoding
-/// already matches the codec pass through without transcoding.
+/// already matches the codec pass through without transcoding. A `jpeg`
+/// representation renders colour frames (`rgb8`, `bgr8`) as they are and
+/// `z16` depth frames as the greyscale picture its `depth_range` spans.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(try_from = "RawImageRepresentation")]
 pub struct ImageRepresentation {
@@ -70,6 +72,8 @@ pub struct ImageRepresentation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality: Option<JpegQuality>,
     pub fields: ImageFieldMap,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depth_range: Option<DepthRange>,
 }
 
 #[derive(Deserialize)]
@@ -79,21 +83,30 @@ struct RawImageRepresentation {
     #[serde(default)]
     quality: Option<JpegQuality>,
     fields: ImageFieldMap,
+    #[serde(default)]
+    depth_range: Option<DepthRange>,
 }
 
 impl TryFrom<RawImageRepresentation> for ImageRepresentation {
     type Error = String;
 
     /// `raw` publishes frame bytes untouched, so there is no encode step a
-    /// quality could apply to; accepting one would silently ignore it.
+    /// quality could apply to and no picture a depth range could span;
+    /// accepting either would silently ignore it.
     fn try_from(raw: RawImageRepresentation) -> Result<Self, String> {
         if raw.quality.is_some() && raw.image != ImageCodec::Jpeg {
             return Err("`quality` applies only to the `jpeg` image representation".to_string());
+        }
+        if raw.depth_range.is_some() && raw.image != ImageCodec::Jpeg {
+            return Err(
+                "`depth_range` applies only to the `jpeg` image representation".to_string(),
+            );
         }
         Ok(Self {
             image: raw.image,
             quality: raw.quality,
             fields: raw.fields,
+            depth_range: raw.depth_range,
         })
     }
 }
@@ -133,6 +146,60 @@ impl<'de> Deserialize<'de> for JpegQuality {
         D: Deserializer<'de>,
     {
         Self::new(u8::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
+/// The readings a `z16` depth frame's greyscale picture spans, in the
+/// frame's own counts (the stream's depth unit per count). A reading at
+/// `near` or nearer renders white, one at `far` or farther black, readings
+/// between them in linear proportion, and 0, a pixel with no reading,
+/// black. Fixed by the exposure rather than stretched per frame, so one
+/// shade means one distance on every frame a client reads.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "RawDepthRange")]
+pub struct DepthRange {
+    near: u16,
+    far: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDepthRange {
+    near: u16,
+    far: u16,
+}
+
+impl DepthRange {
+    /// Accepts a `near` above 0, the no-reading value, and below `far`.
+    pub fn new(near: u16, far: u16) -> Result<Self, String> {
+        if near == 0 {
+            return Err(
+                "`depth_range.near` must be above 0, the value of a pixel with no reading"
+                    .to_string(),
+            );
+        }
+        if near >= far {
+            return Err(format!(
+                "`depth_range.near` must be below `depth_range.far`, got {near} and {far}"
+            ));
+        }
+        Ok(Self { near, far })
+    }
+
+    pub fn near(self) -> u16 {
+        self.near
+    }
+
+    pub fn far(self) -> u16 {
+        self.far
+    }
+}
+
+impl TryFrom<RawDepthRange> for DepthRange {
+    type Error = String;
+
+    fn try_from(raw: RawDepthRange) -> Result<Self, String> {
+        Self::new(raw.near, raw.far)
     }
 }
 
@@ -258,6 +325,64 @@ mod tests {
         .to_string();
         assert!(
             error.contains("`quality` applies only to the `jpeg`"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn depth_range_accepts_a_near_above_zero_and_below_far() {
+        let parsed: DepthRange =
+            serde_json::from_str(r#"{"near": 100, "far": 10000}"#).expect("valid range");
+        assert_eq!((parsed.near(), parsed.far()), (100, 10000));
+        assert_eq!(parsed, DepthRange::new(100, 10000).expect("valid range"));
+    }
+
+    #[test]
+    fn depth_range_rejects_a_zero_near_and_a_near_not_below_far() {
+        let error = serde_json::from_str::<DepthRange>(r#"{"near": 0, "far": 10}"#)
+            .expect_err("0 is the no-reading value")
+            .to_string();
+        assert!(
+            error.contains("`depth_range.near` must be above 0"),
+            "unexpected error: {error}"
+        );
+        for raw in [r#"{"near": 10, "far": 10}"#, r#"{"near": 11, "far": 10}"#] {
+            let error = serde_json::from_str::<DepthRange>(raw)
+                .expect_err("near must be below far")
+                .to_string();
+            assert!(
+                error.contains("`depth_range.near` must be below `depth_range.far`"),
+                "unexpected error for {raw}: {error}"
+            );
+        }
+        serde_json::from_str::<DepthRange>(r#"{"near": 1, "far": 10, "unit": 0.001}"#)
+            .expect_err("a range carries only its two ends");
+    }
+
+    #[test]
+    fn image_representation_accepts_depth_range_only_for_jpeg() {
+        let fields =
+            r#""fields": {"data": "frame", "encoding": "encoding", "width": "w", "height": "h"}"#;
+        let range = r#""depth_range": {"near": 100, "far": 10000}"#;
+        let jpeg: ImageRepresentation =
+            serde_json::from_str(&format!(r#"{{"image": "jpeg", {range}, {fields}}}"#))
+                .expect("jpeg carries a depth range");
+        assert_eq!(
+            jpeg.depth_range,
+            Some(DepthRange::new(100, 10000).expect("valid range"))
+        );
+        let without: ImageRepresentation =
+            serde_json::from_str(&format!(r#"{{"image": "jpeg", {fields}}}"#))
+                .expect("a colour-only representation declares no range");
+        assert_eq!(without.depth_range, None);
+
+        let error = serde_json::from_str::<ImageRepresentation>(&format!(
+            r#"{{"image": "raw", {range}, {fields}}}"#
+        ))
+        .expect_err("a raw representation renders no picture a range could span")
+        .to_string();
+        assert!(
+            error.contains("`depth_range` applies only to the `jpeg`"),
             "unexpected error: {error}"
         );
     }
