@@ -94,6 +94,13 @@ pub(super) struct ComposedCopy {
     pub skipped: Vec<SkippedAdjustment>,
 }
 
+/// Whether `target`, `instance` or `instance/link_id`, names one of
+/// `instance_ids`.
+fn names_one_of(instance_ids: &[Name], target: &str) -> bool {
+    let (instance, _) = split_link_target(target);
+    instance_ids.iter().any(|id| id.as_str() == instance)
+}
+
 impl CopyRecord {
     /// Whether `instance_id` is one of the copy's own instances.
     pub fn owns_instance(&self, instance_id: &str) -> bool {
@@ -105,8 +112,7 @@ impl CopyRecord {
     /// Whether `target`, `instance` or `instance/link_id`, names one of the
     /// copy's own instances.
     pub fn owns_target(&self, target: &str) -> bool {
-        let (instance, _) = split_link_target(target);
-        self.owns_instance(instance)
+        names_one_of(&self.instance_ids, target)
     }
 }
 
@@ -114,8 +120,7 @@ impl ComposedCopy {
     /// Whether `target`, `instance` or `instance/link_id`, names one of the
     /// copy's own instances.
     fn owns(&self, target: &str) -> bool {
-        let (instance, _) = split_link_target(target);
-        self.instance_ids.iter().any(|id| id.as_str() == instance)
+        names_one_of(&self.instance_ids, target)
     }
 
     pub(super) fn record(&self) -> CopyRecord {

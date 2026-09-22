@@ -152,7 +152,7 @@ pub fn first_duplicate<T: Eq + std::hash::Hash>(items: &[T]) -> Option<&T> {
 /// copy its instance belongs to (`None` for an instance the launcher deploys
 /// outside any copy). A node holding members from several copies groups them
 /// by `copy`. The boot-config, node-info and delivery twin of the wire's
-/// `BoundProducer`; the producer-binding counterpart of [`PairedPeer`].
+/// `BoundMember`; the producer-binding counterpart of [`PairedPeer`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 pub struct BoundMember {

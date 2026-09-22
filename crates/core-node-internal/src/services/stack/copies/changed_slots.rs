@@ -11,7 +11,7 @@ use crate::services::node::observation::OBSERVATION_UPDATE_TIMEOUT;
 use config::node::Cardinality;
 use config::runtime::{BoundProducers, Name, SlotBindings};
 use core_node_api::encoding::{
-    ObservationTargets, ParticipantSetsUpdateRequest, SetMember, SlotMembers, SlotSet,
+    ObservationTargets, ParticipantSetsUpdateRequest, SlotMembers, SlotSet,
     slots_in_first_added_order,
 };
 use daemon_config::launcher::{CopyRecord, PeppyLauncher, Placements, PlannedObservation};
@@ -75,27 +75,21 @@ pub(super) fn changed_slots(
     planned: &[PlannedDeployment],
     change: Change,
 ) -> Result<Vec<ChangedSlot>, String> {
-    let mut slots: Vec<ChangedSlot> = Vec::new();
-    for ((instance_id, link_id), targets) in slots_in_first_added_order(&copy.set_members) {
-        let member = SetMember {
-            instance_id: instance_id.clone(),
-            link_id: link_id.to_string(),
-            target: targets[0].to_string(),
-        };
-        if let Some(slot) = changed_slot(copy, planned, &member, change)? {
-            slots.push(slot);
-        }
-    }
-    Ok(slots)
+    slots_in_first_added_order(&copy.set_members)
+        .into_iter()
+        .filter_map(|((instance_id, link_id), _)| {
+            changed_slot(copy, planned, instance_id, link_id, change).transpose()
+        })
+        .collect()
 }
 
 fn changed_slot(
     copy: &CopyRecord,
     planned: &[PlannedDeployment],
-    member: &SetMember,
+    instance: &Name,
+    slot: &str,
     change: Change,
 ) -> Result<Option<ChangedSlot>, String> {
-    let (instance, slot) = (&member.instance_id, member.link_id.as_str());
     let field = format!("`{instance}.links.{slot}`");
     let item = planned
         .iter()
@@ -463,6 +457,7 @@ mod tests {
     use crate::services::stack::fixtures::planned_deployment;
     use config::runtime::ProducerRef;
     use core_node_api::encoding::ObservationTarget;
+    use core_node_api::encoding::SetMember;
     use daemon_config::launcher::{PeppyLauncherParser, UnitSelection};
 
     /// A monitor with a `zero_or_more` node slot `robots`, a `zero_or_more`
@@ -665,6 +660,38 @@ mod tests {
              add stack instances to that slot; take the whole stack down with `peppy stack \
              reset` and launch again"
         );
+    }
+
+    /// A set whose instance runs on a machine the federation does not list is
+    /// refused at join, naming the slot and the machine, and is what a removal
+    /// leaves untouched; a set on a live machine passes both.
+    #[test]
+    fn a_set_on_a_machine_that_is_not_live_is_refused_at_join_and_set_aside_at_removal() {
+        use super::super::live::{check_hosts_live, split_by_liveness};
+        let core_node = |name: &str| config::runtime::CoreNodeName::new(name).unwrap();
+        let placements = Placements::new(
+            core_node("cn-robot"),
+            BTreeMap::from([("monitor_inst".to_string(), core_node("cn-cloud"))]),
+        );
+        let slots = || slots_of(&[("robots", "alpha_arm_inst")], Change::Join).unwrap();
+        let alpha = Name::new("alpha").unwrap();
+        let coordinator_alone = BTreeSet::from(["cn-robot".to_string()]);
+        let both = BTreeSet::from(["cn-robot".to_string(), "cn-cloud".to_string()]);
+
+        let refusal =
+            check_hosts_live(&alpha, &slots(), &placements, &coordinator_alone).unwrap_err();
+        assert!(
+            refusal.contains("`monitor_inst.links.robots`") && refusal.contains("`cn-cloud`"),
+            "{refusal}"
+        );
+        check_hosts_live(&alpha, &slots(), &placements, &both).expect("a live machine passes");
+
+        let (reachable, offline) = split_by_liveness(slots(), &placements, &coordinator_alone);
+        assert!(reachable.is_empty());
+        assert_eq!(offline.len(), 1);
+        let (reachable, offline) = split_by_liveness(slots(), &placements, &both);
+        assert_eq!(reachable.len(), 1);
+        assert!(offline.is_empty());
     }
 
     fn observation(source: &str) -> PlannedObservation {

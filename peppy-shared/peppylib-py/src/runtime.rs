@@ -1459,8 +1459,8 @@ impl PyStandaloneConfig {
     }
 
     /// `with_bound_producer` for a producer whose instance belongs to the copy
-    /// named `copy`, as a `stack join` binds it: the member the node reads for
-    /// this producer carries that copy name.
+    /// named `copy`: the member the node reads for this producer carries that
+    /// copy name.
     fn with_bound_producer_in_copy(
         &self,
         link_id: String,

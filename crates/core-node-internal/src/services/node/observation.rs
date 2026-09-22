@@ -778,7 +778,7 @@ impl ObservationCoordinator {
                 "observation_update rejected",
             )
             .await
-            .map(|_accepted| ())
+            .map(|_delivery| ())
     }
 }
 

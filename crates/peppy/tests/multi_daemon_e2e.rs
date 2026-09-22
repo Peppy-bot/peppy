@@ -4934,6 +4934,10 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
                 "[set-watch] members arms=[fixed_arm_inst:none] leaders=[]\n",
             )
             .await;
+        // The member the boot config seeded is subscribed like any other.
+        daemon
+            .wait_for_node_log(instance, "received from fixed_arm_inst\n")
+            .await;
     }
 
     require_delivered(

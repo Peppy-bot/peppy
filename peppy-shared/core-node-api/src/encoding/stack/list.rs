@@ -330,6 +330,37 @@ impl crate::encoding::Wire for StackListResponse {
 mod tests {
     use super::*;
 
+    /// Interleaved members group under their slot, slots in the order each was
+    /// first added to and targets in the order they were added.
+    #[test]
+    fn set_members_group_by_slot_in_first_added_order() {
+        let member = |instance: &str, link_id: &str, target: &str| SetMember {
+            instance_id: Name::new(instance).unwrap(),
+            link_id: link_id.into(),
+            target: target.into(),
+        };
+        let members = [
+            member("panel_inst", "cameras", "alpha_wrist_left"),
+            member("monitor_inst", "robots", "alpha_arm_inst"),
+            member("panel_inst", "cameras", "alpha_chest"),
+        ];
+        let grouped: Vec<(&str, &str, Vec<&str>)> = slots_in_first_added_order(&members)
+            .into_iter()
+            .map(|((instance, link_id), targets)| (instance.as_str(), link_id, targets))
+            .collect();
+        assert_eq!(
+            grouped,
+            [
+                (
+                    "panel_inst",
+                    "cameras",
+                    vec!["alpha_wrist_left", "alpha_chest"]
+                ),
+                ("monitor_inst", "robots", vec!["alpha_arm_inst"]),
+            ]
+        );
+    }
+
     #[test]
     fn request_round_trips() {
         let request = StackListRequest::new();

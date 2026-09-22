@@ -253,8 +253,8 @@ impl StandaloneConfig {
     }
 
     /// [`with_bound_producer`](Self::with_bound_producer) for a producer whose
-    /// instance belongs to the copy named `copy`, as a `stack join` binds it:
-    /// the member the node reads for this producer carries that copy name.
+    /// instance belongs to the copy named `copy`: the member the node reads for
+    /// this producer carries that copy name.
     pub fn with_bound_producer_in_copy(
         self,
         link_id: impl Into<String>,

@@ -69,7 +69,7 @@ SEEDED_SLOTS_CONFIG = """{
 
 
 def _seeded_config(router) -> StandaloneConfig:
-    """Every builder exercised at once, in the order a launch would resolve them."""
+    """Every slot kind seeded at once, in the order a launch would resolve them."""
     return (
         StandaloneConfig()
         .with_parameters({"frequency_hz": 10.0})
@@ -114,9 +114,55 @@ def _run_standalone(peppy_config_path: str, standalone_config, setup_fn):
     return thread, result_queue, error_queue
 
 
+async def _collect(thread, results: queue.Queue) -> dict:
+    """Every value the setup put on `results`, keyed as it put them, then the
+    runner joined. The cancellation token is put in a `finally`, so it always
+    arrives last: draining until it does never hangs or truncates as slots
+    are added."""
+    seen = {}
+    while True:
+        key, value = await asyncio.to_thread(results.get, timeout=10.0)
+        if key == "token":
+            value.cancel()
+            break
+        seen[key] = value
+    thread.join(timeout=10.0)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_standalone_bound_members_carry_their_copy(monkeypatch):
+    """A producer seeded in a copy reads back with that copy, beside one seeded
+    outside any, in call order."""
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(SEEDED_SLOTS_CONFIG)
+            seeded = (
+                _seeded_config(router)
+                .with_bound_producer("spare_cameras", "core_x", "hub_cam")
+                .with_bound_producer_in_copy("spare_cameras", "core_y", "bravo_cam", "bravo")
+            )
+
+            def setup_fn(params, node_runner, results):
+                results.put(("producers", node_runner.bound_producers("spare_cameras")))
+                results.put(("members", node_runner.bound_members("spare_cameras")))
+
+            thread, results, errors = _run_standalone(peppy_config_path, seeded, setup_fn)
+            seen = await _collect(thread, results)
+
+    assert errors.empty(), f"Runner error: {errors.get_nowait()}"
+    assert [cam.instance_id for cam in seen["producers"]] == ["hub_cam", "bravo_cam"]
+    assert [(m.producer.instance_id, m.copy) for m in seen["members"]] == [
+        ("hub_cam", None),
+        ("bravo_cam", "bravo"),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_standalone_seeds_every_slot_kind(monkeypatch):
-    """Each builder reaches the runtime, and each slot reads back what it seeded."""
+    """Each slot reads back what it seeded."""
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -139,6 +185,7 @@ async def test_standalone_seeds_every_slot_kind(monkeypatch):
                     ("wrist", node_runner.optional_bound_producer("wrist_camera"))
                 )
                 results.put(("spare_cams", node_runner.bound_producers("spare_cameras")))
+                results.put(("spare_members", node_runner.bound_members("spare_cameras")))
 
                 # Observer slots, each through the accessor its cardinality
                 # declares. A `one` slot answers without an Option.
@@ -162,17 +209,7 @@ async def test_standalone_seeds_every_slot_kind(monkeypatch):
                 peppy_config_path, _seeded_config(router), setup_fn
             )
 
-            # The token is put in a `finally`, so it always arrives last: drain
-            # until it does rather than counting the reads, which would silently
-            # hang or truncate the moment a slot is added below.
-            seen = {}
-            while True:
-                key, value = await asyncio.to_thread(results.get, timeout=10.0)
-                if key == "token":
-                    value.cancel()
-                    break
-                seen[key] = value
-            thread.join(timeout=10.0)
+            seen = await _collect(thread, results)
 
     assert errors.empty(), f"Runner error: {errors.get_nowait()}"
 
@@ -187,6 +224,7 @@ async def test_standalone_seeds_every_slot_kind(monkeypatch):
     assert seen["main"].instance_id == "camera_1"
     assert seen["wrist"] is None, "a vacant zero_or_one slot binds nothing"
     assert seen["spare_cams"] == [], "an unseeded zero_or_more slot binds nothing"
+    assert seen["spare_members"] == [], "and holds no member"
 
     assert seen["sole_arm"].producer.instance_id == "left_arm"
     assert seen["sole_arm"].source_link_id == "commander"

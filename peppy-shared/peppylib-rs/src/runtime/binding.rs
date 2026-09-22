@@ -89,7 +89,8 @@ impl BoundSetSubscription {
 /// every cardinality. Spliced by the generated consumed-topic `subscribe()`
 /// call sites; `from_target` is the node or contract target the producers serve
 /// the topic under. Declares a wire subscription for every producer bound now
-/// and fails if one cannot be declared.
+/// and fails if one cannot be declared; a declaration failing while the stream
+/// runs is declared again on a backoff.
 pub async fn subscribe_bound_set(
     node_runner: &NodeRunner,
     link_id: &str,

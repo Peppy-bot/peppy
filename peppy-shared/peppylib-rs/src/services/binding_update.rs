@@ -25,7 +25,7 @@ impl SlotUpdate for BindingUpdateRequest {
     type State = BoundSetState;
 
     const SERVICE: &'static str = BINDING_UPDATE_SERVICE;
-    const SLOT_NOUN: &'static str = "producer set slot";
+    const SLOT_NOUN: &'static str = "`one_or_more` or `zero_or_more` producer slot";
 
     fn decode_request(payload: &[u8]) -> PeppyResult<Self> {
         BindingUpdateRequest::decode(payload)
@@ -182,9 +182,9 @@ mod tests {
         let response = apply_slot_update(&slots, &update("main", 1, &["rear"]));
         assert!(!response.accepted, "{response:?}");
         assert!(
-            response
-                .message
-                .contains("this node holds no producer set slot `main`"),
+            response.message.contains(
+                "this node holds no `one_or_more` or `zero_or_more` producer slot `main`"
+            ),
             "{response:?}"
         );
         assert_eq!(held(&slots), ["front"]);

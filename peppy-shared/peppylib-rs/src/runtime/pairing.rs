@@ -204,6 +204,8 @@ impl PeerSubscription {
 /// Spliced by the generated `peppygen::paired_topics::<link_id>::<topic>::subscribe`
 /// call sites; `pairing_name` / `pairing_tag` / `topic` come from the
 /// pairing doc via codegen constants.
+/// Fails when a pin the slot follows now cannot be declared; a declaration
+/// failing while the stream runs is declared again on a backoff.
 pub async fn subscribe_peer(
     node_runner: &NodeRunner,
     link_id: &str,
@@ -233,7 +235,7 @@ pub async fn subscribe_peer(
 }
 
 /// Messenger-level core of [`subscribe_peer`]: the same engine driven by an
-/// explicit watch channel; nodes go through [`subscribe_peer`].
+/// explicit watch channel.
 /// `own_link_id` is this node's slot in every pair, the recipient each peer
 /// publishes to. Prefer [`subscribe_peer`] in nodes; this seam exists for
 /// embedders and tests that manage peer state themselves. The stream ends when

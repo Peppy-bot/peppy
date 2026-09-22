@@ -593,7 +593,7 @@ Three contract statements follow from this manifest:
 
 The underlying Zenoh transport would broadcast an untargeted service query to every matching producer (`QueryTarget::All`), and every producer's user handler would run even though the consumer only ever consumes the first reply. For idempotent reads that wastes work; for state-changing services it can cause real-world side effects on producers the consumer never intended to reach. Requiring every call to name one member of the slot's validated bound set removes that hazard by construction: the selected target carries the producer's full `(core_node, instance_id)` wire address, so the call addresses exactly one producer with no probe round-trip and no discovery race, both the request and the response stay pinned to it, and an out-of-set target (which plan-time binding validation cannot check) is rejected before it reaches the wire.
 
-If the selected producer dies, the call surfaces `ServiceUnreachable` (a `ConnectionError` in Python) and the caller can retry once the producer is back; the bound set itself never shrinks or rebinds at runtime.
+If the selected producer dies, the call surfaces `ServiceUnreachable` (a `ConnectionError` in Python) and the caller can retry once the producer is back: a producer dying never changes the bound set. On a `one_or_more` or `zero_or_more` slot a [copy joining or leaving](/guides/launch_files/#copies) does, so read `bound_producers()` at the point of use.
 
 ### Validator rules
 

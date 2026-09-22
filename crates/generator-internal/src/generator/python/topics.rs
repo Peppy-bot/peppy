@@ -101,6 +101,13 @@ fn tag_annotation(tag: SubscriptionTag) -> &'static str {
     }
 }
 
+/// The set-following sentence as a docstring suffix, empty on a scalar slot.
+fn follows_the_set_suffix(cardinality: Cardinality) -> String {
+    crate::generator::types::follows_the_set_doc(cardinality)
+        .map(|sentence| format!(" {sentence}"))
+        .unwrap_or_default()
+}
+
 /// Emits the held-`Subscription` class shared by the bound-set, peer, and
 /// observer consumer modules; the docstring and the identity tag differ.
 /// `next()` mirrors the Rust `Subscription::next`: a `(tag, message)` tuple,
@@ -492,11 +499,7 @@ pub fn build_pair_topic_consumer(
         }
         PairTopicConsumerKind::Observed(cardinality) => {
             emit_observer_module_header(&mut builder, &topic.name, qos, peer, cardinality);
-            let follows_the_set = if cardinality.is_scalar() {
-                ""
-            } else {
-                " The subscription follows the set as a join grows it or a removal shrinks it."
-            };
+            let follows_the_set = follows_the_set_suffix(cardinality);
             (
                 format!(
                     "A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance.{follows_the_set}"
@@ -587,11 +590,7 @@ pub fn build_consumed_topic(
     crate::generator::python::services::emit_bound_producer_accessor_fn(&mut builder, dependency);
 
     builder.blank_line();
-    let follows_the_set = if dependency.cardinality.is_scalar() {
-        ""
-    } else {
-        " The subscription follows the set as a join grows it or a removal shrinks it."
-    };
+    let follows_the_set = follows_the_set_suffix(dependency.cardinality);
     emit_subscription_class(
         &mut builder,
         &format!(

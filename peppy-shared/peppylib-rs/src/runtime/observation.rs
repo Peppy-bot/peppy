@@ -294,6 +294,8 @@ impl ObservedTopicSubscription {
 /// `peppygen::paired_topics::<link_id>::<topic>::subscribe` call sites of
 /// observer modules; `pairing_name` / `pairing_tag` / `topic` come from the
 /// pairing doc via codegen constants.
+/// Fails when a pin the slot follows now cannot be declared; a declaration
+/// failing while the stream runs is declared again on a backoff.
 pub async fn subscribe_observed(
     node_runner: &NodeRunner,
     link_id: &str,
@@ -323,7 +325,7 @@ pub async fn subscribe_observed(
 }
 
 /// Messenger-level core of [`subscribe_observed`]: the same engine driven by an
-/// explicit watch channel; nodes go through [`subscribe_observed`].
+/// explicit watch channel.
 /// Prefer [`subscribe_observed`] in nodes; this seam exists for embedders and
 /// tests that manage observation state themselves. The stream ends when
 /// `watch_rx`'s sender drops.

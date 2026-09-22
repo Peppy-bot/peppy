@@ -69,7 +69,7 @@ impl ObservationUpdateRequest {
                         "observation_update",
                         ("peer.coreNode", "peer.instanceId"),
                     )?,
-                    peer_link_id: super::read_text(
+                    peer_link_id: super::read_link_id(
                         wire_peer.get_link_id(),
                         "observation_update",
                         "peer.linkId",
@@ -85,7 +85,7 @@ impl ObservationUpdateRequest {
                     "observation_update",
                     ("sourceCoreNode", "sourceInstanceId"),
                 )?,
-                source_link_id: super::read_text(
+                source_link_id: super::read_link_id(
                     wire.get_source_link_id(),
                     "observation_update",
                     "sourceLinkId",
@@ -156,6 +156,33 @@ mod tests {
 
     fn round_trip(request: &ObservationUpdateRequest) -> ObservationUpdateRequest {
         ObservationUpdateRequest::decode(&request.encode().unwrap().into_inner()).unwrap()
+    }
+
+    /// A source or a pinned peer the wire cannot address, and a link_id it
+    /// cannot carry, refuse the delivery naming the field.
+    #[test]
+    fn a_member_the_wire_cannot_carry_refuses_the_delivery() {
+        let slashed_source_link = {
+            let mut member = member("arm_1", 1, true);
+            member.source.source_link_id = "a/b".to_string();
+            (member, "sourceLinkId")
+        };
+        let empty_peer_link = {
+            let mut member = pinned_member("arm_1", "ctrl_1");
+            member.source.peer.as_mut().unwrap().peer_link_id = String::new();
+            (member, "peer.linkId")
+        };
+        let sentinel_source = (member("*", 1, true), "sourceInstanceId");
+        for (member, field) in [slashed_source_link, empty_peer_link, sentinel_source] {
+            let request = ObservationUpdateRequest {
+                link_id: "fleet".to_string(),
+                sequence: 1,
+                members: vec![member],
+            };
+            let error = ObservationUpdateRequest::decode(&request.encode().unwrap().into_inner())
+                .expect_err("the wire cannot carry this member");
+            assert!(error.to_string().contains(field), "{field}: {error}");
+        }
     }
 
     /// Zero, one and several members all ride the same shape; the empty set is

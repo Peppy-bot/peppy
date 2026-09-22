@@ -24,6 +24,7 @@ use crate::error::{
 };
 use config::node::{PairingObserverDependency, PairingParticipantDependency};
 use config::runtime::{ObservedPeer, ProducerRef};
+use core_node_api::encoding::ObservationTarget;
 use std::collections::{BTreeMap, HashSet};
 
 use super::pairings::{AlreadyPairedSlots, PairingValidationItem, PlannedPairing};
@@ -58,8 +59,8 @@ pub struct PlannedObservation {
 
 impl PlannedObservation {
     /// The member this observation contributes to its observer's slot.
-    pub fn target(&self) -> core_node_api::encoding::ObservationTarget {
-        core_node_api::encoding::ObservationTarget {
+    pub fn target(&self) -> ObservationTarget {
+        ObservationTarget {
             source: self.source.clone(),
             source_link_id: self.source_link_id.clone(),
             peer: self.peer.clone(),

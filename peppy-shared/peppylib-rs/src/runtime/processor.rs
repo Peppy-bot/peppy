@@ -2801,6 +2801,105 @@ mod tests {
         );
     }
 
+    /// A producer seeded in a copy reads back with that copy beside one seeded
+    /// outside any, in call order, through both member accessors; a copy that
+    /// is not a name fails startup naming the slot.
+    #[test]
+    fn standalone_bound_members_carry_the_copy_they_were_seeded_in() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, MULTI_SLOT_PEPPY_CONFIG)
+            .expect("peppy config should be written");
+        let seeded = |arms: StandaloneConfig| {
+            arms.with_bound_producer("main", "core_x", "camera_1")
+                .with_vacant_producer_slot("wrist_camera")
+        };
+
+        let config = seeded(
+            StandaloneConfig::new()
+                .with_bound_producer("arms", "core_x", "right_arm")
+                .with_bound_producer_in_copy("arms", "core_y", "bravo_arm", "bravo"),
+        );
+        let processor = Processor::new_standalone(&peppy_config_path, &config)
+            .expect("seeded slots should construct");
+        let copies = |members: &[crate::messaging::BoundMember]| -> Vec<(String, Option<String>)> {
+            members
+                .iter()
+                .map(|member| {
+                    (
+                        member.producer.instance_id.clone(),
+                        member.copy.as_ref().map(|copy| copy.as_str().to_string()),
+                    )
+                })
+                .collect()
+        };
+        let expected = vec![
+            ("right_arm".to_string(), None),
+            ("bravo_arm".to_string(), Some("bravo".to_string())),
+        ];
+        assert_eq!(copies(&processor.bound_members("arms")), expected);
+        let never_empty = processor.non_empty_bound_members("arms");
+        assert_eq!(never_empty.first().producer.instance_id, "right_arm");
+        assert_eq!(
+            copies(&never_empty.iter().cloned().collect::<Vec<_>>()),
+            expected
+        );
+        assert!(processor.bound_members("spare_cameras").is_empty());
+
+        let unnamed = seeded(StandaloneConfig::new().with_bound_producer_in_copy(
+            "arms",
+            "core_x",
+            "right_arm",
+            "not a name",
+        ));
+        let Err(err) = Processor::new_standalone(&peppy_config_path, &unnamed) else {
+            panic!("a copy is a name");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::InvalidCopyName { link_id, copy, .. }
+                    if link_id == "arms" && copy == "not a name"
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    /// A boot config the runtime cannot parse names the rebuild that heals a
+    /// node built before its daemon: here a slot binding holding a bare producer
+    /// address in place of a member.
+    #[test]
+    fn an_unparsable_boot_config_names_the_rebuild() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let path = temp_dir.path().join("launch.json5");
+        std::fs::write(
+            &path,
+            r#"{
+                messaging_host: "127.0.0.1",
+                messaging_port: 7448,
+                node_instance: {
+                    instance_id: "consumer_1",
+                    slot_bindings: { main: [{ core_node: "core-1234", instance_id: "camera_1" }] }
+                },
+                node_name: "consumer_node",
+                node_tag: "v1",
+                bound_core_node: "core-1234"
+            }"#,
+        )
+        .expect("the boot config is written");
+        let err = Processor::load_runtime_config(path.to_str().unwrap())
+            .expect_err("a bare producer address is no member");
+        assert!(
+            matches!(&err, crate::error::Error::LaunchConfigParse { .. }),
+            "got: {err:?}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("run `peppy node sync` then `peppy node build` for this node"),
+            "{message}"
+        );
+    }
+
     /// Standalone runs enforce the same rules via
     /// `StandaloneConfig::with_bound_producer`: a declared `one` slot left
     /// unseeded fails startup; repeat calls accumulate a multi slot's set

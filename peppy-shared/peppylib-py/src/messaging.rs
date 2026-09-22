@@ -29,6 +29,12 @@ pub(crate) use topics::{
     PyBoundSetSubscription, PySubscription, PyTopicMessage, PyTopicMessenger, PyTopicPublisher,
 };
 
+/// A member's copy as the member reprs spell it: the quoted name, or `None`.
+pub(crate) fn repr_copy(copy: Option<&str>) -> String {
+    copy.map(|copy| format!("{copy:?}"))
+        .unwrap_or_else(|| "None".to_string())
+}
+
 /// Convert a `peppylib::error::Error` into an appropriate Python exception.
 ///
 /// Maps timeout and unreachable variants to their natural Python counterparts

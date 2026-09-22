@@ -37,7 +37,7 @@ pub(crate) trait SlotUpdate: Sized {
     /// Wire service name, also used in the daemon-only rejection message.
     const SERVICE: &'static str;
     /// Human noun for this service's slot, used in its rejections: "pairing
-    /// slot" / "observer slot" / "producer slot".
+    /// slot" / "observer slot" / "`one_or_more` or `zero_or_more` producer slot".
     const SLOT_NOUN: &'static str;
 
     fn decode_request(payload: &[u8]) -> PeppyResult<Self>;
@@ -71,8 +71,11 @@ pub(crate) trait SlotUpdate: Sized {
 /// What every refusal of a delivery the slot cannot hold tells the operator:
 /// the plan the daemon delivers and the manifest the node was built from
 /// describe the slot differently.
-const DISAGREEMENT_REMEDY: &str = "the plan and this node's manifest disagree; run `peppy node \
-     sync` then `peppy node build` for this node and launch again";
+const DISAGREEMENT_REMEDY: &str = concat!(
+    "the plan and this node's manifest disagree; ",
+    crate::runtime::rebuild_remedy!(),
+    " and launch again"
+);
 
 /// `members` members, as a refusal counts them.
 fn members_phrase(members: usize) -> String {

@@ -4,7 +4,7 @@
 //! set the instance holds on the node stack. A consumer's boot config carries
 //! the set it starts with, so only changes are delivered.
 
-use super::common::SlotUpdateClient;
+use super::common::{SlotDelivery, SlotUpdateClient};
 use config::runtime::{BoundProducers, Name};
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
@@ -56,7 +56,7 @@ impl BindingCoordinator {
         }
         .encode()
         .map_err(|error| error.to_string())?;
-        let accepted = self
+        let delivery = self
             .updates
             .send(
                 consumer_instance_id.as_str(),
@@ -66,7 +66,7 @@ impl BindingCoordinator {
                 "binding_update rejected",
             )
             .await?;
-        if !accepted {
+        if delivery == SlotDelivery::HeldNewer {
             return Ok(());
         }
         if self.updates.node_stack().set_instance_slot_binding(

@@ -1,3 +1,7 @@
+//! Bound-set state for consumer slots: the channel state a `binding_update`
+//! delivery replaces, and the never-empty views the `one_or_more` accessors
+//! return.
+
 use config::runtime::{BoundMember, BoundProducers, ProducerRef};
 
 /// The bound producer set of a `cardinality: "one_or_more"` consumer slot, in

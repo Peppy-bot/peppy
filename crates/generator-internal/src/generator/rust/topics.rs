@@ -493,14 +493,7 @@ fn build_pair_topic_subscription(
         ),
         PairTopicSubscriptionKind::Observed(cardinality) => (
             {
-                let follows_the_set = if cardinality.is_scalar() {
-                    quote! {}
-                } else {
-                    quote! {
-                        /// The subscription follows the set as a join grows it or a
-                        /// removal shrinks it.
-                    }
-                };
+                let follows_the_set = follows_the_set_attrs(cardinality);
                 quote! {
                     /// A held subscription to an observed pairing topic, fanned in
                     /// across every member of the slot's observed set. Yields nothing
@@ -509,7 +502,7 @@ fn build_pair_topic_subscription(
                     /// generation-tagged delivery check). A pairing is a live stream,
                     /// not a mailbox: messages published before observation are never
                     /// delivered.
-                    #follows_the_set
+                    #( #follows_the_set )*
                 }
             },
             quote!(peppylib::runtime::ObservedTopicSubscription),
@@ -663,14 +656,7 @@ pub fn build_consumed_topic_subscription(
 
     // A scalar slot's producer is the one its deployment bound; only a set slot
     // follows a join or a removal.
-    let follows_the_set = if dependency.cardinality.is_scalar() {
-        quote! {}
-    } else {
-        quote! {
-            /// The subscription follows the set as a join grows it or a removal
-            /// shrinks it.
-        }
-    };
+    let follows_the_set = follows_the_set_attrs(dependency.cardinality);
     let subscription_tokens = build_subscription_struct(
         quote! {
             /// A held subscription covering every producer bound to this slot: one
@@ -679,7 +665,7 @@ pub fn build_consumed_topic_subscription(
             /// per producer (no total ordering across producers), and ready
             /// producers are merged fairly. To follow a single producer, filter on
             /// the yielded producer identity.
-            #follows_the_set
+            #( #follows_the_set )*
         },
         quote!(peppylib::runtime::BoundSetSubscription),
         quote! {
@@ -814,6 +800,14 @@ pub fn build_bound_producer_accessor_fn(
         #accessor
         #members_accessor
     }
+}
+
+/// The doc attributes of the set-following sentence, empty on a scalar slot.
+fn follows_the_set_attrs(cardinality: Cardinality) -> Vec<TokenStream> {
+    let lines: Vec<&str> = crate::generator::types::follows_the_set_doc(cardinality)
+        .into_iter()
+        .collect();
+    super::doc_attrs(&lines)
 }
 
 /// The `bound_members()` accessor a set slot carries beside its

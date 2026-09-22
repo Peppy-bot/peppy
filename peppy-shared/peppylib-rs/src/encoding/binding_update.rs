@@ -121,6 +121,30 @@ mod tests {
         }
     }
 
+    /// An address no subscription can declare refuses the delivery: an empty
+    /// core node, and an instance id holding a wire separator or a sentinel.
+    #[test]
+    fn an_address_the_wire_cannot_carry_refuses_the_delivery() {
+        for (core_node, instance_id) in [("", "front"), ("core_a", "a/b"), ("core_a", "*")] {
+            let mut builder = ::capnp::message::Builder::new_default();
+            {
+                let mut root =
+                    builder.init_root::<binding_update_capnp::binding_update_request::Builder>();
+                root.set_link_id("cameras");
+                root.set_sequence(1);
+                let mut entry = root.init_producers(1).get(0);
+                entry.set_core_node(core_node);
+                entry.set_instance_id(instance_id);
+            }
+            let payload = super::super::encode_message(&builder).unwrap();
+            let error = BindingUpdateRequest::decode(&payload.into_inner()).unwrap_err();
+            assert!(
+                error.to_string().contains("binding_update field"),
+                "`{core_node}`/`{instance_id}`: {error}"
+            );
+        }
+    }
+
     /// The wire refuses a producer named twice, whatever copies name it, and
     /// a copy that is not a valid name.
     #[test]

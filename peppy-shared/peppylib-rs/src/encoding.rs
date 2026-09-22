@@ -121,35 +121,44 @@ pub(crate) fn decode_message(
         .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
 }
 
-/// Reads a capnp text field into an owned `String`, labeling errors with the
-/// owning codec and schema field name. Crate-internal: shared by the framework
-/// service codecs (`peer_update`, `observation_update`).
-/// A producer address from its two text fields: a non-empty core node and an
-/// instance id that is a valid name, so a delivery naming a producer the wire
-/// cannot address is refused here, where the daemon hears the refusal.
+/// A producer address from its two text fields, each held to the wire's own
+/// segment rule, so a delivery naming a producer no subscription can address
+/// is refused here, where the daemon hears the refusal.
 pub(crate) fn read_producer(
     core_node: ::capnp::Result<::capnp::text::Reader<'_>>,
     instance_id: ::capnp::Result<::capnp::text::Reader<'_>>,
     codec: &str,
     names: (&str, &str),
 ) -> Result<config::runtime::ProducerRef> {
-    let core_node = read_text(core_node, codec, names.0)?;
-    if core_node.is_empty() {
-        return Err(crate::error::Error::Deserialization(format!(
-            "{codec} field `{}` is empty",
-            names.0
-        )));
-    }
-    let instance_id = read_text(instance_id, codec, names.1)?;
-    let instance_id = config::runtime::Name::new(instance_id).map_err(|e| {
-        crate::error::Error::Deserialization(format!("{codec} field `{}`: {e}", names.1))
-    })?;
+    let segment = |field, name: &str| -> Result<String> {
+        let text = read_text(field, codec, name)?;
+        pmi::Segment::try_from(text.as_str()).map_err(|e| {
+            crate::error::Error::Deserialization(format!("{codec} field `{name}`: {e}"))
+        })?;
+        Ok(text)
+    };
     Ok(config::runtime::ProducerRef::new(
-        core_node,
-        instance_id.as_str(),
+        segment(core_node, names.0)?,
+        segment(instance_id, names.1)?,
     ))
 }
 
+/// A slot's link_id from its text field, held to the wire's link_id rule.
+pub(crate) fn read_link_id(
+    field: ::capnp::Result<::capnp::text::Reader<'_>>,
+    codec: &str,
+    name: &str,
+) -> Result<String> {
+    let text = read_text(field, codec, name)?;
+    pmi::Segment::try_link_id(&text).map_err(|e| {
+        crate::error::Error::Deserialization(format!("{codec} field `{name}`: {e}"))
+    })?;
+    Ok(text)
+}
+
+/// Reads a capnp text field into an owned `String`, labeling errors with the
+/// owning codec and schema field name. Crate-internal: shared by the framework
+/// service codecs (`peer_update`, `observation_update`, `binding_update`).
 pub(crate) fn read_text(
     field: ::capnp::Result<::capnp::text::Reader<'_>>,
     codec: &str,

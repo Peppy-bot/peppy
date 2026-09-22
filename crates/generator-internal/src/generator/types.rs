@@ -352,6 +352,13 @@ impl DependencyContext {
     }
 }
 
+/// The sentence a subscription's doc carries on a set slot, whose members a
+/// join grows and a removal shrinks; a scalar slot's subscription has none.
+pub fn follows_the_set_doc(cardinality: Cardinality) -> Option<&'static str> {
+    (!cardinality.is_scalar())
+        .then_some("The subscription follows the set as a join grows it or a removal shrinks it.")
+}
+
 impl DependencyContext {
     /// Pre-wrapped doc lines for the `bound_members()` accessor a set slot
     /// carries beside `bound_producers()`: the same set, each member with the

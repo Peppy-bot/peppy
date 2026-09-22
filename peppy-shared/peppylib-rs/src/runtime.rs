@@ -22,9 +22,25 @@ pub use pairing::{
 };
 pub use processor::{Processor, STANDALONE_CORE_NODE};
 
+/// The rebuild every skew remedy names, spelled once for the messages that
+/// build on it.
+macro_rules! rebuild_remedy {
+    () => {
+        "run `peppy node sync` then `peppy node build` for this node"
+    };
+}
+pub(crate) use rebuild_remedy;
+
+/// The rebuild that heals a node whose generated code or runtime predates what
+/// it is started with, as every message naming it spells it.
+pub const REBUILD_REMEDY: &str = rebuild_remedy!();
+
 /// What every generated accessor's panic tells the operator to do when the
 /// node's generated code predates its manifest.
-pub(crate) const RESYNC_REMEDY: &str = "the generated code and the manifest disagree; run `peppy node sync` then `peppy node build` for this node";
+pub(crate) const RESYNC_REMEDY: &str = concat!(
+    "the generated code and the manifest disagree; ",
+    rebuild_remedy!()
+);
 
 use std::fmt;
 use std::future::Future;

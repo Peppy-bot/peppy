@@ -275,8 +275,9 @@ pub(crate) async fn start_slot_stream<S: FollowedSlot>(
 
 /// The converge loop: keeps one wire subscription per followed pin as the
 /// slot's set changes, publishing the followed members after each change. A pin
-/// whose declaration failed, or whose wire channel closed under it, is declared
-/// again after a backoff, until it succeeds or the slot stops following it.
+/// whose wire channel closed under it is declared again at once, and a pin
+/// whose declaration failed is declared again after a backoff, until it
+/// succeeds or the slot stops following it.
 /// Ends when the slot's state channel closes (runtime teardown), dropping every
 /// subscription it holds.
 async fn follow_the_set<S: FollowedSlot>(
@@ -320,7 +321,7 @@ async fn follow_the_set<S: FollowedSlot>(
             redeclare_delay = FIRST_REDECLARE_DELAY;
         }
         members_tx.send_if_modified(|held| {
-            if follows_the_same_pins::<S>(held, &current) {
+            if publishes_current_members::<S>(held, &current) {
                 return false;
             }
             *held = members_of::<S>(&current);
@@ -347,10 +348,11 @@ fn is_open(subscription: &Subscription) -> bool {
     !subscription.wire_receiver().is_disconnected()
 }
 
-/// Whether the published members follow the same pins as `current`, in the
-/// same order. A pin the converge task keeps keeps its subscription, so equal
-/// pins mean equal receivers.
-fn follows_the_same_pins<S: FollowedSlot>(
+/// Whether the published members are `current`'s: the same pins in the same
+/// order, each read from the channel its subscription holds now. A pin declared
+/// again reads from a new channel, so it is published even though the pin is
+/// the one the reader already knew.
+fn publishes_current_members<S: FollowedSlot>(
     held: &Members<S>,
     current: &[(Arc<S::Pin>, Subscription)],
 ) -> bool {
@@ -358,7 +360,9 @@ fn follows_the_same_pins<S: FollowedSlot>(
         && held
             .iter()
             .zip(current.iter())
-            .all(|((held_pin, _), (pin, _))| held_pin == pin)
+            .all(|((held_pin, held_rx), (pin, subscription))| {
+                held_pin == pin && held_rx.same_channel(subscription.wire_receiver())
+            })
 }
 
 /// The followed members as the reader polls them.
@@ -688,26 +692,40 @@ mod tests {
                     .expect("the pin declares");
             assert_eq!(*declarations.attempts.lock().unwrap(), 1);
 
-            // Closing the session closes every wire channel it holds.
-            shared
-                .lock()
-                .await
-                .stop_session()
-                .await
-                .expect("the mock session stops");
-            // The reader sees the closed channel on its next poll.
-            let _ = tokio::time::timeout(Duration::from_millis(200), stream.next()).await;
+            // Closing the session closes every wire channel it holds, and it
+            // is back before the reader looks, so the first redeclare succeeds
+            // and the slot follows the same pin through a new channel.
+            {
+                let mut messenger = shared.lock().await;
+                messenger
+                    .stop_session()
+                    .await
+                    .expect("the mock session stops");
+                messenger
+                    .start_session()
+                    .await
+                    .expect("the mock session starts again");
+            }
 
-            let redeclared = tokio::time::timeout(FIRST_REDECLARE_DELAY * 6, async {
-                while *declarations.attempts.lock().unwrap() < 2 {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
+            // The reader sees the closed channel on its next poll, the pin is
+            // declared again, and the reader polls the new channel: a publish
+            // after the restart is heard.
+            let heard = tokio::time::timeout(FIRST_REDECLARE_DELAY * 8, async {
+                loop {
+                    publish_from(&shared, "arm_1", b"after the restart").await;
+                    if let Ok(Some((pin, _))) =
+                        tokio::time::timeout(Duration::from_millis(100), stream.next()).await
+                    {
+                        return pin;
+                    }
                 }
             })
-            .await;
+            .await
+            .expect("the redeclared pin delivers");
+            assert_eq!(*heard, producer("arm_1"));
             assert!(
-                redeclared.is_ok(),
-                "the closed pin is declared again; attempts={}",
-                *declarations.attempts.lock().unwrap()
+                *declarations.attempts.lock().unwrap() >= 2,
+                "the closed pin was declared again"
             );
         }
 

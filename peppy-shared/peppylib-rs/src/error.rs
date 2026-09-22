@@ -258,9 +258,9 @@ pub enum Error {
     },
 
     #[error(
-        "failed to parse launch config at `{path}`; a node built before its daemon's release \
-         reads a config it cannot parse: run `peppy node sync` then `peppy node build` for this \
-         node and launch again"
+        "failed to parse launch config at `{path}`. If this node was built before the daemon was \
+         upgraded, {} and launch again",
+        crate::runtime::rebuild_remedy!()
     )]
     LaunchConfigParse {
         path: String,

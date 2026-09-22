@@ -45,14 +45,10 @@ impl PyBoundMember {
     }
 
     fn __repr__(&self) -> String {
-        let copy = match &self.inner.copy {
-            Some(copy) => format!("{:?}", copy.as_str()),
-            None => "None".to_string(),
-        };
         format!(
             "BoundMember(producer={}, copy={})",
             PyProducerRef::from(self.inner.producer.clone()).__repr__(),
-            copy
+            super::repr_copy(self.copy())
         )
     }
 }

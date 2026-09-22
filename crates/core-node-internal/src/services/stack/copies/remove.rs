@@ -80,10 +80,9 @@ async fn remove_inner(
         format!("copy `{name}` is absent; peppy stack list shows the copies on the stack")
     })?;
     let staying: Vec<_> = active
-        .copies
-        .values()
-        .filter(|other| other.record.name != copy.record.name)
-        .map(|other| other.record.clone())
+        .copy_records()
+        .filter(|other| other.name != copy.record.name)
+        .cloned()
         .collect();
     let remaining = active
         .prepared
@@ -185,8 +184,7 @@ async fn remove_inner(
         }
         report_offline_sets(ctx, name, &offline_slots, &active.placements).await;
         // A domain leaves with the instance that supplied it. Its lifetime
-        // goes too, so a copy rejoining under the same name mints a new one
-        //
+        // goes too, so a copy rejoining under the same name mints a new one.
         for domain in &removed_domains {
             active.clocks.remove(domain);
         }

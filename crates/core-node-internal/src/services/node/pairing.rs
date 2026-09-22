@@ -477,7 +477,7 @@ impl PairingCoordinator {
                 "peer_update rejected",
             )
             .await
-            .map(|_accepted| ())
+            .map(|_delivery| ())
     }
 }
 

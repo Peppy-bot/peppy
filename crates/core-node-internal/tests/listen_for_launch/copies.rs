@@ -1023,11 +1023,24 @@ struct MonitorSlots {
 
 impl MonitorSlots {
     async fn serve(started: &StartedCoreNode, robots_cardinality: Cardinality) -> Self {
+        Self::serve_holding(
+            started,
+            robots_cardinality,
+            peppylib::messaging::BoundSetState::seeded(config::runtime::BoundProducers::default()),
+        )
+        .await
+    }
+
+    /// [`Self::serve`] with `robots` already holding `held`, as a monitor that
+    /// took deliveries before this test looked.
+    async fn serve_holding(
+        started: &StartedCoreNode,
+        robots_cardinality: Cardinality,
+        held: peppylib::messaging::BoundSetState,
+    ) -> Self {
         let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
         let mut services = answer_readiness(started, "monitor", "monitor_inst").await;
-        let (robots_tx, robots) = tokio::sync::watch::channel(
-            peppylib::messaging::BoundSetState::seeded(config::runtime::BoundProducers::default()),
-        );
+        let (robots_tx, robots) = tokio::sync::watch::channel(held);
         services.push(AbortOnDrop(
             peppylib::services::binding_update::listen_for_binding_update(
                 &messenger,
@@ -1099,6 +1112,57 @@ impl MonitorSlots {
             })
             .collect()
     }
+}
+
+/// A monitor already holding a later delivery answers a join's set as one it
+/// will not take: the join stands, the monitor keeps what it holds, and the
+/// stack keeps the set it recorded for the monitor.
+#[tokio::test]
+async fn a_monitor_holding_a_later_set_keeps_its_record_through_a_join() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, launcher) = fleet_with_a_monitor(&started, "zero_or_more", "");
+    let monitor = MonitorSlots::serve_holding(
+        &started,
+        Cardinality::ZeroOrMore,
+        peppylib::messaging::BoundSetState {
+            sequence: u64::MAX,
+            producers: config::runtime::BoundProducers::default(),
+        },
+    )
+    .await;
+    let launch = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        "stale-set-test",
+        StackBudgets::new(30, 30, 30, Some(120)),
+    );
+    let result = execute(&started, &launch).await;
+    assert!(result.success, "{:?}", result.error_message);
+    let _responders = answer_readiness(&started, "named_robot", "alpha_arm_inst").await;
+
+    let result = execute(&started, &robot_goal("alpha", "real")).await;
+    assert!(result.success, "{:?}", result.error_message);
+    assert!(
+        monitor.robots().is_empty(),
+        "the monitor keeps the later set it holds"
+    );
+
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    let graph: core_node_api::SerializedNodeGraph =
+        serde_json::from_str(&list.graph_json).expect("the listing carries the stack's graph");
+    let recorded = graph
+        .nodes
+        .iter()
+        .flat_map(|node| &node.instances)
+        .find(|instance| instance.instance_id == "monitor_inst")
+        .expect("the monitor runs")
+        .slot_bindings
+        .get("robots")
+        .map(|bound| bound.len());
+    assert_eq!(
+        recorded,
+        Some(0),
+        "the stack records what the monitor holds, which the refused set is not"
+    );
 }
 
 /// A running monitor's `zero_or_more` producer and observer slots follow the

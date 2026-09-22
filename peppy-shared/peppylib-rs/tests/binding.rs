@@ -300,7 +300,7 @@ async fn binding_update_service_applies_daemon_deliveries_end_to_end() {
     assert!(
         response
             .message
-            .contains("this node holds no producer set slot `camera`"),
+            .contains("this node holds no `one_or_more` or `zero_or_more` producer slot `camera`"),
         "{}",
         response.message
     );
