@@ -15,6 +15,29 @@ inputs:
 runs:
   using: composite
   steps:
+    # The macOS image taps Homebrew repositories of its own, and Homebrew
+    # reads a tap only after someone trusts it. It lists the taps nobody
+    # trusted each time it installs, and the runner turns that list into a
+    # warning annotation on the release run, raised by the `brew install` the
+    # script below does.
+    #
+    # A release stage installs from Homebrew's own taps only, so the image's
+    # other taps give this run nothing but that notice. Their clones go, and
+    # so does the clone of any tap a later image adds. The clones are deleted
+    # rather than untapped because `brew untap` refuses a tap whose formulae
+    # the image installed, and `brew untap --force` reports that in a warning
+    # annotation of its own.
+    - name: Drop the Homebrew taps a release never installs from
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        taps="$(brew tap | grep -v '^homebrew/' || true)"
+        library="$(brew --repository)/Library/Taps"
+        for tap in $taps; do
+          rm -rf "$library/${tap%%/*}/homebrew-${tap#*/}"
+        done
+
     # The release is the one workflow on hosted runners, because it builds for
     # macOS and arm64 while the rest of CI runs on self-hosted boxes that are
     # provisioned before they take a job. A hosted runner is a fresh image
