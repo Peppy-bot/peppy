@@ -1,0 +1,44 @@
+<entry>
+  <title>v0.30.5</title>
+  <id>https://docs.peppy.bot/releases/v0-30-5/</id>
+  <updated>2026-09-22T00:00:00Z</updated>
+
+  <summary>`peppy stack join` and `stack remove` now grow and shrink a running instance's producer and observer sets, delivered live to running nodes.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.30.5&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;`peppy stack join` and `stack remove` now grow and shrink a running instance's producer and observer sets, delivered live to running nodes.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on September 22, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;peppy stack list --json&lt;/code&gt; now nests each &lt;code&gt;slot_bindings&lt;/code&gt; producer under a &lt;code&gt;producer&lt;/code&gt; key, with an optional &lt;code&gt;copy&lt;/code&gt; key; update anything that parses that output.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Rust generated &lt;code&gt;bound_producers()&lt;/code&gt; accessors return owned values (&lt;code&gt;NonEmptyProducers&lt;/code&gt;, &lt;code&gt;Vec&amp;lt;ProducerRef&amp;gt;&lt;/code&gt;) instead of borrowed slices, so bind the result to a variable before calling &lt;code&gt;.first()&lt;/code&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;peppy stack join&lt;/code&gt; adds a copy's own instances to a running instance's &lt;code&gt;one_or_more&lt;/code&gt; or &lt;code&gt;zero_or_more&lt;/code&gt; producer or observer slot, delivering the grown set to the running node.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;peppy stack remove&lt;/code&gt; takes the members a copy added back out of the running sets, and refuses a removal that would empty a &lt;code&gt;one_or_more&lt;/code&gt; slot, naming it.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;A running node's bound producer and observer sets, and its topic subscriptions, follow copies joining and leaving, so call &lt;code&gt;bound_producers()&lt;/code&gt; or &lt;code&gt;sources()&lt;/code&gt; at the point of use.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Generated set slots gain a &lt;code&gt;bound_members()&lt;/code&gt; accessor returning each producer with the copy its instance belongs to, and Python gains a &lt;code&gt;peppylib.BoundMember&lt;/code&gt; type.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;peppy stack list&lt;/code&gt; shows the set members each copy added under &lt;code&gt;Set members:&lt;/code&gt; and marks each bound member a copy brought with &lt;code&gt;[copy NAME]&lt;/code&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Standalone nodes gain &lt;code&gt;with_bound_producer_in_copy&lt;/code&gt; and &lt;code&gt;with_peer_pin_in_copy&lt;/code&gt; builders for a binding or pair whose instance belongs to a copy.&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
