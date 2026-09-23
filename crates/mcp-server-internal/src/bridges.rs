@@ -16,7 +16,7 @@ use peppy_mcp_runtime::{
     ActionContext, ActionExit, Recipient, ResourceIngest, ToolCall, ToolCallError,
 };
 use peppylib::config::QoSProfile;
-use peppylib::messaging::{MessengerHandle, ProducerRef, SenderTarget, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, ProducerRef, SenderTarget};
 use peppylib::runtime::NodeRunner;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -258,13 +258,15 @@ fn feedback_qos(action: &NativeExposedAction) -> QoSProfile {
         .unwrap_or_default()
 }
 
-/// Feeds a resource from its topic: every message admitted by the
-/// update-rate gate is decoded and offered to the resource's policies. The
-/// subscription lives as long as the node.
+/// Feeds the resources of one catalog entry from its topic: every message
+/// admitted by the update-rate gate is decoded and offered to the resource
+/// `ingest_of` picks for the producer that published it. The subscription
+/// follows the target's bound set, one wire subscription per bound
+/// producer, and lives as long as the node.
 pub(crate) async fn pump_resource(
     node_runner: Arc<NodeRunner>,
     resource: PreparedResource,
-    ingest: ResourceIngest,
+    ingest_of: impl Fn(&ProducerRef) -> Option<ResourceIngest>,
 ) {
     let subscription = match peppylib::runtime::subscribe_bound_set(
         &node_runner,
@@ -286,7 +288,12 @@ pub(crate) async fn pump_resource(
         }
     };
     let mut subscription = TopicConsumer::new(subscription, resource.codec.clone());
-    while let Some((_producer, message)) = subscription.next_message().await {
+    while let Some((producer, message)) = subscription.next_message().await {
+        // A member the host has not registered yet has nowhere to hold a
+        // snapshot; its next message lands once it has.
+        let Some(ingest) = ingest_of(&producer) else {
+            continue;
+        };
         feed(&ingest, || subscription.decode(&message));
     }
 }
@@ -310,44 +317,6 @@ fn feed<E: std::fmt::Display>(
         Err(error) => {
             tracing::debug!(%error, resource = ingest.resource_name(), "message does not convert")
         }
-    }
-}
-
-/// Feeds a resource of one member of a per-robot surface from that member's
-/// topic alone. The subscription lives as long as the member stays bound;
-/// the host drops it when the member leaves.
-pub(crate) async fn pump_member_resource(
-    node_runner: Arc<NodeRunner>,
-    resource: PreparedResource,
-    producer: ProducerRef,
-    ingest: ResourceIngest,
-) {
-    let processor = node_runner.processor();
-    let mut subscription = match TopicMessenger::subscribe(
-        node_runner.messenger(),
-        processor.bound_core_node(),
-        processor.bound_instance_id(),
-        resource.binding.contract.clone(),
-        &resource.binding.member,
-        &producer,
-        resource.qos.clone(),
-    )
-    .await
-    {
-        Ok(subscription) => subscription,
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                resource = ingest.resource_name(),
-                "subscription failed; the resource stays unavailable"
-            );
-            return;
-        }
-    };
-    while let Some(message) = subscription.on_next_message().await {
-        feed(&ingest, || {
-            resource.codec.decode(message.payload_bytes().as_ref())
-        });
     }
 }
 

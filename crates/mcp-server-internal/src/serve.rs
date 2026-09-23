@@ -184,12 +184,7 @@ async fn run(
                             .join("\n"),
                     });
                 }
-                let resources = exposure
-                    .resources
-                    .into_iter()
-                    .map(|resource| (resource.name.clone(), resource))
-                    .collect();
-                followers.push((targets, resources, handle));
+                followers.push((targets, exposure.resources, handle));
             }
             None => {
                 for resource in exposure.resources {
@@ -252,7 +247,9 @@ async fn run(
         tokio::spawn(bridges::pump_resource(
             Arc::clone(&node_runner),
             resource,
-            ingest,
+            // A fixed surface's target is bound to one producer, and every
+            // message it publishes fills the one resource.
+            move |_producer| Some(ingest.clone()),
         ));
     }
     for (targets, resources, handle) in followers {
