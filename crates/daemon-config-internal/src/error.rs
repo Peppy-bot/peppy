@@ -193,8 +193,8 @@ impl std::fmt::Display for BindingCopyFillsSlotTwice {
         } = self;
         write!(
             f,
-            "robot `{copy}` fills `{owner_instance_id}.links.{link_id}` with {} instances ({}), \
-             and `{link_id}` holds one member per robot. Name one of them under `{link_id}` in \
+            "copy `{copy}` fills `{owner_instance_id}.links.{link_id}` with {} instances ({}), \
+             and `{link_id}` holds one member per copy. Name one of them under `{link_id}` in \
              the option's `add_links`",
             members.len(),
             format_quoted_list(members)

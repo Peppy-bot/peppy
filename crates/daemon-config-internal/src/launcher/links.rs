@@ -563,7 +563,7 @@ mod tests {
         assert_eq!(plan.errors.len(), 1, "unexpected errors: {:?}", plan.errors);
         let message = plan.errors[0].to_string();
         assert!(
-            message.starts_with("robot `alpha` fills `cons1.links.limbs` with 2 instances"),
+            message.starts_with("copy `alpha` fills `cons1.links.limbs` with 2 instances"),
             "{message}"
         );
     }

@@ -2510,8 +2510,8 @@ async fn a_robot_filling_a_once_per_robot_target_twice_is_refused_at_launch() {
     ));
     assert!(
         error.contains(
-            "robot `alpha` fills `mcp_server.links.front_camera` with 2 instances (`left_cam`, \
-             `right_cam`), and `front_camera` holds one member per robot. Name one of them under \
+            "copy `alpha` fills `mcp_server.links.front_camera` with 2 instances (`left_cam`, \
+             `right_cam`), and `front_camera` holds one member per copy. Name one of them under \
              `front_camera` in the option's `add_links`"
         ),
         "{error}"
@@ -2569,7 +2569,7 @@ async fn a_join_filling_a_once_per_robot_target_twice_is_refused() {
     let error = stack.join_error("two_camera_robot", "alpha");
     assert!(
         error.contains(
-            "robot `alpha` fills `mcp_server.links.front_camera` with 2 instances (`left_cam`, \
+            "copy `alpha` fills `mcp_server.links.front_camera` with 2 instances (`left_cam`, \
              `right_cam`)"
         ),
         "{error}"

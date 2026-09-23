@@ -2049,8 +2049,8 @@ mod tests {
         assert_eq!(out.errors.len(), 1, "unexpected errors: {:?}", out.errors);
         assert_eq!(
             out.errors[0].to_string(),
-            "robot `alpha` fills `cons1.links.limbs` with 2 instances (`left`, `right`), and \
-             `limbs` holds one member per robot. Name one of them under `limbs` in the option's \
+            "copy `alpha` fills `cons1.links.limbs` with 2 instances (`left`, `right`), and \
+             `limbs` holds one member per copy. Name one of them under `limbs` in the option's \
              `add_links`"
         );
     }
