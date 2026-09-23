@@ -417,7 +417,7 @@ impl Fleet {
 
 /// The name a resource of `entry` is published under for `robot`, and for
 /// its member `name` on a target filled any number of times.
-pub(crate) fn published_name(entry: &ResourceEntry, robot: &str, name: Option<&str>) -> String {
+fn published_name(entry: &ResourceEntry, robot: &str, name: Option<&str>) -> String {
     match name {
         Some(name) => format!("{robot}/{name}/{}", entry.name),
         None => format!("{robot}/{}", entry.name),
@@ -425,7 +425,7 @@ pub(crate) fn published_name(entry: &ResourceEntry, robot: &str, name: Option<&s
 }
 
 /// The URI of a published resource, from its published name.
-pub(crate) fn published_uri(name: &str) -> String {
+fn published_uri(name: &str) -> String {
     format!("peppy://resource/{name}")
 }
 

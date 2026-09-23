@@ -330,7 +330,8 @@ pub struct ListEntry {
     pub description: String,
 }
 
-/// One field of a robot's listing entry and where its value comes from.
+/// One field of a robot's listing entry: the response of the tool the
+/// listing calls for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DescribeEntry {
@@ -338,19 +339,9 @@ pub struct DescribeEntry {
     pub key: String,
     /// The target the value is read through.
     pub target: String,
-    pub source: DescribeSource,
-}
-
-/// Where a listing field's value comes from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum DescribeSource {
-    /// The response of the tool published for this service member, called
-    /// when the robot is listed.
-    Tool { name: String },
-    /// The named root fields of the latest snapshot of the resource
-    /// published for this topic member.
-    Resource { name: String, fields: Vec<String> },
+    /// The tool published for the service member, called when the robot is
+    /// listed.
+    pub tool: String,
 }
 
 /// One exposed topic: an MCP resource serving the latest policy-approved

@@ -803,7 +803,6 @@ fn per_robot_exposure(status_sha: &str, extra_status_services: &str) -> String {
             list: {{ tool: "robot.list", description: "The robots of the stack." }},
             describe: {{
                 identity: {{ target: "status", service: "get_identity" }},
-                state: {{ target: "status", topic: "status", fields: ["battery"] }},
             }},
         }},
         targets: {{
@@ -865,23 +864,11 @@ fn a_per_robot_bundle_adds_the_routing_arguments_and_resolves_its_listing() {
     assert_eq!(robots.list.name, "robot.list");
     assert_eq!(
         robots.describe,
-        vec![
-            DescribeEntry {
-                key: "identity".to_string(),
-                target: "status".to_string(),
-                source: DescribeSource::Tool {
-                    name: "robot.get_identity".to_string()
-                },
-            },
-            DescribeEntry {
-                key: "state".to_string(),
-                target: "status".to_string(),
-                source: DescribeSource::Resource {
-                    name: "robot.status".to_string(),
-                    fields: vec!["battery".to_string()],
-                },
-            },
-        ]
+        vec![DescribeEntry {
+            key: "identity".to_string(),
+            target: "status".to_string(),
+            tool: "robot.get_identity".to_string(),
+        }]
     );
     let by_slot: BTreeMap<&str, Option<&str>> = contracts
         .iter()
@@ -938,19 +925,33 @@ fn a_request_field_named_like_a_routing_argument_is_refused() {
     );
 }
 
+/// The listing calls a described service with the robot alone, so one
+/// taking a request of its own cannot fill a listing field.
 #[test]
-fn a_describe_field_must_be_a_root_member_of_its_topic() {
-    let status = fixture(STATUS_CONTRACT);
-    let camera = fixture(CAMERA_CONTRACT);
+fn a_described_service_takes_no_request_of_its_own() {
+    // The contract's `rename` takes a request the routing argument does not
+    // collide with, so the listing rule is the only one it breaks.
+    let contract = STATUS_CONTRACT.replace(
+        r#"request_message_format: { robot: "string" }"#,
+        r#"request_message_format: { new_name: "string" }"#,
+    );
+    let rename = r#"{
+        member: "rename",
+        tool: "robot.rename",
+        description: "Rename the robot.",
+        operation: "mutating",
+        deadline_ms: 2000,
+    },"#;
     let violations = violations_of(
-        &per_robot_exposure(&sha_of(STATUS_CONTRACT), "")
-            .replace(r#"fields: ["battery"]"#, r#"fields: ["battery", "charge"]"#),
-        &[&status, &camera],
+        &per_robot_exposure(&sha_of(&contract), rename)
+            .replace(r#"service: "get_identity""#, r#"service: "rename""#),
+        &[&fixture(&contract), &fixture(CAMERA_CONTRACT)],
     );
     assert_eq!(violations.len(), 1, "{violations:?}");
     assert!(
-        violations[0].contains("`robots.describe.state`")
-            && violations[0].contains("field `charge`"),
+        violations[0].contains("`robots.describe.identity`")
+            && violations[0].contains("takes `new_name`")
+            && violations[0].contains("takes no request"),
         "{violations:?}"
     );
 }

@@ -5,15 +5,12 @@
 
 use crate::clock::Clock;
 use crate::error::{BuildError, ToolCallError};
-use crate::fleet::{
-    Fleet, FleetMember, FleetRuntime, FleetSource, MemberAddress, published_name, published_uri,
-    quoted,
-};
+use crate::fleet::{Fleet, FleetMember, FleetRuntime, FleetSource, MemberAddress, quoted};
 use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState};
 use crate::tasks::{ActionContext, ActionExit, ActionSurface, TaskHandler};
 use peppy_mcp_catalog::{
-    BundleIdentity, BundleServer, BundleSurface, DescribeSource, ExposureBundle, ROBOT_ARGUMENT,
-    ResourceEntry, ServiceOperation, TaskEntry, ToolEntry,
+    BundleIdentity, BundleServer, BundleSurface, ExposureBundle, ROBOT_ARGUMENT, ResourceEntry,
+    ServiceOperation, TaskEntry, ToolEntry,
 };
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
@@ -1084,20 +1081,9 @@ impl ExposureServer {
             .expect("the robot was read from this snapshot");
         let mut notes: Vec<Value> = Vec::new();
         for describe in &fleet.catalog.describe {
-            let value = match &describe.source {
-                DescribeSource::Tool { name } => {
-                    self.describe_through_tool(snapshot, &robot, &describe.target, name)
-                        .await
-                }
-                DescribeSource::Resource { name, fields } => self.describe_through_resource(
-                    fleet,
-                    snapshot,
-                    &robot,
-                    &describe.target,
-                    name,
-                    fields,
-                ),
-            };
+            let value = self
+                .describe_through_tool(snapshot, &robot, &describe.target, &describe.tool)
+                .await;
             match value {
                 Ok(value) => {
                     entry[&describe.key] = value;
@@ -1143,40 +1129,6 @@ impl ExposureServer {
             )),
         }
     }
-
-    fn describe_through_resource(
-        &self,
-        fleet: &FleetRuntime,
-        snapshot: &Fleet,
-        robot: &str,
-        target: &str,
-        resource_name: &str,
-        fields: &[String],
-    ) -> Result<Value, String> {
-        let entry = fleet
-            .entries
-            .iter()
-            .find(|entry| entry.name == resource_name)
-            .expect("the catalog names a resource of this bundle");
-        snapshot
-            .route(robot, target, None)
-            .map_err(|refusal| refusal.to_string())?;
-        let uri = published_uri(&published_name(entry, robot, None));
-        let state = fleet
-            .state(&uri)
-            .ok_or_else(|| UNAVAILABLE_SINCE_JOIN.to_string())?;
-        let view = state
-            .snapshot_for_read(self.state.clock.now_nanos())
-            .map_err(|refusal| read_refusal_text(&refusal, UNAVAILABLE_SINCE_JOIN))?;
-        let snapshot: Value = serde_json::from_str(&view.serialized)
-            .expect("a stored snapshot is the JSON it was serialized from");
-        Ok(Value::Object(
-            fields
-                .iter()
-                .map(|field| (field.clone(), snapshot[field].clone()))
-                .collect(),
-        ))
-    }
 }
 
 /// Takes the string field `name` out of a validated object; the schema
@@ -1200,17 +1152,6 @@ fn within_result_limit(entry: &ToolEntry, result: Value) -> Result<Value, String
         }
     }
     Ok(result)
-}
-
-/// Why a snapshot cannot be read, `unavailable` saying since when nothing
-/// was published.
-fn read_refusal_text(refusal: &ReadRefusal, unavailable: &str) -> String {
-    match refusal {
-        ReadRefusal::Unavailable => unavailable.to_string(),
-        ReadRefusal::Stale { age_ms, max_age_ms } => {
-            format!("stale: the snapshot is {age_ms} ms old and `max_age_ms` is {max_age_ms}")
-        }
-    }
 }
 
 /// How the host keeps a per-robot server's resources in step with the
@@ -2220,8 +2161,7 @@ mod tests {
   "robots": {
     "list": { "name": "robot.list", "description": "The robots of the stack." },
     "describe": [
-      { "key": "identity", "target": "status", "source": { "tool": { "name": "robot.get_identity" } } },
-      { "key": "state", "target": "status", "source": { "resource": { "name": "robot.status", "fields": ["battery"] } } }
+      { "key": "identity", "target": "status", "tool": "robot.get_identity" }
     ]
   },
   "contracts": [
@@ -2430,16 +2370,6 @@ mod tests {
         #[tokio::test]
         async fn the_listing_reports_each_robot_with_what_its_targets_answer() {
             let (server, fleet) = served();
-            let handle = server.fleet().expect("a per-robot server");
-            let attached = handle.attach(&member("status", "alpha", "backbone_inst"));
-            assert_eq!(attached.len(), 1);
-            let (entry, ingest) = &attached[0];
-            assert_eq!(entry.name, "robot.status");
-            let token = ingest.admit().expect("gate open");
-            ingest
-                .publish(token, json!({ "battery": 87, "mode": "idle" }))
-                .expect("publishes");
-
             let listed = server
                 .list_robots(runtime(&server), JsonObject::new())
                 .await
@@ -2458,16 +2388,14 @@ mod tests {
                             "members": { "camera": ["wrist_left"] },
                             "notes": [],
                             "identity": { "robot": "alpha_backbone_inst", "input": {} },
-                            "state": { "battery": 87 },
                         },
                         {
                             "robot": "bravo",
                             "tools": ["robot.get_identity"],
                             "resources": ["bravo/robot.status"],
                             "members": {},
-                            "notes": ["state: unavailable: nothing has been published since the robot joined"],
+                            "notes": [],
                             "identity": { "robot": "bravo_backbone_inst", "input": {} },
-                            "state": null,
                         },
                     ]
                 })
@@ -2493,11 +2421,8 @@ mod tests {
                     "notes": [
                         "identity: robot `charlie` has no `status`; it fills `camera`; the robots with a \
                          `status` are `alpha`, `bravo`",
-                        "state: robot `charlie` has no `status`; it fills `camera`; the robots with a \
-                         `status` are `alpha`, `bravo`",
                     ],
                     "identity": null,
-                    "state": null,
                 })
             );
             let error = server
@@ -2600,7 +2525,6 @@ mod tests {
                 "members",
                 "notes",
                 "identity",
-                "state",
             ] {
                 assert!(
                     entry.get(field).is_some(),

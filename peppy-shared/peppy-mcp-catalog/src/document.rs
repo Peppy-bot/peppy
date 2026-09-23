@@ -701,30 +701,17 @@ impl RobotSurface {
                     describe.target
                 ));
             }
-            match &describe.member {
-                DescribeMember::Service(service) => {
-                    if !target
-                        .selection
-                        .services
-                        .iter()
-                        .any(|s| &s.member == service)
-                    {
-                        return Err(format!(
-                            "`robots.describe.{key}` names service `{service}` of target `{}`, \
-                             which the target does not select as a tool",
-                            describe.target
-                        ));
-                    }
-                }
-                DescribeMember::Topic { topic, .. } => {
-                    if !target.selection.topics.iter().any(|t| &t.member == topic) {
-                        return Err(format!(
-                            "`robots.describe.{key}` names topic `{topic}` of target `{}`, \
-                             which the target does not select as a resource",
-                            describe.target
-                        ));
-                    }
-                }
+            if !target
+                .selection
+                .services
+                .iter()
+                .any(|service| service.member == describe.service)
+            {
+                return Err(format!(
+                    "`robots.describe.{key}` names service `{}` of target `{}`, which the \
+                     target does not select as a tool",
+                    describe.service, describe.target
+                ));
             }
         }
         Ok(())
@@ -740,34 +727,23 @@ pub struct ListTool {
     pub description: String,
 }
 
-/// One thing the listing reports of each robot: a service's response, or
-/// named fields of a topic's latest snapshot, read through a target the
-/// robot fills once.
+/// One thing the listing reports of each robot: the response of a service,
+/// called when the robot is listed and read through a target the robot
+/// fills once.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(try_from = "RawDescribe", into = "RawDescribe")]
+#[serde(try_from = "RawDescribe")]
 pub struct Describe {
     pub target: String,
-    pub member: DescribeMember,
+    pub service: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum DescribeMember {
-    /// The response of this service, called when the robot is listed.
-    Service(String),
-    /// These root fields of the topic's latest snapshot.
-    Topic { topic: String, fields: Vec<String> },
-}
-
-#[derive(Serialize, Deserialize)]
+/// Wire shape of [`Describe`], which parsing holds to the rules a target
+/// name and a member name follow.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawDescribe {
     target: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    service: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    topic: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    fields: Vec<String>,
+    service: String,
 }
 
 impl TryFrom<RawDescribe> for Describe {
@@ -775,67 +751,11 @@ impl TryFrom<RawDescribe> for Describe {
 
     fn try_from(raw: RawDescribe) -> Result<Self, String> {
         check_identifier(&raw.target, "`describe` target")?;
-        let member = match (raw.service, raw.topic) {
-            (Some(service), None) => {
-                if !raw.fields.is_empty() {
-                    return Err(
-                        "a `describe` entry naming a service reports its whole response; \
-                         `fields` applies to a topic"
-                            .to_string(),
-                    );
-                }
-                check_identifier(&service, "`describe` service")?;
-                DescribeMember::Service(service)
-            }
-            (None, Some(topic)) => {
-                check_identifier(&topic, "`describe` topic")?;
-                if raw.fields.is_empty() {
-                    return Err(format!(
-                        "a `describe` entry naming topic `{topic}` lists the snapshot `fields` \
-                         it reports; name at least one"
-                    ));
-                }
-                for field in &raw.fields {
-                    check_identifier(field, "`describe` field")?;
-                }
-                DescribeMember::Topic {
-                    topic,
-                    fields: raw.fields,
-                }
-            }
-            (Some(_), Some(_)) => {
-                return Err(
-                    "a `describe` entry names either a `service` or a `topic`, not both"
-                        .to_string(),
-                );
-            }
-            (None, None) => {
-                return Err("a `describe` entry names a `service` or a `topic`".to_string());
-            }
-        };
+        check_identifier(&raw.service, "`describe` service")?;
         Ok(Self {
             target: raw.target,
-            member,
+            service: raw.service,
         })
-    }
-}
-
-impl From<Describe> for RawDescribe {
-    fn from(describe: Describe) -> Self {
-        match describe.member {
-            DescribeMember::Service(service) => Self {
-                target: describe.target,
-                service: Some(service),
-                topic: None,
-                fields: Vec::new(),
-            },
-            DescribeMember::Topic { topic, fields } => Self {
-                target: describe.target,
-                service: None,
-                topic: Some(topic),
-                fields,
-            },
-        }
     }
 }
 
@@ -1601,7 +1521,6 @@ mod tests {
         list: { tool: "robot.list", description: "The robots of the stack." },
         describe: {
             identity: { target: "status", service: "get_identity" },
-            state: { target: "status", topic: "status", fields: ["battery"] },
         },
     },"#;
 
@@ -1610,17 +1529,8 @@ mod tests {
         let exposure = parse(&per_robot(ROBOTS)).expect("parses");
         let (robots, targets) = robot_surface(&exposure);
         assert_eq!(robots.list.tool.as_str(), "robot.list");
-        assert_eq!(
-            robots.describe["identity"].member,
-            DescribeMember::Service("get_identity".to_string())
-        );
-        assert_eq!(
-            robots.describe["state"].member,
-            DescribeMember::Topic {
-                topic: "status".to_string(),
-                fields: vec!["battery".to_string()],
-            }
-        );
+        assert_eq!(robots.describe["identity"].target, "status");
+        assert_eq!(robots.describe["identity"].service, "get_identity");
         assert_eq!(
             targets["camera"]
                 .argument
@@ -1701,9 +1611,6 @@ mod tests {
         let unselected_service =
             per_robot(ROBOTS).replace(r#"service: "get_identity""#, r#"service: "reboot""#);
         assert!(parse_err(&unselected_service).contains("does not select as a tool"));
-        let unselected_topic =
-            per_robot(ROBOTS).replace(r#"topic: "status", fields"#, r#"topic: "log", fields"#);
-        assert!(parse_err(&unselected_topic).contains("does not select as a resource"));
         let per_member = per_robot(ROBOTS).replace(
             r#"identity: { target: "status", service: "get_identity" }"#,
             r#"identity: { target: "camera", service: "video_stream_info" }"#,
@@ -1712,21 +1619,17 @@ mod tests {
     }
 
     #[test]
-    fn a_describe_entry_names_one_member_kind() {
-        let both = per_robot(ROBOTS).replace(
-            r#"service: "get_identity" }"#,
-            r#"service: "get_identity", topic: "status", fields: ["battery"] }"#,
+    fn a_describe_entry_names_a_target_and_a_service() {
+        let no_service = per_robot(ROBOTS).replace(r#", service: "get_identity""#, "");
+        assert!(parse_err(&no_service).contains("missing field `service`"));
+        let padded =
+            per_robot(ROBOTS).replace(r#"service: "get_identity""#, r#"service: " get_identity ""#);
+        assert!(parse_err(&padded).contains("padded with whitespace"));
+        let topic = per_robot(ROBOTS).replace(
+            r#"service: "get_identity""#,
+            r#"topic: "status", fields: ["battery"]"#,
         );
-        assert!(parse_err(&both).contains("not both"));
-        let neither = per_robot(ROBOTS).replace(r#", service: "get_identity""#, "");
-        assert!(parse_err(&neither).contains("names a `service` or a `topic`"));
-        let no_fields = per_robot(ROBOTS).replace(r#", fields: ["battery"]"#, "");
-        assert!(parse_err(&no_fields).contains("name at least one"));
-        let service_fields = per_robot(ROBOTS).replace(
-            r#"service: "get_identity" }"#,
-            r#"service: "get_identity", fields: ["robot"] }"#,
-        );
-        assert!(parse_err(&service_fields).contains("`fields` applies to a topic"));
+        assert!(parse_err(&topic).contains("unknown field `topic`"));
     }
 
     #[test]

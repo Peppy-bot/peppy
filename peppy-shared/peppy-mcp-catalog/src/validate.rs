@@ -9,13 +9,13 @@
 //! repository machinery is the caller's job.
 
 use crate::bundle::{
-    BundleContractPin, BundleIdentity, BundleServer, BundleSurface, DescribeEntry, DescribeSource,
+    BundleContractPin, BundleIdentity, BundleServer, BundleSurface, DescribeEntry,
     EXPOSURE_BUNDLE_FORMAT, ExposureBundle, ListEntry, ResourceEntry, ResourcePolicies,
     RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
 };
 use crate::document::{
-    ArgumentName, DescribeMember, ExposureSurface, McpExposure, ROBOT_ARGUMENT, RobotSurface,
-    ServiceExposure, TopicExposure,
+    ArgumentName, ExposureSurface, McpExposure, ROBOT_ARGUMENT, RobotSurface, ServiceExposure,
+    TopicExposure,
 };
 use crate::policy::ImageFieldMap;
 use crate::schema::{
@@ -327,7 +327,7 @@ pub fn build_exposure_bundle(
             contracts: pins.into_iter().map(|(pin, _)| pin).collect(),
         },
         Some(robots) => BundleSurface::PerRobot {
-            robots: robot_catalog(robots, &resources, &tools, &mut violations),
+            robots: robot_catalog(robots, &tools, &mut violations),
             contracts: pins
                 .into_iter()
                 .map(|(pin, argument)| RobotContractPin { pin, argument })
@@ -413,75 +413,48 @@ fn add_routing_arguments(
 }
 
 /// The per-robot surface of the bundle: each `describe` entry resolved to
-/// the resource or tool the listing reads it through, whose snapshot fields
-/// are checked against the topic's format.
+/// the tool the listing calls it through.
 fn robot_catalog(
     robots: &RobotSurface,
-    resources: &[ResourceEntry],
     tools: &[ToolEntry],
     violations: &mut Vec<String>,
 ) -> RobotCatalog {
     let mut describe = Vec::with_capacity(robots.describe.len());
     for (key, entry) in &robots.describe {
         let context = format!("`robots.describe.{key}`");
-        let source = match &entry.member {
-            DescribeMember::Service(service) => tools
-                .iter()
-                .find(|tool| tool.target == entry.target && &tool.member == service)
-                .map(|tool| {
-                    // The listing calls the service with the robot alone.
-                    let takes: Vec<&str> = tool
-                        .input_schema
-                        .get("properties")
-                        .and_then(Value::as_object)
-                        .into_iter()
-                        .flat_map(|properties| properties.keys())
-                        .map(String::as_str)
-                        .filter(|name| *name != ROBOT_ARGUMENT)
-                        .collect();
-                    if !takes.is_empty() {
-                        violations.push(format!(
-                            "{context}: service `{service}` of target `{}` takes `{}`, and the \
-                             listing reads a service that takes no request; describe the robot \
-                             through one that takes none, or through a topic's fields",
-                            entry.target,
-                            takes.join("`, `")
-                        ));
-                    }
-                    DescribeSource::Tool {
-                        name: tool.name.clone(),
-                    }
-                }),
-            DescribeMember::Topic { topic, fields } => resources
-                .iter()
-                .find(|resource| resource.target == entry.target && &resource.member == topic)
-                .map(|resource| {
-                    let known = resource.schema.get("properties").and_then(Value::as_object);
-                    for field in fields {
-                        if !known.is_some_and(|properties| properties.contains_key(field)) {
-                            violations.push(format!(
-                                "{context}: field `{field}` is not a root member of topic \
-                                 `{topic}` of target `{}`",
-                                entry.target
-                            ));
-                        }
-                    }
-                    DescribeSource::Resource {
-                        name: resource.name.clone(),
-                        fields: fields.clone(),
-                    }
-                }),
+        // The document check holds every `describe` entry to a service its
+        // target selects, so an entry with no tool is one whose member did
+        // not validate, already reported under the target.
+        let Some(tool) = tools
+            .iter()
+            .find(|tool| tool.target == entry.target && tool.member == entry.service)
+        else {
+            continue;
         };
-        // The document check holds every `describe` entry to a member its
-        // target selects, so an entry without a catalog entry is one whose
-        // member did not validate, already reported under the target.
-        if let Some(source) = source {
-            describe.push(DescribeEntry {
-                key: key.clone(),
-                target: entry.target.clone(),
-                source,
-            });
+        // The listing calls the service with the robot alone.
+        let takes: Vec<&str> = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|properties| properties.keys())
+            .map(String::as_str)
+            .filter(|name| *name != ROBOT_ARGUMENT)
+            .collect();
+        if !takes.is_empty() {
+            violations.push(format!(
+                "{context}: service `{}` of target `{}` takes `{}`, and the listing reads a \
+                 service that takes no request; describe the robot through one that takes none",
+                entry.service,
+                entry.target,
+                takes.join("`, `")
+            ));
         }
+        describe.push(DescribeEntry {
+            key: key.clone(),
+            target: entry.target.clone(),
+            tool: tool.name.clone(),
+        });
     }
     RobotCatalog {
         list: ListEntry {
