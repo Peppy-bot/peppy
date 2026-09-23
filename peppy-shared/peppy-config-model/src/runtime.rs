@@ -148,40 +148,65 @@ pub fn first_duplicate<T: Eq + std::hash::Hash>(items: &[T]) -> Option<&T> {
     items.iter().find(|item| !seen.insert(*item))
 }
 
+/// The copy an instance belongs to: the copy's name, and the id the copy's
+/// fragment wrote for the instance, which the copy runs as
+/// [`instance_id_in_copy`]. Both halves travel together, so a reader that
+/// groups instances by copy names each one inside its copy without reading
+/// the minted id.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct CopyTag {
+    pub name: Name,
+    pub instance_id: Name,
+}
+
+impl CopyTag {
+    /// The tag a pair of wire texts carries, both empty for an instance
+    /// outside every copy. The one gate every wire boundary decodes the pair
+    /// through, so half a tag is refused wherever it arrives.
+    pub fn from_wire(
+        copy: &str,
+        instance_id: &str,
+    ) -> std::result::Result<Option<Self>, ParsingError> {
+        match (copy.is_empty(), instance_id.is_empty()) {
+            (true, true) => Ok(None),
+            (false, false) => Ok(Some(Self {
+                name: Name::new(copy)?,
+                instance_id: Name::new(instance_id)?,
+            })),
+            _ => Err(ParsingError::HalfCopyTag {
+                copy: copy.to_owned(),
+                instance_id: instance_id.to_owned(),
+            }),
+        }
+    }
+
+    /// The pair [`Self::from_wire`] reads: the copy's name and the id inside
+    /// it, both empty for an instance outside every copy.
+    pub fn to_wire(tag: Option<&Self>) -> (&str, &str) {
+        tag.map_or(("", ""), |tag| {
+            (tag.name.as_str(), tag.instance_id.as_str())
+        })
+    }
+}
+
 /// One member of a bound producer set: the producer's wire address and the
 /// copy its instance belongs to (`None` for an instance the launcher deploys
 /// outside any copy). A node holding members from several copies groups them
-/// by `copy`. The boot-config, node-info and delivery twin of the wire's
-/// `BoundMember`; the producer-binding counterpart of [`PairedPeer`].
+/// by `copy.name` and names each one by `copy.instance_id`. The boot-config,
+/// node-info and delivery twin of the wire's `BoundMember`; the
+/// producer-binding counterpart of [`PairedPeer`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 pub struct BoundMember {
     pub producer: ProducerRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub copy: Option<Name>,
-}
-
-impl BoundMember {
-    /// The member's name within its copy: the id the launcher wrote, which a
-    /// launch mints as `<copy>_<id>`. A member of no copy runs under its id
-    /// as written. `None` when the instance id does not carry its copy's
-    /// prefix, which no launch produces.
-    pub fn name_in_copy(&self) -> Option<&str> {
-        let instance_id = self.producer.instance_id.as_str();
-        let Some(copy) = &self.copy else {
-            return Some(instance_id);
-        };
-        instance_id
-            .strip_prefix(copy.as_str())
-            .and_then(|rest| rest.strip_prefix('_'))
-            .filter(|name| !name.is_empty())
-    }
+    pub copy: Option<CopyTag>,
 }
 
 /// The id a launch mints for a copy's instance: the copy's name, `_`, then
 /// the id the launcher wrote. Both halves are names and `_` is a name
-/// character, so the join is a name; [`BoundMember::name_in_copy`] reads
-/// the written id back.
+/// character, so the join is a name.
 pub fn instance_id_in_copy(copy: &Name, id: &str) -> Name {
     Name::try_from(format!("{copy}_{id}")).expect("two names joined by `_` are a name")
 }
@@ -719,6 +744,15 @@ mod tests {
     use crate::error::Error;
     use tempfile::TempDir;
 
+    /// The tag a launch stamps on an instance of a copy: the copy's name and
+    /// the id its fragment wrote.
+    fn copy_tag(name: &str, instance_id: &str) -> CopyTag {
+        CopyTag {
+            name: Name::new(name).expect("a copy name"),
+            instance_id: Name::new(instance_id).expect("an instance id"),
+        }
+    }
+
     #[test]
     fn name_validation() {
         assert!(Name::new("robot").is_ok());
@@ -1085,7 +1119,7 @@ mod tests {
                     BoundMember::from(ProducerRef::new("core_a", "front_camera")),
                     BoundMember {
                         producer: ProducerRef::new("core_b", "bravo_camera"),
-                        copy: Some(Name::new("bravo").unwrap()),
+                        copy: Some(copy_tag("bravo", "camera")),
                     },
                 ])
                 .expect("distinct producers"),
@@ -1099,7 +1133,7 @@ mod tests {
             "camera": [
                 { "producer": { "core_node": "core_a", "instance_id": "front_camera" } },
                 { "producer": { "core_node": "core_b", "instance_id": "bravo_camera" },
-                  "copy": "bravo" }
+                  "copy": { "name": "bravo", "instance_id": "camera" } }
             ],
             "main": [ { "producer": { "core_node": "core_a", "instance_id": "p1" } } ],
             "spare": []
@@ -1115,11 +1149,11 @@ mod tests {
                 .get("camera")
                 .expect("camera slot")
                 .iter()
-                .map(|member| (member.producer.instance_id.as_str(), member.copy.as_ref()))
+                .map(|member| (member.producer.instance_id.as_str(), member.copy.clone()))
                 .collect::<Vec<_>>(),
             [
                 ("front_camera", None),
-                ("bravo_camera", Some(&Name::new("bravo").unwrap()))
+                ("bravo_camera", Some(copy_tag("bravo", "camera")))
             ],
             "member order and each member's copy must survive the round-trip"
         );
@@ -1148,8 +1182,15 @@ mod tests {
             json!({ "producer": { "core_node": "core_a", "instance_id": "p1" } }),
             // Duplicate producer within one slot, under two copies.
             json!([
-                { "producer": { "core_node": "core_a", "instance_id": "p1" }, "copy": "alpha" },
-                { "producer": { "core_node": "core_a", "instance_id": "p1" }, "copy": "bravo" }
+                { "producer": { "core_node": "core_a", "instance_id": "p1" },
+                  "copy": { "name": "alpha", "instance_id": "p1" } },
+                { "producer": { "core_node": "core_a", "instance_id": "p1" },
+                  "copy": { "name": "bravo", "instance_id": "p1" } }
+            ]),
+            // Half a copy tag: the copy's name without the id inside it.
+            json!([
+                { "producer": { "core_node": "core_a", "instance_id": "alpha_p1" },
+                  "copy": { "name": "alpha" } }
             ]),
         ];
         for payload in rejected {
@@ -1221,7 +1262,7 @@ mod tests {
 
         let in_copy = |copy: &str| BoundMember {
             producer: ProducerRef::new("core_a", "cam"),
-            copy: Some(Name::new(copy).unwrap()),
+            copy: Some(copy_tag(copy, "cam")),
         };
         for members in [
             vec![
@@ -1260,11 +1301,11 @@ mod tests {
             (
                 BoundMember {
                     producer: ProducerRef::new("core_a", "bravo_arm_inst"),
-                    copy: Some(Name::new("bravo").unwrap()),
+                    copy: Some(copy_tag("bravo", "arm_inst")),
                 },
                 json!({
                     "producer": { "core_node": "core_a", "instance_id": "bravo_arm_inst" },
-                    "copy": "bravo"
+                    "copy": { "name": "bravo", "instance_id": "arm_inst" }
                 }),
             ),
         ];
@@ -1396,33 +1437,26 @@ mod tests {
         );
     }
 
+    /// The id a launch runs a copy's instance under joins the copy's name
+    /// and the id the copy's fragment wrote, which the member carries beside
+    /// it.
     #[test]
-    fn a_member_names_itself_within_its_copy() {
+    fn a_copys_instance_runs_under_its_name_joined_to_the_written_id() {
         let alpha = Name::new("alpha").expect("a name");
-        let named = |instance_id: &str, copy: Option<&Name>| BoundMember {
-            producer: ProducerRef::new("cn", instance_id),
-            copy: copy.cloned(),
+        let minted = instance_id_in_copy(&alpha, "wrist_left");
+        assert_eq!(minted.as_str(), "alpha_wrist_left");
+        let member = BoundMember {
+            producer: ProducerRef::new("cn", minted.as_str()),
+            copy: Some(copy_tag("alpha", "wrist_left")),
         };
         assert_eq!(
-            named("alpha_wrist_left", Some(&alpha)).name_in_copy(),
-            Some("wrist_left")
+            member.copy.map(|copy| copy.instance_id),
+            Some(Name::new("wrist_left").unwrap())
         );
         assert_eq!(
-            named(
-                instance_id_in_copy(&alpha, "wrist_left").as_str(),
-                Some(&alpha)
-            )
-            .name_in_copy(),
-            Some("wrist_left"),
-            "the minted id reads back as the written one"
-        );
-        assert_eq!(named("wrist_left", None).name_in_copy(), Some("wrist_left"));
-        assert_eq!(
-            named("bravo_wrist_left", Some(&alpha)).name_in_copy(),
+            BoundMember::from(ProducerRef::new("cn", "wrist_left")).copy,
             None,
-            "an id without its copy's prefix names nothing"
+            "an instance outside every copy carries no tag"
         );
-        assert_eq!(named("alpha_", Some(&alpha)).name_in_copy(), None);
-        assert_eq!(named("alpha", Some(&alpha)).name_in_copy(), None);
     }
 }

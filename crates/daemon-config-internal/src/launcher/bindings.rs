@@ -208,11 +208,12 @@ pub fn validate_bindings(
                         continue;
                     }
                     // Each member carries its full wire address and the copy
-                    // its instance belongs to, so what a node reads for a
-                    // member is settled here and nowhere else.
+                    // its instance belongs to, with the id it has inside that
+                    // copy, so what a node reads for a member is settled here
+                    // and nowhere else.
                     members.push(BoundMember {
                         producer: ProducerRef::new(placements.of(target_id), target_id.clone()),
-                        copy: copies.copy_of(target_id).cloned(),
+                        copy: copies.tag_of(target_id).cloned(),
                     });
                 }
                 if slot_failed {
@@ -445,7 +446,7 @@ fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'
 
 #[cfg(test)]
 mod tests {
-    use super::super::compose::CopyRecord;
+    use super::super::compose::{CopyInstance, CopyRecord};
     use super::*;
     use config::runtime::Name;
 
@@ -1880,15 +1881,21 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let copy = |name: &str, instance: &str| CopyRecord {
-            name: Name::new(name).unwrap(),
-            axis: "robot".into(),
-            option: "real".into(),
-            selection: Default::default(),
-            instance_ids: vec![Name::new(instance).unwrap()],
-            set_members: Vec::new(),
+        let copy = |name: &str, in_copy: &str| {
+            let name = Name::new(name).unwrap();
+            CopyRecord {
+                instances: vec![CopyInstance {
+                    instance_id: config::runtime::instance_id_in_copy(&name, in_copy),
+                    in_copy: Name::new(in_copy).unwrap(),
+                }],
+                name,
+                axis: "robot".into(),
+                option: "real".into(),
+                selection: Default::default(),
+                set_members: Vec::new(),
+            }
         };
-        let copies = CopyMembership::of(&[copy("alpha", "alpha_cam"), copy("bravo", "bravo_cam")]);
+        let copies = CopyMembership::of(&[copy("alpha", "cam"), copy("bravo", "cam")]);
         let out = validate_bindings(&items, &all_local(), &copies);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
@@ -1896,13 +1903,16 @@ mod tests {
                 .iter()
                 .map(|member| (
                     member.producer.instance_id.as_str(),
-                    member.copy.as_ref().map(Name::as_str)
+                    member
+                        .copy
+                        .as_ref()
+                        .map(|copy| (copy.name.as_str(), copy.instance_id.as_str()))
                 ))
                 .collect::<Vec<_>>(),
             [
                 ("hub_cam", None),
-                ("alpha_cam", Some("alpha")),
-                ("bravo_cam", Some("bravo"))
+                ("alpha_cam", Some(("alpha", "cam"))),
+                ("bravo_cam", Some(("bravo", "cam")))
             ]
         );
     }

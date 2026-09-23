@@ -9,6 +9,7 @@ import pytest
 
 from peppylib import (
     BoundMember,
+    CopyTag,
     MessengerHandle,
     ObservedSource,
     PeerInfo,
@@ -117,21 +118,29 @@ def test_peer_info_is_structured_and_hashable():
 
 
 def test_bound_member_carries_the_copy_beside_the_producer():
-    """`BoundMember` is a set member as a slot holds it: the producer plus
-    the copy its instance belongs to, which is `None` outside a copy."""
+    """`BoundMember` is a set member as a slot holds it: the producer plus the
+    copy its instance belongs to and the id it has inside that copy, which is
+    `None` outside a copy."""
     producer = ProducerRef("core_a", "bravo_arm_inst")
-    member = BoundMember(producer, "bravo")
+    tag = CopyTag("bravo", "arm_inst")
+    member = BoundMember(producer, tag)
     assert member.producer == producer
-    assert member.copy == "bravo"
+    assert member.copy == tag
+    assert member.copy.name == "bravo"
+    assert member.copy.instance_id == "arm_inst"
     assert BoundMember(producer).copy is None
-    assert member == BoundMember(producer, "bravo")
+    assert member == BoundMember(producer, CopyTag("bravo", "arm_inst"))
+    assert member != BoundMember(producer, CopyTag("bravo", "other_inst"))
     assert member != BoundMember(producer)
     assert repr(member) == (
-        'BoundMember(producer=ProducerRef("core_a", "bravo_arm_inst"), copy="bravo")'
+        'BoundMember(producer=ProducerRef("core_a", "bravo_arm_inst"), '
+        'copy=CopyTag("bravo", "arm_inst"))'
     )
     assert repr(BoundMember(producer)).endswith("copy=None)")
     with pytest.raises(ValueError):
-        BoundMember(producer, "not a name")
+        CopyTag("not a name", "arm_inst")
+    with pytest.raises(ValueError):
+        CopyTag("bravo", "not a name")
 
 
 def test_peer_member_carries_the_copy_beside_the_identity():

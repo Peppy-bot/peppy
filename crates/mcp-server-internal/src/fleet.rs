@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 
 /// The members of every target of a per-robot exposure as the stack binds
 /// them now: each with the copy it belongs to, as the robot it serves, and
-/// its name within the copy.
+/// the name it has within that copy.
 pub(crate) fn members(node_runner: &NodeRunner, targets: &[String]) -> Vec<FleetMember> {
     let processor = node_runner.processor();
     targets
@@ -24,21 +24,14 @@ pub(crate) fn members(node_runner: &NodeRunner, targets: &[String]) -> Vec<Fleet
                 .into_iter()
                 .map(|member| FleetMember {
                     target: target.clone(),
-                    // A launch mints every copy's ids under the copy's name;
-                    // an id without that prefix is served under the id it
-                    // runs as, and logged.
-                    name: member
-                        .name_in_copy()
-                        .unwrap_or_else(|| {
-                            tracing::warn!(
-                                instance = member.producer.instance_id,
-                                copy = ?member.copy,
-                                "a bound member's id does not carry its copy's name"
-                            );
-                            &member.producer.instance_id
-                        })
-                        .to_owned(),
-                    robot: member.copy.as_ref().map(ToString::to_string),
+                    // A member of a copy is named inside it by the id the
+                    // copy's fragment wrote; one outside every copy by the
+                    // id it runs as.
+                    name: match &member.copy {
+                        Some(copy) => copy.instance_id.as_str().to_owned(),
+                        None => member.producer.instance_id.clone(),
+                    },
+                    robot: member.copy.as_ref().map(|copy| copy.name.to_string()),
                     address: MemberAddress {
                         core_node: member.producer.core_node,
                         instance_id: member.producer.instance_id,

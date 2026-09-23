@@ -16,9 +16,19 @@ use super::load::{LoadedFragment, LoadedOption};
 use super::prepared::PreparedLauncher;
 use super::report::{AppliedAdjustment, AppliedChange, SkippedAdjustment, render, render_option};
 use super::select::{CopyOrigin, UnitSelection, resolve_copy};
-use config::runtime::{CoreNodeName, CoreNodeNameError, Name, instance_id_in_copy};
+use config::runtime::{CopyTag, CoreNodeName, CoreNodeNameError, Name, instance_id_in_copy};
 use core_node_api::encoding::{ArgumentOverride, SetMember};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+/// One instance a copy minted: the id the stack runs it under, and the id
+/// the copy's fragment wrote for it. The stack id is
+/// [`instance_id_in_copy`] of the copy's name and the written one, so every
+/// reader that needs the id inside the copy takes it from here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyInstance {
+    pub instance_id: Name,
+    pub in_copy: Name,
+}
 
 /// One copy on the stack: what it copies, how its axes were filled, and the
 /// instances it minted.
@@ -28,7 +38,7 @@ pub struct CopyRecord {
     pub axis: String,
     pub option: String,
     pub selection: UnitSelection,
-    pub instance_ids: Vec<Name>,
+    pub instances: Vec<CopyInstance>,
     /// The members the copy added to stack instances' set slots, in the order
     /// it added them. Removing the copy takes out exactly these.
     pub set_members: Vec<SetMember>,
@@ -41,7 +51,7 @@ pub struct CopyRecord {
 /// stamps into a bound set, and the copy a spawned instance is told it is in.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CopyMembership {
-    by_instance: BTreeMap<String, Name>,
+    by_instance: BTreeMap<String, CopyTag>,
 }
 
 impl CopyMembership {
@@ -51,18 +61,30 @@ impl CopyMembership {
             by_instance: copies
                 .into_iter()
                 .flat_map(|copy| {
-                    copy.instance_ids
-                        .iter()
-                        .map(move |id| (id.as_str().to_string(), copy.name.clone()))
+                    copy.instances.iter().map(move |instance| {
+                        (
+                            instance.instance_id.as_str().to_string(),
+                            CopyTag {
+                                name: copy.name.clone(),
+                                instance_id: instance.in_copy.clone(),
+                            },
+                        )
+                    })
                 })
                 .collect(),
         }
     }
 
-    /// The copy `instance_id` belongs to, or `None` for an instance the
-    /// launcher deploys outside any copy.
-    pub fn copy_of(&self, instance_id: &str) -> Option<&Name> {
+    /// The copy `instance_id` belongs to and the id it has inside it, or
+    /// `None` for an instance the launcher deploys outside any copy.
+    pub fn tag_of(&self, instance_id: &str) -> Option<&CopyTag> {
         self.by_instance.get(instance_id)
+    }
+
+    /// The name of the copy `instance_id` belongs to, for a reader that needs
+    /// the copy alone.
+    pub fn copy_of(&self, instance_id: &str) -> Option<&Name> {
+        self.tag_of(instance_id).map(|tag| &tag.name)
     }
 }
 
@@ -83,7 +105,7 @@ pub(super) struct ComposedCopy {
     pub option: String,
     /// The copy's own axes: the copied option and the option's axes.
     pub selection: UnitSelection,
-    pub instance_ids: Vec<Name>,
+    pub instances: Vec<CopyInstance>,
     /// The copy's deployments, ids minted, merged by source.
     pub deployments: Vec<Deployment>,
     /// The fields the copy's adjustments wrote on stack instances, as they
@@ -95,24 +117,32 @@ pub(super) struct ComposedCopy {
 }
 
 /// Whether `target`, `instance` or `instance/link_id`, names one of
-/// `instance_ids`.
-fn names_one_of(instance_ids: &[Name], target: &str) -> bool {
+/// `instances`.
+fn names_one_of(instances: &[CopyInstance], target: &str) -> bool {
     let (instance, _) = split_link_target(target);
-    instance_ids.iter().any(|id| id.as_str() == instance)
+    instances
+        .iter()
+        .any(|owned| owned.instance_id.as_str() == instance)
 }
 
 impl CopyRecord {
     /// Whether `instance_id` is one of the copy's own instances.
     pub fn owns_instance(&self, instance_id: &str) -> bool {
-        self.instance_ids
+        self.instances
             .iter()
-            .any(|id| id.as_str() == instance_id)
+            .any(|owned| owned.instance_id.as_str() == instance_id)
+    }
+
+    /// The ids the stack runs the copy's instances under, in the order the
+    /// record holds them.
+    pub fn instance_ids(&self) -> impl Iterator<Item = &Name> {
+        self.instances.iter().map(|owned| &owned.instance_id)
     }
 
     /// Whether `target`, `instance` or `instance/link_id`, names one of the
     /// copy's own instances.
     pub fn owns_target(&self, target: &str) -> bool {
-        names_one_of(&self.instance_ids, target)
+        names_one_of(&self.instances, target)
     }
 }
 
@@ -120,7 +150,7 @@ impl ComposedCopy {
     /// Whether `target`, `instance` or `instance/link_id`, names one of the
     /// copy's own instances.
     fn owns(&self, target: &str) -> bool {
-        names_one_of(&self.instance_ids, target)
+        names_one_of(&self.instances, target)
     }
 
     pub(super) fn record(&self) -> CopyRecord {
@@ -129,7 +159,7 @@ impl ComposedCopy {
             axis: self.axis.clone(),
             option: self.option.clone(),
             selection: self.selection.clone(),
-            instance_ids: self.instance_ids.clone(),
+            instances: self.instances.clone(),
             set_members: self
                 .stack_writes
                 .iter()
@@ -339,7 +369,7 @@ pub(super) fn compose_copy(
     };
 
     let mut deployments: Vec<Deployment> = Vec::new();
-    let mut instance_ids = Vec::new();
+    let mut instances = Vec::new();
     for deployment in expanded.deployments {
         let mut owned_instances = Vec::new();
         for mut instance in deployment.instances {
@@ -354,9 +384,13 @@ pub(super) fn compose_copy(
                     core_node: core_node.clone(),
                 });
             }
+            let in_copy = instance.instance_id.clone();
             instance.instance_id = minted.clone();
             instance.core_node = Some(name.to_string());
-            instance_ids.push(minted.clone());
+            instances.push(CopyInstance {
+                instance_id: minted.clone(),
+                in_copy,
+            });
             owned_instances.push(instance);
         }
         if !owned_instances.is_empty() {
@@ -392,7 +426,7 @@ pub(super) fn compose_copy(
         axis: axis.to_owned(),
         option: loaded.name.clone(),
         selection: own,
-        instance_ids,
+        instances,
         deployments,
         stack_writes,
         core_nodes,
@@ -834,7 +868,7 @@ pub(super) fn detach(
     bare: &PeppyLauncher,
     released: &HashSet<(String, String)>,
 ) -> Result<PeppyLauncher, CompositionError> {
-    let removed: HashSet<&str> = copy.instance_ids.iter().map(Name::as_str).collect();
+    let removed: HashSet<&str> = copy.instance_ids().map(Name::as_str).collect();
     let mut remaining = existing.clone();
     for deployment in &mut remaining.deployments {
         deployment
@@ -914,11 +948,11 @@ fn add_copy(flat: &mut PeppyLauncher, copy: &ComposedCopy) -> Result<(), Composi
         .flat_map(|d| &d.instances)
         .map(|instance| instance.instance_id.to_string())
         .collect();
-    for id in &copy.instance_ids {
-        if present.contains(id.as_str()) {
+    for owned in &copy.instances {
+        if present.contains(owned.instance_id.as_str()) {
             return Err(CompositionError::PrefixedIdCollision {
                 copy: copy.name.to_string(),
-                id: id.to_string(),
+                id: owned.instance_id.to_string(),
             });
         }
     }
@@ -976,36 +1010,42 @@ pub(super) fn validate_flat(flat: &PeppyLauncher) -> Result<PeppyLauncher, Compo
 mod membership_tests {
     use super::*;
 
-    fn copy(name: &str, instance_ids: &[&str]) -> CopyRecord {
+    /// A copy of `name` owning the instances its fragment wrote as
+    /// `in_copy`, each minted the way composition mints it.
+    fn copy(name: &str, in_copy: &[&str]) -> CopyRecord {
+        let name = Name::new(name).unwrap();
         CopyRecord {
-            name: Name::new(name).unwrap(),
+            instances: in_copy
+                .iter()
+                .map(|id| CopyInstance {
+                    instance_id: instance_id_in_copy(&name, id),
+                    in_copy: Name::new(*id).unwrap(),
+                })
+                .collect(),
+            name,
             axis: "robot".into(),
             option: "real".into(),
             selection: UnitSelection::default(),
-            instance_ids: instance_ids
-                .iter()
-                .map(|id| Name::new(*id).unwrap())
-                .collect(),
             set_members: Vec::new(),
         }
     }
 
-    /// Every instance a copy minted answers that copy; an instance outside
-    /// every copy answers none.
+    /// Every instance a copy minted answers that copy and the id its fragment
+    /// wrote; an instance outside every copy answers none.
     #[test]
     fn each_minted_instance_answers_its_copy() {
         let membership = CopyMembership::of(&[
-            copy("alpha", &["alpha_arm_inst", "alpha_leader_inst"]),
-            copy("bravo", &["bravo_arm_inst"]),
+            copy("alpha", &["arm_inst", "leader_inst"]),
+            copy("bravo", &["arm_inst"]),
         ]);
-        assert_eq!(
-            membership.copy_of("alpha_leader_inst").map(Name::as_str),
-            Some("alpha")
-        );
-        assert_eq!(
-            membership.copy_of("bravo_arm_inst").map(Name::as_str),
-            Some("bravo")
-        );
+        let tag = |instance_id: &str| {
+            membership
+                .tag_of(instance_id)
+                .map(|tag| (tag.name.as_str(), tag.instance_id.as_str()))
+        };
+        assert_eq!(tag("alpha_leader_inst"), Some(("alpha", "leader_inst")));
+        assert_eq!(tag("bravo_arm_inst"), Some(("bravo", "arm_inst")));
+        assert_eq!(tag("hub_inst"), None);
         assert_eq!(membership.copy_of("hub_inst"), None);
         assert_eq!(CopyMembership::default().copy_of("alpha_arm_inst"), None);
     }

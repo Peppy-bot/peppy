@@ -17,7 +17,7 @@ pub use clocks::{
     ClockIncarnations, ResolvedClocks, mint_incarnation, resolve_clocks, validate_clock_connections,
 };
 pub use compose::{
-    AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport,
+    AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyInstance,
     CopyMembership, CopyRecord, JoinRequest, PreparedLauncher, RunningStack,
     SELF_COPY_NAME_REFUSAL, SkipReason, SkippedAdjustment, UnitSelection, check_composition,
 };

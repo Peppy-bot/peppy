@@ -139,6 +139,16 @@ pub enum Error {
         reason: String,
     },
 
+    #[error(
+        "instance id `{instance_id}` inside copy `{copy}`, on the pin of slot `{link_id}`, is not a name: {reason}"
+    )]
+    InvalidInstanceIdInCopy {
+        link_id: String,
+        copy: String,
+        instance_id: String,
+        reason: String,
+    },
+
     // -- observation (pairing observers)
     #[error(
         "unknown observer slot '{link_id}': the manifest declares no depends_on.pairing_observers entry with that link_id"

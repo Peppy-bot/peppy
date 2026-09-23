@@ -24,4 +24,8 @@ struct BoundMember {
     copy @2 :Text;
     # The copy the producer's instance belongs to; empty for an instance run
     # outside a copy.
+    instanceIdInCopy @3 :Text;
+    # The id the copy's fragment wrote for the instance, which the copy runs
+    # as `<copy>_<instanceIdInCopy>`. Set exactly when `copy` is; the node
+    # refuses a delivery that names one without the other.
 }

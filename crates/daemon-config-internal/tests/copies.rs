@@ -1,9 +1,9 @@
 use config::{AnyType, runtime::Name};
 use core_node_api::encoding::{ArgumentOverride, SetMember};
 use daemon_config::launcher::{
-    AppliedChange, ComposedLaunch, CompositionError, JoinRequest, LinkValue, PeppyLauncher,
-    PeppyLauncherParser, PreparedLauncher, RunningStack, Selection, SkipReason, SkippedAdjustment,
-    UnitSelection,
+    AppliedChange, ComposedLaunch, CompositionError, CopyRecord, JoinRequest, LinkValue,
+    PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, Selection, SkipReason,
+    SkippedAdjustment, UnitSelection,
 };
 use std::path::Path;
 
@@ -85,6 +85,11 @@ fn load(document: &str) -> PreparedLauncher {
 
 fn name(value: &str) -> Name {
     Name::try_from(value.to_owned()).unwrap()
+}
+
+/// The ids the stack runs a copy's instances under.
+fn instance_ids(copy: &CopyRecord) -> Vec<Name> {
+    copy.instance_ids().cloned().collect()
 }
 
 fn ids(flat: &PeppyLauncher) -> Vec<String> {
@@ -185,7 +190,7 @@ fn a_copy_selects_its_options_own_axes_at_join() {
         .unwrap();
     assert_eq!(joined.copy.selection.echo(), "robot=sim  commander=xr");
     assert_eq!(
-        joined.copy.instance_ids,
+        instance_ids(&joined.copy),
         [name("alpha_arm_inst"), name("alpha_commander_inst")]
     );
     let commander = joined
@@ -388,8 +393,17 @@ fn the_copies_a_file_deploys_match_a_launch_followed_by_joins() {
         ["alpha", "bravo"]
     );
     assert_eq!(
-        copies[0].instance_ids,
+        instance_ids(&copies[0]),
         [name("alpha_arm_inst"), name("alpha_commander_inst")]
+    );
+    assert_eq!(
+        copies[0]
+            .instances
+            .iter()
+            .map(|owned| owned.in_copy.as_str())
+            .collect::<Vec<_>>(),
+        ["arm_inst", "commander_inst"],
+        "each instance keeps the id its fragment wrote, beside the minted one"
     );
     assert_eq!(
         copies[0].selection.echo(),
@@ -1017,7 +1031,7 @@ fn copies_configure_stack_nodes_together_and_later_joins_cannot_change_them() {
     let launch = prepared.launch(&[], &[]).unwrap();
     let engine = instance(&launch.launcher, "engine_inst");
     assert_eq!(engine.arguments["hardware"], AnyType::String("v1".into()));
-    assert_eq!(launch.copies()[0].instance_ids, [name("alpha_arm_inst")]);
+    assert_eq!(instance_ids(&launch.copies()[0]), [name("alpha_arm_inst")]);
     let snapshot = serde_json::to_value(&launch.launcher).unwrap();
     let error = join(
         &prepared,
@@ -2281,7 +2295,7 @@ fn a_join_with_no_words_takes_the_entrys_settings() {
         "robot=arm  commander=mcp  rig=cameras"
     );
     assert_eq!(
-        joined.copy.instance_ids,
+        instance_ids(&joined.copy),
         [
             name("bravo_arm_inst"),
             name("bravo_commander_inst"),
@@ -2321,12 +2335,9 @@ fn a_join_word_overrides_one_axis_and_keeps_the_entrys_others() {
         "robot=arm  commander=xr  rig=cameras"
     );
     assert!(
-        joined
-            .copy
-            .instance_ids
-            .contains(&name("bravo_camera_inst")),
+        instance_ids(&joined.copy).contains(&name("bravo_camera_inst")),
         "the entry's rig stays selected: {:?}",
-        joined.copy.instance_ids
+        instance_ids(&joined.copy)
     );
 
     // The browser panel consumes no camera, and the entry's rig stays on.
@@ -2426,7 +2437,7 @@ fn a_join_takes_nothing_from_an_entry_without_settings_or_of_another_option() {
     let prepared = load(&rigged_fleet_document(MCP_ROBOTS));
     let cart = join_onto_launch(&prepared, "cart", "charlie", &[], &[]).unwrap();
     assert_eq!(cart.copy.selection.echo(), "robot=cart");
-    assert_eq!(cart.copy.instance_ids, [name("charlie_cart_inst")]);
+    assert_eq!(instance_ids(&cart.copy), [name("charlie_cart_inst")]);
 }
 
 /// Removing a copy the file deploys and joining it again under its name
@@ -2455,7 +2466,7 @@ fn removing_a_file_copy_and_joining_it_again_reproduces_it() {
         )
         .unwrap();
     assert_eq!(rejoined.copy.selection, alpha.selection);
-    assert_eq!(rejoined.copy.instance_ids, alpha.instance_ids);
+    assert_eq!(instance_ids(&rejoined.copy), instance_ids(alpha));
     assert_eq!(
         serde_json::to_value(&rejoined.launcher).unwrap(),
         serde_json::to_value(&launch.launcher).unwrap()

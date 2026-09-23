@@ -45,7 +45,7 @@ pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 // a removal shrinks it. Wire operations stay per-producer: a bound-set topic
 // subscription opens one pinned subscription per member, and poll / send_goal
 // take the single selected member.
-pub use config::runtime::{BoundMember, ProducerRef};
+pub use config::runtime::{BoundMember, CopyTag, ProducerRef};
 
 // Curated pmi re-exports. peppylib is a thin layer over PMI, so these types are
 // the shared vocabulary of its public messaging API rather than hidden

@@ -5,7 +5,7 @@
 use crate::binding_update_capnp;
 use crate::error::{Error, Result};
 use crate::types::Payload;
-use config::runtime::{BoundMember, BoundProducers, Name};
+use config::runtime::{BoundMember, BoundProducers, CopyTag};
 
 /// Absolute producer-binding state pushed by the daemon: the consumer slot's
 /// complete ordered member set. Field-for-field mirror of the capnp
@@ -32,7 +32,9 @@ impl BindingUpdateRequest {
                 let mut entry = wire.reborrow().get(idx as u32);
                 entry.set_core_node(&member.producer.core_node);
                 entry.set_instance_id(&member.producer.instance_id);
-                entry.set_copy(member.copy.as_ref().map(Name::as_str).unwrap_or(""));
+                let (copy, instance_id_in_copy) = CopyTag::to_wire(member.copy.as_ref());
+                entry.set_copy(copy);
+                entry.set_instance_id_in_copy(instance_id_in_copy);
             }
         }
         super::encode_message(&builder)
@@ -57,16 +59,17 @@ impl BindingUpdateRequest {
                     ("coreNode", "instanceId"),
                 )?;
                 let copy = super::read_text(entry.get_copy(), "binding_update", "copy")?;
-                let copy = (!copy.is_empty())
-                    .then(|| Name::new(copy))
-                    .transpose()
-                    .map_err(|error| {
-                        Error::Deserialization(format!(
-                            "binding_update for slot `{link_id}`: member `{}/{}` names an \
-                             invalid copy: {error}",
-                            producer.core_node, producer.instance_id
-                        ))
-                    })?;
+                let instance_id_in_copy = super::read_text(
+                    entry.get_instance_id_in_copy(),
+                    "binding_update",
+                    "instanceIdInCopy",
+                )?;
+                let copy = CopyTag::from_wire(&copy, &instance_id_in_copy).map_err(|error| {
+                    Error::Deserialization(format!(
+                        "binding_update for slot `{link_id}`: member `{}/{}`: {error}",
+                        producer.core_node, producer.instance_id
+                    ))
+                })?;
                 Ok(BoundMember { producer, copy })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -86,12 +89,17 @@ impl BindingUpdateRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::runtime::ProducerRef;
+    use config::runtime::{Name, ProducerRef};
 
-    fn member(core_node: &str, instance_id: &str, copy: Option<&str>) -> BoundMember {
+    /// A member of `copy`, named inside it as a launch names it: the copy
+    /// and the id its fragment wrote.
+    fn member(core_node: &str, instance_id: &str, copy: Option<(&str, &str)>) -> BoundMember {
         BoundMember {
             producer: ProducerRef::new(core_node, instance_id),
-            copy: copy.map(|copy| Name::new(copy).expect("a valid copy name")),
+            copy: copy.map(|(name, instance_id)| CopyTag {
+                name: Name::new(name).expect("a valid copy name"),
+                instance_id: Name::new(instance_id).expect("a valid instance id"),
+            }),
         }
     }
 
@@ -110,8 +118,8 @@ mod tests {
             vec![member("core_a", "rear", None)],
             vec![
                 member("core_a", "rear", None),
-                member("core_b", "alpha_front", Some("alpha")),
-                member("core_a", "bravo_front", Some("bravo")),
+                member("core_b", "alpha_front", Some(("alpha", "front"))),
+                member("core_a", "bravo_front", Some(("bravo", "front"))),
             ],
         ] {
             let sent = request(members);
@@ -145,11 +153,12 @@ mod tests {
         }
     }
 
-    /// The wire refuses a producer named twice, whatever copies name it, and
-    /// a copy that is not a valid name.
+    /// The wire refuses a producer named twice, whatever copies name it, a
+    /// copy that is not a valid name, and half a copy tag: a copy with no id
+    /// inside it, and an id inside no copy.
     #[test]
-    fn a_repeated_producer_or_an_invalid_copy_refuses_the_delivery() {
-        let payload = |copies: [&str; 2]| {
+    fn a_repeated_producer_or_a_bad_copy_tag_refuses_the_delivery() {
+        let payload = |tags: [(&str, &str); 2]| {
             let mut builder = ::capnp::message::Builder::new_default();
             {
                 let mut root =
@@ -157,20 +166,29 @@ mod tests {
                 root.set_link_id("cameras");
                 root.set_sequence(1);
                 let mut wire = root.init_producers(2);
-                for (idx, copy) in copies.into_iter().enumerate() {
+                for (idx, (copy, instance_id_in_copy)) in tags.into_iter().enumerate() {
                     let mut entry = wire.reborrow().get(idx as u32);
                     entry.set_core_node("core_a");
                     entry.set_instance_id("front");
                     entry.set_copy(copy);
+                    entry.set_instance_id_in_copy(instance_id_in_copy);
                 }
             }
             super::super::encode_message(&builder).unwrap()
         };
-        for (copies, expected) in [
-            (["alpha", "bravo"], "Duplicate producer"),
-            (["alpha", "not a name"], "invalid copy"),
+        for (tags, expected) in [
+            (
+                [("alpha", "front"), ("bravo", "front")],
+                "Duplicate producer",
+            ),
+            (
+                [("alpha", "front"), ("not a name", "front")],
+                "Invalid name",
+            ),
+            ([("alpha", "front"), ("bravo", "")], "Copy tag"),
+            ([("alpha", "front"), ("", "front")], "Copy tag"),
         ] {
-            let error = BindingUpdateRequest::decode(&payload(copies).into_inner()).unwrap_err();
+            let error = BindingUpdateRequest::decode(&payload(tags).into_inner()).unwrap_err();
             let message = error.to_string();
             assert!(
                 message.contains("cameras") && message.contains(expected),

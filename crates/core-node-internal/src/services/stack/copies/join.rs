@@ -16,7 +16,7 @@ use super::super::launch::watchers::{lifecycle_watchers, watchers_replacing};
 use super::super::launch::{
     HostedNode, JoinScope, NodeKey, PhaseChange, PhaseGoal, UnresolvedAdd, federated,
 };
-use super::super::state::{ActiveLaunch, StackCopy, instance_ids_in_start_order};
+use super::super::state::{ActiveLaunch, StackCopy, copy_in_start_order};
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
 use super::{
     change_active_launch,
@@ -30,12 +30,9 @@ use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry,
     NodeRunLogEntry, StackJoinGoal,
 };
-use daemon_config::launcher::{CopyMembership, CopyRecord};
+use daemon_config::launcher::CopyMembership;
 use futures::FutureExt;
-use std::{
-    collections::{HashMap, HashSet},
-    panic::AssertUnwindSafe,
-};
+use std::{collections::HashMap, panic::AssertUnwindSafe};
 
 /// Adds the copy `goal` names to the running stack and records it with the
 /// launch, whatever the outcome: a failed join rolls back to the record it
@@ -155,16 +152,8 @@ async fn join_inner(
     .into_iter()
     .map(|item| (NodeKey::new(&item.node_name, &item.node_tag), item))
     .collect();
-    let owned: HashSet<_> = delta
-        .values()
-        .flat_map(|item| &item.deployment.instances)
-        .map(|instance| &instance.instance_id)
-        .collect();
     let record = StackCopy {
-        record: CopyRecord {
-            instance_ids: instance_ids_in_start_order(&planned, &ordered, &owned),
-            ..copy.clone()
-        },
+        record: copy_in_start_order(copy.clone(), &planned, &ordered),
         core_node: host,
     };
     // Held past the record's move into the launch: a failed delivery puts the

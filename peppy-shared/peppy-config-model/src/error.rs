@@ -351,6 +351,10 @@ pub enum ParsingError {
         core_node: String,
         instance_id: String,
     },
+    #[error(
+        "Copy tag `{copy}`/`{instance_id}`: an instance of a copy carries both the copy's name and the id the copy's fragment wrote for it, and an instance outside every copy carries neither"
+    )]
+    HalfCopyTag { copy: String, instance_id: String },
 
     // -- build system
     #[error("Invalid toolchain {0}")]

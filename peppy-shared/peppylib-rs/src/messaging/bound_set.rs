@@ -14,8 +14,8 @@ use config::runtime::{BoundMember, BoundProducers, ProducerRef};
 pub type NonEmptyProducers = super::NonEmpty<ProducerRef>;
 
 /// The bound member set of a `cardinality: "one_or_more"` consumer slot: every
-/// producer with the copy its instance belongs to, in plan order and never
-/// empty. Generated `bound_members()` accessors of `one_or_more` slots return
+/// producer with the copy its instance belongs to and the id it has inside
+/// that copy, in plan order and never empty. Generated `bound_members()` accessors of `one_or_more` slots return
 /// it; those of `zero_or_more` slots return a plain, possibly empty
 /// `Vec<BoundMember>`, the same split as [`NonEmptyProducers`].
 pub type NonEmptyMembers = super::NonEmpty<BoundMember>;

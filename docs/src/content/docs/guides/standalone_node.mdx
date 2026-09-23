@@ -128,11 +128,11 @@ Parameters are not the only thing a launch resolves. A node that declares [pairi
 | `with_peer_pin` | the daemon's `--pair` delivery for a `depends_on.pairings` slot |
 | `with_peer_pin_in_copy` | the same pair, for a peer whose instance belongs to a copy: it takes the copy's name last, and the member the node reads carries it |
 | `with_bound_producer` | one `--link` occurrence, or one launcher `links:` entry, for a `depends_on.nodes` / `depends_on.contracts` slot |
-| `with_bound_producer_in_copy` | the same binding, for a producer whose instance belongs to a copy: it takes the copy's name last, and the member the node reads carries it |
+| `with_bound_producer_in_copy` | the same binding, for a producer whose instance belongs to a copy: it takes the copy's name and the id the copy's fragment wrote instead of the instance id, runs the producer under the `NAME_<id>` a launch mints from them, and the member the node reads carries both |
 | `with_vacant_producer_slot` | a launcher writing a producer-binding slot `{ vacant: "<why>" }` |
 | `with_observed_source` | one member of the set the daemon stamps into an observer slot at spawn |
 
-Every builder takes the local slot's `link_id` first. The three that name a remote instance follow it with that instance's `(core_node, instance_id)` address, and the two of those that also name a slot on the other side (a pairing's peer and an observed pairing's source) take that slot's `link_id` last. `with_vacant_producer_slot` names only the local slot, because there is no instance to point at:
+Every builder takes the local slot's `link_id` first. The three that name a remote instance follow it with that instance's `(core_node, instance_id)` address, `with_bound_producer_in_copy` naming the instance as its copy and the id inside it, and the two that also name a slot on the other side (a pairing's peer and an observed pairing's source) take that slot's `link_id` last. `with_vacant_producer_slot` names only the local slot, because there is no instance to point at:
 
 <Tabs>
   <TabItem label="Python">

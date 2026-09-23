@@ -847,7 +847,7 @@ fn format_slot_binding(bound: &config::runtime::BoundProducers) -> String {
                 "{}@{}{}",
                 member.producer.instance_id,
                 member.producer.core_node,
-                copy_label(member.copy.as_ref())
+                copy_label(member.copy.as_ref().map(|copy| &copy.name))
             )
         })
         .collect::<Vec<_>>()
@@ -1135,7 +1135,10 @@ mod tests {
             config::runtime::BoundMember::from(ProducerRef::new("core_a", "hub_arm")),
             config::runtime::BoundMember {
                 producer: ProducerRef::new("core_b", "alpha_arm"),
-                copy: Some(config::runtime::Name::new("alpha").unwrap()),
+                copy: Some(config::runtime::CopyTag {
+                    name: config::runtime::Name::new("alpha").unwrap(),
+                    instance_id: config::runtime::Name::new("arm").unwrap(),
+                }),
             },
         ])
         .unwrap();

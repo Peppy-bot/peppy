@@ -90,7 +90,7 @@ async fn remove_inner(
         .map_err(|e| e.to_string())?;
     let shrunk_slots = changed_slots(&copy.record, &active.planned, Change::Removal)?;
     check_not_emptied(&copy.record, &shrunk_slots, &remaining)?;
-    let removed: HashSet<_> = copy.record.instance_ids.iter().map(Name::as_str).collect();
+    let removed: HashSet<_> = copy.record.instance_ids().map(Name::as_str).collect();
     let remaining_planned = planned_from(&remaining, &active.resolved);
     let copies = CopyMembership::of(&staying);
     // The copy supplies a clock when one of its instances publishes a domain
@@ -309,7 +309,7 @@ pub(super) async fn stop_copy(
             &ctx.core_instance_id,
             &ctx.node_stack,
             &ctx.relationships,
-            &copy.record.instance_ids,
+            &copy.record.instance_ids().cloned().collect::<Vec<_>>(),
         )
         .await;
         return Ok(());
@@ -317,11 +317,12 @@ pub(super) async fn stop_copy(
     let stack = stack_list_on(ctx, host).await?;
     // The host stops each instance in turn within its own teardown budget,
     // then answers.
-    let timeout = copy_removal_budget(stack.shutdown_grace_secs, copy.record.instance_ids.len())
+    let timeout = copy_removal_budget(stack.shutdown_grace_secs, copy.record.instances.len())
         .saturating_add(STACK_QUERY_TIMEOUT);
-    let instance_ids =
-        core_node_api::encoding::RemovedInstances::try_from(copy.record.instance_ids.clone())
-            .map_err(|error| format!("cannot remove `{host}`'s instances: {error}"))?;
+    let instance_ids = core_node_api::encoding::RemovedInstances::try_from(
+        copy.record.instance_ids().cloned().collect::<Vec<_>>(),
+    )
+    .map_err(|error| format!("cannot remove `{host}`'s instances: {error}"))?;
     poll(
         &ParticipantInstancesRemoveRequest {
             launch_id: launch_id.to_owned(),
@@ -345,7 +346,7 @@ pub(super) async fn stop_copy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daemon_config::launcher::CopyRecord;
+    use daemon_config::launcher::{CopyInstance, CopyRecord};
 
     fn instance(id: &str) -> DeploymentInstance {
         DeploymentInstance::empty(Name::new(id).unwrap())
@@ -384,10 +385,13 @@ mod tests {
             axis: "robot".into(),
             option: "real".into(),
             selection: Default::default(),
-            instance_ids: vec![
-                Name::new("alpha_arm_inst").unwrap(),
-                Name::new("alpha_cam_inst").unwrap(),
-            ],
+            instances: ["arm_inst", "cam_inst"]
+                .into_iter()
+                .map(|id| CopyInstance {
+                    instance_id: config::runtime::instance_id_in_copy(&alpha, id),
+                    in_copy: Name::new(id).unwrap(),
+                })
+                .collect(),
             set_members: Vec::new(),
         }]);
         let consumers = ClockConsumers::of(&instances, &clocks, &domains, &copies);

@@ -458,7 +458,7 @@ mod tests {
     use config::runtime::ProducerRef;
     use core_node_api::encoding::ObservationTarget;
     use core_node_api::encoding::SetMember;
-    use daemon_config::launcher::{PeppyLauncherParser, UnitSelection};
+    use daemon_config::launcher::{CopyInstance, PeppyLauncherParser, UnitSelection};
 
     /// A monitor with a `zero_or_more` node slot `robots`, a `zero_or_more`
     /// contract slot `camera_profiles`, a `one` node slot `lead_robot`, a
@@ -511,7 +511,10 @@ mod tests {
             axis: "robot".into(),
             option: "real".into(),
             selection: UnitSelection::default(),
-            instance_ids: vec![Name::new("alpha_arm_inst").unwrap()],
+            instances: vec![CopyInstance {
+                instance_id: Name::new("alpha_arm_inst").unwrap(),
+                in_copy: Name::new("arm_inst").unwrap(),
+            }],
             set_members: members
                 .iter()
                 .map(|(slot, target)| SetMember {
@@ -708,7 +711,7 @@ mod tests {
     }
 
     /// A set's members by instance, a producer set's each with the copy it
-    /// belongs to as `instance:copy`.
+    /// belongs to and the id it has inside it as `instance:copy/in_copy`.
     fn members(set: &SlotSet) -> Vec<String> {
         match &set.members {
             SlotMembers::Producers(producers) => producers
@@ -720,8 +723,8 @@ mod tests {
                         member
                             .copy
                             .as_ref()
-                            .map(|copy| copy.as_str())
-                            .unwrap_or("-")
+                            .map(|copy| format!("{}/{}", copy.name, copy.instance_id))
+                            .unwrap_or_else(|| "-".to_string())
                     )
                 })
                 .collect(),
@@ -743,17 +746,26 @@ mod tests {
             Change::Join,
         )
         .unwrap();
-        let in_copy = |core_node: &str, instance: &str, copy: &str| config::runtime::BoundMember {
-            producer: ProducerRef::new(core_node, instance),
-            copy: Some(Name::new(copy).unwrap()),
+        let in_copy = |core_node: &str, copy: &str, id: &str| {
+            let name = Name::new(copy).unwrap();
+            config::runtime::BoundMember {
+                producer: ProducerRef::new(
+                    core_node,
+                    config::runtime::instance_id_in_copy(&name, id).as_str(),
+                ),
+                copy: Some(config::runtime::CopyTag {
+                    name,
+                    instance_id: Name::new(id).unwrap(),
+                }),
+            }
         };
         let bindings = BTreeMap::from([(
             "monitor_inst".to_string(),
             SlotBindings::from([(
                 "robots".to_string(),
                 BoundProducers::try_from(vec![
-                    in_copy("cn-robot", "bravo_arm_inst", "bravo"),
-                    in_copy("cn-cloud", "alpha_arm_inst", "alpha"),
+                    in_copy("cn-robot", "bravo", "arm_inst"),
+                    in_copy("cn-cloud", "alpha", "arm_inst"),
                 ])
                 .unwrap(),
             )]),
@@ -785,8 +797,8 @@ mod tests {
                 (
                     "robots",
                     vec![
-                        "bravo_arm_inst:bravo".to_string(),
-                        "alpha_arm_inst:alpha".to_string()
+                        "bravo_arm_inst:bravo/arm_inst".to_string(),
+                        "alpha_arm_inst:alpha/arm_inst".to_string()
                     ]
                 ),
                 (
@@ -810,7 +822,7 @@ mod tests {
                 .map(|set| (set.link_id.as_str(), members(set)))
                 .collect::<Vec<_>>(),
             [
-                ("robots", vec!["bravo_arm_inst:bravo".to_string()]),
+                ("robots", vec!["bravo_arm_inst:bravo/arm_inst".to_string()]),
                 ("fleet", vec!["bravo_arm_inst".to_string()]),
             ],
             "the sets a join grew, without its members as producers, sources or pinned peers, \

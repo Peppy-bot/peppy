@@ -4296,7 +4296,8 @@ async fn wait_for_log_count(daemon: &Daemon, instance_id: &str, marker: &str, co
 
 /// The members slot `link_id` of `instance_id` holds, as a `stack list --json`
 /// section records them, each as `instance@core_node` in plan order followed
-/// by ` [copy NAME]` for a member a copy brought.
+/// by ` [copy NAME/IN_COPY]` for a member a copy brought: the copy's name and
+/// the id its fragment wrote for the instance.
 fn recorded_bindings(section: &serde_json::Value, instance_id: &str, link_id: &str) -> Vec<String> {
     let instance = section["stack"]["nodes"]
         .as_array()
@@ -4310,9 +4311,14 @@ fn recorded_bindings(section: &serde_json::Value, instance_id: &str, link_id: &s
         .into_iter()
         .flatten()
         .map(|member| {
-            let copy = member["copy"]
+            let copy = member["copy"]["name"]
                 .as_str()
-                .map(|copy| format!(" [copy {copy}]"))
+                .map(|name| {
+                    let in_copy = member["copy"]["instance_id"]
+                        .as_str()
+                        .expect("a member of a copy names the id inside it");
+                    format!(" [copy {name}/{in_copy}]")
+                })
                 .unwrap_or_default();
             format!(
                 "{}@{}{copy}",
@@ -5062,8 +5068,8 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
         "the grown gates",
     );
     let grown = vec![
-        format!("alpha_commander_inst@{cloud} [copy alpha]"),
-        format!("bravo_commander_inst@{robot} [copy bravo]"),
+        format!("alpha_commander_inst@{cloud} [copy alpha/commander_inst]"),
+        format!("bravo_commander_inst@{robot} [copy bravo/commander_inst]"),
     ];
     assert_eq!(gates(&listed), (grown.clone(), grown), "{listed}");
     let bravo = coordinator_section(&listed, robot)["copies"]
@@ -5090,7 +5096,9 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
         federation.robot.peppy(&["stack", "list", "--json"]).await,
         "the shrunken gates",
     );
-    let shrunk = vec![format!("bravo_commander_inst@{robot} [copy bravo]")];
+    let shrunk = vec![format!(
+        "bravo_commander_inst@{robot} [copy bravo/commander_inst]"
+    )];
     assert_eq!(gates(&listed), (shrunk.clone(), shrunk), "{listed}");
 
     require_success(
@@ -5168,14 +5176,14 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     consumer
         .wait_for_node_log(
             "consumer_inst",
-            "members arms=[fixed_arm_inst:none,alpha_arm_inst:alpha,bravo_arm_inst:bravo] \
+            "members arms=[fixed_arm_inst:none,alpha_arm_inst:alpha/arm_inst,bravo_arm_inst:bravo/arm_inst] \
               leaders=[alpha_leader_inst,bravo_leader_inst]\n",
         )
         .await;
     observer
         .wait_for_node_log(
             "observer_inst",
-            "members arms=[fixed_arm_inst:none,alpha_arm_inst:alpha,bravo_arm_inst:bravo] \
+            "members arms=[fixed_arm_inst:none,alpha_arm_inst:alpha/arm_inst,bravo_arm_inst:bravo/arm_inst] \
               leaders=[alpha_leader_inst,bravo_leader_inst]\n",
         )
         .await;
@@ -5196,13 +5204,13 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     consumer
         .wait_for_node_log(
             "consumer_inst",
-            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo] leaders=[bravo_leader_inst]\n",
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo/arm_inst] leaders=[bravo_leader_inst]\n",
         )
         .await;
     observer
         .wait_for_node_log(
             "observer_inst",
-            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo] leaders=[bravo_leader_inst]\n",
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo/arm_inst] leaders=[bravo_leader_inst]\n",
         )
         .await;
 
@@ -5216,14 +5224,14 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     consumer
         .wait_for_node_log(
             "consumer_inst",
-            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo,alpha_arm_inst:alpha] \
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo/arm_inst,alpha_arm_inst:alpha/arm_inst] \
               leaders=[bravo_leader_inst,alpha_leader_inst]\n",
         )
         .await;
     observer
         .wait_for_node_log(
             "observer_inst",
-            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo,alpha_arm_inst:alpha] \
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo/arm_inst,alpha_arm_inst:alpha/arm_inst] \
               leaders=[bravo_leader_inst,alpha_leader_inst]\n",
         )
         .await;
@@ -5366,7 +5374,9 @@ async fn a_set_on_an_offline_machine_refuses_a_join_and_stays_on_removal() {
     assert_eq!(copy_names(&coordinator), ["alpha"], "{listed}");
     assert_eq!(
         recorded_bindings(&coordinator, COORDINATOR_GATE, "commander"),
-        [format!("alpha_commander_inst@{robot} [copy alpha]")],
+        [format!(
+            "alpha_commander_inst@{robot} [copy alpha/commander_inst]"
+        )],
         "{listed}"
     );
 
