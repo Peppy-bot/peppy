@@ -2434,7 +2434,7 @@ mod tests {
 
         #[tokio::test]
         async fn resources_follow_the_fleet_and_a_change_is_announced() {
-            let (server, fleet) = served();
+            let (server, members) = served();
             let handle = server.fleet().expect("a per-robot server");
             let fleet = runtime(&server);
             let listed: Vec<String> = fleet
@@ -2486,7 +2486,7 @@ mod tests {
                 CatalogEvent::ResourceUpdated { .. }
             ));
 
-            fleet
+            members
                 .lock()
                 .unwrap()
                 .retain(|member| member.robot.as_deref() != Some("alpha"));
