@@ -2337,20 +2337,25 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
         front_camera_info_refused(&client, "charlie").await,
         "`charlie` is not a robot of this stack; the robots are `alpha`, `bravo`"
     );
+    // Bravo's status is read once the server announces its first snapshot.
     let bravo_status = robot_uri("bravo", "front_camera.status");
-    let read = tokio::time::timeout(WAIT, async {
-        loop {
-            match client
-                .read_resource(ReadResourceRequestParams::new(bravo_status.clone()))
-                .await
-            {
-                Ok(read) => return read,
-                Err(_unavailable) => tokio::time::sleep(Duration::from_millis(50)).await,
-            }
-        }
-    })
-    .await
-    .expect("bravo's status serves once its camera publishes");
+    let mut status_subscription = client
+        .listen(
+            SubscriptionFilter::builder()
+                .resource_subscription(bravo_status.as_str())
+                .build(),
+        )
+        .await
+        .expect("subscriptions/listen is accepted");
+    await_resource_updates(&mut status_subscription, &[&bravo_status]).await;
+    status_subscription
+        .cancel()
+        .await
+        .expect("subscription cancels");
+    let read = client
+        .read_resource(ReadResourceRequestParams::new(bravo_status.clone()))
+        .await
+        .expect("bravo's status serves once its camera publishes");
     assert_eq!(
         text_snapshot(read),
         json!({ "battery": 87, "note": "operational", "recording": true })
