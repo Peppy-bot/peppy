@@ -10,6 +10,7 @@
 //! set of pinned bytes.
 
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
+use crate::internal::launcher::MemberAddressing;
 use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedItem};
 use crate::internal::source::ExposureRef;
 use config::node::{NodeConfig, NodeConfigParser};
@@ -205,6 +206,9 @@ pub struct McpDeploymentPlan {
     pub tag: String,
     pub config: NodeConfig,
     pub exposures: Vec<ValidatedExposure>,
+    /// How the server reads the sets its contract slots hold, which the
+    /// binding validator holds the launcher to.
+    pub addressing: MemberAddressing,
 }
 
 /// One contract slot of the synthesized manifest and who filled it.
@@ -389,6 +393,21 @@ pub fn plan_deployment(
             serde_json::json!({ "consumes": consumed(&actions) }),
         );
     }
+    // The robots of a per-robot surface are the stack's copies, so the
+    // server addresses every member by its copy, and a target declaring no
+    // `argument` is one a robot fills once. `per_robot` gates both this and
+    // the `zero_or_more` cardinality below, so the two agree.
+    let addressing = if per_robot {
+        MemberAddressing::ByCopy {
+            one_per_copy: slots
+                .iter()
+                .filter(|(_, slot)| slot.argument.is_none())
+                .map(|(target, _)| target.clone())
+                .collect(),
+        }
+    } else {
+        MemberAddressing::WholeSet
+    };
     let contract_slots: Vec<serde_json::Value> = slots
         .iter()
         .map(|(target, slot)| {
@@ -452,6 +471,7 @@ pub fn plan_deployment(
         tag,
         config,
         exposures: validated,
+        addressing,
     })
 }
 
@@ -1020,6 +1040,18 @@ mod tests {
                         }},
                     ],
                 }},
+                main_camera: {{
+                    contract: {{ name: "rgb_camera", tag: "v1" }},
+                    services: [
+                        {{
+                            member: "video_stream_info",
+                            tool: "main_camera.info",
+                            description: "Report.",
+                            operation: "read_only",
+                            deadline_ms: 2000,
+                        }},
+                    ],
+                }},
             }},
         }}"#
         )
@@ -1033,9 +1065,19 @@ mod tests {
         )
         .expect("plans");
         let slots = &plan.config.manifest.depends_on.as_ref().unwrap().contracts;
-        assert_eq!(slots.len(), 1);
+        assert_eq!(slots.len(), 2);
         assert_eq!(slots[0].link_id, "camera");
         assert_eq!(slots[0].cardinality, config::node::Cardinality::ZeroOrMore);
+        assert_eq!(slots[1].link_id, "main_camera");
+        assert_eq!(slots[1].cardinality, config::node::Cardinality::ZeroOrMore);
+        // The robots are the stack's copies: they address the members of
+        // `camera` by its argument and fill `main_camera` once each.
+        assert_eq!(
+            plan.addressing,
+            MemberAddressing::ByCopy {
+                one_per_copy: ["main_camera".to_owned()].into_iter().collect(),
+            }
+        );
         let peppy_mcp_catalog::BundleSurface::PerRobot { contracts, .. } =
             &plan.exposures[0].bundle.surface
         else {
@@ -1056,6 +1098,7 @@ mod tests {
         .expect("plans");
         let slots = &fixed.config.manifest.depends_on.as_ref().unwrap().contracts;
         assert_eq!(slots[0].cardinality, config::node::Cardinality::One);
+        assert_eq!(fixed.addressing, MemberAddressing::WholeSet);
     }
 
     #[test]

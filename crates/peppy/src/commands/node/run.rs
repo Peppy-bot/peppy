@@ -9,7 +9,7 @@ use core_node_api::encoding::{
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
     BindingValidationItem, CopyMembership, DeploymentInstance, LinkValue, PairingValidationItem,
-    Placements, WALL_CLOCK, split_link_target, validate_link_plan,
+    Placements, SETS_READ_WHOLE, WALL_CLOCK, split_link_target, validate_link_plan,
 };
 use names_generator2::get_random;
 use peppylib::core_node::transport::{poll, send_goal};
@@ -700,6 +700,8 @@ async fn validate_links_against_stack(
         )
     }];
 
+    // This preflight binds with no copy membership, so every member reads as
+    // outside a copy: the sets it validates are read whole.
     let mut items: Vec<BindingValidationItem<'_>> = snapshot
         .iter()
         .map(|s| BindingValidationItem {
@@ -708,6 +710,7 @@ async fn validate_links_against_stack(
             instances: &s.instances,
             depends_on: None,
             implements: &s.implements,
+            addressing: SETS_READ_WHOLE,
         })
         .collect();
     items.push(BindingValidationItem {
@@ -716,6 +719,7 @@ async fn validate_links_against_stack(
         instances: &synthetic_instances,
         depends_on: target_depends_on.as_ref(),
         implements: &target_implements,
+        addressing: SETS_READ_WHOLE,
     });
 
     // Build the pairing/observation view over the same snapshot. Running

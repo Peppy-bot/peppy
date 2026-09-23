@@ -85,13 +85,13 @@ pub mod launcher {
         ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyInstance,
         CopyMembership, CopyRecord, Deployment, DeploymentInstance, DeploymentSource,
         ExternallyCoveredSlots, FragmentPart, FragmentSpec, FrameworkOverrides, JoinRequest,
-        LauncherFragmentParser, LinkTargets, LinkValue, PairingValidationItem, PeppyLauncher,
-        PeppyLauncherParser, Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing,
-        PreparedLauncher, ResolvedClocks, RunningStack, SELF_COPY_NAME_REFUSAL, Selection,
-        SkipReason, SkippedAdjustment, UnitSelection, VacantReason, WALL_CLOCK, check_composition,
-        mint_incarnation, participant_vacancies, resolve_clocks, split_link_target,
-        validate_bindings, validate_clock_connections, validate_link_plan, validate_link_slots,
-        validate_pairings,
+        LauncherFragmentParser, LinkTargets, LinkValue, MemberAddressing, PairingValidationItem,
+        PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation, PlannedPairEndpoint,
+        PlannedPairing, PreparedLauncher, ResolvedClocks, RunningStack, SELF_COPY_NAME_REFUSAL,
+        SETS_READ_WHOLE, Selection, SkipReason, SkippedAdjustment, UnitSelection, VacantReason,
+        WALL_CLOCK, check_composition, mint_incarnation, participant_vacancies, resolve_clocks,
+        split_link_target, validate_bindings, validate_clock_connections, validate_link_plan,
+        validate_link_slots, validate_pairings,
     };
 }
 

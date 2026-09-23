@@ -4,7 +4,9 @@
 use super::launch::PlannedDeployment;
 use config::AnyType;
 use config::runtime::{CoreNodeName, Name};
-use daemon_config::launcher::{Deployment, DeploymentInstance, DeploymentSource, Placements};
+use daemon_config::launcher::{
+    Deployment, DeploymentInstance, DeploymentSource, MemberAddressing, Placements,
+};
 use daemon_config::repository::{
     DeploymentRoot, EntryOrigin, GitCommit, ItemName, ItemTag, ManifestFingerprint, PinKind,
     PinnedItem, RepoRelativePath,
@@ -71,6 +73,7 @@ pub(super) fn planned_container_deployment(
         root: DeploymentRoot::Node(test_root_pin(node_name)),
         closure_pins: Vec::new(),
         pin_manifests: Vec::new(),
+        addressing: MemberAddressing::WholeSet,
     }
 }
 

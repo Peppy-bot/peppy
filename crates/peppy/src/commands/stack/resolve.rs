@@ -8,8 +8,8 @@ use core_node_api::encoding::{LaunchJoin, LauncherOrigin};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
     AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, DeploymentSource,
-    ExternallyCoveredSlots, PairingValidationItem, PeppyLauncher, Placements, PreparedLauncher,
-    resolve_clocks, validate_link_plan,
+    ExternallyCoveredSlots, MemberAddressing, PairingValidationItem, PeppyLauncher, Placements,
+    PreparedLauncher, resolve_clocks, validate_link_plan,
 };
 use daemon_config::repository::EntryOrigin;
 use tracing::info;
@@ -247,6 +247,19 @@ pub fn resolve_rendered(
     Ok((document, lines))
 }
 
+/// One deployment's manifest as [`check_link_plan`] resolved it: the
+/// identity it declares, the deployment it came from, and how its node reads
+/// the sets its slots hold.
+struct CheckedManifest {
+    name: String,
+    tag: String,
+    /// The deployment's position in the flat launcher, which carries the
+    /// instances the manifest is judged against.
+    index: usize,
+    config: NodeConfig,
+    addressing: MemberAddressing,
+}
+
 /// Hold the flat plan to the launch-time link rules a client can check: the
 /// cross-family slot-key and vacancy rules, then the pairing rules. Both
 /// validators read only the flat launcher and the deployed nodes' manifests,
@@ -285,7 +298,7 @@ fn check_link_plan(
     };
 
     let mut unavailable: Vec<String> = Vec::new();
-    let mut manifests: Vec<(String, String, usize, NodeConfig)> = Vec::new();
+    let mut manifests: Vec<CheckedManifest> = Vec::new();
     for (index, deployment) in flat.deployments.iter().enumerate() {
         let (name, tag) = match &deployment.source {
             DeploymentSource::Node { name, tag } => (name.as_str(), tag.as_str()),
@@ -297,12 +310,13 @@ fn check_link_plan(
                     info!("{message}")
                 }) {
                     Ok(plan) => {
-                        manifests.push((
-                            plan.name.as_str().to_owned(),
-                            plan.tag.clone(),
+                        manifests.push(CheckedManifest {
+                            name: plan.name.as_str().to_owned(),
+                            tag: plan.tag,
                             index,
-                            plan.config,
-                        ));
+                            config: plan.config,
+                            addressing: plan.addressing,
+                        });
                     }
                     Err(e) => unavailable.push(format!("{} ({e})", deployment.source.label())),
                 }
@@ -352,7 +366,13 @@ fn check_link_plan(
             // would otherwise have the plan judged against that node's slot
             // declarations under this one's name.
             Ok(config) if config.manifest.name.as_str() == name && config.manifest.tag == tag => {
-                manifests.push((name.to_string(), tag.to_string(), index, config));
+                manifests.push(CheckedManifest {
+                    name: name.to_string(),
+                    tag: tag.to_string(),
+                    index,
+                    config,
+                    addressing: MemberAddressing::WholeSet,
+                });
             }
             Ok(config) => {
                 unavailable.push(format!(
@@ -410,27 +430,30 @@ fn check_link_plan(
 
     let binding_items: Vec<BindingValidationItem<'_>> = manifests
         .iter()
-        .map(|(name, tag, index, config)| BindingValidationItem {
-            node_name: name,
-            node_tag: tag,
-            instances: &flat.deployments[*index].instances,
-            depends_on: config.manifest.depends_on.as_ref(),
-            implements: &config.manifest.implements,
+        .map(|checked| BindingValidationItem {
+            node_name: &checked.name,
+            node_tag: &checked.tag,
+            instances: &flat.deployments[checked.index].instances,
+            depends_on: checked.config.manifest.depends_on.as_ref(),
+            implements: &checked.config.manifest.implements,
+            addressing: &checked.addressing,
         })
         .collect();
     let pairing_items: Vec<PairingValidationItem<'_>> = manifests
         .iter()
-        .map(|(name, tag, index, config)| PairingValidationItem {
-            node_name: name,
-            node_tag: tag,
-            instances: &flat.deployments[*index].instances,
-            pairing_deps: config
+        .map(|checked| PairingValidationItem {
+            node_name: &checked.name,
+            node_tag: &checked.tag,
+            instances: &flat.deployments[checked.index].instances,
+            pairing_deps: checked
+                .config
                 .manifest
                 .depends_on
                 .as_ref()
                 .map(|d| d.pairings.as_slice())
                 .unwrap_or_default(),
-            observer_deps: config
+            observer_deps: checked
+                .config
                 .manifest
                 .depends_on
                 .as_ref()
