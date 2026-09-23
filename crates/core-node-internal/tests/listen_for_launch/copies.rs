@@ -1354,6 +1354,81 @@ async fn a_joined_member_reads_as_not_live_while_its_source_is_down() {
     .unwrap();
 }
 
+/// The last copy of a `one_or_more` axis stays: its removal is refused,
+/// naming the copy and the axis, while a copy above the floor goes and the
+/// whole stack still comes down.
+#[tokio::test]
+async fn the_last_copy_of_a_one_or_more_axis_stays_until_the_stack_goes() {
+    let started = start_core_node_with_mock_messenger().await;
+    let directory = tempdir().unwrap();
+    let robot = write_node_config(
+        directory.path(),
+        "named_robot",
+        "v1",
+        "test-hash",
+        &["sleep", "300"],
+        false,
+        false,
+    );
+    TestPackagesCache::new()
+        .fs_entry("named_robot", "v1", &robot)
+        .write(&started.peppy_dirs);
+    let launcher = directory.path().join("fleet.json5");
+    fs::write(
+        &launcher,
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "one_or_more", options: {
+            real: { deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] }
+        } }],
+        deployments: [{ robot: "real", instances: [{ instance_id: "alpha" }] }]
+    }"#,
+    )
+    .unwrap();
+    let _alpha = answer_readiness(&started, "named_robot", "alpha_arm_inst").await;
+    let launch = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        "one-or-more-axis-test",
+        StackBudgets::new(30, 30, 30, Some(120)),
+    );
+    let result = execute(&started, &launch).await;
+    assert!(result.success, "{:?}", result.error_message);
+    let pid = robot_pid(&started, "alpha");
+
+    let _bravo = answer_readiness(&started, "named_robot", "bravo_arm_inst").await;
+    let joined = execute(&started, &robot_goal("bravo", "real")).await;
+    assert!(joined.success, "{:?}", joined.error_message);
+    let above_floor = execute(&started, &StackRemoveGoal::new(Name::new("bravo").unwrap())).await;
+    assert!(above_floor.success, "{:?}", above_floor.error_message);
+
+    let refused = execute(&started, &StackRemoveGoal::new(Name::new("alpha").unwrap())).await;
+    assert!(
+        !refused.success,
+        "the last copy of a one_or_more axis stays"
+    );
+    let message = refused
+        .error_message
+        .expect("a refused removal names its reason");
+    assert!(
+        message.contains("`alpha`")
+            && message.contains("`robot`")
+            && message.contains("one_or_more"),
+        "{message}"
+    );
+    assert!(
+        is_process_running(pid),
+        "a refused removal leaves the copy running"
+    );
+
+    let reset =
+        participant_request(&started, &core_node_api::encoding::StackResetRequest::new()).await;
+    assert!(reset.success, "{:?}", reset.error_message);
+    assert!(
+        !is_process_running(pid),
+        "reset takes the last copy down with the stack"
+    );
+}
+
 /// A removal that would leave a running `one_or_more` set with no member is
 /// refused, naming the slot, and the copy keeps running.
 #[tokio::test]

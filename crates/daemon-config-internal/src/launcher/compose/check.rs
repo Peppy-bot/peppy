@@ -76,7 +76,10 @@ struct Repeatable<'a> {
 ///
 /// Returns the rendered problems, each prefixed with the launcher's file
 /// name; an empty vec means every legal selection composes and the
-/// constraints refuse only what the author could mean to refuse.
+/// constraints refuse only what the author could mean to refuse. An axis
+/// the file leaves for the command line, a `one` axis for `--with` or a
+/// `one_or_more` axis for `--join`, is judged on the selections that fill
+/// it.
 pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<String> {
     let label = launcher_file_label(launcher_file);
     let prepared = match PreparedLauncher::load(launcher, launcher_file) {
@@ -131,11 +134,13 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
 /// The bare launch must stay a member of the family: what the file
 /// deploys, with nothing selected on top, has to compose. A `one` axis the
 /// file leaves for `--with`, on the launcher or on a file copy, has no bare
-/// launch, and that is the author's call.
+/// launch, and neither has a `one_or_more` axis the file leaves for
+/// `--join`; both are the author's call.
 fn check_bare_launch(prepared: &PreparedLauncher, label: &str) -> Vec<String> {
     match prepared.launch(&[], &[]) {
         Ok(_)
         | Err(CompositionError::UnresolvedAxis { .. })
+        | Err(CompositionError::CopyAxisUnfilled { .. })
         | Err(CompositionError::UnresolvedCopyAxis(_)) => Vec::new(),
         Err(e) => vec![format!(
             "{label}: the bare launch (no `--with`) fails: {e}. A launch of what the file \

@@ -9,8 +9,8 @@ use crate::encoding::{
 };
 use config::runtime::{CoreNodeName, Name};
 
-/// One copy on the stack: a named instance of an option of a `zero_or_more`
-/// axis, where it runs, the instances it minted, the `axis=option` words its
+/// One copy on the stack: a named instance of an option of an axis that runs
+/// as copies, where it runs, the instances it minted, the `axis=option` words its
 /// own axes were filled with, and the members it added to stack instances'
 /// set slots.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

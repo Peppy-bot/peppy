@@ -547,7 +547,7 @@ fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
     assert!(
         error
             .to_string()
-            .contains("`ghost` is not an option of a `zero_or_more` axis"),
+            .contains("`ghost` is not an option of an axis this launcher runs as copies"),
         "{error}"
     );
     // An option with no entry composes as its fragment deploys it.
@@ -705,7 +705,6 @@ fn the_axis_grammar_refuses_every_key_it_does_not_declare() {
     assert!(error.contains("fragment"), "{error}");
     for properties in [
         "cardinality: 'many'",
-        "cardinality: 'one_or_more'",
         "cardinality: 'zero_or_more', provides: null",
         "provides: null",
         "optional: true",
@@ -717,6 +716,112 @@ fn the_axis_grammar_refuses_every_key_it_does_not_declare() {
             "{properties}"
         );
     }
+}
+
+/// A `one_or_more` axis runs as named copies and a launch starts at least
+/// one of them, from the file or from `--join`; a launch that starts none
+/// is refused, naming the axis and both ways to fill it.
+#[test]
+fn a_one_or_more_axis_starts_at_least_one_copy() {
+    for deployments in ["", r#"{ robot: "sim", instances: [] }"#] {
+        let deploys_none = load(&one_or_more_fleet(deployments));
+        let error = deploys_none.launch(&[], &[]).unwrap_err();
+        assert!(
+            matches!(&error, CompositionError::CopyAxisUnfilled { axis, option, menu }
+                if axis == "robot" && option == "sim" && menu.contains("robot: `sim`")),
+            "{error}"
+        );
+        assert!(error.to_string().contains("--join sim:alpha"), "{error}");
+
+        let joined = deploys_none
+            .launch(&[], &[launch_join("sim", "alpha")])
+            .unwrap();
+        assert_eq!(ids(&joined.launcher), ["alpha_arm_inst"]);
+    }
+
+    let launch = load(&one_or_more_fleet(TWO_ROBOTS))
+        .launch(&[], &[])
+        .unwrap();
+    assert_eq!(ids(&launch.launcher), ["alpha_arm_inst", "beta_arm_inst"]);
+}
+
+/// The last copy of a `one_or_more` axis stays: a copy above the floor is
+/// removed, and the removal that would empty the axis is refused.
+#[test]
+fn a_removal_cannot_empty_a_one_or_more_axis() {
+    let prepared = load(&one_or_more_fleet(TWO_ROBOTS));
+    let launch = prepared.launch(&[], &[]).unwrap();
+    let record_of = |copy_name: &str| {
+        launch
+            .copies()
+            .iter()
+            .find(|record| record.name == copy_name)
+            .unwrap()
+    };
+    let without_beta = prepared
+        .remove(
+            &launch.launcher,
+            record_of("beta"),
+            &launch.selection,
+            &[record_of("alpha").clone()],
+        )
+        .unwrap();
+    assert_eq!(ids(&without_beta), ["alpha_arm_inst"]);
+
+    let error = prepared
+        .remove(&launch.launcher, record_of("alpha"), &launch.selection, &[])
+        .unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::CopyAxisEmptied { copy, axis, option }
+            if copy == "alpha" && axis == "robot" && option == "sim"),
+        "{error}"
+    );
+}
+
+/// A `one_or_more` copy takes the entry's `with` and `arguments` and its
+/// own on top, as a `zero_or_more` copy does, and the floor is met after
+/// those resolve: a file copy under overrides and a join under the entry's.
+#[test]
+fn a_one_or_more_copy_resolves_its_overrides_like_any_copy() {
+    let prepared = load(&one_or_more_fleet(
+        r#"{ robot: "sim", arguments: { arm_inst: { speed: 0.5 } }, instances: [
+            { instance_id: "alpha", arguments: { arm_inst: { speed: 0.75 } } }
+        ] }"#,
+    ));
+    let launch = prepared
+        .launch(&[], &[launch_join("sim", "bravo")])
+        .unwrap();
+    assert_eq!(ids(&launch.launcher), ["alpha_arm_inst", "bravo_arm_inst"]);
+    assert_eq!(
+        instance(&launch.launcher, "alpha_arm_inst").arguments["speed"],
+        AnyType::Float(0.75),
+        "the copy's own argument wins over the entry's"
+    );
+    assert_eq!(
+        instance(&launch.launcher, "bravo_arm_inst").arguments["speed"],
+        AnyType::Float(0.5),
+        "a joined copy starts from the entry's arguments"
+    );
+}
+
+const TWO_ROBOTS: &str = r#"{ robot: "sim", instances: [
+    { instance_id: "alpha" }, { instance_id: "beta" }
+] }"#;
+
+/// One axis holding the robot, declared `one_or_more`, deployed by
+/// `deployments`.
+fn one_or_more_fleet(deployments: &str) -> String {
+    format!(
+        r#"{{
+        peppy_schema: "launcher/v1",
+        components: [{{ name: "robot", cardinality: "one_or_more", options: {{
+            sim: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }}, instances: [
+                {{ instance_id: "arm_inst" }}
+            ] }}] }}
+        }} }}],
+        deployments: [{deployments}]
+    }}"#
+    )
 }
 
 /// A launcher adjustment guarded on a copy axis belongs to each copy of

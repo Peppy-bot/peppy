@@ -79,8 +79,8 @@ struct LaunchGoal {
     joins @12 :List(LaunchJoin);
 }
 
-# One `--join OPTION:NAME` on `stack launch`: the option of a `zero_or_more`
-# axis and the name the copy runs under.
+# One `--join OPTION:NAME` on `stack launch`: the option of an axis that runs
+# as copies and the name the copy runs under.
 struct LaunchJoin {
     option @0 :Text;
     name @1 :Text;
@@ -101,7 +101,7 @@ struct StackJoinGoal {
     # The copy's name: the prefix of every instance id it mints, and the
     # placement link the whole copy is wired by.
     name @0 :Text;
-    # The option of a `zero_or_more` axis the copy runs.
+    # The option the copy runs, of an axis that runs as copies.
     option @1 :Text;
     # `--with` words over the copied option's own axes, verbatim.
     selections @2 :List(Text);
