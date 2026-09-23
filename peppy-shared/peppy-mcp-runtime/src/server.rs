@@ -1151,7 +1151,6 @@ fn take_string(fields: &mut JsonObject, name: &str) -> String {
     }
 }
 
-/// Runs every future, keeping their order.
 /// A tool result held to the entry's `max_result_bytes`.
 fn within_result_limit(entry: &ToolEntry, result: Value) -> Result<Value, String> {
     if let Some(limit) = entry.max_result_bytes {
