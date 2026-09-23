@@ -30,7 +30,7 @@ pub const ROBOT_ARGUMENT: &str = "robot";
 
 /// The fields every robot's listing entry carries, which a `describe` key
 /// cannot take.
-pub const LISTING_FIELDS: [&str; 4] = [ROBOT_ARGUMENT, "capabilities", "members", "notes"];
+pub const LISTING_FIELDS: [&str; 5] = [ROBOT_ARGUMENT, "tools", "resources", "members", "notes"];
 
 /// Reject any `peppy_schema` value other than `mcp_exposure/v1` so a node,
 /// launcher, or contract document cannot parse as an exposure.

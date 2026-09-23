@@ -936,8 +936,12 @@ fn listing_tool(fleet: &FleetRuntime) -> Tool {
             json!({ "type": "string", "description": "The robot's name, which every other tool takes." }),
         ),
         (
-            "capabilities".to_string(),
-            json!({ "type": "array", "items": { "type": "string" }, "description": "The targets the robot fills, which say which tools and resources answer for it." }),
+            "tools".to_string(),
+            json!({ "type": "array", "items": { "type": "string" }, "description": "The tools that answer for this robot, each called with its name." }),
+        ),
+        (
+            "resources".to_string(),
+            json!({ "type": "array", "items": { "type": "string" }, "description": "The resources this robot publishes, each read at `peppy://resource/<name>`." }),
         ),
         (
             "members".to_string(),
@@ -958,7 +962,7 @@ fn listing_tool(fleet: &FleetRuntime) -> Tool {
                 "items": {
                     "type": "object",
                     "properties": entry_properties,
-                    "required": [ROBOT_ARGUMENT, "capabilities", "members", "notes"],
+                    "required": [ROBOT_ARGUMENT, "tools", "resources", "members", "notes"],
                 },
             },
         },
@@ -1012,10 +1016,10 @@ impl ExposureServer {
         })
     }
 
-    /// Answers the listing tool: one entry per robot with the targets it
-    /// fills, its named members, and each `describe` value read through the
-    /// robot's own tools and resources, every robot read at once so the
-    /// listing takes one robot's describe deadlines at most.
+    /// Answers the listing tool: one entry per robot with the tools and
+    /// resources it answers, its named members, and each `describe` value
+    /// read through the robot's own tools and resources, every robot read at
+    /// once so the listing takes one robot's describe deadlines at most.
     async fn list_robots(
         &self,
         fleet: &FleetRuntime,
@@ -1043,7 +1047,7 @@ impl ExposureServer {
     /// value that cannot be read is `null`, with the reason under `notes`.
     async fn describe_robot(&self, fleet: &FleetRuntime, snapshot: &Fleet, robot: String) -> Value {
         let mut entry = snapshot
-            .listing_entry(&robot)
+            .listing_entry(&robot, &fleet.by_target)
             .expect("the robot was read from this snapshot");
         let mut notes: Vec<Value> = Vec::new();
         for describe in &fleet.catalog.describe {
@@ -2405,7 +2409,11 @@ mod tests {
                     "robots": [
                         {
                             "robot": "alpha",
-                            "capabilities": ["status", "camera"],
+                            "tools": ["camera.set_brightness", "robot.get_identity"],
+                            "resources": [
+                                "alpha/robot.status",
+                                "alpha/wrist_left/camera.latest_frame",
+                            ],
                             "members": { "camera": ["wrist_left"] },
                             "notes": [],
                             "identity": { "robot": "alpha_backbone_inst", "input": {} },
@@ -2413,7 +2421,8 @@ mod tests {
                         },
                         {
                             "robot": "bravo",
-                            "capabilities": ["status"],
+                            "tools": ["robot.get_identity"],
+                            "resources": ["bravo/robot.status"],
                             "members": {},
                             "notes": ["state: unavailable: nothing has been published since the robot joined"],
                             "identity": { "robot": "bravo_backbone_inst", "input": {} },
@@ -2437,7 +2446,8 @@ mod tests {
                 structured(listed)["robots"][2],
                 json!({
                     "robot": "charlie",
-                    "capabilities": ["camera"],
+                    "tools": ["camera.set_brightness"],
+                    "resources": ["charlie/front/camera.latest_frame"],
                     "members": { "camera": ["front"] },
                     "notes": [
                         "identity: robot `charlie` has no `status`; it fills `camera`; the robots with a \
@@ -2550,7 +2560,8 @@ mod tests {
             let entry = &output["properties"]["robots"]["items"]["properties"];
             for field in [
                 "robot",
-                "capabilities",
+                "tools",
+                "resources",
                 "members",
                 "notes",
                 "identity",

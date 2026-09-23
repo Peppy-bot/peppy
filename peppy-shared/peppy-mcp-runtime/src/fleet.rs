@@ -356,36 +356,57 @@ impl Fleet {
         listed
     }
 
-    /// One robot's listing entry without its `describe` values: the targets
-    /// it fills, its named members and the problems the surface has with it.
-    pub(crate) fn listing_entry(&self, robot: &str) -> Option<Value> {
+    /// One robot's listing entry without its `describe` values: the tools it
+    /// answers and the resources it publishes, both sorted, its named
+    /// members and the problems the surface has with it.
+    pub(crate) fn listing_entry(
+        &self,
+        robot: &str,
+        by_target: &HashMap<String, TargetNames>,
+    ) -> Option<Value> {
         let entry = self.robots.get(robot)?;
-        let mut capabilities = Vec::new();
+        let mut tools: Vec<&str> = Vec::new();
+        let mut resources: Vec<String> = Vec::new();
         let mut members = serde_json::Map::new();
         let mut notes = Vec::new();
         for (target, fill) in &entry.fills {
-            match fill {
-                Fill::Once(_) => capabilities.push(json!(target)),
+            let filled_by: Vec<Option<&str>> = match fill {
+                Fill::Once(_) => vec![None],
                 Fill::Many { named, .. } => {
-                    capabilities.push(json!(target));
                     members.insert(
                         target.clone(),
                         Value::Array(named.keys().map(|name| json!(name)).collect()),
                     );
+                    named.keys().map(|name| Some(name.as_str())).collect()
                 }
-                Fill::Conflict(instances) => notes.push(json!(
-                    RouteRefusal::Conflict {
-                        robot: robot.to_string(),
-                        target: target.clone(),
-                        instances: instances.clone(),
-                    }
-                    .to_string()
-                )),
-            }
+                Fill::Conflict(instances) => {
+                    notes.push(json!(
+                        RouteRefusal::Conflict {
+                            robot: robot.to_string(),
+                            target: target.clone(),
+                            instances: instances.clone(),
+                        }
+                        .to_string()
+                    ));
+                    continue;
+                }
+            };
+            let Some(names) = by_target.get(target) else {
+                continue;
+            };
+            tools.extend(names.tools.iter().map(String::as_str));
+            resources.extend(names.resources.iter().flat_map(|resource| {
+                filled_by
+                    .iter()
+                    .map(move |name| published_name(resource, robot, *name))
+            }));
         }
+        tools.sort_unstable();
+        resources.sort_unstable();
         Some(json!({
             ROBOT_ARGUMENT: robot,
-            "capabilities": capabilities,
+            "tools": tools,
+            "resources": resources,
             "members": members,
             "notes": notes,
         }))
@@ -416,6 +437,14 @@ fn published_resource(entry: &ResourceEntry, robot: &str, name: Option<&str>) ->
 /// The published resources of one member, each with its runtime state.
 pub(crate) type MemberResources = Vec<(ResourceEntry, Arc<ResourceState>)>;
 
+/// What one target publishes, in catalog order: the tools whose calls it
+/// takes, and the resource entries published for each member filling it.
+#[derive(Debug, Default)]
+pub(crate) struct TargetNames {
+    tools: Vec<String>,
+    resources: Vec<ResourceEntry>,
+}
+
 /// The per-robot surface as the server holds it: the catalog, the source of
 /// the fleet, and the resource states the host attached for the members
 /// that run.
@@ -425,9 +454,9 @@ pub(crate) struct FleetRuntime {
     /// The argument a target's calls name a member by, keyed by target;
     /// `None` for a target filled once per robot.
     pub(crate) argument_of: HashMap<String, Option<String>>,
-    /// The resource entries of every target, keyed by target.
-    pub(crate) entries_by_target: HashMap<String, Vec<ResourceEntry>>,
-    /// The same entries, flat, in catalog order.
+    /// What every target publishes, keyed by target.
+    pub(crate) by_target: HashMap<String, TargetNames>,
+    /// The resource entries of every target, flat, in catalog order.
     pub(crate) entries: Vec<ResourceEntry>,
     /// The state of every attached resource, keyed by URI.
     pub(crate) states: RwLock<HashMap<String, Arc<ResourceState>>>,
@@ -444,18 +473,31 @@ impl FleetRuntime {
             .iter()
             .map(|pin| (pin.link_id.clone(), pin.argument.clone()))
             .collect();
-        let mut entries_by_target: HashMap<String, Vec<ResourceEntry>> = HashMap::new();
+        let mut by_target: HashMap<String, TargetNames> = HashMap::new();
         for entry in &bundle.resources {
-            entries_by_target
+            by_target
                 .entry(entry.target.clone())
                 .or_default()
+                .resources
                 .push(entry.clone());
+        }
+        let tools = bundle
+            .tools
+            .iter()
+            .map(|tool| (&tool.target, &tool.name))
+            .chain(bundle.tasks.iter().map(|task| (&task.target, &task.name)));
+        for (target, name) in tools {
+            by_target
+                .entry(target.clone())
+                .or_default()
+                .tools
+                .push(name.clone());
         }
         Self {
             catalog,
             source,
             argument_of,
-            entries_by_target,
+            by_target,
             entries: bundle.resources.clone(),
             states: RwLock::new(HashMap::new()),
         }
@@ -464,6 +506,14 @@ impl FleetRuntime {
     /// The fleet as the source reports it now.
     pub(crate) fn fleet(&self) -> Fleet {
         Fleet::group(self.source.members(), &self.argument_of)
+    }
+
+    /// The resource entries `target` publishes, in catalog order.
+    fn published_by(&self, target: &str) -> &[ResourceEntry] {
+        self.by_target
+            .get(target)
+            .map(|names| names.resources.as_slice())
+            .unwrap_or_default()
     }
 
     /// The published name of `entry` for `member`.
@@ -482,10 +532,8 @@ impl FleetRuntime {
     /// route to (serving no robot, or one of several filling a once-target),
     /// or a target with no resources, attaches nothing.
     pub(crate) fn attach(&self, member: &FleetMember) -> MemberResources {
-        let Some(entries) = self.entries_by_target.get(&member.target) else {
-            return Vec::new();
-        };
-        if !self.routes_to(member) {
+        let entries = self.published_by(&member.target);
+        if entries.is_empty() || !self.routes_to(member) {
             return Vec::new();
         }
         let mut states = self.states.write().expect("fleet lock is never poisoned");
@@ -520,9 +568,10 @@ impl FleetRuntime {
 
     /// Drops the resource states of `member`.
     pub(crate) fn detach(&self, member: &FleetMember) {
-        let Some(entries) = self.entries_by_target.get(&member.target) else {
+        let entries = self.published_by(&member.target);
+        if entries.is_empty() {
             return;
-        };
+        }
         let mut states = self.states.write().expect("fleet lock is never poisoned");
         for entry in entries {
             if let Some(name) = self.name_for(member, entry) {
@@ -575,6 +624,39 @@ mod tests {
         HashMap::from([
             ("postures".to_string(), None),
             ("camera".to_string(), Some("camera".to_string())),
+        ])
+    }
+
+    fn resource(name: &str, target: &str) -> ResourceEntry {
+        serde_json::from_value(json!({
+            "name": name,
+            "uri": published_uri(name),
+            "description": "The latest snapshot.",
+            "target": target,
+            "member": "snapshot",
+            "policies": { "freshness": { "max_age_ms": 2000 }, "update": { "max_hz": 2.0 } },
+            "schema": { "type": "object" },
+        }))
+        .expect("a resource entry")
+    }
+
+    /// What each target of the fleet publishes: one tool and one resource.
+    fn names() -> HashMap<String, TargetNames> {
+        HashMap::from([
+            (
+                "postures".to_string(),
+                TargetNames {
+                    tools: vec!["robot.move_arm".to_string()],
+                    resources: vec![resource("robot.status", "postures")],
+                },
+            ),
+            (
+                "camera".to_string(),
+                TargetNames {
+                    tools: vec!["camera.set_brightness".to_string()],
+                    resources: vec![resource("camera.latest_frame", "camera")],
+                },
+            ),
         ])
     }
 
@@ -678,50 +760,40 @@ mod tests {
                  launcher",
             ]
         );
-        let entry = fleet.listing_entry("alpha").unwrap();
-        assert_eq!(entry["capabilities"], json!([]));
+        let entry = fleet.listing_entry("alpha", &names()).unwrap();
+        assert_eq!(entry["tools"], json!([]));
+        assert_eq!(entry["resources"], json!([]));
         assert_eq!(entry["notes"].as_array().unwrap().len(), 1);
     }
 
     #[test]
-    fn the_listing_entry_names_the_targets_and_members() {
-        let entry = fleet().listing_entry("alpha").unwrap();
+    fn the_listing_entry_names_the_tools_resources_and_members() {
+        let entry = fleet().listing_entry("alpha", &names()).unwrap();
         assert_eq!(
             entry,
             json!({
                 "robot": "alpha",
-                "capabilities": ["postures", "camera"],
+                "tools": ["camera.set_brightness", "robot.move_arm"],
+                "resources": [
+                    "alpha/robot.status",
+                    "alpha/wrist_left/camera.latest_frame",
+                    "alpha/wrist_right/camera.latest_frame",
+                ],
                 "members": { "camera": ["wrist_left", "wrist_right"] },
                 "notes": [],
             })
         );
-        assert_eq!(fleet().listing_entry("charlie"), None);
+        assert_eq!(fleet().listing_entry("charlie", &names()), None);
     }
 
     #[test]
     fn resources_are_published_per_robot_and_member() {
-        let entry: ResourceEntry = serde_json::from_value(json!({
-            "name": "camera.latest_frame",
-            "uri": "peppy://resource/camera.latest_frame",
-            "description": "The latest frame.",
-            "target": "camera",
-            "member": "video_stream",
-            "policies": { "freshness": { "max_age_ms": 2000 }, "update": { "max_hz": 2.0 } },
-            "schema": { "type": "object" },
-        }))
-        .unwrap();
-        let status: ResourceEntry = serde_json::from_value(json!({
-            "name": "robot.status",
-            "uri": "peppy://resource/robot.status",
-            "description": "The status.",
-            "target": "postures",
-            "member": "status",
-            "policies": { "freshness": { "max_age_ms": 2000 }, "update": { "max_hz": 2.0 } },
-            "schema": { "type": "object" },
-        }))
-        .unwrap();
+        let entries = [
+            resource("camera.latest_frame", "camera"),
+            resource("robot.status", "postures"),
+        ];
         let listed: Vec<(String, String)> = fleet()
-            .resources(&[entry, status])
+            .resources(&entries)
             .iter()
             .map(|resource| (resource.name.to_string(), resource.uri.to_string()))
             .collect();

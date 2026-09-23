@@ -2280,7 +2280,17 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
     assert_eq!(robots, ["alpha"]);
     assert_eq!(
         alpha,
-        json!({ "robot": "alpha", "capabilities": ["front_camera"], "members": {}, "notes": [] })
+        json!({
+            "robot": "alpha",
+            "tools": [
+                "front_camera.info",
+                "front_camera.record_clip",
+                "front_camera.set_brightness",
+            ],
+            "resources": ["alpha/front_camera.latest_frame", "alpha/front_camera.status"],
+            "members": {},
+            "notes": [],
+        })
     );
     await_resource_list_changed(&mut subscription).await;
 
