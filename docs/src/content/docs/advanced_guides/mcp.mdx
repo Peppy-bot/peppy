@@ -207,7 +207,7 @@ An exposure is checked where it is published, by the repository check, and again
 
 ```sh
 peppy repo index . --check --validate-mcp-exposures   # the index, then every exposure against its contracts
-peppy robot_control catalog camera_and_recording:v1             # the catalog an endpoint for the exposure advertises
+peppy mcp catalog camera_and_recording:v1             # the catalog an endpoint for the exposure advertises
 ```
 
 `peppy repo index --check --validate-mcp-exposures` validates every exposure the repository's index lists against the contracts it references and reports **every** violation of **every** exposure at once, so you fix a document in one pass. A contract the caches cannot resolve is an error naming that contract, never a pass. A file that declares the exposure schema but does not parse as one (a document claiming a public name twice, say) is listed by no index, so the check reports it by path rather than letting it pass unseen. Run the check in the repository's CI, as [mcp-hub](https://github.com/Peppy-bot/mcp-hub) does: a hub cannot then merge an exposure that a launch would refuse.
@@ -220,7 +220,7 @@ peppy robot_control catalog camera_and_recording:v1             # the catalog an
     - contract `episode_recording:v1` not in contract cache; run `peppy repo refresh`
 ```
 
-`peppy robot_control catalog <name:tag>` prints the catalog the server derives for one exposure: every resource, tool, and task with its public name, description, policies, and derived JSON Schemas, plus the identity the endpoint advertises and the contract slots its targets become. It is what a running endpoint answers through discovery and the list methods, so it is the thing to read when you want to see what a client will see. The catalog is derived on demand and is never committed.
+`peppy mcp catalog <name:tag>` prints the catalog the server derives for one exposure: every resource, tool, and task with its public name, description, policies, and derived JSON Schemas, plus the identity the endpoint advertises and the contract slots its targets become. It is what a running endpoint answers through discovery and the list methods, so it is the thing to read when you want to see what a client will see. The catalog is derived on demand and is never committed.
 
 ```json
 {
@@ -251,9 +251,9 @@ A launcher deploys exposures with `source: { exposures: [...] }`, listing each a
 peppy stack launch mcp_camera_and_recording
 ```
 
-The daemon resolves each exposure through the machine's [repository caches](/advanced_guides/repositories/), then every contract the exposures reference, validates every exposure against those contracts, and derives the server's node from the result: its identity, its manifest (one contract slot per target, consuming exactly the selected members), and the catalog of each endpoint. Nothing is added or built. The node lands in the stack ready to run, with the installed `peppy` binary as its artifact, and its instance runs `peppy robot_control serve`. You never run that command yourself: the daemon hands it the pinned documents through the environment, and run by hand it refuses, naming `PEPPY_MCP_SERVE_SPEC`. The derived manifest and the documents the server reads are written under `~/.peppy/built_in/<node name>/`. On Linux, replacing the `peppy` binary on disk while the daemon runs (an upgrade, a rebuild) does not strand it: the daemon keeps serving built-in nodes from its own running image, warns in the add log that the file was replaced, and picks up the new binary when it restarts.
+The daemon resolves each exposure through the machine's [repository caches](/advanced_guides/repositories/), then every contract the exposures reference, validates every exposure against those contracts, and derives the server's node from the result: its identity, its manifest (one contract slot per target, consuming exactly the selected members), and the catalog of each endpoint. Nothing is added or built. The node lands in the stack ready to run, with the installed `peppy` binary as its artifact, and its instance runs `peppy mcp serve`. You never run that command yourself: the daemon hands it the pinned documents through the environment, and run by hand it refuses, naming `PEPPY_MCP_SERVE_SPEC`. The derived manifest and the documents the server reads are written under `~/.peppy/built_in/<node name>/`. On Linux, replacing the `peppy` binary on disk while the daemon runs (an upgrade, a rebuild) does not strand it: the daemon keeps serving built-in nodes from its own running image, warns in the add log that the file was replaced, and picks up the new binary when it restarts.
 
-The node's identity is derived from the exposures it serves, so a relaunch, a peer, and a reader of `peppy stack list` all name it the same way: `robot_control` followed by `_<name>_<tag>` for each exposure in name-then-tag order, at the tag `builtin`. The launcher above registers `mcp_camera_and_recording_v1:builtin`.
+The node's identity is derived from the exposures it serves, so a relaunch, a peer, and a reader of `peppy stack list` all name it the same way: `mcp` followed by `_<name>_<tag>` for each exposure in name-then-tag order, at the tag `builtin`. The launcher above registers `mcp_camera_and_recording_v1:builtin`.
 
 The instance prefers `127.0.0.1:<port>` (default `8900`) and serves each exposure at its own path:
 
@@ -265,7 +265,7 @@ Every other path returns 404, a bare `/mcp` included. Point a client at `http://
 
 `port` is a preference. A server that finds the port free takes it. A server that finds it held by another process takes a port the operating system picks on the same loopback address, says so in its run log with a warning naming both ports, and announces the port it holds. Only a held port falls back: any other bind failure stops the process, its run log says `cannot bind 127.0.0.1:<port>`, and the launch fails naming that instance. The URL the server ended up on is never a guess: the launch or the join that started it prints it under `MCP endpoints:`, and [`peppy stack list`](#seeing-what-is-served) shows it for as long as the instance runs.
 
-The derived manifest declares one entry under `execution.endpoints` per exposure, labelled `<name>_<tag>` (the tag spelled as generated code spells it, `-` becoming `_`), of kind `robot_control`, described by the exposure's title. The server announces each one when it binds, and the daemon reports the URL under that label. The launch ends with them under `MCP endpoints:`; the server binds loopback only, so each exposure has exactly one URL:
+The derived manifest declares one entry under `execution.endpoints` per exposure, labelled `<name>_<tag>` (the tag spelled as generated code spells it, `-` becoming `_`), of kind `mcp`, described by the exposure's title. The server announces each one when it binds, and the daemon reports the URL under that label. The launch ends with them under `MCP endpoints:`; the server binds loopback only, so each exposure has exactly one URL:
 
 ```text
 MCP endpoints:
@@ -385,11 +385,11 @@ Instance endpoints
 ┌──────────────────────────────────────┬────────────┬──────┬─────────────────────────┬───────────────────────────────────────────────────┐
 │ NODE                                 │ INSTANCE   │ KIND │ LABEL                   │ ENDPOINT                                          │
 ├──────────────────────────────────────┼────────────┼──────┼─────────────────────────┼───────────────────────────────────────────────────┤
-│ mcp_camera_and_recording_v1:builtin  │ mcp_server │ robot_control  │ camera_and_recording_v1 │ http://127.0.0.1:8900/camera_and_recording/v1/mcp │
+│ mcp_camera_and_recording_v1:builtin  │ mcp_server │ mcp  │ camera_and_recording_v1 │ http://127.0.0.1:8900/camera_and_recording/v1/mcp │
 └──────────────────────────────────────┴────────────┴──────┴─────────────────────────┴───────────────────────────────────────────────────┘
 ```
 
-`peppy node info mcp_camera_and_recording_v1:builtin` lists the same endpoint under the instance as `camera_and_recording_v1 (robot_control)  http://127.0.0.1:8900/camera_and_recording/v1/mcp`.
+`peppy node info mcp_camera_and_recording_v1:builtin` lists the same endpoint under the instance as `camera_and_recording_v1 (mcp)  http://127.0.0.1:8900/camera_and_recording/v1/mcp`.
 
 `peppy stack resolve` derives the same node from the same caches and holds the deployment's `links` to its slots, so a launcher can be checked before it is launched. See [Auditing a composed launch](/guides/launch_files/#auditing-a-composed-launch).
 
