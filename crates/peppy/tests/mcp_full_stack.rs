@@ -1921,14 +1921,9 @@ async fn stack_resolve_checks_the_links_of_an_exposure_deployment() {
             8900
         )
     ));
-    let (_, report) = peppy::commands::stack::resolve_rendered(
-        &stack.peppy_dirs,
-        complete,
-        &[],
-        &[],
-        &Default::default(),
-    )
-    .expect("a complete deployment resolves");
+    let (_, report) =
+        peppy::commands::stack::resolve_rendered(&stack.peppy_dirs, complete, &[], &[])
+            .expect("a complete deployment resolves");
     assert!(
         !report.iter().any(|line| line.contains("not checked")),
         "{report:?}"
@@ -1945,15 +1940,9 @@ async fn stack_resolve_checks_the_links_of_an_exposure_deployment() {
             ]
         }}"#
     ));
-    let error = peppy::commands::stack::resolve_rendered(
-        &stack.peppy_dirs,
-        unknown_slot,
-        &[],
-        &[],
-        &Default::default(),
-    )
-    .expect_err("a link naming no slot of the synthesized manifest is refused")
-    .to_string();
+    let error = peppy::commands::stack::resolve_rendered(&stack.peppy_dirs, unknown_slot, &[], &[])
+        .expect_err("a link naming no slot of the synthesized manifest is refused")
+        .to_string();
     assert!(error.contains("recorder"), "{error}");
 }
 

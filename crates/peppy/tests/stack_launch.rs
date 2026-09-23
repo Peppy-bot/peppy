@@ -4296,7 +4296,6 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
         launcher,
         &["recorder=on".to_owned()],
         &[],
-        &Default::default(),
     )
     .expect("resolves");
 
@@ -4369,7 +4368,6 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
         launcher.clone(),
         &["mujoco".to_owned(), "cameras".to_owned()],
         &[],
-        &Default::default(),
     )
     .expect_err("the refused member must not resolve");
     let msg = err.to_string();
@@ -4385,7 +4383,6 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
         launcher,
         &["cameras".to_owned()],
         &[],
-        &Default::default(),
     )
     .expect("the legal sibling resolves");
     assert!(
@@ -4566,9 +4563,8 @@ fn stack_resolve_fails_a_zero_or_one_pairing_slot_left_uncovered() {
     )
     .expect("launcher");
 
-    let err =
-        peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[], &Default::default())
-            .expect_err("an uncovered zero_or_one pairing slot must not resolve");
+    let err = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
+        .expect_err("an uncovered zero_or_one pairing slot must not resolve");
     let msg = err.to_string();
     assert!(
         msg.contains("pairing slot `camera`")
@@ -4601,9 +4597,8 @@ fn stack_resolve_accepts_a_vacant_pairing_slot_and_says_it_checked() {
     )
     .expect("launcher");
 
-    let (_document, report) =
-        peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[], &Default::default())
-            .expect("a vacant slot is covered");
+    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
+        .expect("a vacant slot is covered");
     let report_text = report.join(
         "
 ",
@@ -4636,9 +4631,8 @@ fn stack_resolve_reports_the_check_skipped_when_a_manifest_is_missing() {
     )
     .expect("launcher");
 
-    let (_document, report) =
-        peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[], &Default::default())
-            .expect("a cache miss skips the link check");
+    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
+        .expect("a cache miss skips the link check");
     let report_text = report.join(
         "
 ",
@@ -4686,9 +4680,8 @@ fn stack_resolve_reports_the_check_skipped_on_a_mislabeled_manifest() {
     )
     .expect("launcher");
 
-    let (_document, report) =
-        peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[], &Default::default())
-            .expect("a mislabeled manifest skips the link check");
+    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
+        .expect("a mislabeled manifest skips the link check");
     let report_text = report.join(
         "
 ",
@@ -4722,14 +4715,9 @@ fn stack_resolve_reports_the_check_skipped_on_an_empty_cache() {
     )
     .expect("launcher");
 
-    let (_document, report) = peppy::commands::stack::resolve_rendered(
-        &empty_peppy_dirs(),
-        launcher,
-        &[],
-        &[],
-        &Default::default(),
-    )
-    .expect("an empty cache skips the link check");
+    let (_document, report) =
+        peppy::commands::stack::resolve_rendered(&empty_peppy_dirs(), launcher, &[], &[])
+            .expect("an empty cache skips the link check");
     let report_text = report.join(
         "
 ",
@@ -4751,9 +4739,8 @@ fn stack_resolve_checks_link_rules_against_a_cached_git_checkout() {
     let launcher = root.path().join("solo.json5");
     fs::write(&launcher, UNCOVERED_VIEWER_LAUNCHER).expect("launcher");
 
-    let err =
-        peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[], &Default::default())
-            .expect_err("an uncovered zero_or_one pairing slot must not resolve");
+    let err = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
+        .expect_err("an uncovered zero_or_one pairing slot must not resolve");
     let msg = err.to_string();
     assert!(
         msg.contains("pairing slot `camera`")
@@ -4773,9 +4760,8 @@ fn stack_resolve_reports_the_check_skipped_when_a_git_checkout_is_missing() {
     let launcher = root.path().join("solo.json5");
     fs::write(&launcher, UNCOVERED_VIEWER_LAUNCHER).expect("launcher");
 
-    let (_document, report) =
-        peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[], &Default::default())
-            .expect("a commit no checkout holds skips the link check");
+    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
+        .expect("a commit no checkout holds skips the link check");
     let report_text = report.join("\n");
     assert!(
         report_text.contains("link rules not checked")

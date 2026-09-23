@@ -8,7 +8,7 @@ mod reset;
 mod resolve;
 
 pub use list::{list_nodes_collecting, list_nodes_json_collecting};
-pub use resolve::{CopyArgument, JoinPreviews, resolve_rendered};
+pub use resolve::resolve_rendered;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -93,8 +93,6 @@ pub enum StackCommands {
         with: WithWords,
         #[command(flatten)]
         joins: LaunchJoins,
-        #[command(flatten)]
-        previews: JoinPreviews,
     },
     /// Tear the node stack down to an empty state.
     ///
@@ -209,9 +207,10 @@ impl StackTimeouts {
 #[derive(clap::Args, Default)]
 pub struct LaunchJoins {
     /// A copy of OPTION, one of a `zero_or_more` axis, named NAME in the
-    /// launch: composed as a copy of the launcher's entry for the option and
-    /// validated with the launch; `stack launch` starts it and `stack build`
-    /// builds its nodes. Repeatable and comma-separated, once per copy;
+    /// launch: joined onto the launch as `stack join OPTION:NAME` joins one
+    /// onto the running stack, and started with it by `stack launch`, its
+    /// nodes built with it by `stack build`. Repeatable and comma-separated,
+    /// once per copy, each joined onto the plan the ones before it left;
     /// `NAME.option` words and `--place NAME@CORE_NODE` address it as they do
     /// a copy the file lists.
     #[arg(
@@ -226,8 +225,7 @@ pub struct LaunchJoins {
 
 /// The one spelling for "a copy NAME of OPTION": the option before the colon,
 /// the copy's name after it, held to a copy name's grammar. `stack join`
-/// takes it as its positional, `--join` composes the copy with a launch, and
-/// `--then-join` previews one joined afterwards.
+/// takes it as its positional, and `--join` joins the copy onto a launch.
 fn parse_copy_reference(raw: &str) -> Result<core_node_api::encoding::LaunchJoin, String> {
     const FORM: &str = "write `OPTION:NAME`, the option of a `zero_or_more` axis and the name \
                         the copy runs under";
@@ -303,8 +301,7 @@ impl Command for StackCommand {
                 launcher_config_path,
                 with,
                 joins,
-                previews,
-            } => resolve::resolve(launcher_config_path, with.words, joins.joins, previews),
+            } => resolve::resolve(launcher_config_path, with.words, joins.joins),
             StackCommands::Launch(args) => {
                 info!("Launching stack...");
                 launch::launch::<LaunchGoal>(ctx, args)
