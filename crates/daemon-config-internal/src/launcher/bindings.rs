@@ -297,7 +297,8 @@ pub fn validate_bindings(
                         continue;
                     }
                     for (copy, ids) in by_copy.iter().filter(|(_, ids)| ids.len() > 1) {
-                        out.errors.push(copy_fills_slot_twice(instance, slot, copy, ids));
+                        out.errors
+                            .push(copy_fills_slot_twice(instance, slot, copy, ids));
                     }
                 }
             }
@@ -2041,7 +2042,13 @@ mod tests {
             parse_instances(r#"[{ instance_id: "alpha_left" }, { instance_id: "alpha_right" }]"#);
         let addressing = by_copy(&["limbs"]);
         let items = vec![
-            item_addressed("cons", "v1", &cons_instances, Some(&depends_on), &addressing),
+            item_addressed(
+                "cons",
+                "v1",
+                &cons_instances,
+                Some(&depends_on),
+                &addressing,
+            ),
             item("backbone", "v1", &prod_instances, None),
         ];
         let copies = CopyMembership::of(&[copy_of("alpha", &["left", "right"])]);
@@ -2070,7 +2077,13 @@ mod tests {
         let prod_instances = parse_instances(r#"[{ instance_id: "the_camera" }]"#);
         let addressing = by_copy(&[]);
         let items = vec![
-            item_addressed("cons", "v1", &cons_instances, Some(&depends_on), &addressing),
+            item_addressed(
+                "cons",
+                "v1",
+                &cons_instances,
+                Some(&depends_on),
+                &addressing,
+            ),
             item("camera", "v1", &prod_instances, None),
         ];
         let out = validate_bindings(&items, &all_local(), &no_copies());
@@ -2114,7 +2127,13 @@ mod tests {
         );
         let addressing = by_copy(&["limbs"]);
         let items = vec![
-            item_addressed("cons", "v1", &cons_instances, Some(&depends_on), &addressing),
+            item_addressed(
+                "cons",
+                "v1",
+                &cons_instances,
+                Some(&depends_on),
+                &addressing,
+            ),
             item("backbone", "v1", &backbones, None),
             item("camera", "v1", &cameras, None),
         ];
@@ -2168,7 +2187,13 @@ mod tests {
         let prod_instances = parse_instances(r#"[{ instance_id: "alpha_left" }]"#);
         let addressing = by_copy(&["limbs"]);
         let items = vec![
-            item_addressed("cons", "v1", &cons_instances, Some(&depends_on), &addressing),
+            item_addressed(
+                "cons",
+                "v1",
+                &cons_instances,
+                Some(&depends_on),
+                &addressing,
+            ),
             item("backbone", "v1", &prod_instances, None),
         ];
         let copies = CopyMembership::of(&[copy_of("alpha", &["left"])]);

@@ -752,8 +752,8 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "robot `alpha` fills `postures` with 2 instances (`alpha_backbone`, \
-             `alpha_other`), and a target filled once per robot cannot serve two; fix the \
-             launcher"
+             `alpha_other`), and a target filled once per robot cannot serve two; stop one of \
+             them with `peppy node stop <instance_id>`"
         );
         assert_eq!(
             fleet.problems(),
@@ -761,8 +761,8 @@ mod tests {
                 "`stray_inst` fills `postures` outside any copy, and only a robot's copy serves it",
                 "`alpha_brain` fills `brain`, which the surface does not declare",
                 "robot `alpha` fills `postures` with 2 instances (`alpha_backbone`, \
-                 `alpha_other`), and a target filled once per robot cannot serve two; fix the \
-                 launcher",
+                 `alpha_other`), and a target filled once per robot cannot serve two; stop one \
+                 of them with `peppy node stop <instance_id>`",
             ]
         );
         let entry = fleet.listing_entry("alpha", &names()).unwrap();
