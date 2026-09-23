@@ -2172,8 +2172,8 @@ mod tests {
         assert_eq!(out.slot_bindings["cons1"]["limbs"].len(), 3);
     }
 
-    /// A slot that failed an earlier rule resolved nothing, so rule 6 leaves
-    /// it to that rule rather than reporting it twice.
+    /// A slot that failed an earlier rule resolved nothing, so the rule that
+    /// found the fault is the one that reports it.
     #[test]
     fn a_slot_that_failed_an_earlier_rule_is_reported_only_by_that_rule() {
         let cons_instances = parse_instances(

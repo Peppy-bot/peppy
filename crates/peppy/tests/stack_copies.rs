@@ -352,7 +352,7 @@ fn resolve_previews_joins_in_order_over_what_the_last_one_left() {
     );
 
     // An override reaches a previewed copy by its name, and one naming a copy
-    // no `--then-join` previews says which flag would.
+    // outside the previews is refused naming the flag that previews one.
     let overridden = |copy: &str| JoinPreviews {
         joins: vec![copy_of("real:alpha")],
         arguments: vec![CopyArgument {
