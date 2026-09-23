@@ -682,7 +682,7 @@ peppy stack join openarm_v1:bravo --with xr_commander --place jetson-2
 peppy stack launch physical --join openarm_v2:alpha --join openarm_v1:bravo --with bravo.xr_commander --place alpha@jetson-1 --place bravo@jetson-2
 ```
 
-`stack join OPTION:NAME` names the option to copy and the copy's name, the one spelling `--join` takes. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` at launch and `--place jetson-1` at join run the whole copy there, and a copy with no placement runs on the coordinator.
+`stack join OPTION:NAME` names the option to copy and the copy's name, the one spelling `--join` and `--then-join` take. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` at launch and `--place jetson-1` at join run the whole copy there, and a copy with no placement runs on the coordinator.
 
 A joined copy starts from the same settings as a copy the file lists. Weakest first: what the option's fragment deploys, then the `with`, `arguments` and `adjustments` of the launcher's entry for that option, then the join's `--with` words and `--set-arguments`. A word wins on its own axis and the entry's other axes stay selected, so the option's constraints judge the two together, as they do for a launch word `NAME.option`. Under the `xr_commander` entry above, a plain `peppy stack join openarm_v2_sim:charlie` is another headset robot, and `peppy stack remove alpha` followed by `peppy stack join openarm_v2_sim:alpha` brings back the copy the file deployed. One entry speaks for every copy of its option, so a launcher deploys each option of a `zero_or_more` axis in one entry, and a second entry naming the same option is refused.
 
@@ -740,7 +740,8 @@ One simulation per stack, and each simulated robot joins it as a copy that bring
 
 ```sh
 peppy stack resolve openarm_simulation --with mujoco
-peppy stack resolve physical --join openarm_v2:alpha --then-join openarm_v1 --then-join-name bravo --then-join-with xr_commander
+peppy stack resolve physical --join openarm_v2:alpha --then-join openarm_v1:bravo --with bravo.xr_commander
+peppy stack resolve physical --then-join openarm_v2:alpha --then-join openarm_v1:bravo --with bravo.xr_commander
 ```
 
 Join and remove run on the coordinator (`--core-node NAME` reaches it from another machine), serialize with launches and with each other, and reserve only the machines they touch: an unrelated host that is offline blocks neither. A reset cancels the operation in flight, waits for its cleanup, and empties the stack. A restarted coordinator has no launcher to compose against; launch again before joining.
@@ -752,7 +753,7 @@ Join and remove run on the coordinator (`--core-node NAME` reaches it from anoth
 Composition changes instances from a distance, so it ships with an audit command:
 
 ```sh
-peppy stack resolve physical --then-join so101 --then-join-name alpha --then-join-with xr_commander,lerobot_recorder
+peppy stack resolve physical --then-join so101:alpha --with alpha.xr_commander,alpha.lerobot_recorder
 ```
 
 `stack resolve` needs no running stack. It prints the flattened `launcher/v1` document to stdout and a resolution report to stderr. An excerpt:
@@ -771,6 +772,6 @@ alpha_recorder_inst: clock `wall`
 link rules hold: slot keys, vacancies, pairing coverage, observation sources and clock agreement checked over 4 node manifest(s)
 ```
 
-Every applied adjustment is listed with the value it replaced and the fragment it came from, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. A launcher that deploys copies resolves with them, one `copy NAME:` line each, `--join OPTION:NAME` starts one with the launch as it does on `stack launch`, and `--then-join OPTION` previews one more joined onto the running stack afterwards, with `--then-join-name`, `--then-join-with` and `--then-join-set-arguments` standing in for the join's own flags. The resulting flat launcher declares each copy's name in `core_nodes`; launch that file with `--place NAME@CORE_NODE` or `--local`.
+Every applied adjustment is listed with the value it replaced and the fragment it came from, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. A launcher that deploys copies resolves with them, one `copy NAME:` line each, `--join OPTION:NAME` starts one with the launch as it does on `stack launch`, and `--then-join OPTION:NAME` previews one more joined onto the running stack afterwards, repeatable and comma-separated, each one composed onto the plan the ones before it left. A previewed copy takes its own axes from `--with NAME.option` and its arguments from `--set-arguments NAME.INSTANCE.ARGUMENT=JSON5`, the names that address a copy the launch starts. The resulting flat launcher declares each copy's name in `core_nodes`; launch that file with `--place NAME@CORE_NODE` or `--local`.
 
 The report ends by holding the flat plan to the launch-time link rules that need no daemon. `stack resolve` reads this machine's nodes cache at `~/.peppy/cache/nodes.json5`, loads each deployed node's manifest, and checks slot-key legality, vacancies, and pairing coverage across them; the `link rules hold` line names how many manifests it checked. A node published by a git repository is read out of the checkout the caches already hold, `peppy repo refresh` handing every clone it makes to the checkout cache, so the nodes and launchers a hub publishes are checked against each other without the command ever reaching the network. The contract-binding rules stay launch-only, because satisfying them can involve the root node that only a running daemon knows. When the plan breaks a rule a launch would reject, say a `zero_or_one` pairing slot left neither paired nor vacant, `stack resolve` fails with that launch's own error instead of surfacing it minutes later at launch. When a manifest cannot be read locally the check is skipped rather than run on a partial picture: the report says `link rules not checked`, names the missing manifest, and advises `peppy repo refresh`, which is what fills both the nodes cache and the checkouts the git-backed manifests are read from.

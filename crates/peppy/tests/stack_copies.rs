@@ -1,13 +1,32 @@
 use clap::Parser;
 use config::runtime::{CoreNodeName, Name};
-use core_node_api::encoding::JoinPlacement;
+use core_node_api::encoding::{JoinPlacement, LaunchJoin};
 use daemon_config::consts::PeppyDirs;
-use peppy::commands::stack::{JoinPreview, LauncherArgs, StackCommands, resolve_rendered};
+use peppy::commands::stack::{
+    CopyArgument, JoinPreviews, LauncherArgs, StackCommands, resolve_rendered,
+};
 
 #[derive(Parser)]
 struct StackCli {
     #[command(subcommand)]
     command: StackCommands,
+}
+
+/// `--then-join OPTION:NAME`, once per `OPTION:NAME` given.
+fn then_joins(copies: &[&str]) -> JoinPreviews {
+    JoinPreviews {
+        joins: copies.iter().map(|copy| copy_of(copy)).collect(),
+        arguments: Vec::new(),
+    }
+}
+
+/// One `OPTION:NAME`, as the shared parser reads it.
+fn copy_of(copy: &str) -> LaunchJoin {
+    let (option, name) = copy.split_once(':').expect("a copy is OPTION:NAME");
+    LaunchJoin {
+        option: option.to_owned(),
+        name: Name::new(name).unwrap(),
+    }
 }
 
 #[test]
@@ -56,8 +75,8 @@ fn stack_join_cli_names_the_copy_and_accepts_placement_overrides_and_timeouts() 
         vec!["stack", "join", "real:bad/name"],
         vec!["stack", "join", "real:self"],
         vec!["stack", "join", "real", "-i", "alpha"],
-        vec!["stack", "resolve", "fleet", "--then-join-with", "xr"],
-        vec!["stack", "resolve", "fleet", "--then-join-name", "alpha"],
+        vec!["stack", "resolve", "fleet", "--then-join", "real"],
+        vec!["stack", "resolve", "fleet", "--then-join", "real:self"],
         vec!["stack", "launch", "fleet", "--join", "real"],
         vec!["stack", "launch", "fleet", "--join", ":alpha"],
         vec!["stack", "launch", "fleet", "--join", "real:bad/name"],
@@ -106,18 +125,17 @@ fn stack_join_and_preview_reject_nonfinite_overrides() {
         "{speed: Infinity}",
     ] {
         let argument = format!("arm_inst.speed={value}");
-        for prefix in [
-            vec!["stack", "join", "real:alpha"],
-            vec!["stack", "resolve", "fleet", "--then-join", "real"],
+        let scoped = format!("alpha.{argument}");
+        for (prefix, override_) in [
+            (vec!["stack", "join", "real:alpha"], argument.as_str()),
+            (
+                vec!["stack", "resolve", "fleet", "--then-join", "real:alpha"],
+                scoped.as_str(),
+            ),
         ] {
-            let flag = if prefix.contains(&"resolve") {
-                "--then-join-set-arguments"
-            } else {
-                "--set-arguments"
-            };
             let args: Vec<_> = prefix
                 .into_iter()
-                .chain([flag, argument.as_str()])
+                .chain(["--set-arguments", override_])
                 .collect();
             let error = StackCli::try_parse_from(args)
                 .err()
@@ -147,18 +165,12 @@ fn stack_resolve_applies_a_launch_word_scoped_to_a_file_copy() {
         } } }],
         deployments: [{ robot: "real", instances: [{ instance_id: "alpha" }] }],
     }"#).unwrap();
-    let no_join = JoinPreview {
-        option: None,
-        name: Name::new("unused").unwrap(),
-        words: Vec::new(),
-        arguments: Vec::new(),
-    };
     let (document, report) = resolve_rendered(
         &PeppyDirs::new(directory.path()),
         launcher,
         &["alpha.commander=xr".into()],
         &[],
-        &no_join,
+        &JoinPreviews::default(),
     )
     .unwrap();
     assert!(
@@ -195,11 +207,12 @@ fn stack_resolve_join_uses_shared_state_prefixes_and_override_precedence() {
         ],
         adjustments: [{ target: "arm_inst", set_arguments: { speed: 0.5 } }]
     }"#).unwrap();
-    let join = JoinPreview {
-        option: Some("real".into()),
-        name: Name::new("alpha").unwrap(),
-        words: Vec::new(),
-        arguments: vec!["arm_inst.speed=0.2".parse().unwrap()],
+    let join = JoinPreviews {
+        joins: vec![copy_of("real:alpha")],
+        arguments: vec![CopyArgument {
+            copy: Name::new("alpha").unwrap(),
+            argument: "arm_inst.speed=0.2".parse().unwrap(),
+        }],
     };
     let (document, report) = resolve_rendered(
         &PeppyDirs::new(directory.path()),
@@ -237,16 +250,139 @@ fn stack_resolve_join_uses_shared_state_prefixes_and_override_precedence() {
         launcher,
         &["real".into()],
         &[],
-        &JoinPreview::default(),
+        &JoinPreviews::default(),
     )
     .unwrap_err()
     .to_string();
     assert!(error.contains("peppy stack join real:NAME"), "{error}");
 }
 
+/// `--then-join` composes each copy onto the plan the ones before it left,
+/// in the order given, and a name the plan already has is refused.
+#[test]
+fn resolve_previews_joins_in_order_over_what_the_last_one_left() {
+    let directory = tempfile::tempdir().unwrap();
+    let launcher = directory.path().join("fleet.json5");
+    std::fs::write(&launcher, r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "simulation", cardinality: "zero_or_one", options: { sim: {
+                deployments: [{ source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }]
+            }}},
+            { name: "robot", cardinality: "zero_or_more", options: { real: {
+                deployments: [
+                    { source: { name: "arm", tag: "v1" }, instances: [
+                        { instance_id: "arm_inst", arguments: { speed: 0.1 }, links: { engine: "engine_inst" } }
+                    ] },
+                    { commander: "web" },
+                ],
+                components: [{ name: "commander", options: {
+                    web: { deployments: [{ source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "commander_inst" }] }] },
+                    xr: { deployments: [{ source: { name: "headset", tag: "v1" }, instances: [{ instance_id: "commander_inst" }] }] },
+                } }],
+            }}}
+        ],
+    }"#).unwrap();
+    let resolve = |words: &[&str], previews: &JoinPreviews| {
+        let words: Vec<String> = words.iter().map(|word| word.to_string()).collect();
+        resolve_rendered(
+            &PeppyDirs::new(directory.path()),
+            launcher.clone(),
+            &words,
+            &[],
+            previews,
+        )
+    };
+
+    let (document, report) = resolve(
+        &["sim", "bravo.commander=xr"],
+        &then_joins(&["real:alpha", "real:bravo"]),
+    )
+    .expect("two joins onto one simulation");
+    let joined: Vec<&str> = report
+        .iter()
+        .filter(|line| line.ends_with("joined:"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        joined,
+        [
+            "copy `alpha` of `real` joined:",
+            "copy `bravo` of `real` joined:",
+        ],
+        "{report:?}"
+    );
+    let flat: serde_json::Value = serde_json5::from_str(&document).unwrap();
+    assert_eq!(flat["core_nodes"], serde_json::json!(["alpha", "bravo"]));
+    let sources: Vec<(String, String)> = flat["deployments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|deployment| {
+            let source = deployment["source"]["name"].as_str().unwrap().to_owned();
+            deployment["instances"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(move |instance| {
+                    (
+                        source.clone(),
+                        instance["instance_id"].as_str().unwrap().to_owned(),
+                    )
+                })
+        })
+        .collect();
+    for member in [
+        ("arm".to_owned(), "alpha_arm_inst".to_owned()),
+        ("arm".to_owned(), "bravo_arm_inst".to_owned()),
+        ("panel".to_owned(), "alpha_commander_inst".to_owned()),
+        ("headset".to_owned(), "bravo_commander_inst".to_owned()),
+    ] {
+        assert!(sources.contains(&member), "{member:?} in {sources:?}");
+    }
+
+    // The second join is refused only because the first took the name: the
+    // same join alone resolves.
+    resolve(&["sim"], &then_joins(&["real:alpha"])).expect("one join under that name resolves");
+    let error = resolve(&["sim"], &then_joins(&["real:alpha", "real:alpha"]))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("`--then-join real:alpha` names a copy the plan already has"),
+        "{error}"
+    );
+
+    // An override reaches a previewed copy by its name, and one naming a copy
+    // no `--then-join` previews says which flag would.
+    let overridden = |copy: &str| JoinPreviews {
+        joins: vec![copy_of("real:alpha")],
+        arguments: vec![CopyArgument {
+            copy: Name::new(copy).unwrap(),
+            argument: "arm_inst.speed=0.4".parse().unwrap(),
+        }],
+    };
+    let (document, _) = resolve(&["sim"], &overridden("alpha")).expect("the copy takes it");
+    let flat: serde_json::Value = serde_json5::from_str(&document).unwrap();
+    let arm = flat["deployments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|deployment| deployment["instances"].as_array().unwrap())
+        .find(|instance| instance["instance_id"] == "alpha_arm_inst")
+        .unwrap();
+    assert_eq!(arm["arguments"]["speed"], 0.4);
+    let error = resolve(&["sim"], &overridden("charlie"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("`--set-arguments charlie.arm_inst.speed` names no previewed join")
+            && error.contains("`--then-join OPTION:charlie`"),
+        "{error}"
+    );
+}
+
 /// `stack resolve --then-join` previews what `stack join` composes: the copy
-/// starts from the launcher's entry for the option, a `--then-join-with` word
-/// wins on its axis, and `--then-join-set-arguments` wins per argument.
+/// starts from the launcher's entry for the option, a `NAME.option` word wins
+/// on its axis, and a `NAME.INSTANCE.ARGUMENT` override wins per argument.
 #[test]
 fn stack_resolve_join_starts_from_the_launchers_entry_for_the_option() {
     let directory = tempfile::tempdir().unwrap();
@@ -269,19 +405,21 @@ fn stack_resolve_join_starts_from_the_launchers_entry_for_the_option() {
             instances: [{ instance_id: "alpha" }] }],
     }"#).unwrap();
     let resolve = |words: &[&str], arguments: &[&str]| {
-        let join = JoinPreview {
-            option: Some("real".into()),
-            name: Name::new("bravo").unwrap(),
-            words: words.iter().map(|word| word.to_string()).collect(),
+        let join = JoinPreviews {
+            joins: vec![copy_of("real:bravo")],
             arguments: arguments
                 .iter()
-                .map(|argument| argument.parse().unwrap())
+                .map(|argument| CopyArgument {
+                    copy: Name::new("bravo").unwrap(),
+                    argument: argument.parse().unwrap(),
+                })
                 .collect(),
         };
+        let scoped: Vec<String> = words.iter().map(|word| format!("bravo.{word}")).collect();
         let (document, report) = resolve_rendered(
             &PeppyDirs::new(directory.path()),
             launcher.clone(),
-            &[],
+            &scoped,
             &[],
             &join,
         )
@@ -348,45 +486,47 @@ fn stack_resolve_join_starts_from_the_launchers_entry_for_the_option() {
     );
 }
 
+/// Several previewed joins keep the order they are typed in, and each one's
+/// words and overrides reach it through the copy's own name.
 #[test]
-fn resolve_previews_a_join_with_its_own_name_selection_and_overrides() {
+fn resolve_previews_several_joins_addressed_by_the_copys_name() {
     let cli = StackCli::try_parse_from([
         "stack",
         "resolve",
         "fleet",
         "--with",
-        "mujoco",
+        "mujoco,bravo.xr_commander",
         "--then-join",
-        "openarm_v2_sim",
-        "--then-join-name",
-        "bravo",
-        "--then-join-with",
-        "xr_commander",
-        "--then-join-set-arguments",
-        "commander_inst.port=8001",
+        "openarm_v2_sim:bravo",
+        "--then-join",
+        "so101_sim:charlie,openarm_v1_sim:delta",
+        "--set-arguments",
+        "bravo.commander_inst.port=8001",
     ])
     .unwrap();
-    let StackCommands::Resolve {
-        with, then_join, ..
-    } = cli.command
-    else {
+    let StackCommands::Resolve { with, previews, .. } = cli.command else {
         unreachable!()
     };
-    assert_eq!(with.words, ["mujoco"]);
-    assert_eq!(then_join.option.as_deref(), Some("openarm_v2_sim"));
-    assert_eq!(then_join.name.as_str(), "bravo");
-    assert_eq!(then_join.words, ["xr_commander"]);
+    assert_eq!(with.words, ["mujoco", "bravo.xr_commander"]);
     assert_eq!(
-        then_join.arguments,
-        ["commander_inst.port=8001".parse().unwrap()]
+        previews
+            .joins
+            .iter()
+            .map(|join| (join.option.as_str(), join.name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("openarm_v2_sim", "bravo"),
+            ("so101_sim", "charlie"),
+            ("openarm_v1_sim", "delta"),
+        ]
     );
-    let cli =
-        StackCli::try_parse_from(["stack", "resolve", "fleet", "--then-join", "openarm_v2_sim"])
-            .unwrap();
-    let StackCommands::Resolve { then_join, .. } = cli.command else {
-        unreachable!()
-    };
-    assert_eq!(then_join.name.as_str(), "preview");
+    assert_eq!(
+        previews.arguments,
+        [CopyArgument {
+            copy: Name::new("bravo").unwrap(),
+            argument: "commander_inst.port=8001".parse().unwrap(),
+        }]
+    );
 }
 
 #[test]
@@ -422,17 +562,18 @@ fn a_launch_time_join_names_an_option_and_a_copy() {
         "--join",
         "openarm_v2_sim:alpha",
         "--then-join",
-        "so101_sim",
+        "so101_sim:bravo",
     ])
     .unwrap();
     let StackCommands::Resolve {
-        joins, then_join, ..
+        joins, previews, ..
     } = cli.command
     else {
         unreachable!()
     };
     assert_eq!(joins.joins[0].name.as_str(), "alpha");
-    assert_eq!(then_join.option.as_deref(), Some("so101_sim"));
+    assert_eq!(previews.joins[0].option, "so101_sim");
+    assert_eq!(previews.joins[0].name.as_str(), "bravo");
     let error = StackCli::try_parse_from(["stack", "launch", "fleet", "--join", "real"])
         .err()
         .expect("a launch-time join names a copy")
@@ -504,7 +645,7 @@ fn resolve_starts_the_copies_a_launch_time_join_names_from_the_options_entry() {
         launcher.clone(),
         &[],
         &[],
-        &JoinPreview::default(),
+        &JoinPreviews::default(),
     )
     .unwrap();
     assert!(
@@ -524,7 +665,7 @@ fn resolve_starts_the_copies_a_launch_time_join_names_from_the_options_entry() {
         launcher.clone(),
         &["bravo.commander=web".into()],
         &joins(&["alpha", "bravo"]),
-        &JoinPreview::default(),
+        &JoinPreviews::default(),
     )
     .unwrap();
     assert!(
@@ -575,7 +716,7 @@ fn resolve_starts_the_copies_a_launch_time_join_names_from_the_options_entry() {
         launcher.clone(),
         &[],
         &joins(&["alpha", "alpha"]),
-        &JoinPreview::default(),
+        &JoinPreviews::default(),
     )
     .unwrap_err()
     .to_string();
@@ -591,7 +732,7 @@ fn resolve_starts_the_copies_a_launch_time_join_names_from_the_options_entry() {
             option: "ghost".into(),
             name: Name::new("alpha").unwrap(),
         }],
-        &JoinPreview::default(),
+        &JoinPreviews::default(),
     )
     .unwrap_err()
     .to_string();

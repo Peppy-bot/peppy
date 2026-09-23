@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use config::node::{NodeConfig, NodeConfigParser};
+use config::runtime::Name;
 use core_node_api::encoding::ArgumentOverride;
 use core_node_api::encoding::{LaunchJoin, LauncherOrigin};
 use daemon_config::consts::PeppyDirs;
@@ -15,9 +17,6 @@ use tracing::info;
 use super::launch::{infer_launcher_origin, parse_launcher_file};
 use crate::error::{Error, Result};
 
-/// The name a previewed copy runs under when none is given.
-const PREVIEW_COPY_NAME: &str = "preview";
-
 /// The machine a preview places every instance on.
 ///
 /// A domain's identity names the machine its publisher runs on, and this
@@ -28,44 +27,110 @@ const PREVIEW_COPY_NAME: &str = "preview";
 /// an operator there.
 const PREVIEW_CORE_NODE: &str = "cn-preview";
 
-/// Preview one more copy joined onto the resolved launch afterwards, under
-/// a join's rules.
-#[derive(clap::Args, Debug)]
-pub struct JoinPreview {
-    /// Then join a copy of this option, as `stack join OPTION` would add it
-    /// to the running stack.
-    #[arg(long = "then-join", value_name = "OPTION")]
-    pub option: Option<String>,
-    /// The joined copy's name: `-i` on `stack join`.
-    #[arg(long = "then-join-name", requires = "option", value_name = "NAME",
-        default_value = PREVIEW_COPY_NAME, value_parser = super::parse_copy_name)]
-    pub name: config::runtime::Name,
-    /// Select the joined option's own axes: `--with` on `stack join`.
-    // `resolve` carries both `--with` and `--then-join-with`, whose fields
-    // share a name, so this one spells its clap id out.
-    #[arg(id = "join_words", long = "then-join-with", requires = "option",
-        value_name = "option|axis=option", value_delimiter = ',',
-        value_parser = super::parse_with_word)]
-    pub words: Vec<String>,
-    /// Override a joined instance's argument with a JSON5 value:
-    /// `--set-arguments` on `stack join`.
+/// The copies previewed as joins onto the resolved launch, each under a
+/// join's rules.
+#[derive(clap::Args, Debug, Default)]
+pub struct JoinPreviews {
+    /// Then join a copy of OPTION under NAME, as `stack join OPTION:NAME`
+    /// adds it to the running stack. Repeatable and comma-separated, each
+    /// join composed onto the plan the ones before it left; `NAME.option`
+    /// words select the copy's own axes.
+    // `resolve` carries both `--join` and `--then-join`, whose fields share a
+    // name, so this one spells its clap id out.
     #[arg(
-        long = "then-join-set-arguments",
-        requires = "option",
-        value_name = "INSTANCE.ARGUMENT=JSON5"
+        id = "then_joins",
+        long = "then-join",
+        value_name = "OPTION:NAME",
+        value_delimiter = ',',
+        value_parser = super::parse_copy_reference,
+        action = clap::ArgAction::Append
     )]
-    pub arguments: Vec<ArgumentOverride>,
+    pub joins: Vec<LaunchJoin>,
+    /// Override an argument of an instance of a previewed copy, the way
+    /// `--set-arguments INSTANCE.ARGUMENT=JSON5` does on the `stack join`
+    /// this previews. Once per argument, each scoped to the copy it lands on.
+    #[arg(
+        long = "set-arguments",
+        value_name = "NAME.INSTANCE.ARGUMENT=JSON5",
+        value_parser = parse_copy_argument,
+        action = clap::ArgAction::Append
+    )]
+    pub arguments: Vec<CopyArgument>,
 }
 
-impl Default for JoinPreview {
-    fn default() -> Self {
-        Self {
-            option: None,
-            name: config::runtime::Name::new(PREVIEW_COPY_NAME).expect("a plain identifier"),
-            words: Vec::new(),
-            arguments: Vec::new(),
+/// One `--set-arguments NAME.INSTANCE.ARGUMENT=JSON5`: the copy the override
+/// lands on, and the override itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopyArgument {
+    pub copy: Name,
+    pub argument: ArgumentOverride,
+}
+
+/// One scoped override: the copy's name before the first dot, an ordinary
+/// `INSTANCE.ARGUMENT=JSON5` override after it.
+fn parse_copy_argument(raw: &str) -> std::result::Result<CopyArgument, String> {
+    const FORM: &str = "write `NAME.INSTANCE.ARGUMENT=JSON5`, the copy a `--then-join` names \
+                        and the instance as the option's fragment writes it";
+    let Some((copy, override_)) = raw.split_once('.') else {
+        return Err(format!("`{raw}` names no copy: {FORM}"));
+    };
+    Ok(CopyArgument {
+        copy: super::parse_copy_name(copy)?,
+        argument: override_
+            .parse::<ArgumentOverride>()
+            .map_err(|error| format!("`{raw}`: {error}; {FORM}"))?,
+    })
+}
+
+/// The launch's own words and the words each previewed copy takes. A word
+/// selecting `NAME.option` where NAME is a previewed join belongs to that
+/// join, as one naming a copy the file or `--join` starts belongs to it.
+fn split_preview_words(
+    words: &[String],
+    previews: &[LaunchJoin],
+) -> (Vec<String>, BTreeMap<String, Vec<String>>) {
+    let mut launch = Vec::new();
+    let mut scoped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for word in words {
+        let selector = word.split_once('=').map_or(word.as_str(), |(head, _)| head);
+        let previewed = selector
+            .split_once('.')
+            .and_then(|(copy, _)| previews.iter().find(|join| join.name.as_str() == copy));
+        match previewed {
+            Some(join) => scoped
+                .entry(join.name.to_string())
+                .or_default()
+                .push(word[join.name.as_str().len() + 1..].to_owned()),
+            None => launch.push(word.clone()),
         }
     }
+    (launch, scoped)
+}
+
+/// The overrides each previewed copy takes, refusing one scoped to a copy no
+/// `--then-join` names.
+fn split_preview_arguments(
+    arguments: &[CopyArgument],
+    previews: &[LaunchJoin],
+) -> Result<BTreeMap<String, Vec<ArgumentOverride>>> {
+    let mut scoped: BTreeMap<String, Vec<ArgumentOverride>> = BTreeMap::new();
+    for entry in arguments {
+        if !previews.iter().any(|join| join.name == entry.copy) {
+            return Err(Error::ExecutionFailed(format!(
+                "`--set-arguments {copy}.{instance}.{argument}` names no previewed join; \
+                 `--then-join OPTION:{copy}` previews one, and a copy the launch starts takes \
+                 its arguments from the launcher's entry for the option",
+                copy = entry.copy,
+                instance = entry.argument.instance_id(),
+                argument = entry.argument.argument(),
+            )));
+        }
+        scoped
+            .entry(entry.copy.to_string())
+            .or_default()
+            .push(entry.argument.clone());
+    }
+    Ok(scoped)
 }
 
 /// `peppy stack resolve <name|path> [--with ...]`: print the flat launcher
@@ -89,14 +154,14 @@ pub fn resolve(
     launcher_config_path: PathBuf,
     words: Vec<String>,
     joins: Vec<LaunchJoin>,
-    then_join: JoinPreview,
+    previews: JoinPreviews,
 ) -> Result<()> {
     let (document, report) = resolve_rendered(
         &PeppyDirs::default(),
         launcher_config_path,
         &words,
         &joins,
-        &then_join,
+        &previews,
     )?;
     for line in report {
         eprintln!("{line}");
@@ -115,8 +180,10 @@ pub fn resolve_rendered(
     launcher_config_path: PathBuf,
     words: &[String],
     joins: &[LaunchJoin],
-    then_join: &JoinPreview,
+    previews: &JoinPreviews,
 ) -> Result<(String, Vec<String>)> {
+    let (launch_words, preview_words) = split_preview_words(words, &previews.joins);
+    let preview_arguments = split_preview_arguments(&previews.arguments, &previews.joins)?;
     let path = match infer_launcher_origin(launcher_config_path)? {
         LauncherOrigin::Fs(path) => path,
         LauncherOrigin::Repository { name } => {
@@ -129,31 +196,34 @@ pub fn resolve_rendered(
     let prepared = PreparedLauncher::load(&parsed, &path)
         .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
     let composed = prepared
-        .launch(words, joins)
+        .launch(&launch_words, joins)
         .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
     let mut copies = composed.copies().to_vec();
     let mut flat = composed.launcher;
     let mut lines = composed.report.render_lines();
-    if let Some(option) = &then_join.option {
-        if composed
-            .report
-            .copies
-            .iter()
-            .any(|copy| copy.name == then_join.name)
-        {
+    // Each preview is a join onto the plan the ones before it left, as the
+    // coordinator composes one join after another against the stack's own
+    // selection and the flat document it has grown.
+    for preview in &previews.joins {
+        if copies.iter().any(|copy| copy.name == preview.name) {
             return Err(Error::ExecutionFailed(format!(
-                "`--then-join-name {}` names a copy the launch already starts; preview the \
-                 join under a name of its own",
-                then_join.name
+                "`--then-join {option}:{name}` names a copy the plan already has; give the \
+                 previewed join a name of its own",
+                option = preview.option,
+                name = preview.name,
             )));
         }
         let joined = prepared
             .join(
                 daemon_config::launcher::JoinRequest {
-                    option,
-                    name: &then_join.name,
-                    words: &then_join.words,
-                    arguments: &then_join.arguments,
+                    option: &preview.option,
+                    name: &preview.name,
+                    words: preview_words
+                        .get(preview.name.as_str())
+                        .map_or(&[][..], |words| words.as_slice()),
+                    arguments: preview_arguments
+                        .get(preview.name.as_str())
+                        .map_or(&[][..], |arguments| arguments.as_slice()),
                 },
                 daemon_config::launcher::RunningStack {
                     selection: &composed.selection,
@@ -164,7 +234,8 @@ pub fn resolve_rendered(
         flat = joined.launcher;
         lines.push(format!(
             "copy `{name}` of `{option}` joined:",
-            name = then_join.name
+            name = preview.name,
+            option = preview.option,
         ));
         lines.extend(joined.report.render_lines());
         copies.push(joined.copy);

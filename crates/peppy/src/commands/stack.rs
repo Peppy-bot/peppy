@@ -8,7 +8,7 @@ mod reset;
 mod resolve;
 
 pub use list::{list_nodes_collecting, list_nodes_json_collecting};
-pub use resolve::{JoinPreview, resolve_rendered};
+pub use resolve::{CopyArgument, JoinPreviews, resolve_rendered};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -94,7 +94,7 @@ pub enum StackCommands {
         #[command(flatten)]
         joins: LaunchJoins,
         #[command(flatten)]
-        then_join: JoinPreview,
+        previews: JoinPreviews,
     },
     /// Tear the node stack down to an empty state.
     ///
@@ -303,8 +303,8 @@ impl Command for StackCommand {
                 launcher_config_path,
                 with,
                 joins,
-                then_join,
-            } => resolve::resolve(launcher_config_path, with.words, joins.joins, then_join),
+                previews,
+            } => resolve::resolve(launcher_config_path, with.words, joins.joins, previews),
             StackCommands::Launch(args) => {
                 info!("Launching stack...");
                 launch::launch::<LaunchGoal>(ctx, args)

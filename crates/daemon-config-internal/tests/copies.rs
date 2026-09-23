@@ -2009,9 +2009,7 @@ fn copy_selection_refusals_name_the_copied_option() {
         "{error}"
     );
     assert!(
-        error
-            .to_string()
-            .contains("peppy stack join OPTION:NAME"),
+        error.to_string().contains("peppy stack join OPTION:NAME"),
         "{error}"
     );
     let launched = prepared.launch(&[], &[]).unwrap();
