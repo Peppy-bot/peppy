@@ -179,7 +179,8 @@ impl std::fmt::Display for RouteRefusal {
             } => write!(
                 f,
                 "robot `{robot}` fills `{target}` with {} instances ({}), and a target filled \
-                 once per robot cannot serve two; fix the launcher",
+                 once per robot cannot serve two; stop one of them with `peppy node stop \
+                 <instance_id>`",
                 instances.len(),
                 quoted(instances)
             ),
