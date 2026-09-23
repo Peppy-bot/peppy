@@ -333,7 +333,7 @@ fn copies_are_never_selected_by_a_launch_word() {
         "{error}"
     );
     assert!(
-        error.to_string().contains("peppy stack join real -i NAME"),
+        error.to_string().contains("peppy stack join real:NAME"),
         "{error}"
     );
     let error = prepared.launch(&words(&["xr"]), &[]).unwrap_err();
@@ -1658,7 +1658,7 @@ fn an_option_axis_cannot_shadow_a_launcher_axis() {
 }
 
 /// The options of the axes that run as copies are distinct, since
-/// `stack join OPTION` names a copy by its option alone.
+/// `stack join OPTION:NAME` picks the axis by the option alone.
 #[test]
 fn copy_options_are_distinct_across_copy_axes() {
     let error = PeppyLauncherParser::from_content(
@@ -2011,7 +2011,7 @@ fn copy_selection_refusals_name_the_copied_option() {
     assert!(
         error
             .to_string()
-            .contains("peppy stack join OPTION -i NAME"),
+            .contains("peppy stack join OPTION:NAME"),
         "{error}"
     );
     let launched = prepared.launch(&[], &[]).unwrap();

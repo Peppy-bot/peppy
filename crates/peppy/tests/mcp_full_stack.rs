@@ -917,8 +917,10 @@ impl Stack {
     fn join(&self, option: &str, name: &str) {
         StackCommand {
             command: StackCommands::Join {
-                option: option.to_owned(),
-                name: copy_name(name),
+                copy: LaunchJoin {
+                    option: option.to_owned(),
+                    name: copy_name(name),
+                },
                 with: Default::default(),
                 arguments: Vec::new(),
                 place: None,
@@ -2238,8 +2240,8 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
     assert!(listed_resource_uris(&client).await.is_empty());
     assert_eq!(
         front_camera_info_refused(&client, "alpha").await,
-        "`alpha` is not a robot of this stack, which has no robot; `peppy stack join OPTION -i \
-         NAME` adds one"
+        "`alpha` is not a robot of this stack, which has no robot; `peppy stack join \
+         OPTION:NAME` adds one"
     );
 
     // --- The tool list is the union of the targets' tools plus the

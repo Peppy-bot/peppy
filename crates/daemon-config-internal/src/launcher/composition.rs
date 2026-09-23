@@ -1110,16 +1110,16 @@ pub(crate) fn validate_axes(axes: &[ComponentAxis], scope: AxisScope) -> Result<
             }
         }
     }
-    // `peppy stack join OPTION` names a copy by its option alone, so the
-    // options of the axes that run as copies are distinct across those axes.
+    // `peppy stack join OPTION:NAME` picks the axis by the option alone, so
+    // the options of the axes that run as copies are distinct across those axes.
     let mut copy_options: BTreeMap<&str, &str> = BTreeMap::new();
     for axis in axes.iter().filter(|axis| axis.cardinality.is_repeatable()) {
         for option in axis.options.keys() {
             if let Some(first) = copy_options.insert(option, &axis.name) {
                 return Err(format!(
                     "`{option}` is an option of both `{first}` and `{}`, which run as copies; \
-                     `peppy stack join {option}` would not say which one, so give one of them \
-                     another name",
+                     `peppy stack join {option}:NAME` would not say which one, so give one of \
+                     them another name",
                     axis.name
                 ));
             }

@@ -126,7 +126,7 @@ impl std::fmt::Display for RouteRefusal {
                 write!(
                     f,
                     "`{robot}` is not a robot of this stack, which has no robot; `peppy stack \
-                     join OPTION -i NAME` adds one"
+                     join OPTION:NAME` adds one"
                 )
             }
             Self::NoSuchRobot { robot, robots } => write!(
@@ -729,8 +729,8 @@ mod tests {
                 .route("alpha", "postures", None)
                 .unwrap_err()
                 .to_string(),
-            "`alpha` is not a robot of this stack, which has no robot; `peppy stack join OPTION -i \
-             NAME` adds one"
+            "`alpha` is not a robot of this stack, which has no robot; `peppy stack join \
+             OPTION:NAME` adds one"
         );
     }
 

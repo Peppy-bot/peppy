@@ -11,13 +11,11 @@ struct StackCli {
 }
 
 #[test]
-fn stack_join_cli_names_the_option_and_accepts_placement_overrides_and_timeouts() {
+fn stack_join_cli_names_the_copy_and_accepts_placement_overrides_and_timeouts() {
     let cli = StackCli::try_parse_from([
         "stack",
         "join",
-        "real",
-        "-i",
-        "alpha",
+        "real:alpha",
         "--with",
         "xr",
         "--set-arguments",
@@ -29,8 +27,7 @@ fn stack_join_cli_names_the_option_and_accepts_placement_overrides_and_timeouts(
     ])
     .unwrap();
     let StackCommands::Join {
-        option,
-        name,
+        copy,
         with,
         arguments,
         place,
@@ -40,8 +37,8 @@ fn stack_join_cli_names_the_option_and_accepts_placement_overrides_and_timeouts(
     else {
         panic!("join")
     };
-    assert_eq!(option, "real");
-    assert_eq!(name.as_str(), "alpha");
+    assert_eq!(copy.option, "real");
+    assert_eq!(copy.name.as_str(), "alpha");
     assert_eq!(with.words, ["xr"]);
     assert_eq!(arguments, ["arm_inst.speed=0.2".parse().unwrap()]);
     assert_eq!(
@@ -54,9 +51,11 @@ fn stack_join_cli_names_the_option_and_accepts_placement_overrides_and_timeouts(
     for args in [
         vec!["stack", "join"],
         vec!["stack", "join", "real"],
-        vec!["stack", "join", "-i", "alpha"],
-        vec!["stack", "join", "real", "-i", "bad/name"],
-        vec!["stack", "join", "real", "-i", "self"],
+        vec!["stack", "join", ":alpha"],
+        vec!["stack", "join", "real:"],
+        vec!["stack", "join", "real:bad/name"],
+        vec!["stack", "join", "real:self"],
+        vec!["stack", "join", "real", "-i", "alpha"],
         vec!["stack", "resolve", "fleet", "--then-join-with", "xr"],
         vec!["stack", "resolve", "fleet", "--then-join-name", "alpha"],
         vec!["stack", "launch", "fleet", "--join", "real"],
@@ -89,18 +88,11 @@ fn stack_join_cli_names_the_option_and_accepts_placement_overrides_and_timeouts(
         .expect("--place on launch needs a link and a core node")
         .to_string();
     assert!(error.contains("expected NAME@CORE_NODE"), "{error}");
-    let error = StackCli::try_parse_from([
-        "stack",
-        "join",
-        "real",
-        "-i",
-        "alpha",
-        "--place",
-        "alpha@jetson-1",
-    ])
-    .err()
-    .expect("--place on join names a machine")
-    .to_string();
+    let error =
+        StackCli::try_parse_from(["stack", "join", "real:alpha", "--place", "alpha@jetson-1"])
+            .err()
+            .expect("--place on join names a machine")
+            .to_string();
     assert!(error.contains("`--place jetson-1`"), "{error}");
 }
 
@@ -115,7 +107,7 @@ fn stack_join_and_preview_reject_nonfinite_overrides() {
     ] {
         let argument = format!("arm_inst.speed={value}");
         for prefix in [
-            vec!["stack", "join", "real", "-i", "alpha"],
+            vec!["stack", "join", "real:alpha"],
             vec!["stack", "resolve", "fleet", "--then-join", "real"],
         ] {
             let flag = if prefix.contains(&"resolve") {
@@ -249,7 +241,7 @@ fn stack_resolve_join_uses_shared_state_prefixes_and_override_precedence() {
     )
     .unwrap_err()
     .to_string();
-    assert!(error.contains("peppy stack join real -i NAME"), "{error}");
+    assert!(error.contains("peppy stack join real:NAME"), "{error}");
 }
 
 /// `stack resolve --then-join` previews what `stack join` composes: the copy
@@ -445,7 +437,38 @@ fn a_launch_time_join_names_an_option_and_a_copy() {
         .err()
         .expect("a launch-time join names a copy")
         .to_string();
-    assert!(error.contains("`--join OPTION:NAME`"), "{error}");
+    assert!(error.contains("write `OPTION:NAME`"), "{error}");
+}
+
+/// `--join` takes several copies comma-separated as well as repeated, the
+/// way `--with` takes several words, and keeps the order they are typed in.
+#[test]
+fn a_launch_time_join_takes_several_copies_in_one_word() {
+    let cli = StackCli::try_parse_from([
+        "stack",
+        "build",
+        "fleet",
+        "--join",
+        "openarm_v2_sim:alpha,so101_sim:charlie",
+        "--join",
+        "openarm_v1_sim:bravo",
+    ])
+    .unwrap();
+    let StackCommands::Build(LauncherArgs { joins, .. }) = cli.command else {
+        unreachable!()
+    };
+    assert_eq!(
+        joins
+            .joins
+            .iter()
+            .map(|join| (join.option.as_str(), join.name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("openarm_v2_sim", "alpha"),
+            ("so101_sim", "charlie"),
+            ("openarm_v1_sim", "bravo"),
+        ]
+    );
 }
 
 #[test]

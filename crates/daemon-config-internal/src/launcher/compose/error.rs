@@ -80,7 +80,7 @@ pub enum CompositionError {
     #[error(
         "`--with {word}` selects axis `{axis}`, which runs as named copies; list them under \
          `deployments` as `{{ {axis}: \"{option}\", instances: [{{ instance_id: \"NAME\" }}] }}`, \
-         or add one to the running stack with `peppy stack join {option} -i NAME`"
+         or add one to the running stack with `peppy stack join {option}:NAME`"
     )]
     RepeatableAxisAtLaunch {
         word: String,
@@ -91,7 +91,7 @@ pub enum CompositionError {
     #[error(
         "`--with {word}` selects axis `{axis}` of the copies of `{parent}`; select it per copy \
          with `with: {{ {axis}: \"{option}\" }}` under `deployments`, or on `peppy stack join \
-         {parent} -i NAME --with {option}`"
+         {parent}:NAME --with {option}`"
     )]
     CopyAxisAtLaunch {
         word: String,
@@ -278,7 +278,7 @@ pub enum CompositionError {
 
     #[error(
         "`--with {word}` names no option of axis `{axis}`, which runs as copies; add one with \
-         `peppy stack join OPTION -i NAME`, choosing from:{menu}"
+         `peppy stack join OPTION:NAME`, choosing from:{menu}"
     )]
     RepeatableAxisUnknownOption {
         word: String,

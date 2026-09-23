@@ -188,7 +188,7 @@ pub(super) fn split_scoped_words(
             });
         }
         if !copies.contains(&copy) {
-            let join = format!("`peppy stack join OPTION -i {copy} --with ...` adds a copy");
+            let join = format!("`peppy stack join OPTION:{copy} --with ...` adds a copy");
             return Err(CompositionError::ScopedSelectionUnknownCopy {
                 word: word.clone(),
                 copy: copy.to_owned(),

@@ -5230,12 +5230,14 @@ async fn stack_join_and_remove_after_a_build_are_refused() {
     );
 }
 
-/// `stack join arm -i alpha`, under the budgets these tests launch with.
+/// `stack join arm:alpha`, under the budgets these tests launch with.
 fn join_copy(ctx: &Arc<AppContext>) -> peppy::error::Result<()> {
     StackCommand {
         command: StackCommands::Join {
-            option: "arm".to_owned(),
-            name: config::runtime::Name::new("alpha").expect("valid copy name"),
+            copy: core_node_api::encoding::LaunchJoin {
+                option: "arm".to_owned(),
+                name: config::runtime::Name::new("alpha").expect("valid copy name"),
+            },
             with: Default::default(),
             arguments: Vec::new(),
             place: None,

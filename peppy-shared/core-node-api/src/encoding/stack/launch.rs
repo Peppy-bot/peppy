@@ -103,9 +103,10 @@ pub struct LaunchGoal {
     pub joins: Vec<LaunchJoin>,
 }
 
-/// One `--join OPTION:NAME` on `stack launch`: the copy of `option` that
-/// runs under `name`, composed, validated and started with the launch as
-/// a copy of the launcher's entry for the option.
+/// One `OPTION:NAME` reference to a copy: the copy of `option` that runs
+/// under `name`, built from the launcher's entry for the option. `--join`
+/// composes, validates and starts it with the launch; `stack join` adds the
+/// same copy to a running stack.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchJoin {
     pub option: String,

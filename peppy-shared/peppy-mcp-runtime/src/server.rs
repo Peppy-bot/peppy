@@ -2362,8 +2362,8 @@ mod tests {
                 refused(json!({ "robot": "alpha", "camera": "wrist_left", "value": 1 })).await;
             assert_eq!(
                 error.message,
-                "`alpha` is not a robot of this stack, which has no robot; `peppy stack join OPTION -i \
-                 NAME` adds one"
+                "`alpha` is not a robot of this stack, which has no robot; `peppy stack join \
+                 OPTION:NAME` adds one"
             );
         }
 

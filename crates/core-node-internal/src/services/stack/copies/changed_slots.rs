@@ -230,7 +230,7 @@ pub(super) fn check_not_emptied(
     } else {
         format!(
             "removing copy `{name}` would leave {fields} with no member; join a copy that adds to \
-             {slots} first (`peppy stack join {option} -i NAME`), then remove `{name}`, or take \
+             {slots} first (`peppy stack join {option}:NAME`), then remove `{name}`, or take \
              the whole stack down with `peppy stack reset`",
             name = copy.name,
             option = copy.option,
@@ -624,7 +624,7 @@ mod tests {
             error,
             "removing copy `alpha` would leave `monitor_inst.links.fleet` (declared `one_or_more` \
              by `monitor:v1`) with no member; join a copy that adds to that slot first (`peppy \
-             stack join real -i NAME`), then remove `alpha`, or take the whole stack down with \
+             stack join real:NAME`), then remove `alpha`, or take the whole stack down with \
              `peppy stack reset`"
         );
         check_not_emptied(

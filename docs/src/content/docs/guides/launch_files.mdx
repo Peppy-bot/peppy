@@ -641,7 +641,7 @@ An entry and a copy also take `adjustments`, the same verbs a fragment's adjustm
 peppy stack launch openarm_simulation --with mujoco,alpha.xr_commander
 ```
 
-An entry may list no copy. It then says how every copy of the option is set up, and a launch starts none of them; `--join OPTION:NAME` on `stack launch`, once per copy, starts a copy with the launch: a copy of the entry under that name, composed, validated and started with the launch, and failing with it. The words that address a listed copy address it too, `--with NAME.option` and `--place NAME@CORE_NODE`:
+An entry may list no copy. It then says how every copy of the option is set up, and a launch starts none of them; `--join OPTION:NAME` on `stack launch`, once per copy and comma-separated as `--with` is, starts a copy with the launch: a copy of the entry under that name, composed, validated and started with the launch, and failing with it. The words that address a listed copy address it too, `--with NAME.option` and `--place NAME@CORE_NODE`:
 
 ```json5
 deployments: [
@@ -653,7 +653,7 @@ deployments: [
 ```sh
 peppy stack launch simulation_mcp                                                    # the simulation and the copies the file lists
 peppy stack launch simulation_mcp --join so101_sim:charlie                           # one more, as the entry sets it up
-peppy stack launch simulation_mcp --join so101_sim:charlie --join so101_sim:delta --with delta.xr_commander
+peppy stack launch simulation_mcp --join so101_sim:charlie,so101_sim:delta --with delta.xr_commander
 ```
 
 A launch-time join and a later `stack join` build the same copy from the same entry. They differ in when it is composed: `--join` composes the copy into the initial configuration, so it may write to the stack's instances as a listed copy does, while `stack join` adds it to a running stack and keeps to what already runs there. A name the launch already starts, listed or joined, is refused.
@@ -669,27 +669,27 @@ peppy stack launch openarm_simulation --with mujoco
 
 # Another robot in place of the first, on another machine, then its removal.
 peppy stack remove alpha
-peppy stack join openarm_v2_sim -i bravo --with xr_commander --place jetson-2
+peppy stack join openarm_v2_sim:bravo --with xr_commander --place jetson-2
 peppy stack list
 peppy stack remove bravo
 
 # A stack with no robot yet, then robots as they arrive.
 peppy stack launch physical
-peppy stack join openarm_v2 -i alpha --place jetson-1
-peppy stack join openarm_v1 -i bravo --with xr_commander --place jetson-2
+peppy stack join openarm_v2:alpha --place jetson-1
+peppy stack join openarm_v1:bravo --with xr_commander --place jetson-2
 
 # The same two robots named at launch.
 peppy stack launch physical --join openarm_v2:alpha --join openarm_v1:bravo --with bravo.xr_commander --place alpha@jetson-1 --place bravo@jetson-2
 ```
 
-`stack join` names the option to copy and, with `-i`, the copy's name, the way `node run` names a node and an instance. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` at launch and `--place jetson-1` at join run the whole copy there, and a copy with no placement runs on the coordinator.
+`stack join OPTION:NAME` names the option to copy and the copy's name, the one spelling `--join` takes. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` at launch and `--place jetson-1` at join run the whole copy there, and a copy with no placement runs on the coordinator.
 
-A joined copy starts from the same settings as a copy the file lists. Weakest first: what the option's fragment deploys, then the `with`, `arguments` and `adjustments` of the launcher's entry for that option, then the join's `--with` words and `--set-arguments`. A word wins on its own axis and the entry's other axes stay selected, so the option's constraints judge the two together, as they do for a launch word `NAME.option`. Under the `xr_commander` entry above, a plain `peppy stack join openarm_v2_sim -i charlie` is another headset robot, and `peppy stack remove alpha` followed by `peppy stack join openarm_v2_sim -i alpha` brings back the copy the file deployed. One entry speaks for every copy of its option, so a launcher deploys each option of a `zero_or_more` axis in one entry, and a second entry naming the same option is refused.
+A joined copy starts from the same settings as a copy the file lists. Weakest first: what the option's fragment deploys, then the `with`, `arguments` and `adjustments` of the launcher's entry for that option, then the join's `--with` words and `--set-arguments`. A word wins on its own axis and the entry's other axes stay selected, so the option's constraints judge the two together, as they do for a launch word `NAME.option`. Under the `xr_commander` entry above, a plain `peppy stack join openarm_v2_sim:charlie` is another headset robot, and `peppy stack remove alpha` followed by `peppy stack join openarm_v2_sim:alpha` brings back the copy the file deployed. One entry speaks for every copy of its option, so a launcher deploys each option of a `zero_or_more` axis in one entry, and a second entry naming the same option is refused.
 
 `--set-arguments INSTANCE.ARGUMENT=JSON5` on `stack join` overrides one argument of one of the copy's instances, named as the fragment writes it, the way a copy entry's `arguments` does in the file. It applies after every adjustment, over the option entry's `arguments`, once per argument on the command line. Numbers must be finite; quote string values:
 
 ```sh
-peppy stack join openarm_v2 -i charlie --with xr_commander \
+peppy stack join openarm_v2:charlie --with xr_commander \
   --set-arguments backbone_inst.max_ee_velocity_m_s=0.2 \
   --set-arguments commander_inst.https_port=4444
 ```
@@ -724,10 +724,10 @@ adjustments: [
 ```
 
 ```sh
-peppy stack launch monitored             # monitor_inst reads robots as []
-peppy stack join openarm_v2 -i alpha     # [alpha_backbone_inst]
-peppy stack join openarm_v2 -i bravo     # [alpha_backbone_inst, bravo_backbone_inst]
-peppy stack remove alpha                 # [bravo_backbone_inst]
+peppy stack launch monitored          # monitor_inst reads robots as []
+peppy stack join openarm_v2:alpha     # [alpha_backbone_inst]
+peppy stack join openarm_v2:bravo     # [alpha_backbone_inst, bravo_backbone_inst]
+peppy stack remove alpha              # [bravo_backbone_inst]
 ```
 
 The members follow the order the copies joined, and a copy that rejoins under the same name is a member once, at the end. A member a join adds behaves like one the launch writes: it is subscribed like any other, keeps its position, and an observed member reads as not live while its source is down. A join adds only the copy's own instances, and only to a `one_or_more` or `zero_or_more` producer or observer slot of the instance's manifest; naming an instance the stack runs, a `one` or `zero_or_one` slot, or a pairing slot is refused at join, naming the slot and the fix. A join reserves the machine of every instance whose set it grows, wherever that instance runs, and is refused when that machine is not live on the federation or no longer runs the instance, naming the slot, the machine and the fix. A copy the launcher file deploys at launch may add a stack instance to a set, beside or in place of its own; removing that copy takes the member out again, and rejoining it by name is refused, so such a copy is launched with the stack.

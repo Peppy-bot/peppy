@@ -252,7 +252,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         );
         publish_stdout(
             &ctx,
-            "Launcher active; add copies with peppy stack join OPTION -i NAME".to_owned(),
+            "Launcher active; add copies with peppy stack join OPTION:NAME".to_owned(),
             LaunchFeedbackStep::LauncherStep,
         )
         .await;

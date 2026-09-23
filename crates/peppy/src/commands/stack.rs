@@ -43,14 +43,11 @@ pub enum StackCommands {
     /// `one_or_more` or `zero_or_more` slot, which `stack list` then shows
     /// under the copy.
     Join {
-        /// The option to copy: one of a `zero_or_more` axis of the running
-        /// launcher.
-        #[arg(value_name = "OPTION")]
-        option: String,
-        /// The copy's name: the prefix of every instance id it creates and
-        /// its placement link.
-        #[arg(short = 'i', long = "instance-id", value_name = "NAME", value_parser = parse_copy_name)]
-        name: config::runtime::Name,
+        /// The copy to add: an option of a `zero_or_more` axis of the running
+        /// launcher, and the name the copy runs under, which prefixes every
+        /// instance id it creates and is its placement link.
+        #[arg(value_name = "OPTION:NAME", value_parser = parse_copy_reference)]
+        copy: core_node_api::encoding::LaunchJoin,
         #[command(flatten)]
         with: WithWords,
         /// Override an argument of one of the copy's instances with a JSON5
@@ -214,32 +211,32 @@ pub struct LaunchJoins {
     /// A copy of OPTION, one of a `zero_or_more` axis, named NAME in the
     /// launch: composed as a copy of the launcher's entry for the option and
     /// validated with the launch; `stack launch` starts it and `stack build`
-    /// builds its nodes. Repeatable, once per copy; `NAME.option` words and
-    /// `--place NAME@CORE_NODE` address it as they do a copy the file lists.
+    /// builds its nodes. Repeatable and comma-separated, once per copy;
+    /// `NAME.option` words and `--place NAME@CORE_NODE` address it as they do
+    /// a copy the file lists.
     #[arg(
         long = "join",
         value_name = "OPTION:NAME",
-        value_parser = parse_launch_join,
+        value_delimiter = ',',
+        value_parser = parse_copy_reference,
         action = clap::ArgAction::Append
     )]
     pub joins: Vec<core_node_api::encoding::LaunchJoin>,
 }
 
-/// One `--join OPTION:NAME`: the option before the colon, the copy's name
-/// after it, held to a copy name's grammar.
-fn parse_launch_join(raw: &str) -> Result<core_node_api::encoding::LaunchJoin, String> {
+/// The one spelling for "a copy NAME of OPTION": the option before the colon,
+/// the copy's name after it, held to a copy name's grammar. `stack join`
+/// takes it as its positional, `--join` composes the copy with a launch, and
+/// `--then-join` previews one joined afterwards.
+fn parse_copy_reference(raw: &str) -> Result<core_node_api::encoding::LaunchJoin, String> {
+    const FORM: &str = "write `OPTION:NAME`, the option of a `zero_or_more` axis and the name \
+                        the copy runs under";
     let Some((option, name)) = raw.split_once(':') else {
-        return Err(format!(
-            "`--join {raw}` names no copy; a launch-time join is `--join OPTION:NAME`, the \
-             option of a `zero_or_more` axis and the name the copy runs under"
-        ));
+        return Err(format!("`{raw}` names no copy: {FORM}"));
     };
     let option = option.trim();
     if option.is_empty() {
-        return Err(format!(
-            "`--join {raw}` names no option before the colon; a launch-time join is `--join \
-             OPTION:NAME`"
-        ));
+        return Err(format!("`{raw}` names no option before the colon: {FORM}"));
     }
     Ok(core_node_api::encoding::LaunchJoin {
         option: option.to_owned(),
@@ -293,13 +290,12 @@ impl Command for StackCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
             StackCommands::Join {
-                option,
-                name,
+                copy,
                 with,
                 arguments,
                 place,
                 timeouts,
-            } => join::join(ctx, option, name, with.words, arguments, place, timeouts),
+            } => join::join(ctx, copy, with.words, arguments, place, timeouts),
             StackCommands::Remove { name } => remove::remove(ctx, name),
             StackCommands::List { json } => list::list_nodes(ctx, json),
             StackCommands::Reset { federated } => reset::reset_stack(ctx, federated),
