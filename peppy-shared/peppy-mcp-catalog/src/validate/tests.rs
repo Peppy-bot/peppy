@@ -464,6 +464,60 @@ fn a_bounded_topic_within_its_size_limit_validates() {
     assert_eq!(bundle.resources.len(), 1);
 }
 
+/// One frame topic serves a JPEG picture for a model and a lossless PNG for
+/// a program, each its own resource, both bound to the one contract topic.
+#[test]
+fn two_resources_read_one_topic_with_different_representations() {
+    use crate::ImageCodec;
+
+    let frame_fields =
+        r#"fields: { data: "frame", encoding: "encoding", width: "width", height: "height" }"#;
+    let validated = validate(
+        &camera_exposure(&format!(
+            r#"topics: [
+                {{
+                    member: "video_stream",
+                    resource: "cam.latest_frame",
+                    description: "Latest frame, JPEG encoded.",
+                    freshness: {{ max_age_ms: 2000 }},
+                    update: {{ max_hz: 2 }},
+                    representation: {{ image: "jpeg", quality: 80, {frame_fields} }},
+                    max_result_bytes: 524288,
+                    on_oversize: "downscale",
+                }},
+                {{
+                    member: "video_stream",
+                    resource: "cam.frame_png",
+                    description: "Latest frame, losslessly encoded.",
+                    freshness: {{ max_age_ms: 2000 }},
+                    update: {{ max_hz: 2 }},
+                    representation: {{ image: "png16", {frame_fields} }},
+                    max_result_bytes: 524288,
+                    on_oversize: "downscale",
+                }},
+            ]"#
+        )),
+        &[&fixture(CAMERA_CONTRACT)],
+    );
+    let published: Vec<(&str, &str, Option<ImageCodec>)> = validated
+        .resources()
+        .map(|(entry, bound)| {
+            (
+                entry.name.as_str(),
+                bound.member.name.as_str(),
+                entry.policies.representation.as_ref().map(|r| r.image),
+            )
+        })
+        .collect();
+    assert_eq!(
+        published,
+        [
+            ("cam.latest_frame", "video_stream", Some(ImageCodec::Jpeg)),
+            ("cam.frame_png", "video_stream", Some(ImageCodec::Png16)),
+        ]
+    );
+}
+
 #[test]
 fn representation_fields_must_name_real_members_with_the_right_types() {
     let violations = violations_of(

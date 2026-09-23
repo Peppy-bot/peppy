@@ -160,6 +160,8 @@ All four fields must refer to required, non-`$optional` top-level members of the
 
 A `jpeg` representation renders `rgb8` and `bgr8` frames in color, and 16-bit depth frames, labelled `z16`, `mono16` or `16UC1` (one little-endian `u16` reading per pixel, 0 for a pixel with no reading) as a grayscale picture. `depth_range` sets the readings that picture spans, in the frame's own counts, so one shade means one distance on every frame a client reads: a reading at `near` or nearer renders white, one at `far` or farther black, readings between them in linear proportion, and 0 black. `near` must be above 0 and below `far`. A `z16` frame that arrives on a representation without a `depth_range` is refused, and a `depth_range` on a `raw` representation is a parse error.
 
+A target may select one topic member more than once, each entry with its own `resource` name, representation and policies, and each keeping its own snapshot: a depth frame reads as a `jpeg` picture a model judges distance from and as a lossless `png16` frame a program decodes.
+
 ### Service policies
 
 | Field | Required | What it does |
@@ -438,7 +440,7 @@ Validation reports **every** violation at once, so you can fix the document in o
 Parsing catches document-level errors before these checks. Examples include:
 
 - An exposure with no targets or a target that selects no members.
-- A public name claimed twice anywhere in the document, or a member selected twice by one target.
+- A public name claimed twice anywhere in the document, or a service or action member selected twice by one target.
 - A target `argument` on a document without `robots`, a target `argument` of `robot`, a `describe` entry naming a target the robot fills any number of times or a member its target does not select, or an argument name that is not `snake_case`.
 - A blank `title`, `instructions`, or `description` value.
 - A zero deadline or a `max_hz` value that is not positive and finite.

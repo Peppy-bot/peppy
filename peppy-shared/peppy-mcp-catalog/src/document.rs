@@ -292,11 +292,8 @@ impl ExposureTarget {
             }
             _ => {}
         }
-        check_unique_members(
-            target_name,
-            "topic",
-            self.topics.iter().map(|t| t.member.as_str()),
-        )?;
+        // Several resources may read one topic, each with its own name and
+        // representation; a service or action member is one tool.
         check_unique_members(
             target_name,
             "service",
@@ -1579,6 +1576,45 @@ mod tests {
         );
         let with_quality = camera_and_recording().replace(r#"image: "jpeg""#, r#"image: "png16""#);
         assert!(parse_err(&with_quality).contains("`quality` applies only to the `jpeg`"));
+    }
+
+    /// One frame topic serves a JPEG picture for a model and a lossless
+    /// PNG for a program.
+    #[test]
+    fn two_resources_may_read_one_topic_with_different_representations() {
+        let lossless = r#"{
+            member: "video_stream",
+            resource: "front_camera.frame_png",
+            description: "Latest frame from the front-facing camera, losslessly encoded.",
+            freshness: { max_age_ms: 2000 },
+            update: { max_hz: 2 },
+            representation: {
+                image: "png16",
+                fields: { data: "frame", encoding: "encoding", width: "width", height: "height" },
+            },
+            max_result_bytes: 524288,
+            on_oversize: "downscale",
+        },"#;
+        let doc = camera_and_recording().replace("topics: [", &format!("topics: [{lossless}"));
+        let exposure = parse(&doc).expect("one topic backs two resources");
+        let frames = &exposure.targets["front_camera"].topics;
+        assert!(frames.iter().all(|topic| topic.member == "video_stream"));
+        let published: Vec<(&str, Option<ImageCodec>)> = frames
+            .iter()
+            .map(|topic| {
+                (
+                    topic.resource.as_str(),
+                    topic.representation.as_ref().map(|r| r.image),
+                )
+            })
+            .collect();
+        assert_eq!(
+            published,
+            [
+                ("front_camera.frame_png", Some(ImageCodec::Png16)),
+                ("front_camera.latest_frame", Some(ImageCodec::Jpeg)),
+            ]
+        );
     }
 
     #[test]
