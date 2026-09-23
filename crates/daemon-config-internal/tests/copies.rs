@@ -1,5 +1,5 @@
 use config::{AnyType, runtime::Name};
-use core_node_api::encoding::{ArgumentOverride, SetMember};
+use core_node_api::encoding::{ArgumentOverride, LaunchJoin, SetMember};
 use daemon_config::launcher::{
     AppliedChange, ComposedLaunch, CompositionError, CopyRecord, JoinRequest, LinkValue,
     PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, Selection, SkipReason,
@@ -109,6 +109,14 @@ fn instance<'a>(
         .flat_map(|d| &d.instances)
         .find(|i| i.instance_id.as_str() == id)
         .unwrap_or_else(|| panic!("{id} is in the plan"))
+}
+
+/// `--join OPTION:NAME` on `stack launch`.
+fn launch_join(option: &str, copy: &str) -> LaunchJoin {
+    LaunchJoin {
+        option: option.to_owned(),
+        name: name(copy),
+    }
 }
 
 /// A join with no words and no overrides.
@@ -462,11 +470,6 @@ fn the_copies_a_file_deploys_match_a_launch_followed_by_joins() {
 
 #[test]
 fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
-    use core_node_api::encoding::LaunchJoin;
-    let join = |option: &str, copy: &str| LaunchJoin {
-        option: option.into(),
-        name: name(copy),
-    };
     // The entry lists no copy and says how every copy of the option is set
     // up; a bare launch starts none.
     let entry = fleet(r#"{ robot: "sim", with: { commander: "xr" } }"#);
@@ -478,7 +481,7 @@ fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
     let launch = entry
         .launch(
             &words(&["engine", "bravo.commander=web"]),
-            &[join("sim", "alpha"), join("sim", "bravo")],
+            &[launch_join("sim", "alpha"), launch_join("sim", "bravo")],
         )
         .unwrap();
     assert_eq!(
@@ -510,7 +513,7 @@ fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
     // launch already starts, and an option no repeatable axis offers.
     let both = fleet(r#"{ robot: "sim", instances: [{ instance_id: "alpha" }] }"#);
     let launch = both
-        .launch(&words(&["engine"]), &[join("sim", "bravo")])
+        .launch(&words(&["engine"]), &[launch_join("sim", "bravo")])
         .unwrap();
     assert_eq!(
         launch
@@ -521,16 +524,25 @@ fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
         ["alpha", "bravo"]
     );
     let error = both
-        .launch(&words(&["engine"]), &[join("sim", "alpha")])
+        .launch(&words(&["engine"]), &[launch_join("sim", "alpha")])
         .unwrap_err();
     assert!(
-        error
-            .to_string()
-            .contains("`--join sim:alpha` names a copy the launch already starts as `alpha`"),
+        matches!(&error, CompositionError::NameIsCoreNodeLink { name } if name == "alpha"),
+        "{error}"
+    );
+    // Two `--join` copies under one name meet the same check.
+    let error = both
+        .launch(
+            &words(&["engine"]),
+            &[launch_join("sim", "bravo"), launch_join("sim", "bravo")],
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::NameIsCoreNodeLink { name } if name == "bravo"),
         "{error}"
     );
     let error = both
-        .launch(&words(&["engine"]), &[join("ghost", "charlie")])
+        .launch(&words(&["engine"]), &[launch_join("ghost", "charlie")])
         .unwrap_err();
     assert!(
         error
@@ -540,7 +552,7 @@ fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
     );
     // An option with no entry composes as its fragment deploys it.
     let launch = fleet("")
-        .launch(&words(&["engine"]), &[join("sim", "alpha")])
+        .launch(&words(&["engine"]), &[launch_join("sim", "alpha")])
         .unwrap();
     assert_eq!(
         launch
@@ -560,7 +572,7 @@ fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
         ],
     }"#,
     )
-    .launch(&[], &[join("sim", "alpha")])
+    .launch(&[], &[launch_join("sim", "alpha")])
     .unwrap_err();
     assert!(
         error
@@ -584,7 +596,7 @@ fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
     }"#,
     );
     let error = open_commander
-        .launch(&[], &[join("real", "alpha")])
+        .launch(&[], &[launch_join("real", "alpha")])
         .unwrap_err();
     assert!(
         error.to_string().contains(
@@ -998,8 +1010,11 @@ fn every_link_follows_the_prefix_and_a_join_grows_a_stack_set() {
     );
 }
 
+/// Copies deployed together configure a stack node as one, and a copy that
+/// arrives afterwards keeps to what already runs, whether `stack join` adds
+/// it or `--join` names it at launch.
 #[test]
-fn copies_configure_stack_nodes_together_and_later_joins_cannot_change_them() {
+fn copies_configure_stack_nodes_together_and_joined_copies_cannot_change_them() {
     let document = |copies: &str| {
         format!(
             r#"{{
@@ -1047,6 +1062,12 @@ fn copies_configure_stack_nodes_together_and_later_joins_cannot_change_them() {
         "{error}"
     );
     assert_eq!(serde_json::to_value(&launch.launcher).unwrap(), snapshot);
+    // `--join` at launch composes the copy onto the same plan, so the
+    // operator reads the same refusal.
+    let refusal = prepared
+        .launch(&[], &[launch_join("v2", "bravo")])
+        .unwrap_err();
+    assert_eq!(refusal.to_string(), error.to_string());
     // The report of a join reads the value it replaced off the running
     // stack, where alpha already set the engine to v1.
     let joined = prepared
@@ -2871,9 +2892,10 @@ fn a_join_cannot_add_a_stack_instance_to_a_running_set() {
     );
 }
 
-/// A running set follows joins in the order they came; removing a copy takes
-/// out its member alone, leaving the member the launcher wrote; and a copy
-/// rejoining under the same name is a member once, at the end.
+/// A running set follows joins in the order they came, whether `stack join`
+/// adds them one by one or `--join` names them at launch; removing a copy
+/// takes out its member alone, leaving the member the launcher wrote; and a
+/// copy rejoining under the same name is a member once, at the end.
 #[test]
 fn a_running_set_follows_joins_and_removals_and_a_rejoin_appears_once() {
     let prepared = load(
@@ -2921,6 +2943,18 @@ fn a_running_set_follows_joins_and_removals_and_a_rejoin_appears_once() {
     assert_eq!(
         robots(&bravo.launcher),
         ["eye", "alpha_wrist", "bravo_wrist"]
+    );
+    // Two copies named at launch reach the set in the order they were
+    // typed, each composed onto what the one before it left.
+    let both = prepared
+        .launch(
+            &[],
+            &[launch_join("wrist", "alpha"), launch_join("wrist", "bravo")],
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&both.launcher).unwrap(),
+        serde_json::to_value(&bravo.launcher).unwrap()
     );
     assert_eq!(
         bravo.copy.set_members,

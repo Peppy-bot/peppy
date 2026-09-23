@@ -80,7 +80,7 @@ impl PreparedLauncher {
 
     /// Composes a launch: the stack under `words`, then every copy the
     /// launcher's `deployments` list, then every copy `joins` names, each
-    /// composed as a copy of its option's entry under that name.
+    /// joined onto the plan the ones before it left.
     pub fn launch(
         &self,
         words: &[String],
@@ -90,11 +90,8 @@ impl PreparedLauncher {
             if !words.is_empty() {
                 return Err(CompositionError::WithOnFlatLauncher);
             }
-            if let Some(join) = joins.first() {
-                return Err(CompositionError::JoinUnknownOption {
-                    option: join.option.clone(),
-                    menu: String::from(" this launcher declares no axis running as copies"),
-                });
+            if !joins.is_empty() {
+                return Err(CompositionError::NoRepeatableAxis);
             }
             return Ok(ComposedLaunch {
                 launcher: self.launcher.clone(),
@@ -110,30 +107,14 @@ impl PreparedLauncher {
         let mut taken = bare.core_nodes.clone();
         let mut copies: Vec<ComposedCopy> = Vec::new();
         // The words scoped to a copy, `NAME.option`, laid over the copy's
-        // settings; a refusal names the word as typed, copy and all.
+        // settings.
         let scoped_words = |name: &Name,
                             loaded: &LoadedOption|
          -> Result<BTreeMap<String, String>, CompositionError> {
             let Some(rests) = scoped.get(name.as_str()) else {
                 return Ok(BTreeMap::new());
             };
-            let as_typed = |rest: &str| format!("{name}.{rest}");
-            select::copy_words(loaded, rests).map_err(|error| match error {
-                CompositionError::UnknownCopySelection { word, option, menu } => {
-                    CompositionError::UnknownCopySelection {
-                        word: as_typed(&word),
-                        option,
-                        menu,
-                    }
-                }
-                CompositionError::AmbiguousSelection { word, axes } => {
-                    CompositionError::AmbiguousSelection {
-                        word: as_typed(&word),
-                        axes,
-                    }
-                }
-                other => other,
-            })
+            select::copy_words(loaded, rests).map_err(|error| as_typed(name, error))
         };
         for entry in &self.launcher.option_deployments {
             let loaded = self.loaded.option(&entry.axis, &entry.option);
@@ -160,40 +141,7 @@ impl PreparedLauncher {
                 copies.push(copy);
             }
         }
-        for join in joins {
-            if copies.iter().any(|copy| copy.name == join.name) {
-                return Err(CompositionError::LaunchJoinNameTaken {
-                    option: join.option.clone(),
-                    name: join.name.to_string(),
-                });
-            }
-            let axis = self.repeatable_axis_of(&join.option)?;
-            let loaded = self.loaded.option(&axis, &join.option);
-            let settings = self.joined_copy_settings(
-                &axis,
-                &join.option,
-                &scoped_words(&join.name, loaded)?,
-                &ArgumentOverrides::default(),
-            );
-            let copy = compose_copy(
-                self,
-                &selection,
-                &bare,
-                CopyRequest {
-                    axis: &axis,
-                    loaded,
-                    name: &join.name,
-                    with: &settings.with,
-                    arguments: &settings.arguments,
-                    adjustments: &settings.adjustments,
-                    origin: CopyOrigin::LaunchJoin,
-                },
-                &taken,
-            )?;
-            taken.extend(copy.core_nodes.iter().cloned());
-            copies.push(copy);
-        }
-        let launcher = combine(&self.launcher, &bare, &framework, &copies)?;
+        let mut launcher = combine(&self.launcher, &bare, &framework, &copies)?;
         let mut report = CompositionReport {
             selection: selection.clone(),
             copies: Vec::new(),
@@ -202,28 +150,31 @@ impl PreparedLauncher {
         };
         for copy in copies {
             let record = copy.record();
-            // A line about a stack instance names the copy behind it.
-            let owned = |target: &str| record.owns_instance(target);
-            let attributed = |origin: &str, target: &str| {
-                if owned(target) {
-                    origin.to_owned()
-                } else {
-                    format!("{origin}, copy `{}`", record.name)
-                }
-            };
-            report
-                .applied
-                .extend(copy.applied.into_iter().map(|mut entry| {
-                    entry.origin = attributed(&entry.origin, &entry.target);
-                    entry
-                }));
-            report
-                .skipped
-                .extend(copy.skipped.into_iter().map(|mut entry| {
-                    entry.origin = attributed(&entry.origin, &entry.target);
-                    entry
-                }));
-            report.copies.push(record);
+            report.add_copy(record, copy.applied, copy.skipped);
+        }
+        // A copy the command line names is a join: laid over the plan the
+        // file's configuration and the joins before it left, under the rules
+        // `peppy stack join` holds a copy to.
+        for join in joins {
+            let joined = self
+                .compose_join(
+                    JoinRequest {
+                        option: &join.option,
+                        name: &join.name,
+                        words: scoped
+                            .get(join.name.as_str())
+                            .map_or(&[][..], Vec::as_slice),
+                        arguments: &[],
+                    },
+                    RunningStack {
+                        selection: &selection,
+                        launcher: &launcher,
+                    },
+                    CopyOrigin::LaunchJoin,
+                )
+                .map_err(|error| as_typed(&join.name, error))?;
+            launcher = joined.launcher;
+            report.add_copy(joined.copy, joined.report.applied, joined.report.skipped);
         }
         Ok(ComposedLaunch {
             launcher,
@@ -239,6 +190,17 @@ impl PreparedLauncher {
         &self,
         request: JoinRequest<'_>,
         stack: RunningStack<'_>,
+    ) -> Result<ComposedJoin, CompositionError> {
+        self.compose_join(request, stack, CopyOrigin::Join)
+    }
+
+    /// One copy joined onto `stack`, `origin` naming the command that asked
+    /// for it, which a refusal over an unfilled axis quotes.
+    fn compose_join(
+        &self,
+        request: JoinRequest<'_>,
+        stack: RunningStack<'_>,
+        origin: CopyOrigin,
     ) -> Result<ComposedJoin, CompositionError> {
         let axis = self.repeatable_axis_of(request.option)?;
         let loaded = self.loaded.option(&axis, request.option);
@@ -260,7 +222,7 @@ impl PreparedLauncher {
                 with: &settings.with,
                 arguments: &settings.arguments,
                 adjustments: &settings.adjustments,
-                origin: CopyOrigin::Join,
+                origin,
             },
             &stack.launcher.core_nodes,
         )?;
@@ -475,6 +437,28 @@ impl PreparedLauncher {
             self.stack_framework(selection)?,
         ))?;
         Ok((flat, bare))
+    }
+}
+
+/// A refusal over a word scoped to the copy `name`, named as the operator
+/// typed it, `NAME.rest`.
+fn as_typed(name: &Name, error: CompositionError) -> CompositionError {
+    let scoped = |word: String| format!("{name}.{word}");
+    match error {
+        CompositionError::UnknownCopySelection { word, option, menu } => {
+            CompositionError::UnknownCopySelection {
+                word: scoped(word),
+                option,
+                menu,
+            }
+        }
+        CompositionError::AmbiguousSelection { word, axes } => {
+            CompositionError::AmbiguousSelection {
+                word: scoped(word),
+                axes,
+            }
+        }
+        other => other,
     }
 }
 

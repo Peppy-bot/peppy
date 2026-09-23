@@ -225,9 +225,9 @@ fn check_file_copies_over(
         let mut variants: Vec<(String, ComposedCopy)> = Vec::new();
         for entry in &launcher.option_deployments {
             let loaded = prepared.loaded.option(&entry.axis, &entry.option);
-            // An entry of a repeatable axis listing no copy is composed as
-            // `--join OPTION:NAME` composes it at launch, under the option's
-            // own name.
+            // An entry of a repeatable axis listing no copy is composed once
+            // under the option's own name, since every copy of the option
+            // starts from it.
             let repeatable = launcher
                 .repeatable_axes()
                 .any(|axis| axis.name == entry.axis);

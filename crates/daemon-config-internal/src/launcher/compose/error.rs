@@ -146,13 +146,6 @@ pub enum CompositionError {
     JoinUnknownOption { option: String, menu: String },
 
     #[error(
-        "`--join {option}:{name}` names a copy the launch already starts as `{name}`, from the \
-         file or from another `--join`; give this one a name of its own, `--join \
-         {option}:<name>`"
-    )]
-    LaunchJoinNameTaken { option: String, name: String },
-
-    #[error(
         "copy `{copy}` of `{option}` starts no node; an option that runs as copies deploys at \
          least one"
     )]
