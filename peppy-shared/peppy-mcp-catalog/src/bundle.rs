@@ -147,13 +147,12 @@ pub struct BundleContractPin {
     pub argument: Option<String>,
 }
 
-/// The per-robot surface of a bundle: what every tool's input carries and
-/// what the listing tool reports.
+/// The per-robot surface of a bundle: the listing tool and what it reports.
+/// Every tool takes the robot's name under
+/// [`ROBOT_ARGUMENT`](crate::document::ROBOT_ARGUMENT).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RobotCatalog {
-    /// The required argument of every tool: the robot's name.
-    pub argument: String,
     pub list: ListEntry,
     /// What the listing reports of each robot, in document order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

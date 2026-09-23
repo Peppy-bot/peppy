@@ -475,7 +475,6 @@ fn fleet_cameras_exposure() -> String {
             instructions: "Call robot.list first; every other tool names a robot it lists.",
         }},
         robots: {{
-            argument: "robot",
             list: {{ tool: "robot.list", description: "The robots of the stack, each with its camera." }},
         }},
         targets: {{

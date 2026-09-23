@@ -9,7 +9,7 @@
 
 use crate::state::ResourceState;
 use indexmap::IndexMap;
-use peppy_mcp_catalog::{ExposureBundle, ResourceEntry, RobotCatalog};
+use peppy_mcp_catalog::{ExposureBundle, ROBOT_ARGUMENT, ResourceEntry, RobotCatalog};
 use rmcp::model::Resource;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -384,7 +384,7 @@ impl Fleet {
             }
         }
         Some(json!({
-            "robot": robot,
+            ROBOT_ARGUMENT: robot,
             "capabilities": capabilities,
             "members": members,
             "notes": notes,

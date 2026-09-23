@@ -1002,7 +1002,6 @@ mod tests {
             manifest: {{ name: "{name}", tag: "v1" }},
             server: {{ title: "{name}" }},
             robots: {{
-                argument: "robot",
                 list: {{ tool: "robot.list", description: "The robots." }},
             }},
             targets: {{

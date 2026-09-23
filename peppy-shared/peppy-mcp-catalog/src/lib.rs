@@ -42,8 +42,8 @@ pub use bundle::{
 };
 pub use document::{
     ActionExposure, ArgumentName, DescribeMember, ExposureManifest, ExposureTarget, McpExposure,
-    PinnedContractRef, PublicName, RestrictBounds, RobotSurface, ServerIdentity, ServiceExposure,
-    TopicExposure,
+    PinnedContractRef, PublicName, ROBOT_ARGUMENT, RestrictBounds, RobotSurface, ServerIdentity,
+    ServiceExposure, TopicExposure,
 };
 pub use policy::{
     ActionOperation, DepthRange, FreshnessPolicy, ImageCodec, ImageFieldMap, ImageRepresentation,

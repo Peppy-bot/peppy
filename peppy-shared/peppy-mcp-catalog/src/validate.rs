@@ -14,7 +14,8 @@ use crate::bundle::{
     RobotCatalog, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
 };
 use crate::document::{
-    ArgumentName, DescribeMember, McpExposure, RobotSurface, ServiceExposure, TopicExposure,
+    ArgumentName, DescribeMember, McpExposure, ROBOT_ARGUMENT, RobotSurface, ServiceExposure,
+    TopicExposure,
 };
 use crate::policy::ImageFieldMap;
 use crate::schema::{
@@ -184,8 +185,9 @@ pub fn build_exposure_bundle(
         // target a robot fills any number of times.
         let routing: Vec<&str> = exposure
             .robots
-            .iter()
-            .map(|robots| robots.argument.as_str())
+            .is_some()
+            .then_some(ROBOT_ARGUMENT)
+            .into_iter()
             .chain(target.argument.iter().map(ArgumentName::as_str))
             .collect();
 
@@ -417,7 +419,6 @@ fn robot_catalog(
                 .find(|tool| tool.target == entry.target && &tool.member == service)
                 .map(|tool| {
                     // The listing calls the service with the robot alone.
-                    let routing = robots.argument.to_string();
                     let takes: Vec<&str> = tool
                         .input_schema
                         .get("properties")
@@ -425,7 +426,7 @@ fn robot_catalog(
                         .into_iter()
                         .flat_map(|properties| properties.keys())
                         .map(String::as_str)
-                        .filter(|name| *name != routing)
+                        .filter(|name| *name != ROBOT_ARGUMENT)
                         .collect();
                     if !takes.is_empty() {
                         violations.push(format!(
@@ -472,7 +473,6 @@ fn robot_catalog(
         }
     }
     RobotCatalog {
-        argument: robots.argument.to_string(),
         list: ListEntry {
             name: robots.list.tool.to_string(),
             description: robots.list.description.clone(),

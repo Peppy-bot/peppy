@@ -742,7 +742,6 @@ fn per_robot_exposure(status_sha: &str, extra_status_services: &str) -> String {
         manifest: {{ name: "robot_control", tag: "v1" }},
         server: {{ title: "Robots" }},
         robots: {{
-            argument: "robot",
             list: {{ tool: "robot.list", description: "The robots of the stack." }},
             describe: {{
                 identity: {{ target: "status", service: "get_identity" }},
@@ -803,7 +802,6 @@ fn a_per_robot_bundle_adds_the_routing_arguments_and_resolves_its_listing() {
     );
 
     let robots = bundle.robots.as_ref().expect("a per-robot bundle");
-    assert_eq!(robots.argument, "robot");
     assert_eq!(robots.list.name, "robot.list");
     assert_eq!(
         robots.describe,

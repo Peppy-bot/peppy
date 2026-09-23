@@ -12,8 +12,8 @@ use crate::fleet::{
 use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState};
 use crate::tasks::{ActionContext, ActionExit, ActionSurface, TaskHandler};
 use peppy_mcp_catalog::{
-    BundleIdentity, BundleServer, DescribeSource, ExposureBundle, ResourceEntry, ServiceOperation,
-    TaskEntry, ToolEntry,
+    BundleIdentity, BundleServer, DescribeSource, ExposureBundle, ROBOT_ARGUMENT, ResourceEntry,
+    ServiceOperation, TaskEntry, ToolEntry,
 };
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
@@ -932,7 +932,7 @@ impl ServerState {
 fn listing_tool(fleet: &FleetRuntime) -> Tool {
     let mut entry_properties = serde_json::Map::from_iter([
         (
-            "robot".to_string(),
+            ROBOT_ARGUMENT.to_string(),
             json!({ "type": "string", "description": "The robot's name, which every other tool takes." }),
         ),
         (
@@ -958,7 +958,7 @@ fn listing_tool(fleet: &FleetRuntime) -> Tool {
                 "items": {
                     "type": "object",
                     "properties": entry_properties,
-                    "required": ["robot", "capabilities", "members", "notes"],
+                    "required": [ROBOT_ARGUMENT, "capabilities", "members", "notes"],
                 },
             },
         },
@@ -998,7 +998,7 @@ impl ExposureServer {
         };
         let argument = fleet.argument_of.get(target).cloned().flatten();
         let fields = input.as_object_mut().expect("validated input is an object");
-        let robot = take_string(fields, &fleet.catalog.argument);
+        let robot = take_string(fields, ROBOT_ARGUMENT);
         let name = argument
             .as_deref()
             .map(|argument| take_string(fields, argument));
@@ -2186,7 +2186,6 @@ mod tests {
   "exposure": { "name": "robot_control", "tag": "v1" },
   "server": { "title": "Robots" },
   "robots": {
-    "argument": "robot",
     "list": { "name": "robot.list", "description": "The robots of the stack." },
     "describe": [
       { "key": "identity", "target": "status", "source": { "tool": { "name": "robot.get_identity" } } },

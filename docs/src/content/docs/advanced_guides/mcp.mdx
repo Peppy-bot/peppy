@@ -284,7 +284,6 @@ An exposure that declares `robots` is a **per-robot surface**: one endpoint for 
   manifest: { name: "robot_control", tag: "v1" },
   server: { title: "Robots", instructions: "Call robot.list first; every other tool names a robot it lists." },
   robots: {
-    argument: "robot",
     list: { tool: "robot.list", description: "The robots of the stack, with what each one fills." },
     describe: {
       identity: { target: "identity", service: "get_identity" },
@@ -315,7 +314,7 @@ An exposure that declares `robots` is a **per-robot surface**: one endpoint for 
 }
 ```
 
-`robots.argument` names the required argument every tool takes, the robot's name as the listing tool reports it. A target with an `argument` of its own is filled any number of times per robot (a camera), and every call on it names the member with that argument; a target without one is filled at most once per robot. The published input schema of every tool carries the routing arguments as required string properties beside the contract's own fields, and a contract request field of the same name is refused at validation. `robots.describe` says what the listing reports of each robot beyond the targets it fills, keyed by the field of the listing entry: a service's whole response, or named root fields of a topic's latest snapshot, each read through a target the robot fills once and selects as a tool or a resource. A `describe` key cannot be `robot`, `capabilities`, `members` or `notes`, the fields every entry carries.
+Every tool of a per-robot surface takes a required `robot` argument, the robot's name as the listing tool reports it under `robot`. A target with an `argument` of its own is filled any number of times per robot (a camera), and every call on it names the member with that argument; a target without one is filled at most once per robot. A target's `argument` cannot be `robot`. The published input schema of every tool carries the routing arguments as required string properties beside the contract's own fields, and a contract request field of the same name is refused at validation. `robots.describe` says what the listing reports of each robot beyond the targets it fills, keyed by the field of the listing entry: a service's whole response, or named root fields of a topic's latest snapshot, each read through a target the robot fills once and selects as a tool or a resource. A `describe` key cannot be `robot`, `capabilities`, `members` or `notes`, the fields every entry carries.
 
 Every target of a per-robot surface is a `zero_or_more` contract slot the stack's robots fill: the deployment's instance takes no `links`, and a robot's own fragment adds its instances to the targets with `add_links` on the server's instance, at launch as any adjustment and afterwards as a [join](/guides/launch_files/#copies) grows a running set. The robot's name is its copy's name, so only copies fill a per-robot surface: the server refuses to start while an instance outside any copy fills a target, or a robot fills a target with no `argument` twice, naming each. A member the stack binds after the start with either fault is left out of the fleet: the server logs it, and a robot's second member on such a target is named under the robot's `notes`, where its calls are refused.
 
@@ -440,7 +439,7 @@ Parsing catches document-level errors before these checks. Examples include:
 
 - An exposure with no targets or a target that selects no members.
 - A public name claimed twice anywhere in the document, or a member selected twice by one target.
-- A target `argument` on a document without `robots`, a `describe` entry naming a target the robot fills any number of times or a member its target does not select, or an argument name that is not `snake_case`.
+- A target `argument` on a document without `robots`, a target `argument` of `robot`, a `describe` entry naming a target the robot fills any number of times or a member its target does not select, or an argument name that is not `snake_case`.
 - A blank `title`, `instructions`, or `description` value.
 - A zero deadline or a `max_hz` value that is not positive and finite.
 - A `quality` value on a `raw` or `png16` representation.

@@ -24,6 +24,14 @@ use serde::{
 use std::collections::HashSet;
 use std::num::NonZeroU64;
 
+/// The argument every tool of a per-robot surface takes: the robot's name,
+/// as the listing tool reports it under this key.
+pub const ROBOT_ARGUMENT: &str = "robot";
+
+/// The fields every robot's listing entry carries, which a `describe` key
+/// cannot take.
+pub const LISTING_FIELDS: [&str; 4] = [ROBOT_ARGUMENT, "capabilities", "members", "notes"];
+
 /// Reject any `peppy_schema` value other than `mcp_exposure/v1` so a node,
 /// launcher, or contract document cannot parse as an exposure.
 fn deserialize_mcp_exposure_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D::Error>
@@ -276,10 +284,10 @@ impl ExposureTarget {
                      addresses on a per-robot surface; declare `robots` or remove it"
                 ));
             }
-            (Some(argument), Some(robots)) if argument == &robots.argument => {
+            (Some(argument), Some(_)) if argument.as_str() == ROBOT_ARGUMENT => {
                 return Err(format!(
-                    "target `{target_name}` declares `argument: \"{argument}\"`, the name \
-                     `robots.argument` already takes; give the target's argument another name"
+                    "target `{target_name}` declares `argument: \"{ROBOT_ARGUMENT}\"`, the name \
+                     every call names its robot with; give the target's argument another name"
                 ));
             }
             _ => {}
@@ -508,15 +516,12 @@ fn is_false(value: &bool) -> bool {
     !value
 }
 
-/// What makes an exposure a per-robot surface: the argument every call names
-/// its robot with, the tool that lists the robots, and what the listing
-/// reports of each robot beyond the targets it fills.
+/// What makes an exposure a per-robot surface: the tool that lists the
+/// robots, and what the listing reports of each robot beyond the targets it
+/// fills. Every call names its robot with [`ROBOT_ARGUMENT`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RobotSurface {
-    /// The required argument of every tool: the robot's name, as the listing
-    /// tool reports it.
-    pub argument: ArgumentName,
     pub list: ListTool,
     /// What the listing reports of each robot, keyed by the field the report
     /// carries it under, in document order.
@@ -527,10 +532,6 @@ pub struct RobotSurface {
     )]
     pub describe: IndexMap<String, Describe>,
 }
-
-/// The fields every robot's listing entry carries, which a `describe` key
-/// cannot take.
-pub const LISTING_FIELDS: [&str; 4] = ["robot", "capabilities", "members", "notes"];
 
 impl RobotSurface {
     fn check_coherence(&self, targets: &IndexMap<String, ExposureTarget>) -> Result<(), String> {
@@ -1432,7 +1433,6 @@ mod tests {
     }
 
     const ROBOTS: &str = r#"robots: {
-        argument: "robot",
         list: { tool: "robot.list", description: "The robots of the stack." },
         describe: {
             identity: { target: "status", service: "get_identity" },
@@ -1444,7 +1444,6 @@ mod tests {
     fn parses_a_per_robot_surface() {
         let exposure = parse(&per_robot(ROBOTS)).expect("parses");
         let robots = exposure.robots.as_ref().expect("a per-robot surface");
-        assert_eq!(robots.argument.as_str(), "robot");
         assert_eq!(robots.list.tool.as_str(), "robot.list");
         assert_eq!(
             robots.describe["identity"].member,
@@ -1483,7 +1482,20 @@ mod tests {
     fn a_target_argument_cannot_take_the_robot_arguments_name() {
         let err =
             parse_err(&per_robot(ROBOTS).replace(r#"argument: "camera""#, r#"argument: "robot""#));
-        assert!(err.contains("`robots.argument` already takes"), "{err}");
+        assert!(
+            err.contains("the name every call names its robot with"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_robots_block_declares_no_routing_argument() {
+        let with_argument = ROBOTS.replace("list: {", r#"argument: "robot", list: {"#);
+        let err = parse_err(&per_robot(&with_argument));
+        assert!(
+            err.contains("unknown field `argument`") && err.contains("`list`"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1498,9 +1510,9 @@ mod tests {
 
     #[test]
     fn argument_names_are_snake_case() {
-        for bad in [r#""Robot""#, r#""robot-name""#, r#""1robot""#, r#""""#] {
+        for bad in [r#""Camera""#, r#""camera-name""#, r#""1camera""#, r#""""#] {
             let err = parse_err(
-                &per_robot(ROBOTS).replace(r#"argument: "robot""#, &format!("argument: {bad}")),
+                &per_robot(ROBOTS).replace(r#"argument: "camera""#, &format!("argument: {bad}")),
             );
             assert!(err.contains("is not snake_case"), "{bad}: {err}");
         }
