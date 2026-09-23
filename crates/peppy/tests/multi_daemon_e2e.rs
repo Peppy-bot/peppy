@@ -4081,12 +4081,8 @@ fn peer_hold_violations(
 /// and one join's from the next's.
 async fn join_station(federation: &Federation, station: &Station) {
     let label = format!("commander_inst.label=\"{}\"", station.label());
-    let mut args = vec![
-        "stack",
-        "join", &format!("station:{station}").name,
-        "--set-arguments",
-        &label,
-    ];
+    let copy = format!("station:{}", station.name);
+    let mut args = vec!["stack", "join", &copy, "--set-arguments", &label];
     if let Some(core_node) = station.placement.core_node(federation) {
         args.extend(["--place", core_node]);
     }
@@ -4837,12 +4833,8 @@ async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
     ];
     for (name, value, place) in leaders {
         let argument = format!("leader_inst.value={value}");
-        let mut args = vec![
-            "stack",
-            "join", &format!("limb:{name}"),
-            "--set-arguments",
-            &argument,
-        ];
+        let copy = format!("limb:{name}");
+        let mut args = vec!["stack", "join", &copy, "--set-arguments", &argument];
         if let Some(core_node) = place {
             args.extend(["--place", core_node]);
         }
