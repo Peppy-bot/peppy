@@ -45,7 +45,8 @@ pub use error::{BuildError, PublishError, ToolCallError};
 pub use fleet::{FleetMember, FleetSource, MemberAddress};
 pub use peppy_mcp_catalog as catalog;
 pub use server::{
-    ExposureServer, ExposureServerBuilder, ExposureSet, FleetHandle, ToolCall, ToolHandler,
+    ExposureServer, ExposureServerBuilder, ExposureSet, FleetHandle, Recipient, ToolCall,
+    ToolHandler,
 };
 pub use state::{AdmitToken, ResourceIngest};
 pub use tasks::{ActionContext, ActionExit, TaskHandler};

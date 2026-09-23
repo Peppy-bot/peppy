@@ -35,15 +35,15 @@ pub mod schema;
 pub mod validate;
 
 pub use bundle::{
-    BundleContractPin, BundleIdentity, BundleServer, DescribeEntry, DescribeSource,
+    BundleContractPin, BundleIdentity, BundleServer, BundleSurface, DescribeEntry, DescribeSource,
     EXPOSURE_BUNDLE_FORMAT, ExposureBundle, I64_DECIMAL_PATTERN, ListEntry, ResourceEntry,
-    ResourcePolicies, RobotCatalog, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
+    ResourcePolicies, RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
     U64_DECIMAL_PATTERN, is_canonical_i64_decimal, is_canonical_u64_decimal,
 };
 pub use document::{
-    ActionExposure, ArgumentName, DescribeMember, ExposureManifest, ExposureTarget, McpExposure,
-    PinnedContractRef, PublicName, ROBOT_ARGUMENT, RestrictBounds, RobotSurface, ServerIdentity,
-    ServiceExposure, TopicExposure,
+    ActionExposure, ArgumentName, DescribeMember, ExposureManifest, ExposureSurface,
+    ExposureTarget, McpExposure, PinnedContractRef, PublicName, ROBOT_ARGUMENT, RestrictBounds,
+    RobotSurface, RobotTarget, ServerIdentity, ServiceExposure, TopicExposure,
 };
 pub use policy::{
     ActionOperation, DepthRange, FreshnessPolicy, ImageCodec, ImageFieldMap, ImageRepresentation,

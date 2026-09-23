@@ -9,13 +9,13 @@
 //! repository machinery is the caller's job.
 
 use crate::bundle::{
-    BundleContractPin, BundleIdentity, BundleServer, DescribeEntry, DescribeSource,
+    BundleContractPin, BundleIdentity, BundleServer, BundleSurface, DescribeEntry, DescribeSource,
     EXPOSURE_BUNDLE_FORMAT, ExposureBundle, ListEntry, ResourceEntry, ResourcePolicies,
-    RobotCatalog, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
+    RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
 };
 use crate::document::{
-    ArgumentName, DescribeMember, McpExposure, ROBOT_ARGUMENT, RobotSurface, ServiceExposure,
-    TopicExposure,
+    ArgumentName, DescribeMember, ExposureSurface, McpExposure, ROBOT_ARGUMENT, RobotSurface,
+    ServiceExposure, TopicExposure,
 };
 use crate::policy::ImageFieldMap;
 use crate::schema::{
@@ -143,7 +143,13 @@ pub fn build_exposure_bundle(
         }
     }
 
-    let mut pins = Vec::new();
+    let robots = match &exposure.surface {
+        ExposureSurface::Fixed { .. } => None,
+        ExposureSurface::PerRobot { robots, .. } => Some(robots),
+    };
+    // Each target's slot with the argument its calls name a member by, which
+    // only a per-robot surface's slot carries.
+    let mut pins: Vec<(BundleContractPin, Option<String>)> = Vec::new();
     let mut resources = Vec::new();
     let mut resource_members = Vec::new();
     let mut tools = Vec::new();
@@ -151,7 +157,7 @@ pub fn build_exposure_bundle(
     let mut tasks = Vec::new();
     let mut task_members = Vec::new();
 
-    for (target_name, target) in &exposure.targets {
+    for (target_name, target, argument) in exposure.surface.targets() {
         let reference = &target.contract;
         let contract_label = format!("{}:{}", reference.name, reference.tag);
 
@@ -178,17 +184,15 @@ pub fn build_exposure_bundle(
             tag: reference.tag.clone(),
             sha256: contract.sha256.to_string(),
             link_id: target_name.clone(),
-            argument: target.argument.as_ref().map(ToString::to_string),
         };
         // The arguments the server adds to every call on this target: the
         // robot's name on a per-robot surface, and the member's name on a
         // target a robot fills any number of times.
-        let routing: Vec<&str> = exposure
-            .robots
+        let routing: Vec<&str> = robots
             .is_some()
             .then_some(ROBOT_ARGUMENT)
             .into_iter()
-            .chain(target.argument.iter().map(ArgumentName::as_str))
+            .chain(argument.map(ArgumentName::as_str))
             .collect();
 
         for topic in &target.topics {
@@ -315,13 +319,21 @@ pub fn build_exposure_bundle(
             });
             task_members.push(BoundMember::new(&slot, declared));
         }
-        pins.push(slot);
+        pins.push((slot, argument.map(ToString::to_string)));
     }
 
-    let robots = exposure
-        .robots
-        .as_ref()
-        .map(|robots| robot_catalog(robots, &resources, &tools, &mut violations));
+    let surface = match robots {
+        None => BundleSurface::Fixed {
+            contracts: pins.into_iter().map(|(pin, _)| pin).collect(),
+        },
+        Some(robots) => BundleSurface::PerRobot {
+            robots: robot_catalog(robots, &resources, &tools, &mut violations),
+            contracts: pins
+                .into_iter()
+                .map(|(pin, argument)| RobotContractPin { pin, argument })
+                .collect(),
+        },
+    };
 
     if !violations.is_empty() {
         return Err(ExposureValidationError { violations });
@@ -339,8 +351,7 @@ pub fn build_exposure_bundle(
                 title: exposure.server.title.clone(),
                 instructions: exposure.server.instructions.clone(),
             },
-            robots,
-            contracts: pins,
+            surface,
             resources,
             tools,
             tasks,

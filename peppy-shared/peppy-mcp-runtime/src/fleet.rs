@@ -9,7 +9,9 @@
 
 use crate::state::ResourceState;
 use indexmap::IndexMap;
-use peppy_mcp_catalog::{ExposureBundle, ROBOT_ARGUMENT, ResourceEntry, RobotCatalog};
+use peppy_mcp_catalog::{
+    ExposureBundle, ROBOT_ARGUMENT, ResourceEntry, RobotCatalog, RobotContractPin,
+};
 use rmcp::model::Resource;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -463,15 +465,17 @@ pub(crate) struct FleetRuntime {
 }
 
 impl FleetRuntime {
+    /// The runtime of `bundle`'s per-robot surface, whose `catalog` and
+    /// `contracts` the caller took out of it.
     pub(crate) fn new(
         bundle: &ExposureBundle,
         catalog: RobotCatalog,
+        contracts: &[RobotContractPin],
         source: Arc<dyn FleetSource>,
     ) -> Self {
-        let argument_of = bundle
-            .contracts
+        let argument_of = contracts
             .iter()
-            .map(|pin| (pin.link_id.clone(), pin.argument.clone()))
+            .map(|pin| (pin.pin.link_id.clone(), pin.argument.clone()))
             .collect();
         let mut by_target: HashMap<String, TargetNames> = HashMap::new();
         for entry in &bundle.resources {

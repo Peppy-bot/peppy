@@ -14,7 +14,9 @@ use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedItem};
 use crate::internal::source::ExposureRef;
 use config::node::{NodeConfig, NodeConfigParser};
 use config::runtime::Name;
-use peppy_mcp_catalog::{McpExposure, ResolvedContract, ValidatedExposure, build_exposure_bundle};
+use peppy_mcp_catalog::{
+    ExposureSurface, McpExposure, ResolvedContract, ValidatedExposure, build_exposure_bundle,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -251,10 +253,10 @@ pub fn plan_deployment(
     // surface a scalar slot the launcher's `links` fill.
     let per_robot = ordered
         .iter()
-        .find(|exposure| exposure.document.robots.is_some());
+        .find(|exposure| matches!(exposure.document.surface, ExposureSurface::PerRobot { .. }));
     let fixed = ordered
         .iter()
-        .find(|exposure| exposure.document.robots.is_none());
+        .find(|exposure| matches!(exposure.document.surface, ExposureSurface::Fixed { .. }));
     if let (Some(per_robot), Some(fixed)) = (per_robot, fixed) {
         return Err(McpDeploymentError::MixedSurfaces {
             per_robot: per_robot.reference().to_string(),
@@ -273,7 +275,7 @@ pub fn plan_deployment(
     for exposure in &ordered {
         let label = exposure.reference().to_string();
         let mut resolved: Vec<ResolvedContract<'_>> = Vec::new();
-        for (target, spec) in &exposure.document.targets {
+        for (target, spec, spec_argument) in exposure.document.surface.targets() {
             let reference = &spec.contract;
             let contract_label = format!("{}:{}", reference.name.as_str(), reference.tag);
             let pinned = contracts
@@ -296,7 +298,7 @@ pub fn plan_deployment(
                     pinned: pinned.pin.sha256.clone(),
                 });
             }
-            let argument = spec.argument.as_ref().map(ToString::to_string);
+            let argument = spec_argument.map(ToString::to_string);
             match slots.get(target) {
                 Some(slot)
                     if slot.contract.name != reference.name.as_str()
@@ -1034,10 +1036,12 @@ mod tests {
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].link_id, "camera");
         assert_eq!(slots[0].cardinality, config::node::Cardinality::ZeroOrMore);
-        assert_eq!(
-            plan.exposures[0].bundle.contracts[0].argument.as_deref(),
-            Some("camera")
-        );
+        let peppy_mcp_catalog::BundleSurface::PerRobot { contracts, .. } =
+            &plan.exposures[0].bundle.surface
+        else {
+            panic!("expected a per-robot bundle");
+        };
+        assert_eq!(contracts[0].argument.as_deref(), Some("camera"));
         let fixed = plan_deployment(
             &[exposure(&exposure_document(
                 "camera_only",

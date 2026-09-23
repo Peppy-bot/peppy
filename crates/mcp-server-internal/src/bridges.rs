@@ -13,7 +13,7 @@ use message_codec::consumer::{
 };
 use peppy_mcp_catalog::{BundleContractPin, ExposureBundle, ValidatedExposure};
 use peppy_mcp_runtime::{
-    ActionContext, ActionExit, MemberAddress, ResourceIngest, ToolCall, ToolCallError,
+    ActionContext, ActionExit, Recipient, ResourceIngest, ToolCall, ToolCallError,
 };
 use peppylib::config::QoSProfile;
 use peppylib::messaging::{MessengerHandle, ProducerRef, SenderTarget, TopicMessenger};
@@ -353,14 +353,10 @@ pub(crate) async fn pump_member_resource(
 
 /// The producer a call goes to: the member the runtime routed it to on a
 /// per-robot surface, the producer the launcher bound on a fixed one.
-fn producer_of(
-    node_runner: &NodeRunner,
-    target: &str,
-    member: Option<MemberAddress>,
-) -> ProducerRef {
-    match member {
-        Some(member) => ProducerRef::new(member.core_node, member.instance_id),
-        None => node_runner.processor().sole_bound_producer(target).clone(),
+fn producer_of(node_runner: &NodeRunner, target: &str, recipient: Recipient) -> ProducerRef {
+    match recipient {
+        Recipient::Member(member) => ProducerRef::new(member.core_node, member.instance_id),
+        Recipient::BoundProducer => node_runner.processor().sole_bound_producer(target).clone(),
     }
 }
 
@@ -372,7 +368,7 @@ pub(crate) async fn call_tool(
     call: ToolCall,
 ) -> Result<Value, ToolCallError> {
     let binding = tool.binding.member_binding();
-    let producer = producer_of(node_runner, &tool.binding.target, call.member);
+    let producer = producer_of(node_runner, &tool.binding.target, call.recipient);
     tool.client
         .call(
             node_runner.messenger(),
@@ -418,7 +414,7 @@ pub(crate) async fn run_task(
     context: ActionContext,
 ) -> Result<Value, ActionExit> {
     let binding = task.binding.member_binding();
-    let producer = producer_of(node_runner, &task.binding.target, call.member);
+    let producer = producer_of(node_runner, &task.binding.target, call.recipient);
     drive_goal(
         task,
         node_runner.messenger(),

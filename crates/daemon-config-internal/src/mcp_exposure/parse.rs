@@ -60,7 +60,7 @@ mod tests {
         let exposure = PeppyMcpExposureParser::from_content(MINIMAL_EXPOSURE).expect("parses");
         assert_eq!(exposure.peppy_schema, PeppySchema::McpExposureV1);
         assert_eq!(exposure.manifest.name.as_str(), "camera_surface");
-        assert_eq!(exposure.targets.len(), 1);
+        assert_eq!(exposure.surface.targets().len(), 1);
     }
 
     #[test]

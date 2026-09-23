@@ -12,8 +12,8 @@ use crate::fleet::{
 use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState};
 use crate::tasks::{ActionContext, ActionExit, ActionSurface, TaskHandler};
 use peppy_mcp_catalog::{
-    BundleIdentity, BundleServer, DescribeSource, ExposureBundle, ROBOT_ARGUMENT, ResourceEntry,
-    ServiceOperation, TaskEntry, ToolEntry,
+    BundleIdentity, BundleServer, BundleSurface, DescribeSource, ExposureBundle, ROBOT_ARGUMENT,
+    ResourceEntry, ServiceOperation, TaskEntry, ToolEntry,
 };
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
@@ -67,13 +67,20 @@ const TASK_TTL_GRACE_MS: u64 = 1_000;
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// One validated call handed to a bridge: the canonical-JSON input the
-/// contract member takes and, on a per-robot surface, the member of the
-/// target the call goes to. On a fixed surface `member` is `None` and the
-/// bridge calls the producer the launcher bound.
+/// contract member takes, and the provider it goes to.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolCall {
     pub input: Value,
-    pub member: Option<MemberAddress>,
+    pub recipient: Recipient,
+}
+
+/// The provider a call goes to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Recipient {
+    /// The producer the launcher bound to the entry's target.
+    BoundProducer,
+    /// The member of the target the call's robot fills.
+    Member(MemberAddress),
 }
 
 /// One registered bridge: a validated call in, canonical-JSON output or a
@@ -118,9 +125,7 @@ struct TaskState {
 struct ServerState {
     server: BundleServer,
     exposure: BundleIdentity,
-    resources_by_uri: HashMap<String, Arc<ResourceState>>,
-    resource_uri_by_name: HashMap<String, String>,
-    resource_list: Vec<Resource>,
+    addressing: Addressing,
     tools: HashMap<String, Arc<ToolState>>,
     tasks: HashMap<String, Arc<TaskState>>,
     /// `tools/list` order: the bundle's tools, then its tasks.
@@ -131,8 +136,59 @@ struct ServerState {
     manager: TaskManager,
     events: broadcast::Sender<CatalogEvent>,
     clock: Clock,
-    /// The per-robot surface, on a bundle that declares one.
-    fleet: Option<FleetRuntime>,
+}
+
+/// How the server addresses providers and publishes resources, as the
+/// bundle's surface decides.
+enum Addressing {
+    /// Every call goes to the producer the launcher bound to its target,
+    /// and the catalog's own resources are the ones served.
+    Fixed(CatalogResources),
+    /// Every call names its robot, and the resources follow the fleet.
+    PerRobot(Arc<FleetRuntime>),
+}
+
+/// The resources of a fixed surface, as the catalog fixes them for the life
+/// of the server.
+struct CatalogResources {
+    by_uri: HashMap<String, Arc<ResourceState>>,
+    uri_by_name: HashMap<String, String>,
+    list: Vec<Resource>,
+}
+
+impl CatalogResources {
+    /// One resource state per catalog entry, keyed by the URI clients read
+    /// it at and by the name the host feeds it under.
+    fn new(entries: &[ResourceEntry]) -> Result<Self, BuildError> {
+        let mut resources = Self {
+            by_uri: HashMap::new(),
+            uri_by_name: HashMap::new(),
+            list: Vec::new(),
+        };
+        for entry in entries {
+            resources.list.push(
+                Resource::new(entry.uri.clone(), entry.name.clone())
+                    .with_description(entry.description.clone())
+                    .with_mime_type("application/json"),
+            );
+            resources
+                .uri_by_name
+                .insert(entry.name.clone(), entry.uri.clone());
+            if resources
+                .by_uri
+                .insert(
+                    entry.uri.clone(),
+                    Arc::new(ResourceState::new(entry.clone())),
+                )
+                .is_some()
+            {
+                return Err(BuildError::DuplicateName {
+                    name: entry.uri.clone(),
+                });
+            }
+        }
+        Ok(resources)
+    }
 }
 
 /// Builds an [`ExposureServer`] from a parsed bundle, one registered
@@ -186,35 +242,10 @@ impl ExposureServerBuilder {
         } = self;
 
         let mut names = HashSet::new();
-        let mut resources_by_uri = HashMap::new();
-        let mut resource_uri_by_name = HashMap::new();
-        let mut resource_list = Vec::new();
         for entry in &bundle.resources {
             if !names.insert(entry.name.clone()) {
                 return Err(BuildError::DuplicateName {
                     name: entry.name.clone(),
-                });
-            }
-            // A per-robot surface publishes its resources per robot, from
-            // the fleet; the catalog's own URIs serve a fixed surface.
-            if fleet_source.is_some() {
-                continue;
-            }
-            resource_list.push(
-                Resource::new(entry.uri.clone(), entry.name.clone())
-                    .with_description(entry.description.clone())
-                    .with_mime_type("application/json"),
-            );
-            resource_uri_by_name.insert(entry.name.clone(), entry.uri.clone());
-            if resources_by_uri
-                .insert(
-                    entry.uri.clone(),
-                    Arc::new(ResourceState::new(entry.clone())),
-                )
-                .is_some()
-            {
-                return Err(BuildError::DuplicateName {
-                    name: entry.uri.clone(),
                 });
             }
         }
@@ -287,19 +318,30 @@ impl ExposureServerBuilder {
             return Err(BuildError::UnknownTaskHandler { name });
         }
 
-        let fleet = match (&bundle.robots, fleet_source) {
-            (None, None) => None,
-            (None, Some(_)) => return Err(BuildError::UnexpectedFleetSource),
-            (Some(_), None) => return Err(BuildError::MissingFleetSource),
-            (Some(catalog), Some(source)) => {
-                if !names.insert(catalog.list.name.clone()) {
+        // A per-robot surface publishes its resources per robot, from the
+        // fleet; the catalog's own URIs serve a fixed surface.
+        let addressing = match (&bundle.surface, fleet_source) {
+            (BundleSurface::Fixed { .. }, None) => {
+                Addressing::Fixed(CatalogResources::new(&bundle.resources)?)
+            }
+            (BundleSurface::Fixed { .. }, Some(_)) => {
+                return Err(BuildError::UnexpectedFleetSource);
+            }
+            (BundleSurface::PerRobot { .. }, None) => return Err(BuildError::MissingFleetSource),
+            (BundleSurface::PerRobot { robots, contracts }, Some(source)) => {
+                if !names.insert(robots.list.name.clone()) {
                     return Err(BuildError::DuplicateName {
-                        name: catalog.list.name.clone(),
+                        name: robots.list.name.clone(),
                     });
                 }
-                let fleet = FleetRuntime::new(&bundle, catalog.clone(), source);
+                let fleet = Arc::new(FleetRuntime::new(
+                    &bundle,
+                    robots.clone(),
+                    contracts,
+                    source,
+                ));
                 tool_list.push(listing_tool(&fleet));
-                Some(fleet)
+                Addressing::PerRobot(fleet)
             }
         };
 
@@ -308,16 +350,13 @@ impl ExposureServerBuilder {
             state: Arc::new(ServerState {
                 server: bundle.server,
                 exposure: bundle.exposure,
-                resources_by_uri,
-                resource_uri_by_name,
-                resource_list,
+                addressing,
                 tools,
                 tasks,
                 tool_list,
                 manager: TaskManager::new(),
                 events,
                 clock,
-                fleet,
             }),
         })
     }
@@ -426,18 +465,25 @@ impl ExposureServer {
     /// The handle through which the host attaches and detaches the members
     /// of a per-robot bundle; `None` on a fixed surface.
     pub fn fleet(&self) -> Option<FleetHandle> {
-        self.state.fleet.as_ref()?;
-        Some(FleetHandle {
-            state: Arc::clone(&self.state),
-        })
+        match &self.state.addressing {
+            Addressing::Fixed(_) => None,
+            Addressing::PerRobot(fleet) => Some(FleetHandle {
+                fleet: Arc::clone(fleet),
+                events: self.state.events.clone(),
+                clock: self.state.clock.clone(),
+            }),
+        }
     }
 
-    /// The ingest feeding the named resource, or `None` when the bundle
-    /// exposes no such resource.
+    /// The ingest feeding the named resource of a fixed surface, or `None`
+    /// when the bundle exposes no such resource.
     pub fn ingest(&self, resource_name: &str) -> Option<ResourceIngest> {
-        let uri = self.state.resource_uri_by_name.get(resource_name)?;
+        let Addressing::Fixed(resources) = &self.state.addressing else {
+            return None;
+        };
+        let uri = resources.uri_by_name.get(resource_name)?;
         Some(ResourceIngest {
-            state: Arc::clone(self.state.resources_by_uri.get(uri)?),
+            state: Arc::clone(resources.by_uri.get(uri)?),
             events: self.state.events.clone(),
             clock: self.state.clock.clone(),
         })
@@ -489,18 +535,16 @@ impl ExposureServer {
     /// the robots present, and one it lists whose member the host has not
     /// attached yet reads as unavailable.
     fn resource_state(&self, uri: &str) -> Result<Arc<ResourceState>, McpError> {
-        let Some(fleet) = &self.state.fleet else {
-            return self
-                .state
-                .resources_by_uri
-                .get(uri)
-                .cloned()
-                .ok_or_else(|| {
+        let fleet = match &self.state.addressing {
+            Addressing::Fixed(resources) => {
+                return resources.by_uri.get(uri).cloned().ok_or_else(|| {
                     McpError::resource_not_found(
                         format!("`{uri}` is not a resource of this exposure"),
                         Some(json!({ "uri": uri })),
                     )
                 });
+            }
+            Addressing::PerRobot(fleet) => fleet,
         };
         let snapshot = fleet.fleet();
         let listed = snapshot
@@ -916,17 +960,6 @@ async fn drive_task(
     }
 }
 
-impl ServerState {
-    /// Every resource entry of the bundle, for a per-robot surface to
-    /// publish per robot.
-    fn fleet_entries(&self) -> &[ResourceEntry] {
-        self.fleet
-            .as_ref()
-            .map(|fleet| fleet.entries.as_slice())
-            .unwrap_or_default()
-    }
-}
-
 /// The listing tool of a per-robot surface: it takes nothing and answers one
 /// entry per robot.
 fn listing_tool(fleet: &FleetRuntime) -> Tool {
@@ -994,10 +1027,10 @@ impl ExposureServer {
     /// to the member the robot fills `target` with; on a fixed surface the
     /// input is the call.
     fn route(&self, target: &str, mut input: Value) -> Result<ToolCall, McpError> {
-        let Some(fleet) = &self.state.fleet else {
+        let Addressing::PerRobot(fleet) = &self.state.addressing else {
             return Ok(ToolCall {
                 input,
-                member: None,
+                recipient: Recipient::BoundProducer,
             });
         };
         let argument = fleet.argument_of.get(target).cloned().flatten();
@@ -1012,7 +1045,7 @@ impl ExposureServer {
             .map_err(|refusal| McpError::invalid_params(refusal.to_string(), None))?;
         Ok(ToolCall {
             input,
-            member: Some(member),
+            recipient: Recipient::Member(member),
         })
     }
 
@@ -1098,7 +1131,7 @@ impl ExposureServer {
             .map_err(|refusal| refusal.to_string())?;
         let call = ToolCall {
             input: json!({}),
-            member: Some(member),
+            recipient: Recipient::Member(member),
         };
         let deadline = Duration::from_millis(tool.entry.deadline_ms.get());
         match tokio::time::timeout(deadline, tool.handler.call(call)).await {
@@ -1185,21 +1218,16 @@ fn read_refusal_text(refusal: &ReadRefusal, unavailable: &str) -> String {
 /// each one that leaves, and says when the list changed.
 #[derive(Clone)]
 pub struct FleetHandle {
-    state: Arc<ServerState>,
+    fleet: Arc<FleetRuntime>,
+    events: broadcast::Sender<CatalogEvent>,
+    clock: Clock,
 }
 
 impl FleetHandle {
-    fn runtime(&self) -> &FleetRuntime {
-        self.state
-            .fleet
-            .as_ref()
-            .expect("a fleet handle exists on a per-robot server alone")
-    }
-
     /// Registers `member`'s resources and hands back the ingest feeding each
     /// one, with the catalog entry it publishes.
     pub fn attach(&self, member: &FleetMember) -> Vec<(ResourceEntry, ResourceIngest)> {
-        self.runtime()
+        self.fleet
             .attach(member)
             .into_iter()
             .map(|(entry, state)| {
@@ -1207,8 +1235,8 @@ impl FleetHandle {
                     entry,
                     ResourceIngest {
                         state,
-                        events: self.state.events.clone(),
-                        clock: self.state.clock.clone(),
+                        events: self.events.clone(),
+                        clock: self.clock.clone(),
                     },
                 )
             })
@@ -1217,19 +1245,19 @@ impl FleetHandle {
 
     /// Drops `member`'s resources.
     pub fn detach(&self, member: &FleetMember) {
-        self.runtime().detach(member);
+        self.fleet.detach(member);
     }
 
     /// Tells listening clients the resource list changed.
     pub fn changed(&self) {
         // Send fails only when nobody listens, which is fine.
-        let _ = self.state.events.send(CatalogEvent::ResourceListChanged);
+        let _ = self.events.send(CatalogEvent::ResourceListChanged);
     }
 
     /// The members the surface cannot serve as the fleet stands now, each
     /// with the reason.
     pub fn problems(&self) -> Vec<String> {
-        self.runtime().fleet().problems().to_vec()
+        self.fleet.fleet().problems().to_vec()
     }
 }
 
@@ -1304,16 +1332,16 @@ impl ServerHandler for ExposureServer {
     ) -> Result<ListResourcesResult, McpError> {
         // A per-robot surface's resources follow its robots, so the list
         // is read from the fleet on every request and carries no cache hint.
-        let Some(fleet) = &self.state.fleet else {
-            return Ok(
-                ListResourcesResult::with_all_items(self.state.resource_list.clone())
+        match &self.state.addressing {
+            Addressing::Fixed(resources) => {
+                Ok(ListResourcesResult::with_all_items(resources.list.clone())
                     .with_ttl_ms(CATALOG_TTL_MS)
-                    .with_cache_scope(CacheScope::Private),
-            );
-        };
-        Ok(ListResourcesResult::with_all_items(
-            fleet.fleet().resources(self.state.fleet_entries()),
-        ))
+                    .with_cache_scope(CacheScope::Private))
+            }
+            Addressing::PerRobot(fleet) => Ok(ListResourcesResult::with_all_items(
+                fleet.fleet().resources(&fleet.entries),
+            )),
+        }
     }
 
     async fn read_resource(
@@ -1351,7 +1379,7 @@ impl ServerHandler for ExposureServer {
     ) -> Result<CallToolResponse, McpError> {
         let name = request.name.as_ref();
         let arguments = request.arguments.unwrap_or_default();
-        if let Some(fleet) = &self.state.fleet
+        if let Addressing::PerRobot(fleet) = &self.state.addressing
             && name == fleet.catalog.list.name
         {
             return self.list_robots(fleet, arguments).await.map(Into::into);
@@ -1920,7 +1948,7 @@ mod tests {
         let operation = task.handler.start(
             ToolCall {
                 input: JsonObject::new().into(),
-                member: None,
+                recipient: Recipient::BoundProducer,
             },
             context,
         );
@@ -2286,11 +2314,15 @@ mod tests {
             let server = ExposureServer::builder(bundle())
                 .with_fleet(move || source.lock().unwrap().clone())
                 .with_tool("robot.get_identity", |call: ToolCall| async move {
-                    let member = call.member.expect("routed");
+                    let Recipient::Member(member) = call.recipient else {
+                        panic!("a per-robot call names its member");
+                    };
                     Ok(json!({ "robot": member.instance_id, "input": call.input }))
                 })
                 .with_tool("camera.set_brightness", |call: ToolCall| async move {
-                    let member = call.member.expect("routed");
+                    let Recipient::Member(member) = call.recipient else {
+                        panic!("a per-robot call names its member");
+                    };
                     Ok(json!({ "camera": member.instance_id, "input": call.input }))
                 })
                 .build()
@@ -2300,6 +2332,15 @@ mod tests {
 
         fn structured(result: CallToolResult) -> Value {
             result.structured_content.expect("a structured result")
+        }
+
+        /// The fleet runtime of a per-robot server, which the listing tests
+        /// drive directly.
+        fn runtime(server: &ExposureServer) -> &FleetRuntime {
+            match &server.state.addressing {
+                Addressing::PerRobot(fleet) => fleet,
+                Addressing::Fixed(_) => panic!("expected a per-robot server"),
+            }
         }
 
         #[test]
@@ -2400,7 +2441,7 @@ mod tests {
                 .expect("publishes");
 
             let listed = server
-                .list_robots(server.state.fleet.as_ref().unwrap(), JsonObject::new())
+                .list_robots(runtime(&server), JsonObject::new())
                 .await
                 .expect("lists");
             assert_eq!(
@@ -2439,7 +2480,7 @@ mod tests {
                 .unwrap()
                 .push(member("camera", "charlie", "front"));
             let listed = server
-                .list_robots(server.state.fleet.as_ref().unwrap(), JsonObject::new())
+                .list_robots(runtime(&server), JsonObject::new())
                 .await
                 .expect("lists");
             assert_eq!(
@@ -2460,10 +2501,7 @@ mod tests {
                 })
             );
             let error = server
-                .list_robots(
-                    server.state.fleet.as_ref().unwrap(),
-                    arguments(json!({ "robot": "alpha" })),
-                )
+                .list_robots(runtime(&server), arguments(json!({ "robot": "alpha" })))
                 .await
                 .expect_err("takes no arguments");
             assert!(error.message.contains("`robot.list` takes no arguments"));
@@ -2473,13 +2511,10 @@ mod tests {
         async fn resources_follow_the_fleet_and_a_change_is_announced() {
             let (server, fleet) = served();
             let handle = server.fleet().expect("a per-robot server");
-            let listed: Vec<String> = server
-                .state
-                .fleet
-                .as_ref()
-                .unwrap()
+            let fleet = runtime(&server);
+            let listed: Vec<String> = fleet
                 .fleet()
-                .resources(server.state.fleet_entries())
+                .resources(&fleet.entries)
                 .iter()
                 .map(|resource| resource.uri.to_string())
                 .collect();
@@ -2646,7 +2681,10 @@ mod tests {
     #[test]
     fn the_catalog_carries_descriptions_schemas_and_annotations() {
         let server = built_server();
-        let resource = &server.state.resource_list[0];
+        let Addressing::Fixed(resources) = &server.state.addressing else {
+            panic!("expected a fixed server");
+        };
+        let resource = &resources.list[0];
         assert_eq!(resource.uri, "peppy://resource/front_camera.status");
         assert_eq!(resource.name, "front_camera.status");
         assert_eq!(resource.mime_type.as_deref(), Some("application/json"));

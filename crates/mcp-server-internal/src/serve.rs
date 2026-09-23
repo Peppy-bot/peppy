@@ -8,6 +8,7 @@ use daemon_config::mcp_deployment::{
     endpoint_label, plan_deployment,
 };
 use message_codec::consumer::ConsumerIdentity;
+use peppy_mcp_catalog::BundleSurface;
 use peppy_mcp_runtime::{Clock, ExposureServer, ExposureSet};
 use peppylib::runtime::{EndpointBinding, NodeBuilder, NodeRunner, bind_preferred};
 use serde::Deserialize;
@@ -122,11 +123,12 @@ async fn run(
         // targets; a fixed one binds each target to the launcher's producer.
         let targets: Vec<String> = exposure
             .bundle
-            .contracts
+            .surface
+            .contracts()
             .iter()
             .map(|pin| pin.link_id.clone())
             .collect();
-        let per_robot = exposure.bundle.robots.is_some();
+        let per_robot = matches!(exposure.bundle.surface, BundleSurface::PerRobot { .. });
         let label = format!(
             "{}:{}",
             exposure.bundle.exposure.name, exposure.bundle.exposure.tag

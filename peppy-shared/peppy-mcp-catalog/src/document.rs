@@ -51,32 +51,77 @@ where
 /// Exposure documents take the contract shape in the repository: a tagged
 /// manifest, indexed by name and tag, sha256-pinned wherever referenced.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(try_from = "RawMcpExposure")]
+#[serde(try_from = "RawMcpExposure", into = "RawMcpExposure")]
 pub struct McpExposure {
     pub peppy_schema: PeppySchema,
     pub manifest: ExposureManifest,
     pub server: ServerIdentity,
-    /// Present on a per-robot surface: every target is then filled by the
-    /// robots of the stack, and every call names its robot.
-    pub robots: Option<RobotSurface>,
-    pub targets: IndexMap<String, ExposureTarget>,
+    pub surface: ExposureSurface,
+}
+
+/// What an exposure publishes: the targets a launcher fills, or the robots
+/// of a stack, each filling every target.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExposureSurface {
+    /// Each target is filled by the instance a launcher binds to its
+    /// contract slot, and a call carries the member's own request alone.
+    Fixed {
+        targets: IndexMap<String, ExposureTarget>,
+    },
+    /// Every target is filled by the robots of the stack, and every call
+    /// names its robot with [`ROBOT_ARGUMENT`].
+    PerRobot {
+        robots: RobotSurface,
+        targets: IndexMap<String, RobotTarget>,
+    },
+}
+
+impl ExposureSurface {
+    /// Every target in document order, each with the argument a call names
+    /// its member by on a target a robot fills any number of times.
+    pub fn targets(&self) -> Vec<(&String, &ExposureTarget, Option<&ArgumentName>)> {
+        match self {
+            Self::Fixed { targets } => targets
+                .iter()
+                .map(|(target_name, selection)| (target_name, selection, None))
+                .collect(),
+            Self::PerRobot { targets, .. } => targets
+                .iter()
+                .map(|(target_name, target)| {
+                    (target_name, &target.selection, target.argument.as_ref())
+                })
+                .collect(),
+        }
+    }
+}
+
+/// One target of a per-robot surface: the members it selects, and how a
+/// robot fills it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RobotTarget {
+    pub selection: ExposureTarget,
+    /// The argument that names the member a call addresses on a target a
+    /// robot fills any number of times (a camera). A target without one is
+    /// filled at most once per robot.
+    pub argument: Option<ArgumentName>,
 }
 
 /// Wire shape of [`McpExposure`]. Deserialization funnels through
 /// `TryFrom<RawMcpExposure>` so the document-level coherence rules (non-empty
 /// target set, per-target member selection, unique public names, policy
-/// cross-field rules) hold on every parsed value.
-#[derive(Deserialize)]
+/// cross-field rules) hold on every parsed value, and a target's `argument`
+/// reaches the parsed document on a per-robot surface alone.
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawMcpExposure {
     #[serde(deserialize_with = "deserialize_mcp_exposure_v1_schema")]
     peppy_schema: PeppySchema,
     manifest: ExposureManifest,
     server: ServerIdentity,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     robots: Option<RobotSurface>,
     #[serde(deserialize_with = "deserialize_targets")]
-    targets: IndexMap<String, ExposureTarget>,
+    targets: IndexMap<String, RawExposureTarget>,
 }
 
 impl TryFrom<RawMcpExposure> for McpExposure {
@@ -96,13 +141,19 @@ impl TryFrom<RawMcpExposure> for McpExposure {
             }
             Ok(())
         };
-        if let Some(robots) = &raw.robots {
-            robots.check_coherence(&raw.targets)?;
-            claim(robots.list.tool.as_str())?;
-        }
-        for (target_name, target) in &raw.targets {
-            target.check_coherence(target_name, raw.robots.as_ref())?;
-            for name in target.public_names() {
+        let surface = match raw.robots {
+            None => ExposureSurface::Fixed {
+                targets: fixed_targets(raw.targets)?,
+            },
+            Some(robots) => {
+                let targets = per_robot_targets(raw.targets)?;
+                robots.check_coherence(&targets)?;
+                claim(robots.list.tool.as_str())?;
+                ExposureSurface::PerRobot { robots, targets }
+            }
+        };
+        for (_, selection, _) in surface.targets() {
+            for name in selection.public_names() {
                 claim(name)?;
             }
         }
@@ -110,17 +161,99 @@ impl TryFrom<RawMcpExposure> for McpExposure {
             peppy_schema: raw.peppy_schema,
             manifest: raw.manifest,
             server: raw.server,
-            robots: raw.robots,
-            targets: raw.targets,
+            surface,
         })
     }
+}
+
+impl From<McpExposure> for RawMcpExposure {
+    fn from(exposure: McpExposure) -> Self {
+        let (robots, targets) = match exposure.surface {
+            ExposureSurface::Fixed { targets } => (
+                None,
+                targets
+                    .into_iter()
+                    .map(|(target_name, selection)| {
+                        (target_name, RawExposureTarget::new(selection, None))
+                    })
+                    .collect(),
+            ),
+            ExposureSurface::PerRobot { robots, targets } => (
+                Some(robots),
+                targets
+                    .into_iter()
+                    .map(|(target_name, target)| {
+                        (
+                            target_name,
+                            RawExposureTarget::new(target.selection, target.argument),
+                        )
+                    })
+                    .collect(),
+            ),
+        };
+        Self {
+            peppy_schema: exposure.peppy_schema,
+            manifest: exposure.manifest,
+            server: exposure.server,
+            robots,
+            targets,
+        }
+    }
+}
+
+/// The targets of a fixed surface, each held to the rules a target follows.
+fn fixed_targets(
+    raw: IndexMap<String, RawExposureTarget>,
+) -> Result<IndexMap<String, ExposureTarget>, String> {
+    raw.into_iter()
+        .map(|(target_name, target)| {
+            let (selection, argument) = target.split();
+            if argument.is_some() {
+                return Err(format!(
+                    "target `{target_name}` declares `argument`, which names the member a call \
+                     addresses on a per-robot surface; declare `robots` or remove it"
+                ));
+            }
+            selection.check_coherence(&target_name)?;
+            Ok((target_name, selection))
+        })
+        .collect()
+}
+
+/// The targets of a per-robot surface, each held to the rules a target
+/// follows and to the name the robot's own argument takes.
+fn per_robot_targets(
+    raw: IndexMap<String, RawExposureTarget>,
+) -> Result<IndexMap<String, RobotTarget>, String> {
+    raw.into_iter()
+        .map(|(target_name, target)| {
+            let (selection, argument) = target.split();
+            if argument
+                .as_ref()
+                .is_some_and(|argument| argument.as_str() == ROBOT_ARGUMENT)
+            {
+                return Err(format!(
+                    "target `{target_name}` declares `argument: \"{ROBOT_ARGUMENT}\"`, the name \
+                     every call names its robot with; give the target's argument another name"
+                ));
+            }
+            selection.check_coherence(&target_name)?;
+            Ok((
+                target_name,
+                RobotTarget {
+                    selection,
+                    argument,
+                },
+            ))
+        })
+        .collect()
 }
 
 /// Deserialize the target map, rejecting duplicate target names and names
 /// that could not serve as the `link_id` of a contract slot.
 fn deserialize_targets<'de, D>(
     deserializer: D,
-) -> Result<IndexMap<String, ExposureTarget>, D::Error>
+) -> Result<IndexMap<String, RawExposureTarget>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -243,54 +376,68 @@ pub struct PinnedContractRef {
 }
 
 /// One logical target: the contract it draws from and the members it makes
-/// public. The target's key in [`McpExposure::targets`] becomes the `link_id`
+/// public. The target's key in the surface's target map becomes the `link_id`
 /// of the contract slot a deployment serving the exposure declares, so the
 /// launcher decides which concrete instance fills it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExposureTarget {
     pub contract: PinnedContractRef,
-    /// On a per-robot surface, the argument that names the member a call
-    /// addresses on a target a robot fills any number of times (a camera).
-    /// A target without one is filled at most once per robot.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub argument: Option<ArgumentName>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub topics: Vec<TopicExposure>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<ServiceExposure>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ActionExposure>,
+}
+
+/// Wire shape of one target: an [`ExposureTarget`] plus the `argument` a
+/// per-robot surface's target takes.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawExposureTarget {
+    contract: PinnedContractRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    argument: Option<ArgumentName>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    topics: Vec<TopicExposure>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    services: Vec<ServiceExposure>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    actions: Vec<ActionExposure>,
+}
+
+impl RawExposureTarget {
+    fn new(selection: ExposureTarget, argument: Option<ArgumentName>) -> Self {
+        Self {
+            contract: selection.contract,
+            argument,
+            topics: selection.topics,
+            services: selection.services,
+            actions: selection.actions,
+        }
+    }
+
+    /// The members the target selects, apart from the argument a call names
+    /// one of them by, which only a per-robot surface takes.
+    fn split(self) -> (ExposureTarget, Option<ArgumentName>) {
+        (
+            ExposureTarget {
+                contract: self.contract,
+                topics: self.topics,
+                services: self.services,
+                actions: self.actions,
+            },
+            self.argument,
+        )
+    }
 }
 
 impl ExposureTarget {
     /// The document-level rules a single target must satisfy, with
     /// `target_name` naming the target in every error.
-    fn check_coherence(
-        &self,
-        target_name: &str,
-        robots: Option<&RobotSurface>,
-    ) -> Result<(), String> {
+    fn check_coherence(&self, target_name: &str) -> Result<(), String> {
         if self.topics.is_empty() && self.services.is_empty() && self.actions.is_empty() {
             return Err(format!(
                 "target `{target_name}` selects no members; list at least one topic, service, \
                  or action"
             ));
-        }
-        match (&self.argument, robots) {
-            (Some(_), None) => {
-                return Err(format!(
-                    "target `{target_name}` declares `argument`, which names the member a call \
-                     addresses on a per-robot surface; declare `robots` or remove it"
-                ));
-            }
-            (Some(argument), Some(_)) if argument.as_str() == ROBOT_ARGUMENT => {
-                return Err(format!(
-                    "target `{target_name}` declares `argument: \"{ROBOT_ARGUMENT}\"`, the name \
-                     every call names its robot with; give the target's argument another name"
-                ));
-            }
-            _ => {}
         }
         // Several resources may read one topic, each with its own name and
         // representation; a service or action member is one tool.
@@ -531,7 +678,7 @@ pub struct RobotSurface {
 }
 
 impl RobotSurface {
-    fn check_coherence(&self, targets: &IndexMap<String, ExposureTarget>) -> Result<(), String> {
+    fn check_coherence(&self, targets: &IndexMap<String, RobotTarget>) -> Result<(), String> {
         for (key, describe) in &self.describe {
             if LISTING_FIELDS.contains(&key.as_str()) {
                 return Err(format!(
@@ -556,7 +703,12 @@ impl RobotSurface {
             }
             match &describe.member {
                 DescribeMember::Service(service) => {
-                    if !target.services.iter().any(|s| &s.member == service) {
+                    if !target
+                        .selection
+                        .services
+                        .iter()
+                        .any(|s| &s.member == service)
+                    {
                         return Err(format!(
                             "`robots.describe.{key}` names service `{service}` of target `{}`, \
                              which the target does not select as a tool",
@@ -565,7 +717,7 @@ impl RobotSurface {
                     }
                 }
                 DescribeMember::Topic { topic, .. } => {
-                    if !target.topics.iter().any(|t| &t.member == topic) {
+                    if !target.selection.topics.iter().any(|t| &t.member == topic) {
                         return Err(format!(
                             "`robots.describe.{key}` names topic `{topic}` of target `{}`, \
                              which the target does not select as a resource",
@@ -858,6 +1010,22 @@ mod tests {
         parse(json5).expect_err("expected the document to be rejected")
     }
 
+    /// The targets of a document that declares no `robots`.
+    fn targets_of(exposure: &McpExposure) -> &IndexMap<String, ExposureTarget> {
+        match &exposure.surface {
+            ExposureSurface::Fixed { targets } => targets,
+            ExposureSurface::PerRobot { .. } => panic!("expected a fixed surface"),
+        }
+    }
+
+    /// The robots block and targets of a document that declares `robots`.
+    fn robot_surface(exposure: &McpExposure) -> (&RobotSurface, &IndexMap<String, RobotTarget>) {
+        match &exposure.surface {
+            ExposureSurface::PerRobot { robots, targets } => (robots, targets),
+            ExposureSurface::Fixed { .. } => panic!("expected a per-robot surface"),
+        }
+    }
+
     /// The complete surface from the design walkthrough: a camera target
     /// with a policy-rich topic and two services, and a recorder target
     /// with one confirmation-gated action.
@@ -965,7 +1133,7 @@ mod tests {
             Some("Observe the front camera and record teleoperation episodes.")
         );
 
-        let camera = &exposure.targets["front_camera"];
+        let camera = &targets_of(&exposure)["front_camera"];
         assert_eq!(camera.contract.name.as_str(), "rgb_camera");
         assert_eq!(
             camera
@@ -992,7 +1160,7 @@ mod tests {
         assert_eq!(bounds.min, Some(serde_json::Number::from(-64)));
         assert_eq!(bounds.max, Some(serde_json::Number::from(64)));
 
-        let recorder = &exposure.targets["recorder"];
+        let recorder = &targets_of(&exposure)["recorder"];
         let record = &recorder.actions[0];
         assert_eq!(record.operation, ActionOperation::LongRunning);
         assert!(record.safety_sensitive);
@@ -1003,7 +1171,7 @@ mod tests {
     #[test]
     fn target_order_follows_the_document() {
         let exposure = parse(&camera_and_recording()).expect("parses");
-        let names: Vec<&String> = exposure.targets.keys().collect();
+        let names: Vec<&String> = targets_of(&exposure).keys().collect();
         assert_eq!(names, ["front_camera", "recorder"]);
     }
 
@@ -1059,7 +1227,7 @@ mod tests {
     fn accepts_a_reference_without_a_sha256_pin() {
         let doc = minimal(INFO_SERVICE).replace(&format!(r#", sha256: "{RGB_SHA}""#), "");
         let exposure = parse(&doc).expect("the pin is optional");
-        assert_eq!(exposure.targets["cam"].contract.sha256, None);
+        assert_eq!(targets_of(&exposure)["cam"].contract.sha256, None);
         let serialized = serde_json::to_string(&exposure).expect("serializes");
         assert!(
             !serialized.contains("sha256"),
@@ -1236,7 +1404,7 @@ mod tests {
             "quality: 80, depth_range: { near: 100, far: 10000 },",
         );
         let exposure = parse(&doc).expect("a jpeg representation carries a depth range");
-        let representation = exposure.targets["front_camera"].topics[0]
+        let representation = targets_of(&exposure)["front_camera"].topics[0]
             .representation
             .as_ref()
             .expect("representation");
@@ -1307,7 +1475,7 @@ mod tests {
         }}"#
         );
         let exposure = parse(&doc).expect("a reject policy needs no image representation");
-        let topic = &exposure.targets["cam"].topics[0];
+        let topic = &targets_of(&exposure)["cam"].topics[0];
         assert_eq!(topic.on_oversize, Some(OversizePolicy::Reject));
         assert_eq!(topic.update.max_hz.get(), 0.5);
         assert!(topic.representation.is_none());
@@ -1440,7 +1608,7 @@ mod tests {
     #[test]
     fn parses_a_per_robot_surface() {
         let exposure = parse(&per_robot(ROBOTS)).expect("parses");
-        let robots = exposure.robots.as_ref().expect("a per-robot surface");
+        let (robots, targets) = robot_surface(&exposure);
         assert_eq!(robots.list.tool.as_str(), "robot.list");
         assert_eq!(
             robots.describe["identity"].member,
@@ -1454,13 +1622,13 @@ mod tests {
             }
         );
         assert_eq!(
-            exposure.targets["camera"]
+            targets["camera"]
                 .argument
                 .as_ref()
                 .map(ArgumentName::as_str),
             Some("camera")
         );
-        assert_eq!(exposure.targets["status"].argument, None);
+        assert_eq!(targets["status"].argument, None);
         let serialized = serde_json::to_string(&exposure).expect("serializes");
         let reparsed: McpExposure = serde_json::from_str(&serialized).expect("reparses");
         assert_eq!(reparsed, exposure);
@@ -1568,7 +1736,7 @@ mod tests {
             .replace("quality: 80,", "");
         let exposure = parse(&doc).expect("png16 downscales");
         assert_eq!(
-            exposure.targets["front_camera"].topics[0]
+            targets_of(&exposure)["front_camera"].topics[0]
                 .representation
                 .as_ref()
                 .map(|r| r.image),
@@ -1597,7 +1765,7 @@ mod tests {
         },"#;
         let doc = camera_and_recording().replace("topics: [", &format!("topics: [{lossless}"));
         let exposure = parse(&doc).expect("one topic backs two resources");
-        let frames = &exposure.targets["front_camera"].topics;
+        let frames = &targets_of(&exposure)["front_camera"].topics;
         assert!(frames.iter().all(|topic| topic.member == "video_stream"));
         let published: Vec<(&str, Option<ImageCodec>)> = frames
             .iter()

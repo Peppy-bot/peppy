@@ -189,7 +189,8 @@ fn the_walkthrough_exposure_builds_its_bundle() {
     assert_eq!(bundle.exposure.name, "camera_and_recording");
     assert_eq!(bundle.exposure.tag, "v1");
     let links: Vec<(&str, &str)> = bundle
-        .contracts
+        .surface
+        .contracts()
         .iter()
         .map(|pin| (pin.link_id.as_str(), pin.name.as_str()))
         .collect();
@@ -200,7 +201,10 @@ fn the_walkthrough_exposure_builds_its_bundle() {
             ("recorder", "episode_recording")
         ]
     );
-    assert_eq!(bundle.contracts[0].sha256, sha_of(CAMERA_CONTRACT));
+    assert_eq!(
+        bundle.surface.contracts()[0].sha256,
+        sha_of(CAMERA_CONTRACT)
+    );
 
     assert_eq!(bundle.resources.len(), 1);
     let frame = &bundle.resources[0];
@@ -309,7 +313,7 @@ fn a_reference_without_a_pin_is_validated_against_the_resolved_bytes() {
     assert!(!exposure.contains("sha256"), "the reference carries no pin");
     let bundle = build(&exposure, &[&fixture(CAMERA_CONTRACT)]);
     assert_eq!(
-        bundle.contracts[0].sha256,
+        bundle.surface.contracts()[0].sha256,
         sha_of(CAMERA_CONTRACT),
         "the bundle pins the bytes the exposure was validated against"
     );
@@ -855,7 +859,9 @@ fn a_per_robot_bundle_adds_the_routing_arguments_and_resolves_its_listing() {
         &[&status, &camera],
     );
 
-    let robots = bundle.robots.as_ref().expect("a per-robot bundle");
+    let BundleSurface::PerRobot { robots, contracts } = &bundle.surface else {
+        panic!("expected a per-robot bundle");
+    };
     assert_eq!(robots.list.name, "robot.list");
     assert_eq!(
         robots.describe,
@@ -877,10 +883,9 @@ fn a_per_robot_bundle_adds_the_routing_arguments_and_resolves_its_listing() {
             },
         ]
     );
-    let by_slot: BTreeMap<&str, Option<&str>> = bundle
-        .contracts
+    let by_slot: BTreeMap<&str, Option<&str>> = contracts
         .iter()
-        .map(|pin| (pin.link_id.as_str(), pin.argument.as_deref()))
+        .map(|pin| (pin.pin.link_id.as_str(), pin.argument.as_deref()))
         .collect();
     assert_eq!(by_slot["status"], None);
     assert_eq!(by_slot["camera"], Some("camera"));
@@ -956,8 +961,10 @@ fn a_fixed_bundle_carries_no_robot_surface() {
         WALKTHROUGH_EXPOSURE,
         &[&fixture(CAMERA_CONTRACT), &fixture(RECORDING_CONTRACT)],
     );
-    assert_eq!(bundle.robots, None);
-    assert!(bundle.contracts.iter().all(|pin| pin.argument.is_none()));
+    assert!(
+        matches!(bundle.surface, BundleSurface::Fixed { .. }),
+        "a document without `robots` derives a fixed surface"
+    );
     assert!(
         !bundle.to_json_string().contains("\"robots\""),
         "an absent surface is not written"
