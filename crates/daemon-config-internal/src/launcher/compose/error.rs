@@ -114,14 +114,14 @@ pub enum CompositionError {
     },
 
     #[error(
-        "this launcher declares no `zero_or_more` axis, so its stack takes no copy, from `stack \
-         join` or from `--join OPTION:NAME`"
+        "this launcher declares no axis that runs as copies (`zero_or_more` or `one_or_more`), \
+         so its stack takes no copy, from `stack join` or from `--join OPTION:NAME`"
     )]
     NoRepeatableAxis,
 
     #[error(
-        "`{option}` is not an option of a `zero_or_more` axis of this launcher; the copies it \
-         can add:{menu}"
+        "`{option}` is not an option of an axis this launcher runs as copies; the copies it can \
+         add:{menu}"
     )]
     JoinUnknownOption { option: String, menu: String },
 
@@ -187,6 +187,29 @@ pub enum CompositionError {
         copy: String,
         axis: String,
         option: String,
+    },
+
+    #[error(
+        "copy `{copy}` is the last one on axis `{axis}`, which has cardinality `one_or_more`; \
+         join its replacement first with `peppy stack join {option}:NAME` and then remove \
+         `{copy}`, or take the stack down with `peppy stack reset`"
+    )]
+    CopyAxisEmptied {
+        copy: String,
+        axis: String,
+        option: String,
+    },
+
+    #[error(
+        "axis `{axis}` has cardinality `one_or_more`, and this launch deploys or joins no copy \
+         of it; deploy one in `deployments` (`{{ {axis}: \"{option}\", instances: [{{ \
+         instance_id: \"alpha\" }}] }}`) or name one on the command line with `--join \
+         {option}:alpha`, choosing from:{menu}"
+    )]
+    CopyAxisUnfilled {
+        axis: String,
+        option: String,
+        menu: String,
     },
 
     #[error(

@@ -1,7 +1,9 @@
 //! A launcher held ready to compose: its fragments read once, and the
 //! launch, join and removal it answers.
 
-use super::super::composition::{Adjustment, ArgumentOverrides, CopySettings, OptionDeployment};
+use super::super::composition::{
+    Adjustment, ArgumentOverrides, ComponentCardinality, CopySettings, OptionDeployment,
+};
 use super::super::types::{LauncherFramework, PeppyLauncher};
 use super::constraints::{self, ConstraintScope};
 use super::copy::{
@@ -176,6 +178,26 @@ impl PreparedLauncher {
             launcher = joined.launcher;
             report.add_copy(joined.copy, joined.report.applied, joined.report.skipped);
         }
+        // Every copy this launch starts is on the plan now, the file's and
+        // the command line's, so this is where a `one_or_more` axis is held
+        // to its floor.
+        if let Some(axis) = self
+            .launcher
+            .repeatable_axes()
+            .filter(|axis| axis.cardinality == ComponentCardinality::OneOrMore)
+            .find(|axis| !report.copies.iter().any(|copy| copy.axis == axis.name))
+        {
+            return Err(CompositionError::CopyAxisUnfilled {
+                axis: axis.name.clone(),
+                option: axis
+                    .options
+                    .keys()
+                    .next()
+                    .expect("an axis declares at least one option")
+                    .clone(),
+                menu: select::axes_menu(std::iter::once(axis)),
+            });
+        }
         Ok(ComposedLaunch {
             launcher,
             selection,
@@ -241,8 +263,8 @@ impl PreparedLauncher {
         })
     }
 
-    /// The `zero_or_more` axis `option` belongs to, which a join and a
-    /// launch-time join copy it from.
+    /// The copy axis `option` belongs to, which a join and a launch-time
+    /// join copy it from.
     fn repeatable_axis_of(&self, option: &str) -> Result<String, CompositionError> {
         let mut repeatable = self.launcher.repeatable_axes().peekable();
         if repeatable.peek().is_none() {
@@ -288,12 +310,21 @@ impl PreparedLauncher {
         selection: &UnitSelection,
         remaining: &[CopyRecord],
     ) -> Result<PeppyLauncher, CompositionError> {
-        let known = self
+        let Some(axis) = self
             .launcher
             .repeatable_axes()
-            .any(|axis| axis.name == copy.axis && axis.options.contains_key(&copy.option));
-        if !known {
+            .find(|axis| axis.name == copy.axis && axis.options.contains_key(&copy.option))
+        else {
             return Err(CompositionError::CopyOfAnotherLauncher {
+                copy: copy.name.to_string(),
+                axis: copy.axis.clone(),
+                option: copy.option.clone(),
+            });
+        };
+        if axis.cardinality == ComponentCardinality::OneOrMore
+            && !remaining.iter().any(|record| record.axis == copy.axis)
+        {
+            return Err(CompositionError::CopyAxisEmptied {
                 copy: copy.name.to_string(),
                 axis: copy.axis.clone(),
                 option: copy.option.clone(),
@@ -462,8 +493,8 @@ fn as_typed(name: &Name, error: CompositionError) -> CompositionError {
     }
 }
 
-/// One `zero_or_more` axis of a launcher, with every instance id its
-/// options can define.
+/// One copy axis of a launcher, with every instance id its options can
+/// define.
 struct CopyAxis<'a> {
     name: &'a str,
     defines: HashSet<&'a str>,
