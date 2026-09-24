@@ -10,11 +10,14 @@
 //! set of pinned bytes.
 
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
+use crate::internal::launcher::MemberAddressing;
 use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedItem};
 use crate::internal::source::ExposureRef;
 use config::node::{NodeConfig, NodeConfigParser};
 use config::runtime::Name;
-use peppy_mcp_catalog::{McpExposure, ResolvedContract, ValidatedExposure, build_exposure_bundle};
+use peppy_mcp_catalog::{
+    ExposureSurface, McpExposure, ResolvedContract, ValidatedExposure, build_exposure_bundle,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -141,10 +144,42 @@ pub enum McpDeploymentError {
         .0.target, .0.first_contract, .0.first_exposure, .0.second_contract, .0.second_exposure
     )]
     SlotConflict(SlotConflict),
+    #[error(transparent)]
+    ArgumentConflict(Box<ArgumentConflict>),
+    #[error(
+        "exposure `{per_robot}` is a per-robot surface and exposure `{fixed}` is not; one \
+         deployment serves per-robot surfaces alone or fixed surfaces alone, so list \
+         `{per_robot}` in a deployment of its own"
+    )]
+    MixedSurfaces { per_robot: String, fixed: String },
     #[error("{}", format_violations(.0))]
     Invalid(Vec<ExposureViolations>),
     #[error("the synthesized manifest for `{identity}` is not a valid node manifest: {reason}")]
     Manifest { identity: String, reason: String },
+}
+
+/// Two exposures of one deployment name a shared target's member
+/// differently: by an argument, or once per robot with none.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "target `{target}` takes {} in exposure `{first_exposure}` and {} in exposure \
+     `{second_exposure}`; two exposures sharing a target name must name its member the same way",
+    argument_phrase(.first_argument),
+    argument_phrase(.second_argument)
+)]
+pub struct ArgumentConflict {
+    pub target: String,
+    pub first_exposure: String,
+    pub first_argument: Option<String>,
+    pub second_exposure: String,
+    pub second_argument: Option<String>,
+}
+
+fn argument_phrase(argument: &Option<String>) -> String {
+    match argument {
+        Some(argument) => format!("argument `{argument}`"),
+        None => "no argument".to_owned(),
+    }
 }
 
 fn format_violations(reports: &[ExposureViolations]) -> String {
@@ -171,12 +206,18 @@ pub struct McpDeploymentPlan {
     pub tag: String,
     pub config: NodeConfig,
     pub exposures: Vec<ValidatedExposure>,
+    /// How the server reads the sets its contract slots hold, which the
+    /// binding validator holds the launcher to.
+    pub addressing: MemberAddressing,
 }
 
 /// One contract slot of the synthesized manifest and who filled it.
 struct Slot<'a> {
     contract: &'a PinnedItem,
     exposure: String,
+    /// On a per-robot surface, the argument naming the member a call
+    /// addresses on the target.
+    argument: Option<String>,
 }
 
 /// Derives the built-in server's deployment from its pinned documents.
@@ -211,6 +252,23 @@ pub fn plan_deployment(
     let name = built_in_identity(&references);
     let tag = BUILT_IN_TAG.to_owned();
 
+    // A deployment serves one kind of surface: every target of a per-robot
+    // surface is a set slot the stack's robots fill, every target of a fixed
+    // surface a scalar slot the launcher's `links` fill.
+    let per_robot = ordered
+        .iter()
+        .find(|exposure| matches!(exposure.document.surface, ExposureSurface::PerRobot { .. }));
+    let fixed = ordered
+        .iter()
+        .find(|exposure| matches!(exposure.document.surface, ExposureSurface::Fixed { .. }));
+    if let (Some(per_robot), Some(fixed)) = (per_robot, fixed) {
+        return Err(McpDeploymentError::MixedSurfaces {
+            per_robot: per_robot.reference().to_string(),
+            fixed: fixed.reference().to_string(),
+        });
+    }
+    let per_robot = per_robot.is_some();
+
     let mut slots: BTreeMap<String, Slot> = BTreeMap::new();
     let mut topics: BTreeSet<(String, String)> = BTreeSet::new();
     let mut services: BTreeSet<(String, String)> = BTreeSet::new();
@@ -221,7 +279,7 @@ pub fn plan_deployment(
     for exposure in &ordered {
         let label = exposure.reference().to_string();
         let mut resolved: Vec<ResolvedContract<'_>> = Vec::new();
-        for (target, spec) in &exposure.document.targets {
+        for (target, spec, spec_argument) in exposure.document.surface.targets() {
             let reference = &spec.contract;
             let contract_label = format!("{}:{}", reference.name.as_str(), reference.tag);
             let pinned = contracts
@@ -244,6 +302,7 @@ pub fn plan_deployment(
                     pinned: pinned.pin.sha256.clone(),
                 });
             }
+            let argument = spec_argument.map(ToString::to_string);
             match slots.get(target) {
                 Some(slot)
                     if slot.contract.name != reference.name.as_str()
@@ -257,6 +316,17 @@ pub fn plan_deployment(
                         second_contract: contract_label.clone(),
                     }));
                 }
+                Some(slot) if slot.argument != argument => {
+                    return Err(McpDeploymentError::ArgumentConflict(Box::new(
+                        ArgumentConflict {
+                            target: target.clone(),
+                            first_exposure: slot.exposure.clone(),
+                            first_argument: slot.argument.clone(),
+                            second_exposure: label.clone(),
+                            second_argument: argument.clone(),
+                        },
+                    )));
+                }
                 Some(_) => {}
                 None => {
                     slots.insert(
@@ -264,6 +334,7 @@ pub fn plan_deployment(
                         Slot {
                             contract: &pinned.pin,
                             exposure: label.clone(),
+                            argument,
                         },
                     );
                 }
@@ -322,15 +393,34 @@ pub fn plan_deployment(
             serde_json::json!({ "consumes": consumed(&actions) }),
         );
     }
+    // The robots of a per-robot surface are the stack's copies, so the
+    // server addresses every member by its copy, and a target declaring no
+    // `argument` is one a robot fills once. `per_robot` gates both this and
+    // the `zero_or_more` cardinality below, so the two agree.
+    let addressing = if per_robot {
+        MemberAddressing::ByCopy {
+            one_per_copy: slots
+                .iter()
+                .filter(|(_, slot)| slot.argument.is_none())
+                .map(|(target, _)| target.clone())
+                .collect(),
+        }
+    } else {
+        MemberAddressing::WholeSet
+    };
     let contract_slots: Vec<serde_json::Value> = slots
         .iter()
         .map(|(target, slot)| {
-            serde_json::json!({
+            let mut declared = serde_json::json!({
                 "name": slot.contract.name.as_str(),
                 "tag": slot.contract.tag.as_str(),
                 "link_id": target,
                 "sha256": slot.contract.sha256.as_str(),
-            })
+            });
+            if per_robot {
+                declared["cardinality"] = serde_json::json!("zero_or_more");
+            }
+            declared
         })
         .collect();
     // One endpoint per exposure, labelled from the same tokens the identity
@@ -381,6 +471,7 @@ pub fn plan_deployment(
         tag,
         config,
         exposures: validated,
+        addressing,
     })
 }
 
@@ -920,6 +1011,136 @@ mod tests {
             plan_deployment(&[orphan], &[contract(RECORDING_CONTRACT)]).expect_err("no camera pin");
         assert!(
             matches!(error, McpDeploymentError::ContractNotPinned { ref contract, .. } if contract == "rgb_camera:v1"),
+            "{error}"
+        );
+    }
+
+    /// A per-robot surface over the camera contract: one target a robot
+    /// fills any number of times, named by `camera`.
+    fn per_robot_document(name: &str, argument: &str) -> String {
+        format!(
+            r#"{{
+            peppy_schema: "mcp_exposure/v1",
+            manifest: {{ name: "{name}", tag: "v1" }},
+            server: {{ title: "{name}" }},
+            robots: {{
+                list: {{ tool: "robot.list", description: "The robots." }},
+            }},
+            targets: {{
+                camera: {{
+                    contract: {{ name: "rgb_camera", tag: "v1" }},
+                    argument: "{argument}",
+                    services: [
+                        {{
+                            member: "video_stream_info",
+                            tool: "camera.info",
+                            description: "Report.",
+                            operation: "read_only",
+                            deadline_ms: 2000,
+                        }},
+                    ],
+                }},
+                main_camera: {{
+                    contract: {{ name: "rgb_camera", tag: "v1" }},
+                    services: [
+                        {{
+                            member: "video_stream_info",
+                            tool: "main_camera.info",
+                            description: "Report.",
+                            operation: "read_only",
+                            deadline_ms: 2000,
+                        }},
+                    ],
+                }},
+            }},
+        }}"#
+        )
+    }
+
+    #[test]
+    fn a_per_robot_surface_declares_every_target_a_zero_or_more_slot() {
+        let plan = plan_deployment(
+            &[exposure(&per_robot_document("robot_control", "camera"))],
+            &[contract(CAMERA_CONTRACT)],
+        )
+        .expect("plans");
+        let slots = &plan.config.manifest.depends_on.as_ref().unwrap().contracts;
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].link_id, "camera");
+        assert_eq!(slots[0].cardinality, config::node::Cardinality::ZeroOrMore);
+        assert_eq!(slots[1].link_id, "main_camera");
+        assert_eq!(slots[1].cardinality, config::node::Cardinality::ZeroOrMore);
+        // The robots are the stack's copies: they address the members of
+        // `camera` by its argument and fill `main_camera` once each.
+        assert_eq!(
+            plan.addressing,
+            MemberAddressing::ByCopy {
+                one_per_copy: ["main_camera".to_owned()].into_iter().collect(),
+            }
+        );
+        let peppy_mcp_catalog::BundleSurface::PerRobot { contracts, .. } =
+            &plan.exposures[0].bundle.surface
+        else {
+            panic!("expected a per-robot bundle");
+        };
+        assert_eq!(contracts[0].argument.as_deref(), Some("camera"));
+        let fixed = plan_deployment(
+            &[exposure(&exposure_document(
+                "camera_only",
+                "v1",
+                "camera",
+                "rgb_camera",
+                None,
+                "video_stream_info",
+            ))],
+            &[contract(CAMERA_CONTRACT)],
+        )
+        .expect("plans");
+        let slots = &fixed.config.manifest.depends_on.as_ref().unwrap().contracts;
+        assert_eq!(slots[0].cardinality, config::node::Cardinality::One);
+        assert_eq!(fixed.addressing, MemberAddressing::WholeSet);
+    }
+
+    #[test]
+    fn a_deployment_mixing_a_per_robot_and_a_fixed_surface_is_refused() {
+        let error = plan_deployment(
+            &[
+                exposure(&per_robot_document("robot_control", "camera")),
+                exposure(&exposure_document(
+                    "camera_only",
+                    "v1",
+                    "front_camera",
+                    "rgb_camera",
+                    None,
+                    "video_stream_info",
+                )),
+            ],
+            &[contract(CAMERA_CONTRACT)],
+        )
+        .expect_err("mixed surfaces are refused");
+        assert_eq!(
+            error.to_string(),
+            "exposure `robot_control:v1` is a per-robot surface and exposure `camera_only:v1` \
+             is not; one deployment serves per-robot surfaces alone or fixed surfaces alone, so \
+             list `robot_control:v1` in a deployment of its own"
+        );
+    }
+
+    #[test]
+    fn two_surfaces_sharing_a_target_must_name_its_member_alike() {
+        let error = plan_deployment(
+            &[
+                exposure(&per_robot_document("robot_control", "camera")),
+                exposure(&per_robot_document("robot_cameras", "device")),
+            ],
+            &[contract(CAMERA_CONTRACT)],
+        )
+        .expect_err("differing arguments are refused");
+        assert!(
+            error.to_string().starts_with(
+                "target `camera` takes argument `device` in exposure `robot_cameras:v1` and \
+                 argument `camera` in exposure `robot_control:v1`"
+            ),
             "{error}"
         );
     }

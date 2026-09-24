@@ -79,7 +79,7 @@ pub(in crate::services::stack) async fn parse_launcher_config(
 
     let prepared = daemon_config::launcher::PreparedLauncher::load(&parsed, &launch_file)
         .map_err(|e| e.to_string())?;
-    let composed = match prepared.launch(&goal.selections) {
+    let composed = match prepared.launch(&goal.selections, &goal.joins) {
         Ok(composed) => {
             if !parsed.components.is_empty() {
                 // The full resolution is echoed before anything runs, so the
@@ -390,6 +390,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
             root,
             closure_pins,
             pin_manifests,
+            addressing,
         } = match resolved {
             Ok(resolved) => resolved,
             Err(err) => {
@@ -446,6 +447,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
             root,
             closure_pins,
             pin_manifests,
+            addressing,
         });
     }
 
@@ -474,6 +476,9 @@ struct ResolvedDeployment {
     /// minted after the graph is validated. Empty for the built-in server,
     /// whose contracts are pinned with it.
     pin_manifests: Vec<config::node::Manifest>,
+    /// How the deployment's node reads the sets its slots hold: the
+    /// built-in server's comes from its plan, and a node reads them whole.
+    addressing: daemon_config::launcher::MemberAddressing,
 }
 
 /// Whether any instance of `deployment` is placed off this daemon, which is
@@ -545,6 +550,7 @@ async fn resolve_one(
                 root,
                 closure_pins,
                 pin_manifests: Vec::new(),
+                addressing: resolved.plan.addressing,
             });
         }
     };
@@ -572,6 +578,7 @@ async fn resolve_one(
         root: DeploymentRoot::Node(root.pin),
         closure_pins: dep_pins,
         pin_manifests: manifests,
+        addressing: daemon_config::launcher::MemberAddressing::WholeSet,
     })
 }
 

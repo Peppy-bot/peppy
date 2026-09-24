@@ -166,6 +166,61 @@ pub struct DuplicateInstanceIdAcrossStack {
     pub tag_b: String,
 }
 
+/// Payload for [`ParsingError::BindingCopyFillsSlotTwice`]. One copy filled
+/// a slot that holds one member per copy with several of its instances.
+/// Boxed in the variant for the same `result_large_err` reason as the other
+/// binding payloads.
+///
+/// `Display` is hand-written because the count and the list are two readings
+/// of `members`.
+#[derive(Debug, Clone)]
+pub struct BindingCopyFillsSlotTwice {
+    /// The copy's name.
+    pub copy: String,
+    pub owner_instance_id: String,
+    pub link_id: String,
+    /// The ids the copy's fragment wrote for the instances it bound.
+    pub members: Vec<String>,
+}
+
+impl std::fmt::Display for BindingCopyFillsSlotTwice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            copy,
+            owner_instance_id,
+            link_id,
+            members,
+        } = self;
+        write!(
+            f,
+            "copy `{copy}` fills `{owner_instance_id}.links.{link_id}` with {} instances ({}), \
+             and `{link_id}` holds one member per copy. Name one of them under `{link_id}` in \
+             the option's `add_links`",
+            members.len(),
+            format_quoted_list(members)
+        )
+    }
+}
+
+impl std::error::Error for BindingCopyFillsSlotTwice {}
+
+/// Payload for [`ParsingError::BindingMemberOutsideCopy`]. A slot whose
+/// consumer addresses its members by copy was filled by an instance the
+/// launcher deploys outside every copy. Boxed in the variant for the same
+/// `result_large_err` reason as the other binding payloads.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "`{instance_id}` fills `{owner_instance_id}.links.{link_id}` from outside any copy, and \
+     every member of `{link_id}` belongs to a copy. Add the instance from a copy's own fragment \
+     with `add_links: {{ {link_id}: [\"<id>\"] }}` on `{owner_instance_id}`, and drop it from \
+     `{owner_instance_id}`'s `links`"
+)]
+pub struct BindingMemberOutsideCopy {
+    pub instance_id: String,
+    pub owner_instance_id: String,
+    pub link_id: String,
+}
+
 /// Payload for [`ParsingError::ClockMismatch`]. Two instances a
 /// clock-dependent connection joins read different clocks, so one side would
 /// be interpreting the other's timestamps against a clock that never produced
@@ -677,6 +732,16 @@ pub enum ParsingError {
     /// variants.
     #[error(transparent)]
     DuplicateInstanceIdAcrossStack(Box<DuplicateInstanceIdAcrossStack>),
+    /// One copy filled a slot holding one member per copy with several of
+    /// its instances. Boxed for the same `result_large_err` reason as the
+    /// other binding variants.
+    #[error(transparent)]
+    BindingCopyFillsSlotTwice(Box<BindingCopyFillsSlotTwice>),
+    /// An instance the launcher deploys outside every copy filled a slot
+    /// whose consumer addresses its members by copy. Boxed for the same
+    /// `result_large_err` reason as the other binding variants.
+    #[error(transparent)]
+    BindingMemberOutsideCopy(Box<BindingMemberOutsideCopy>),
 
     // -- launcher/CLI: clocks
     #[error(

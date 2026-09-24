@@ -34,6 +34,7 @@
 pub mod bridge;
 pub mod clock;
 pub mod error;
+pub mod fleet;
 pub mod representation;
 pub mod server;
 mod state;
@@ -41,7 +42,11 @@ pub mod tasks;
 
 pub use clock::Clock;
 pub use error::{BuildError, PublishError, ToolCallError};
+pub use fleet::{FleetMember, FleetSource, MemberAddress};
 pub use peppy_mcp_catalog as catalog;
-pub use server::{ExposureServer, ExposureServerBuilder, ExposureSet, ToolHandler};
+pub use server::{
+    ExposureServer, ExposureServerBuilder, ExposureSet, FleetHandle, Recipient, ToolCall,
+    ToolHandler,
+};
 pub use state::{AdmitToken, ResourceIngest};
 pub use tasks::{ActionContext, ActionExit, TaskHandler};

@@ -6,7 +6,7 @@ mod services;
 mod target;
 mod topics;
 
-pub(crate) use bound_set::PyBoundMember;
+pub(crate) use bound_set::{PyBoundMember, PyCopyTag};
 pub(crate) use observation::{
     PyObservationSlot, PyObservationSlotSet, PyObservedSource, PyObservedSubscription,
 };
@@ -286,6 +286,7 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging_module.add_class::<PyPeerInfo>()?;
     messaging_module.add_class::<PyPeerMember>()?;
     messaging_module.add_class::<PyBoundMember>()?;
+    messaging_module.add_class::<PyCopyTag>()?;
     messaging_module.add_class::<PyPeerSlot>()?;
     messaging_module.add_class::<PyPeerSlotSet>()?;
     messaging_module.add_class::<PyPeerSubscription>()?;

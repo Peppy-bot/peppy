@@ -1,22 +1,18 @@
 use std::path::PathBuf;
 
 use config::node::{NodeConfig, NodeConfigParser};
-use core_node_api::encoding::ArgumentOverride;
-use core_node_api::encoding::LauncherOrigin;
+use core_node_api::encoding::{LaunchJoin, LauncherOrigin};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
     AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, DeploymentSource,
-    ExternallyCoveredSlots, PairingValidationItem, PeppyLauncher, Placements, PreparedLauncher,
-    resolve_clocks, validate_link_plan,
+    ExternallyCoveredSlots, MemberAddressing, PairingValidationItem, PeppyLauncher, Placements,
+    PreparedLauncher, resolve_clocks, validate_link_plan,
 };
 use daemon_config::repository::EntryOrigin;
 use tracing::info;
 
 use super::launch::{infer_launcher_origin, parse_launcher_file};
 use crate::error::{Error, Result};
-
-/// The name a previewed copy runs under when none is given.
-const PREVIEW_COPY_NAME: &str = "preview";
 
 /// The machine a preview places every instance on.
 ///
@@ -27,44 +23,6 @@ const PREVIEW_COPY_NAME: &str = "preview";
 /// name alone; a clock refusal names the whole identity, so this name reaches
 /// an operator there.
 const PREVIEW_CORE_NODE: &str = "cn-preview";
-
-/// Preview one more copy joined onto the resolved launch.
-#[derive(clap::Args, Debug)]
-pub struct JoinPreview {
-    /// Include a copy of this option, as `stack join OPTION` would add it.
-    #[arg(long = "join", value_name = "OPTION")]
-    pub option: Option<String>,
-    /// The previewed copy's name: `-i` on `stack join`.
-    #[arg(long = "join-name", requires = "option", value_name = "NAME",
-        default_value = PREVIEW_COPY_NAME, value_parser = super::parse_copy_name)]
-    pub name: config::runtime::Name,
-    /// Select the copied option's own axes: `--with` on `stack join`.
-    // `resolve` carries both `--with` and `--join-with`, whose fields share a
-    // name, so this one spells its clap id out.
-    #[arg(id = "join_words", long = "join-with", requires = "option",
-        value_name = "option|axis=option", value_delimiter = ',',
-        value_parser = super::parse_with_word)]
-    pub words: Vec<String>,
-    /// Override a joined instance's argument with a JSON5 value:
-    /// `--set-arguments` on `stack join`.
-    #[arg(
-        long = "join-set-arguments",
-        requires = "option",
-        value_name = "INSTANCE.ARGUMENT=JSON5"
-    )]
-    pub arguments: Vec<ArgumentOverride>,
-}
-
-impl Default for JoinPreview {
-    fn default() -> Self {
-        Self {
-            option: None,
-            name: config::runtime::Name::new(PREVIEW_COPY_NAME).expect("a plain identifier"),
-            words: Vec::new(),
-            arguments: Vec::new(),
-        }
-    }
-}
 
 /// `peppy stack resolve <name|path> [--with ...]`: print the flat launcher
 /// a composed launch would run, and the report of what the selection did.
@@ -83,9 +41,13 @@ impl Default for JoinPreview {
 /// of the checkout the caches materialized for it; when one is not readable
 /// locally the check is skipped and says so, because a partial item list
 /// would misreport rules that need both endpoints.
-pub fn resolve(launcher_config_path: PathBuf, words: Vec<String>, join: JoinPreview) -> Result<()> {
+pub fn resolve(
+    launcher_config_path: PathBuf,
+    words: Vec<String>,
+    joins: Vec<LaunchJoin>,
+) -> Result<()> {
     let (document, report) =
-        resolve_rendered(&PeppyDirs::default(), launcher_config_path, &words, &join)?;
+        resolve_rendered(&PeppyDirs::default(), launcher_config_path, &words, &joins)?;
     for line in report {
         eprintln!("{line}");
     }
@@ -102,7 +64,7 @@ pub fn resolve_rendered(
     dirs: &PeppyDirs,
     launcher_config_path: PathBuf,
     words: &[String],
-    join: &JoinPreview,
+    joins: &[LaunchJoin],
 ) -> Result<(String, Vec<String>)> {
     let path = match infer_launcher_origin(launcher_config_path)? {
         LauncherOrigin::Fs(path) => path,
@@ -116,39 +78,32 @@ pub fn resolve_rendered(
     let prepared = PreparedLauncher::load(&parsed, &path)
         .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
     let composed = prepared
-        .launch(words)
+        .launch(words, joins)
         .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
-    let mut copies = composed.copies().to_vec();
-    let mut flat = composed.launcher;
     let mut lines = composed.report.render_lines();
-    if let Some(option) = &join.option {
-        let joined = prepared
-            .join(
-                daemon_config::launcher::JoinRequest {
-                    option,
-                    name: &join.name,
-                    words: &join.words,
-                    arguments: &join.arguments,
-                },
-                daemon_config::launcher::RunningStack {
-                    selection: &composed.selection,
-                    launcher: &flat,
-                },
-            )
-            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
-        flat = joined.launcher;
-        lines.push(format!(
-            "copy `{name}` of `{option}` joined:",
-            name = join.name
-        ));
-        lines.extend(joined.report.render_lines());
-        copies.push(joined.copy);
-    }
-    check_link_plan(&flat, &CopyMembership::of(&copies), dirs, &mut lines)?;
+    check_link_plan(
+        &composed.launcher,
+        &CopyMembership::of(composed.copies()),
+        dirs,
+        &mut lines,
+    )?;
 
-    let document = json5_pretty::to_string_pretty(&flat)
+    let document = json5_pretty::to_string_pretty(&composed.launcher)
         .map_err(|e| Error::ExecutionFailed(format!("cannot serialize the flat launcher: {e}")))?;
     Ok((document, lines))
+}
+
+/// One deployment's manifest as [`check_link_plan`] resolved it: the
+/// identity it declares, the deployment it came from, and how its node reads
+/// the sets its slots hold.
+struct CheckedManifest {
+    name: String,
+    tag: String,
+    /// The deployment's position in the flat launcher, which carries the
+    /// instances the manifest is judged against.
+    index: usize,
+    config: NodeConfig,
+    addressing: MemberAddressing,
 }
 
 /// Hold the flat plan to the launch-time link rules a client can check: the
@@ -189,7 +144,7 @@ fn check_link_plan(
     };
 
     let mut unavailable: Vec<String> = Vec::new();
-    let mut manifests: Vec<(String, String, usize, NodeConfig)> = Vec::new();
+    let mut manifests: Vec<CheckedManifest> = Vec::new();
     for (index, deployment) in flat.deployments.iter().enumerate() {
         let (name, tag) = match &deployment.source {
             DeploymentSource::Node { name, tag } => (name.as_str(), tag.as_str()),
@@ -201,12 +156,13 @@ fn check_link_plan(
                     info!("{message}")
                 }) {
                     Ok(plan) => {
-                        manifests.push((
-                            plan.name.as_str().to_owned(),
-                            plan.tag.clone(),
+                        manifests.push(CheckedManifest {
+                            name: plan.name.as_str().to_owned(),
+                            tag: plan.tag,
                             index,
-                            plan.config,
-                        ));
+                            config: plan.config,
+                            addressing: plan.addressing,
+                        });
                     }
                     Err(e) => unavailable.push(format!("{} ({e})", deployment.source.label())),
                 }
@@ -256,7 +212,13 @@ fn check_link_plan(
             // would otherwise have the plan judged against that node's slot
             // declarations under this one's name.
             Ok(config) if config.manifest.name.as_str() == name && config.manifest.tag == tag => {
-                manifests.push((name.to_string(), tag.to_string(), index, config));
+                manifests.push(CheckedManifest {
+                    name: name.to_string(),
+                    tag: tag.to_string(),
+                    index,
+                    config,
+                    addressing: MemberAddressing::WholeSet,
+                });
             }
             Ok(config) => {
                 unavailable.push(format!(
@@ -314,27 +276,30 @@ fn check_link_plan(
 
     let binding_items: Vec<BindingValidationItem<'_>> = manifests
         .iter()
-        .map(|(name, tag, index, config)| BindingValidationItem {
-            node_name: name,
-            node_tag: tag,
-            instances: &flat.deployments[*index].instances,
-            depends_on: config.manifest.depends_on.as_ref(),
-            implements: &config.manifest.implements,
+        .map(|checked| BindingValidationItem {
+            node_name: &checked.name,
+            node_tag: &checked.tag,
+            instances: &flat.deployments[checked.index].instances,
+            depends_on: checked.config.manifest.depends_on.as_ref(),
+            implements: &checked.config.manifest.implements,
+            addressing: &checked.addressing,
         })
         .collect();
     let pairing_items: Vec<PairingValidationItem<'_>> = manifests
         .iter()
-        .map(|(name, tag, index, config)| PairingValidationItem {
-            node_name: name,
-            node_tag: tag,
-            instances: &flat.deployments[*index].instances,
-            pairing_deps: config
+        .map(|checked| PairingValidationItem {
+            node_name: &checked.name,
+            node_tag: &checked.tag,
+            instances: &flat.deployments[checked.index].instances,
+            pairing_deps: checked
+                .config
                 .manifest
                 .depends_on
                 .as_ref()
                 .map(|d| d.pairings.as_slice())
                 .unwrap_or_default(),
-            observer_deps: config
+            observer_deps: checked
+                .config
                 .manifest
                 .depends_on
                 .as_ref()

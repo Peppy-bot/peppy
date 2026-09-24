@@ -2,11 +2,13 @@
 //! then run as a node and serve.
 
 use crate::bridges::{self, PreparedExposure};
+use crate::fleet;
 use daemon_config::mcp_deployment::{
     McpDeploymentError, McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, SPEC_ENV_VAR,
     endpoint_label, plan_deployment,
 };
 use message_codec::consumer::ConsumerIdentity;
+use peppy_mcp_catalog::BundleSurface;
 use peppy_mcp_runtime::{Clock, ExposureServer, ExposureSet};
 use peppylib::runtime::{EndpointBinding, NodeBuilder, NodeRunner, bind_preferred};
 use serde::Deserialize;
@@ -34,6 +36,13 @@ pub enum ServeError {
     Build(#[from] peppy_mcp_runtime::BuildError),
     #[error("cannot bind 127.0.0.1:{port}: {source}")]
     Bind { port: u16, source: std::io::Error },
+    #[error(
+        "the stack binds members exposure `{exposure}` cannot serve:\n{problems}\nA per-robot \
+         surface is filled by copies alone, each target once per robot unless the target \
+         declares an argument: bind each instance from its copy's fragment with `add_links`, \
+         one per target"
+    )]
+    Fleet { exposure: String, problems: String },
     #[error(transparent)]
     Node(#[from] peppylib::PeppyError),
 }
@@ -77,7 +86,7 @@ pub fn serve() -> Result<(), ServeError> {
     Ok(())
 }
 
-/// The node's setup: bridges bound to the launcher's producers, one server
+/// The node's setup: bridges to the producers of each target, one server
 /// per exposure, the listener, and the pumps that feed the resources.
 async fn run(
     arguments: ServeArguments,
@@ -100,6 +109,7 @@ async fn run(
 
     let mut servers = Vec::with_capacity(prepared.len());
     let mut pumps = Vec::new();
+    let mut followers = Vec::new();
     let mut announcements = Vec::with_capacity(prepared.len());
     for exposure in prepared {
         announcements.push((
@@ -109,17 +119,31 @@ async fn run(
             ),
             exposure.bundle.exposure.endpoint_path(),
         ));
+        // A per-robot exposure reads its fleet from the bound sets of its
+        // targets; a fixed one binds each target to the launcher's producer.
+        let targets: Vec<String> = exposure
+            .bundle
+            .surface
+            .contracts()
+            .iter()
+            .map(|pin| pin.link_id.clone())
+            .collect();
+        let per_robot = matches!(exposure.bundle.surface, BundleSurface::PerRobot { .. });
+        let label = format!(
+            "{}:{}",
+            exposure.bundle.exposure.name, exposure.bundle.exposure.tag
+        );
         let mut builder = ExposureServer::builder(exposure.bundle).with_clock(clock.clone());
         for tool in exposure.tools {
             let tool = Arc::new(tool);
             let name = tool.name.clone();
             let node_runner = Arc::clone(&node_runner);
             let identity = identity.clone();
-            builder = builder.with_tool(name, move |input: serde_json::Value| {
+            builder = builder.with_tool(name, move |call: peppy_mcp_runtime::ToolCall| {
                 let tool = Arc::clone(&tool);
                 let node_runner = Arc::clone(&node_runner);
                 let identity = identity.clone();
-                async move { bridges::call_tool(&tool, &node_runner, &identity, input).await }
+                async move { bridges::call_tool(&tool, &node_runner, &identity, call).await }
             });
         }
         for task in exposure.tasks {
@@ -127,24 +151,49 @@ async fn run(
             let name = task.name.clone();
             let node_runner = Arc::clone(&node_runner);
             let identity = identity.clone();
-            builder = builder.with_task(
-                name,
-                move |input: serde_json::Value, context: peppy_mcp_runtime::ActionContext| {
-                    let task = Arc::clone(&task);
-                    let node_runner = Arc::clone(&node_runner);
-                    let identity = identity.clone();
-                    async move {
-                        bridges::run_task(&task, &node_runner, &identity, input, context).await
-                    }
-                },
-            );
+            builder =
+                builder.with_task(
+                    name,
+                    move |call: peppy_mcp_runtime::ToolCall,
+                          context: peppy_mcp_runtime::ActionContext| {
+                        let task = Arc::clone(&task);
+                        let node_runner = Arc::clone(&node_runner);
+                        let identity = identity.clone();
+                        async move {
+                            bridges::run_task(&task, &node_runner, &identity, call, context).await
+                        }
+                    },
+                );
+        }
+        if per_robot {
+            let node_runner = Arc::clone(&node_runner);
+            let targets = targets.clone();
+            builder = builder.with_fleet(move || fleet::members(&node_runner, &targets));
         }
         let server = builder.build()?;
-        for resource in exposure.resources {
-            let ingest = server
-                .ingest(&resource.name)
-                .expect("the bundle the server was built from exposes this resource");
-            pumps.push((resource, ingest));
+        match server.fleet() {
+            Some(handle) => {
+                let problems = handle.problems();
+                if !problems.is_empty() {
+                    return Err(ServeError::Fleet {
+                        exposure: label,
+                        problems: problems
+                            .iter()
+                            .map(|problem| format!("  - {problem}"))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    });
+                }
+                followers.push((targets, exposure.resources, handle));
+            }
+            None => {
+                for resource in exposure.resources {
+                    let ingest = server
+                        .ingest(&resource.name)
+                        .expect("the bundle the server was built from exposes this resource");
+                    pumps.push((resource, ingest));
+                }
+            }
         }
         servers.push(server);
     }
@@ -198,7 +247,17 @@ async fn run(
         tokio::spawn(bridges::pump_resource(
             Arc::clone(&node_runner),
             resource,
-            ingest,
+            // A fixed surface's target is bound to one producer, and every
+            // message it publishes fills the one resource.
+            move |_producer| Some(ingest.clone()),
+        ));
+    }
+    for (targets, resources, handle) in followers {
+        tokio::spawn(fleet::follow(
+            Arc::clone(&node_runner),
+            targets,
+            resources,
+            handle,
         ));
     }
     // The endpoint outlives this setup; a `serve` that stops on its own

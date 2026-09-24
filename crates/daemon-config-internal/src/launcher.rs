@@ -12,12 +12,12 @@ mod types;
 // The conventional filename is `peppy_launcher.json5` for standalone projects,
 // but the parser is filename-agnostic; repository discovery accepts any
 // `.json5` file whose body declares the launcher schema.
-pub use bindings::{BindingValidationItem, validate_bindings};
+pub use bindings::{BindingValidationItem, MemberAddressing, SETS_READ_WHOLE, validate_bindings};
 pub use clocks::{
     ClockIncarnations, ResolvedClocks, mint_incarnation, resolve_clocks, validate_clock_connections,
 };
 pub use compose::{
-    AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport,
+    AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyInstance,
     CopyMembership, CopyRecord, JoinRequest, PreparedLauncher, RunningStack,
     SELF_COPY_NAME_REFUSAL, SkipReason, SkippedAdjustment, UnitSelection, check_composition,
 };

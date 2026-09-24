@@ -390,7 +390,10 @@ mod tests {
                     config::runtime::BoundMember::from(ProducerRef::new("core_a", "cam2")),
                     config::runtime::BoundMember {
                         producer: ProducerRef::new("core_a", "bravo_cam"),
-                        copy: Some(config::runtime::Name::new("bravo").unwrap()),
+                        copy: Some(config::runtime::CopyTag {
+                            name: config::runtime::Name::new("bravo").unwrap(),
+                            instance_id: config::runtime::Name::new("cam").unwrap(),
+                        }),
                     },
                 ])
                 .expect("distinct producers"),

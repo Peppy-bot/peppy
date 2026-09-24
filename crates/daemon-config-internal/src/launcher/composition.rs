@@ -328,9 +328,10 @@ where
 
 /// One option entry of a `deployments` list, `{ <axis>: "<option>" }`: the
 /// option the document deploys on that axis. On a `zero_or_more` axis the
-/// entry lists the copies a launch starts under `instances`; its own `with`,
-/// `arguments` and `adjustments` apply to every copy of the option, the
-/// ones it lists and the ones `stack join` adds, a copy's own winning per
+/// entry lists the copies a launch starts under `instances`, which may be
+/// none; its own `with`, `arguments` and `adjustments` apply to every copy
+/// of the option, the ones it lists, the ones `--join OPTION:NAME` starts
+/// with the launch and the ones `stack join` adds, a copy's own winning per
 /// axis and per argument and running after the entry's.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptionDeployment {
@@ -1109,16 +1110,16 @@ pub(crate) fn validate_axes(axes: &[ComponentAxis], scope: AxisScope) -> Result<
             }
         }
     }
-    // `peppy stack join OPTION` names a copy by its option alone, so the
-    // options of the axes that run as copies are distinct across those axes.
+    // `peppy stack join OPTION:NAME` picks the axis by the option alone, so
+    // the options of the axes that run as copies are distinct across those axes.
     let mut copy_options: BTreeMap<&str, &str> = BTreeMap::new();
     for axis in axes.iter().filter(|axis| axis.cardinality.is_repeatable()) {
         for option in axis.options.keys() {
             if let Some(first) = copy_options.insert(option, &axis.name) {
                 return Err(format!(
                     "`{option}` is an option of both `{first}` and `{}`, which run as copies; \
-                     `peppy stack join {option}` would not say which one, so give one of them \
-                     another name",
+                     `peppy stack join {option}:NAME` would not say which one, so give one of \
+                     them another name",
                     axis.name
                 ));
             }
@@ -1186,15 +1187,11 @@ pub(crate) fn validate_option_deployments(
                 ));
             }
             ComponentCardinality::ZeroOrMore => {
-                if entry.instances.is_empty() {
-                    return Err(format!(
-                        "axis `{}` runs as named copies: `{{ {}: \"{}\", instances: [{{ \
-                         instance_id: \"alpha\" }}] }}`",
-                        entry.axis, entry.axis, entry.option
-                    ));
-                }
                 // One entry speaks for every copy of its option, the ones a
-                // join adds included, so an option has one entry to ask.
+                // join adds included, so an option has one entry to ask. An
+                // entry listing no copy says how every copy of the option is
+                // set up, for `--join OPTION:NAME` at launch and for a later
+                // join.
                 if !copied_options.insert((&entry.axis, &entry.option)) {
                     return Err(format!(
                         "`deployments` deploys `{}: \"{}\"` twice; list every copy of the \
@@ -1926,8 +1923,8 @@ mod tests {
             r#"{ robot: "sim", instances: [{ instance_id: "alpha" }, { instance_id: "bravo" }] }"#,
         )
         .expect("copies deploy");
-        let error = deployed(ROBOT_AXIS, r#"{ robot: "sim" }"#).expect_err("copies need names");
-        assert!(error.contains("instance_id"), "got: {error}");
+        deployed(ROBOT_AXIS, r#"{ robot: "sim" }"#)
+            .expect("an entry listing no copy says how every copy of the option is set up");
         let error = deployed(
             ROBOT_AXIS,
             r#"{ robot: "sim", instances: [{ instance_id: "alpha" }] },

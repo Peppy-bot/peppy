@@ -25,6 +25,11 @@ pub enum BuildError {
     /// Two servers in a set serve the same exposure identity, which is one
     /// endpoint path.
     DuplicateExposure { name: String, tag: String },
+    /// A per-robot bundle was built without the source of its fleet.
+    MissingFleetSource,
+    /// A fleet source was registered for a bundle that is not a per-robot
+    /// surface.
+    UnexpectedFleetSource,
 }
 
 impl fmt::Display for BuildError {
@@ -61,6 +66,16 @@ impl fmt::Display for BuildError {
             Self::DuplicateExposure { name, tag } => {
                 write!(f, "exposure `{name}:{tag}` is listed more than once")
             }
+            Self::MissingFleetSource => {
+                write!(
+                    f,
+                    "a per-robot bundle needs a fleet source; register one with `with_fleet`"
+                )
+            }
+            Self::UnexpectedFleetSource => write!(
+                f,
+                "a fleet source was registered, but the bundle declares no `robots`"
+            ),
         }
     }
 }

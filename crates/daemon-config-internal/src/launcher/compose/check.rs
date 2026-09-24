@@ -2,7 +2,7 @@
 //! selection of its axes, and every copy it can run, held to the same
 //! checks a launch would run.
 
-use super::super::composition::ComponentAxis;
+use super::super::composition::{ArgumentOverrides, ComponentAxis, CopyEntry};
 use super::super::types::PeppyLauncher;
 use super::constraints::{
     ConstraintInPlay, ConstraintScope, LAUNCHER, constraint_satisfied, constraints_in_play,
@@ -25,7 +25,7 @@ use std::path::Path;
 /// exists, parses, provides, and guards cleanly), and the skipped
 /// cross-combination checks are reported as a problem: a check that skips
 /// combinations must fail or it looks like it checked them all.
-const COMBINATION_CEILING: usize = 2048;
+const COMBINATION_CEILING: usize = 4096;
 
 /// The name a checked copy runs under, numbered past a stack that
 /// declares it as a core node link or prefixes an instance id with it.
@@ -133,7 +133,7 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
 /// file leaves for `--with`, on the launcher or on a file copy, has no bare
 /// launch, and that is the author's call.
 fn check_bare_launch(prepared: &PreparedLauncher, label: &str) -> Vec<String> {
-    match prepared.launch(&[]) {
+    match prepared.launch(&[], &[]) {
         Ok(_)
         | Err(CompositionError::UnresolvedAxis { .. })
         | Err(CompositionError::UnresolvedCopyAxis { .. }) => Vec::new(),
@@ -225,15 +225,40 @@ fn check_file_copies_over(
         let mut variants: Vec<(String, ComposedCopy)> = Vec::new();
         for entry in &launcher.option_deployments {
             let loaded = prepared.loaded.option(&entry.axis, &entry.option);
-            for instance in &entry.instances {
+            // An entry of a repeatable axis listing no copy is composed once
+            // under the option's own name, since every copy of the option
+            // starts from it.
+            let repeatable = launcher
+                .repeatable_axes()
+                .any(|axis| axis.name == entry.axis);
+            let launch_joined = (repeatable && entry.instances.is_empty()).then(|| CopyEntry {
+                instance_id: Name::new(&entry.option).expect("an option name is a name"),
+                with: BTreeMap::new(),
+                arguments: ArgumentOverrides::default(),
+                adjustments: Vec::new(),
+            });
+            for instance in entry.instances.iter().chain(launch_joined.iter()) {
                 let settings = entry.settings_for(instance);
-                let file_copy = format!("{} + file copy `{}`", stack.echo(), instance.instance_id);
+                let file_copy = if launch_joined.is_some() {
+                    format!(
+                        "{} + launch --join {}:{}",
+                        stack.echo(),
+                        entry.option,
+                        instance.instance_id
+                    )
+                } else {
+                    format!("{} + file copy `{}`", stack.echo(), instance.instance_id)
+                };
                 let attempts: Vec<(String, BTreeMap<String, String>)> = match resolve_copy(
                     loaded,
                     &entry.axis,
                     instance.instance_id.as_str(),
                     &settings.with,
-                    CopyOrigin::File,
+                    if launch_joined.is_some() {
+                        CopyOrigin::LaunchJoin
+                    } else {
+                        CopyOrigin::File
+                    },
                 ) {
                     Ok(_) => vec![(file_copy.clone(), settings.with.clone())],
                     Err(CompositionError::UnresolvedCopyAxis { axis, .. }) => loaded

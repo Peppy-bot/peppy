@@ -7,7 +7,8 @@
 
 use capnp::message::Builder;
 use config::runtime::{
-    BoundMember, BoundProducers, CoreNodeName, Name, ObservedPeer, ProducerRef, first_duplicate,
+    BoundMember, BoundProducers, CopyTag, CoreNodeName, Name, ObservedPeer, ProducerRef,
+    first_duplicate,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -576,23 +577,28 @@ fn write_instance_address(
 }
 
 /// Writes one member of a producer-binding slot into an initialized
-/// `BoundMember` builder; a member outside any copy writes an empty copy.
+/// `BoundMember` builder; a member outside any copy writes an empty copy and
+/// an empty id in it.
 fn write_bound_member(
     mut member: federation_capnp::bound_member::Builder<'_>,
     bound: &BoundMember,
 ) {
     write_instance_address(member.reborrow().init_producer(), &bound.producer);
-    member.set_copy(bound.copy.as_ref().map(Name::as_str).unwrap_or(""));
+    let (copy, instance_id_in_copy) = CopyTag::to_wire(bound.copy.as_ref());
+    member.set_copy(copy);
+    member.set_instance_id_in_copy(instance_id_in_copy);
 }
 
-/// Inverse of [`write_bound_member`]. An empty copy is a member outside any
-/// copy.
+/// Inverse of [`write_bound_member`]. Two empty texts are a member outside
+/// any copy, and half a tag is refused.
 fn read_bound_member(member: federation_capnp::bound_member::Reader<'_>) -> Result<BoundMember> {
     Ok(BoundMember {
         producer: read_instance_address(member.get_producer()?, "sets.producers")?,
-        copy: optional_text(member.get_copy()?.to_str()?)
-            .map(|copy| read_name(&copy, "sets.producers.copy"))
-            .transpose()?,
+        copy: CopyTag::from_wire(
+            member.get_copy()?.to_str()?,
+            member.get_instance_id_in_copy()?.to_str()?,
+        )
+        .map_err(|e| crate::Error::Decoding(format!("`sets.producers.copy`: {e}")))?,
     })
 }
 
@@ -909,6 +915,15 @@ impl crate::encoding::Wire for RelationshipNotificationAck {
 mod tests {
     use super::*;
 
+    /// The tag a launch stamps on an instance of a copy: the copy's name and
+    /// the id its fragment wrote.
+    fn copy_tag(name: &str, instance_id: &str) -> CopyTag {
+        CopyTag {
+            name: Name::new(name).expect("a copy name"),
+            instance_id: Name::new(instance_id).expect("an instance id"),
+        }
+    }
+
     #[test]
     fn sets_update_round_trips_producer_and_observer_sets_in_plan_order() {
         let pairing = |instance: &str| ObservationTarget {
@@ -933,11 +948,11 @@ mod tests {
                         BoundProducers::try_from(vec![
                             BoundMember {
                                 producer: ProducerRef::new("cn-robot", "bravo_arm_inst"),
-                                copy: Some(Name::new("bravo").unwrap()),
+                                copy: Some(copy_tag("bravo", "arm_inst")),
                             },
                             BoundMember {
                                 producer: ProducerRef::new("cn-cloud", "alpha_arm_inst"),
-                                copy: Some(Name::new("alpha").unwrap()),
+                                copy: Some(copy_tag("alpha", "arm_inst")),
                             },
                             BoundMember::from(ProducerRef::new("cn-robot", "fixed_arm_inst")),
                         ])
@@ -975,6 +990,35 @@ mod tests {
             ParticipantSetsUpdateRequest::decode(&request.encode().unwrap()).unwrap(),
             request
         );
+    }
+
+    /// Half a copy tag never leaves an encoder, so the decoder is the only
+    /// gate: a copy with no id inside it, and an id inside no copy.
+    #[test]
+    fn sets_update_refuses_half_a_copy_tag() {
+        for (copy, instance_id_in_copy) in [("alpha", ""), ("", "arm_inst")] {
+            let mut builder = Builder::new_default();
+            {
+                let mut request = builder
+                    .init_root::<federation_capnp::participant_sets_update_request::Builder>();
+                request.set_launch_id("launch-abc123");
+                let mut set = request.init_sets(1).get(0);
+                set.set_instance_id("planner_inst");
+                set.set_link_id("robots");
+                let mut member = set.init_members().init_producers(1).get(0);
+                member.set_copy(copy);
+                member.set_instance_id_in_copy(instance_id_in_copy);
+                let mut address = member.init_producer();
+                address.set_core_node("cn-robot");
+                address.set_instance_id("alpha_arm_inst");
+            }
+            let error = ParticipantSetsUpdateRequest::decode(&encode_message(&builder).unwrap())
+                .expect_err("half a copy tag is refused");
+            assert!(
+                error.to_string().contains("Copy tag"),
+                "copy `{copy}`, id in copy `{instance_id_in_copy}`: {error}"
+            );
+        }
     }
 
     #[test]

@@ -85,6 +85,22 @@ impl BoundSetSubscription {
     }
 }
 
+/// The watch channel of a consumer slot's bound set: its current members and
+/// every set the daemon delivers after. A node holding members of several
+/// copies reads which copy each belongs to from it. Fails on a slot the
+/// manifest does not declare.
+pub fn watch_bound_set(
+    node_runner: &NodeRunner,
+    link_id: &str,
+) -> Result<watch::Receiver<BoundSetState>> {
+    node_runner
+        .processor()
+        .bound_set_watch(link_id)
+        .ok_or_else(|| Error::UnknownProducerSlot {
+            link_id: link_id.to_string(),
+        })
+}
+
 /// Subscribe to one topic across a consumer slot's bound producer set, for
 /// every cardinality. Spliced by the generated consumed-topic `subscribe()`
 /// call sites; `from_target` is the node or contract target the producers serve
@@ -99,12 +115,7 @@ pub async fn subscribe_bound_set(
     qos: QoSProfile,
 ) -> Result<BoundSetSubscription> {
     let processor = node_runner.processor();
-    let watch_rx =
-        processor
-            .bound_set_watch(link_id)
-            .ok_or_else(|| Error::UnknownProducerSlot {
-                link_id: link_id.to_string(),
-            })?;
+    let watch_rx = watch_bound_set(node_runner, link_id)?;
     subscribe_bound_set_with_watch(
         node_runner.messenger().clone(),
         processor.bound_core_node().to_string(),

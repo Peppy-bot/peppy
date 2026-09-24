@@ -94,7 +94,7 @@ pub(crate) fn resolve_exposure_deployment(
         )?;
         let document = PeppyMcpExposureParser::from_content(&exposure.content)
             .map_err(|e| format!("exposure `{reference}` does not parse: {e}"))?;
-        for target in document.targets.values() {
+        for (_, target, _) in document.surface.targets() {
             let key = (
                 target.contract.name.as_str().to_owned(),
                 target.contract.tag.clone(),

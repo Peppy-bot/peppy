@@ -3195,7 +3195,7 @@ async fn copies_joining_late_bind_the_stacks_running_domain() {
         require_success(
             fleet
                 .coordinator
-                .peppy(&["stack", "join", "probe", "-i", name, "--place", host])
+                .peppy(&["stack", "join", &format!("probe:{name}"), "--place", host])
                 .await,
             "join late clock consumer",
         );
@@ -3258,7 +3258,7 @@ async fn copies_join_and_remove_with_an_offline_neighbor() {
         require_success(
             federation
                 .robot
-                .peppy(&["stack", "join", "arm", "-i", name, "--place", host])
+                .peppy(&["stack", "join", &format!("arm:{name}"), "--place", host])
                 .await,
             "join copy",
         );
@@ -3267,7 +3267,7 @@ async fn copies_join_and_remove_with_an_offline_neighbor() {
     require_success(
         federation
             .robot
-            .peppy(&["stack", "join", "arm", "-i", "charlie"])
+            .peppy(&["stack", "join", "arm:charlie"])
             .await,
         "join on a healthy host while an unrelated neighbor is offline",
     );
@@ -3347,10 +3347,7 @@ async fn a_join_refused_by_a_machine_with_its_own_stack_leaves_that_stack_alone(
         .robot
         .peppy(&[
             "stack",
-            "join",
-            "arm",
-            "-i",
-            "alpha",
+            "join", "arm:alpha",
             "--place",
             &federation.cloud_core_node,
         ])
@@ -3396,10 +3393,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
             .robot
             .peppy(&[
                 "stack",
-                "join",
-                "arm",
-                "-i",
-                "bravo",
+                "join", "arm:bravo",
                 "--place",
                 &federation.cloud_core_node,
             ])
@@ -3411,10 +3405,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
         .robot
         .peppy(&[
             "stack",
-            "join",
-            "cam",
-            "-i",
-            "failed",
+            "join", "cam:failed",
             "--place",
             &place_on_cloud,
         ])
@@ -3450,10 +3441,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
             .robot
             .peppy(&[
                 "stack",
-                "join",
-                "cam",
-                "-i",
-                "failed",
+                "join", "cam:failed",
                 "--place",
                 &place_on_cloud,
             ])
@@ -3496,10 +3484,7 @@ async fn a_join_whose_peer_work_outlives_its_deadline_leaves_nothing_on_the_peer
         .robot
         .peppy(&[
             "stack",
-            "join",
-            "cam",
-            "-i",
-            "late",
+            "join", "cam:late",
             "--place",
             &federation.cloud_core_node,
             "--max-timeout-secs",
@@ -3547,7 +3532,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
     require_success(
         federation
             .robot
-            .peppy(&["stack", "join", "arm", "-i", "alpha"])
+            .peppy(&["stack", "join", "arm:alpha"])
             .await,
         "join local alpha",
     );
@@ -3557,10 +3542,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
                 .robot
                 .peppy(&[
                     "stack",
-                    "join",
-                    "arm",
-                    "-i",
-                    name,
+                    "join", &format!("arm:{name}"),
                     "--place",
                     &federation.cloud_core_node,
                 ])
@@ -3615,10 +3597,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
         .robot
         .peppy(&[
             "stack",
-            "join",
-            "arm",
-            "-i",
-            "failed",
+            "join", "arm:failed",
             "--place",
             &federation.cloud_core_node,
         ])
@@ -3682,10 +3661,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
             .robot
             .peppy(&[
                 "stack",
-                "join",
-                "arm",
-                "-i",
-                "bravo",
+                "join", "arm:bravo",
                 "--place",
                 &federation.cloud_core_node,
             ])
@@ -4105,15 +4081,8 @@ fn peer_hold_violations(
 /// and one join's from the next's.
 async fn join_station(federation: &Federation, station: &Station) {
     let label = format!("commander_inst.label=\"{}\"", station.label());
-    let mut args = vec![
-        "stack",
-        "join",
-        "station",
-        "-i",
-        station.name,
-        "--set-arguments",
-        &label,
-    ];
+    let copy = format!("station:{}", station.name);
+    let mut args = vec!["stack", "join", &copy, "--set-arguments", &label];
     if let Some(core_node) = station.placement.core_node(federation) {
         args.extend(["--place", core_node]);
     }
@@ -4296,7 +4265,8 @@ async fn wait_for_log_count(daemon: &Daemon, instance_id: &str, marker: &str, co
 
 /// The members slot `link_id` of `instance_id` holds, as a `stack list --json`
 /// section records them, each as `instance@core_node` in plan order followed
-/// by ` [copy NAME]` for a member a copy brought.
+/// by ` [copy NAME/IN_COPY]` for a member a copy brought: the copy's name and
+/// the id its fragment wrote for the instance.
 fn recorded_bindings(section: &serde_json::Value, instance_id: &str, link_id: &str) -> Vec<String> {
     let instance = section["stack"]["nodes"]
         .as_array()
@@ -4310,9 +4280,14 @@ fn recorded_bindings(section: &serde_json::Value, instance_id: &str, link_id: &s
         .into_iter()
         .flatten()
         .map(|member| {
-            let copy = member["copy"]
+            let copy = member["copy"]["name"]
                 .as_str()
-                .map(|copy| format!(" [copy {copy}]"))
+                .map(|name| {
+                    let in_copy = member["copy"]["instance_id"]
+                        .as_str()
+                        .expect("a member of a copy names the id inside it");
+                    format!(" [copy {name}/{in_copy}]")
+                })
                 .unwrap_or_default();
             format!(
                 "{}@{}{copy}",
@@ -4858,15 +4833,8 @@ async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
     ];
     for (name, value, place) in leaders {
         let argument = format!("leader_inst.value={value}");
-        let mut args = vec![
-            "stack",
-            "join",
-            "limb",
-            "-i",
-            name,
-            "--set-arguments",
-            &argument,
-        ];
+        let copy = format!("limb:{name}");
+        let mut args = vec!["stack", "join", &copy, "--set-arguments", &argument];
         if let Some(core_node) = place {
             args.extend(["--place", core_node]);
         }
@@ -4958,10 +4926,7 @@ async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
             .robot
             .peppy(&[
                 "stack",
-                "join",
-                "limb",
-                "-i",
-                "bravo",
+                "join", "limb:bravo",
                 "--set-arguments",
                 "leader_inst.value=2",
                 "--place",
@@ -5046,14 +5011,14 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
     require_delivered(
         federation
             .robot
-            .peppy(&["stack", "join", "station", "-i", "alpha", "--place", cloud])
+            .peppy(&["stack", "join", "station:alpha", "--place", cloud])
             .await,
         "join a station on the peer",
     );
     require_delivered(
         federation
             .robot
-            .peppy(&["stack", "join", "station", "-i", "bravo"])
+            .peppy(&["stack", "join", "station:bravo"])
             .await,
         "join a station on the coordinator",
     );
@@ -5062,8 +5027,8 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
         "the grown gates",
     );
     let grown = vec![
-        format!("alpha_commander_inst@{cloud} [copy alpha]"),
-        format!("bravo_commander_inst@{robot} [copy bravo]"),
+        format!("alpha_commander_inst@{cloud} [copy alpha/commander_inst]"),
+        format!("bravo_commander_inst@{robot} [copy bravo/commander_inst]"),
     ];
     assert_eq!(gates(&listed), (grown.clone(), grown), "{listed}");
     let bravo = coordinator_section(&listed, robot)["copies"]
@@ -5090,7 +5055,9 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
         federation.robot.peppy(&["stack", "list", "--json"]).await,
         "the shrunken gates",
     );
-    let shrunk = vec![format!("bravo_commander_inst@{robot} [copy bravo]")];
+    let shrunk = vec![format!(
+        "bravo_commander_inst@{robot} [copy bravo/commander_inst]"
+    )];
     assert_eq!(gates(&listed), (shrunk.clone(), shrunk), "{listed}");
 
     require_success(
@@ -5152,14 +5119,14 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     require_delivered(
         federation
             .robot
-            .peppy(&["stack", "join", "member", "-i", "alpha"])
+            .peppy(&["stack", "join", "member:alpha"])
             .await,
         "join alpha on the coordinator",
     );
     require_delivered(
         federation
             .robot
-            .peppy(&["stack", "join", "member", "-i", "bravo", "--place", &cloud])
+            .peppy(&["stack", "join", "member:bravo", "--place", &cloud])
             .await,
         "join bravo on the peer",
     );
@@ -5168,14 +5135,14 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     consumer
         .wait_for_node_log(
             "consumer_inst",
-            "members arms=[fixed_arm_inst:none,alpha_arm_inst:alpha,bravo_arm_inst:bravo] \
+            "members arms=[fixed_arm_inst:none,alpha_arm_inst:alpha/arm_inst,bravo_arm_inst:bravo/arm_inst] \
               leaders=[alpha_leader_inst,bravo_leader_inst]\n",
         )
         .await;
     observer
         .wait_for_node_log(
             "observer_inst",
-            "members arms=[fixed_arm_inst:none,alpha_arm_inst:alpha,bravo_arm_inst:bravo] \
+            "members arms=[fixed_arm_inst:none,alpha_arm_inst:alpha/arm_inst,bravo_arm_inst:bravo/arm_inst] \
               leaders=[alpha_leader_inst,bravo_leader_inst]\n",
         )
         .await;
@@ -5196,34 +5163,34 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     consumer
         .wait_for_node_log(
             "consumer_inst",
-            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo] leaders=[bravo_leader_inst]\n",
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo/arm_inst] leaders=[bravo_leader_inst]\n",
         )
         .await;
     observer
         .wait_for_node_log(
             "observer_inst",
-            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo] leaders=[bravo_leader_inst]\n",
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo/arm_inst] leaders=[bravo_leader_inst]\n",
         )
         .await;
 
     require_delivered(
         federation
             .robot
-            .peppy(&["stack", "join", "member", "-i", "alpha"])
+            .peppy(&["stack", "join", "member:alpha"])
             .await,
         "rejoin alpha on the coordinator",
     );
     consumer
         .wait_for_node_log(
             "consumer_inst",
-            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo,alpha_arm_inst:alpha] \
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo/arm_inst,alpha_arm_inst:alpha/arm_inst] \
               leaders=[bravo_leader_inst,alpha_leader_inst]\n",
         )
         .await;
     observer
         .wait_for_node_log(
             "observer_inst",
-            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo,alpha_arm_inst:alpha] \
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo/arm_inst,alpha_arm_inst:alpha/arm_inst] \
               leaders=[bravo_leader_inst,alpha_leader_inst]\n",
         )
         .await;
@@ -5286,7 +5253,7 @@ async fn a_join_growing_a_set_whose_instance_is_gone_is_refused_and_changes_noth
 
     let refused = federation
         .robot
-        .peppy(&["stack", "join", "station", "-i", "alpha"])
+        .peppy(&["stack", "join", "station:alpha"])
         .await;
     assert!(!refused.success(), "{}", refused.text);
     assert!(
@@ -5338,7 +5305,7 @@ async fn a_set_on_an_offline_machine_refuses_a_join_and_stays_on_removal() {
     require_success(
         federation
             .robot
-            .peppy(&["stack", "join", "station", "-i", "alpha"])
+            .peppy(&["stack", "join", "station:alpha"])
             .await,
         "join alpha while both machines are live",
     );
@@ -5346,7 +5313,7 @@ async fn a_set_on_an_offline_machine_refuses_a_join_and_stays_on_removal() {
 
     let refused = federation
         .robot
-        .peppy(&["stack", "join", "station", "-i", "bravo"])
+        .peppy(&["stack", "join", "station:bravo"])
         .await;
     assert!(!refused.success(), "{}", refused.text);
     assert!(
@@ -5366,7 +5333,9 @@ async fn a_set_on_an_offline_machine_refuses_a_join_and_stays_on_removal() {
     assert_eq!(copy_names(&coordinator), ["alpha"], "{listed}");
     assert_eq!(
         recorded_bindings(&coordinator, COORDINATOR_GATE, "commander"),
-        [format!("alpha_commander_inst@{robot} [copy alpha]")],
+        [format!(
+            "alpha_commander_inst@{robot} [copy alpha/commander_inst]"
+        )],
         "{listed}"
     );
 

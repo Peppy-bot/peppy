@@ -7,7 +7,9 @@ mod pairing;
 mod processor;
 mod slot_stream;
 
-pub use binding::{BoundSetSubscription, subscribe_bound_set, subscribe_bound_set_with_watch};
+pub use binding::{
+    BoundSetSubscription, subscribe_bound_set, subscribe_bound_set_with_watch, watch_bound_set,
+};
 pub use builder::{NodeBuilder, NodeContext, StandaloneConfig};
 pub use endpoints::{AnnouncedEndpoint, EndpointBinding, bind_preferred};
 pub use node_runner::NodeRunner;

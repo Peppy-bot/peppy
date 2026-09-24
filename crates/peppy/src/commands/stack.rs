@@ -8,7 +8,7 @@ mod reset;
 mod resolve;
 
 pub use list::{list_nodes_collecting, list_nodes_json_collecting};
-pub use resolve::{JoinPreview, resolve_rendered};
+pub use resolve::resolve_rendered;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,14 +43,11 @@ pub enum StackCommands {
     /// `one_or_more` or `zero_or_more` slot, which `stack list` then shows
     /// under the copy.
     Join {
-        /// The option to copy: one of a `zero_or_more` axis of the running
-        /// launcher.
-        #[arg(value_name = "OPTION")]
-        option: String,
-        /// The copy's name: the prefix of every instance id it creates and
-        /// its placement link.
-        #[arg(short = 'i', long = "instance-id", value_name = "NAME", value_parser = parse_copy_name)]
-        name: config::runtime::Name,
+        /// The copy to add: an option of a `zero_or_more` axis of the running
+        /// launcher, and the name the copy runs under, which prefixes every
+        /// instance id it creates and is its placement link.
+        #[arg(value_name = "OPTION:NAME", value_parser = parse_copy_reference)]
+        copy: core_node_api::encoding::LaunchJoin,
         #[command(flatten)]
         with: WithWords,
         /// Override an argument of one of the copy's instances with a JSON5
@@ -95,7 +92,7 @@ pub enum StackCommands {
         #[command(flatten)]
         with: WithWords,
         #[command(flatten)]
-        join: JoinPreview,
+        joins: LaunchJoins,
     },
     /// Tear the node stack down to an empty state.
     ///
@@ -161,6 +158,8 @@ pub struct LauncherArgs {
     #[command(flatten)]
     pub with: WithWords,
     #[command(flatten)]
+    pub joins: LaunchJoins,
+    #[command(flatten)]
     pub timeouts: StackTimeouts,
     /// Build every node from its staged sources even when a cached
     /// artifact built from byte-identical sources exists. Applies to
@@ -201,6 +200,46 @@ impl StackTimeouts {
             self.max_timeout_secs,
         )
     }
+}
+
+/// The copies `--join OPTION:NAME` composes with a launch, shared by
+/// launch, build, and resolve.
+#[derive(clap::Args, Default)]
+pub struct LaunchJoins {
+    /// A copy of OPTION, one of a `zero_or_more` axis, named NAME in the
+    /// launch: joined onto the launch as `stack join OPTION:NAME` joins one
+    /// onto the running stack, and started with it by `stack launch`, its
+    /// nodes built with it by `stack build`. Repeatable and comma-separated,
+    /// once per copy, each joined onto the plan the ones before it left;
+    /// `NAME.option` words and `--place NAME@CORE_NODE` address it as they do
+    /// a copy the file lists.
+    #[arg(
+        long = "join",
+        value_name = "OPTION:NAME",
+        value_delimiter = ',',
+        value_parser = parse_copy_reference,
+        action = clap::ArgAction::Append
+    )]
+    pub joins: Vec<core_node_api::encoding::LaunchJoin>,
+}
+
+/// The one spelling for "a copy NAME of OPTION": the option before the colon,
+/// the copy's name after it, held to a copy name's grammar. `stack join`
+/// takes it as its positional, and `--join` joins the copy onto a launch.
+fn parse_copy_reference(raw: &str) -> Result<core_node_api::encoding::LaunchJoin, String> {
+    const FORM: &str = "write `OPTION:NAME`, the option of a `zero_or_more` axis and the name \
+                        the copy runs under";
+    let Some((option, name)) = raw.split_once(':') else {
+        return Err(format!("`{raw}` names no copy: {FORM}"));
+    };
+    let option = option.trim();
+    if option.is_empty() {
+        return Err(format!("`{raw}` names no option before the colon: {FORM}"));
+    }
+    Ok(core_node_api::encoding::LaunchJoin {
+        option: option.to_owned(),
+        name: parse_copy_name(name)?,
+    })
 }
 
 /// The `--with` words, shared by launch, build, join, and resolve.
@@ -249,21 +288,20 @@ impl Command for StackCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
             StackCommands::Join {
-                option,
-                name,
+                copy,
                 with,
                 arguments,
                 place,
                 timeouts,
-            } => join::join(ctx, option, name, with.words, arguments, place, timeouts),
+            } => join::join(ctx, copy, with.words, arguments, place, timeouts),
             StackCommands::Remove { name } => remove::remove(ctx, name),
             StackCommands::List { json } => list::list_nodes(ctx, json),
             StackCommands::Reset { federated } => reset::reset_stack(ctx, federated),
             StackCommands::Resolve {
                 launcher_config_path,
                 with,
-                join,
-            } => resolve::resolve(launcher_config_path, with.words, join),
+                joins,
+            } => resolve::resolve(launcher_config_path, with.words, joins.joins),
             StackCommands::Launch(args) => {
                 info!("Launching stack...");
                 launch::launch::<LaunchGoal>(ctx, args)

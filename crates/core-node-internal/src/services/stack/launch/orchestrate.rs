@@ -376,6 +376,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
             instances: &p.deployment.instances,
             depends_on: p.config.manifest.depends_on.as_ref(),
             implements: &p.config.manifest.implements,
+            addressing: &p.addressing,
         })
         .collect();
     if !root_instances.is_empty() {
@@ -385,6 +386,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
             instances: &root_instances,
             depends_on: None,
             implements: &root_config.manifest.implements,
+            addressing: daemon_config::launcher::SETS_READ_WHOLE,
         });
     }
     // Pairing and observation share one item list, each reading its own slot

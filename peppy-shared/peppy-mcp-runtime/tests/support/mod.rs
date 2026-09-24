@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 use peppy_mcp_catalog::ExposureBundle;
-use peppy_mcp_runtime::{ActionContext, ActionExit, Clock, ExposureServer, ExposureSet};
+use peppy_mcp_runtime::{ActionContext, ActionExit, Clock, ExposureServer, ExposureSet, ToolCall};
 use rmcp::model::{
     ClientCapabilities, ClientInfo, DetailedTask, GetTaskParams, ProgressNotificationParam,
     ProtocolVersion, UpdateTaskParams,
@@ -304,14 +304,14 @@ async fn episode_goal(
 
 /// The `recorder.record_episode` handler, behind the confirmation-gated
 /// action.
-pub async fn record_episode(input: Value, context: ActionContext) -> Result<Value, ActionExit> {
-    episode_goal("recording", input, context).await
+pub async fn record_episode(call: ToolCall, context: ActionContext) -> Result<Value, ActionExit> {
+    episode_goal("recording", call.input, context).await
 }
 
 /// The `recorder.replay_episode` handler, behind the action with no
 /// confirmation gate.
-pub async fn replay_episode(input: Value, context: ActionContext) -> Result<Value, ActionExit> {
-    episode_goal("replaying", input, context).await
+pub async fn replay_episode(call: ToolCall, context: ActionContext) -> Result<Value, ActionExit> {
+    episode_goal("replaying", call.input, context).await
 }
 
 /// Serves the full fixture set: both exposures with their tool handlers and
@@ -359,12 +359,12 @@ fn with_camera_tools(
 ) -> peppy_mcp_runtime::ExposureServerBuilder {
     let info = expected.info.clone();
     builder
-        .with_tool("front_camera.info", move |_input: Value| {
+        .with_tool("front_camera.info", move |_call: ToolCall| {
             let info = info.clone();
             async move { Ok(info) }
         })
-        .with_tool("front_camera.set_brightness", |input: Value| async move {
-            let value = input["value"].as_i64().expect("validated integer");
+        .with_tool("front_camera.set_brightness", |call: ToolCall| async move {
+            let value = call.input["value"].as_i64().expect("validated integer");
             if value == 13 {
                 return Err(peppy_mcp_runtime::ToolCallError::Failed(
                     "13 is reserved".to_string(),

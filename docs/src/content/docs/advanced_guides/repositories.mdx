@@ -133,13 +133,13 @@ Every matching identity is listed with where it is stored, names the pattern mat
 camera
 
 3 items match `camera`
-┌──────────────┬───────────────────┬────────────────────────────────────────────────────────────┬────────────────────────────┬──────────┐
-│ KIND         │ ITEM              │ REPOSITORY                                                 │ PATH                       │ SHA256   │
-├──────────────┼───────────────────┼────────────────────────────────────────────────────────────┼────────────────────────────┼──────────┤
-│ mcp exposure │ front_camera:v1   │ https://github.com/Peppy-bot/mcp-hub.git (ref: main)       │ cameras/front_camera.json5 │ 583f9ac9 │
-│ contract     │ rgb_camera:v1     │ https://github.com/Peppy-bot/contracts-hub.git (ref: main) │ cameras/rgb_camera.json5   │ 4594da02 │
-│ node         │ sim_rgb_camera:v1 │ https://github.com/Peppy-bot/nodes-hub.git (ref: main)     │ sim_rgb_camera/peppy.json5 │ 9f2c1a77 │
-└──────────────┴───────────────────┴────────────────────────────────────────────────────────────┴────────────────────────────┴──────────┘
+┌──────────────┬─────────────────────────┬────────────────────────────────────────────────────────────┬──────────────────────────────────────┬──────────┐
+│ KIND         │ ITEM                    │ REPOSITORY                                                 │ PATH                                 │ SHA256   │
+├──────────────┼─────────────────────────┼────────────────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┤
+│ mcp exposure │ camera_and_recording:v1 │ https://github.com/Peppy-bot/mcp-hub.git (ref: main)       │ recording/camera_and_recording.json5 │ 583f9ac9 │
+│ contract     │ rgb_camera:v1           │ https://github.com/Peppy-bot/contracts-hub.git (ref: main) │ cameras/rgb_camera.json5             │ 4594da02 │
+│ node         │ sim_rgb_camera:v1       │ https://github.com/Peppy-bot/nodes-hub.git (ref: main)     │ sim_rgb_camera/peppy.json5           │ 9f2c1a77 │
+└──────────────┴─────────────────────────┴────────────────────────────────────────────────────────────┴──────────────────────────────────────┴──────────┘
 ```
 
 The `SHA256` column shows the first eight characters of each document's fingerprint, as the `PIN` cells of [`peppy repo show`](#show-what-a-query-matches) do. A `@<sha256>` query takes the complete 64-character fingerprint; `--json` carries fingerprints whole.

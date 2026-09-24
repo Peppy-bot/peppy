@@ -24,16 +24,33 @@
 use super::compose::CopyMembership;
 use super::types::Placements;
 use crate::error::{
-    BindingContractNotImplemented, BindingSlotUnfulfilled, BindingTargetMismatch,
-    DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
+    BindingContractNotImplemented, BindingCopyFillsSlotTwice, BindingMemberOutsideCopy,
+    BindingSlotUnfulfilled, BindingTargetMismatch, DuplicateInstanceIdAcrossStack, ParsingError,
+    SlotKind,
 };
 use config::node::{Cardinality, DependsOn, ImplementsEntry};
-use config::runtime::{BoundMember, BoundProducers, ProducerRef, SlotBindings};
-use std::collections::BTreeMap;
+use config::runtime::{BoundMember, BoundProducers, Name, ProducerRef, SlotBindings};
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::types::{
     CardinalityShapeViolation, DeploymentInstance, Selection, check_cardinality_shape,
 };
+
+/// How a deployment's consumer reads the bound sets of the slots it
+/// declares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemberAddressing {
+    /// Every set is read whole, so the copy a member belongs to says
+    /// nothing about how the consumer reaches it.
+    WholeSet,
+    /// Members are addressed by the copy they belong to, so every member
+    /// belongs to one, and each slot named here holds one member per copy.
+    ByCopy { one_per_copy: BTreeSet<String> },
+}
+
+/// The addressing of a consumer that reads every set whole: what a caller
+/// with no per-copy rule to carry hands each [`BindingValidationItem`].
+pub const SETS_READ_WHOLE: &MemberAddressing = &MemberAddressing::WholeSet;
 
 /// Minimal view of one planned deployment needed for binding
 /// validation. Built by the launcher with borrowed references to avoid
@@ -49,6 +66,8 @@ pub struct BindingValidationItem<'a> {
     /// to decide whether this node can satisfy a consumer's contract
     /// slot.
     pub implements: &'a [ImplementsEntry],
+    /// How this deployment's consumer reads the sets its slots hold.
+    pub addressing: &'a MemberAddressing,
 }
 
 /// Per-slot metadata extracted from `depends_on` during validation.
@@ -135,6 +154,11 @@ pub struct ValidatedBindings {
 ///    [`ParsingError::BindingSlotUnfulfilled`] per slot (in link_id order);
 ///    a `zero_or_more` slot with no entry resolves to an explicit empty
 ///    set, and so does a `zero_or_one` slot the deployment wrote vacant.
+/// 6. A consumer whose addressing is [`MemberAddressing::ByCopy`] takes
+///    members that belong to a copy ([`ParsingError::BindingMemberOutsideCopy`]
+///    otherwise), and one member per copy on each slot the addressing names
+///    ([`ParsingError::BindingCopyFillsSlotTwice`] otherwise). A slot that
+///    failed rule 2 or rule 3 resolved nothing and is left to that rule.
 pub fn validate_bindings(
     items: &[BindingValidationItem<'_>],
     placements: &Placements,
@@ -208,11 +232,12 @@ pub fn validate_bindings(
                         continue;
                     }
                     // Each member carries its full wire address and the copy
-                    // its instance belongs to, so what a node reads for a
-                    // member is settled here and nowhere else.
+                    // its instance belongs to, with the id it has inside that
+                    // copy, so what a node reads for a member is settled here
+                    // and nowhere else.
                     members.push(BoundMember {
                         producer: ProducerRef::new(placements.of(target_id), target_id.clone()),
-                        copy: copies.copy_of(target_id).cloned(),
+                        copy: copies.tag_of(target_id).cloned(),
                     });
                 }
                 if slot_failed {
@@ -247,6 +272,34 @@ pub fn validate_bindings(
                                 cardinality: slot.cardinality,
                             },
                         )));
+                }
+            }
+
+            // Rule 6: a consumer that addresses its members by copy takes
+            // members that belong to one, and one member per copy on the
+            // slots it fills once.
+            if let MemberAddressing::ByCopy { one_per_copy } = item.addressing {
+                for slot in declared_slots.keys() {
+                    let Some(bound) = resolved.get(*slot) else {
+                        continue;
+                    };
+                    let mut by_copy: BTreeMap<&Name, Vec<&Name>> = BTreeMap::new();
+                    for member in bound.as_slice() {
+                        match &member.copy {
+                            Some(copy) => by_copy
+                                .entry(&copy.name)
+                                .or_default()
+                                .push(&copy.instance_id),
+                            None => out.errors.push(member_outside_copy(instance, slot, member)),
+                        }
+                    }
+                    if !one_per_copy.contains(*slot) {
+                        continue;
+                    }
+                    for (copy, ids) in by_copy.iter().filter(|(_, ids)| ids.len() > 1) {
+                        out.errors
+                            .push(copy_fills_slot_twice(instance, slot, copy, ids));
+                    }
                 }
             }
 
@@ -334,6 +387,36 @@ fn target_conformance_error(
             }))
         }
     }
+}
+
+/// Rule 6 error for a member the launcher deploys outside every copy, on a
+/// slot whose consumer addresses its members by copy.
+fn member_outside_copy(
+    instance: &DeploymentInstance,
+    link_id: &str,
+    member: &BoundMember,
+) -> ParsingError {
+    ParsingError::BindingMemberOutsideCopy(Box::new(BindingMemberOutsideCopy {
+        instance_id: member.producer.instance_id.clone(),
+        owner_instance_id: instance.instance_id.to_string(),
+        link_id: link_id.to_string(),
+    }))
+}
+
+/// Rule 6 error for one copy filling a slot that holds one member per copy
+/// with several, each named by the id the copy's fragment wrote.
+fn copy_fills_slot_twice(
+    instance: &DeploymentInstance,
+    link_id: &str,
+    copy: &Name,
+    members: &[&Name],
+) -> ParsingError {
+    ParsingError::BindingCopyFillsSlotTwice(Box::new(BindingCopyFillsSlotTwice {
+        copy: copy.to_string(),
+        owner_instance_id: instance.instance_id.to_string(),
+        link_id: link_id.to_string(),
+        members: members.iter().map(ToString::to_string).collect(),
+    }))
 }
 
 /// Build `instance_id → BindingValidationItem` lookup. Duplicate IDs
@@ -445,9 +528,8 @@ fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'
 
 #[cfg(test)]
 mod tests {
-    use super::super::compose::CopyRecord;
+    use super::super::compose::{CopyInstance, CopyRecord};
     use super::*;
-    use config::runtime::Name;
 
     /// The launching daemon's core_node stamped into every resolved
     /// binding by these tests.
@@ -467,6 +549,34 @@ mod tests {
     /// A stack with no copies, which most rules never look at.
     fn no_copies() -> CopyMembership {
         CopyMembership::default()
+    }
+
+    /// A copy named `name` holding one instance per id in `in_copy`, each
+    /// running under the id the launch mints for it.
+    fn copy_of(name: &str, in_copy: &[&str]) -> CopyRecord {
+        let name = Name::new(name).expect("a copy name");
+        CopyRecord {
+            instances: in_copy
+                .iter()
+                .map(|id| CopyInstance {
+                    instance_id: config::runtime::instance_id_in_copy(&name, id),
+                    in_copy: Name::new(*id).expect("an in-copy instance id"),
+                })
+                .collect(),
+            name,
+            axis: "robot".into(),
+            option: "real".into(),
+            selection: Default::default(),
+            set_members: Vec::new(),
+        }
+    }
+
+    /// A consumer addressing its members by copy, holding one member per
+    /// copy on `one_per_copy`.
+    fn by_copy(one_per_copy: &[&str]) -> MemberAddressing {
+        MemberAddressing::ByCopy {
+            one_per_copy: one_per_copy.iter().map(|slot| (*slot).to_owned()).collect(),
+        }
     }
 
     fn parse_instances(json5: &str) -> Vec<DeploymentInstance> {
@@ -489,12 +599,25 @@ mod tests {
         instances: &'a [DeploymentInstance],
         depends_on: Option<&'a DependsOn>,
     ) -> BindingValidationItem<'a> {
+        item_addressed(node_name, node_tag, instances, depends_on, SETS_READ_WHOLE)
+    }
+
+    /// Like `item` but with the addressing the consumer's deployment plans,
+    /// for the rule-6 tests.
+    fn item_addressed<'a>(
+        node_name: &'a str,
+        node_tag: &'a str,
+        instances: &'a [DeploymentInstance],
+        depends_on: Option<&'a DependsOn>,
+        addressing: &'a MemberAddressing,
+    ) -> BindingValidationItem<'a> {
         BindingValidationItem {
             node_name,
             node_tag,
             instances,
             depends_on,
             implements: &[],
+            addressing,
         }
     }
 
@@ -513,6 +636,7 @@ mod tests {
             instances,
             depends_on,
             implements,
+            addressing: SETS_READ_WHOLE,
         }
     }
 
@@ -1880,15 +2004,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let copy = |name: &str, instance: &str| CopyRecord {
-            name: Name::new(name).unwrap(),
-            axis: "robot".into(),
-            option: "real".into(),
-            selection: Default::default(),
-            instance_ids: vec![Name::new(instance).unwrap()],
-            set_members: Vec::new(),
-        };
-        let copies = CopyMembership::of(&[copy("alpha", "alpha_cam"), copy("bravo", "bravo_cam")]);
+        let copies = CopyMembership::of(&[copy_of("alpha", &["cam"]), copy_of("bravo", &["cam"])]);
         let out = validate_bindings(&items, &all_local(), &copies);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
@@ -1896,14 +2012,197 @@ mod tests {
                 .iter()
                 .map(|member| (
                     member.producer.instance_id.as_str(),
-                    member.copy.as_ref().map(Name::as_str)
+                    member
+                        .copy
+                        .as_ref()
+                        .map(|copy| (copy.name.as_str(), copy.instance_id.as_str()))
                 ))
                 .collect::<Vec<_>>(),
             [
                 ("hub_cam", None),
-                ("alpha_cam", Some("alpha")),
-                ("bravo_cam", Some("bravo"))
+                ("alpha_cam", Some(("alpha", "cam"))),
+                ("bravo_cam", Some(("bravo", "cam")))
             ]
+        );
+    }
+
+    /// Rule 6: a copy filling a once-per-copy slot with two of its own
+    /// instances is refused, naming both by the ids its fragment wrote.
+    #[test]
+    fn a_copy_filling_a_once_per_copy_slot_twice_is_refused() {
+        let cons_instances = parse_instances(
+            r#"[{ instance_id: "cons1", links: { limbs: ["alpha_left", "alpha_right"] } }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{ nodes: [
+                { name: "backbone", tag: "v1", link_id: "limbs", cardinality: "zero_or_more" }
+            ] }"#,
+        );
+        let prod_instances =
+            parse_instances(r#"[{ instance_id: "alpha_left" }, { instance_id: "alpha_right" }]"#);
+        let addressing = by_copy(&["limbs"]);
+        let items = vec![
+            item_addressed(
+                "cons",
+                "v1",
+                &cons_instances,
+                Some(&depends_on),
+                &addressing,
+            ),
+            item("backbone", "v1", &prod_instances, None),
+        ];
+        let copies = CopyMembership::of(&[copy_of("alpha", &["left", "right"])]);
+        let out = validate_bindings(&items, &all_local(), &copies);
+        assert_eq!(out.errors.len(), 1, "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            out.errors[0].to_string(),
+            "copy `alpha` fills `cons1.links.limbs` with 2 instances (`left`, `right`), and \
+             `limbs` holds one member per copy. Name one of them under `limbs` in the option's \
+             `add_links`"
+        );
+    }
+
+    /// Rule 6: a member the launcher deploys outside every copy is refused
+    /// on a slot whose consumer addresses its members by copy, whether or
+    /// not that slot holds one member per copy.
+    #[test]
+    fn a_member_outside_every_copy_is_refused() {
+        let cons_instances =
+            parse_instances(r#"[{ instance_id: "cons1", links: { cameras: ["the_camera"] } }]"#);
+        let depends_on = parse_depends_on(
+            r#"{ nodes: [
+                { name: "camera", tag: "v1", link_id: "cameras", cardinality: "zero_or_more" }
+            ] }"#,
+        );
+        let prod_instances = parse_instances(r#"[{ instance_id: "the_camera" }]"#);
+        let addressing = by_copy(&[]);
+        let items = vec![
+            item_addressed(
+                "cons",
+                "v1",
+                &cons_instances,
+                Some(&depends_on),
+                &addressing,
+            ),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, &all_local(), &no_copies());
+        assert_eq!(out.errors.len(), 1, "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            out.errors[0].to_string(),
+            "`the_camera` fills `cons1.links.cameras` from outside any copy, and every member of \
+             `cameras` belongs to a copy. Add the instance from a copy's own fragment with \
+             `add_links: { cameras: [\"<id>\"] }` on `cons1`, and drop it from `cons1`'s `links`"
+        );
+    }
+
+    /// Rule 6 holds each copy to one member on the slots the addressing
+    /// names, and takes as many as a copy brings on the others.
+    #[test]
+    fn one_member_per_copy_and_many_on_a_repeatable_slot_are_accepted() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "cons1",
+                links: {
+                    limbs: ["alpha_backbone", "bravo_backbone"],
+                    cameras: ["alpha_wrist_left", "alpha_wrist_right", "bravo_wrist_left"],
+                },
+            }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{ nodes: [
+                { name: "backbone", tag: "v1", link_id: "limbs", cardinality: "zero_or_more" },
+                { name: "camera", tag: "v1", link_id: "cameras", cardinality: "zero_or_more" }
+            ] }"#,
+        );
+        let backbones = parse_instances(
+            r#"[{ instance_id: "alpha_backbone" }, { instance_id: "bravo_backbone" }]"#,
+        );
+        let cameras = parse_instances(
+            r#"[
+                { instance_id: "alpha_wrist_left" },
+                { instance_id: "alpha_wrist_right" },
+                { instance_id: "bravo_wrist_left" }
+            ]"#,
+        );
+        let addressing = by_copy(&["limbs"]);
+        let items = vec![
+            item_addressed(
+                "cons",
+                "v1",
+                &cons_instances,
+                Some(&depends_on),
+                &addressing,
+            ),
+            item("backbone", "v1", &backbones, None),
+            item("camera", "v1", &cameras, None),
+        ];
+        let copies = CopyMembership::of(&[
+            copy_of("alpha", &["backbone", "wrist_left", "wrist_right"]),
+            copy_of("bravo", &["backbone", "wrist_left"]),
+        ]);
+        let out = validate_bindings(&items, &all_local(), &copies);
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(out.slot_bindings["cons1"]["limbs"].len(), 2);
+        assert_eq!(out.slot_bindings["cons1"]["cameras"].len(), 3);
+    }
+
+    /// A consumer that reads its sets whole takes two members of one copy
+    /// and members outside every copy alike.
+    #[test]
+    fn a_consumer_reading_sets_whole_is_untouched_by_rule_6() {
+        let cons_instances = parse_instances(
+            r#"[{ instance_id: "cons1", links: { limbs: ["alpha_left", "alpha_right", "hub"] } }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{ nodes: [
+                { name: "backbone", tag: "v1", link_id: "limbs", cardinality: "zero_or_more" }
+            ] }"#,
+        );
+        let prod_instances = parse_instances(
+            r#"[{ instance_id: "alpha_left" }, { instance_id: "alpha_right" }, { instance_id: "hub" }]"#,
+        );
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("backbone", "v1", &prod_instances, None),
+        ];
+        let copies = CopyMembership::of(&[copy_of("alpha", &["left", "right"])]);
+        let out = validate_bindings(&items, &all_local(), &copies);
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(out.slot_bindings["cons1"]["limbs"].len(), 3);
+    }
+
+    /// A slot that failed an earlier rule resolved nothing, so the rule that
+    /// found the fault is the one that reports it.
+    #[test]
+    fn a_slot_that_failed_an_earlier_rule_is_reported_only_by_that_rule() {
+        let cons_instances = parse_instances(
+            r#"[{ instance_id: "cons1", links: { limbs: ["alpha_left", "ghost"] } }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{ nodes: [
+                { name: "backbone", tag: "v1", link_id: "limbs", cardinality: "zero_or_more" }
+            ] }"#,
+        );
+        let prod_instances = parse_instances(r#"[{ instance_id: "alpha_left" }]"#);
+        let addressing = by_copy(&["limbs"]);
+        let items = vec![
+            item_addressed(
+                "cons",
+                "v1",
+                &cons_instances,
+                Some(&depends_on),
+                &addressing,
+            ),
+            item("backbone", "v1", &prod_instances, None),
+        ];
+        let copies = CopyMembership::of(&[copy_of("alpha", &["left"])]);
+        let out = validate_bindings(&items, &all_local(), &copies);
+        assert_eq!(out.errors.len(), 1, "unexpected errors: {:?}", out.errors);
+        assert!(
+            matches!(&out.errors[0], ParsingError::UnknownInstanceId { instance_id, .. } if instance_id == "ghost"),
+            "got {:?}",
+            out.errors[0]
         );
     }
 

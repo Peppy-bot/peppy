@@ -271,9 +271,12 @@ impl DeclaredLinkSlots<'_> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::bindings::{MemberAddressing, SETS_READ_WHOLE};
+    use super::super::compose::{CopyInstance, CopyRecord};
     use super::super::types::DeploymentInstance;
     use super::*;
     use config::node::ImplementsEntry;
+    use config::runtime::{CoreNodeName, Name};
 
     fn parse_instances(json5: &str) -> Vec<DeploymentInstance> {
         serde_json5::from_str(json5).expect("instances fixture should parse")
@@ -293,6 +296,7 @@ mod tests {
             instances,
             depends_on,
             implements: &[] as &[ImplementsEntry],
+            addressing: SETS_READ_WHOLE,
         }
     }
 
@@ -500,6 +504,67 @@ mod tests {
         assert!(
             !message.contains("empty array"),
             "a required slot has no empty spelling to be pointed at: {message}"
+        );
+    }
+
+    /// Every caller reaches the binding rules through this entry point, so a
+    /// copy filling a once-per-copy slot twice is refused by stack launch,
+    /// `stack join` and the CLI preflight alike.
+    #[test]
+    fn the_link_plan_refuses_a_copy_filling_a_once_per_copy_slot_twice() {
+        let cons_instances = parse_instances(
+            r#"[{ instance_id: "cons1", links: { limbs: ["alpha_left", "alpha_right"] } }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{ nodes: [
+                { name: "cons", tag: "v1", link_id: "limbs", cardinality: "zero_or_more" }
+            ] }"#,
+        );
+        let prod_instances =
+            parse_instances(r#"[{ instance_id: "alpha_left" }, { instance_id: "alpha_right" }]"#);
+        let addressing = MemberAddressing::ByCopy {
+            one_per_copy: ["limbs".to_owned()].into_iter().collect(),
+        };
+        let alpha = Name::new("alpha").expect("a copy name");
+        let copies = CopyMembership::of(&[CopyRecord {
+            instances: ["left", "right"]
+                .into_iter()
+                .map(|id| CopyInstance {
+                    instance_id: config::runtime::instance_id_in_copy(&alpha, id),
+                    in_copy: Name::new(id).expect("an in-copy instance id"),
+                })
+                .collect(),
+            name: alpha,
+            axis: "robot".into(),
+            option: "real".into(),
+            selection: Default::default(),
+            set_members: Vec::new(),
+        }]);
+        let binding_items = [
+            BindingValidationItem {
+                node_name: "cons",
+                node_tag: "v1",
+                instances: &cons_instances,
+                depends_on: Some(&depends_on),
+                implements: &[] as &[ImplementsEntry],
+                addressing: &addressing,
+            },
+            item(&prod_instances, None),
+        ];
+        let plan = validate_link_plan(
+            &binding_items,
+            &[],
+            &AlreadyPairedSlots::new(),
+            &ExternallyCoveredSlots::new(),
+            &Placements::all_on(CoreNodeName::new("core_a").expect("a core node name")),
+            &copies,
+            &ResolvedClocks::default(),
+        );
+        assert_eq!(plan.errors.len(), 1, "unexpected errors: {:?}", plan.errors);
+        let message = plan.errors[0].to_string();
+        assert!(
+            message.starts_with("copy `alpha` fills `cons1.links.limbs` with 2 instances"),
+            "{message}"
         );
     }
 }

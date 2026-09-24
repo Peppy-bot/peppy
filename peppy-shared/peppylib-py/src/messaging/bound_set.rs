@@ -5,10 +5,56 @@ use super::PyProducerRef;
 use peppylib::messaging::BoundMember;
 use pyo3::prelude::*;
 
+/// The copy an instance belongs to: the copy's name, and the id the copy's
+/// fragment wrote for the instance, which the copy runs as
+/// `<name>_<instance_id>`.
+#[pyclass(name = "CopyTag", frozen, eq, hash, skip_from_py_object)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct PyCopyTag {
+    pub(crate) inner: config::runtime::CopyTag,
+}
+
+#[pymethods]
+impl PyCopyTag {
+    #[new]
+    fn new(name: &str, instance_id: &str) -> PyResult<Self> {
+        let named = |value: &str| {
+            config::runtime::Name::new(value)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        };
+        Ok(Self {
+            inner: config::runtime::CopyTag {
+                name: named(name)?,
+                instance_id: named(instance_id)?,
+            },
+        })
+    }
+
+    /// The copy's name.
+    #[getter]
+    fn name(&self) -> &str {
+        self.inner.name.as_str()
+    }
+
+    /// The id the copy's fragment wrote for the instance.
+    #[getter]
+    fn instance_id(&self) -> &str {
+        self.inner.instance_id.as_str()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CopyTag({:?}, {:?})",
+            self.inner.name.as_str(),
+            self.inner.instance_id.as_str()
+        )
+    }
+}
+
 /// One member of a consumer slot's bound set: the producer and the copy its
 /// instance belongs to (`None` for an instance the launcher deploys outside
 /// any copy). A node holding members from several copies groups them by
-/// `copy`.
+/// `copy.name` and names each one by `copy.instance_id`.
 #[pyclass(name = "BoundMember", frozen, eq, hash, skip_from_py_object)]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PyBoundMember {
@@ -19,15 +65,11 @@ pub struct PyBoundMember {
 impl PyBoundMember {
     #[new]
     #[pyo3(signature = (producer, copy=None))]
-    fn new(producer: &PyProducerRef, copy: Option<&str>) -> PyResult<Self> {
-        let copy = copy
-            .map(config::runtime::Name::new)
-            .transpose()
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    fn new(producer: &PyProducerRef, copy: Option<&PyCopyTag>) -> PyResult<Self> {
         Ok(Self {
             inner: BoundMember {
                 producer: producer.as_inner().clone(),
-                copy,
+                copy: copy.map(|copy| copy.inner.clone()),
             },
         })
     }
@@ -40,15 +82,19 @@ impl PyBoundMember {
 
     /// The copy the producer's instance belongs to, or `None`.
     #[getter]
-    fn copy(&self) -> Option<&str> {
-        self.inner.copy.as_ref().map(|copy| copy.as_str())
+    fn copy(&self) -> Option<PyCopyTag> {
+        self.inner.copy.as_ref().map(|inner| PyCopyTag {
+            inner: inner.clone(),
+        })
     }
 
     fn __repr__(&self) -> String {
         format!(
             "BoundMember(producer={}, copy={})",
             PyProducerRef::from(self.inner.producer.clone()).__repr__(),
-            super::repr_copy(self.copy())
+            self.copy()
+                .map(|copy| copy.__repr__())
+                .unwrap_or_else(|| "None".to_string())
         )
     }
 }

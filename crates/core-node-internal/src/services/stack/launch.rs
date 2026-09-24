@@ -168,6 +168,9 @@ pub(super) struct PlannedDeployment {
     /// Every manifest in the deployment's closure, root first. What the
     /// doc-pin minting walks after the graph validation has had first say.
     pub(super) pin_manifests: Vec<config::node::Manifest>,
+    /// How this deployment's node reads the sets its slots hold, which the
+    /// binding validator holds the launcher to.
+    pub(super) addressing: daemon_config::launcher::MemberAddressing,
 }
 
 /// Process a stack launch request.
@@ -252,7 +255,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         );
         publish_stdout(
             &ctx,
-            "Launcher active; add copies with peppy stack join OPTION -i NAME".to_owned(),
+            "Launcher active; add copies with peppy stack join OPTION:NAME".to_owned(),
             LaunchFeedbackStep::LauncherStep,
         )
         .await;

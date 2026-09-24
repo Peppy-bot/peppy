@@ -142,7 +142,7 @@ async def test_standalone_bound_members_carry_their_copy(monkeypatch):
             seeded = (
                 _seeded_config(router)
                 .with_bound_producer("spare_cameras", "core_x", "hub_cam")
-                .with_bound_producer_in_copy("spare_cameras", "core_y", "bravo_cam", "bravo")
+                .with_bound_producer_in_copy("spare_cameras", "core_y", "bravo", "cam")
             )
 
             def setup_fn(params, node_runner, results):
@@ -154,9 +154,12 @@ async def test_standalone_bound_members_carry_their_copy(monkeypatch):
 
     assert errors.empty(), f"Runner error: {errors.get_nowait()}"
     assert [cam.instance_id for cam in seen["producers"]] == ["hub_cam", "bravo_cam"]
-    assert [(m.producer.instance_id, m.copy) for m in seen["members"]] == [
+    assert [
+        (m.producer.instance_id, m.copy and (m.copy.name, m.copy.instance_id))
+        for m in seen["members"]
+    ] == [
         ("hub_cam", None),
-        ("bravo_cam", "bravo"),
+        ("bravo_cam", ("bravo", "cam")),
     ]
 
 

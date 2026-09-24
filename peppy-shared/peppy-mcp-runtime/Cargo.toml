@@ -18,17 +18,20 @@ rmcp = { version = "3.1.2", default-features = false, features = [
 # rmcp's StreamableHttpService is a tower Service; axum mounts it and drives
 # the listener. http1 + tokio is the minimal serving surface.
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+futures = "0.3"
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 tokio-util = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
+# Robots and their members keep the order the stack binds them in.
+indexmap = "2.2"
 # Validates tool inputs against the bundle's derived schemas before anything
 # touches the Peppy graph. Default features are dropped so no HTTP resolver or
 # TLS stack rides along; bundle schemas are self-contained.
 jsonschema = { version = "0.56", default-features = false }
-# JPEG transcoding for image-representation topic snapshots; jpeg is the only
-# codec the representation policy emits.
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# JPEG and 16-bit PNG transcoding for image-representation topic snapshots,
+# the two codecs the representation policy emits.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 base64 = "0.23"
 tracing = "0.1"
 

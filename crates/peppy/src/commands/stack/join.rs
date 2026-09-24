@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use config::runtime::{CoreNodeName, Name};
-use core_node_api::encoding::{ArgumentOverride, JoinPlacement, StackJoinGoal};
+use config::runtime::CoreNodeName;
+use core_node_api::encoding::{ArgumentOverride, JoinPlacement, LaunchJoin, StackJoinGoal};
 
 use super::StackTimeouts;
 use super::goal::drive_stack_goal;
@@ -13,8 +13,7 @@ use crate::error::{Error, Result};
 
 pub(super) fn join(
     ctx: &Arc<AppContext>,
-    option: String,
-    name: Name,
+    copy: LaunchJoin,
     words: Vec<String>,
     arguments: Vec<ArgumentOverride>,
     place: Option<JoinPlacement>,
@@ -26,7 +25,7 @@ pub(super) fn join(
         selections: words,
         arguments,
         placement: place.unwrap_or(JoinPlacement::Local),
-        ..StackJoinGoal::new(name, option, budgets)
+        ..StackJoinGoal::new(copy.name, copy.option, budgets)
     };
     crate::commands::block_on(async {
         let conn = ctx.connect_to_daemon().await?;

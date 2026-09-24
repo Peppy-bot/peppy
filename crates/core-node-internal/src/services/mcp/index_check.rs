@@ -167,10 +167,10 @@ fn exposure_problems(exposure: &McpExposure, contracts: &mut Contracts<'_>) -> V
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
     // Resolve first, then borrow: every reference goes through the memo
     // before any resolved contract is held by reference.
-    for target in exposure.targets.values() {
+    for (_, target, _) in exposure.surface.targets() {
         contracts.get(&target.contract);
     }
-    for target in exposure.targets.values() {
+    for (_, target, _) in exposure.surface.targets() {
         let reference = &target.contract;
         if !seen.insert((reference.name.as_str().to_owned(), reference.tag.clone())) {
             continue;

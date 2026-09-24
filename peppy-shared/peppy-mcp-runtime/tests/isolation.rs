@@ -302,7 +302,8 @@ async fn stopping_the_set_aborts_running_tasks_on_every_endpoint() {
         let server = builder
             .with_task(
                 "recorder.record_episode",
-                move |_input: Value, _context: peppy_mcp_runtime::ActionContext| {
+                move |_call: peppy_mcp_runtime::ToolCall,
+                      _context: peppy_mcp_runtime::ActionContext| {
                     let guard = TeardownSignal(signal.clone());
                     async move {
                         let _guard = guard;

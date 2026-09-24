@@ -161,6 +161,10 @@ struct SlotSet {
 struct BoundMember {
     producer @0 :InstanceAddress;
     copy @1 :Text;
+    instanceIdInCopy @2 :Text;
+    # The id the copy's fragment wrote for the instance, which the copy runs
+    # as `<copy>_<instanceIdInCopy>`. Set exactly when `copy` is; the receiver
+    # refuses a set that names one without the other.
 }
 
 # One pairing an observer slot taps: the source instance and its pairing slot.

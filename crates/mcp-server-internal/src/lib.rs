@@ -5,14 +5,16 @@
 //! [`daemon_config::mcp_deployment::SPEC_ENV_VAR`], beside the runtime
 //! config every node receives. From those documents alone the process
 //! derives the deployment's manifest and catalogs, runs as the node the
-//! daemon planned (its contract slots filled by the launcher's `links`),
-//! and serves each exposure at `/<name>/<tag>/mcp` on one loopback port.
+//! daemon planned (its contract slots filled by the launcher's `links`, or
+//! by the robots of the stack on a per-robot surface), and serves each
+//! exposure at `/<name>/<tag>/mcp` on one loopback port.
 //!
 //! Message conversion is the runtime codec of `message-codec`: the layout
 //! generated nodes use, laid out from each contract's `message_format`
 //! when the process starts.
 
 mod bridges;
+mod fleet;
 mod serve;
 
 pub use serve::{ServeError, serve};

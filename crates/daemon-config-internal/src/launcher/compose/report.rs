@@ -184,6 +184,35 @@ impl CompositionReport {
         lines.extend(self.adjustment_lines());
         lines
     }
+
+    /// Folds one copy of a launch in: its record, and the adjustments it
+    /// applied and skipped, attributed.
+    pub(super) fn add_copy(
+        &mut self,
+        copy: CopyRecord,
+        applied: Vec<AppliedAdjustment>,
+        skipped: Vec<SkippedAdjustment>,
+    ) {
+        self.applied.extend(applied.into_iter().map(|mut entry| {
+            entry.origin = attributed(&copy, &entry.origin, &entry.target);
+            entry
+        }));
+        self.skipped.extend(skipped.into_iter().map(|mut entry| {
+            entry.origin = attributed(&copy, &entry.origin, &entry.target);
+            entry
+        }));
+        self.copies.push(copy);
+    }
+}
+
+/// Where one line of a copy's report came from: the fragment alone for the
+/// copy's own instances, the copy as well for a line about a stack instance.
+fn attributed(copy: &CopyRecord, origin: &str, target: &str) -> String {
+    if copy.owns_instance(target) {
+        origin.to_owned()
+    } else {
+        format!("{origin}, copy `{}`", copy.name)
+    }
 }
 
 pub(super) fn render<T: serde::Serialize>(value: &T) -> String {

@@ -9,10 +9,14 @@
 //! repository machinery is the caller's job.
 
 use crate::bundle::{
-    BundleContractPin, BundleIdentity, BundleServer, EXPOSURE_BUNDLE_FORMAT, ExposureBundle,
-    ResourceEntry, ResourcePolicies, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
+    BundleContractPin, BundleIdentity, BundleServer, BundleSurface, DescribeEntry,
+    EXPOSURE_BUNDLE_FORMAT, ExposureBundle, ListEntry, ResourceEntry, ResourcePolicies,
+    RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
 };
-use crate::document::{McpExposure, ServiceExposure, TopicExposure};
+use crate::document::{
+    ArgumentName, ExposureSurface, McpExposure, ROBOT_ARGUMENT, RobotSurface, ServiceExposure,
+    TopicExposure,
+};
 use crate::policy::ImageFieldMap;
 use crate::schema::{
     MaxSerializedSize, empty_object_schema, integer_bounds, max_serialized_json_bytes,
@@ -139,7 +143,13 @@ pub fn build_exposure_bundle(
         }
     }
 
-    let mut pins = Vec::new();
+    let robots = match &exposure.surface {
+        ExposureSurface::Fixed { .. } => None,
+        ExposureSurface::PerRobot { robots, .. } => Some(robots),
+    };
+    // Each target's slot with the argument its calls name a member by, which
+    // only a per-robot surface's slot carries.
+    let mut pins: Vec<(BundleContractPin, Option<String>)> = Vec::new();
     let mut resources = Vec::new();
     let mut resource_members = Vec::new();
     let mut tools = Vec::new();
@@ -147,7 +157,7 @@ pub fn build_exposure_bundle(
     let mut tasks = Vec::new();
     let mut task_members = Vec::new();
 
-    for (target_name, target) in &exposure.targets {
+    for (target_name, target, argument) in exposure.surface.targets() {
         let reference = &target.contract;
         let contract_label = format!("{}:{}", reference.name, reference.tag);
 
@@ -175,6 +185,15 @@ pub fn build_exposure_bundle(
             sha256: contract.sha256.to_string(),
             link_id: target_name.clone(),
         };
+        // The arguments the server adds to every call on this target: the
+        // robot's name on a per-robot surface, and the member's name on a
+        // target a robot fills any number of times.
+        let routing: Vec<&str> = robots
+            .is_some()
+            .then_some(ROBOT_ARGUMENT)
+            .into_iter()
+            .chain(argument.map(ArgumentName::as_str))
+            .collect();
 
         for topic in &target.topics {
             let Some(declared) = find_topic(contract, &topic.member) else {
@@ -204,9 +223,19 @@ pub fn build_exposure_bundle(
                 ));
                 continue;
             };
-            if let Some(entry) = check_service(target_name, service, declared, &mut violations) {
-                tools.push(entry);
-                tool_members.push(BoundMember::new(&slot, declared));
+            if let Some(mut entry) = check_service(target_name, service, declared, &mut violations)
+            {
+                let context = format!("target `{target_name}` service `{}`", service.member);
+                if add_routing_arguments(
+                    &context,
+                    &routing,
+                    declared.request_message_format.as_ref(),
+                    &mut entry.input_schema,
+                    &mut violations,
+                ) {
+                    tools.push(entry);
+                    tool_members.push(BoundMember::new(&slot, declared));
+                }
             }
         }
 
@@ -253,11 +282,23 @@ pub fn build_exposure_bundle(
                 &format!("{context} result"),
                 &mut violations,
             );
-            let (Some(input_schema), Some(_), Some(output_schema)) =
+            let (Some(mut input_schema), Some(_), Some(output_schema)) =
                 (goal_request, goal_response, result)
             else {
                 continue;
             };
+            if !add_routing_arguments(
+                &context,
+                &routing,
+                declared
+                    .goal_service
+                    .as_ref()
+                    .and_then(|g| g.request_message_format.as_ref()),
+                &mut input_schema,
+                &mut violations,
+            ) {
+                continue;
+            }
             let feedback_schema = match feedback {
                 Some(Some(schema)) => Some(schema),
                 Some(None) => continue,
@@ -278,8 +319,21 @@ pub fn build_exposure_bundle(
             });
             task_members.push(BoundMember::new(&slot, declared));
         }
-        pins.push(slot);
+        pins.push((slot, argument.map(ToString::to_string)));
     }
+
+    let surface = match robots {
+        None => BundleSurface::Fixed {
+            contracts: pins.into_iter().map(|(pin, _)| pin).collect(),
+        },
+        Some(robots) => BundleSurface::PerRobot {
+            robots: robot_catalog(robots, &tools, &mut violations),
+            contracts: pins
+                .into_iter()
+                .map(|(pin, argument)| RobotContractPin { pin, argument })
+                .collect(),
+        },
+    };
 
     if !violations.is_empty() {
         return Err(ExposureValidationError { violations });
@@ -297,7 +351,7 @@ pub fn build_exposure_bundle(
                 title: exposure.server.title.clone(),
                 instructions: exposure.server.instructions.clone(),
             },
-            contracts: pins,
+            surface,
             resources,
             tools,
             tasks,
@@ -306,6 +360,109 @@ pub fn build_exposure_bundle(
         tools: tool_members,
         tasks: task_members,
     })
+}
+
+/// Adds the routing arguments to a tool's derived input schema, as required
+/// string properties. A contract request field of the same name is a
+/// violation: the server could not tell the two apart. Returns whether the
+/// schema is usable.
+fn add_routing_arguments(
+    context: &str,
+    routing: &[&str],
+    request_format: Option<&MessageFormat>,
+    input_schema: &mut Value,
+    violations: &mut Vec<String>,
+) -> bool {
+    if routing.is_empty() {
+        return true;
+    }
+    let mut usable = true;
+    for argument in routing {
+        if request_format.is_some_and(|format| format.0.contains_key(*argument)) {
+            violations.push(format!(
+                "{context}: the request format declares `{argument}`, the name the server \
+                 adds to every call as a routing argument; rename the argument in the exposure"
+            ));
+            usable = false;
+        }
+    }
+    if !usable {
+        return false;
+    }
+    let Some(schema) = input_schema.as_object_mut() else {
+        return true;
+    };
+    let properties = schema
+        .entry("properties")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if let Some(properties) = properties.as_object_mut() {
+        for argument in routing {
+            properties.insert(
+                (*argument).to_string(),
+                serde_json::json!({ "type": "string" }),
+            );
+        }
+    }
+    let required = schema
+        .entry("required")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Some(required) = required.as_array_mut() {
+        required.extend(routing.iter().map(|argument| Value::from(*argument)));
+    }
+    true
+}
+
+/// The per-robot surface of the bundle: each `describe` entry resolved to
+/// the tool the listing calls it through.
+fn robot_catalog(
+    robots: &RobotSurface,
+    tools: &[ToolEntry],
+    violations: &mut Vec<String>,
+) -> RobotCatalog {
+    let mut describe = Vec::with_capacity(robots.describe.len());
+    for (key, entry) in &robots.describe {
+        let context = format!("`robots.describe.{key}`");
+        // The document check holds every `describe` entry to a service its
+        // target selects, so an entry with no tool is one whose member did
+        // not validate, already reported under the target.
+        let Some(tool) = tools
+            .iter()
+            .find(|tool| tool.target == entry.target && tool.member == entry.service)
+        else {
+            continue;
+        };
+        // The listing calls the service with the robot alone.
+        let takes: Vec<&str> = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|properties| properties.keys())
+            .map(String::as_str)
+            .filter(|name| *name != ROBOT_ARGUMENT)
+            .collect();
+        if !takes.is_empty() {
+            violations.push(format!(
+                "{context}: service `{}` of target `{}` takes `{}`, and the listing reads a \
+                 service that takes no request; describe the robot through one that takes none",
+                entry.service,
+                entry.target,
+                takes.join("`, `")
+            ));
+        }
+        describe.push(DescribeEntry {
+            key: key.clone(),
+            target: entry.target.clone(),
+            tool: tool.name.clone(),
+        });
+    }
+    RobotCatalog {
+        list: ListEntry {
+            name: robots.list.tool.to_string(),
+            description: robots.list.description.clone(),
+        },
+        describe,
+    }
 }
 
 /// The resource entry of a topic that validates; `None` records why it

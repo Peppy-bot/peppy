@@ -9,10 +9,10 @@ use super::launch::watchers::LifecycleWatchers;
 use super::launch::{NodeKey, PlannedDeployment};
 use config::runtime::{CoreNodeName, Name};
 use daemon_config::launcher::{
-    ClockIncarnations, CopyRecord, PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks,
-    UnitSelection,
+    ClockIncarnations, CopyInstance, CopyRecord, PeppyLauncher, Placements, PreparedLauncher,
+    ResolvedClocks, UnitSelection,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 /// The launch this daemon coordinates: what it composed, where it runs,
 /// and the copies on it.
@@ -62,7 +62,7 @@ impl ActiveLaunch {
                 name: copy.record.name.clone(),
                 option: copy.record.option.clone(),
                 core_node: copy.core_node.clone(),
-                instance_ids: copy.record.instance_ids.clone(),
+                instance_ids: copy.record.instance_ids().cloned().collect(),
                 selections: copy
                     .record
                     .selection
@@ -123,21 +123,14 @@ impl ActiveLaunch {
     /// order they start.
     pub(super) fn record_copies(&mut self, copies: Vec<CopyRecord>, ordered: &[NodeKey]) {
         for copy in copies {
-            let owned: HashSet<_> = copy.instance_ids.iter().collect();
-            let instance_ids = instance_ids_in_start_order(&self.planned, ordered, &owned);
-            let first = instance_ids.first().expect("a copy starts an instance");
-            let core_node = self.placements.core_node_of(first.as_str()).clone();
-            let name = copy.name.clone();
-            self.copies.insert(
-                name,
-                StackCopy {
-                    record: CopyRecord {
-                        instance_ids,
-                        ..copy
-                    },
-                    core_node,
-                },
-            );
+            let record = copy_in_start_order(copy, &self.planned, ordered);
+            let first = record.instances.first().expect("a copy starts an instance");
+            let core_node = self
+                .placements
+                .core_node_of(first.instance_id.as_str())
+                .clone();
+            let name = record.name.clone();
+            self.copies.insert(name, StackCopy { record, core_node });
         }
     }
 
@@ -160,13 +153,15 @@ pub(super) fn active_launch(ctx: &StackChangeContext) -> ChangeResult<ActiveLaun
     })
 }
 
-/// The `owned` instances of `planned` in the order their nodes start.
-pub(super) fn instance_ids_in_start_order(
+/// `copy` with its own instances of `planned` in the order their nodes start.
+/// An instance whose node `ordered` does not name has no place to start, and
+/// the record leaves it out.
+pub(super) fn copy_in_start_order(
+    copy: CopyRecord,
     planned: &[PlannedDeployment],
     ordered: &[NodeKey],
-    owned: &HashSet<&Name>,
-) -> Vec<Name> {
-    ordered
+) -> CopyRecord {
+    let instances = ordered
         .iter()
         .flat_map(|key| {
             planned
@@ -174,9 +169,14 @@ pub(super) fn instance_ids_in_start_order(
                 .filter(move |item| key == &NodeKey::new(&item.node_name, &item.node_tag))
         })
         .flat_map(|item| &item.deployment.instances)
-        .filter(|instance| owned.contains(&instance.instance_id))
-        .map(|instance| instance.instance_id.clone())
-        .collect()
+        .filter_map(|instance| {
+            copy.instances
+                .iter()
+                .find(|owned| owned.instance_id == instance.instance_id)
+                .cloned()
+        })
+        .collect();
+    CopyRecord { instances, ..copy }
 }
 
 #[cfg(test)]
@@ -184,9 +184,30 @@ mod tests {
     use super::*;
     use crate::services::stack::fixtures::planned_deployment;
 
+    /// A copy of `alpha` owning the instances its fragment wrote as
+    /// `in_copy`, each minted as composition mints it.
+    fn alpha(in_copy: &[&str]) -> CopyRecord {
+        let name = Name::new("alpha").unwrap();
+        CopyRecord {
+            instances: in_copy
+                .iter()
+                .map(|id| CopyInstance {
+                    instance_id: config::runtime::instance_id_in_copy(&name, id),
+                    in_copy: Name::new(*id).unwrap(),
+                })
+                .collect(),
+            name,
+            axis: "robot".into(),
+            option: "real".into(),
+            selection: Default::default(),
+            set_members: Vec::new(),
+        }
+    }
+
     /// A copy's instances are recorded in the order the dependency order
-    /// starts their nodes, whatever order the plan lists them in, and every
-    /// instance another copy owns is left out.
+    /// starts their nodes, whatever order the plan lists them in, each
+    /// keeping the id its fragment wrote, and every instance another copy
+    /// owns is left out.
     #[test]
     fn a_copy_records_its_own_instances_in_the_order_their_nodes_start() {
         let planned = vec![
@@ -201,27 +222,34 @@ mod tests {
             ),
         ];
         let ordered = [NodeKey::new("arm", "v1"), NodeKey::new("recorder", "v1")];
-        let alpha = [
-            Name::new("alpha_arm").unwrap(),
-            Name::new("alpha_recorder").unwrap(),
-            Name::new("alpha_spare_arm").unwrap(),
-        ];
-        let owned: HashSet<&Name> = alpha.iter().collect();
+        let copy = alpha(&["arm", "recorder", "spare_arm"]);
 
+        let recorded = |copy: CopyRecord, ordered: &[NodeKey]| {
+            copy_in_start_order(copy, &planned, ordered)
+                .instances
+                .iter()
+                .map(|owned| {
+                    (
+                        owned.instance_id.as_str().to_owned(),
+                        owned.in_copy.as_str().to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            instance_ids_in_start_order(&planned, &ordered, &owned),
+            recorded(copy.clone(), &ordered),
             [
-                Name::new("alpha_arm").unwrap(),
-                Name::new("alpha_spare_arm").unwrap(),
-                Name::new("alpha_recorder").unwrap(),
+                ("alpha_arm".to_owned(), "arm".to_owned()),
+                ("alpha_spare_arm".to_owned(), "spare_arm".to_owned()),
+                ("alpha_recorder".to_owned(), "recorder".to_owned()),
             ]
         );
         assert!(
-            instance_ids_in_start_order(&planned, &ordered, &HashSet::new()).is_empty(),
+            recorded(alpha(&[]), &ordered).is_empty(),
             "a copy owning nothing records nothing"
         );
         assert!(
-            instance_ids_in_start_order(&planned, &[], &owned).is_empty(),
+            recorded(copy, &[]).is_empty(),
             "an instance whose node is unordered has no place to start"
         );
     }

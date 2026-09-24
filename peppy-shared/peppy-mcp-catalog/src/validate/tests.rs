@@ -189,7 +189,8 @@ fn the_walkthrough_exposure_builds_its_bundle() {
     assert_eq!(bundle.exposure.name, "camera_and_recording");
     assert_eq!(bundle.exposure.tag, "v1");
     let links: Vec<(&str, &str)> = bundle
-        .contracts
+        .surface
+        .contracts()
         .iter()
         .map(|pin| (pin.link_id.as_str(), pin.name.as_str()))
         .collect();
@@ -200,7 +201,10 @@ fn the_walkthrough_exposure_builds_its_bundle() {
             ("recorder", "episode_recording")
         ]
     );
-    assert_eq!(bundle.contracts[0].sha256, sha_of(CAMERA_CONTRACT));
+    assert_eq!(
+        bundle.surface.contracts()[0].sha256,
+        sha_of(CAMERA_CONTRACT)
+    );
 
     assert_eq!(bundle.resources.len(), 1);
     let frame = &bundle.resources[0];
@@ -309,7 +313,7 @@ fn a_reference_without_a_pin_is_validated_against_the_resolved_bytes() {
     assert!(!exposure.contains("sha256"), "the reference carries no pin");
     let bundle = build(&exposure, &[&fixture(CAMERA_CONTRACT)]);
     assert_eq!(
-        bundle.contracts[0].sha256,
+        bundle.surface.contracts()[0].sha256,
         sha_of(CAMERA_CONTRACT),
         "the bundle pins the bytes the exposure was validated against"
     );
@@ -462,6 +466,60 @@ fn a_bounded_topic_within_its_size_limit_validates() {
         &[&fixture(CAMERA_CONTRACT)],
     );
     assert_eq!(bundle.resources.len(), 1);
+}
+
+/// One frame topic serves a JPEG picture for a model and a lossless PNG for
+/// a program, each its own resource, both bound to the one contract topic.
+#[test]
+fn two_resources_read_one_topic_with_different_representations() {
+    use crate::ImageCodec;
+
+    let frame_fields =
+        r#"fields: { data: "frame", encoding: "encoding", width: "width", height: "height" }"#;
+    let validated = validate(
+        &camera_exposure(&format!(
+            r#"topics: [
+                {{
+                    member: "video_stream",
+                    resource: "cam.latest_frame",
+                    description: "Latest frame, JPEG encoded.",
+                    freshness: {{ max_age_ms: 2000 }},
+                    update: {{ max_hz: 2 }},
+                    representation: {{ image: "jpeg", quality: 80, {frame_fields} }},
+                    max_result_bytes: 524288,
+                    on_oversize: "downscale",
+                }},
+                {{
+                    member: "video_stream",
+                    resource: "cam.frame_png",
+                    description: "Latest frame, losslessly encoded.",
+                    freshness: {{ max_age_ms: 2000 }},
+                    update: {{ max_hz: 2 }},
+                    representation: {{ image: "png16", {frame_fields} }},
+                    max_result_bytes: 524288,
+                    on_oversize: "downscale",
+                }},
+            ]"#
+        )),
+        &[&fixture(CAMERA_CONTRACT)],
+    );
+    let published: Vec<(&str, &str, Option<ImageCodec>)> = validated
+        .resources()
+        .map(|(entry, bound)| {
+            (
+                entry.name.as_str(),
+                bound.member.name.as_str(),
+                entry.policies.representation.as_ref().map(|r| r.image),
+            )
+        })
+        .collect();
+    assert_eq!(
+        published,
+        [
+            ("cam.latest_frame", "video_stream", Some(ImageCodec::Jpeg)),
+            ("cam.frame_png", "video_stream", Some(ImageCodec::Png16)),
+        ]
+    );
 }
 
 #[test]
@@ -706,5 +764,210 @@ fn the_validation_error_renders_one_bullet_per_violation() {
     assert_eq!(
         error.to_string(),
         "the exposure does not validate against its contracts:\n  - first problem\n  - second problem"
+    );
+}
+
+const STATUS_CONTRACT: &str = r#"{
+    peppy_schema: "contract/v1",
+    manifest: { name: "robot_status", tag: "v1" },
+    interfaces: {
+        topics: [
+            {
+                name: "status",
+                qos_profile: "sensor_data",
+                message_format: { battery: "u8", mode: "string" },
+            },
+        ],
+        services: [
+            {
+                name: "get_identity",
+                response_message_format: { robot: "string", model: "string" },
+            },
+            {
+                name: "rename",
+                request_message_format: { robot: "string" },
+                response_message_format: { applied: "bool" },
+            },
+        ],
+    },
+}"#;
+
+/// A per-robot surface over the status contract and the walkthrough camera.
+fn per_robot_exposure(status_sha: &str, extra_status_services: &str) -> String {
+    format!(
+        r#"{{
+        peppy_schema: "mcp_exposure/v1",
+        manifest: {{ name: "robot_control", tag: "v1" }},
+        server: {{ title: "Robots" }},
+        robots: {{
+            list: {{ tool: "robot.list", description: "The robots of the stack." }},
+            describe: {{
+                identity: {{ target: "status", service: "get_identity" }},
+            }},
+        }},
+        targets: {{
+            status: {{
+                contract: {{ name: "robot_status", tag: "v1", sha256: "{status_sha}" }},
+                topics: [
+                    {{
+                        member: "status",
+                        resource: "robot.status",
+                        description: "The robot's latest status.",
+                        freshness: {{ max_age_ms: 2000 }},
+                        update: {{ max_hz: 2 }},
+                        max_result_bytes: 4096,
+                        on_oversize: "reject",
+                    }},
+                ],
+                services: [
+                    {{
+                        member: "get_identity",
+                        tool: "robot.get_identity",
+                        description: "Who the robot is.",
+                        operation: "read_only",
+                        deadline_ms: 2000,
+                    }},
+                    {extra_status_services}
+                ],
+            }},
+            camera: {{
+                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{}" }},
+                argument: "camera",
+                services: [
+                    {{
+                        member: "set_brightness",
+                        tool: "camera.set_brightness",
+                        description: "Set the camera's brightness.",
+                        operation: "mutating",
+                        deadline_ms: 2000,
+                    }},
+                ],
+            }},
+        }},
+    }}"#,
+        sha_of(CAMERA_CONTRACT)
+    )
+}
+
+#[test]
+fn a_per_robot_bundle_adds_the_routing_arguments_and_resolves_its_listing() {
+    let status = fixture(STATUS_CONTRACT);
+    let camera = fixture(CAMERA_CONTRACT);
+    let bundle = build(
+        &per_robot_exposure(&sha_of(STATUS_CONTRACT), ""),
+        &[&status, &camera],
+    );
+
+    let BundleSurface::PerRobot { robots, contracts } = &bundle.surface else {
+        panic!("expected a per-robot bundle");
+    };
+    assert_eq!(robots.list.name, "robot.list");
+    assert_eq!(
+        robots.describe,
+        vec![DescribeEntry {
+            key: "identity".to_string(),
+            target: "status".to_string(),
+            tool: "robot.get_identity".to_string(),
+        }]
+    );
+    let by_slot: BTreeMap<&str, Option<&str>> = contracts
+        .iter()
+        .map(|pin| (pin.pin.link_id.as_str(), pin.argument.as_deref()))
+        .collect();
+    assert_eq!(by_slot["status"], None);
+    assert_eq!(by_slot["camera"], Some("camera"));
+
+    let identity = &bundle.tools[0];
+    assert_eq!(identity.name, "robot.get_identity");
+    assert_eq!(
+        identity.input_schema["required"],
+        serde_json::json!(["robot"])
+    );
+    assert_eq!(
+        identity.input_schema["properties"]["robot"],
+        serde_json::json!({ "type": "string" })
+    );
+    let brightness = &bundle.tools[1];
+    assert_eq!(brightness.name, "camera.set_brightness");
+    assert_eq!(
+        brightness.input_schema["required"],
+        serde_json::json!(["value", "robot", "camera"])
+    );
+    assert_eq!(
+        brightness.input_schema["additionalProperties"],
+        serde_json::json!(false)
+    );
+
+    let reparsed = ExposureBundle::from_json_str(&bundle.to_json_string()).expect("round trips");
+    assert_eq!(reparsed, bundle);
+}
+
+#[test]
+fn a_request_field_named_like_a_routing_argument_is_refused() {
+    let status = fixture(STATUS_CONTRACT);
+    let camera = fixture(CAMERA_CONTRACT);
+    let rename = r#"{
+        member: "rename",
+        tool: "robot.rename",
+        description: "Rename the robot.",
+        operation: "mutating",
+        deadline_ms: 2000,
+    },"#;
+    let violations = violations_of(
+        &per_robot_exposure(&sha_of(STATUS_CONTRACT), rename),
+        &[&status, &camera],
+    );
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(
+        violations[0].contains("service `rename`")
+            && violations[0].contains("declares `robot`, the name the server adds"),
+        "{violations:?}"
+    );
+}
+
+/// The listing calls a described service with the robot alone, so one
+/// taking a request of its own cannot fill a listing field.
+#[test]
+fn a_described_service_takes_no_request_of_its_own() {
+    // The contract's `rename` takes a request the routing argument does not
+    // collide with, so the listing rule is the only one it breaks.
+    let contract = STATUS_CONTRACT.replace(
+        r#"request_message_format: { robot: "string" }"#,
+        r#"request_message_format: { new_name: "string" }"#,
+    );
+    let rename = r#"{
+        member: "rename",
+        tool: "robot.rename",
+        description: "Rename the robot.",
+        operation: "mutating",
+        deadline_ms: 2000,
+    },"#;
+    let violations = violations_of(
+        &per_robot_exposure(&sha_of(&contract), rename)
+            .replace(r#"service: "get_identity""#, r#"service: "rename""#),
+        &[&fixture(&contract), &fixture(CAMERA_CONTRACT)],
+    );
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(
+        violations[0].contains("`robots.describe.identity`")
+            && violations[0].contains("takes `new_name`")
+            && violations[0].contains("takes no request"),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn a_fixed_bundle_carries_no_robot_surface() {
+    let bundle = build(
+        WALKTHROUGH_EXPOSURE,
+        &[&fixture(CAMERA_CONTRACT), &fixture(RECORDING_CONTRACT)],
+    );
+    assert!(
+        matches!(bundle.surface, BundleSurface::Fixed { .. }),
+        "a document without `robots` derives a fixed surface"
+    );
+    assert!(
+        !bundle.to_json_string().contains("\"robots\""),
+        "an absent surface is not written"
     );
 }

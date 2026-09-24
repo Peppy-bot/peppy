@@ -48,18 +48,135 @@ pub fn is_canonical_i64_decimal(text: &str) -> bool {
 /// targets become. A server derives it when it starts, and the catalog
 /// command prints it on demand; it is never an artifact of its own.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawExposureBundle", into = "RawExposureBundle")]
 pub struct ExposureBundle {
     pub bundle_format: u32,
     pub schema_mapping_version: u32,
     pub exposure: BundleIdentity,
     pub server: BundleServer,
-    /// The contract slot each logical target becomes: one slot per pin,
-    /// with the pin's `link_id` as the slot the launcher fills.
-    pub contracts: Vec<BundleContractPin>,
+    pub surface: BundleSurface,
     pub resources: Vec<ResourceEntry>,
     pub tools: Vec<ToolEntry>,
     pub tasks: Vec<TaskEntry>,
+}
+
+/// What a bundle serves: the contract slots of a fixed surface, or the
+/// robots of a stack, each filling every slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BundleSurface {
+    /// Each slot is filled by the instance a launcher binds to it, and a
+    /// tool call carries the member's own request alone.
+    Fixed { contracts: Vec<BundleContractPin> },
+    /// Every slot is a `zero_or_more` slot the stack's robots fill, and
+    /// every tool takes the robot's name.
+    PerRobot {
+        robots: RobotCatalog,
+        contracts: Vec<RobotContractPin>,
+    },
+}
+
+impl BundleSurface {
+    /// The contract slot of every target, in catalog order.
+    pub fn contracts(&self) -> Vec<&BundleContractPin> {
+        match self {
+            Self::Fixed { contracts } => contracts.iter().collect(),
+            Self::PerRobot { contracts, .. } => contracts.iter().map(|pin| &pin.pin).collect(),
+        }
+    }
+}
+
+/// Wire shape of [`ExposureBundle`]. Deserialization funnels through
+/// `TryFrom<RawExposureBundle>` so the `argument` a slot takes reaches the
+/// parsed bundle on a per-robot surface alone.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawExposureBundle {
+    bundle_format: u32,
+    schema_mapping_version: u32,
+    exposure: BundleIdentity,
+    server: BundleServer,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    robots: Option<RobotCatalog>,
+    /// The contract slot each logical target becomes: one slot per pin,
+    /// with the pin's `link_id` as the slot the launcher fills.
+    contracts: Vec<RawBundleContractPin>,
+    resources: Vec<ResourceEntry>,
+    tools: Vec<ToolEntry>,
+    tasks: Vec<TaskEntry>,
+}
+
+impl TryFrom<RawExposureBundle> for ExposureBundle {
+    type Error = String;
+
+    fn try_from(raw: RawExposureBundle) -> Result<Self, String> {
+        let surface = match raw.robots {
+            Some(robots) => BundleSurface::PerRobot {
+                robots,
+                contracts: raw
+                    .contracts
+                    .into_iter()
+                    .map(RobotContractPin::from)
+                    .collect(),
+            },
+            None => {
+                let mut contracts = Vec::with_capacity(raw.contracts.len());
+                for pin in raw.contracts {
+                    if pin.argument.is_some() {
+                        return Err(format!(
+                            "contract slot `{}` declares `argument`, which names the member a \
+                             call addresses on a per-robot surface; a bundle taking one declares \
+                             `robots`",
+                            pin.link_id
+                        ));
+                    }
+                    contracts.push(RobotContractPin::from(pin).pin);
+                }
+                BundleSurface::Fixed { contracts }
+            }
+        };
+        Ok(Self {
+            bundle_format: raw.bundle_format,
+            schema_mapping_version: raw.schema_mapping_version,
+            exposure: raw.exposure,
+            server: raw.server,
+            surface,
+            resources: raw.resources,
+            tools: raw.tools,
+            tasks: raw.tasks,
+        })
+    }
+}
+
+impl From<ExposureBundle> for RawExposureBundle {
+    fn from(bundle: ExposureBundle) -> Self {
+        let (robots, contracts) = match bundle.surface {
+            BundleSurface::Fixed { contracts } => (
+                None,
+                contracts
+                    .into_iter()
+                    .map(|pin| RawBundleContractPin::new(pin, None))
+                    .collect(),
+            ),
+            BundleSurface::PerRobot { robots, contracts } => (
+                Some(robots),
+                contracts
+                    .into_iter()
+                    .map(|pin| RawBundleContractPin::new(pin.pin, pin.argument))
+                    .collect(),
+            ),
+        };
+        Self {
+            bundle_format: bundle.bundle_format,
+            schema_mapping_version: bundle.schema_mapping_version,
+            exposure: bundle.exposure,
+            server: bundle.server,
+            robots,
+            contracts,
+            resources: bundle.resources,
+            tools: bundle.tools,
+            tasks: bundle.tasks,
+        }
+    }
 }
 
 impl ExposureBundle {
@@ -129,13 +246,102 @@ pub struct BundleServer {
 
 /// One pinned contract slot: the contract bytes the exposure was validated
 /// against, and the slot a launcher binds a provider to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleContractPin {
     pub name: String,
     pub tag: String,
     pub sha256: String,
     pub link_id: String,
+}
+
+/// One pinned contract slot of a per-robot surface, and how a robot fills it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RobotContractPin {
+    pub pin: BundleContractPin,
+    /// The argument naming the member a call addresses on a target a robot
+    /// fills any number of times.
+    pub argument: Option<String>,
+}
+
+/// Wire shape of one contract slot: a [`BundleContractPin`] plus the
+/// `argument` a per-robot surface's slot takes.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBundleContractPin {
+    name: String,
+    tag: String,
+    sha256: String,
+    link_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    argument: Option<String>,
+}
+
+impl RawBundleContractPin {
+    fn new(pin: BundleContractPin, argument: Option<String>) -> Self {
+        Self {
+            name: pin.name,
+            tag: pin.tag,
+            sha256: pin.sha256,
+            link_id: pin.link_id,
+            argument,
+        }
+    }
+}
+
+impl From<RawBundleContractPin> for RobotContractPin {
+    fn from(raw: RawBundleContractPin) -> Self {
+        let RawBundleContractPin {
+            name,
+            tag,
+            sha256,
+            link_id,
+            argument,
+        } = raw;
+        Self {
+            pin: BundleContractPin {
+                name,
+                tag,
+                sha256,
+                link_id,
+            },
+            argument,
+        }
+    }
+}
+
+/// The per-robot surface of a bundle: the listing tool and what it reports.
+/// Every tool takes the robot's name under
+/// [`ROBOT_ARGUMENT`](crate::document::ROBOT_ARGUMENT).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RobotCatalog {
+    pub list: ListEntry,
+    /// What the listing reports of each robot, in document order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub describe: Vec<DescribeEntry>,
+}
+
+/// The listing tool: its public name and prose. Its input takes nothing and
+/// its output is the runtime's, one entry per robot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListEntry {
+    pub name: String,
+    pub description: String,
+}
+
+/// One field of a robot's listing entry: the response of the tool the
+/// listing calls for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DescribeEntry {
+    /// The field of the listing entry.
+    pub key: String,
+    /// The target the value is read through.
+    pub target: String,
+    /// The tool published for the service member, called when the robot is
+    /// listed.
+    pub tool: String,
 }
 
 /// One exposed topic: an MCP resource serving the latest policy-approved
@@ -248,7 +454,7 @@ mod tests {
     fn parses_a_published_bundle_and_round_trips_it() {
         let bundle = ExposureBundle::from_json_str(&minimal_bundle_json(1, 1)).expect("parses");
         assert_eq!(bundle.exposure.name, "camera");
-        assert_eq!(bundle.contracts[0].link_id, "front_camera");
+        assert_eq!(bundle.surface.contracts()[0].link_id, "front_camera");
         assert_eq!(bundle.resources[0].policies.update.max_hz.get(), 2.0);
 
         let serialized = bundle.to_json_string();
@@ -287,6 +493,43 @@ mod tests {
             error.contains("schema mapping version 2 is not supported"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn refuses_a_routing_argument_without_a_robot_surface() {
+        let content = minimal_bundle_json(1, 1).replace(
+            r#""link_id": "front_camera" }"#,
+            r#""link_id": "front_camera", "argument": "camera" }"#,
+        );
+        let error = ExposureBundle::from_json_str(&content)
+            .expect_err("a fixed surface's slot takes no argument");
+        assert!(
+            error.contains("contract slot `front_camera` declares `argument`"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_per_robot_bundle_carries_the_argument_of_each_slot() {
+        let content = minimal_bundle_json(1, 1)
+            .replace(
+                r#""link_id": "front_camera" }"#,
+                r#""link_id": "front_camera", "argument": "camera" }"#,
+            )
+            .replace(
+                r#""server": { "title": "Camera" },"#,
+                r#""server": { "title": "Camera" },
+  "robots": { "list": { "name": "robot.list", "description": "The robots." } },"#,
+            );
+        let bundle = ExposureBundle::from_json_str(&content).expect("parses");
+        let BundleSurface::PerRobot { robots, contracts } = &bundle.surface else {
+            panic!("a per-robot surface");
+        };
+        assert_eq!(robots.list.name, "robot.list");
+        assert_eq!(contracts[0].argument.as_deref(), Some("camera"));
+        let reparsed = ExposureBundle::from_json_str(&bundle.to_json_string())
+            .expect("round trips through its wire shape");
+        assert_eq!(reparsed, bundle);
     }
 
     #[test]

@@ -176,10 +176,12 @@ where
         launcher_config_path,
         placement,
         with,
+        joins,
         timeouts,
         rebuild,
     } = args;
     let words = with.words;
+    let joins = joins.joins;
     let subcommand = G::OPERATION.to_ascii_lowercase();
     let launcher_origin = infer_launcher_origin(launcher_config_path)?;
 
@@ -191,7 +193,7 @@ where
     if let LauncherOrigin::Fs(path) = &launcher_origin {
         let parsed = parse_launcher_file(path)?;
         PreparedLauncher::load(&parsed, path)
-            .and_then(|prepared| prepared.launch(&words))
+            .and_then(|prepared| prepared.launch(&words, &joins))
             .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
     }
 
@@ -258,6 +260,7 @@ where
     )
     .with_placement(placement)
     .with_selections(words)
+    .with_joins(joins)
     .with_rebuild(rebuild);
     let budgets = goal.budgets.clone();
 

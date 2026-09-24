@@ -39,13 +39,25 @@ pub struct PeerPin {
     pub copy: Option<String>,
 }
 
-/// One producer a standalone consumer slot binds at boot: the producer and
-/// the copy its instance belongs to, `None` outside a copy. The copy is
-/// checked as a name when the node starts, as [`PeerPin`]'s is.
+/// One producer a standalone consumer slot binds at boot: the machine it runs
+/// on and how the seed names its instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundPin {
-    pub producer: crate::messaging::ProducerRef,
-    pub copy: Option<String>,
+    pub core_node: String,
+    pub instance: PinnedInstance,
+}
+
+/// How a standalone seed names a producer's instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinnedInstance {
+    /// An instance the launcher deploys outside any copy, under the id it
+    /// runs as.
+    AsWritten(String),
+    /// An instance of a copy: the copy's name and the id the copy's fragment
+    /// wrote for it. The node starts it under the id a launch mints from the
+    /// two, and the member it reads carries both. Each half is checked as a
+    /// name when the node starts, as [`PeerPin`]'s copy is.
+    InCopy { copy: String, instance_id: String },
 }
 
 /// Configuration for standalone execution.
@@ -249,24 +261,32 @@ impl StandaloneConfig {
         producer_core_node: impl Into<String>,
         producer_instance_id: impl Into<String>,
     ) -> Self {
-        self.push_bound_pin(link_id, producer_core_node, producer_instance_id, None)
+        self.push_bound_pin(
+            link_id,
+            producer_core_node,
+            PinnedInstance::AsWritten(producer_instance_id.into()),
+        )
     }
 
     /// [`with_bound_producer`](Self::with_bound_producer) for a producer whose
-    /// instance belongs to the copy named `copy`: the member the node reads for
-    /// this producer carries that copy name.
+    /// instance belongs to the copy named `copy`, under the id `instance_id`
+    /// the copy's fragment wrote: the producer runs under the id a launch
+    /// mints from the two, `<copy>_<instance_id>`, and the member the node
+    /// reads for it carries both.
     pub fn with_bound_producer_in_copy(
         self,
         link_id: impl Into<String>,
         producer_core_node: impl Into<String>,
-        producer_instance_id: impl Into<String>,
         copy: impl Into<String>,
+        instance_id: impl Into<String>,
     ) -> Self {
         self.push_bound_pin(
             link_id,
             producer_core_node,
-            producer_instance_id,
-            Some(copy.into()),
+            PinnedInstance::InCopy {
+                copy: copy.into(),
+                instance_id: instance_id.into(),
+            },
         )
     }
 
@@ -274,18 +294,14 @@ impl StandaloneConfig {
         mut self,
         link_id: impl Into<String>,
         producer_core_node: impl Into<String>,
-        producer_instance_id: impl Into<String>,
-        copy: Option<String>,
+        instance: PinnedInstance,
     ) -> Self {
         self.bound_producers
             .entry(link_id.into())
             .or_default()
             .push(BoundPin {
-                producer: crate::messaging::ProducerRef::new(
-                    producer_core_node.into(),
-                    producer_instance_id.into(),
-                ),
-                copy,
+                core_node: producer_core_node.into(),
+                instance,
             });
         self
     }

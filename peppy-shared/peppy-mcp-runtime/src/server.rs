@@ -5,10 +5,12 @@
 
 use crate::clock::Clock;
 use crate::error::{BuildError, ToolCallError};
-use crate::state::{ReadRefusal, ResourceIngest, ResourceState, ResourceUpdated};
+use crate::fleet::{Fleet, FleetMember, FleetRuntime, FleetSource, MemberAddress, quoted};
+use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState};
 use crate::tasks::{ActionContext, ActionExit, ActionSurface, TaskHandler};
 use peppy_mcp_catalog::{
-    BundleIdentity, BundleServer, ExposureBundle, ServiceOperation, TaskEntry, ToolEntry,
+    BundleIdentity, BundleServer, BundleSurface, ExposureBundle, ROBOT_ARGUMENT, ResourceEntry,
+    ServiceOperation, TaskEntry, ToolEntry,
 };
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
@@ -42,6 +44,10 @@ const TASKS_EXTENSION_ID: &str = "io.modelcontextprotocol/tasks";
 /// `resources/list`. The catalog is fixed for the life of the server (a
 /// changed exposure restarts the process serving it), so clients may cache
 /// it for as long as they keep the connection.
+const UNAVAILABLE_SINCE_START: &str =
+    "unavailable: nothing has been published since the server started";
+const UNAVAILABLE_SINCE_JOIN: &str =
+    "unavailable: nothing has been published since the robot joined";
 const CATALOG_TTL_MS: u64 = 3_600_000;
 
 /// Grace period the advertised task TTL carries on top of the exposure's
@@ -57,26 +63,43 @@ const TASK_TTL_GRACE_MS: u64 = 1_000;
 /// semantics loses nothing that a fresh read would not recover.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
-/// One registered bridge: validated canonical-JSON input in, canonical-JSON
-/// output or a [`ToolCallError`] out. Any `Fn(Value) -> impl Future` with
-/// those shapes implements it.
+/// One validated call handed to a bridge: the canonical-JSON input the
+/// contract member takes, and the provider it goes to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCall {
+    pub input: Value,
+    pub recipient: Recipient,
+}
+
+/// The provider a call goes to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Recipient {
+    /// The producer the launcher bound to the entry's target.
+    BoundProducer,
+    /// The member of the target the call's robot fills.
+    Member(MemberAddress),
+}
+
+/// One registered bridge: a validated call in, canonical-JSON output or a
+/// [`ToolCallError`] out. Any `Fn(ToolCall) -> impl Future` with those
+/// shapes implements it.
 pub trait ToolHandler: Send + Sync + 'static {
     fn call(
         &self,
-        input: Value,
+        call: ToolCall,
     ) -> Pin<Box<dyn Future<Output = Result<Value, ToolCallError>> + Send>>;
 }
 
 impl<F, Fut> ToolHandler for F
 where
-    F: Fn(Value) -> Fut + Send + Sync + 'static,
+    F: Fn(ToolCall) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Value, ToolCallError>> + Send + 'static,
 {
     fn call(
         &self,
-        input: Value,
+        call: ToolCall,
     ) -> Pin<Box<dyn Future<Output = Result<Value, ToolCallError>> + Send>> {
-        Box::pin(self(input))
+        Box::pin(self(call))
     }
 }
 
@@ -99,9 +122,7 @@ struct TaskState {
 struct ServerState {
     server: BundleServer,
     exposure: BundleIdentity,
-    resources_by_uri: HashMap<String, Arc<ResourceState>>,
-    resource_uri_by_name: HashMap<String, String>,
-    resource_list: Vec<Resource>,
+    addressing: Addressing,
     tools: HashMap<String, Arc<ToolState>>,
     tasks: HashMap<String, Arc<TaskState>>,
     /// `tools/list` order: the bundle's tools, then its tasks.
@@ -110,20 +131,82 @@ struct ServerState {
     /// by design; every HTTP session shares this manager, which is what
     /// lets a reconnecting client keep polling an existing task id.
     manager: TaskManager,
-    events: broadcast::Sender<ResourceUpdated>,
+    events: broadcast::Sender<CatalogEvent>,
     clock: Clock,
 }
 
+/// How the server addresses providers and publishes resources, as the
+/// bundle's surface decides.
+enum Addressing {
+    /// Every call goes to the producer the launcher bound to its target,
+    /// and the catalog's own resources are the ones served.
+    Fixed(CatalogResources),
+    /// Every call names its robot, and the resources follow the fleet.
+    PerRobot(Arc<FleetRuntime>),
+}
+
+/// The resources of a fixed surface, as the catalog fixes them for the life
+/// of the server.
+struct CatalogResources {
+    by_uri: HashMap<String, Arc<ResourceState>>,
+    uri_by_name: HashMap<String, String>,
+    list: Vec<Resource>,
+}
+
+impl CatalogResources {
+    /// One resource state per catalog entry, keyed by the URI clients read
+    /// it at and by the name the host feeds it under.
+    fn new(entries: &[ResourceEntry]) -> Result<Self, BuildError> {
+        let mut resources = Self {
+            by_uri: HashMap::new(),
+            uri_by_name: HashMap::new(),
+            list: Vec::new(),
+        };
+        for entry in entries {
+            resources.list.push(
+                Resource::new(entry.uri.clone(), entry.name.clone())
+                    .with_description(entry.description.clone())
+                    .with_mime_type("application/json"),
+            );
+            resources
+                .uri_by_name
+                .insert(entry.name.clone(), entry.uri.clone());
+            if resources
+                .by_uri
+                .insert(
+                    entry.uri.clone(),
+                    Arc::new(ResourceState::new(entry.clone())),
+                )
+                .is_some()
+            {
+                return Err(BuildError::DuplicateName {
+                    name: entry.uri.clone(),
+                });
+            }
+        }
+        Ok(resources)
+    }
+}
+
 /// Builds an [`ExposureServer`] from a parsed bundle, one registered
-/// handler per exposed tool, and one task handler per exposed action.
+/// handler per exposed tool, one task handler per exposed action, and the
+/// source of the fleet on a per-robot bundle.
 pub struct ExposureServerBuilder {
     bundle: ExposureBundle,
     clock: Clock,
     handlers: HashMap<String, Arc<dyn ToolHandler>>,
     task_handlers: HashMap<String, Arc<dyn TaskHandler>>,
+    fleet_source: Option<Arc<dyn FleetSource>>,
 }
 
 impl ExposureServerBuilder {
+    /// Registers where the server reads the fleet of a per-robot bundle:
+    /// the members of every target as the stack binds them now.
+    pub fn with_fleet(mut self, source: impl FleetSource) -> Self {
+        self.fleet_source = Some(Arc::new(source));
+        self
+    }
+
     /// Injects the time source for freshness and rate gating. Defaults to
     /// the wall clock; the host passes its sim-time-aware clock so sim time
     /// governs policies too.
@@ -152,33 +235,14 @@ impl ExposureServerBuilder {
             clock,
             mut handlers,
             mut task_handlers,
+            fleet_source,
         } = self;
 
         let mut names = HashSet::new();
-        let mut resources_by_uri = HashMap::new();
-        let mut resource_uri_by_name = HashMap::new();
-        let mut resource_list = Vec::new();
         for entry in &bundle.resources {
             if !names.insert(entry.name.clone()) {
                 return Err(BuildError::DuplicateName {
                     name: entry.name.clone(),
-                });
-            }
-            resource_list.push(
-                Resource::new(entry.uri.clone(), entry.name.clone())
-                    .with_description(entry.description.clone())
-                    .with_mime_type("application/json"),
-            );
-            resource_uri_by_name.insert(entry.name.clone(), entry.uri.clone());
-            if resources_by_uri
-                .insert(
-                    entry.uri.clone(),
-                    Arc::new(ResourceState::new(entry.clone())),
-                )
-                .is_some()
-            {
-                return Err(BuildError::DuplicateName {
-                    name: entry.uri.clone(),
                 });
             }
         }
@@ -251,14 +315,39 @@ impl ExposureServerBuilder {
             return Err(BuildError::UnknownTaskHandler { name });
         }
 
+        // A per-robot surface publishes its resources per robot, from the
+        // fleet; the catalog's own URIs serve a fixed surface.
+        let addressing = match (&bundle.surface, fleet_source) {
+            (BundleSurface::Fixed { .. }, None) => {
+                Addressing::Fixed(CatalogResources::new(&bundle.resources)?)
+            }
+            (BundleSurface::Fixed { .. }, Some(_)) => {
+                return Err(BuildError::UnexpectedFleetSource);
+            }
+            (BundleSurface::PerRobot { .. }, None) => return Err(BuildError::MissingFleetSource),
+            (BundleSurface::PerRobot { robots, contracts }, Some(source)) => {
+                if !names.insert(robots.list.name.clone()) {
+                    return Err(BuildError::DuplicateName {
+                        name: robots.list.name.clone(),
+                    });
+                }
+                let fleet = Arc::new(FleetRuntime::new(
+                    &bundle,
+                    robots.clone(),
+                    contracts,
+                    source,
+                ));
+                tool_list.push(listing_tool(&fleet));
+                Addressing::PerRobot(fleet)
+            }
+        };
+
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Ok(ExposureServer {
             state: Arc::new(ServerState {
                 server: bundle.server,
                 exposure: bundle.exposure,
-                resources_by_uri,
-                resource_uri_by_name,
-                resource_list,
+                addressing,
                 tools,
                 tasks,
                 tool_list,
@@ -366,15 +455,32 @@ impl ExposureServer {
             clock: Clock::wall(),
             handlers: HashMap::new(),
             task_handlers: HashMap::new(),
+            fleet_source: None,
         }
     }
 
-    /// The ingest feeding the named resource, or `None` when the bundle
-    /// exposes no such resource.
+    /// The handle through which the host attaches and detaches the members
+    /// of a per-robot bundle; `None` on a fixed surface.
+    pub fn fleet(&self) -> Option<FleetHandle> {
+        match &self.state.addressing {
+            Addressing::Fixed(_) => None,
+            Addressing::PerRobot(fleet) => Some(FleetHandle {
+                fleet: Arc::clone(fleet),
+                events: self.state.events.clone(),
+                clock: self.state.clock.clone(),
+            }),
+        }
+    }
+
+    /// The ingest feeding the named resource of a fixed surface, or `None`
+    /// when the bundle exposes no such resource.
     pub fn ingest(&self, resource_name: &str) -> Option<ResourceIngest> {
-        let uri = self.state.resource_uri_by_name.get(resource_name)?;
+        let Addressing::Fixed(resources) = &self.state.addressing else {
+            return None;
+        };
+        let uri = resources.uri_by_name.get(resource_name)?;
         Some(ResourceIngest {
-            state: Arc::clone(self.state.resources_by_uri.get(uri)?),
+            state: Arc::clone(resources.by_uri.get(uri)?),
             events: self.state.events.clone(),
             clock: self.state.clock.clone(),
         })
@@ -420,13 +526,53 @@ impl ExposureServer {
         capabilities.build()
     }
 
-    fn read_snapshot(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
-        let Some(resource) = self.state.resources_by_uri.get(uri) else {
+    /// The state behind `uri`: a fixed surface's catalog entry, or a
+    /// per-robot surface's attached member resource. On a per-robot surface
+    /// the fleet is read once: a resource it does not list is refused naming
+    /// the robots present, and one it lists whose member the host has not
+    /// attached yet reads as unavailable.
+    fn resource_state(&self, uri: &str) -> Result<Arc<ResourceState>, McpError> {
+        let fleet = match &self.state.addressing {
+            Addressing::Fixed(resources) => {
+                return resources.by_uri.get(uri).cloned().ok_or_else(|| {
+                    McpError::resource_not_found(
+                        format!("`{uri}` is not a resource of this exposure"),
+                        Some(json!({ "uri": uri })),
+                    )
+                });
+            }
+            Addressing::PerRobot(fleet) => fleet,
+        };
+        let snapshot = fleet.fleet();
+        let listed = snapshot
+            .resources(&fleet.entries)
+            .iter()
+            .any(|resource| resource.uri == uri);
+        if !listed {
             return Err(McpError::resource_not_found(
-                format!("`{uri}` is not a resource of this exposure"),
+                match snapshot.robot_names().as_slice() {
+                    [] => format!(
+                        "`{uri}` is not a resource of this exposure, whose stack has no robot"
+                    ),
+                    robots => format!(
+                        "`{uri}` is not a resource of this exposure; the robots are {}",
+                        quoted(robots)
+                    ),
+                },
                 Some(json!({ "uri": uri })),
             ));
-        };
+        }
+        match fleet.state(uri) {
+            Some(state) => Ok(state),
+            None => Err(McpError::internal_error(
+                format!("resource `{uri}` is {UNAVAILABLE_SINCE_JOIN}"),
+                None,
+            )),
+        }
+    }
+
+    fn read_snapshot(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
+        let resource = self.resource_state(uri)?;
         match resource.snapshot_for_read(self.state.clock.now_nanos()) {
             Ok(view) => Ok(ReadResourceResult::new(vec![
                 ResourceContents::text(view.serialized, uri).with_mime_type("application/json"),
@@ -434,10 +580,7 @@ impl ExposureServer {
             .with_ttl_ms(view.remaining_fresh_ms)
             .with_cache_scope(CacheScope::Private)),
             Err(ReadRefusal::Unavailable) => Err(McpError::internal_error(
-                format!(
-                    "resource `{uri}` is unavailable: nothing has been published since the \
-                     server started"
-                ),
+                format!("resource `{uri}` is {UNAVAILABLE_SINCE_START}"),
                 None,
             )),
             Err(ReadRefusal::Stale { age_ms, max_age_ms }) => Err(McpError::internal_error(
@@ -462,9 +605,10 @@ impl ExposureServer {
             ));
         };
         let input = validated_input(name, &tool.validator, arguments)?;
+        let call = self.route(&tool.entry.target, input)?;
 
         let deadline = Duration::from_millis(tool.entry.deadline_ms.get());
-        let result = match tokio::time::timeout(deadline, tool.handler.call(input)).await {
+        let result = match tokio::time::timeout(deadline, tool.handler.call(call)).await {
             Err(_elapsed) => {
                 return Ok(tool_error(format!(
                     "deadline exceeded: the provider did not answer within {} ms",
@@ -475,16 +619,10 @@ impl ExposureServer {
             Ok(Ok(value)) => value,
         };
 
-        if let Some(limit) = tool.entry.max_result_bytes {
-            let size = serialized_len(&result);
-            if size > limit.get() {
-                return Ok(tool_error(format!(
-                    "result of {size} bytes exceeds the {} byte limit",
-                    limit.get()
-                )));
-            }
+        match within_result_limit(&tool.entry, result) {
+            Ok(result) => Ok(CallToolResult::structured(result)),
+            Err(refusal) => Ok(tool_error(refusal)),
         }
-        Ok(CallToolResult::structured(result))
     }
 
     /// Runs the action behind a tool call on the surface the client can
@@ -520,6 +658,7 @@ impl ExposureServer {
         arguments: JsonObject,
     ) -> Result<CreateTaskResult, McpError> {
         let input = validated_input(&task.entry.name, &task.validator, arguments)?;
+        let call = self.route(&task.entry.target, input)?;
 
         let task = Arc::clone(task);
         // The advertised TTL is the whole-goal deadline plus a grace window:
@@ -533,7 +672,7 @@ impl ExposureServer {
                 .saturating_add(TASK_TTL_GRACE_MS),
         );
         let seed = self.state.manager.spawn(options, move |context| {
-            Box::pin(run_task_operation(task, input, context))
+            Box::pin(run_task_operation(task, call, context))
         });
         Ok(CreateTaskResult::new(seed))
     }
@@ -560,13 +699,14 @@ impl ExposureServer {
             return Err(confirmation_needs_the_tasks_extension(&task.entry.name));
         }
         let input = validated_input(&task.entry.name, &task.validator, arguments)?;
+        let call = self.route(&task.entry.target, input)?;
 
         let (feedback, relay) = mpsc::unbounded_channel();
         let action_context = ActionContext {
             surface: ActionSurface::Call { feedback, cancel },
         };
         let deadline = Duration::from_millis(task.entry.deadline_ms.get());
-        let operation = task.handler.start(input, action_context);
+        let operation = task.handler.start(call, action_context);
         let outcome = tokio::time::timeout(
             deadline,
             relay_feedback_until_settled(operation, relay, progress),
@@ -760,11 +900,11 @@ impl ExposureSet {
 /// it prompt and gives the failure a descriptive message.
 async fn run_task_operation(
     task: Arc<TaskState>,
-    input: Value,
+    call: ToolCall,
     context: TaskContext,
 ) -> Result<CallToolResult, TaskExit> {
     let deadline = Duration::from_millis(task.entry.deadline_ms.get());
-    match tokio::time::timeout(deadline, drive_task(task, input, context)).await {
+    match tokio::time::timeout(deadline, drive_task(task, call, context)).await {
         Ok(result) => result,
         Err(_elapsed) => Err(TaskExit::Error(McpError::internal_error(
             deadline_exceeded(deadline),
@@ -778,7 +918,7 @@ const CONFIRMATION_INPUT_KEY: &str = "confirmation";
 
 async fn drive_task(
     task: Arc<TaskState>,
-    input: Value,
+    call: ToolCall,
     context: TaskContext,
 ) -> Result<CallToolResult, TaskExit> {
     if task.entry.confirmation_required {
@@ -808,12 +948,257 @@ async fn drive_task(
     let action_context = ActionContext {
         surface: ActionSurface::Task(context.clone()),
     };
-    match task.handler.start(input, action_context).await {
+    match task.handler.start(call, action_context).await {
         Ok(value) => Ok(CallToolResult::structured(value)),
         Err(ActionExit::Cancelled) => Err(TaskExit::Cancelled),
         Err(ActionExit::Failed(message)) => {
             Err(TaskExit::Error(McpError::internal_error(message, None)))
         }
+    }
+}
+
+/// The listing tool of a per-robot surface: it takes nothing and answers one
+/// entry per robot.
+fn listing_tool(fleet: &FleetRuntime) -> Tool {
+    let mut entry_properties = serde_json::Map::from_iter([
+        (
+            ROBOT_ARGUMENT.to_string(),
+            json!({ "type": "string", "description": "The robot's name, which every other tool takes." }),
+        ),
+        (
+            "tools".to_string(),
+            json!({ "type": "array", "items": { "type": "string" }, "description": "The tools that answer for this robot, each called with its name." }),
+        ),
+        (
+            "resources".to_string(),
+            json!({ "type": "array", "items": { "type": "string" }, "description": "The resources this robot publishes, each read at `peppy://resource/<name>`." }),
+        ),
+        (
+            "members".to_string(),
+            json!({ "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string" } }, "description": "For each target the robot fills any number of times, the names a call addresses its members by." }),
+        ),
+        (
+            "notes".to_string(),
+            json!({ "type": "array", "items": { "type": "string" }, "description": "What could not be read or served for this robot, and why." }),
+        ),
+    ]);
+    entry_properties.extend(fleet.describe_schema());
+    let input_schema = json!({ "type": "object", "properties": {}, "additionalProperties": false });
+    let output_schema = json!({
+        "type": "object",
+        "properties": {
+            "robots": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": entry_properties,
+                    "required": [ROBOT_ARGUMENT, "tools", "resources", "members", "notes"],
+                },
+            },
+        },
+        "required": ["robots"],
+        "additionalProperties": false,
+    });
+    let Value::Object(input) = input_schema else {
+        unreachable!("the listing input schema is an object");
+    };
+    let Value::Object(output) = output_schema else {
+        unreachable!("the listing output schema is an object");
+    };
+    Tool::new(
+        fleet.catalog.list.name.clone(),
+        fleet.catalog.list.description.clone(),
+        Arc::new(input),
+    )
+    .with_annotations(
+        ToolAnnotations::default()
+            .read_only(true)
+            .destructive(false),
+    )
+    .with_raw_output_schema(Arc::new(output))
+}
+
+impl ExposureServer {
+    /// Turns a validated input into the call a bridge runs: on a per-robot
+    /// surface the routing arguments are taken out of the input and resolved
+    /// to the member the robot fills `target` with; on a fixed surface the
+    /// input is the call.
+    fn route(&self, target: &str, mut input: Value) -> Result<ToolCall, McpError> {
+        let Addressing::PerRobot(fleet) = &self.state.addressing else {
+            return Ok(ToolCall {
+                input,
+                recipient: Recipient::BoundProducer,
+            });
+        };
+        let argument = fleet.argument_of.get(target).cloned().flatten();
+        let fields = input.as_object_mut().expect("validated input is an object");
+        let robot = take_string(fields, ROBOT_ARGUMENT);
+        let name = argument
+            .as_deref()
+            .map(|argument| take_string(fields, argument));
+        let member = fleet
+            .fleet()
+            .route(&robot, target, name.as_deref())
+            .map_err(|refusal| McpError::invalid_params(refusal.to_string(), None))?;
+        Ok(ToolCall {
+            input,
+            recipient: Recipient::Member(member),
+        })
+    }
+
+    /// Answers the listing tool: one entry per robot with the tools and
+    /// resources it answers, its named members, and each `describe` value
+    /// read through the robot's own tools and resources, every robot read at
+    /// once so the listing takes one robot's describe deadlines at most.
+    async fn list_robots(
+        &self,
+        fleet: &FleetRuntime,
+        arguments: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        if !arguments.is_empty() {
+            return Err(McpError::invalid_params(
+                format!(
+                    "`{}` takes no arguments; it lists every robot of the stack",
+                    fleet.catalog.list.name
+                ),
+                None,
+            ));
+        }
+        let snapshot = fleet.fleet();
+        let entries = snapshot
+            .robot_names()
+            .into_iter()
+            .map(|robot| self.describe_robot(fleet, &snapshot, robot));
+        let robots: Vec<Value> = futures::future::join_all(entries).await;
+        Ok(CallToolResult::structured(json!({ "robots": robots })))
+    }
+
+    /// One robot's listing entry with its `describe` values filled in. A
+    /// value that cannot be read is `null`, with the reason under `notes`.
+    async fn describe_robot(&self, fleet: &FleetRuntime, snapshot: &Fleet, robot: String) -> Value {
+        let mut entry = snapshot
+            .listing_entry(&robot, &fleet.by_target)
+            .expect("the robot was read from this snapshot");
+        let mut notes: Vec<Value> = Vec::new();
+        for describe in &fleet.catalog.describe {
+            let value = self
+                .describe_through_tool(snapshot, &robot, &describe.target, &describe.tool)
+                .await;
+            match value {
+                Ok(value) => {
+                    entry[&describe.key] = value;
+                }
+                Err(reason) => {
+                    entry[&describe.key] = Value::Null;
+                    notes.push(json!(format!("{}: {reason}", describe.key)));
+                }
+            }
+        }
+        if let Some(existing) = entry["notes"].as_array_mut() {
+            existing.extend(notes);
+        }
+        entry
+    }
+
+    async fn describe_through_tool(
+        &self,
+        snapshot: &Fleet,
+        robot: &str,
+        target: &str,
+        tool_name: &str,
+    ) -> Result<Value, String> {
+        let tool = self
+            .state
+            .tools
+            .get(tool_name)
+            .expect("the catalog names a tool of this bundle");
+        let member = snapshot
+            .route(robot, target, None)
+            .map_err(|refusal| refusal.to_string())?;
+        let call = ToolCall {
+            input: json!({}),
+            recipient: Recipient::Member(member),
+        };
+        let deadline = Duration::from_millis(tool.entry.deadline_ms.get());
+        match tokio::time::timeout(deadline, tool.handler.call(call)).await {
+            Ok(Ok(value)) => within_result_limit(&tool.entry, value),
+            Ok(Err(error)) => Err(error.to_string()),
+            Err(_elapsed) => Err(format!(
+                "deadline exceeded: the provider did not answer within {} ms",
+                tool.entry.deadline_ms
+            )),
+        }
+    }
+}
+
+/// Takes the string field `name` out of a validated object; the schema
+/// made it required and a string.
+fn take_string(fields: &mut JsonObject, name: &str) -> String {
+    match fields.remove(name) {
+        Some(Value::String(value)) => value,
+        _ => unreachable!("the input schema requires `{name}` as a string"),
+    }
+}
+
+/// A tool result held to the entry's `max_result_bytes`.
+fn within_result_limit(entry: &ToolEntry, result: Value) -> Result<Value, String> {
+    if let Some(limit) = entry.max_result_bytes {
+        let size = serialized_len(&result);
+        if size > limit.get() {
+            return Err(format!(
+                "result of {size} bytes exceeds the {} byte limit",
+                limit.get()
+            ));
+        }
+    }
+    Ok(result)
+}
+
+/// How the host keeps a per-robot server's resources in step with the
+/// members that run: it attaches each member it starts feeding, detaches
+/// each one that leaves, and says when the list changed.
+#[derive(Clone)]
+pub struct FleetHandle {
+    fleet: Arc<FleetRuntime>,
+    events: broadcast::Sender<CatalogEvent>,
+    clock: Clock,
+}
+
+impl FleetHandle {
+    /// Registers `member`'s resources and hands back the ingest feeding each
+    /// one, with the catalog entry it publishes.
+    pub fn attach(&self, member: &FleetMember) -> Vec<(ResourceEntry, ResourceIngest)> {
+        self.fleet
+            .attach(member)
+            .into_iter()
+            .map(|(entry, state)| {
+                (
+                    entry,
+                    ResourceIngest {
+                        state,
+                        events: self.events.clone(),
+                        clock: self.clock.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Drops `member`'s resources.
+    pub fn detach(&self, member: &FleetMember) {
+        self.fleet.detach(member);
+    }
+
+    /// Tells listening clients the resource list changed.
+    pub fn changed(&self) {
+        // Send fails only when nobody listens, which is fine.
+        let _ = self.events.send(CatalogEvent::ResourceListChanged);
+    }
+
+    /// The members the surface cannot serve as the fleet stands now, each
+    /// with the reason.
+    pub fn problems(&self) -> Vec<String> {
+        self.fleet.fleet().problems().to_vec()
     }
 }
 
@@ -886,11 +1271,18 @@ impl ServerHandler for ExposureServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        Ok(
-            ListResourcesResult::with_all_items(self.state.resource_list.clone())
-                .with_ttl_ms(CATALOG_TTL_MS)
-                .with_cache_scope(CacheScope::Private),
-        )
+        // A per-robot surface's resources follow its robots, so the list
+        // is read from the fleet on every request and carries no cache hint.
+        match &self.state.addressing {
+            Addressing::Fixed(resources) => {
+                Ok(ListResourcesResult::with_all_items(resources.list.clone())
+                    .with_ttl_ms(CATALOG_TTL_MS)
+                    .with_cache_scope(CacheScope::Private))
+            }
+            Addressing::PerRobot(fleet) => Ok(ListResourcesResult::with_all_items(
+                fleet.fleet().resources(&fleet.entries),
+            )),
+        }
     }
 
     async fn read_resource(
@@ -928,6 +1320,11 @@ impl ServerHandler for ExposureServer {
     ) -> Result<CallToolResponse, McpError> {
         let name = request.name.as_ref();
         let arguments = request.arguments.unwrap_or_default();
+        if let Addressing::PerRobot(fleet) = &self.state.addressing
+            && name == fleet.catalog.list.name
+        {
+            return self.list_robots(fleet, arguments).await.map(Into::into);
+        }
         let Some(task) = self.state.tasks.get(name) else {
             return self.execute_tool(name, arguments).await.map(Into::into);
         };
@@ -977,8 +1374,16 @@ impl ServerHandler for ExposureServer {
             tokio::select! {
                 _ = context.cancelled() => return Ok(()),
                 event = events.recv() => match event {
-                    Ok(ResourceUpdated { uri }) => {
-                        match sink.notify_resource_updated(uri).await {
+                    Ok(event) => {
+                        let sent = match event {
+                            CatalogEvent::ResourceUpdated { uri } => {
+                                sink.notify_resource_updated(uri).await
+                            }
+                            CatalogEvent::ResourceListChanged => {
+                                sink.notify_resource_list_changed().await
+                            }
+                        };
+                        match sent {
                             Ok(()) => {}
                             Err(
                                 SubscriptionSendError::SubscriptionClosed
@@ -1065,8 +1470,8 @@ mod tests {
         .expect("test bundle parses")
     }
 
-    async fn brightness_handler(input: Value) -> Result<Value, ToolCallError> {
-        let value = input["value"].as_i64().expect("validated integer");
+    async fn brightness_handler(call: ToolCall) -> Result<Value, ToolCallError> {
+        let value = call.input["value"].as_i64().expect("validated integer");
         Ok(json!({ "applied": value >= 0 }))
     }
 
@@ -1138,14 +1543,14 @@ mod tests {
     }
 
     async fn record_handler(
-        _input: Value,
+        _call: ToolCall,
         _context: crate::tasks::ActionContext,
     ) -> Result<Value, ActionExit> {
         Ok(json!({ "frames": 120 }))
     }
 
     async fn resume_handler(
-        _input: Value,
+        _call: ToolCall,
         _context: crate::tasks::ActionContext,
     ) -> Result<Value, ActionExit> {
         Ok(json!({ "resumed": true }))
@@ -1369,7 +1774,7 @@ mod tests {
             .with_task("recorder.record_episode", record_handler)
             .with_task(
                 "recorder.resume_session",
-                |_input: Value, _context: crate::tasks::ActionContext| async move {
+                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
                     Err::<Value, _>(ActionExit::Failed(
                         "the provider abandoned the goal".to_string(),
                     ))
@@ -1400,7 +1805,7 @@ mod tests {
             .with_task("recorder.record_episode", record_handler)
             .with_task(
                 "recorder.resume_session",
-                move |_input: Value, context: crate::tasks::ActionContext| {
+                move |_call: ToolCall, context: crate::tasks::ActionContext| {
                     let cancel_seen = Arc::clone(&observed);
                     async move {
                         context.cancel_requested().await;
@@ -1435,7 +1840,7 @@ mod tests {
             .with_task("recorder.record_episode", record_handler)
             .with_task(
                 "recorder.resume_session",
-                |_input: Value, _context: crate::tasks::ActionContext| async move {
+                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
                     std::future::pending::<Result<Value, ActionExit>>().await
                 },
             )
@@ -1465,7 +1870,7 @@ mod tests {
             .with_task("recorder.record_episode", record_handler)
             .with_task(
                 "recorder.resume_session",
-                |_input: Value, context: crate::tasks::ActionContext| async move {
+                |_call: ToolCall, context: crate::tasks::ActionContext| async move {
                     context.report_feedback("frame 1");
                     context.report_feedback("frame 2");
                     Ok(json!({ "resumed": true }))
@@ -1481,7 +1886,13 @@ mod tests {
                 cancel: tokio_util::sync::CancellationToken::new(),
             },
         };
-        let operation = task.handler.start(JsonObject::new().into(), context);
+        let operation = task.handler.start(
+            ToolCall {
+                input: JsonObject::new().into(),
+                recipient: Recipient::BoundProducer,
+            },
+            context,
+        );
         let outcome = relay_feedback_until_settled(operation, relay, Some(relayed))
             .await
             .expect("the goal completes");
@@ -1530,7 +1941,7 @@ mod tests {
             .with_task("recorder.record_episode", record_handler)
             .with_task(
                 "recorder.resume_session",
-                |_input: Value, context: crate::tasks::ActionContext| async move {
+                |_call: ToolCall, context: crate::tasks::ActionContext| async move {
                     context.report_feedback("resuming at frame 42");
                     context.cancel_requested().await;
                     Err(ActionExit::Cancelled)
@@ -1559,7 +1970,7 @@ mod tests {
             .with_task("recorder.record_episode", record_handler)
             .with_task(
                 "recorder.resume_session",
-                |_input: Value, _context: crate::tasks::ActionContext| async move {
+                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
                     Err::<Value, _>(ActionExit::Failed(
                         "the provider abandoned the goal".to_string(),
                     ))
@@ -1589,7 +2000,7 @@ mod tests {
             .with_tool("front_camera.set_brightness", brightness_handler)
             .with_task(
                 "recorder.record_episode",
-                move |_input: Value, _context: crate::tasks::ActionContext| {
+                move |_call: ToolCall, _context: crate::tasks::ActionContext| {
                     let goal_ran = Arc::clone(&observed);
                     async move {
                         goal_ran.store(true, Ordering::SeqCst);
@@ -1648,7 +2059,7 @@ mod tests {
             .with_tool("front_camera.set_brightness", brightness_handler)
             .with_task(
                 "recorder.record_episode",
-                move |_input: Value, _context: crate::tasks::ActionContext| {
+                move |_call: ToolCall, _context: crate::tasks::ActionContext| {
                     let goal_ran = Arc::clone(&observed);
                     async move {
                         goal_ran.store(true, Ordering::SeqCst);
@@ -1697,7 +2108,7 @@ mod tests {
             .with_task("recorder.record_episode", record_handler)
             .with_task(
                 "recorder.resume_session",
-                |_input: Value, _context: crate::tasks::ActionContext| async move {
+                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
                     std::future::pending::<Result<Value, ActionExit>>().await
                 },
             )
@@ -1729,6 +2140,398 @@ mod tests {
         let server = built_server();
         assert_eq!(server.endpoint_path(), "/camera_and_recording/v1/mcp");
         assert_eq!(server.exposure().name, "camera_and_recording");
+    }
+
+    /// The per-robot surface the fleet tests drive: a status target filled
+    /// once per robot (a resource the listing reads a field of, and an
+    /// identity tool it calls) and a camera target filled any number of
+    /// times.
+    mod per_robot {
+        use super::*;
+        use crate::fleet::{FleetMember, MemberAddress};
+        use std::sync::Mutex;
+
+        fn bundle() -> ExposureBundle {
+            ExposureBundle::from_json_str(
+                r#"{
+  "bundle_format": 1,
+  "schema_mapping_version": 1,
+  "exposure": { "name": "robot_control", "tag": "v1" },
+  "server": { "title": "Robots" },
+  "robots": {
+    "list": { "name": "robot.list", "description": "The robots of the stack." },
+    "describe": [
+      { "key": "identity", "target": "status", "tool": "robot.get_identity" }
+    ]
+  },
+  "contracts": [
+    { "name": "robot_status", "tag": "v1", "sha256": "aa", "link_id": "status" },
+    { "name": "rgb_camera", "tag": "v1", "sha256": "bb", "link_id": "camera", "argument": "camera" }
+  ],
+  "resources": [
+    {
+      "name": "robot.status",
+      "uri": "peppy://resource/robot.status",
+      "description": "The robot's latest status.",
+      "target": "status",
+      "member": "status",
+      "policies": { "freshness": { "max_age_ms": 2000 }, "update": { "max_hz": 2.0 } },
+      "schema": { "type": "object" }
+    },
+    {
+      "name": "camera.latest_frame",
+      "uri": "peppy://resource/camera.latest_frame",
+      "description": "The camera's latest frame.",
+      "target": "camera",
+      "member": "video_stream",
+      "policies": { "freshness": { "max_age_ms": 2000 }, "update": { "max_hz": 2.0 } },
+      "schema": { "type": "object" }
+    }
+  ],
+  "tools": [
+    {
+      "name": "robot.get_identity",
+      "description": "Who the robot is.",
+      "target": "status",
+      "member": "get_identity",
+      "operation": "read_only",
+      "deadline_ms": 2000,
+      "input_schema": {
+        "type": "object",
+        "properties": { "robot": { "type": "string" } },
+        "required": ["robot"],
+        "additionalProperties": false
+      },
+      "output_schema": { "type": "object" }
+    },
+    {
+      "name": "camera.set_brightness",
+      "description": "Set the camera's brightness.",
+      "target": "camera",
+      "member": "set_brightness",
+      "operation": "mutating",
+      "deadline_ms": 2000,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "value": { "type": "integer" },
+          "robot": { "type": "string" },
+          "camera": { "type": "string" }
+        },
+        "required": ["value", "robot", "camera"],
+        "additionalProperties": false
+      },
+      "output_schema": { "type": "object" }
+    }
+  ],
+  "tasks": []
+}"#,
+            )
+            .expect("per-robot bundle parses")
+        }
+
+        fn member(target: &str, robot: &str, name: &str) -> FleetMember {
+            FleetMember {
+                target: target.to_string(),
+                address: MemberAddress {
+                    core_node: "cn".to_string(),
+                    instance_id: format!("{robot}_{name}"),
+                },
+                robot: Some(robot.to_string()),
+                name: name.to_string(),
+            }
+        }
+
+        /// A server over a fleet the test edits, whose tools answer with the
+        /// member they were routed to.
+        fn served() -> (ExposureServer, Arc<Mutex<Vec<FleetMember>>>) {
+            let fleet = Arc::new(Mutex::new(vec![
+                member("status", "alpha", "backbone_inst"),
+                member("camera", "alpha", "wrist_left"),
+                member("status", "bravo", "backbone_inst"),
+            ]));
+            let source = Arc::clone(&fleet);
+            let server = ExposureServer::builder(bundle())
+                .with_fleet(move || source.lock().unwrap().clone())
+                .with_tool("robot.get_identity", |call: ToolCall| async move {
+                    let Recipient::Member(member) = call.recipient else {
+                        panic!("a per-robot call names its member");
+                    };
+                    Ok(json!({ "robot": member.instance_id, "input": call.input }))
+                })
+                .with_tool("camera.set_brightness", |call: ToolCall| async move {
+                    let Recipient::Member(member) = call.recipient else {
+                        panic!("a per-robot call names its member");
+                    };
+                    Ok(json!({ "camera": member.instance_id, "input": call.input }))
+                })
+                .build()
+                .expect("bundle and handlers agree");
+            (server, fleet)
+        }
+
+        fn structured(result: CallToolResult) -> Value {
+            result.structured_content.expect("a structured result")
+        }
+
+        /// The fleet runtime of a per-robot server, which the listing tests
+        /// drive directly.
+        fn runtime(server: &ExposureServer) -> &FleetRuntime {
+            match &server.state.addressing {
+                Addressing::PerRobot(fleet) => fleet,
+                Addressing::Fixed(_) => panic!("expected a per-robot server"),
+            }
+        }
+
+        #[test]
+        fn a_per_robot_bundle_needs_its_fleet_and_a_fixed_bundle_takes_none() {
+            let missing = ExposureServer::builder(bundle())
+                .with_tool("robot.get_identity", brightness_handler)
+                .with_tool("camera.set_brightness", brightness_handler)
+                .build()
+                .expect_err("no fleet source");
+            assert_eq!(missing, BuildError::MissingFleetSource);
+            let unexpected = ExposureServer::builder(test_bundle())
+                .with_tool("front_camera.set_brightness", brightness_handler)
+                .with_fleet(Vec::new)
+                .build()
+                .expect_err("a fixed bundle has no fleet");
+            assert_eq!(unexpected, BuildError::UnexpectedFleetSource);
+        }
+
+        #[tokio::test]
+        async fn a_call_is_routed_to_the_robots_member_without_its_routing_arguments() {
+            let (server, _) = served();
+            let result = server
+                .execute_tool(
+                    "camera.set_brightness",
+                    arguments(json!({ "robot": "alpha", "camera": "wrist_left", "value": 3 })),
+                )
+                .await
+                .expect("routes");
+            assert_eq!(
+                structured(result),
+                json!({ "camera": "alpha_wrist_left", "input": { "value": 3 } })
+            );
+            let result = server
+                .execute_tool("robot.get_identity", arguments(json!({ "robot": "bravo" })))
+                .await
+                .expect("routes");
+            assert_eq!(
+                structured(result),
+                json!({ "robot": "bravo_backbone_inst", "input": {} })
+            );
+        }
+
+        #[tokio::test]
+        async fn refusals_name_the_robots_and_members_present() {
+            let (server, fleet) = served();
+            let refused = |arguments: Value| async {
+                server
+                    .execute_tool("camera.set_brightness", self::arguments(arguments))
+                    .await
+                    .expect_err("refused")
+            };
+            let error =
+                refused(json!({ "robot": "charlie", "camera": "wrist_left", "value": 1 })).await;
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+            assert_eq!(
+                error.message,
+                "`charlie` is not a robot of this stack; the robots are `alpha`, `bravo`"
+            );
+            let error =
+                refused(json!({ "robot": "bravo", "camera": "wrist_left", "value": 1 })).await;
+            assert_eq!(
+                error.message,
+                "robot `bravo` has no `camera`; it fills `status`; the robots with a `camera` are `alpha`"
+            );
+            let error = refused(json!({ "robot": "alpha", "camera": "chest", "value": 1 })).await;
+            assert_eq!(
+                error.message,
+                "robot `alpha` has no `camera` named `chest` (`camera`); it has `wrist_left`"
+            );
+            let error = refused(json!({ "robot": "alpha", "value": 1 })).await;
+            assert!(
+                error.message.contains("invalid arguments"),
+                "{}",
+                error.message
+            );
+
+            fleet.lock().unwrap().clear();
+            let error =
+                refused(json!({ "robot": "alpha", "camera": "wrist_left", "value": 1 })).await;
+            assert_eq!(
+                error.message,
+                "`alpha` is not a robot of this stack, which has no robot; `peppy stack join \
+                 OPTION:NAME` adds one"
+            );
+        }
+
+        #[tokio::test]
+        async fn the_listing_reports_each_robot_with_what_its_targets_answer() {
+            let (server, fleet) = served();
+            let listed = server
+                .list_robots(runtime(&server), JsonObject::new())
+                .await
+                .expect("lists");
+            assert_eq!(
+                structured(listed),
+                json!({
+                    "robots": [
+                        {
+                            "robot": "alpha",
+                            "tools": ["camera.set_brightness", "robot.get_identity"],
+                            "resources": [
+                                "alpha/robot.status",
+                                "alpha/wrist_left/camera.latest_frame",
+                            ],
+                            "members": { "camera": ["wrist_left"] },
+                            "notes": [],
+                            "identity": { "robot": "alpha_backbone_inst", "input": {} },
+                        },
+                        {
+                            "robot": "bravo",
+                            "tools": ["robot.get_identity"],
+                            "resources": ["bravo/robot.status"],
+                            "members": {},
+                            "notes": [],
+                            "identity": { "robot": "bravo_backbone_inst", "input": {} },
+                        },
+                    ]
+                })
+            );
+            // A robot filling no described target is listed with what it
+            // fills and each describe value null, the note naming the robots
+            // that fill the target.
+            fleet
+                .lock()
+                .unwrap()
+                .push(member("camera", "charlie", "front"));
+            let listed = server
+                .list_robots(runtime(&server), JsonObject::new())
+                .await
+                .expect("lists");
+            assert_eq!(
+                structured(listed)["robots"][2],
+                json!({
+                    "robot": "charlie",
+                    "tools": ["camera.set_brightness"],
+                    "resources": ["charlie/front/camera.latest_frame"],
+                    "members": { "camera": ["front"] },
+                    "notes": [
+                        "identity: robot `charlie` has no `status`; it fills `camera`; the robots with a \
+                         `status` are `alpha`, `bravo`",
+                    ],
+                    "identity": null,
+                })
+            );
+            let error = server
+                .list_robots(runtime(&server), arguments(json!({ "robot": "alpha" })))
+                .await
+                .expect_err("takes no arguments");
+            assert!(error.message.contains("`robot.list` takes no arguments"));
+        }
+
+        #[tokio::test]
+        async fn resources_follow_the_fleet_and_a_change_is_announced() {
+            let (server, members) = served();
+            let handle = server.fleet().expect("a per-robot server");
+            let fleet = runtime(&server);
+            let listed: Vec<String> = fleet
+                .fleet()
+                .resources(&fleet.entries)
+                .iter()
+                .map(|resource| resource.uri.to_string())
+                .collect();
+            assert_eq!(
+                listed,
+                [
+                    "peppy://resource/alpha/robot.status",
+                    "peppy://resource/alpha/wrist_left/camera.latest_frame",
+                    "peppy://resource/bravo/robot.status",
+                ]
+            );
+            let unavailable = server
+                .read_snapshot("peppy://resource/alpha/robot.status")
+                .expect_err("listed, not attached");
+            assert!(
+                unavailable.message.contains("unavailable"),
+                "{}",
+                unavailable.message
+            );
+            let unknown = server
+                .read_snapshot("peppy://resource/charlie/robot.status")
+                .expect_err("not listed");
+            assert_eq!(unknown.code, ErrorCode::RESOURCE_NOT_FOUND);
+            assert!(
+                unknown.message.contains("the robots are `alpha`, `bravo`"),
+                "{}",
+                unknown.message
+            );
+
+            let mut events = server.state.events.subscribe();
+            let camera = member("camera", "alpha", "wrist_left");
+            let attached = handle.attach(&camera);
+            let (_, ingest) = &attached[0];
+            let token = ingest.admit().expect("gate open");
+            ingest
+                .publish(token, json!({ "frame": "AAAA" }))
+                .expect("publishes");
+            let read = server
+                .read_snapshot("peppy://resource/alpha/wrist_left/camera.latest_frame")
+                .expect("attached and published");
+            assert_eq!(read.contents.len(), 1);
+            assert!(matches!(
+                events.try_recv().expect("the publish is announced"),
+                CatalogEvent::ResourceUpdated { .. }
+            ));
+
+            members
+                .lock()
+                .unwrap()
+                .retain(|member| member.robot.as_deref() != Some("alpha"));
+            handle.detach(&camera);
+            handle.changed();
+            assert!(matches!(
+                events.try_recv().expect("the change is announced"),
+                CatalogEvent::ResourceListChanged
+            ));
+            let gone = server
+                .read_snapshot("peppy://resource/alpha/wrist_left/camera.latest_frame")
+                .expect_err("detached and unlisted");
+            assert_eq!(gone.code, ErrorCode::RESOURCE_NOT_FOUND);
+        }
+
+        #[test]
+        fn the_listing_tool_joins_the_tool_list_with_the_describe_fields_in_its_schema() {
+            let (server, _) = served();
+            let names: Vec<&str> = server
+                .state
+                .tool_list
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect();
+            assert_eq!(
+                names,
+                ["robot.get_identity", "camera.set_brightness", "robot.list"]
+            );
+            let listing = server.get_tool("robot.list").expect("listed");
+            let output = listing.output_schema.expect("an output schema");
+            let entry = &output["properties"]["robots"]["items"]["properties"];
+            for field in [
+                "robot",
+                "tools",
+                "resources",
+                "members",
+                "notes",
+                "identity",
+            ] {
+                assert!(
+                    entry.get(field).is_some(),
+                    "{field} is a field of every entry"
+                );
+            }
+        }
     }
 
     fn built_server_tagged(tag: &str) -> ExposureServer {
@@ -1802,7 +2605,10 @@ mod tests {
     #[test]
     fn the_catalog_carries_descriptions_schemas_and_annotations() {
         let server = built_server();
-        let resource = &server.state.resource_list[0];
+        let Addressing::Fixed(resources) = &server.state.addressing else {
+            panic!("expected a fixed server");
+        };
+        let resource = &resources.list[0];
         assert_eq!(resource.uri, "peppy://resource/front_camera.status");
         assert_eq!(resource.name, "front_camera.status");
         assert_eq!(resource.mime_type.as_deref(), Some("application/json"));
@@ -1865,7 +2671,7 @@ mod tests {
     #[tokio::test]
     async fn a_bridge_failure_is_a_readable_tool_error() {
         let server = ExposureServer::builder(test_bundle())
-            .with_tool("front_camera.set_brightness", |_input: Value| async {
+            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
                 Err(ToolCallError::Unavailable("no producer bound".to_string()))
             })
             .build()
@@ -1888,7 +2694,7 @@ mod tests {
     #[tokio::test]
     async fn an_oversize_result_is_a_tool_error() {
         let server = ExposureServer::builder(test_bundle())
-            .with_tool("front_camera.set_brightness", |_input: Value| async {
+            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
                 Ok(json!({ "applied": "y".repeat(128) }))
             })
             .build()
@@ -1911,7 +2717,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_handler_slower_than_the_deadline_is_a_tool_error() {
         let server = ExposureServer::builder(test_bundle())
-            .with_tool("front_camera.set_brightness", |_input: Value| async {
+            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
                 Ok(json!({ "applied": true }))
             })

@@ -14,6 +14,7 @@ use crate::encoding::{
     required_text, write_text_list,
 };
 use crate::graph::InstanceEndpoint;
+use config::runtime::Name;
 
 use super::budgets::StackBudgets;
 use super::read_selections;
@@ -97,6 +98,19 @@ pub struct LaunchGoal {
     /// Forwarded to each node build the launch performs, on the coordinator
     /// and on every peer.
     pub rebuild: bool,
+    /// The copies `--join OPTION:NAME` starts with the launch, in the order
+    /// they were given.
+    pub joins: Vec<LaunchJoin>,
+}
+
+/// One `OPTION:NAME` reference to a copy: the copy of `option` that runs
+/// under `name`, built from the launcher's entry for the option. `--join`
+/// composes, validates and starts it with the launch; `stack join` adds the
+/// same copy to a running stack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchJoin {
+    pub option: String,
+    pub name: Name,
 }
 
 impl LaunchGoal {
@@ -112,6 +126,7 @@ impl LaunchGoal {
             placement: PlacementSpec::default(),
             selections: Vec::new(),
             rebuild: false,
+            joins: Vec::new(),
         }
     }
 
@@ -127,6 +142,11 @@ impl LaunchGoal {
 
     pub fn with_rebuild(mut self, rebuild: bool) -> Self {
         self.rebuild = rebuild;
+        self
+    }
+
+    pub fn with_joins(mut self, joins: Vec<LaunchJoin>) -> Self {
+        self.joins = joins;
         self
     }
 
@@ -179,6 +199,14 @@ impl LaunchGoal {
             );
 
             goal.reborrow().set_rebuild(self.rebuild);
+
+            let join_count = capnp_list_len(self.joins.len(), "LaunchGoal.joins")?;
+            let mut joins = goal.reborrow().init_joins(join_count);
+            for (idx, join) in self.joins.iter().enumerate() {
+                let mut wire = joins.reborrow().get(idx as u32);
+                wire.set_option(&join.option);
+                wire.set_name(join.name.as_str());
+            }
         }
         encode_message(&builder)
     }
@@ -259,6 +287,25 @@ impl LaunchGoal {
         };
 
         let selections = read_selections(goal.get_selections()?, "LaunchGoal.selections")?;
+        let joins = goal
+            .get_joins()?
+            .iter()
+            .map(|wire| {
+                let option = wire.get_option()?.to_str()?;
+                if option.is_empty() {
+                    return Err(crate::Error::Decoding(
+                        "LaunchGoal.joins names an empty option".to_owned(),
+                    ));
+                }
+                Ok(LaunchJoin {
+                    option: option.to_owned(),
+                    name: crate::encoding::read_name(
+                        wire.get_name()?.to_str()?,
+                        "LaunchGoal.joins.name",
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
             launch_id: launch_id.to_owned(),
@@ -267,6 +314,7 @@ impl LaunchGoal {
             budgets,
             selections,
             rebuild: goal.get_rebuild(),
+            joins,
         })
     }
 }
@@ -750,6 +798,61 @@ mod tests {
         let bytes = build.encode().expect("encode");
         assert_eq!(StackBuildGoal::decode(&bytes).expect("decode"), build);
         assert_eq!(build.into_launch(), goal);
+    }
+
+    #[test]
+    fn launch_goal_roundtrips_joins_in_order_and_refuses_an_empty_option() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "fleet".to_owned(),
+            },
+            "launch-1",
+            StackBudgets::default(),
+        )
+        .with_joins(vec![
+            LaunchJoin {
+                option: "openarm_v2_sim".to_owned(),
+                name: Name::new("alpha").unwrap(),
+            },
+            LaunchJoin {
+                option: "so101_sim".to_owned(),
+                name: Name::new("charlie").unwrap(),
+            },
+        ]);
+        let decoded = LaunchGoal::decode(&goal.encode().unwrap()).unwrap();
+        assert_eq!(decoded.joins, goal.joins);
+        assert!(
+            LaunchGoal::decode(
+                &LaunchGoal::new(
+                    LauncherOrigin::Repository {
+                        name: "fleet".to_owned(),
+                    },
+                    "launch-1",
+                    StackBudgets::default(),
+                )
+                .encode()
+                .unwrap()
+            )
+            .unwrap()
+            .joins
+            .is_empty()
+        );
+
+        let mut builder = Builder::new_default();
+        {
+            let mut wire = builder.init_root::<launch_capnp::launch_goal::Builder>();
+            wire.set_launch_id("launch-1");
+            wire.set_node_add_idle_timeout_secs(1);
+            wire.set_node_build_idle_timeout_secs(1);
+            wire.set_node_run_idle_timeout_secs(1);
+            wire.reborrow()
+                .init_launcher_origin()
+                .set_repository("fleet");
+            let mut joins = wire.init_joins(1);
+            joins.reborrow().get(0).set_name("alpha");
+        }
+        let error = LaunchGoal::decode(&encode_message(&builder).unwrap()).unwrap_err();
+        assert!(error.to_string().contains("empty option"), "{error}");
     }
 
     /// `--rebuild` travels with the launch so every node build it performs,

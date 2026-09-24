@@ -1459,21 +1459,23 @@ impl PyStandaloneConfig {
     }
 
     /// `with_bound_producer` for a producer whose instance belongs to the copy
-    /// named `copy`: the member the node reads for this producer carries that
-    /// copy name.
+    /// named `copy`, under the id `instance_id` the copy's fragment wrote: the
+    /// producer runs under the id a launch mints from the two,
+    /// `<copy>_<instance_id>`, and the member the node reads for it carries
+    /// both.
     fn with_bound_producer_in_copy(
         &self,
         link_id: String,
         producer_core_node: String,
-        producer_instance_id: String,
         copy: String,
+        instance_id: String,
     ) -> Self {
         Self {
             inner: self.inner.clone().with_bound_producer_in_copy(
                 link_id,
                 producer_core_node,
-                producer_instance_id,
                 copy,
+                instance_id,
             ),
         }
     }

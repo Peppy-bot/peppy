@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::sync::watch;
 
-use super::builder::StandaloneConfig;
+use super::builder::{BoundPin, PinnedInstance, StandaloneConfig};
 use crate::services::binding_update::BindingSlotChannels;
 use crate::services::observation_update::ObservationSlotChannels;
 use crate::services::peer_update::PairingSlotChannels;
@@ -250,12 +250,7 @@ impl Processor {
             }
             let members = pins
                 .iter()
-                .map(|pin| {
-                    Ok(config::runtime::BoundMember {
-                        producer: pin.producer.clone(),
-                        copy: seed_copy_name(link_id, pin.copy.as_deref())?,
-                    })
-                })
+                .map(|pin| seed_bound_member(link_id, pin))
                 .collect::<Result<Vec<_>>>()?;
             let bound = config::runtime::BoundProducers::try_from(members)
                 .map_err(config::ConfigError::from)?;
@@ -320,7 +315,11 @@ impl Processor {
                     Ok(config::runtime::PairedPeer {
                         peer: pin.info.producer.clone(),
                         peer_link_id: pin.info.peer_link_id.clone(),
-                        copy: seed_copy_name(link_id, pin.copy.as_deref())?,
+                        copy: pin
+                            .copy
+                            .as_deref()
+                            .map(|copy| seed_copy_name(link_id, copy))
+                            .transpose()?,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -480,9 +479,10 @@ impl Processor {
 
     /// The members of the set currently bound to the consumer slot declared
     /// at `link_id`, in plan order: each producer with the copy its instance
-    /// belongs to, `None` for one the launcher deploys outside any copy. The
-    /// same set [`Self::bound_producers`] answers by producer alone, under
-    /// the same rules; a node that groups producers by copy reads this one.
+    /// belongs to and the id it has inside that copy, `None` for one the
+    /// launcher deploys outside any copy. The same set
+    /// [`Self::bound_producers`] answers by producer alone, under the same
+    /// rules; a node that groups producers by copy reads this one.
     ///
     /// Generated `bound_members()` module functions of `zero_or_more` slots
     /// splice this directly; `one_or_more` slots go through
@@ -958,17 +958,43 @@ fn one_or_more_slot_is_empty(link_id: &str) -> ! {
     )
 }
 
-/// The copy a standalone seed names for a member of slot `link_id`, as a
-/// validated name; `None` seeds a member outside any copy.
-fn seed_copy_name(link_id: &str, copy: Option<&str>) -> Result<Option<Name>> {
-    copy.map(|copy| {
-        Name::new(copy).map_err(|e| Error::InvalidCopyName {
-            link_id: link_id.to_string(),
-            copy: copy.to_string(),
-            reason: e.to_string(),
-        })
+/// The member a standalone seed pins to slot `link_id`: an instance under
+/// the id it runs as, or one of a copy, minted under the copy's name and
+/// carrying both halves of its tag.
+fn seed_bound_member(link_id: &str, pin: &BoundPin) -> Result<config::runtime::BoundMember> {
+    let (instance_id, copy) = match &pin.instance {
+        PinnedInstance::AsWritten(instance_id) => (instance_id.clone(), None),
+        PinnedInstance::InCopy { copy, instance_id } => {
+            let name = seed_copy_name(link_id, copy)?;
+            let in_copy = Name::new(instance_id).map_err(|e| Error::InvalidInstanceIdInCopy {
+                link_id: link_id.to_string(),
+                copy: copy.to_string(),
+                instance_id: instance_id.to_string(),
+                reason: e.to_string(),
+            })?;
+            (
+                config::runtime::instance_id_in_copy(&name, in_copy.as_str()).to_string(),
+                Some(config::runtime::CopyTag {
+                    name,
+                    instance_id: in_copy,
+                }),
+            )
+        }
+    };
+    Ok(config::runtime::BoundMember {
+        producer: config::runtime::ProducerRef::new(pin.core_node.clone(), instance_id),
+        copy,
     })
-    .transpose()
+}
+
+/// The copy a standalone seed names for a member of slot `link_id`, as a
+/// validated name.
+fn seed_copy_name(link_id: &str, copy: &str) -> Result<Name> {
+    Name::new(copy).map_err(|e| Error::InvalidCopyName {
+        link_id: link_id.to_string(),
+        copy: copy.to_string(),
+        reason: e.to_string(),
+    })
 }
 
 /// A consumer's producer-binding slots. A set slot (`one_or_more`,
@@ -2801,9 +2827,10 @@ mod tests {
         );
     }
 
-    /// A producer seeded in a copy reads back with that copy beside one seeded
-    /// outside any, in call order, through both member accessors; a copy that
-    /// is not a name fails startup naming the slot.
+    /// A producer seeded in a copy runs under the id the copy mints and reads
+    /// back with both halves of its tag, beside one seeded outside any copy,
+    /// in call order, through both member accessors; a half that is not a name
+    /// fails startup naming the slot.
     #[test]
     fn standalone_bound_members_carry_the_copy_they_were_seeded_in() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -2818,7 +2845,7 @@ mod tests {
         let config = seeded(
             StandaloneConfig::new()
                 .with_bound_producer("arms", "core_x", "right_arm")
-                .with_bound_producer_in_copy("arms", "core_y", "bravo_arm", "bravo"),
+                .with_bound_producer_in_copy("arms", "core_y", "bravo", "arm"),
         );
         let processor = Processor::new_standalone(&peppy_config_path, &config)
             .expect("seeded slots should construct");
@@ -2828,14 +2855,17 @@ mod tests {
                 .map(|member| {
                     (
                         member.producer.instance_id.clone(),
-                        member.copy.as_ref().map(|copy| copy.as_str().to_string()),
+                        member
+                            .copy
+                            .as_ref()
+                            .map(|copy| format!("{}/{}", copy.name, copy.instance_id)),
                     )
                 })
                 .collect()
         };
         let expected = vec![
             ("right_arm".to_string(), None),
-            ("bravo_arm".to_string(), Some("bravo".to_string())),
+            ("bravo_arm".to_string(), Some("bravo/arm".to_string())),
         ];
         assert_eq!(copies(&processor.bound_members("arms")), expected);
         let never_empty = processor.non_empty_bound_members("arms");
@@ -2849,8 +2879,8 @@ mod tests {
         let unnamed = seeded(StandaloneConfig::new().with_bound_producer_in_copy(
             "arms",
             "core_x",
-            "right_arm",
             "not a name",
+            "arm",
         ));
         let Err(err) = Processor::new_standalone(&peppy_config_path, &unnamed) else {
             panic!("a copy is a name");
@@ -2860,6 +2890,24 @@ mod tests {
                 &err,
                 crate::error::Error::InvalidCopyName { link_id, copy, .. }
                     if link_id == "arms" && copy == "not a name"
+            ),
+            "got: {err:?}"
+        );
+
+        let unnamed_id = seeded(StandaloneConfig::new().with_bound_producer_in_copy(
+            "arms",
+            "core_x",
+            "bravo",
+            "not a name",
+        ));
+        let Err(err) = Processor::new_standalone(&peppy_config_path, &unnamed_id) else {
+            panic!("an id inside a copy is a name");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::InvalidInstanceIdInCopy { link_id, instance_id, .. }
+                    if link_id == "arms" && instance_id == "not a name"
             ),
             "got: {err:?}"
         );
