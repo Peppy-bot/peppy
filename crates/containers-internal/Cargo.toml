@@ -13,6 +13,11 @@ daemon-config = { workspace = true }
 # Home lookup for `~` expansion in mount-spec sources. `dirs` falls back to
 # the passwd database when `$HOME` is unset (daemons under systemd/cron).
 dirs = "7"
+# Reads the Docker-style registry auth file apptainer would use and writes the
+# copy without Docker CLI's OAuth token entries that the native backend hands
+# to apptainer instead.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "2.0"
 tracing = "0.1"

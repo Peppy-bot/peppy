@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod facade;
 pub(crate) mod lima;
+pub(crate) mod registry_auth;
 
 #[cfg(test)]
 mod tests;

@@ -639,6 +639,14 @@ Now `peppy node add` only runs the application-specific build steps; package ins
 If multiple nodes share the same system dependencies, a single base image can serve all of them. Update the base image when dependencies change and tag it with a version so builds stay reproducible.
 :::
 
+### Pulling from a private registry
+
+On Linux, a build reads registry credentials from the same file Apptainer reads: `$APPTAINER_AUTH_FILE` when it is set, else `~/.apptainer/docker-config.json` (written by `apptainer registry login`) when it exists, else `~/.docker/config.json` (written by `docker login`). Log in to the registry that holds your base image with either tool before you build.
+
+Peppy gives Apptainer a copy of that file without the `https://index.docker.io/v1/access-token` and `https://index.docker.io/v1/refresh-token` entries that Docker's browser login adds. These entries hold Docker's own session tokens, not registry passwords, and Apptainer would otherwise use one of them at random in place of your Docker Hub credential. Peppy writes the copy before each build, so a new `docker login` applies to the next build without a daemon restart. If Peppy cannot read or parse the file, the build fails and names the file.
+
+On macOS, builds run inside the Lima guest, so they use the credential files in the guest user's home directory.
+
 ### Adding environment variables
 
 Add variables to the `%environment` section so they are available at runtime:

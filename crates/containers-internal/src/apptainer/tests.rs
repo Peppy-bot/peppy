@@ -5,11 +5,13 @@ use super::activity::{
 use super::facade::{Apptainer, Backend, is_uri, prepare_scratch_dir};
 #[cfg(target_os = "linux")]
 use super::facade::{apparmor_profile_ref, check_setup_status, shell_escape_single_quoted};
+use super::registry_auth::{RegistryAuth, RegistryAuthSource};
 use crate::error::Error;
 use std::fs;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -76,15 +78,41 @@ const NATIVE_FIXTURE_TMP_DIR: &str = "/opt/peppy-tmp/apptainer";
 /// Builds a Native-backend facade for command-assembly and path-translation
 /// tests without touching host state. The apptainer path need not exist: these
 /// tests only inspect assembled argv, translated paths, and the no-op kill path.
+/// Its registry credentials come from a file that does not exist, and the
+/// sanitized copy a build command writes lands in [`native_fixture_scratch`],
+/// never next to the host's real credentials.
 fn native_facade() -> Apptainer {
+    let scratch = native_fixture_scratch();
+    native_facade_with_registry_auth(RegistryAuth {
+        source: RegistryAuthSource::Named(scratch.join("no-such-auth-file.json")),
+        sanitized_file: scratch.join("registry-auth/docker-config.json"),
+    })
+}
+
+/// [`native_facade`] with the registry auth locations a test controls.
+fn native_facade_with_registry_auth(registry_auth: RegistryAuth) -> Apptainer {
     Apptainer {
         apptainer_dir: PathBuf::from("/opt/apptainer"),
         backend: Backend::Native {
             apptainer_bin: PathBuf::from("/opt/apptainer/bin/apptainer"),
             tmp_dir: PathBuf::from(NATIVE_FIXTURE_TMP_DIR),
+            registry_auth,
         },
         extra_mounts: Vec::new(),
     }
+}
+
+/// Scratch directory shared by every [`native_facade`] in this test binary.
+/// Held in a static, so it is never dropped: the shared test root reclaims it
+/// once it is stale.
+fn native_fixture_scratch() -> &'static Path {
+    static SCRATCH: OnceLock<TempDir> = OnceLock::new();
+    SCRATCH
+        .get_or_init(|| {
+            TempDir::new_in(config_test_support::test_tmp_root())
+                .expect("create native fixture scratch dir")
+        })
+        .path()
 }
 
 /// Builds a Lima-backend facade for command-assembly and path-translation
@@ -1416,6 +1444,155 @@ fn lima_command_does_not_set_apptainer_tmpdir() {
         command_env(&cmd, "APPTAINER_TMPDIR"),
         None,
         "a host-side APPTAINER_TMPDIR would not survive the hop into the guest"
+    );
+}
+
+/// The Docker config a Docker CLI web login leaves behind: the Docker Hub
+/// credential next to the CLI's own OAuth access and refresh tokens.
+const WEB_LOGIN_DOCKER_CONFIG: &str = r#"{"auths": {
+    "https://index.docker.io/v1/": {"auth": "cGVwcHk6ZGNrcl9wYXQ="},
+    "https://index.docker.io/v1/access-token": {"auth": "cGVwcHk6and0"},
+    "https://index.docker.io/v1/refresh-token": {"auth": "cGVwcHk6cmVmcmVzaA=="}
+}}"#;
+
+/// A native facade reading registry credentials from a Docker config in a
+/// scratch dir that lives as long as the fixture.
+struct RegistryAuthFixture {
+    facade: Apptainer,
+    docker_config: PathBuf,
+    sanitized_file: PathBuf,
+    _dir: TempDir,
+}
+
+fn native_facade_reading_docker_config(contents: &str) -> RegistryAuthFixture {
+    let dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("create scratch dir");
+    let docker_config = dir.path().join("config.json");
+    fs::write(&docker_config, contents).expect("write docker config");
+    let sanitized_file = dir.path().join("sanitized/docker-config.json");
+    RegistryAuthFixture {
+        facade: native_facade_with_registry_auth(RegistryAuth {
+            source: RegistryAuthSource::Named(docker_config.clone()),
+            sanitized_file: sanitized_file.clone(),
+        }),
+        docker_config,
+        sanitized_file,
+        _dir: dir,
+    }
+}
+
+/// A native build is pointed at the sanitized copy, which holds the Docker Hub
+/// credential and none of the OAuth token entries apptainer would otherwise
+/// pick from at random.
+#[test]
+fn native_build_reads_registry_credentials_from_the_sanitized_copy() {
+    let fixture = native_facade_reading_docker_config(WEB_LOGIN_DOCKER_CONFIG);
+
+    let cmd = fixture
+        .facade
+        .build(Path::new("/work/out.sif"), Path::new("/work/node.def"))
+        .into_std_command()
+        .expect("native build command should assemble");
+
+    assert_eq!(
+        command_env(&cmd, "APPTAINER_AUTH_FILE"),
+        Some(fixture.sanitized_file.clone())
+    );
+    let sanitized: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.sanitized_file).expect("read sanitized copy"))
+            .expect("sanitized copy holds JSON");
+    assert_eq!(
+        sanitized,
+        serde_json::json!({"auths": {
+            "https://index.docker.io/v1/": {"auth": "cGVwcHk6ZGNrcl9wYXQ="}
+        }})
+    );
+}
+
+/// Running or executing a local image never reaches a registry, so it neither
+/// reads the user's credentials nor depends on them being readable.
+#[test]
+fn native_run_and_exec_of_a_local_image_leave_registry_credentials_alone() {
+    let fixture = native_facade_reading_docker_config("{not json");
+
+    for cmd in [
+        fixture.facade.run("/work/node.sif").into_std_command(),
+        fixture
+            .facade
+            .exec("/work/node.sif", &["true"])
+            .into_std_command(),
+    ] {
+        let cmd = cmd.expect("a local image needs no registry credentials");
+        assert_eq!(command_env(&cmd, "APPTAINER_AUTH_FILE"), None);
+    }
+    assert!(
+        !fixture.sanitized_file.exists(),
+        "no sanitized copy is written"
+    );
+}
+
+/// A URI image is pulled on the spot, so it gets the same credentials as a
+/// build.
+#[test]
+fn native_run_and_exec_of_a_registry_image_read_the_sanitized_copy() {
+    let fixture = native_facade_reading_docker_config(WEB_LOGIN_DOCKER_CONFIG);
+
+    for cmd in [
+        fixture.facade.run("docker://alpine:3").into_std_command(),
+        fixture
+            .facade
+            .exec("docker://alpine:3", &["true"])
+            .into_std_command(),
+    ] {
+        let cmd = cmd.expect("native command should assemble");
+        assert_eq!(
+            command_env(&cmd, "APPTAINER_AUTH_FILE"),
+            Some(fixture.sanitized_file.clone())
+        );
+    }
+}
+
+/// A user auth file apptainer could not read fails the build before anything
+/// is spawned, naming the file.
+#[test]
+fn native_build_fails_on_an_invalid_registry_auth_file() {
+    let fixture = native_facade_reading_docker_config("{not json");
+
+    let err = fixture
+        .facade
+        .build(Path::new("/work/out.sif"), Path::new("/work/node.def"))
+        .into_std_command()
+        .expect_err("an invalid auth file must fail command assembly");
+
+    match err {
+        Error::RegistryAuthFileInvalid { path, .. } => {
+            assert_eq!(path, fixture.docker_config.display().to_string())
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+/// Under Lima the guest apptainer reads the guest user's auth files, and host
+/// process env does not reach it anyway.
+#[test]
+fn lima_build_does_not_set_apptainer_auth_file() {
+    let facade = lima_facade();
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let output = PathBuf::from(&home).join("test/output.sif");
+    let def = PathBuf::from(&home).join("test/def.def");
+
+    let cmd = facade
+        .build(&output, &def)
+        .into_std_command()
+        .expect("lima build command should assemble");
+
+    assert_eq!(command_env(&cmd, "APPTAINER_AUTH_FILE"), None);
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !args.iter().any(|a| a.contains("APPTAINER_AUTH_FILE")),
+        "the guest argv must not carry it either, got: {args:?}"
     );
 }
 

@@ -845,6 +845,8 @@ dependencies = [
  "dirs 7.0.0",
  "nix 0.31.3",
  "peppy-config-model",
+ "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.20",

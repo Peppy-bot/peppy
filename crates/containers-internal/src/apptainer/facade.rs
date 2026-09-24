@@ -1,5 +1,6 @@
 use super::super::error::{Error, Result};
 use super::lima;
+use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::Mutex;
@@ -95,6 +96,11 @@ pub(crate) enum Backend {
         /// environment into the guest, and the guest's own `/tmp` is ordinary
         /// disk-backed storage inside the VM rather than a quota-limited tmpfs.
         tmp_dir: PathBuf,
+        /// The registry auth file apptainer would read, and the sanitized
+        /// copy it reads instead; see [`registry_auth`](super::registry_auth).
+        /// The Lima backend has no counterpart: apptainer runs inside the
+        /// guest, where it reads the guest user's auth files, not this host's.
+        registry_auth: RegistryAuth,
     },
     /// macOS: route commands through a Lima VM.
     Lima {
@@ -476,6 +482,7 @@ impl Apptainer {
             Backend::Native {
                 apptainer_bin,
                 tmp_dir: apptainer_scratch_dir(),
+                registry_auth: RegistryAuth::from_env()?,
             }
         };
 
@@ -911,6 +918,17 @@ impl Apptainer {
     // Internal helpers
     // -----------------------------------------------------------------------
 
+    /// The registry auth file a command that can reach a registry must hand to
+    /// apptainer, freshly rewritten from the user's current credentials (see
+    /// [`registry_auth`](super::registry_auth)). `None` under Lima, whose
+    /// guest apptainer reads the guest user's own auth files.
+    fn prepare_registry_auth_file(&self) -> Result<Option<&Path>> {
+        match &self.backend {
+            Backend::Native { registry_auth, .. } => registry_auth.prepare().map(Some),
+            Backend::Lima { .. } => Ok(None),
+        }
+    }
+
     /// Translate a string argument: if it is a URI, return as-is; otherwise
     /// resolve as a filesystem path via [`translate_path()`](Self::translate_path).
     fn translate_arg(&self, arg: &str) -> Result<String> {
@@ -1020,6 +1038,7 @@ impl Apptainer {
             Backend::Native {
                 apptainer_bin,
                 tmp_dir,
+                ..
             } => {
                 let mut cmd = Command::new(apptainer_bin);
                 cmd.env(APPTAINER_TMPDIR_ENV, tmp_dir);
@@ -1259,6 +1278,19 @@ enum CommandKind {
     Build { output: String, def_file: String },
 }
 
+impl CommandKind {
+    /// Whether apptainer may fetch an image from a registry to run this
+    /// command: a build always may (its def file can bootstrap from one), a
+    /// run or exec only when its image is a URI rather than a local file.
+    fn may_contact_registry(&self) -> bool {
+        match self {
+            CommandKind::Build { .. } => true,
+            CommandKind::Run { image, .. } => is_uri(image),
+            CommandKind::Exec { container, .. } => is_uri(container),
+        }
+    }
+}
+
 /// Builder for an apptainer command with optional flags.
 ///
 /// Created via [`Apptainer::run()`], [`Apptainer::exec()`],
@@ -1463,19 +1495,30 @@ impl<'a> ApptainerCommand<'a> {
     /// positional args, wrapped in `limactl shell` under Lima) shared by the
     /// terminal methods. The cancel-PGID path is already guest-native, so it is
     /// passed straight through to wrap the Lima build as a process-group leader.
+    ///
+    /// A command that can reach a registry also gets `APPTAINER_AUTH_FILE`
+    /// pointed at the sanitized registry auth file on the native backend, so
+    /// it fails here, before spawning, when the user's auth file cannot be
+    /// read or parsed.
     fn assemble_command(&self) -> Result<Command> {
         let args = self.build_args()?;
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         // The pgid path comes from `lima::guest_pgid_path`, i.e. it is already a
         // guest-side path, so it must NOT go through `translate_path` (which
         // would reject `/tmp/...` as outside `$HOME`).
-        self.facade.command(
+        let mut cmd = self.facade.command(
             &str_args,
             &self.lima_shell_extra_args,
             self.cancel_pgid_path.as_deref(),
             self.working_dir.as_deref(),
             &self.apptainer_env,
-        )
+        )?;
+        if self.kind.may_contact_registry()
+            && let Some(auth_file) = self.facade.prepare_registry_auth_file()?
+        {
+            cmd.env(APPTAINER_AUTH_FILE_ENV, auth_file);
+        }
+        Ok(cmd)
     }
 
     /// Build the fully-configured [`Command`] without spawning it.
