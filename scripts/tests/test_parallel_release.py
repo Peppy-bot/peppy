@@ -511,7 +511,7 @@ def test_bindings_build_every_platform_and_pack_them(
     mock_repo_root.return_value = tmp_path
     mock_run.return_value = subprocess.CompletedProcess([], 0)
     # What the generator build script leaves in the build cache.
-    _fake_bindings_dir(_cache_root(tmp_path) / "peppylib-py" / "so")
+    _fake_bindings_dir(_cache_root(tmp_path) / "peppylib-py" / "so" / "release")
 
     run_bindings(tmp_path / "out")
 

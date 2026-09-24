@@ -328,13 +328,14 @@ sudo apt-get install -y -qq build-essential unzip gcc-x86-64-linux-gnu \
 def _prebuilt_peppylib_so_dir() -> Path:
     """Host directory holding the peppylib native bindings the release embeds.
 
-    Mirrors build-helpers' `cache_dir("peppylib-py")/so`, rooted at $HOME exactly
+    Mirrors the release profile's slot of the generator build script's cache,
+    build-helpers' `cache_dir("peppylib-py")/so/release`, rooted at $HOME exactly
     as the Rust side resolves it (not the PEPPY_HOME override). The native
-    aarch64-apple-darwin build populates it. Lima mounts the host home into the
-    guest at the same path, so the in-VM build reads the bindings straight from
-    here via PEPPYLIB_PREBUILT_SO_DIR, with no cargo-cache staging.
+    aarch64-apple-darwin release build populates it. Lima mounts the host home
+    into the guest at the same path, so the in-VM build reads the bindings
+    straight from here via PEPPYLIB_PREBUILT_SO_DIR, with no cargo-cache staging.
     """
-    return Path.home() / ".peppy" / "tmp" / "peppylib-py" / "so"
+    return Path.home() / ".peppy" / "tmp" / "peppylib-py" / "so" / "release"
 
 
 def require_prebuilt_peppylib_so() -> Path:

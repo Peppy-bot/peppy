@@ -2719,8 +2719,8 @@ fn a_file_copy_may_leave_an_axis_for_a_launch_word() {
     let prepared = load(&document(""));
     let error = prepared.launch(&[], &[]).unwrap_err();
     assert!(
-        matches!(&error, CompositionError::UnresolvedCopyAxis { copy, axis, .. }
-            if copy == "alpha" && axis == "commander"),
+        matches!(&error, CompositionError::UnresolvedCopyAxis(unresolved)
+            if unresolved.copy == "alpha" && unresolved.axis == "commander"),
         "{error}"
     );
     assert!(
