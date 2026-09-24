@@ -2,7 +2,7 @@
 name = "peppy-release-scripts"
 version = "0.0.1"
 description = "Release scripts for peppy"
-channels = ["https://prefix.dev/github-releases", "conda-forge"]
+channels = ["conda-forge"]
 platforms = ["linux-64", "osx-arm64", "linux-aarch64"]
 # pixi.lock uses format v7, which pixi < 0.68 cannot parse and would silently
 # re-resolve and rewrite. 0.72 is the oldest version this workspace is tested
@@ -12,14 +12,12 @@ requires-pixi = ">=0.72"
 [dependencies]
 python = ">=3.13,<3.14"
 pip = "*"
-lima = { version = ">=2.2.0", channel = "https://prefix.dev/github-releases" }
 
 [pypi-dependencies]
 peppy-release-scripts = { path = ".", editable = true }
 httpx = "*"
 rich = "*"
 pytest = "*"
-pytest-xdist = "*"
 respx = "*"
 
 # CPython ignores .pth files that carry the macOS UF_HIDDEN flag, and pixi sets that
@@ -37,14 +35,10 @@ build-base-images = "build-base-images"
 is-doc-up-to-date = "is-doc-up-to-date"
 update-docs = "update-docs"
 test = "pytest tests/ -v"
-# The suite's two halves, which CI runs as two jobs. `test-fast` is the mocked
-# tests: about a second for some 417 of them. `test-vm` is the Lima install
-# tests: 27 of them, a quarter of an hour, and the other 99.9% of the runtime.
-test-fast = "pytest tests/ -v -m 'not vm'"
-test-vm = "pytest tests/ -v -m vm"
-# Adds the cross-arch guests, which exist only where the release build
-# produces the other triples -- macOS (see cli.get_targets_for_platform). On
-# Linux this selects nothing `test` does not already run.
-test-all = "pytest tests/ -v --cross-arch"
+# The suite's two halves, which CI runs as separate jobs. `test-fast` is the
+# mocked tests, about a second for all of them. `test-install` is the
+# install.sh tests: minutes, and they change the machine they run on, so they
+# skip unless PEPPY_DISPOSABLE_TEST_HOST=1 declares the machine disposable.
+test-fast = "pytest tests/ -v -m 'not install'"
+test-install = "pytest tests/ -v -m install"
 test-one = "pytest tests/ -v -k"
-test-container = "pytest tests/test_install_container.py -v -s"

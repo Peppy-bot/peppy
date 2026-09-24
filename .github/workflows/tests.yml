@@ -28,13 +28,18 @@ env:
 # and shared with every repository on it. Every suite is gated on its inputs by
 # the changes job and waits for that job alone, never for another suite.
 #
-# Every job runs on a self-hosted runner; no job uses a GitHub-hosted one. Each
-# runner is its own machine taking one job at a time, so as many suites run in
-# parallel as there are boxes and the rest queue; a suite is warm or cold
-# depending on which box it lands on, since the caches below are per-box. A
-# pull request from a fork lands on those same boxes, so what keeps fork code
-# away from them is the repository's fork-PR approval policy, which holds every
-# outside contributor's run until a maintainer approves it.
+# Every job but one runs on a self-hosted runner. Each runner is its own
+# machine taking one job at a time, so as many suites run in parallel as there
+# are boxes and the rest queue; a suite is warm or cold depending on which box
+# it lands on, since the caches below are per-box. A pull request from a fork
+# lands on those same boxes, so what keeps fork code away from them is the
+# repository's fork-PR approval policy, which holds every outside
+# contributor's run until a maintainer approves it.
+#
+# The exception is install-script, which runs install.sh on the machine it
+# runs on. install.sh changes that machine (apt packages, systemd linger, an
+# AppArmor profile, a user service), so it runs on a GitHub-hosted runner,
+# which is a fresh image for each job and is discarded after it.
 jobs:
   # What the change set requires each gated job to run: a boolean for the jobs
   # that are all or nothing, and a package selection for the job that splits
@@ -54,7 +59,7 @@ jobs:
       docs_integration: ${{ steps.changes.outputs.docs_integration }}
       cross_check: ${{ steps.changes.outputs.cross_check }}
       scripts: ${{ steps.changes.outputs.scripts }}
-      scripts_vm: ${{ steps.changes.outputs.scripts_vm }}
+      install_script: ${{ steps.changes.outputs.install_script }}
       peppy_shared_packages: ${{ steps.changes.outputs.peppy_shared_packages }}
       peppy_shared_peppylib_py: ${{ steps.changes.outputs.peppy_shared_peppylib_py }}
 
@@ -199,12 +204,12 @@ jobs:
         with:
           command: cargo test --locked -p docs-integration-tests
 
-  # The release scripts test in two jobs because their two halves cost three
-  # orders of magnitude apart. Measured on run 35394542148: 444 tests in
-  # 891s, of which the 27 that boot a Lima guest took 890s and the other 417
-  # took about one second between them. Running them together billed every
-  # change under scripts/ -- a release-note wording fix included -- for three
-  # guest boots.
+  # The release scripts test in two halves because they cost orders of
+  # magnitude apart. This job runs the mocked tests, about a second for all of
+  # them, on any change under scripts/. The install.sh tests need a release
+  # archive and a fresh machine, so they run in install-archive and
+  # install-script, gated on the far narrower set of files that decide what
+  # gets installed and how.
   release-scripts:
     needs: changes
     if: needs.changes.outputs.scripts == 'true'
@@ -222,65 +227,59 @@ jobs:
       - uses: ./.github/actions/rust-build-env
 
       - name: Run the mocked release scripts tests
-        run: ./scripts/run_tests.sh -m 'not vm'
+        run: ./scripts/run_tests.sh -m 'not install'
 
-  # The Lima half. Gated on the files that decide what a guest installs and
-  # how (see TREE_SUITES in the changes action), and run unconditionally on
-  # the way into main, so a promotion re-proves the install path even when the
-  # narrow gate stayed shut on every pull request behind it.
-  release-scripts-vm:
+  # Builds the release archive the install.sh tests install, from this
+  # change, the way a release host builds it. On a self-hosted box, whose
+  # cargo registry and tool cache the build reuses; the job that installs the
+  # archive needs a fresh machine, which a box that outlives its jobs is not.
+  install-archive:
     needs: changes
-    if: needs.changes.outputs.scripts_vm == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.install_script == 'true'
     runs-on: self-hosted
     permissions:
       contents: read
-    # Three guests, a release build and a container build. A healthy run is
-    # about 15 minutes; the failure this bounds is the one that does not fail
-    # at all, where a guest never finishes booting and the job sits for hours
-    # holding a box (run 35394542148 was still going after one).
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust-build-env
+
+      - name: Build the release archive of this runner's platform
+        run: ./scripts/build_release.sh --local --tag test
+
+      # The installing job runs on ubuntu-24.04, so the box must build the
+      # x86_64 archive; a box of another architecture fails here, by name.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: install-archive
+          path: dist/peppy-x86_64-unknown-linux-gnu.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Installs that archive with this change's install.sh on a fresh Ubuntu
+  # x86_64 runner, and runs the container path of install.sh in Docker (see
+  # the install-test action). The release workflow runs the same tests on
+  # every platform before it publishes; this job is the early warning for
+  # the one platform a pull request can build cheaply.
+  install-script:
+    needs: install-archive
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
           persist-credentials: false
 
-      # Provides the pixi the suite runs under.
-      - uses: ./.github/actions/rust-build-env
-
-      # The install tests boot Lima VMs (limactl itself comes from the pixi
-      # environment) on the runner's QEMU, which comes from the box's
-      # provisioning. KVM access is set here because a reboot resets the
-      # permission: it opens when present but group-inaccessible. Needs
-      # passwordless sudo on the box.
-      #
-      # Without KVM Lima falls back to software emulation, under which the
-      # three guests take hours and the job runs into the cap above with
-      # nothing to show for the box it held. So a box with no /dev/kvm fails
-      # here, in seconds, and says why: re-running the job costs seconds until
-      # it lands on a box that has KVM, where the whole run costs the 15
-      # minutes the cap is sized for.
-      - name: Open KVM to the runner, or fail before a guest boots without it
-        run: |
-          if [ ! -e /dev/kvm ]; then
-            echo "::error title=No KVM on ${RUNNER_NAME:-this runner}::/dev/kvm is absent, so Lima would boot every guest under QEMU software emulation and this job would run into its cap. Re-run the job to land on a box with KVM, or give this one KVM (nested virtualisation on a VPS)."
-            {
-              echo "### No KVM on ${RUNNER_NAME:-this runner}"
-              echo
-              echo "\`/dev/kvm\` is absent. The install tests need KVM to finish"
-              echo "inside the job's cap, so nothing was run. Re-run the job to"
-              echo "land on a box that has it."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          if ! [ -r /dev/kvm -a -w /dev/kvm ]; then
-            sudo chmod 666 /dev/kvm
-          fi
-          echo "KVM available: guests run at native speed." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Run the Lima install tests
-        run: ./scripts/run_tests.sh -m vm
+      - uses: ./.github/actions/install-test
+        with:
+          archive: install-archive
 
   # The sealed peppy-shared tree: the cargo packages of its workspace together
   # with the peppylib Python bindings built from them. It runs the units the
@@ -464,7 +463,8 @@ jobs:
       - multi-daemon-e2e
       - docs-integration
       - release-scripts
-      - release-scripts-vm
+      - install-archive
+      - install-script
       - peppy-shared
       - cross-check
     # Runs whatever happened above: on the default condition a failed or

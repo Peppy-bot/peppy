@@ -60,33 +60,34 @@ WORKSPACE_SUITE = "workspace"
 # toolchain included.
 #
 # The release scripts split across two of them because their two halves cost
-# three orders of magnitude apart. The mocked half runs the whole tree in
-# about a second, so it is gated on the whole tree. The Lima half boots a
-# guest per distro and takes a quarter of an hour, so it is gated on the files
-# that decide what it installs and how: a change to the release-notes drafter
-# or the docs gate cannot alter what install.sh does to a guest, and used to
-# boot three of them to prove it.
+# orders of magnitude apart. The mocked half runs the whole tree in about a
+# second, so it is gated on the whole tree. The install half builds a release
+# archive and installs it on a fresh runner, so it is gated on the files that
+# decide what gets installed and how: a change to the release-notes drafter
+# or the docs gate cannot alter what install.sh does to a machine.
 TREE_SUITES = {
     # pixi run test-fast
     "scripts": ["scripts/**"],
-    # pixi run test-vm. install.sh is what the guests run; lima_helpers and
-    # the two test modules are what drives them; and build/build_release/cli
-    # produce the release archive the guests install from (see
-    # conftest._build_release_archives). The manifests pin the pixi
-    # environment the guests and limactl come out of.
-    "scripts_vm": [
+    # The install-archive and install-script jobs. install.sh is what the
+    # runner runs; build_release.sh and build/build_release/cli produce the
+    # archive it installs (`build_release.sh --local --tag test`); the
+    # install-test action, run_tests.sh, conftest and the two test modules
+    # are what drives it; and the manifests pin the pixi environment the
+    # tests run in.
+    "install_script": [
         "scripts/install.sh",
+        "scripts/build_release.sh",
         "scripts/functions/build.py",
         "scripts/functions/build_release.py",
         "scripts/functions/cli.py",
-        "scripts/functions/docker.py",
-        "scripts/functions/lima.py",
+        "scripts/run_tests.sh",
         "scripts/tests/conftest.py",
-        "scripts/tests/lima_helpers.py",
+        "scripts/tests/install_helpers.py",
         "scripts/tests/test_install.py",
-        "scripts/tests/test_install_container.py",
+        "scripts/tests/test_install_in_docker.py",
         "scripts/pixi.toml",
         "scripts/pixi.lock",
+        ".github/actions/install-test/**",
     ],
 }
 
@@ -106,7 +107,8 @@ JOBS = {
     "docs-integration": ["docs_integration"],
     "cross-check": ["cross_check"],
     "release-scripts": ["scripts"],
-    "release-scripts-vm": ["scripts_vm"],
+    "install-archive": ["install_script"],
+    "install-script": ["install_script"],
     "peppy-shared": ["peppy_shared_packages", "peppy_shared_peppylib_py"],
 }
 
@@ -132,10 +134,10 @@ CARGO_CI_INPUTS = [
 
 # What the `peppy` workspace resolves itself from: an input of the suites that
 # build `crates/`, and of them alone. The sealed tree resolves and locks on
-# its own and CI checks it out without these files. The Lima suite builds a
-# release archive from the workspace for its guests to install, and what the
-# guests prove is what install.sh does with that archive on each distro; the
-# archive's own behaviour is what the suites of `crates/` test.
+# its own and CI checks it out without these files. The install suite builds
+# a release archive from the workspace to install, and what it proves is what
+# install.sh does with that archive; the archive's own behaviour is what the
+# suites of `crates/` test.
 PEPPY_WORKSPACE_INPUTS = [
     "Cargo.toml",
     "Cargo.lock",

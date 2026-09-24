@@ -286,8 +286,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     let apparmor_manageable = is_apparmor_manageable();
 
     // newuidmap is required for fakeroot mode (unprivileged user namespaces).
-    // It's provided by the `uidmap` package on Debian/Ubuntu, `shadow-utils`
-    // on Fedora, and `shadow` on Arch Linux.
+    // Ubuntu provides it in the `uidmap` package.
     let newuidmap_ok = which("newuidmap").is_some();
 
     // The procfs flag may read "1" even inside containers (inherited from
@@ -337,12 +336,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
         let mut parts: Vec<String> = Vec::new();
 
         if !newuidmap_ok {
-            parts.push(
-                "sudo apt-get install -y uidmap 2>/dev/null \
-                 || sudo dnf install -y shadow-utils 2>/dev/null \
-                 || sudo pacman -Sy --noconfirm shadow 2>/dev/null"
-                    .to_string(),
-            );
+            parts.push("sudo apt-get install -y uidmap".to_string());
         }
 
         if apparmor_restricted && !apparmor_ok {

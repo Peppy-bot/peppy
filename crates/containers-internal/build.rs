@@ -2469,8 +2469,7 @@ echo "=== Apptainer build complete ==="
                 "cargo:warning=fuse2fs not found on this host. The bundled rootless apptainer \
                  needs it to mount EXT3 filesystem images; without it every container start logs \
                  `fuse2fs not found, will not be able to mount EXT3 filesystems` and EXT3 mounts \
-                 are unavailable. Install it with `sudo apt-get install fuse2fs` (Debian/Ubuntu), \
-                 `sudo dnf install fuse2fs` (Fedora/RHEL) or `sudo pacman -S fuse2fs` (Arch)."
+                 are unavailable. Install it with `sudo apt-get install fuse2fs`."
             );
         }
 
