@@ -24,7 +24,9 @@ impl BuildProfile {
     }
 
     /// The tag stored in the build-state marker for artifacts built under this
-    /// profile.
+    /// profile, and the name of the profile's own slot of the shared `.so`
+    /// cache (`~/.peppy/tmp/peppylib-py/so/<tag>`). The release scripts read
+    /// the release slot by that name (`scripts/functions/lima.py`).
     pub fn tag(self) -> &'static str {
         match self {
             Self::Debug => "dev",
@@ -173,6 +175,8 @@ mod tests {
         assert!(!should_cross_compile(true, true, false, false));
     }
 
+    // The release scripts locate the release bindings at `so/release`, and a
+    // debug and a release build must never share a cache slot.
     #[test]
     fn profile_tags_are_stable() {
         assert_eq!(BuildProfile::Debug.tag(), "dev");
