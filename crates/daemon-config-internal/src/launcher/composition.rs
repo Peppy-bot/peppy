@@ -7,8 +7,9 @@
 //! whose `components` fill once (`one`, `zero_or_one`) describes a FAMILY of
 //! stacks whose members differ in which option fills each axis, selected by
 //! the file's `deployments` and swapped at launch with `--with`. An axis
-//! with cardinality `zero_or_more` runs as named copies, each listed under
-//! `deployments` or added with `stack join`. A fragment declares its own
+//! with cardinality `zero_or_more` or `one_or_more` runs as named copies,
+//! each listed under `deployments` or added with `stack join`, and a
+//! `one_or_more` axis keeps one of them. A fragment declares its own
 //! axes the same way, filled once per copy of it. Composition
 //! ( [`super::compose`] ) turns a launcher plus a selection into the
 //! ordinary flat document the rest of the pipeline consumes; this module is
@@ -46,14 +47,16 @@ pub type ArgumentOverrides = BTreeMap<String, BTreeMap<String, AnyType>>;
 
 /// How many selections of an axis a document allows. `one` and
 /// `zero_or_one` are filled once, by a `deployments` entry or `--with`, and
-/// their instances keep the ids they are written with. `zero_or_more` runs
-/// as named copies, each minting its ids under its name.
+/// their instances keep the ids they are written with. `zero_or_more` and
+/// `one_or_more` run as named copies, each minting its ids under its name;
+/// `one_or_more` holds at least one of them for as long as the stack runs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentCardinality {
     #[default]
     One,
     ZeroOrOne,
+    OneOrMore,
     ZeroOrMore,
 }
 
@@ -63,12 +66,22 @@ impl ComponentCardinality {
     }
 
     pub fn allows_empty(self) -> bool {
-        self != Self::One
+        matches!(self, Self::ZeroOrOne | Self::ZeroOrMore)
     }
 
     /// Whether the axis runs as named copies.
     pub fn is_repeatable(self) -> bool {
-        self == Self::ZeroOrMore
+        matches!(self, Self::ZeroOrMore | Self::OneOrMore)
+    }
+
+    /// The word the document declares it with.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::One => "one",
+            Self::ZeroOrOne => "zero_or_one",
+            Self::OneOrMore => "one_or_more",
+            Self::ZeroOrMore => "zero_or_more",
+        }
     }
 }
 
@@ -327,8 +340,8 @@ where
 }
 
 /// One option entry of a `deployments` list, `{ <axis>: "<option>" }`: the
-/// option the document deploys on that axis. On a `zero_or_more` axis the
-/// entry lists the copies a launch starts under `instances`, which may be
+/// option the document deploys on that axis. On an axis that runs as copies
+/// the entry lists the ones a launch starts under `instances`, which may be
 /// none; its own `with`, `arguments` and `adjustments` apply to every copy
 /// of the option, the ones it lists, the ones `--join OPTION:NAME` starts
 /// with the launch and the ones `stack join` adds, a copy's own winning per
@@ -459,7 +472,7 @@ impl OptionDeployment {
     }
 }
 
-/// One named copy of a `zero_or_more` axis's option: `instance_id` prefixes
+/// One named copy of a repeatable axis's option: `instance_id` prefixes
 /// every id the option's fragments define (`alpha_backbone_inst`), `with`
 /// selects the option's own axes, `arguments` overrides the arguments of
 /// the option's instances, keyed by the ids written in the fragment, and
@@ -1083,10 +1096,11 @@ pub(crate) fn validate_axes(axes: &[ComponentAxis], scope: AxisScope) -> Result<
         }
         if scope == AxisScope::Fragment && axis.cardinality.is_repeatable() {
             return Err(format!(
-                "axis `{}` declares `zero_or_more` inside a fragment; copies are the \
-                 launcher's to deploy, so declare this axis in the launcher, or give it \
-                 `one` or `zero_or_one`",
-                axis.name
+                "axis `{}` declares `{}` inside a fragment; copies are the launcher's to \
+                 deploy, so declare this axis in the launcher, or give it `one` or \
+                 `zero_or_one`",
+                axis.name,
+                axis.cardinality.as_str()
             ));
         }
     }
@@ -1186,7 +1200,7 @@ pub(crate) fn validate_option_deployments(
                     entry.axis, entry.option
                 ));
             }
-            ComponentCardinality::ZeroOrMore => {
+            ComponentCardinality::ZeroOrMore | ComponentCardinality::OneOrMore => {
                 // One entry speaks for every copy of its option, the ones a
                 // join adds included, so an option has one entry to ask. An
                 // entry listing no copy says how every copy of the option is
@@ -1679,12 +1693,14 @@ mod tests {
 
     #[test]
     fn a_fragment_axis_cannot_be_repeatable() {
-        let error = parse_fragment(
-            r#"components: [{ name: "cameras", cardinality: "zero_or_more", options: { a: "a.json5" } }]"#,
-        )
-        .expect_err("copies belong to the launcher");
-        assert!(error.contains("zero_or_more"), "got: {error}");
-        assert!(error.contains("launcher"), "got: {error}");
+        for repeatable in ["zero_or_more", "one_or_more"] {
+            let error = parse_fragment(&format!(
+                r#"components: [{{ name: "cameras", cardinality: "{repeatable}", options: {{ a: "a.json5" }} }}]"#
+            ))
+            .expect_err("copies belong to the launcher");
+            assert!(error.contains(repeatable), "got: {error}");
+            assert!(error.contains("launcher"), "got: {error}");
+        }
     }
 
     #[test]

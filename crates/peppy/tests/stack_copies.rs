@@ -614,7 +614,7 @@ fn resolve_starts_the_copies_a_launch_time_join_names_from_the_options_entry() {
     .unwrap_err()
     .to_string();
     assert!(
-        error.contains("`ghost` is not an option of a `zero_or_more` axis"),
+        error.contains("`ghost` is not an option of an axis this launcher runs as copies"),
         "{error}"
     );
 }

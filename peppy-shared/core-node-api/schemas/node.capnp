@@ -54,8 +54,9 @@ struct StackListResponse {
     shutdownGraceSecs @9 :UInt64;
 }
 
-# One copy on the stack: a named instance of an option of a `zero_or_more`
-# axis, where it runs, the instances it minted, and how its axes were filled.
+# One copy on the stack: a named instance of an option of an axis that runs
+# as copies, where it runs, the instances it minted, and how its axes were
+# filled.
 struct CopyInfo {
     name @0 :Text;
     coreNode @1 :Text;

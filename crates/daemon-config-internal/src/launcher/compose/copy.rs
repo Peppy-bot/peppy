@@ -1,4 +1,4 @@
-//! Copies: one option of a `zero_or_more` axis composed under a name, its
+//! Copies: one option of a copy axis composed under a name, its
 //! ids minted under that name, and the way copies are folded into the
 //! stack, at launch, at join and at removal.
 

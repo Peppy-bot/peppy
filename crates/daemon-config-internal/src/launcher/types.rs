@@ -41,8 +41,8 @@ pub struct PeppyLauncher {
     /// The node entries of `deployments`.
     pub deployments: Vec<Deployment>,
     /// The option entries of `deployments`: the options the launcher deploys
-    /// on its `one` axes, and the named copies it deploys on its
-    /// `zero_or_more` axes. Empty for a flat stack.
+    /// on its `one` axes, and the named copies it deploys on its copy
+    /// axes. Empty for a flat stack.
     pub option_deployments: Vec<OptionDeployment>,
     /// The component axes of a composed launcher: what may run. Empty for a
     /// flat stack, which is the ordinary way to write a one-off.
@@ -202,7 +202,7 @@ impl PeppyLauncher {
     }
 
     /// The axes that run as named copies: every axis whose cardinality is
-    /// `zero_or_more`.
+    /// `zero_or_more` or `one_or_more`.
     pub fn repeatable_axes(&self) -> impl Iterator<Item = &ComponentAxis> {
         self.components
             .iter()

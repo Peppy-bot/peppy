@@ -1487,6 +1487,33 @@ fn check_composition_flags_a_refused_bare_launch() {
     );
 }
 
+/// A `one_or_more` axis the file leaves for `--join` has no bare launch,
+/// as a `one` axis left for `--with` has none, and the check leaves the
+/// choice to the author; the same axis with a copy deployed is checked
+/// like any other.
+#[test]
+fn check_composition_leaves_a_one_or_more_axis_to_the_command_line() {
+    let launcher = |deployments: &str| {
+        parse_launcher(&format!(
+            r#"{{
+            peppy_schema: "launcher/v1",
+            components: [{{ name: "robot", cardinality: "one_or_more", options: {{
+                real: {{ deployments: [{{ source: {{ name: "can_arm", tag: "v1" }},
+                                        instances: [{{ instance_id: "arm_inst" }}] }}] }}
+            }} }}],
+            deployments: [{deployments}]
+        }}"#
+        ))
+    };
+    for deployments in [
+        "",
+        r#"{ robot: "real", instances: [{ instance_id: "alpha" }] }"#,
+    ] {
+        let problems = check_composition(&launcher(deployments), Path::new("family.json5"));
+        assert!(problems.is_empty(), "{deployments}: {problems:?}");
+    }
+}
+
 /// The bare launch is one member checked on its own, so it is still
 /// checked when the family is too big to enumerate: the ceiling guard
 /// skips the cross-combination checks, not the bare launch.

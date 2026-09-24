@@ -43,8 +43,8 @@ pub enum StackCommands {
     /// `one_or_more` or `zero_or_more` slot, which `stack list` then shows
     /// under the copy.
     Join {
-        /// The copy to add: an option of a `zero_or_more` axis of the running
-        /// launcher, and the name the copy runs under, which prefixes every
+        /// The copy to add: an option of an axis the running launcher runs as
+        /// copies, and the name the copy runs under, which prefixes every
         /// instance id it creates and is its placement link.
         #[arg(value_name = "OPTION:NAME", value_parser = parse_copy_reference)]
         copy: core_node_api::encoding::LaunchJoin,
@@ -65,7 +65,8 @@ pub enum StackCommands {
     /// added out of the running sets.
     ///
     /// A removal that would leave a `one_or_more` slot with no member is
-    /// refused, naming the slot.
+    /// refused, naming the slot, and so is the removal of the last copy of a
+    /// `one_or_more` axis, naming the copy and the axis.
     Remove {
         /// The copy's name, as listed by `stack list`.
         #[arg(value_parser = parse_copy_name)]
@@ -206,8 +207,8 @@ impl StackTimeouts {
 /// launch, build, and resolve.
 #[derive(clap::Args, Default)]
 pub struct LaunchJoins {
-    /// A copy of OPTION, one of a `zero_or_more` axis, named NAME in the
-    /// launch: joined onto the launch as `stack join OPTION:NAME` joins one
+    /// A copy of OPTION, one of an axis that runs as copies, named NAME in
+    /// the launch: joined onto the launch as `stack join OPTION:NAME` joins one
     /// onto the running stack, and started with it by `stack launch`, its
     /// nodes built with it by `stack build`. Repeatable and comma-separated,
     /// once per copy, each joined onto the plan the ones before it left;
@@ -227,8 +228,8 @@ pub struct LaunchJoins {
 /// the copy's name after it, held to a copy name's grammar. `stack join`
 /// takes it as its positional, and `--join` joins the copy onto a launch.
 fn parse_copy_reference(raw: &str) -> Result<core_node_api::encoding::LaunchJoin, String> {
-    const FORM: &str = "write `OPTION:NAME`, the option of a `zero_or_more` axis and the name \
-                        the copy runs under";
+    const FORM: &str = "write `OPTION:NAME`, the option of an axis that runs as copies and the \
+                        name the copy runs under";
     let Some((option, name)) = raw.split_once(':') else {
         return Err(format!("`{raw}` names no copy: {FORM}"));
     };
