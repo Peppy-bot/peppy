@@ -18,9 +18,10 @@ name: Parallel release
 # it the one users download.
 #
 # The Linux stages run on RunsOn runners on demand, never spot, since a release
-# interrupted part way must not be restarted by a retry: the x86_64 ones on
-# `ci-build` with the peppy-ubuntu24 image, the aarch64 ones on
-# `release-arm64` with RunsOn's arm64 image (both in .github/runs-on.yml).
+# interrupted part way must not be restarted by a retry: the x86_64 ones in
+# the shape of the cargo suites of tests.yml with the peppy-ubuntu24 image,
+# the aarch64 ones on `release-arm64` with RunsOn's arm64 image (see
+# .github/runs-on.yml).
 # RunsOn has no macOS, so the macOS stages run on a Blacksmith macOS runner.
 # The install tests run on GitHub-hosted runners (see the install-test
 # action).
@@ -137,7 +138,7 @@ jobs:
             runner: runs-on=${{ github.run_id }}/runner=release-arm64  # image (via runner): ubuntu24-full-arm64, RunsOn standard image
           - name: apptainer-x86_64
             stage: apptainer
-            runner: runs-on=${{ github.run_id }}/runner=ci-build/spot=false  # image (via runner): peppy-ubuntu24, custom Peppy AMI
+            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=64/family=m7a+m7i+m8a+m8i/volume=150gb:gp3:500mbs:6000iops/spot=false  # custom Peppy AMI
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
@@ -168,7 +169,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: runs-on=${{ github.run_id }}/runner=release-arm64  # image (via runner): ubuntu24-full-arm64, RunsOn standard image
           - target: x86_64-unknown-linux-gnu
-            runner: runs-on=${{ github.run_id }}/runner=ci-build/spot=false  # image (via runner): peppy-ubuntu24, custom Peppy AMI
+            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=64/family=m7a+m7i+m8a+m8i/volume=150gb:gp3:500mbs:6000iops/spot=false  # custom Peppy AMI
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
