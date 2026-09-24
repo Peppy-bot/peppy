@@ -67,7 +67,7 @@ jobs:
   # docs gate and drafts the notes, all recorded in the release plan. The
   # checkout keeps the release token for the docs pull request branches.
   prepare:
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/spot=false  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     steps:
       - name: Require a run from dev
         run: |
@@ -138,7 +138,7 @@ jobs:
             runner: runs-on=${{ github.run_id }}/runner=release-arm64  # image (via runner): ubuntu24-full-arm64, RunsOn standard image
           - name: apptainer-x86_64
             stage: apptainer
-            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32/family=c7a+c7i+c8a+c8i/volume=150gb:gp3:500mbs:6000iops/spot=false  # custom Peppy AMI
+            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops/spot=false  # custom Peppy AMI
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
@@ -169,7 +169,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: runs-on=${{ github.run_id }}/runner=release-arm64  # image (via runner): ubuntu24-full-arm64, RunsOn standard image
           - target: x86_64-unknown-linux-gnu
-            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32/family=c7a+c7i+c8a+c8i/volume=150gb:gp3:500mbs:6000iops/spot=false  # custom Peppy AMI
+            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops/spot=false  # custom Peppy AMI
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
@@ -243,7 +243,7 @@ jobs:
   # their bypass actors push directly, so the token has to belong to one.
   publish:
     needs: [prepare, build, install-test]
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/spot=false  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     steps:
       - uses: actions/checkout@v7
         with:

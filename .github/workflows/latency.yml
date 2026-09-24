@@ -23,7 +23,7 @@ jobs:
     if: github.head_ref == 'dev'
     # A build runner of its own for the whole measurement, so no other job
     # shares its CPUs.
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32/family=c7a+c7i+c8a+c8i/volume=150gb:gp3:500mbs:6000iops  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops  # custom Peppy AMI
     permissions:
       contents: read
       pull-requests: read
