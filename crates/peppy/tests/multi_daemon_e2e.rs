@@ -3347,7 +3347,8 @@ async fn a_join_refused_by_a_machine_with_its_own_stack_leaves_that_stack_alone(
         .robot
         .peppy(&[
             "stack",
-            "join", "arm:alpha",
+            "join",
+            "arm:alpha",
             "--place",
             &federation.cloud_core_node,
         ])
@@ -3393,7 +3394,8 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
             .robot
             .peppy(&[
                 "stack",
-                "join", "arm:bravo",
+                "join",
+                "arm:bravo",
                 "--place",
                 &federation.cloud_core_node,
             ])
@@ -3403,12 +3405,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
     plant_uncreatable_instance_dir(&federation.cloud, "failed_cam_inst").await;
     let failed = federation
         .robot
-        .peppy(&[
-            "stack",
-            "join", "cam:failed",
-            "--place",
-            &place_on_cloud,
-        ])
+        .peppy(&["stack", "join", "cam:failed", "--place", &place_on_cloud])
         .await;
     assert!(!failed.success(), "{}", failed.text);
     assert!(failed.text.contains("failed_cam_inst"), "{}", failed.text);
@@ -3439,12 +3436,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
     require_success(
         federation
             .robot
-            .peppy(&[
-                "stack",
-                "join", "cam:failed",
-                "--place",
-                &place_on_cloud,
-            ])
+            .peppy(&["stack", "join", "cam:failed", "--place", &place_on_cloud])
             .await,
         "rejoin under the freed name",
     );
@@ -3484,7 +3476,8 @@ async fn a_join_whose_peer_work_outlives_its_deadline_leaves_nothing_on_the_peer
         .robot
         .peppy(&[
             "stack",
-            "join", "cam:late",
+            "join",
+            "cam:late",
             "--place",
             &federation.cloud_core_node,
             "--max-timeout-secs",
@@ -3542,7 +3535,8 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
                 .robot
                 .peppy(&[
                     "stack",
-                    "join", &format!("arm:{name}"),
+                    "join",
+                    &format!("arm:{name}"),
                     "--place",
                     &federation.cloud_core_node,
                 ])
@@ -3597,7 +3591,8 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
         .robot
         .peppy(&[
             "stack",
-            "join", "arm:failed",
+            "join",
+            "arm:failed",
             "--place",
             &federation.cloud_core_node,
         ])
@@ -3661,7 +3656,8 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
             .robot
             .peppy(&[
                 "stack",
-                "join", "arm:bravo",
+                "join",
+                "arm:bravo",
                 "--place",
                 &federation.cloud_core_node,
             ])
@@ -4926,7 +4922,8 @@ async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
             .robot
             .peppy(&[
                 "stack",
-                "join", "limb:bravo",
+                "join",
+                "limb:bravo",
                 "--set-arguments",
                 "leader_inst.value=2",
                 "--place",

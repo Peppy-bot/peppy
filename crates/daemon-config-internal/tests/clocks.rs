@@ -253,18 +253,20 @@ fn two_documents_declaring_one_domain_must_agree() {
     let error = prepare(directory.path(), &launcher(r#"{ simulation: "wall" }"#))
         .launch(&words(&["mujoco"]), &[])
         .expect_err("one domain declared two ways must be refused");
-    let CompositionError::ClockDomainConflict {
-        domain,
-        first_origin,
-        second_origin,
-        ..
-    } = &error
-    else {
+    let CompositionError::ClockDomainConflict(conflict) = &error else {
         panic!("expected ClockDomainConflict, got: {error}");
     };
-    assert_eq!(domain, "simulation");
-    assert!(first_origin.contains("fleet.json5"), "{first_origin}");
-    assert!(second_origin.contains("mujoco.json5"), "{second_origin}");
+    assert_eq!(conflict.domain, "simulation");
+    assert!(
+        conflict.first_origin.contains("fleet.json5"),
+        "{}",
+        conflict.first_origin
+    );
+    assert!(
+        conflict.second_origin.contains("mujoco.json5"),
+        "{}",
+        conflict.second_origin
+    );
     let message = error.to_string();
     assert!(
         message.contains("\"wall\"") && message.contains("publisher: \"engine_inst\""),

@@ -29,18 +29,8 @@ pub enum CompositionError {
     )]
     AmbiguousSelection { word: String, axes: String },
 
-    #[error(
-        "clock domain `{domain}` is declared twice and differently: {first} in {first_origin}, \
-         {second} in {second_origin}. One domain is one timeline, so the two documents must \
-         agree or name different domains"
-    )]
-    ClockDomainConflict {
-        domain: String,
-        first_origin: String,
-        first: String,
-        second_origin: String,
-        second: String,
-    },
+    #[error(transparent)]
+    ClockDomainConflict(Box<ClockDomainConflict>),
 
     #[error(
         "axis `{axis}` is selected twice with different options (`{first}`, `{second}`); an axis \
@@ -64,18 +54,8 @@ pub enum CompositionError {
         options: String,
     },
 
-    #[error(
-        "axis `{axis}` of `{option}` has cardinality `one` and copy `{copy}` selects nothing \
-         for it; {fix}. Its options: {options}"
-    )]
-    UnresolvedCopyAxis {
-        copy: String,
-        option: String,
-        axis: String,
-        /// What fills the axis, in the words of whoever names the copy.
-        fix: String,
-        options: String,
-    },
+    #[error(transparent)]
+    UnresolvedCopyAxis(Box<UnresolvedCopyAxis>),
 
     #[error(
         "`--with {word}` selects axis `{axis}`, which runs as named copies; list them under \
@@ -526,4 +506,38 @@ pub enum CompositionError {
 
     #[error("the flattened launcher does not validate: {0}")]
     FlatValidation(#[from] crate::error::Error),
+}
+
+/// Payload for [`CompositionError::ClockDomainConflict`]. Boxed in the
+/// variant so its five `String` fields do not inflate `CompositionError`
+/// past the `clippy::result_large_err` threshold.
+#[derive(Debug, Error)]
+#[error(
+    "clock domain `{domain}` is declared twice and differently: {first} in {first_origin}, \
+     {second} in {second_origin}. One domain is one timeline, so the two documents must agree \
+     or name different domains"
+)]
+pub struct ClockDomainConflict {
+    pub domain: String,
+    pub first_origin: String,
+    pub first: String,
+    pub second_origin: String,
+    pub second: String,
+}
+
+/// Payload for [`CompositionError::UnresolvedCopyAxis`]. Boxed in the
+/// variant for the same `clippy::result_large_err` reason as
+/// [`ClockDomainConflict`].
+#[derive(Debug, Error)]
+#[error(
+    "axis `{axis}` of `{option}` has cardinality `one` and copy `{copy}` selects nothing for \
+     it; {fix}. Its options: {options}"
+)]
+pub struct UnresolvedCopyAxis {
+    pub copy: String,
+    pub option: String,
+    pub axis: String,
+    /// What fills the axis, in the words of whoever names the copy.
+    pub fix: String,
+    pub options: String,
 }

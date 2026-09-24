@@ -8,7 +8,7 @@ use super::super::types::{
     Selection, WALL_CLOCK,
 };
 use super::constraints::{guard_holds, render_guard};
-use super::error::CompositionError;
+use super::error::{ClockDomainConflict, CompositionError};
 use super::load::LoadedFragment;
 use super::report::{AppliedAdjustment, AppliedChange, SkipReason, SkippedAdjustment};
 use super::select::UnitSelection;
@@ -112,13 +112,15 @@ pub(super) fn merge_clocks(
             match declared.get(domain) {
                 Some((_, existing)) if existing == declaration => {}
                 Some((first_origin, existing)) => {
-                    return Err(CompositionError::ClockDomainConflict {
-                        domain: domain.to_string(),
-                        first_origin: first_origin.clone(),
-                        first: render_clock(existing),
-                        second_origin: origin.to_owned(),
-                        second: render_clock(declaration),
-                    });
+                    return Err(CompositionError::ClockDomainConflict(Box::new(
+                        ClockDomainConflict {
+                            domain: domain.to_string(),
+                            first_origin: first_origin.clone(),
+                            first: render_clock(existing),
+                            second_origin: origin.to_owned(),
+                            second: render_clock(declaration),
+                        },
+                    )));
                 }
                 None => {
                     declared.insert(domain.clone(), (origin.to_owned(), declaration.clone()));
