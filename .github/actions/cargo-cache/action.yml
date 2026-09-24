@@ -1,11 +1,11 @@
 name: Cargo build cache
 description: >-
-  Points the cargo target directory at a directory that persists on the
-  self-hosted runner between jobs, so a job compiles only what changed since the
-  suite last ran. The cargo registry and the build scripts' tool cache are left
-  to the runner, which keeps them across jobs of its own accord. Expects the
-  checkout and the Rust toolchain to be in place, and must precede every cargo
-  step.
+  Keeps the suite's cargo target directory, the cargo registry, the build
+  scripts' tool cache and pixi's package cache on the job's RunsOn sticky
+  disk, so a job compiles only what changed since the suite last ran. The
+  job's runs-on label must request the suite's sticky disk
+  (`sticky=<suite>:<size>`). Expects the checkout and the Rust toolchain to be
+  in place, and must precede every cargo step.
 
 inputs:
   suite:
@@ -23,39 +23,50 @@ inputs:
 runs:
   using: composite
   steps:
-    # The runner is self-hosted and reused, so a directory under $HOME outlives
-    # the job; nothing mounts or uploads it. The name carries the architecture
-    # because every artifact in it is built for the host that built it, and
-    # the month because cargo never removes an artifact a dependency bump or a
-    # profile change superseded, so a target directory only grows. The first
-    # run of a month starts empty and pays one cold build per suite, the prune
-    # below drops the previous month, and a directory is never older than a
-    # month of leftovers.
+    # RunsOn restores the sticky disk the job's runs-on label names from the
+    # newest snapshot of it taken on this branch, or on the default branch
+    # when this branch has none, and snapshots it again after the job. A pull
+    # request's run never writes the default branch's snapshot. This action
+    # bind-mounts each directory below onto that disk, at the path its tool
+    # already uses:
     #
-    # The directory is live: a run reads what the previous run left, and every
-    # pull request scheduled here, a fork's included, writes into what later
-    # runs build on. So nothing stored here may be state one run depends on
-    # another having written, only what cargo and the build scripts rebuild
-    # from scratch. Each runner is its own machine with its own $HOME, so a
-    # job is warm or cold depending on which box it lands on. A box runs one
-    # job at a time, so nothing races inside the directory.
+    #   - `cargo`: the registry and the git checkouts under ~/.cargo.
+    #   - ~/.peppy/tmp: the build scripts' tool cache
+    #     (build_helpers::cache_dir), where apptainer, zenohd and the peppylib
+    #     .so are built once per version and content.
+    #   - ~/.cache/rattler: pixi's package cache, for the peppylib build and
+    #     the pixi environments the suites install.
+    #   - ~/.cache/peppy-ci: the suite's target directory, linked below.
+    #
+    # Everything there is keyed by content or rebuilt by cargo when stale, so
+    # what a run finds is a hit for the same bytes or a miss, never state one
+    # run depends on another having written.
+    - uses: runs-on/action@v2
+      with:
+        sticky_cache: |
+          cargo
+          custom,path=~/.peppy/tmp,path=~/.cache/rattler,path=~/.cache/peppy-ci
+
+    # The month is in the name because cargo never removes an artifact a
+    # dependency bump or a profile change superseded, so a target directory
+    # only grows. The first run of a month starts empty and pays one cold
+    # build, the prune below drops the previous month, and a directory is
+    # never older than a month of leftovers.
     - name: Name the suite's cache directory
       id: cache
       shell: bash
       run: |
         set -euo pipefail
-        echo "dir=$HOME/.cache/peppy-ci/${{ inputs.suite }}-${{ runner.arch }}-$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+        echo "dir=$HOME/.cache/peppy-ci/${{ inputs.suite }}-$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
 
-    # Drops this suite's directories from every other month. Scoped to the
-    # suite so a prune never deletes a directory a concurrently queued job of
-    # another suite is building in.
+    # Drops this suite's directories from every other month.
     - name: Prune the previous months' caches
       shell: bash
       run: |
         set -euo pipefail
         keep="${{ steps.cache.outputs.dir }}"
         root="$HOME/.cache/peppy-ci"
-        prefix="${{ inputs.suite }}-${{ runner.arch }}-"
+        prefix="${{ inputs.suite }}-"
         mkdir -p "$root"
         for d in "$root/$prefix"*; do
           [ -d "$d" ] || continue
@@ -70,16 +81,6 @@ runs:
     # under the workspace's own `target/`, so linking the directory leaves the
     # path where every tool expects it.
     #
-    # Nothing under $HOME is touched. The cargo registry, the git checkouts
-    # and the build scripts' tool cache (`~/.peppy/tmp`) are the box's own
-    # directories, shared with every other repository's jobs running as the
-    # same user. They persist by themselves and are keyed by content (the
-    # registry by crate and checksum, the tool cache by version and content in
-    # build_helpers::cache_dir), so each entry is a hit or a miss and needs no
-    # management from here. They fall outside the monthly prune above; the
-    # registry grows slowly, where `target/` is what reaches tens of gigabytes
-    # in one suite.
-    #
     # Incremental compilation is off: its caches are most of a debug target
     # directory and all it would save is the seconds a warm rebuild of a
     # crate's own code takes. Debug info is held to line tables for the same
@@ -88,7 +89,7 @@ runs:
     # backtrace, which line tables keep. The test profile inherits the dev
     # profile's setting.
     #
-    # One subtree of `target/` stays out of the cache: the workspace's
+    # One subtree of `target/` stays off the sticky disk: the workspace's
     # .cargo/config.toml routes uv's cache to `target/uv-cache`, and the
     # Python generator tests fill it with a freshly built peppylib wheel per
     # test, each under a new hash in an append-only cache. Tens of gigabytes

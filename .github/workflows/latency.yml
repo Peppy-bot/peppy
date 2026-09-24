@@ -21,7 +21,9 @@ env:
 jobs:
   latency:
     if: github.head_ref == 'dev'
-    runs-on: self-hosted
+    # A build runner of its own for the whole measurement, so no other job
+    # shares its CPUs.
+    runs-on: runs-on=${{ github.run_id }}/runner=ci-build  # image (via runner): peppy-ubuntu24, custom Peppy AMI
     permissions:
       contents: read
       pull-requests: read
@@ -40,9 +42,8 @@ jobs:
           # runner's git credentials, so don't leave the token in .git/config.
           persist-credentials: false
 
-      # Give this run its own peppy data root (shared_target_dir lives under it)
-      # so the reused self-hosted runner does not accumulate or collide on
-      # /tmp/.peppy across runs. Cleaned up at job end below.
+      # Give this run its own peppy data root under the runner's temp dir
+      # (shared_target_dir lives under it).
       - name: Set up isolated peppy data root
         run: |
           PEPPY_RUN_HOME="$RUNNER_TEMP/peppy-home"
@@ -70,11 +71,3 @@ jobs:
           # Own session, as in tests.yml: this suite spawns and tears down real
           # nodes, so a process-group signal must not reach the runner agent.
           setsid --wait cargo test -p core-node --test latency -- --ignored --test-threads 1 --nocapture
-
-      # Reclaim the per-run data root so disk does not grow on every run. Runs
-      # even when the test step failed.
-      - name: Clean up isolated peppy data root
-        if: always()
-        uses: ./.github/actions/reclaim-data-root
-        with:
-          path: ${{ runner.temp }}/peppy-home

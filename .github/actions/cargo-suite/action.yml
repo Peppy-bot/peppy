@@ -17,9 +17,10 @@ inputs:
 runs:
   using: composite
   steps:
-    # The suite gets its own peppy data root so the runner does not accumulate
-    # or collide on /tmp/.peppy across runs. Only the cargo command opts in via
-    # env; the release scripts job never goes through this action, so
+    # The suite gets its own peppy data root under the runner's temp dir, so
+    # what the tests write stays off the sticky disk that holds ~/.peppy/tmp
+    # (see the cargo-cache action). Only the cargo command opts in via env;
+    # the release scripts job never goes through this action, so
     # scripts/install.sh keeps defaulting PEPPY_HOME to $HOME/.peppy.
     - name: Run the suite in an isolated peppy data root
       shell: bash
@@ -37,12 +38,3 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: git diff --exit-code -- Cargo.lock
-
-    # Reclaim the data root so disk does not grow on every run. Runs even when
-    # the suite failed. The persistent build-tool cache at $HOME/.peppy/tmp is
-    # intentionally left in place (see build_helpers::cache_dir).
-    - name: Clean up isolated peppy data root
-      if: always()
-      uses: ./.github/actions/reclaim-data-root
-      with:
-        path: ${{ runner.temp }}/peppy-home

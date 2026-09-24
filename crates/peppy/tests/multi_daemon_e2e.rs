@@ -290,11 +290,11 @@ async fn e2e_image() -> (String, String) {
 /// Builds the daemon image into the local Docker daemon.
 ///
 /// Prefers the buildx client: `docker buildx build` resolves the configured
-/// default builder, and on the self-hosted CI runner that builder belongs to a
-/// Docker daemon that outlives the job, so its layer cache persists and the apt
-/// and uv-python layers of [`e2e_dockerfile`] are built once and reused across
-/// runs. On a machine that starts clean the cache starts empty and the image is
-/// built from scratch. Where no buildx client is installed the testcontainers
+/// default builder, whose layer cache lives as long as its Docker daemon, so on
+/// a machine that keeps its daemon the apt and uv-python layers of
+/// [`e2e_dockerfile`] are built once and reused across runs. On a machine that
+/// starts clean, as every CI runner does, the cache starts empty and the image
+/// is built from scratch. Where no buildx client is installed the testcontainers
 /// build remains, driving the daemon's own embedded builder and building the
 /// identical image body either way.
 ///
@@ -745,7 +745,7 @@ async fn start_daemon(
         // is blocked twice over: no CAP_SYS_ADMIN, and `docker-default`
         // AppArmor denies unprivileged userns on Ubuntu 24.04+ (the same
         // restriction `containers::apptainer` disables in peppy's Lima guest).
-        // A test-only container on a self-hosted runner is the one place where
+        // A test-only container on a CI runner is the one place where
         // buying both with `privileged` is the proportionate answer; the
         // alternative is three security-opt knobs that each drift with the
         // host's kernel and AppArmor configuration.

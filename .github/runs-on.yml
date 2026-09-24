@@ -1,0 +1,59 @@
+# RunsOn runners for this repository's workflows.
+#
+# Every repository inherits the org config in Peppy-bot/.github-private: the
+# runner `peppy-ci-ubuntu-24.04-x86_64` and the image `peppy-ubuntu24`. Its
+# top-level keys are not deep-merged with this file. This file defines
+# `runners:`, so it replaces the org runner list, and the org runner is copied
+# below unchanged; keep it identical to the org definition. This file does not
+# define `images:`, so `peppy-ubuntu24` is still inherited.
+#
+# RunsOn sets EC2 tags only from a runner definition, and every instance must
+# carry `Environment:shared` and `Stack:github-action-runners`, so every job
+# names one of these runners with `runner=` and adjusts it with labels.
+runners:
+  # The org runner, copied verbatim.
+  peppy-ci-ubuntu-24.04-x86_64:
+    cpu: 16
+    ram: 32
+    volume: 100gb:gp3
+    sticky: build-cache:40gb
+    family: ["c5", "m6i", "c6i", "m4", "m5", "c7i", "m7i"]
+    spot: price-capacity-optimized
+    tags:
+      - Environment:shared
+      - Stack:github-action-runners
+
+  # The cargo suites and the Linux x86_64 release stages. 16 vCPU with 4 GB
+  # each, the memory the suites' parallel builds and generator tests are sized
+  # for, on the current AMD and Intel general-purpose families: the fastest
+  # compiles, over enough spot pools that a spot instance is found at once.
+  # The root disk holds a suite's scratch under RUNNER_TEMP (the Python
+  # generator tests alone write tens of gigabytes of wheels there) with room
+  # to spare, at gp3 throughput and IOPS above the baseline. A cargo suite
+  # adds the sticky disk that holds its build cache (`sticky=<suite>:<size>`);
+  # a release stage adds `spot=false`.
+  ci-build:
+    cpu: 16
+    ram: 64
+    family: ["m7a", "m7i", "m8a", "m8i"]
+    image: peppy-ubuntu24            # custom Peppy AMI (org config)
+    volume: 150gb:gp3:500mbs:6000iops
+    tags:
+      - Environment:shared
+      - Stack:github-action-runners
+
+  # The Linux aarch64 release stages, which build natively on Graviton.
+  # peppy-ubuntu24 is x64 only, so this boots RunsOn's stock arm64 image and
+  # the stage provisions its toolchain with setup_machine.sh --build-only (the
+  # release-host-env action). On demand: a release stage must not be
+  # interrupted.
+  release-arm64:
+    cpu: 16
+    ram: 64
+    family: ["m7g", "m8g"]
+    image: ubuntu24-full-arm64       # RunsOn standard image
+    volume: 150gb:gp3:500mbs:6000iops
+    spot: false
+    tags:
+      - Environment:shared
+      - Stack:github-action-runners

@@ -136,6 +136,7 @@ class Detection(unittest.TestCase):
     def test_a_change_to_what_every_job_runs_through_runs_everything(self):
         for path in (
             ".github/workflows/tests.yml",
+            ".github/runs-on.yml",
             ".github/actions/rust-build-env/action.yml",
         ):
             with self.subTest(path=path):
@@ -144,11 +145,12 @@ class Detection(unittest.TestCase):
                 everything = detect.select_everything()
                 self.assertEqual(selected(selection).keys(), everything.keys())
 
-    def test_a_change_to_the_cargo_plumbing_runs_the_cargo_suites_alone(self):
-        for path in (
-            ".github/actions/cargo-cache/action.yml",
-            ".github/actions/cargo-suite/action.yml",
-            ".github/actions/reclaim-data-root/action.yml",
+    def test_a_change_to_the_cargo_plumbing_runs_the_cargo_suites(self):
+        # The install suite builds its archive through the cargo cache too,
+        # and never through cargo-suite.
+        for path, install_script in (
+            (".github/actions/cargo-cache/action.yml", "true"),
+            (".github/actions/cargo-suite/action.yml", "false"),
         ):
             with self.subTest(path=path):
                 selection = select(path)
@@ -159,7 +161,7 @@ class Detection(unittest.TestCase):
                 self.assertEqual(selection["docs_integration"], "true")
                 self.assertEqual(selection["cross_check"], "true")
                 self.assertEqual(selection["scripts"], "false")
-                self.assertEqual(selection["install_script"], "false")
+                self.assertEqual(selection["install_script"], install_script)
 
     def test_the_detection_and_the_release_plumbing_gate_no_suite(self):
         # The detection decides what runs, never how a suite runs, and the
