@@ -1,0 +1,35 @@
+<entry>
+  <title>v0.31.0</title>
+  <id>https://docs.peppy.bot/releases/v0-31-0/</id>
+  <updated>2026-09-24T00:00:00Z</updated>
+
+  <summary>Serve every robot from one MCP endpoint, start named copies with a launch, and publish lossless 16-bit depth frames.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.31.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Serve every robot from one MCP endpoint, start named copies with a launch, and publish lossless 16-bit depth frames.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on September 24, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy stack join&lt;/code&gt; now takes one &lt;code&gt;OPTION:NAME&lt;/code&gt; argument in place of &lt;code&gt;OPTION -i NAME&lt;/code&gt;; update commands and scripts that add a copy to a running stack.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy stack resolve&lt;/code&gt; previews joined copies with repeatable &lt;code&gt;--join OPTION:NAME&lt;/code&gt; (addressed by &lt;code&gt;--with NAME.option&lt;/code&gt;), replacing the removed &lt;code&gt;--join&lt;/code&gt;, &lt;code&gt;--join-name&lt;/code&gt;, &lt;code&gt;--join-with&lt;/code&gt;, and &lt;code&gt;--join-set-arguments&lt;/code&gt; flags.&lt;/li&gt;
+&lt;li&gt;A bound member's &lt;code&gt;copy&lt;/code&gt; is now a &lt;code&gt;CopyTag&lt;/code&gt; carrying the copy &lt;code&gt;name&lt;/code&gt; and its fragment's instance id, not a plain name string; update readers of &lt;code&gt;member.copy&lt;/code&gt; and of &lt;code&gt;stack list --json&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;The &lt;code&gt;with_bound_producer_in_copy&lt;/code&gt; builder now takes the copy name and the fragment's instance id (running the producer as &lt;code&gt;NAME_&amp;lt;id&amp;gt;&lt;/code&gt;) instead of the full instance id and copy name.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Copies at launch&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy stack launch&lt;/code&gt; and &lt;code&gt;peppy stack build&lt;/code&gt; accept repeatable, comma-separated &lt;code&gt;--join OPTION:NAME&lt;/code&gt; to start named copies with the launch, addressed by &lt;code&gt;NAME.option&lt;/code&gt; words and &lt;code&gt;--place NAME@CORE_NODE&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;A launcher &lt;code&gt;deployments&lt;/code&gt; entry on a &lt;code&gt;zero_or_more&lt;/code&gt; axis may list no copies, instead describing how every copy of that option is set up for later &lt;code&gt;--join&lt;/code&gt; or &lt;code&gt;stack join&lt;/code&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;MCP exposures&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;An MCP exposure that declares &lt;code&gt;robots&lt;/code&gt; becomes a per-robot surface: one endpoint serving every robot of the stack, where each tool names its robot and resources are published per robot.&lt;/li&gt;
+&lt;li&gt;Image representations add a lossless &lt;code&gt;png16&lt;/code&gt; codec for 16-bit single-channel depth frames, usable with &lt;code&gt;on_oversize: "downscale"&lt;/code&gt;, and now read frames labeled &lt;code&gt;z16&lt;/code&gt;, &lt;code&gt;mono16&lt;/code&gt;, or &lt;code&gt;16UC1&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;An exposure target may select the same topic member several times, each entry with its own resource name, representation, and policies.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
