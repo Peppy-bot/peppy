@@ -7,6 +7,10 @@ set -eu
 #   curl -fsSL https://peppy.bot/install.sh | sh -s -- ./peppy-x86_64-unknown-linux-gnu.tgz
 #   ./install.sh ./peppy-x86_64-unknown-linux-gnu.tgz
 #
+# Supported platforms: Ubuntu and the distributions built on it (x86_64 and
+# aarch64), and macOS on Apple Silicon. On any other system the script stops
+# before it changes anything.
+#
 # Environment variables:
 #   PEPPY_VERSION            Version to install (default: latest)
 #   PEPPY_HOME               Install prefix (default: ~/.peppy)
@@ -175,6 +179,70 @@ EOF
     esac
     PEPPY_BIN_DIR="${PEPPY_BIN_DIR:-$PEPPY_HOME/bin}"
 
+    # ---- Platform ----------------------------------------------------------------
+    # Everything after this block reads PLATFORM and ARCH, and nothing before it
+    # changes the system, so an unsupported machine stops here untouched.
+
+    # os_release_field FIELD FILE: print FIELD of an os-release file, unquoted.
+    os_release_field() {
+        sed -n "s/^$1=//p" "$2" | head -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
+    }
+
+    # is_ubuntu_based FILE: 0 when the os-release FILE describes Ubuntu, or a
+    # distribution that names Ubuntu in ID_LIKE (Linux Mint, Pop!_OS, ...).
+    is_ubuntu_based() {
+        [ "$(os_release_field ID "$1")" = "ubuntu" ] && return 0
+        for _LIKE in $(os_release_field ID_LIKE "$1"); do
+            [ "$_LIKE" = "ubuntu" ] && return 0
+        done
+        return 1
+    }
+
+    PLATFORM="$(uname -s)"
+    ARCH="$(uname -m)"
+
+    case "${ARCH-}" in
+    arm64 | aarch64) ARCH="aarch64" ;;
+    x86_64 | amd64) ARCH="x86_64" ;;
+    *)
+        echo "error: unsupported architecture '$ARCH' (peppy supports x86_64 and aarch64)" >&2
+        exit 1
+        ;;
+    esac
+
+    if [ "${PLATFORM-}" = "Darwin" ]; then
+        if [ "$ARCH" != "aarch64" ]; then
+            echo "error: macOS is supported only on Apple Silicon (aarch64/arm64)" >&2
+            exit 1
+        fi
+        PLATFORM="apple-darwin"
+    elif [ "${PLATFORM-}" = "Linux" ]; then
+        # The os-release specification reads /etc/os-release first and falls
+        # back to /usr/lib/os-release.
+        OS_RELEASE=""
+        for _CANDIDATE in /etc/os-release /usr/lib/os-release; do
+            if [ -r "$_CANDIDATE" ]; then
+                OS_RELEASE="$_CANDIDATE"
+                break
+            fi
+        done
+        if [ -z "$OS_RELEASE" ]; then
+            echo "error: cannot identify this Linux distribution (no /etc/os-release or /usr/lib/os-release)." >&2
+            echo "       peppy supports Ubuntu and the distributions built on it." >&2
+            exit 1
+        fi
+        if ! is_ubuntu_based "$OS_RELEASE"; then
+            DISTRO_NAME="$(os_release_field PRETTY_NAME "$OS_RELEASE")"
+            echo "error: unsupported Linux distribution '${DISTRO_NAME:-$(os_release_field ID "$OS_RELEASE")}'." >&2
+            echo "       peppy supports Ubuntu and the distributions built on it." >&2
+            exit 1
+        fi
+        PLATFORM="unknown-linux-gnu"
+    else
+        echo "error: unsupported platform '$PLATFORM' (only macOS and Linux are supported)" >&2
+        exit 1
+    fi
+
     # Detect running daemon and warn before overwriting
     DAEMON_RUNNING=false
     if command -v pgrep >/dev/null 2>&1; then
@@ -220,31 +288,6 @@ EOF
     fi
 
     REPOURL="${PEPPY_REPOURL:-https://peppy.bot}"
-    PLATFORM="$(uname -s)"
-    ARCH="$(uname -m)"
-
-    if [ "${PLATFORM-}" = "Darwin" ]; then
-        PLATFORM="apple-darwin"
-    elif [ "${PLATFORM-}" = "Linux" ]; then
-        if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
-            PLATFORM="unknown-linux-musl"
-        else
-            PLATFORM="unknown-linux-gnu"
-        fi
-    else
-        echo "error: unsupported platform '$PLATFORM' (only macOS and Linux are supported)" >&2
-        exit 1
-    fi
-
-    case "${ARCH-}" in
-    arm64 | aarch64) ARCH="aarch64" ;;
-    x86_64 | amd64) ARCH="x86_64" ;;
-    esac
-
-    if [ "$PLATFORM" = "apple-darwin" ] && [ "$ARCH" != "aarch64" ]; then
-        echo "error: macOS is supported only on Apple Silicon (aarch64/arm64)" >&2
-        exit 1
-    fi
 
     # ---- Shared helpers for sudo operations ------------------------------------
     # prompt_sudo_consent: show labels and get user consent (Y/n). Does not execute.
@@ -296,10 +339,10 @@ EOF
         fi
     }
 
-    # apply_sudo_fixes: execute accumulated package fixes as root. Consent must
-    # already have been obtained. FIXES has trailing " && " stripped internally.
+    # apply_sudo_fixes: execute a package fix command as root. Consent must
+    # already have been obtained.
     apply_sudo_fixes() {
-        _FIXES="${1% && }"
+        _FIXES="$1"
         _SUCCESS_MSG="$2"
 
         cache_sudo_credentials
@@ -405,10 +448,7 @@ EOF
                 if ! check_dbus_session; then
                     echo "" >&2
                     echo "error: D-Bus user session bus is not available." >&2
-                    echo "       Install D-Bus user session support manually:" >&2
-                    echo "         Debian/Ubuntu: sudo apt-get install dbus-user-session" >&2
-                    echo "         Fedora/RHEL:   sudo dnf install dbus-daemon" >&2
-                    echo "         Arch Linux:    sudo pacman -S dbus" >&2
+                    echo "       Install D-Bus user session support manually: sudo apt-get install dbus-user-session" >&2
                     echo "" >&2
                     exit 1
                 fi
@@ -426,10 +466,7 @@ EOF
                     echo "" >&2
                     echo "error: fuse2fs not found." >&2
                     echo "       Rootless apptainer needs it to mount EXT3 filesystem images." >&2
-                    echo "       Install it manually:" >&2
-                    echo "         Debian/Ubuntu: sudo apt-get install fuse2fs" >&2
-                    echo "         Fedora/RHEL:   sudo dnf install fuse2fs" >&2
-                    echo "         Arch Linux:    sudo pacman -S fuse2fs" >&2
+                    echo "       Install it manually: sudo apt-get install fuse2fs" >&2
                     echo "" >&2
                     exit 1
                 fi
@@ -439,33 +476,26 @@ EOF
             if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
                 echo "" >&2
                 echo "error: curl or wget is required but not found." >&2
-                echo "       Install it manually:" >&2
-                echo "         Debian/Ubuntu: sudo apt-get install curl" >&2
-                echo "         Fedora/RHEL:   sudo dnf install curl" >&2
-                echo "         Arch Linux:    sudo pacman -S curl" >&2
+                echo "       Install it manually: sudo apt-get install curl" >&2
                 echo "" >&2
                 exit 1
             fi
         else
             # ---------- normal mode: prompt for pre-download sudo changes -----
-            PREDOWNLOAD_FIXES=""
+            # The apt packages to install, each with a leading space, so one
+            # `apt-get install` takes them all.
+            APT_PACKAGES=""
             ENABLE_LINGER_USER=""
             ALL_LABELS=""
 
             if ! $IN_CONTAINER; then
                 if ! check_dbus_session; then
-                    if command -v apt-get >/dev/null 2>&1; then
-                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}${APT_GET} update -qq && ${APT_GET} install -y -qq dbus-user-session && "
-                    elif command -v dnf >/dev/null 2>&1; then
-                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y dbus-daemon && "
-                    elif command -v pacman >/dev/null 2>&1; then
-                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -Sy --noconfirm dbus && "
-                    fi
+                    APT_PACKAGES="${APT_PACKAGES} dbus-user-session"
                     ALL_LABELS="${ALL_LABELS}  - Install D-Bus user session support (required for peppy background service)\n"
                 fi
 
-                # Tracked separately from PREDOWNLOAD_FIXES so it can be applied
-                # on its own, before the package installs (see the apply block).
+                # Tracked separately from APT_PACKAGES so it can be applied on
+                # its own, before the package installs (see the apply block).
                 if ! check_linger_enabled; then
                     ENABLE_LINGER_USER="$(id -un)"
                     ALL_LABELS="${ALL_LABELS}  - Enable systemd linger for user ${ENABLE_LINGER_USER} (allows peppy daemon to run after SSH disconnect)\n"
@@ -476,41 +506,14 @@ EOF
                 # squashfuse_ll and gocryptfs it is not bundled with peppy,
                 # so it comes from the distro.
                 if ! check_fuse2fs; then
-                    FUSE2FS_FIX=""
-                    if command -v apt-get >/dev/null 2>&1; then
-                        FUSE2FS_FIX="${APT_GET} update -qq && ${APT_GET} install -y -qq fuse2fs"
-                    elif command -v dnf >/dev/null 2>&1; then
-                        FUSE2FS_FIX="dnf install -y fuse2fs"
-                    elif command -v pacman >/dev/null 2>&1; then
-                        FUSE2FS_FIX="pacman -Sy --noconfirm fuse2fs"
-                    fi
-                    if [ -n "$FUSE2FS_FIX" ]; then
-                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}${FUSE2FS_FIX} && "
-                        ALL_LABELS="${ALL_LABELS}  - Install fuse2fs (needed to mount EXT3 filesystems in rootless containers)\n"
-                    else
-                        echo "warning: fuse2fs not found and no supported package manager detected (apt-get, dnf, pacman)." >&2
-                        echo "         Rootless containers cannot mount EXT3 filesystems without it." >&2
-                        echo "         Debian/Ubuntu: sudo apt-get install fuse2fs; Fedora/RHEL: sudo dnf install fuse2fs; Arch Linux: sudo pacman -S fuse2fs" >&2
-                    fi
+                    APT_PACKAGES="${APT_PACKAGES} fuse2fs"
+                    ALL_LABELS="${ALL_LABELS}  - Install fuse2fs (needed to mount EXT3 filesystems in rootless containers)\n"
                 fi
             fi
 
             # Check: curl or wget (required to download the release archive)
             if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-                if command -v apt-get >/dev/null 2>&1; then
-                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}${APT_GET} update -qq && ${APT_GET} install -y -qq curl && "
-                elif command -v dnf >/dev/null 2>&1; then
-                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y curl && "
-                elif command -v pacman >/dev/null 2>&1; then
-                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -Sy --noconfirm curl && "
-                else
-                    echo "" >&2
-                    echo "error: curl or wget is required but not found." >&2
-                    echo "       No supported package manager detected (apt-get, dnf, pacman)." >&2
-                    echo "       Install curl or wget manually and re-run this script." >&2
-                    echo "" >&2
-                    exit 1
-                fi
+                APT_PACKAGES="${APT_PACKAGES} curl"
                 ALL_LABELS="${ALL_LABELS}  - Install curl (required to download peppy)\n"
             fi
 
@@ -524,8 +527,8 @@ EOF
             if [ -n "$ENABLE_LINGER_USER" ]; then
                 enable_linger "$ENABLE_LINGER_USER"
             fi
-            if [ -n "$PREDOWNLOAD_FIXES" ]; then
-                apply_sudo_fixes "$PREDOWNLOAD_FIXES" "Pre-download dependencies configured."
+            if [ -n "$APT_PACKAGES" ]; then
+                apply_sudo_fixes "${APT_GET} update -qq && ${APT_GET} install -y -qq${APT_PACKAGES}" "Pre-download dependencies configured."
             fi
         fi
     fi
@@ -700,7 +703,7 @@ EOF
     # ---- Apptainer container setup (post-install) ----------------------------
     # Delegates AppArmor profile configuration to `peppy container setup`
     # which is the single source of truth for Apptainer system prerequisites.
-    # On systems without AppArmor restrictions (Fedora, Arch), this is a no-op.
+    # On systems without AppArmor restrictions, this is a no-op.
     # Inside containers (Docker/Podman), AppArmor profiles cannot be loaded
     # (requires CAP_MAC_ADMIN), so setup is skipped automatically.
     if [ "$PLATFORM" != "apple-darwin" ]; then

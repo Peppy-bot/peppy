@@ -1,0 +1,48 @@
+name: install.sh tests
+description: >-
+  Installs the release archive of this runner's platform with install.sh and
+  runs the install.sh tests against it (scripts/tests/test_install*.py). The
+  tests change the machine they run on, so the action runs only on a
+  GitHub-hosted runner, which is a fresh image for each job and is discarded
+  after it.
+
+inputs:
+  archive:
+    description: The artifact holding the release archive of this runner's platform
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # A self-hosted box outlives its jobs: install.sh would change it for
+    # every job after this one, and a second run would no longer start from
+    # a fresh machine.
+    - name: Refuse a runner that outlives the job
+      if: runner.environment != 'github-hosted'
+      shell: bash
+      run: |
+        echo "::error::The install.sh tests change the machine they run on and need a runner discarded after the job; ${RUNNER_NAME:-this runner} is ${{ runner.environment }}."
+        exit 1
+
+    # The tests look for the archive where a release build writes it.
+    - uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.archive }}
+        path: dist
+
+    # pixi only, for the Python environment the tests run in. Nothing a
+    # release build needs is installed: the tests start from the image as a
+    # user's machine would, and a build toolchain would put packages on it
+    # (fuse2fs, uidmap) that install.sh is there to install. Pinned to the
+    # version the self-hosted boxes are provisioned with.
+    - name: Install pixi
+      shell: bash
+      run: |
+        curl -fsSL --retry 3 --retry-connrefused https://pixi.sh/install.sh | PIXI_VERSION=v0.80.0 bash
+        echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
+
+    - name: Run the install.sh tests
+      shell: bash
+      env:
+        PEPPY_DISPOSABLE_TEST_HOST: "1"
+      run: ./scripts/run_tests.sh -m install

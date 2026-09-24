@@ -13,6 +13,8 @@ To install `peppy`, run the following command in your terminal:
 curl -fsSL https://peppy.bot/install.sh | sh
 ```
 
+The installer supports Ubuntu and the Linux distributions built on it (x86_64 and aarch64, tested on Ubuntu 24.04), and macOS on Apple Silicon. It recognises an Ubuntu-based distribution by `ID` or `ID_LIKE` in `/etc/os-release`. On any other system, Fedora and Arch Linux among them, it stops with an error before it changes anything.
+
 This installer also sets up the `peppy` background service and populates the repository index that name-based launches resolve from. To skip that step, set `PEPPY_NO_SERVICE_INSTALL=1`. The flag skips the repository setup along with the service, so a launch by name then fails with `nodes.json5 not found or empty` until you run `peppy repo init` and `peppy repo update` yourself.
 
 :::note

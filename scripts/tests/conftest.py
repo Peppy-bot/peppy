@@ -2,120 +2,43 @@
 
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 import respx
 
-from .lima_helpers import VMConfig, build_release_archives, get_native_linux_targets
-
-
-def pytest_addoption(parser: pytest.Parser) -> None:
-    """Add custom CLI options for the test suite."""
-    parser.addoption(
-        "--cross-arch",
-        action="store_true",
-        default=False,
-        help="Run cross-architecture QEMU tests (slow, disabled by default)",
-    )
+from .install_helpers import DISPOSABLE_HOST_VARIABLE, is_disposable_host
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers and ensure Lima cross-arch guest agents are available."""
+    """Register the suite's custom markers."""
     config.addinivalue_line(
         "markers",
-        "cross_arch: marks tests as cross-architecture (may be slow under QEMU emulation)",
+        "install: marks tests that run install.sh on this machine (minutes each, "
+        "vs milliseconds for the mocked suite)",
     )
-    config.addinivalue_line(
-        "markers",
-        "vm: marks tests that boot a Lima guest (minutes each, vs milliseconds "
-        "for the mocked suite)",
-    )
-    _ensure_lima_guest_agents()
 
 
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Skip VM parameterizations this host cannot say anything with.
+    """Skip the install tests on a machine not declared disposable.
 
-    Two separate cases, and they are not the same question:
-
-    * A cross-arch guest is slow enough to be opt-in, so it waits for
-      ``--cross-arch``.
-    * A test *marked* ``cross_arch`` asks whether a cross-build put the right
-      architecture in the archive.  Pointed at a native guest it compares the
-      host's own architecture against itself and passes by construction, so it
-      is skipped whatever the flag says.  Only macOS builds the other triples
-      (``get_targets_for_platform``), so on Linux these never have anything to
-      police -- and they cost about a minute a run.
+    The install tests change the machine they run on and install the release
+    archive of its platform, so they run only where the environment says the
+    machine is discarded after the run. Everywhere else, a developer's laptop
+    included, they skip.
     """
-    run_cross = config.getoption("--cross-arch")
-    skip_cross = pytest.mark.skip(reason="Cross-arch tests disabled (use --cross-arch)")
-    skip_native = pytest.mark.skip(
-        reason="cross_arch test on a native-arch guest: it would assert the "
-        "host architecture against itself"
+    if is_disposable_host():
+        return
+    skip_install = pytest.mark.skip(
+        reason=f"install.sh tests change this machine; they run only where "
+        f"{DISPOSABLE_HOST_VARIABLE}=1 declares it disposable"
     )
     for item in items:
-        if not (hasattr(item, "callspec") and "lima_vm" in item.callspec.params):
-            continue
-        vm_config = item.callspec.params["lima_vm"]
-        if not isinstance(vm_config, VMConfig):
-            continue
-        if vm_config.is_cross_arch:
-            if not run_cross:
-                item.add_marker(skip_cross)
-        elif item.get_closest_marker("cross_arch"):
-            item.add_marker(skip_native)
-
-
-def _ensure_lima_guest_agents() -> None:
-    """Copy Lima additional guest agent binaries into the pixi Lima share dir.
-
-    Lima requires architecture-specific guest agent binaries for cross-arch
-    VMs (e.g. x86_64 on aarch64).  The main ``lima`` package only ships the
-    native agent; additional agents come from ``lima-additional-guestagents``
-    (installed via Homebrew).  This function copies any missing agents from
-    the Homebrew installation into pixi's Lima share directory.
-    """
-    limactl = shutil.which("limactl")
-    if not limactl:
-        return
-
-    pixi_share = Path(limactl).resolve().parent.parent / "share" / "lima"
-    if not pixi_share.is_dir():
-        return
-
-    brew_share = Path("/opt/homebrew/share/lima")
-    if not brew_share.is_dir():
-        return
-
-    for agent in brew_share.glob("lima-guestagent.*"):
-        dest = pixi_share / agent.name
-        if not dest.exists():
-            shutil.copy2(agent, dest)
-
-
-@pytest.fixture(scope="session")
-def _build_release_archives(request: pytest.FixtureRequest) -> None:
-    """Build release archives needed by the collected tests.
-
-    Only builds cross-arch targets when ``--cross-arch`` is passed and
-    ``test_install`` is collected (the only module with cross-arch VM
-    configs).  This avoids building slow cross-arch binaries by default.
-    """
-    run_cross = request.config.getoption("--cross-arch", default=False)
-    needs_cross_arch = run_cross and any(
-        item.module.__name__.endswith(".test_install")
-        for item in request.session.items
-    )
-    if needs_cross_arch:
-        build_release_archives()
-    else:
-        build_release_archives(targets=get_native_linux_targets())
+        if item.get_closest_marker("install"):
+            item.add_marker(skip_install)
 
 
 @pytest.fixture()

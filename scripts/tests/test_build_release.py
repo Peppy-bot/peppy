@@ -35,6 +35,7 @@ from functions.build_release import (
     _upload_archives_and_publish,
     _verify_docs_up_to_date,
     _verify_release_branch_state,
+    main,
 )
 from functions.cli import ReleaseError
 from functions.docs import (
@@ -160,6 +161,76 @@ def test_run_local_mode_empty_tag_raises(
     mock_repo_root.return_value = tmp_path
     with pytest.raises(ReleaseError, match="release tag cannot be empty"):
         _run_local()
+
+
+@patch("functions.build_release._build_all_targets", return_value=[])
+@patch(
+    "functions.build_release.get_targets_for_platform",
+    return_value=["x86_64-unknown-linux-gnu"],
+)
+@patch("functions.build_release.has_uncommitted_changes", return_value=False)
+@patch("functions.build_release.get_repo_root")
+@patch("functions.build_release.validate_release_environment", return_value="")
+@patch("functions.build_release.prompt")
+def test_run_local_with_a_tag_builds_it_without_prompting(
+    mock_prompt: MagicMock,
+    mock_validate: MagicMock,
+    mock_repo_root: MagicMock,
+    mock_uncommitted: MagicMock,
+    mock_targets: MagicMock,
+    mock_build_all: MagicMock,
+    tmp_path: Path,
+) -> None:
+    mock_repo_root.return_value = tmp_path
+    _run_local("test")
+    mock_prompt.assert_not_called()
+    mock_build_all.assert_called_once_with(
+        "test",
+        ["x86_64-unknown-linux-gnu"],
+        tmp_path,
+    )
+
+
+@patch("functions.build_release.prompt")
+@patch("functions.build_release.get_repo_root")
+@patch("functions.build_release.validate_release_environment", return_value="")
+def test_run_local_with_an_empty_tag_raises_without_prompting(
+    mock_validate: MagicMock,
+    mock_repo_root: MagicMock,
+    mock_prompt: MagicMock,
+    tmp_path: Path,
+) -> None:
+    mock_repo_root.return_value = tmp_path
+    with patch(
+        "functions.build_release.has_uncommitted_changes", return_value=False
+    ), pytest.raises(ReleaseError, match="release tag cannot be empty"):
+        _run_local("")
+    mock_prompt.assert_not_called()
+
+
+@patch("functions.build_release._run_local")
+def test_main_passes_the_tag_to_the_local_build(mock_run_local: MagicMock) -> None:
+    with patch("sys.argv", ["build-release", "--local", "--tag", "test"]):
+        main()
+    mock_run_local.assert_called_once_with("test")
+
+
+@patch("functions.build_release._run_local")
+def test_main_prompts_for_the_local_tag_without_the_option(
+    mock_run_local: MagicMock,
+) -> None:
+    with patch("sys.argv", ["build-release", "--local"]):
+        main()
+    mock_run_local.assert_called_once_with(None)
+
+
+def test_tag_without_local_is_rejected(capsys: pytest.CaptureFixture[str]) -> None:
+    with patch("sys.argv", ["build-release", "--tag", "test"]), pytest.raises(
+        SystemExit
+    ) as exited:
+        main()
+    assert exited.value.code == 2
+    assert "--tag applies to --local only" in capsys.readouterr().err
 
 
 @patch("functions.build_release.build_github_client")

@@ -18,7 +18,7 @@ The installer puts the `peppy` CLI on your `PATH`, registers the background serv
 peppy info
 ```
 
-Peppy runs on Linux (x86_64/aarch64, tested on Ubuntu 24.04, Fedora, and Arch Linux) and macOS (aarch64).
+Peppy runs on Ubuntu and the Linux distributions built on it (x86_64/aarch64, tested on Ubuntu 24.04), and on macOS (Apple Silicon). Other Linux distributions, Fedora and Arch Linux among them, are not supported: the installer stops on them before it changes anything.
 
 The [installation guide](https://docs.peppy.bot/guides/installation/) covers version pinning (`PEPPY_VERSION`), skipping the service install (`PEPPY_NO_SERVICE_INSTALL`), and managing the service afterwards.
 

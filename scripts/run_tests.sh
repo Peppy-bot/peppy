@@ -7,16 +7,13 @@ set -eu
 # Arguments are passed through to pytest, so any selection it understands
 # works here:
 #
-#   ./run_tests.sh                  every test, native arch
-#   ./run_tests.sh -m 'not vm'      the mocked tests alone (about a second)
-#   ./run_tests.sh -m vm            the Lima install tests alone
-#   ./run_tests.sh --cross-arch     add the cross-arch guests (macOS only)
-#   ./run_tests.sh -k install       by name
+#   ./run_tests.sh                  every test
+#   ./run_tests.sh -m 'not install' the mocked tests alone (about a second)
+#   ./run_tests.sh -m install       the install.sh tests alone
+#   ./run_tests.sh -k reinstall     by name
 #
-# This script used to exec a fixed `test-all` task and drop its arguments on
-# the floor, so `run_tests.sh --all` ran neither what it named nor what the
-# caller meant -- CI passed that flag for months believing it bought
-# cross-arch coverage it cannot have on Linux.
+# The install.sh tests change the machine they run on, so they skip unless
+# PEPPY_DISPOSABLE_TEST_HOST=1 declares the machine disposable.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 command -v pixi >/dev/null 2>&1 || { echo "error: 'pixi' is required (https://pixi.sh)" >&2; exit 1; }

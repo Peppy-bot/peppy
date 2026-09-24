@@ -173,7 +173,17 @@ def _parse_args() -> argparse.Namespace:
             "exists."
         ),
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--tag",
+        help=(
+            "With --local, the tag to build the artifacts for, instead of "
+            "prompting for one."
+        ),
+    )
+    args = parser.parse_args()
+    if args.tag is not None and not args.local:
+        parser.error("--tag applies to --local only")
+    return args
 
 
 def _open_editor(path: Path) -> None:
@@ -1200,8 +1210,11 @@ def _verify_build_host() -> None:
         need_cmd(cmd)
 
 
-def _run_local() -> None:
-    """Build release artifacts locally without uploading to GitHub."""
+def _run_local(tag: str | None = None) -> None:
+    """Build release artifacts locally without uploading to GitHub.
+
+    Prompts for the tag unless *tag* names it.
+    """
     validate_release_environment(require_token=False)
     repo_root = get_repo_root()
     os.chdir(repo_root)
@@ -1210,7 +1223,8 @@ def _run_local() -> None:
         if not prompt_yn("Working tree has uncommitted changes. Continue?"):
             sys.exit(1)
 
-    tag = prompt("Tag for the build (example: v0.0.1)")
+    if tag is None:
+        tag = prompt("Tag for the build (example: v0.0.1)")
     if not tag:
         raise ReleaseError("release tag cannot be empty")
 
@@ -1301,7 +1315,7 @@ def main() -> None:
     if args.base_images:
         build_base_images_main()
     elif args.local:
-        run_with_error_handling(_run_local)
+        run_with_error_handling(lambda: _run_local(args.tag))
     else:
         run_with_error_handling(
             lambda: _run_full(args.skip_prod_cert_check, args.skip_docs_check)
