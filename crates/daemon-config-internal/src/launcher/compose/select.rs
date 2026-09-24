@@ -4,7 +4,7 @@
 
 use super::super::composition::ComponentAxis;
 use super::super::types::PeppyLauncher;
-use super::error::CompositionError;
+use super::error::{CompositionError, UnresolvedCopyAxis};
 use super::load::{LoadedComposition, LoadedOption};
 use core_node_api::encoding::LaunchJoin;
 use std::collections::BTreeMap;
@@ -419,7 +419,7 @@ fn fill(
                     copy,
                     option,
                     origin,
-                } => CompositionError::UnresolvedCopyAxis {
+                } => CompositionError::UnresolvedCopyAxis(Box::new(UnresolvedCopyAxis {
                     copy: copy.to_owned(),
                     option: option.to_owned(),
                     axis: axis.name.clone(),
@@ -437,7 +437,7 @@ fn fill(
                         CopyOrigin::Join => String::from("`--with <option>` on `peppy stack join`"),
                     },
                     options,
-                },
+                })),
             });
         }
     };

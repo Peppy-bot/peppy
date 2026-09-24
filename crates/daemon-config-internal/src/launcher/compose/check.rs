@@ -136,7 +136,7 @@ fn check_bare_launch(prepared: &PreparedLauncher, label: &str) -> Vec<String> {
     match prepared.launch(&[], &[]) {
         Ok(_)
         | Err(CompositionError::UnresolvedAxis { .. })
-        | Err(CompositionError::UnresolvedCopyAxis { .. }) => Vec::new(),
+        | Err(CompositionError::UnresolvedCopyAxis(_)) => Vec::new(),
         Err(e) => vec![format!(
             "{label}: the bare launch (no `--with`) fails: {e}. A launch of what the file \
              deploys must start"
@@ -261,16 +261,19 @@ fn check_file_copies_over(
                     },
                 ) {
                     Ok(_) => vec![(file_copy.clone(), settings.with.clone())],
-                    Err(CompositionError::UnresolvedCopyAxis { axis, .. }) => loaded
-                        .axis(&axis)
-                        .into_iter()
-                        .flat_map(|left| left.options.keys())
-                        .map(|option| {
-                            let mut with = settings.with.clone();
-                            with.insert(axis.clone(), option.clone());
-                            (format!("{file_copy} ({axis}={option})"), with)
-                        })
-                        .collect(),
+                    Err(CompositionError::UnresolvedCopyAxis(unresolved)) => {
+                        let axis = unresolved.axis;
+                        loaded
+                            .axis(&axis)
+                            .into_iter()
+                            .flat_map(|left| left.options.keys())
+                            .map(|option| {
+                                let mut with = settings.with.clone();
+                                with.insert(axis.clone(), option.clone());
+                                (format!("{file_copy} ({axis}={option})"), with)
+                            })
+                            .collect()
+                    }
                     Err(e) => {
                         problems.push(format!("{label} ({file_copy}): {e}"));
                         continue;

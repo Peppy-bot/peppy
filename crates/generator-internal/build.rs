@@ -782,9 +782,10 @@ mod peppylib_build {
     /// [`stale_so_names`]); they are skipped so the scaffolder treats their
     /// platform as having no binding at all.
     ///
-    /// The file also carries the guard that keeps the embed honest. The `.so`
-    /// cache is shared by every checkout of this repository on the machine, so
-    /// another checkout can rebuild a binding from its own sources after this
+    /// The file also carries the guard that keeps the embed honest. Each
+    /// profile's slot of the `.so` cache is shared by every checkout of this
+    /// repository on the machine, so another checkout building in the same
+    /// profile can rebuild a binding from its own sources after this
     /// script has decided what to embed. `include_bytes!` makes each embedded
     /// `.so` a dep-info input of this crate, and the `include_str!` of the
     /// build-state marker makes its provenance one too, so such a rebuild
@@ -954,8 +955,18 @@ mod peppylib_build {
         // Persistent, peppy-owned home for the built `.so` and their
         // `.so-build-state` marker, rooted outside the source tree so every
         // checkout of this repository shares one set of artifacts and release
-        // staging reads them from one known place.
-        let so_dir = build_helpers::cache_dir("peppylib-py").join("so");
+        // staging reads them from one known place (`so/release`).
+        //
+        // Each cargo profile has a slot of its own. A debug and a release build
+        // of one checkout build the host `.so` from the same sources but in
+        // different profiles, so in a shared slot each one would rebuild the
+        // binding the other embedded and rewrite its build state. The build of
+        // the other profile does not re-run this script when it next compiles
+        // this crate (nothing in its inputs changed), so its embed guard would
+        // find its provenance gone and fail the build.
+        let so_dir = build_helpers::cache_dir("peppylib-py")
+            .join("so")
+            .join(profile.tag());
         std::fs::create_dir_all(&so_dir)
             .unwrap_or_else(|e| panic!("failed to create peppylib .so dir {so_dir:?}: {e}"));
         track_so_cache_presence(&so_dir);

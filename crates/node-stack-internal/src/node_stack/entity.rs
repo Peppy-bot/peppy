@@ -144,7 +144,9 @@ pub enum NodeStage {
     // Special kind
     Root {
         config_path: PathBuf,
-        instance: TrackedNodeInstance,
+        /// Boxed so the one root entity does not make every stage as large
+        /// as a [`TrackedNodeInstance`] (`clippy::large_enum_variant`).
+        instance: Box<TrackedNodeInstance>,
     },
 }
 
@@ -583,7 +585,7 @@ impl NodeEntity {
     pub fn instances(&self) -> &[TrackedNodeInstance] {
         match &self.stage {
             NodeStage::Ready { instances, .. } => instances,
-            NodeStage::Root { instance, .. } => std::slice::from_ref(instance),
+            NodeStage::Root { instance, .. } => std::slice::from_ref(instance.as_ref()),
             NodeStage::Added { .. } | NodeStage::Building { .. } => &[],
         }
     }
@@ -1281,7 +1283,7 @@ impl NodeEntity {
             config,
             NodeStage::Root {
                 config_path: root_path,
-                instance,
+                instance: Box::new(instance),
             },
         )
     }

@@ -504,7 +504,7 @@ fn check_file_copies(
                 Ok(own) => Some(own),
                 // A `one` axis the file leaves for a launch word: which
                 // fragments the copy runs is known at launch.
-                Err(CompositionError::UnresolvedCopyAxis { .. }) => None,
+                Err(CompositionError::UnresolvedCopyAxis(_)) => None,
                 Err(error) => return Err(error),
             };
             let defined: BTreeSet<&str> = match &own {

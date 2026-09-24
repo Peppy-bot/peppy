@@ -9,8 +9,8 @@ use super::launch::watchers::LifecycleWatchers;
 use super::launch::{NodeKey, PlannedDeployment};
 use config::runtime::{CoreNodeName, Name};
 use daemon_config::launcher::{
-    ClockIncarnations, CopyInstance, CopyRecord, PeppyLauncher, Placements, PreparedLauncher,
-    ResolvedClocks, UnitSelection,
+    ClockIncarnations, CopyRecord, PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks,
+    UnitSelection,
 };
 use std::collections::BTreeMap;
 
@@ -183,6 +183,7 @@ pub(super) fn copy_in_start_order(
 mod tests {
     use super::*;
     use crate::services::stack::fixtures::planned_deployment;
+    use daemon_config::launcher::CopyInstance;
 
     /// A copy of `alpha` owning the instances its fragment wrote as
     /// `in_copy`, each minted as composition mints it.
