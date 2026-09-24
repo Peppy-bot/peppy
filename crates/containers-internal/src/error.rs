@@ -77,6 +77,27 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    #[error("Failed to read the registry auth file {path}: {source}")]
+    RegistryAuthFileUnreadable {
+        path: String,
+        source: std::io::Error,
+    },
+
+    #[error(
+        "The registry auth file {path} is not a valid Docker config file: {source}. \
+         Apptainer reads registry credentials from it, so fix or remove it."
+    )]
+    RegistryAuthFileInvalid {
+        path: String,
+        source: serde_json::Error,
+    },
+
+    #[error("Failed to write the registry auth file handed to apptainer at {path}: {source}")]
+    SanitizedRegistryAuthUnwritable {
+        path: String,
+        source: std::io::Error,
+    },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
