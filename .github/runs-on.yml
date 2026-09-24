@@ -31,13 +31,13 @@ runners:
   # The Linux aarch64 release stages, which build natively on Graviton. The
   # org runner and peppy-ubuntu24 are x64 only, so this boots RunsOn's stock
   # arm64 image and the stage provisions its toolchain with setup_machine.sh
-  # --build-only (the release-host-env action). 16 vCPU with 4 GB each, the
+  # --build-only (the release-host-env action). 16 vCPU with 2 GB each, the
   # shape of the x86_64 stages, and on demand: a release stage must not be
   # interrupted. The release runs from dev, which is where RunsOn reads this.
   release-arm64:
     cpu: 16
-    ram: 64
-    family: ["m7g", "m8g"]
+    ram: 32
+    family: ["c7g", "c8g"]
     image: ubuntu24-full-arm64       # RunsOn standard image
     volume: 150gb:gp3:500mbs:6000iops
     spot: false
