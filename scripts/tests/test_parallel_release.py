@@ -30,9 +30,8 @@ from functions.parallel_release import (
     BINDINGS_ARCHIVE,
     ReleasePlan,
     _apptainer_arches_for,
-    _commit_release_notes,
-    _dev_carries_release_notes,
     _find_published_release,
+    _find_release_notes_commit,
     _install_pinned_go,
     _main_already_at,
     _parse_args,
@@ -48,7 +47,12 @@ from functions.parallel_release import (
     run_publish,
 )
 from functions.release_summary import ReleaseContent
+from functions.release_line import update_release_branch as real_update_release_branch
+from functions.release_line import (
+    verify_publish_branch_state as real_verify_publish_branch_state,
+)
 from functions.repo import commit_paths as real_commit_paths
+from functions.repo import merge_into_current_branch as real_merge
 from functions.repo import push_branch as real_push_branch
 
 from .helpers import HUB_COMMITS, hub_set_document, unwrapped
@@ -710,12 +714,57 @@ class ReleaseRepo:
             f"docs: add release notes for {tag}",
         )
 
+    def merge_elsewhere(self, files: dict[str, str], message: str) -> str:
+        """Commit *files* on `origin/dev` from another clone, as a pull request
+        merged while the release runs does, and leave this checkout behind;
+        return the commit."""
+        other = self.path.parent / "elsewhere"
+        if not other.exists():
+            _git(self.path.parent, "clone", "-q", str(self.origin), str(other))
+        _git(other, "fetch", "-q", "origin")
+        _git(other, "switch", "-q", "-C", "dev", "origin/dev")
+        for relative, text in files.items():
+            path = other / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        _git(other, "add", "--", *files)
+        _git(other, "commit", "-q", "-m", message)
+        _git(other, "push", "-q", "origin", "dev")
+        return _git(other, "rev-parse", "HEAD")
+
+    def rewrite_dev(self) -> str:
+        """Force-push a `dev` that drops the release commit; return its tip."""
+        _git(self.path, "reset", "-q", "--hard", self.shipped_commit)
+        (self.path / "code.rs").write_text("fn rewritten() {}\n")
+        _git(self.path, "commit", "-q", "-am", "rewritten")
+        _git(self.path, "push", "-q", "--force", "origin", "dev")
+        return _git(self.path, "rev-parse", "HEAD")
+
+    def move_main_off_the_release(self) -> str:
+        """Push to `main` a commit the release commit does not hold; return it."""
+        _git(self.path, "switch", "-q", "-c", "hotfix", self.shipped_commit)
+        (self.path / "hotfix.rs").write_text("fn hotfix() {}\n")
+        _git(self.path, "add", "hotfix.rs")
+        _git(self.path, "commit", "-q", "-m", "hotfix")
+        _git(self.path, "push", "-q", "origin", "hotfix:main")
+        _git(self.path, "switch", "-q", "dev")
+        return _git(self.path, "rev-parse", "hotfix")
+
     def tag_on_origin(self, commit: str) -> None:
         """Create the release tag on `origin`, as publishing the release does."""
         _git(self.origin, "tag", PLAN.tag, commit)
 
     def align_main(self) -> None:
         _git(self.path, "push", "-q", "origin", "dev:main")
+
+    def worktrees(self) -> list[str]:
+        """The worktrees of the checkout, its own included."""
+        listing = _git(self.path, "worktree", "list", "--porcelain")
+        return [
+            line.removeprefix("worktree ")
+            for line in listing.splitlines()
+            if line.startswith("worktree ")
+        ]
 
 
 @pytest.fixture
@@ -949,10 +998,15 @@ class InstallCheck:
         self.events = events
         self.archives: list[Path] = []
         self.failure: ReleaseError | None = None
+        # What happens elsewhere while the install is checked, in the middle
+        # of the publish.
+        self.meanwhile: Callable[[], object] | None = None
 
     def __call__(self, archive: Path) -> None:
         self.events.append("check the install")
         self.archives.append(archive)
+        if self.meanwhile is not None:
+            self.meanwhile()
         if self.failure is not None:
             raise self.failure
 
@@ -1012,6 +1066,10 @@ def _uploaded_names() -> list[str]:
     return [f"peppy-{triple}.tgz" for triple in RELEASE_TRIPLES]
 
 
+def _parents(repo: ReleaseRepo, commit: str) -> list[str]:
+    return _git(repo.origin, "rev-list", "--parents", "-n", "1", commit).split()[1:]
+
+
 def test_publish_releases_then_commits_the_notes_and_aligns_main(
     publish,
     release_repo: ReleaseRepo,
@@ -1029,16 +1087,21 @@ def test_publish_releases_then_commits_the_notes_and_aligns_main(
     assert release["target_commitish"] == release_repo.release_commit
     assert github.uploads == _uploaded_names()
 
-    # `dev` gained the notes commit alone, and `main` followed it.
+    # `dev` fast-forwarded to the notes commit, and `main` followed it.
     dev = release_repo.remote_commit("dev")
-    assert _git(release_repo.origin, "rev-parse", "dev^") == release_repo.release_commit
+    assert _parents(release_repo, dev) == [release_repo.release_commit]
     assert _git(
         release_repo.origin, "diff", "--name-only", release_repo.release_commit, dev
     ) == NOTES_FILE
+    assert _git(release_repo.origin, "log", "-1", "--format=%s", dev) == (
+        "docs: add release notes for v0.3.0"
+    )
     assert release_repo.remote_commit("main") == dev
     notes = _git(release_repo.origin, "show", f"dev:{NOTES_FILE}")
     assert CONTENT.description in notes
     assert "Released on September 25, 2026" in notes
+    # The worktree the notes were committed in is gone.
+    assert release_repo.worktrees() == [str(release_repo.path)]
 
     # The run ends on the outcome and the published release, never the
     # draft's untagged placeholder.
@@ -1053,35 +1116,58 @@ def test_publish_releases_then_commits_the_notes_and_aligns_main(
 def test_publish_does_its_steps_in_order(
     publish, github: FakeGitHub, events: list[str]
 ) -> None:
-    def recorded_push(remote: str, local_branch: str, remote_branch: str) -> None:
+    def recorded_push(remote: str, source: str, remote_branch: str) -> None:
         events.append(f"push {remote_branch}")
-        real_push_branch(remote, local_branch, remote_branch)
+        real_push_branch(remote, source, remote_branch)
 
-    def recorded_commit(paths: list[Path], message: str) -> None:
+    def recorded_commit(paths: list[Path], message: str, *, cwd: Path) -> str:
         events.append("commit the notes")
-        real_commit_paths(paths, message)
+        return real_commit_paths(paths, message, cwd=cwd)
 
-    def recorded_dev_check(*args: object) -> bool:
-        events.append("check dev")
-        return _dev_carries_release_notes(*args)
+    def recorded_branch_check(release_commit: str) -> str:
+        events.append("check the branches")
+        return real_verify_publish_branch_state(release_commit)
+
+    def recorded_notes_lookup(*args: object) -> str | None:
+        events.append("look up the notes commit")
+        return _find_release_notes_commit(*args)
+
+    def recorded_update() -> str:
+        events.append("update dev")
+        return real_update_release_branch()
+
+    def recorded_merge(commit: str, message: str) -> None:
+        events.append("merge the notes")
+        real_merge(commit, message)
 
     with patch(
         "functions.parallel_release.push_branch", side_effect=recorded_push
     ), patch(
         "functions.parallel_release.commit_paths", side_effect=recorded_commit
     ), patch(
-        "functions.parallel_release._dev_carries_release_notes",
-        side_effect=recorded_dev_check,
+        "functions.parallel_release.verify_publish_branch_state",
+        side_effect=recorded_branch_check,
+    ), patch(
+        "functions.parallel_release._find_release_notes_commit",
+        side_effect=recorded_notes_lookup,
+    ), patch(
+        "functions.parallel_release.update_release_branch",
+        side_effect=recorded_update,
+    ), patch(
+        "functions.parallel_release.merge_into_current_branch",
+        side_effect=recorded_merge,
     ):
         publish()
 
-    # Nothing is written before every check passed: `dev` first, so a run
-    # that stops there tags no hub. Every hub is read before any is tagged,
-    # the install is checked once the hubs carry their tag and before the
-    # draft exists, and the git side waits for the release to be live: the
-    # notes are read from the published release.
+    # Nothing is written before every check passed: the branches first, so a
+    # run that stops there tags no hub. Every hub is read before any is
+    # tagged, the install is checked once the hubs carry their tag and before
+    # the draft exists, and the git side waits for the release to be live:
+    # the notes are read from the published release. `dev` is read again
+    # right before the notes merge into it.
     assert events == [
-        "check dev",
+        "check the branches",
+        "look up the notes commit",
         "look up the published release",
         "verify the archives",
         *(f"read the tag of {hub}" for hub in HUB_COMMITS),
@@ -1091,6 +1177,8 @@ def test_publish_does_its_steps_in_order(
         *(f"upload {name}" for name in _uploaded_names()),
         "publish",
         "commit the notes",
+        "update dev",
+        "merge the notes",
         "push dev",
         "push main",
     ]
@@ -1167,23 +1255,151 @@ def test_publish_rerun_does_not_push_main_already_aligned(
     assert "Released v0.3.0." in capfd.readouterr().err
 
 
-def test_publish_refuses_dev_moved_on_before_any_request(
-    publish, release_repo: ReleaseRepo, github: FakeGitHub, events: list[str]
-) -> None:
-    moved = release_repo.commit_on_dev({"code.rs": "fn merged_since() {}\n"}, "merged")
+MERGED_SINCE = {"code.rs": "fn shipped() {}\nfn released() {}\nfn merged_since() {}\n"}
 
-    with pytest.raises(
-        ReleaseError, match="start a new run from the current 'dev'"
-    ) as excinfo:
+
+def _assert_released_the_built_commit(
+    repo: ReleaseRepo, github: FakeGitHub, merged: str
+) -> None:
+    """The release of *repo* is its release commit, and `dev` holds both its
+    notes and *merged*, the tip `dev` had moved to: the notes commit sits on
+    the release commit, merged into `dev`, and `main` is at the notes commit,
+    without the merge."""
+    [release] = github.published()
+    assert release["target_commitish"] == repo.release_commit
+    for hub, commit in HUB_COMMITS.items():
+        assert github.hub_tag_commit(hub, HUB_TAG) == commit
+
+    dev = repo.remote_commit("dev")
+    merged_tip, notes_commit = _parents(repo, dev)
+    assert merged_tip == merged
+    assert _git(repo.origin, "log", "-1", "--format=%s", dev) == (
+        "Merge the release notes of v0.3.0 into 'dev'"
+    )
+    assert _parents(repo, notes_commit) == [repo.release_commit]
+    assert _git(
+        repo.origin, "diff", "--name-only", repo.release_commit, notes_commit
+    ) == NOTES_FILE
+    assert repo.remote_commit("main") == notes_commit
+    assert _git(repo.origin, "show", "main:code.rs") == _git(
+        repo.origin, "show", f"{repo.release_commit}:code.rs"
+    )
+    assert _git(repo.origin, "show", "dev:code.rs") == MERGED_SINCE["code.rs"].strip()
+    assert repo.worktrees() == [str(repo.path)]
+
+
+@pytest.mark.parametrize(
+    "merge",
+    [
+        # The publish job checked out the `dev` that moved.
+        lambda repo: repo.commit_on_dev(MERGED_SINCE, "merged since the build"),
+        # `dev` moved once the publish job had checked it out.
+        lambda repo: repo.merge_elsewhere(MERGED_SINCE, "merged since the build"),
+    ],
+    ids=["before-the-checkout", "after-the-checkout"],
+)
+def test_publish_releases_the_built_commit_when_dev_moved_since_the_build(
+    publish,
+    release_repo: ReleaseRepo,
+    github: FakeGitHub,
+    merge: Callable[[ReleaseRepo], str],
+) -> None:
+    merged = merge(release_repo)
+
+    publish()
+
+    _assert_released_the_built_commit(release_repo, github, merged)
+
+
+def test_publish_takes_in_a_merge_into_dev_while_it_runs(
+    publish,
+    release_repo: ReleaseRepo,
+    github: FakeGitHub,
+    install_check: InstallCheck,
+) -> None:
+    merged: list[str] = []
+    install_check.meanwhile = lambda: merged.append(
+        release_repo.merge_elsewhere(MERGED_SINCE, "merged during the publish")
+    )
+
+    publish()
+
+    _assert_released_the_built_commit(release_repo, github, merged[0])
+
+
+def test_publish_rerun_finds_the_notes_merged_into_dev_that_moved(
+    publish, release_repo: ReleaseRepo, github: FakeGitHub
+) -> None:
+    release_repo.merge_elsewhere(MERGED_SINCE, "merged since the build")
+
+    def rejected_main_push(remote: str, source: str, remote_branch: str) -> None:
+        if remote_branch == "main":
+            raise ReleaseError(f"failed to push '{source}' to 'origin/main': rejected")
+        real_push_branch(remote, source, remote_branch)
+
+    with patch(
+        "functions.parallel_release.push_branch", side_effect=rejected_main_push
+    ), pytest.raises(ReleaseError, match="Re-run the failed publish job"):
         publish()
 
-    assert f"moved to {moved[:12]}" in str(excinfo.value)
+    merged_notes = release_repo.remote_commit("dev")
+    _, notes_commit = _parents(release_repo, merged_notes)
+    # GitHub created the tag when the release was published, and `dev` took
+    # one more merge before the re-run.
+    release_repo.tag_on_origin(release_repo.release_commit)
+    later = release_repo.merge_elsewhere({"later.rs": "fn later() {}\n"}, "later")
+
+    with patch(
+        "functions.parallel_release.commit_paths",
+        side_effect=AssertionError("committed"),
+    ):
+        publish()
+
+    assert len(github.published()) == 1
+    assert release_repo.remote_commit("dev") == later
+    assert release_repo.remote_commit("main") == notes_commit
+
+
+def test_publish_refuses_a_rewritten_dev_before_any_request(
+    publish, release_repo: ReleaseRepo, github: FakeGitHub
+) -> None:
+    rewritten = release_repo.rewrite_dev()
+
+    with pytest.raises(ReleaseError, match="was rewritten since the release started"):
+        publish()
+
     # No request at all, so no hub is tagged.
     assert github.requests == []
-    assert github.hub_tags == {}
-    assert "check the install" not in events
-    assert release_repo.remote_commit("dev") == moved
+    assert release_repo.remote_commit("dev") == rewritten
     assert release_repo.remote_commit("main") == release_repo.shipped_commit
+
+
+def test_publish_refuses_main_off_the_release_before_any_request(
+    publish, release_repo: ReleaseRepo, github: FakeGitHub
+) -> None:
+    hotfix = release_repo.move_main_off_the_release()
+
+    with pytest.raises(ReleaseError) as excinfo:
+        publish()
+
+    message = unwrapped(str(excinfo.value))
+    assert f"origin/main is at {hotfix[:12]}" in message
+    assert "'main' cannot fast-forward to the release of v0.3.0" in message
+    assert github.requests == []
+    assert release_repo.remote_commit("dev") == release_repo.release_commit
+
+
+def test_publish_refuses_unpushed_dev_commits_before_any_request(
+    publish, release_repo: ReleaseRepo, github: FakeGitHub
+) -> None:
+    (release_repo.path / "code.rs").write_text("fn unpushed() {}\n")
+    _git(release_repo.path, "commit", "-q", "-am", "unpushed")
+
+    with pytest.raises(ReleaseError, match="commits that are not on origin/dev"):
+        publish()
+
+    assert github.requests == []
+    assert release_repo.remote_commit("dev") == release_repo.release_commit
 
 
 def test_publish_tags_every_hub_at_its_recorded_commit(
@@ -1377,10 +1593,10 @@ def test_publish_rerun_after_a_failed_upload_publishes_the_release(
 def test_publish_rerun_after_a_failed_push_finishes_only_the_git_side(
     publish, release_repo: ReleaseRepo, github: FakeGitHub
 ) -> None:
-    def rejected_main_push(remote: str, local_branch: str, remote_branch: str) -> None:
+    def rejected_main_push(remote: str, source: str, remote_branch: str) -> None:
         if remote_branch == "main":
-            raise ReleaseError("failed to push 'dev' to 'origin/main': rejected")
-        real_push_branch(remote, local_branch, remote_branch)
+            raise ReleaseError(f"failed to push '{source}' to 'origin/main': rejected")
+        real_push_branch(remote, source, remote_branch)
 
     with patch(
         "functions.parallel_release.push_branch", side_effect=rejected_main_push
@@ -1404,6 +1620,20 @@ def test_publish_rerun_after_a_failed_push_finishes_only_the_git_side(
     assert github.uploads == _uploaded_names()
     assert release_repo.remote_commit("dev") == notes_commit
     assert release_repo.remote_commit("main") == notes_commit
+
+
+def test_publish_removes_the_notes_worktree_when_the_commit_fails(
+    publish, release_repo: ReleaseRepo, github: FakeGitHub
+) -> None:
+    with patch(
+        "functions.parallel_release.commit_paths",
+        side_effect=ReleaseError("failed to commit the notes"),
+    ), pytest.raises(ReleaseError, match="Re-run the failed publish job"):
+        publish()
+
+    assert release_repo.worktrees() == [str(release_repo.path)]
+    assert release_repo.remote_commit("dev") == release_repo.release_commit
+    assert len(github.published()) == 1
 
 
 def test_publish_stops_when_an_archive_is_missing(
@@ -1431,76 +1661,109 @@ def test_publish_requires_the_release_token(
 # --- the checks that let a publish run again ---
 
 
-def test_dev_at_the_release_commit_carries_no_notes(release_repo: ReleaseRepo) -> None:
-    assert (
-        _dev_carries_release_notes(
-            release_repo.release_commit, _plan_of(release_repo), Path(NOTES_FILE)
-        )
-        is False
+def _notes_commit_lookup(repo: ReleaseRepo) -> str | None:
+    return _find_release_notes_commit(
+        _git(repo.path, "rev-parse", "HEAD"), _plan_of(repo), Path(NOTES_FILE)
     )
 
 
-def test_dev_one_notes_commit_past_the_release_carries_the_notes(
-    release_repo: ReleaseRepo,
-) -> None:
-    notes_commit = release_repo.commit_release_notes()
-
-    assert (
-        _dev_carries_release_notes(
-            notes_commit, _plan_of(release_repo), Path(NOTES_FILE)
-        )
-        is True
-    )
-
-
-def _merge_notes_from_a_side_branch(repo: ReleaseRepo) -> str:
-    _git(repo.path, "switch", "-q", "-c", "side")
+def _notes_on_a_side_branch(repo: ReleaseRepo, branch: str, message: str) -> str:
+    """Commit the notes on a branch of the release commit; return the commit."""
+    _git(repo.path, "switch", "-q", "-c", branch, repo.release_commit)
     path = repo.path / NOTES_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("<entry>v0.3.0</entry>\n")
     _git(repo.path, "add", NOTES_FILE)
-    _git(repo.path, "commit", "-q", "-m", "notes on a side branch")
+    _git(repo.path, "commit", "-q", "-m", message)
     _git(repo.path, "switch", "-q", "dev")
-    _git(repo.path, "merge", "-q", "--no-ff", "-m", "merge the notes", "side")
-    return _git(repo.path, "rev-parse", "HEAD")
+    return _git(repo.path, "rev-parse", branch)
+
+
+def _merge_into_dev(repo: ReleaseRepo, branch: str) -> None:
+    _git(repo.path, "merge", "-q", "--no-ff", "-m", f"merge {branch}", branch)
+
+
+def test_dev_at_the_release_commit_holds_no_notes_commit(
+    release_repo: ReleaseRepo,
+) -> None:
+    assert _notes_commit_lookup(release_repo) is None
+
+
+def test_the_notes_commit_dev_fast_forwarded_to_is_found(
+    release_repo: ReleaseRepo,
+) -> None:
+    notes_commit = release_repo.commit_release_notes()
+    release_repo.commit_on_dev({"later.rs": "fn later() {}\n"}, "later")
+
+    assert _notes_commit_lookup(release_repo) == notes_commit
+
+
+def test_the_notes_commit_merged_into_dev_that_moved_is_found(
+    release_repo: ReleaseRepo,
+) -> None:
+    release_repo.commit_on_dev({"code.rs": "fn merged() {}\n"}, "merged")
+    notes_commit = _notes_on_a_side_branch(release_repo, "notes", "the notes")
+    _merge_into_dev(release_repo, "notes")
+    release_repo.commit_on_dev({"later.rs": "fn later() {}\n"}, "later")
+
+    assert _notes_commit_lookup(release_repo) == notes_commit
+
+
+def test_the_notes_of_another_release_are_not_its_notes_commit(
+    release_repo: ReleaseRepo,
+) -> None:
+    release_repo.commit_release_notes("v0.2.9")
+
+    assert _notes_commit_lookup(release_repo) is None
 
 
 @pytest.mark.parametrize(
-    "move_dev",
+    "change_notes",
     [
-        # A change merged since the build.
-        lambda repo: repo.commit_on_dev({"code.rs": "fn merged() {}\n"}, "merged"),
         # The notes, and a code change in the same commit.
         lambda repo: repo.commit_on_dev(
             {NOTES_FILE: "<entry>v0.3.0</entry>\n", "code.rs": "fn merged() {}\n"},
             "notes and code",
         ),
-        # The notes of another release.
-        lambda repo: repo.commit_release_notes("v0.2.9"),
-        # The notes commit, then a change merged on top of it.
+        # The notes alone, on a commit that is not the release commit.
         lambda repo: (
-            repo.commit_release_notes(),
             repo.commit_on_dev({"code.rs": "fn merged() {}\n"}, "merged"),
+            repo.commit_release_notes(),
         )[-1],
-        # The notes alone, but merged in rather than committed on the release
-        # commit.
-        _merge_notes_from_a_side_branch,
     ],
-    ids=[
-        "code-change",
-        "notes-and-code",
-        "notes-of-another-tag",
-        "commit-after-the-notes",
-        "notes-merged-in",
-    ],
+    ids=["notes-and-code", "notes-off-the-release-commit"],
 )
-def test_dev_moved_any_other_way_is_refused(
-    release_repo: ReleaseRepo, move_dev: Callable[[ReleaseRepo], str]
+def test_other_changes_to_the_notes_file_are_refused(
+    release_repo: ReleaseRepo, change_notes: Callable[[ReleaseRepo], str]
 ) -> None:
-    dev_commit = move_dev(release_repo)
+    changed = change_notes(release_repo)
 
-    with pytest.raises(ReleaseError, match="start a new run from the current 'dev'"):
-        _dev_carries_release_notes(dev_commit, _plan_of(release_repo), Path(NOTES_FILE))
+    with pytest.raises(ReleaseError) as excinfo:
+        _notes_commit_lookup(release_repo)
+
+    message = unwrapped(str(excinfo.value))
+    assert (
+        f"'dev' changed {NOTES_FILE} since {release_repo.release_commit[:12]}"
+    ) in message
+    assert changed[:12] in message
+    assert "cannot merge into 'dev'" in message
+
+
+def test_two_notes_commits_of_the_release_are_refused(
+    release_repo: ReleaseRepo,
+) -> None:
+    first = _notes_on_a_side_branch(release_repo, "first", "the notes")
+    second = _notes_on_a_side_branch(release_repo, "second", "the notes again")
+    _merge_into_dev(release_repo, "first")
+    _merge_into_dev(release_repo, "second")
+
+    with pytest.raises(ReleaseError) as excinfo:
+        _notes_commit_lookup(release_repo)
+
+    message = unwrapped(str(excinfo.value))
+    assert "'dev' holds 2 release notes commits of v0.3.0" in message
+    assert first[:12] in message
+    assert second[:12] in message
 
 
 def test_find_published_release_is_none_while_there_is_none(
@@ -1523,19 +1786,6 @@ def test_find_published_release_checks_the_tag_before_answering(
     assert release is not None
     assert release.release_id == published["id"]
     assert release.html_url.endswith("/releases/tag/v0.3.0")
-
-
-def test_notes_the_tree_already_holds_leave_nothing_to_commit(
-    release_repo: ReleaseRepo,
-) -> None:
-    notes_commit = release_repo.commit_release_notes()
-
-    with patch(
-        "functions.parallel_release.push_branch", side_effect=AssertionError("pushed")
-    ):
-        _commit_release_notes(release_repo.path / NOTES_FILE, "v0.3.0")
-
-    assert _git(release_repo.path, "rev-parse", "HEAD") == notes_commit
 
 
 def test_main_already_at_reads_origin_main(release_repo: ReleaseRepo) -> None:

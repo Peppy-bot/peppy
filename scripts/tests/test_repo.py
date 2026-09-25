@@ -10,15 +10,19 @@ import pytest
 from functions.cli import ReleaseError
 from functions.repo import (
     commit_paths,
+    detached_worktree,
+    fast_forward_current_branch,
     fetch_remote_branches,
     fetch_tag,
     find_commit,
-    get_commit,
     get_changed_paths,
+    get_commit,
     get_commit_subjects,
+    get_commits_changing,
     get_parents,
     has_changes_in_paths,
     is_ancestor,
+    merge_into_current_branch,
     push_branch,
     switch_branch,
     switch_to_new_branch,
@@ -244,11 +248,12 @@ def test_has_changes_in_paths_reports_dirty_and_clean() -> None:
 def test_commit_paths_stages_then_commits_only_those_paths() -> None:
     with patch(
         "functions.repo.subprocess.run",
-        side_effect=[_mock_git(""), _mock_git("")],
+        side_effect=[_mock_git(""), _mock_git(""), _mock_git("abc123\n")],
     ) as run:
-        commit_paths([Path("docs/v1.html")], "docs: add release notes for v1")
+        commit = commit_paths([Path("docs/v1.html")], "docs: add release notes for v1")
 
-    add_cmd, commit_cmd = (c.args[0] for c in run.call_args_list)
+    assert commit == "abc123"
+    add_cmd, commit_cmd, head_cmd = (c.args[0] for c in run.call_args_list)
     assert add_cmd == ["git", "add", "--", "docs/v1.html"]
     # --only takes the commit content from the named paths, so unrelated staged
     # or dirty files are never swept into the release commit.
@@ -261,6 +266,20 @@ def test_commit_paths_stages_then_commits_only_those_paths() -> None:
         "--",
         "docs/v1.html",
     ]
+    assert head_cmd == ["git", "rev-parse", "HEAD"]
+    # Without a checkout named, every command runs in the current directory.
+    assert {c.kwargs["cwd"] for c in run.call_args_list} == {None}
+
+
+def test_commit_paths_commits_in_the_checkout_named() -> None:
+    tree = Path("/tmp/worktree")
+    with patch(
+        "functions.repo.subprocess.run",
+        side_effect=[_mock_git(""), _mock_git(""), _mock_git("abc123\n")],
+    ) as run:
+        commit_paths([tree / "docs/v1.html"], "docs: v1", cwd=tree)
+
+    assert {c.kwargs["cwd"] for c in run.call_args_list} == {tree}
 
 
 def test_commit_paths_raises_when_commit_fails() -> None:
@@ -278,10 +297,124 @@ def test_push_branch_pushes_a_refspec_without_force() -> None:
     assert run.call_args.args[0] == ["git", "push", "origin", "dev:refs/heads/main"]
 
 
+def test_push_branch_pushes_a_commit() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
+        push_branch("origin", "a" * 40, "main")
+    assert run.call_args.args[0] == [
+        "git",
+        "push",
+        "origin",
+        f"{'a' * 40}:refs/heads/main",
+    ]
+
+
 def test_push_branch_raises_when_rejected() -> None:
     with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
         with pytest.raises(ReleaseError, match="failed to push 'dev' to 'origin/main'"):
             push_branch("origin", "dev", "main")
+
+
+# --- commits that change a path ---
+
+
+def test_get_commits_changing_searches_every_side_of_every_merge() -> None:
+    with patch(
+        "functions.repo.subprocess.run", return_value=_mock_git("bbb\naaa\n")
+    ) as run:
+        commits = get_commits_changing("base", "dev", Path("docs/v1.html"))
+
+    assert commits == ("bbb", "aaa")
+    assert run.call_args.args[0] == [
+        "git",
+        "rev-list",
+        "--full-history",
+        "--no-merges",
+        "base..dev",
+        "--",
+        "docs/v1.html",
+    ]
+
+
+def test_get_commits_changing_is_empty_when_no_commit_changes_the_path() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("")):
+        assert get_commits_changing("base", "dev", Path("docs/v1.html")) == ()
+
+
+def test_get_commits_changing_raises_when_git_errors() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 128)):
+        with pytest.raises(ReleaseError, match="that change 'docs/v1.html': boom"):
+            get_commits_changing("base", "dev", Path("docs/v1.html"))
+
+
+# --- merges ---
+
+
+def test_fast_forward_current_branch_refuses_anything_else() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
+        fast_forward_current_branch("origin/dev")
+    assert run.call_args.args[0] == [
+        "git",
+        "merge",
+        "--ff-only",
+        "--quiet",
+        "origin/dev",
+    ]
+
+
+def test_fast_forward_current_branch_raises_on_failure() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 128)):
+        with pytest.raises(ReleaseError, match="failed to fast-forward to 'origin/dev'"):
+            fast_forward_current_branch("origin/dev")
+
+
+def test_merge_into_current_branch_fast_forwards_when_it_can() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
+        merge_into_current_branch("abc123", "Merge the notes")
+    # --ff overrides a merge.ff of the host's configuration, and --no-edit
+    # keeps the merge from asking for its message.
+    assert run.call_args.args[0] == [
+        "git",
+        "merge",
+        "--ff",
+        "--no-edit",
+        "-m",
+        "Merge the notes",
+        "abc123",
+    ]
+
+
+def test_merge_into_current_branch_raises_on_a_conflict() -> None:
+    conflict = _mock_git("CONFLICT (add/add): Merge conflict in docs/v1.html", 1)
+    conflict.stderr = ""
+    with patch("functions.repo.subprocess.run", return_value=conflict):
+        with pytest.raises(ReleaseError, match="CONFLICT"):
+            merge_into_current_branch("abc123", "Merge the notes")
+
+
+# --- worktrees ---
+
+
+def test_detached_worktree_is_removed_when_its_body_fails() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
+        with pytest.raises(ReleaseError, match="the body failed"):
+            with detached_worktree("abc123") as tree:
+                raise ReleaseError("the body failed")
+
+    add_cmd, remove_cmd = (c.args[0] for c in run.call_args_list)
+    assert add_cmd == ["git", "worktree", "add", "--quiet", "--detach", str(tree), "abc123"]
+    assert remove_cmd == ["git", "worktree", "remove", "--force", str(tree)]
+    # The temporary directory that held it is gone too.
+    assert not tree.parent.exists()
+
+
+def test_detached_worktree_raises_when_it_cannot_be_added() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 128)) as run:
+        with pytest.raises(ReleaseError, match="failed to add a worktree at 'abc123'"):
+            with detached_worktree("abc123"):
+                pass
+
+    # Nothing was added, so nothing is removed.
+    assert run.call_count == 1
 
 
 # --- switching branches ---
