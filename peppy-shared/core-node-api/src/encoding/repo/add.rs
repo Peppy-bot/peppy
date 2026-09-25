@@ -8,7 +8,7 @@ use crate::{Payload, Result};
 
 use crate::encoding::{decode_message, encode_message};
 
-use super::git_ref::{GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild};
+use super::git_ref::{GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, decode_git_repo_ref};
 
 /// Discriminant for the type of repository source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -85,18 +85,6 @@ impl RepoSource {
     }
 }
 
-/// Decodes the `repoRef` text of a git source: the empty text is
-/// [`GitRepoRef::RemoteHead`], and a ref peppy cannot read fails the decode.
-pub(crate) fn decode_git_repo_ref(text: &str) -> Result<GitRepoRef> {
-    GitRepoRef::parse(text).map_err(|e| crate::Error::Decoding(e.to_string()))
-}
-
-/// Encodes a git source's ref as the `repoRef` text [`decode_git_repo_ref`]
-/// reads back.
-pub(crate) fn encode_git_repo_ref(repo_ref: &GitRepoRef) -> &str {
-    repo_ref.configured().unwrap_or("")
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoAddRequest {
     pub source: RepoSource,
@@ -154,7 +142,7 @@ impl RepoAddRequest {
                 RepoSource::Git { repo_url, repo_ref } => {
                     let mut git = source.init_git();
                     git.set_repo_url(repo_url);
-                    git.set_repo_ref(encode_git_repo_ref(repo_ref));
+                    git.set_repo_ref(repo_ref.to_string().as_str());
                 }
             }
         }

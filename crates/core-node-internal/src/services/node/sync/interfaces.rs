@@ -1396,7 +1396,7 @@ mod implements_tests {
             ),
             origin: repo_cache::EntryOrigin::Git {
                 repo_url,
-                read_ref: Some(branch.clone()),
+                read_ref: Some(core_node_api::encoding::ReadRef::Named(branch.clone())),
                 repo_ref: Some(branch),
                 commit,
                 path: daemon_config::repository::RepoRelativePath::parse(
@@ -1462,7 +1462,7 @@ mod implements_tests {
             sha256: daemon_config::repository::ManifestFingerprint::parse(&"0".repeat(64)).unwrap(),
             origin: repo_cache::EntryOrigin::Git {
                 repo_url,
-                read_ref: Some(branch.clone()),
+                read_ref: Some(core_node_api::encoding::ReadRef::Named(branch.clone())),
                 repo_ref: Some(branch),
                 commit,
                 path: daemon_config::repository::RepoRelativePath::parse(

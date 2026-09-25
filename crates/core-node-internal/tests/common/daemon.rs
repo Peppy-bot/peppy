@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 fn init_test_data_dir() -> (Option<TempDir>, PeppyDirs) {
-    let dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("test data dir");
+    let dir = new_test_data_dir();
     let peppy_dirs = PeppyDirs::new(dir.path());
     (Some(dir), peppy_dirs)
 }
@@ -73,16 +73,7 @@ fn default_node_arguments() -> CoreNodeArguments {
 }
 
 pub async fn start_core_node_with_mock_messenger() -> StartedCoreNode {
-    let (data_dir, peppy_dirs) = init_test_data_dir();
-    let shared_messenger = create_mock_messenger().await;
-    start_core_node_with_messenger(
-        shared_messenger,
-        default_node_arguments(),
-        data_dir,
-        peppy_dirs,
-        daemon_config::peppy_config::PeppyConfig::default(),
-    )
-    .await
+    start_core_node_with_mock_messenger_on(new_test_data_dir()).await
 }
 
 /// Boots the core node on a data root the test prepared, for a test of what

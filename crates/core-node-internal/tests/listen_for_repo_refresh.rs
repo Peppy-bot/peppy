@@ -12,6 +12,7 @@ use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSourceKind,
 };
+use daemon_config::consts::PeppyDirs;
 use git2::Repository;
 use peppylib::ActionMessenger;
 use peppylib::messaging::ResultStatus;
@@ -38,7 +39,12 @@ fn minimal_peppy_json5(name: &str, tag: &str) -> String {
 
 /// Write a repositories.json5 file in the conf_dir of the started core node.
 fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
+    write_repositories_json5_in(&started.peppy_dirs, content);
+}
+
+/// Write a repositories.json5 file in the conf_dir of `peppy_dirs`.
+fn write_repositories_json5_in(peppy_dirs: &PeppyDirs, content: &str) {
+    let conf_dir = peppy_dirs.conf_dir();
     std::fs::create_dir_all(&conf_dir).expect("create conf dir");
     std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
 }
@@ -303,7 +309,7 @@ async fn refresh_deduplication() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_reads_again_a_release_repository_read_for_another_version() {
     let data_dir = common::new_test_data_dir();
-    let peppy_dirs = daemon_config::consts::PeppyDirs::new(data_dir.path());
+    let peppy_dirs = PeppyDirs::new(data_dir.path());
 
     let hub = data_dir.path().join("hub.git");
     Repository::init_opts(
@@ -315,15 +321,10 @@ async fn start_reads_again_a_release_repository_read_for_another_version() {
     common::publish_and_commit_repo_index(&hub);
     let hub_url = format!("file://{}", hub.display());
 
-    let conf_dir = peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(
-        conf_dir.join("repositories.json5"),
-        format!(
-            r#"[{{ "id": 1, "type": "git", "url": "{hub_url}", "ref": "@{{peppy-release}}" }}]"#
-        ),
-    )
-    .expect("write repos file");
+    let hub_on_the_release = format!(
+        r#"[{{ "id": 1, "type": "git", "url": "{hub_url}", "ref": "@{{peppy-release}}" }}]"#
+    );
+    write_repositories_json5_in(&peppy_dirs, &hub_on_the_release);
     std::fs::create_dir_all(peppy_dirs.cache_dir()).expect("create cache dir");
     std::fs::write(
         peppy_dirs.cache_dir().join("repo_status.json5"),
@@ -348,12 +349,7 @@ async fn start_reads_again_a_release_repository_read_for_another_version() {
 
     // The defaults the daemon appended at start would send a refresh to
     // the network; this test reads its own hub only.
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "git", "url": "{hub_url}", "ref": "@{{peppy-release}}" }}]"#
-        ),
-    );
+    write_repositories_json5(&started, &hub_on_the_release);
     let result = send_refresh_and_wait(&started).await;
     assert!(
         result.goal_response.accepted,

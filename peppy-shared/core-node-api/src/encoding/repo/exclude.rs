@@ -8,8 +8,7 @@ use crate::{Payload, Result};
 use crate::encoding::RepoSource;
 use crate::encoding::{decode_message, encode_message};
 
-use super::add::{decode_git_repo_ref, encode_git_repo_ref};
-use super::git_ref::GitRepoRef;
+use super::git_ref::{GitRepoRef, decode_git_repo_ref};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoExcludeRequest {
@@ -44,7 +43,7 @@ impl RepoExcludeRequest {
                 RepoSource::Git { repo_url, repo_ref } => {
                     let mut git = source.init_git();
                     git.set_repo_url(repo_url);
-                    git.set_repo_ref(encode_git_repo_ref(repo_ref));
+                    git.set_repo_ref(repo_ref.to_string().as_str());
                 }
             }
         }

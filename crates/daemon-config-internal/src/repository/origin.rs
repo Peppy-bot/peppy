@@ -7,7 +7,7 @@
 //! from drifting apart.
 
 use super::types::{GitCommit, RepoRelativePath};
-use core_node_api::encoding::RepoSourceKind;
+use core_node_api::encoding::{ReadRef, RepoSourceKind};
 use std::path::PathBuf;
 
 /// Where an item's bytes live, and which revision they were read at.
@@ -41,7 +41,7 @@ pub enum EntryOrigin {
         /// beside the commit because a fetch starts from a ref before it can
         /// reach a commit, and `@{peppy-release}` is no ref git can fetch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        read_ref: Option<String>,
+        read_ref: Option<ReadRef>,
         /// The commit the tree was read at.
         commit: GitCommit,
         /// Path within the repository to the file that declares the item.
@@ -109,16 +109,6 @@ impl EntryOrigin {
         match self {
             EntryOrigin::Fs { .. } => None,
             EntryOrigin::Git { repo_ref, .. } => repo_ref.as_deref(),
-        }
-    }
-
-    /// The git ref a git origin was read at. `None` for a filesystem
-    /// origin, and for a git origin that follows the remote's default
-    /// branch.
-    pub fn read_ref(&self) -> Option<&str> {
-        match self {
-            EntryOrigin::Fs { .. } => None,
-            EntryOrigin::Git { read_ref, .. } => read_ref.as_deref(),
         }
     }
 

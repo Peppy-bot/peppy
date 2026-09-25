@@ -41,6 +41,15 @@ pub(crate) const REPOS_FILE: &str = "repositories.json5";
 /// The file in `conf/` that lists the repositories and subtrees peppy skips.
 pub(crate) const EXCLUDED_REPOS_FILE: &str = "excluded_repositories.json5";
 
+/// `repository` for a count of one, `repositories` for any other count.
+pub(crate) fn repository_noun(count: usize) -> &'static str {
+    if count == 1 {
+        "repository"
+    } else {
+        "repositories"
+    }
+}
+
 /// Guards read-modify-write cycles on repositories.json5 and
 /// excluded_repositories.json5 to prevent concurrent corruption.
 pub(crate) fn repos_file_lock() -> &'static parking_lot::Mutex<()> {
@@ -180,11 +189,11 @@ enum RepoOwner {
     /// A remote, optionally pinned to a ref.
     Git {
         url: String,
-        /// The ref as configured (`@{peppy-release}` included), which is
-        /// what a cache entry records as its `repo_ref`. `None` for a
-        /// repository that follows whatever branch it is given, which
-        /// therefore matches any ref on its url.
-        pinned_ref: Option<String>,
+        /// The ref as configured, whose [`GitRepoRef::configured`] form is
+        /// what a cache entry records as its `repo_ref`. A repository on
+        /// [`GitRepoRef::RemoteHead`] follows whatever branch it is given,
+        /// and therefore matches any ref on its url.
+        repo_ref: GitRepoRef,
     },
 }
 
@@ -204,7 +213,7 @@ impl RepoOwners {
                         },
                         RepoSource::Git { repo_url, repo_ref } => RepoOwner::Git {
                             url: repo_url,
-                            pinned_ref: repo_ref.configured().map(ToOwned::to_owned),
+                            repo_ref,
                         },
                     };
                     Some((repo.get("id").and_then(|v| v.as_u64()), owner))
@@ -234,18 +243,20 @@ impl RepoOwner {
         match (self, origin) {
             (RepoOwner::Fs { root }, EntryOrigin::Fs { path }) => path.starts_with(root),
             (
-                RepoOwner::Git { url, pinned_ref },
+                RepoOwner::Git { url, repo_ref },
                 EntryOrigin::Git {
-                    repo_url, repo_ref, ..
+                    repo_url,
+                    repo_ref: read_with_ref,
+                    ..
                 },
             ) => {
                 // The ref check matters: without it, two entries for one url
                 // on different refs both attribute to the lower id and read
                 // as one repository claiming an identity twice.
                 url == repo_url
-                    && pinned_ref
-                        .as_deref()
-                        .is_none_or(|pinned| repo_ref.as_deref() == Some(pinned))
+                    && repo_ref
+                        .configured()
+                        .is_none_or(|pinned| read_with_ref.as_deref() == Some(pinned))
             }
             _ => false,
         }
@@ -435,7 +446,7 @@ mod tests {
     };
     use crate::services::repo::cache::test_support::{node_entry, owned_by};
     use crate::services::repo::cache::{EntryOrigin, UNOWNED_REPO_ID, repositories_list_path};
-    use core_node_api::encoding::{GitRepoRef, GitRepoRefError, PeppyBuild, RepoSource};
+    use core_node_api::encoding::{GitRepoRef, GitRepoRefError, PeppyBuild, ReadRef, RepoSource};
     use daemon_config::consts::PeppyDirs;
     use serde_json::Value;
     use std::path::PathBuf;
@@ -722,7 +733,7 @@ mod tests {
         EntryOrigin::Git {
             repo_url: "https://example.com/hub.git".to_owned(),
             repo_ref: Some(repo_ref.to_owned()),
-            read_ref: Some(repo_ref.to_owned()),
+            read_ref: Some(ReadRef::Named(repo_ref.to_owned())),
             commit: daemon_config::repository::GitCommit::parse(&"a".repeat(40)).unwrap(),
             path: daemon_config::repository::RepoRelativePath::parse("node/peppy.json5").unwrap(),
         }
@@ -774,7 +785,7 @@ mod tests {
         let pinned = git_repo("https://example.com/hub.git", Some("peppy-release/v0.31.2"));
         let mut read_for_the_release = git_origin("@{peppy-release}");
         if let EntryOrigin::Git { read_ref, .. } = &mut read_for_the_release {
-            *read_ref = Some("refs/tags/peppy-release/v0.31.2".to_owned());
+            *read_ref = Some(ReadRef::ReleaseTag("v0.31.2".to_owned()));
         }
         let read_for_the_pin = git_origin("peppy-release/v0.31.2");
 

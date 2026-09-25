@@ -813,23 +813,20 @@ impl CoreNode {
     /// already in progress. A failure is logged and the daemon starts with
     /// the entries it holds; the next start tries again.
     async fn refresh_release_repositories_for_this_version(&self) {
-        let peppy_dirs = self.peppy_dirs.clone();
-        let outcome = tokio::task::spawn_blocking(move || {
-            repo::refresh_release_repositories_for_this_version(
-                &peppy_dirs,
-                &peppy_build(),
-                std::time::SystemTime::now(),
-            )
-        })
+        let outcome = repo::refresh_release_repositories_for_this_version(
+            &self.peppy_dirs,
+            &peppy_build(),
+            std::time::SystemTime::now(),
+        )
         .await;
         match outcome {
-            Ok(Ok(repo::VersionRefresh::NotNeeded)) => {}
-            Ok(Ok(repo::VersionRefresh::Refreshed { ids, failures })) => {
+            Ok(repo::VersionRefresh::NotNeeded) => {}
+            Ok(repo::VersionRefresh::Refreshed { ids, failures }) => {
                 info!(
-                    "Read again {} repositor{} on @{{peppy-release}} that were read for another \
-                     peppy version: {}",
+                    "Read again {} {} on @{{peppy-release}} that were read for another peppy \
+                     version: {}",
                     ids.len(),
-                    if ids.len() == 1 { "y" } else { "ies" },
+                    repo::repository_noun(ids.len()),
                     ids.iter()
                         .map(u64::to_string)
                         .collect::<Vec<_>>()
@@ -842,13 +839,9 @@ impl CoreNode {
                     );
                 }
             }
-            Ok(Err(e)) => tracing::warn!(
+            Err(e) => tracing::warn!(
                 "Could not read again the repositories on @{{peppy-release}} read for another \
                  peppy version: {e}"
-            ),
-            Err(e) => tracing::warn!(
-                "Reading again the repositories on @{{peppy-release}} read for another peppy \
-                 version panicked: {e}"
             ),
         }
     }

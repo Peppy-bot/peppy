@@ -8,7 +8,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 /// `peppy repo init`: sync the user's `repositories.json5` with the bundled
-/// default template (see `ensure_default_repos`). Operates
+/// default template by appending any missing default entries. Operates
 /// directly on the local config file (no daemon connection required) so it
 /// can be run after upgrading peppy without restarting the daemon.
 pub(super) fn repo_init(_ctx: &Arc<AppContext>) -> Result<()> {
@@ -26,35 +26,15 @@ pub fn repo_init_with_dirs(peppy_dirs: &PeppyDirs) -> Result<()> {
                 repositories_list_path(peppy_dirs).display()
             );
         }
-        InitOutcome::Updated {
-            added: 0,
-            now_following_release: 0,
-        } => {
+        InitOutcome::Updated { added: 0 } => {
             info!("repositories.json5 is already in sync with the default template.");
         }
-        InitOutcome::Updated {
-            added,
-            now_following_release,
-        } => {
-            if now_following_release > 0 {
-                info!(
-                    "Set {} default repositor{} in repositories.json5 to follow the peppy \
-                     release (ref: @{{peppy-release}}).",
-                    now_following_release,
-                    if now_following_release == 1 {
-                        "y"
-                    } else {
-                        "ies"
-                    }
-                );
-            }
-            if added > 0 {
-                info!(
-                    "Added {} missing default repositor{} to repositories.json5.",
-                    added,
-                    if added == 1 { "y" } else { "ies" }
-                );
-            }
+        InitOutcome::Updated { added } => {
+            info!(
+                "Added {} missing default repositor{} to repositories.json5.",
+                added,
+                if added == 1 { "y" } else { "ies" }
+            );
         }
     }
     Ok(())

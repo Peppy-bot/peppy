@@ -9,6 +9,7 @@
 //! checkout this machine must register instead.
 
 use crate::ssh_config::{IdentityAgent, SshHostConfig, SshTarget, resolve_host_config};
+use core_node_api::encoding::ReadRef;
 use daemon_config::repository::GitCommit;
 use git2::Repository;
 use git2::build::{CheckoutBuilder, RepoBuilder};
@@ -78,47 +79,60 @@ pub(crate) fn checkout_repo_ref(
     Ok(())
 }
 
-/// Positions `repo`'s working tree on `configured_ref`, fetching that ref
-/// first when the clone does not hold it.
+/// Positions `repo`'s working tree on `read_ref`, fetching that ref first
+/// when the clone does not hold it.
 ///
 /// [`clone_repo_shallow`] brings every branch head and no tag, so a branch is
 /// already in the clone. A tag, or a commit that is not a branch head, is
-/// fetched on its own at depth 1 (see [`configured_ref_refspec`]). A ref the
+/// fetched on its own at depth 1 (see [`read_ref_refspec`]). A ref the
 /// remote does not serve fails with the error of the positioning after that
 /// fetch, or of the fetch itself.
-pub(crate) fn checkout_configured_ref(
+pub(crate) fn checkout_read_ref(
     repo: &Repository,
     repo_url: &str,
-    configured_ref: &str,
+    read_ref: &ReadRef,
     on_progress: &mut dyn FnMut(&str),
 ) -> std::result::Result<(), String> {
-    if checkout_repo_ref(repo, configured_ref).is_ok() {
+    let git_name = read_ref.git_name();
+    if checkout_repo_ref(repo, &git_name).is_ok() {
         return Ok(());
     }
-    let refspec = configured_ref_refspec(configured_ref);
+    let refspec = read_ref_refspec(read_ref);
     repo.find_remote("origin")
         .and_then(|mut remote| {
             fetch_with_progress(&mut remote, repo_url, &refspec, true, on_progress)
         })
         .map_err(|e| format!("fetching `{refspec}` failed: {e}"))?;
-    checkout_repo_ref(repo, configured_ref).map_err(|e| e.to_string())
+    checkout_repo_ref(repo, &git_name).map_err(|e| e.to_string())
 }
 
-/// What to fetch for a configured ref the clone does not hold: a ref of 40
-/// hexadecimal characters is a commit, fetched by its hash (a host that
-/// serves commits by hash, as GitHub does, answers it), and any other ref is
-/// a tag, fetched by its full name so that a branch of the same name cannot
-/// stand in for it.
-fn configured_ref_refspec(configured_ref: &str) -> String {
-    let configured_ref = configured_ref.trim();
-    if let Ok(commit) = GitCommit::parse(configured_ref) {
+/// What to fetch for a read ref the clone does not hold. A release tag is
+/// fetched by its full name, so that a branch of the same name cannot stand
+/// in for it. A named ref is a commit or a tag (see [`named_ref_refspec`]).
+fn read_ref_refspec(read_ref: &ReadRef) -> String {
+    match read_ref {
+        ReadRef::ReleaseTag(_) => tag_refspec(&read_ref.git_name()),
+        ReadRef::Named(name) => named_ref_refspec(name.trim()),
+    }
+}
+
+/// What to fetch for a ref named as configured: 40 hexadecimal characters
+/// are a commit, fetched by its hash (a host that serves commits by hash, as
+/// GitHub does, answers it), and any other name is a tag, written by its
+/// short or its full name, fetched by its full name.
+fn named_ref_refspec(name: &str) -> String {
+    if let Ok(commit) = GitCommit::parse(name) {
         return commit.as_str().to_owned();
     }
-    let tag = if configured_ref.starts_with("refs/tags/") {
-        configured_ref.to_owned()
-    } else {
-        format!("refs/tags/{configured_ref}")
-    };
+    if name.starts_with("refs/tags/") {
+        return tag_refspec(name);
+    }
+    tag_refspec(&format!("refs/tags/{name}"))
+}
+
+/// The refspec that fetches the tag with the full name `tag` into the tag
+/// of the same name.
+fn tag_refspec(tag: &str) -> String {
     format!("+{tag}:{tag}")
 }
 
@@ -787,26 +801,28 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_ref_is_fetched_as_a_commit_or_as_a_tag() {
-        let commit = "0123456789ABCDEF0123456789abcdef01234567";
+    fn a_read_ref_is_fetched_as_a_commit_or_as_a_tag() {
+        let named = |name: &str| read_ref_refspec(&ReadRef::Named(name.to_owned()));
         assert_eq!(
-            configured_ref_refspec(commit),
+            named("0123456789ABCDEF0123456789abcdef01234567"),
             "0123456789abcdef0123456789abcdef01234567",
             "40 hexadecimal characters name a commit, fetched by its hash"
         );
+        assert_eq!(named("v1.2.0"), "+refs/tags/v1.2.0:refs/tags/v1.2.0");
         assert_eq!(
-            configured_ref_refspec("v1.2.0"),
-            "+refs/tags/v1.2.0:refs/tags/v1.2.0"
-        );
-        assert_eq!(
-            configured_ref_refspec("refs/tags/release/v1"),
+            named("refs/tags/release/v1"),
             "+refs/tags/release/v1:refs/tags/release/v1",
             "a full tag name is fetched as written"
         );
         assert_eq!(
-            configured_ref_refspec("0123abc"),
+            named("0123abc"),
             "+refs/tags/0123abc:refs/tags/0123abc",
             "an abbreviated hash is no commit peppy can fetch"
+        );
+        assert_eq!(
+            read_ref_refspec(&ReadRef::ReleaseTag("v0.31.2".to_owned())),
+            "+refs/tags/peppy-release/v0.31.2:refs/tags/peppy-release/v0.31.2",
+            "a release tag is fetched by its full name"
         );
     }
 

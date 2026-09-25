@@ -94,13 +94,28 @@ impl GitRepoRef {
     }
 }
 
+/// The `ref` as it is written on the wire: the configured ref, and the
+/// empty text for [`GitRepoRef::RemoteHead`].
 impl fmt::Display for GitRepoRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.configured().unwrap_or(""))
     }
 }
 
+/// Decodes the `repoRef` text of a git source, as [`GitRepoRef`]'s
+/// `Display` writes it: the empty text is [`GitRepoRef::RemoteHead`], and a
+/// ref peppy cannot read fails the decode.
+pub(crate) fn decode_git_repo_ref(text: &str) -> crate::Result<GitRepoRef> {
+    GitRepoRef::parse(text).map_err(|e| crate::Error::Decoding(e.to_string()))
+}
+
+/// The namespace of every tag in a git repository.
+const TAGS_NAMESPACE: &str = "refs/tags/";
+
 /// A git ref a repository entry reads, with [`PEPPY_RELEASE_REF`] resolved.
+///
+/// Stored as its [`ReadRef::git_name`] and read back with
+/// [`ReadRef::from_git_name`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadRef {
     /// A branch, a tag or a commit, passed to git as written.
@@ -117,7 +132,22 @@ impl ReadRef {
     pub fn git_name(&self) -> String {
         match self {
             Self::Named(name) => name.clone(),
-            Self::ReleaseTag(_) => format!("refs/tags/{}", self.short_name()),
+            Self::ReleaseTag(_) => format!("{TAGS_NAMESPACE}{}", self.short_name()),
+        }
+    }
+
+    /// The read ref whose [`ReadRef::git_name`] is `git_name`: the full name
+    /// of a release tag, `refs/tags/peppy-release/v<MAJOR>.<MINOR>.<PATCH>`,
+    /// is a [`ReadRef::ReleaseTag`], and any other name is a
+    /// [`ReadRef::Named`].
+    pub fn from_git_name(git_name: &str) -> Self {
+        let release_version = git_name
+            .strip_prefix(TAGS_NAMESPACE)
+            .and_then(|tag| tag.strip_prefix(PEPPY_RELEASE_TAG_PREFIX))
+            .filter(|version| is_release_version(version));
+        match release_version {
+            Some(version) => Self::ReleaseTag(version.to_owned()),
+            None => Self::Named(git_name.to_owned()),
         }
     }
 
@@ -128,6 +158,19 @@ impl ReadRef {
             Self::Named(name) => name.clone(),
             Self::ReleaseTag(version) => format!("{PEPPY_RELEASE_TAG_PREFIX}{version}"),
         }
+    }
+}
+
+impl serde::Serialize for ReadRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.git_name())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ReadRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let git_name = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Self::from_git_name(&git_name))
     }
 }
 
@@ -270,6 +313,52 @@ mod tests {
             .expect("the keyword names a ref");
         assert_eq!(read, ReadRef::Named("main".to_owned()));
         assert_eq!(read.git_name(), "main");
+    }
+
+    #[test]
+    fn a_read_ref_is_stored_as_its_git_name_and_read_back() {
+        for read in [
+            ReadRef::ReleaseTag("v0.31.2".to_owned()),
+            ReadRef::Named("main".to_owned()),
+            ReadRef::Named("peppy-release/v0.31.2".to_owned()),
+            ReadRef::Named("refs/tags/peppy-release/next".to_owned()),
+            ReadRef::Named("0123456789abcdef0123456789abcdef01234567".to_owned()),
+        ] {
+            let stored = serde_json::to_string(&read).expect("serialize");
+            assert_eq!(stored, format!("\"{}\"", read.git_name()));
+            let read_back: ReadRef = serde_json::from_str(&stored).expect("deserialize");
+            assert_eq!(read_back, read, "{stored}");
+        }
+    }
+
+    /// The short name of a release tag is a branch or a tag the user can
+    /// name: only the full name `refs/tags/peppy-release/<version>` reads as
+    /// the release tag.
+    #[test]
+    fn only_the_full_name_of_a_release_tag_reads_back_as_the_release_tag() {
+        assert_eq!(
+            ReadRef::from_git_name("refs/tags/peppy-release/v0.31.2"),
+            ReadRef::ReleaseTag("v0.31.2".to_owned())
+        );
+        assert_eq!(
+            ReadRef::from_git_name("peppy-release/v0.31.2"),
+            ReadRef::Named("peppy-release/v0.31.2".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_wire_text_of_a_ref_decodes_back_to_it() {
+        for repo_ref in [
+            GitRepoRef::RemoteHead,
+            GitRepoRef::PeppyRelease,
+            GitRepoRef::Named("feat/gripper-force".to_owned()),
+        ] {
+            assert_eq!(
+                decode_git_repo_ref(&repo_ref.to_string()).expect("decode"),
+                repo_ref
+            );
+        }
+        assert!(decode_git_repo_ref("@{upstream}").is_err());
     }
 
     #[test]
