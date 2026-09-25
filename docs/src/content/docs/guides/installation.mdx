@@ -33,6 +33,8 @@ curl -fsSL https://peppy.bot/install.sh | sh -s -- ./peppy-x86_64-unknown-linux-
 
 If a daemon is already running, the installer asks for confirmation before replacing it; set `PEPPY_FORCE_REINSTALL=1` for non-interactive installs.
 
+Each Peppy version reads the content of the default repositories that was released with it (see [Repositories](/advanced_guides/repositories/)). Installing another Peppy version therefore also changes the hub content those repositories read, and the daemon reads it again at its next start.
+
 ### Installer environment variables
 
 | Variable | Effect |
