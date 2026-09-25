@@ -1492,7 +1492,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     );
 
     RepoCommand {
-        command: RepoCommands::Refresh,
+        command: RepoCommands::Refresh { strict: false },
     }
     .execute(&ctx)
     .expect("repo refresh should populate contract cache");
@@ -2031,7 +2031,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     );
 
     RepoCommand {
-        command: RepoCommands::Refresh,
+        command: RepoCommands::Refresh { strict: false },
     }
     .execute(&ctx)
     .expect("repo refresh should populate contract cache");

@@ -73,7 +73,7 @@ fn repo_list_finds_nodes_in_fs_repo() {
 
     // Refresh so the node is discovered and persisted to the cache, then list.
     RepoCommand {
-        command: RepoCommands::Refresh,
+        command: RepoCommands::Refresh { strict: false },
     }
     .execute(&ctx)
     .expect("repo refresh should succeed");
