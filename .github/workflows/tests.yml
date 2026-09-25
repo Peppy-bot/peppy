@@ -261,10 +261,9 @@ jobs:
   # registry and the tool cache on the job's sticky disk. The archive is the
   # peppy dev build of the commit, versioned `dev-<first 12 characters of the
   # commit>`. install-script installs it with install.sh, and the hub-ci-peppy
-  # action, which the hubs' CI runs, installs it as the peppy of a set when
-  # its policy is dev builds (PEPPY_BUILD_POLICY in its resolve.py). The job
-  # that installs the archive here needs the stock Ubuntu image, so the two
-  # are separate jobs.
+  # action, which the hubs' CI runs, installs it as the peppy of a set (see
+  # PEPPY_BUILD_POLICY in its resolve.py). The job that installs the archive
+  # here needs the stock Ubuntu image, so the two are separate jobs.
   #
   # It runs on every pull request and on every push to dev: the action finds
   # the dev build of a peppy branch by the commit at its head, and takes the

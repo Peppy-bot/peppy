@@ -328,8 +328,8 @@ class PeppyBuildChoice(unittest.TestCase):
             with self.subTest(kind=kind):
                 self.assertEqual(resolve.peppy_build_notes(kind, False), ())
 
-    def test_the_policy_in_force_is_the_latest_release(self):
-        self.assertIs(resolve.PEPPY_BUILD_POLICY, PeppyBuildPolicy.LATEST_RELEASE)
+    def test_the_policy_in_force_is_dev_builds(self):
+        self.assertIs(resolve.PEPPY_BUILD_POLICY, PeppyBuildPolicy.DEV_BUILDS)
 
 
 class RunnerArch(unittest.TestCase):
