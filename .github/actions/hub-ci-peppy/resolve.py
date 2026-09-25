@@ -127,7 +127,7 @@ class PeppyBuildPolicy(Enum):
     DEV_BUILDS = "dev builds"
 
 
-PEPPY_BUILD_POLICY = PeppyBuildPolicy.LATEST_RELEASE
+PEPPY_BUILD_POLICY = PeppyBuildPolicy.DEV_BUILDS
 
 
 class PeppyBuildKind(Enum):

@@ -18,8 +18,10 @@ platform, all three at once, and no stage starts a VM:
 - `publish` (Linux): the tag of the release on every hub of the set, a check
   that the archive of the host, installed, reads the default hubs at that
   tag, the GitHub release from the three archives, then the notes committed
-  on `dev` and `main` fast-forwarded to it. A publish started again after a
-  failure does only the steps the failure left undone.
+  on top of the release commit and merged into `dev`, and `main`
+  fast-forwarded to them. Merges into `dev` since the build go into the next
+  release. A publish started again after a failure does only the steps the
+  failure left undone.
 
 The provisioning stages exist because a native build cannot produce everything
 it embeds. Every peppy binary carries the peppylib bindings of all three
@@ -102,6 +104,8 @@ from .release_line import (
     GIT_REMOTE,
     RELEASE_BRANCH,
     latest_release_tag,
+    update_release_branch,
+    verify_publish_branch_state,
     verify_release_branch_state,
 )
 from .release_notes import (
@@ -117,12 +121,15 @@ from .release_summary import (
 )
 from .repo import (
     commit_paths,
+    detached_worktree,
     fetch_tag,
     get_changed_paths,
     get_commit,
+    get_commits_changing,
     get_parents,
     get_repo_root,
-    has_changes_in_paths,
+    is_ancestor,
+    merge_into_current_branch,
     push_branch,
 )
 from .verify_release import verify_all_releases
@@ -812,28 +819,62 @@ def _is_release_notes_commit(
     return get_changed_paths(release_commit, commit) == (notes_file.as_posix(),)
 
 
-def _dev_carries_release_notes(
+def _find_release_notes_commit(
     dev_commit: str, plan: ReleasePlan, notes_file: Path
-) -> bool:
-    """Whether `dev` already carries the release notes commit of *plan*.
+) -> str | None:
+    """The notes commit of *plan* (`_is_release_notes_commit`) that `dev` holds,
+    or None while `dev` holds none.
 
-    False when `dev` is at the plan's commit, where every publish starts. True
-    when `dev` is that commit plus the notes commit alone
-    (`_is_release_notes_commit`), which an earlier attempt leaves once it
-    pushed the notes. Any other `dev` moved on since the archives were built,
-    and the release cannot go on from it: it tags the commit its archives come
-    from and fast-forwards `main` to `dev`.
+    An earlier attempt leaves it once it pushed `dev`: `dev` itself when `dev`
+    had not moved since the build, else merged into `dev`. Without it, any
+    other commit on `dev` since the plan's commit that changes the notes file
+    would make the merge of the notes conflict, so it stops the stage, as does
+    a second notes commit of the release, before anything is written.
     """
-    if dev_commit == plan.release_commit:
-        return False
-    if _is_release_notes_commit(dev_commit, plan.release_commit, notes_file):
-        return True
+    changes = get_commits_changing(plan.release_commit, dev_commit, notes_file)
+    notes_commits = [
+        commit
+        for commit in changes
+        if _is_release_notes_commit(commit, plan.release_commit, notes_file)
+    ]
+    if len(notes_commits) > 1:
+        raise ReleaseError(
+            f"'{RELEASE_BRANCH}' holds {len(notes_commits)} release notes commits "
+            f"of {plan.tag} ({', '.join(c[:12] for c in notes_commits)}), and a "
+            f"publish makes one. This publish stops before it writes anything; "
+            f"find out where the others come from."
+        )
+    if notes_commits:
+        return notes_commits[0]
+    if changes:
+        raise ReleaseError(
+            f"'{RELEASE_BRANCH}' changed {notes_file} since "
+            f"{plan.release_commit[:12]}, the commit this release was built from "
+            f"({', '.join(c[:12] for c in changes)}), so the notes this publish "
+            f"commits on top of that commit cannot merge into '{RELEASE_BRANCH}'. "
+            f"This publish stops before it writes anything; only a publish "
+            f"writes the notes of its release, so find out what wrote them."
+        )
+    return None
+
+
+def _require_main_can_fast_forward_to(commit: str, plan: ReleasePlan) -> None:
+    """Stop unless `origin/main`, as the branch check fetched it, is *commit*
+    or an ancestor of it.
+
+    *commit* is where the publish moves `main`: the notes commit of *plan*,
+    or the plan's commit while the notes are not committed yet, since the
+    notes commit has the plan's commit as its only parent.
+    """
+    main_commit = get_commit(f"{GIT_REMOTE}/{ALIGNED_BRANCH}")
+    if is_ancestor(main_commit, commit):
+        return
     raise ReleaseError(
-        f"'{RELEASE_BRANCH}' moved to {dev_commit[:12]} while the archives "
-        f"were built from {plan.release_commit[:12]}. The release tags the "
-        f"commit its archives come from and fast-forwards '{ALIGNED_BRANCH}' "
-        f"to '{RELEASE_BRANCH}', so the two must match; start a new run "
-        f"from the current '{RELEASE_BRANCH}'."
+        f"{GIT_REMOTE}/{ALIGNED_BRANCH} is at {main_commit[:12]}, which "
+        f"{plan.release_commit[:12]}, the commit this release was built from, "
+        f"does not hold, so '{ALIGNED_BRANCH}' cannot fast-forward to the "
+        f"release of {plan.tag}. This publish stops before it writes anything; "
+        f"find out what moved '{ALIGNED_BRANCH}'."
     )
 
 
@@ -847,9 +888,10 @@ def _write_release_notes(
     slug: RepoSlug,
     plan: ReleasePlan,
     release: ReleaseInfo,
-    repo_root: Path,
+    checkout: Path,
 ) -> Path:
-    """Write the docs release notes of the published *release*; return the file.
+    """Write the docs release notes of the published *release* into the
+    *checkout*; return the file.
 
     The notes carry the release as GitHub renders it, its body as HTML and
     its publication date, so they are written from the published release
@@ -872,23 +914,37 @@ def _write_release_notes(
         release_details=release_details,
         body_html=body_html,
     )
-    return generate_release_notes_file(notes_input, repo_root)
+    return generate_release_notes_file(notes_input, checkout)
 
 
-def _commit_release_notes(notes_path: Path, tag: str) -> None:
-    """Commit the release notes on `dev` and push it.
+def _commit_release_notes(
+    client: httpx.Client, slug: RepoSlug, plan: ReleasePlan, release: ReleaseInfo
+) -> str:
+    """Commit the notes of the published *release* on top of the plan's commit,
+    in a worktree of its own; return the notes commit.
 
-    The commit takes the notes file alone, so any other change in the working
-    tree is left untouched. Notes the tree already holds as written leave
-    nothing to commit, and `dev` as it is.
+    The checkout stays on `dev`, whatever `dev` took since the build, and the
+    commit takes the notes file alone.
     """
-    if not has_changes_in_paths([notes_path]):
-        console.print(
-            f"[yellow]'{RELEASE_BRANCH}' already holds the release notes of "
-            f"{tag} as written; there is nothing to commit.[/yellow]"
+    with detached_worktree(plan.release_commit) as tree:
+        notes_path = _write_release_notes(client, slug, plan, release, tree)
+        return commit_paths(
+            [notes_path], f"docs: add release notes for {plan.tag}", cwd=tree
         )
-        return
-    commit_paths([notes_path], f"docs: add release notes for {tag}")
+
+
+def _merge_release_notes_into_dev(notes_commit: str, tag: str) -> None:
+    """Merge *notes_commit* into `dev` and push it.
+
+    `dev` is brought up to `origin/dev` first (`update_release_branch`), so a
+    merge into `dev` while the publish ran stops nothing. The merge is a
+    fast-forward when `dev` is still at the commit of the release, and a
+    merge commit when `dev` took merges since the build.
+    """
+    update_release_branch()
+    merge_into_current_branch(
+        notes_commit, f"Merge the release notes of {tag} into '{RELEASE_BRANCH}'"
+    )
     console.print(f"Pushing the release notes on '{RELEASE_BRANCH}' to {GIT_REMOTE}...")
     push_branch(GIT_REMOTE, RELEASE_BRANCH, RELEASE_BRANCH)
 
@@ -899,30 +955,34 @@ def _commit_notes_and_align_main(
     plan: ReleasePlan,
     release: ReleaseInfo,
     *,
-    notes_committed: bool,
-    repo_root: Path,
+    notes_commit: str | None,
 ) -> None:
-    """Commit the notes of the published *release* on `dev`, then fast-forward
-    `main` to `dev`, each unless an earlier attempt already did it.
+    """Commit the notes of the published *release* and merge them into `dev`,
+    then fast-forward `main` to the notes commit, each unless an earlier
+    attempt already did it: *notes_commit* is the notes commit `dev` already
+    holds, or None.
 
-    `main` moves with a refspec push, so the working tree never leaves `dev`.
+    `main` gets the notes commit and not the `dev` tip, so it holds what the
+    release shipped and none of the merges `dev` took since the build. It
+    moves with a refspec push, so the working tree never leaves `dev`.
     """
-    if notes_committed:
+    if notes_commit is not None:
         console.print(
             f"[yellow]The release notes of {plan.tag} are already committed on "
             f"'{RELEASE_BRANCH}'.[/yellow]"
         )
     else:
-        notes_path = _write_release_notes(client, slug, plan, release, repo_root)
-        _commit_release_notes(notes_path, plan.tag)
+        notes_commit = _commit_release_notes(client, slug, plan, release)
+        _merge_release_notes_into_dev(notes_commit, plan.tag)
 
-    if _main_already_at(get_commit("HEAD")):
+    if _main_already_at(notes_commit):
         console.print(
-            f"[yellow]'{ALIGNED_BRANCH}' is already at '{RELEASE_BRANCH}'.[/yellow]"
+            f"[yellow]'{ALIGNED_BRANCH}' is already at the release notes of "
+            f"{plan.tag}.[/yellow]"
         )
         return
-    console.print(f"Fast-forwarding '{ALIGNED_BRANCH}' to '{RELEASE_BRANCH}'...")
-    push_branch(GIT_REMOTE, RELEASE_BRANCH, ALIGNED_BRANCH)
+    console.print(f"Fast-forwarding '{ALIGNED_BRANCH}' to the release notes...")
+    push_branch(GIT_REMOTE, notes_commit, ALIGNED_BRANCH)
 
 
 def run_publish(*, plan_path: Path, archives_dir: Path, hub_set_path: Path) -> None:
@@ -930,9 +990,11 @@ def run_publish(*, plan_path: Path, archives_dir: Path, hub_set_path: Path) -> N
 
     A publish is these steps, in this order:
 
-    1. `dev` is checked: it must be at the plan's commit, or that commit plus
-       the notes commit alone. Any other `dev` took a merge since the build,
-       and the stage stops before it writes anything, a hub tag included.
+    1. The branches are checked: `dev` must still hold the plan's commit, and
+       `origin/main` must be able to fast-forward to its notes commit. `dev`
+       may have taken merges since the build: the release is the plan's commit
+       all the same. A failed check stops the stage before it writes anything,
+       a hub tag included.
     2. The tag of the release, `peppy-release/<tag>`, is put on every hub of
        the hub set at the commit the set records (`tag_release_hubs`). A tag
        already there at that commit stays; one at another commit stops the
@@ -942,9 +1004,12 @@ def run_publish(*, plan_path: Path, archives_dir: Path, hub_set_path: Path) -> N
        that tag (`check_release_install`).
     4. The GitHub release: a draft of the plan's tag at the plan's commit,
        every archive uploaded to it, then published.
-    5. The release notes, written from the published release and committed on
-       `dev`. Skipped when `dev` already carries that commit.
-    6. `main` fast-forwarded to `dev`. Skipped when `origin/main` is there.
+    5. The release notes, written from the published release, committed on
+       top of the plan's commit, and merged into `dev`: a fast-forward when
+       `dev` did not move since the build. Skipped when `dev` already holds
+       the notes commit.
+    6. `main` fast-forwarded to the notes commit. Skipped when `origin/main`
+       is there.
 
     Steps 2 to 4 are skipped when a published release of the tag exists and
     its tag points at the plan's commit. A failure in step 1, 2 or 3 publishes
@@ -962,10 +1027,11 @@ def run_publish(*, plan_path: Path, archives_dir: Path, hub_set_path: Path) -> N
 
     repo_root = get_repo_root()
     os.chdir(repo_root)
-    dev_commit = verify_release_branch_state()
-    notes_committed = _dev_carries_release_notes(
+    dev_commit = verify_publish_branch_state(plan.release_commit)
+    notes_commit = _find_release_notes_commit(
         dev_commit, plan, release_notes_file(plan.tag)
     )
+    _require_main_can_fast_forward_to(notes_commit or plan.release_commit, plan)
 
     slug = github_repo_slug()
     client = build_github_client(token)
@@ -974,7 +1040,7 @@ def run_publish(*, plan_path: Path, archives_dir: Path, hub_set_path: Path) -> N
         slug,
         plan,
         hub_set,
-        notes_committed=notes_committed,
+        notes_committed=notes_commit is not None,
         archives_dir=archives_dir,
         repo_root=repo_root,
     )
@@ -987,8 +1053,7 @@ def run_publish(*, plan_path: Path, archives_dir: Path, hub_set_path: Path) -> N
             slug,
             plan,
             release,
-            notes_committed=notes_committed,
-            repo_root=repo_root,
+            notes_commit=notes_commit,
         )
     except ReleaseError as e:
         raise ReleaseError(
@@ -1000,8 +1065,8 @@ def run_publish(*, plan_path: Path, archives_dir: Path, hub_set_path: Path) -> N
         ) from e
 
     console.print(
-        f"[green]Release notes committed on '{RELEASE_BRANCH}' and "
-        f"'{ALIGNED_BRANCH}' fast-forwarded to it.[/green] They feed "
+        f"[green]Release notes merged into '{RELEASE_BRANCH}' and "
+        f"'{ALIGNED_BRANCH}' fast-forwarded to them.[/green] They feed "
         "https://forum.peppy.bot/c/peppy-os/announcements/6 and "
         "https://docs.peppy.bot/reference/changelog/"
     )

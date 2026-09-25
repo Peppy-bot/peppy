@@ -30,16 +30,27 @@ name: Parallel release
 # Nothing is published when a job before publish fails, or when publish fails
 # before its release step.
 #
-# A merge into `dev` while the release runs stops it at the first step of
-# publish, before any hub is tagged: the release tags the commit its archives
-# come from and fast-forwards `main` to `dev`. Start a new run from the new
-# `dev` tip.
+# A merge into `dev` while the release runs goes into the next release. The
+# release stays the commit the run started from: publish tags that commit,
+# commits the release notes on top of it, merges them into `dev`, and
+# fast-forwards `main` to the notes commit, so `main` holds what shipped and
+# `dev` keeps every merge.
 #
-# The Linux stages run on RunsOn runners on demand, never spot, since a release
-# interrupted part way must not be restarted by a retry: the x86_64 ones in
-# the shape of the cargo suites of tests.yml with the peppy-ubuntu24 image,
-# the aarch64 ones on `release-arm64` with RunsOn's arm64 image (see
-# .github/runs-on.yml).
+# The Linux stages run on RunsOn runners: the x86_64 ones in the shape of the
+# cargo suites of tests.yml with the peppy-ubuntu24 image, the aarch64 ones on
+# `release-arm64` with its arm64 build, peppy-ubuntu24-aarch64 (see
+# .github/runs-on.yml). The 2 vCPU jobs, prepare, hub-set, hub-launch and
+# publish, run on demand, never spot. They cost little, and three of them act
+# outside the run: prepare can push a docs pull request branch, hub-launch
+# starts a launchers-hub run, and publish tags the hubs, creates the release
+# and moves `dev` and `main`. None of those may stop part way and start again.
+# The provision and build stages run on spot. They only build and upload an
+# artifact, so a stage that AWS interrupts can run again: once this run ends,
+# RunsOn re-runs its failed jobs and the jobs that wait on them in a second
+# attempt, the interrupted one on demand, and that attempt reads the release
+# plan and the artifacts the first attempt uploaded. Both stages turn
+# fail-fast off, so an interrupted leg fails alone and the second attempt runs
+# that leg again, not its siblings.
 # RunsOn has no macOS, so the macOS stages run on a Blacksmith macOS runner.
 # The install tests run on GitHub-hosted runners (see the install-test
 # action).
@@ -68,7 +79,12 @@ on:
 
 # One release at a time, and never cancelled for a newer one: a release stopped
 # part way can leave a published release whose notes are not yet committed on
-# `dev`.
+# `dev`. So every job has a timeout: a stage that hangs would otherwise hold
+# the group, and every later release with it, for GitHub's default of six
+# hours. The timeouts of prepare, provision and build are about three times
+# the slowest run of the stage in recent releases; publish has more room,
+# since a publish stopped part way has to be re-run to finish (see publish).
+# hub-set and hub-launch set their own.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -113,6 +129,7 @@ jobs:
   prepare:
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     environment: release
+    timeout-minutes: 40
     steps:
       - name: Require a run from dev
         run: |
@@ -181,9 +198,11 @@ jobs:
 
   # Waits for prepare, which stops a release that must not be built. The same
   # three runner types as the builds, each building what it builds natively.
+  # A leg that fails leaves the others running, as in build.
   provision:
     needs: prepare
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: bindings
@@ -191,11 +210,12 @@ jobs:
             runner: blacksmith-12vcpu-macos-latest
           - name: apptainer-aarch64
             stage: apptainer
-            runner: runs-on=${{ github.run_id }}/runner=release-arm64  # image (via runner): ubuntu24-full-arm64, RunsOn standard image
+            runner: runs-on=${{ github.run_id }}/runner=release-arm64  # image (via runner): peppy-ubuntu24-aarch64, custom Peppy AMI
           - name: apptainer-x86_64
             stage: apptainer
-            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops/spot=false  # custom Peppy AMI
+            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops  # custom Peppy AMI
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
         with:
@@ -207,26 +227,33 @@ jobs:
       - name: Build the ${{ matrix.name }}
         run: ./scripts/parallel_release.sh ${{ matrix.stage }} --output-dir "$RUNNER_TEMP/provisioned"
 
+      # The second attempt that follows a spot interruption uploads under the
+      # same name, and replaces what the interrupted attempt uploaded.
       - uses: actions/upload-artifact@v7
         with:
           name: provision-${{ matrix.name }}
+          overwrite: true
           path: ${{ runner.temp }}/provisioned/
           retention-days: 1
 
   # One archive per runner, all three in parallel, each from the commit the
-  # plan pins. A failed build cancels the others: a release needs all three.
+  # plan pins. A failed build leaves the others running: a spot interruption
+  # fails one leg alone, and the second attempt then builds only that leg.
+  # publish still waits for all three.
   build:
     needs: [prepare, provision]
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
             runner: blacksmith-12vcpu-macos-latest
           - target: aarch64-unknown-linux-gnu
-            runner: runs-on=${{ github.run_id }}/runner=release-arm64  # image (via runner): ubuntu24-full-arm64, RunsOn standard image
+            runner: runs-on=${{ github.run_id }}/runner=release-arm64  # image (via runner): peppy-ubuntu24-aarch64, custom Peppy AMI
           - target: x86_64-unknown-linux-gnu
-            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops/spot=false  # custom Peppy AMI
+            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops  # custom Peppy AMI
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -253,9 +280,12 @@ jobs:
             --target "${{ matrix.target }}" \
             --provisioned "$RUNNER_TEMP/provisioned"
 
+      # The second attempt that follows a spot interruption uploads under the
+      # same name, and replaces what the interrupted attempt uploaded.
       - uses: actions/upload-artifact@v7
         with:
           name: archive-${{ matrix.target }}
+          overwrite: true
           path: dist/peppy-${{ matrix.target }}.tgz
           if-no-files-found: error
           retention-days: 1
@@ -413,15 +443,18 @@ jobs:
   # Collects the three archives and the hub set, and publishes, in this order
   # (see run_publish in scripts/functions/parallel_release.py):
   #
-  # 1. `dev` is checked to be where the builds left it. A merge into `dev`
-  #    since then stops the release here, before any hub is tagged.
+  # 1. `dev` must still hold the commit the builds built, and `main` must be
+  #    able to fast-forward to that commit's notes. A failed check stops the
+  #    release here, before any hub is tagged. A `dev` that took merges
+  #    since the build passes it.
   # 2. Each hub gets the tag `peppy-release/<tag>` at the commit of the hub
   #    set. A tag already there at that commit stays; a tag at another commit
   #    stops the release. No tag is ever moved or deleted.
   # 3. The x86_64 archive, installed with a PEPPY_HOME of its own, must read
   #    every default hub at that tag (`peppy repo refresh --strict`).
-  # 4. The release is published, the notes are committed on `dev`, and
-  #    `main` is fast-forwarded to it.
+  # 4. The release is published. Its notes are committed on top of the
+  #    commit the builds built and merged into `dev` (a fast-forward when
+  #    `dev` did not move), and `main` is fast-forwarded to the notes commit.
   #
   # A failure in step 1, 2 or 3 publishes nothing. A hub tag without a
   # published release is read by no peppy, and a new run of the same version
@@ -432,19 +465,21 @@ jobs:
   # checkout keeps its token for them. The token covers this repository and
   # every hub of the hub set, which hub-set names in its `hubs` output. It
   # writes contents (the release, its archives, both pushes and the hub tags)
-  # and workflows: the fast-forward of `main` carries every commit `dev` took
-  # since the last release, and GitHub refuses a push that changes a file
+  # and workflows: the fast-forward of `main` carries every commit of the
+  # release since the last one, and GitHub refuses a push that changes a file
   # under .github/workflows/ from an App token without that permission.
   #
   # A publish that fails is started again with "Re-run failed jobs" while the
   # run's artifacts exist (one day). The re-run finds what the failed attempt
-  # finished (the hub tags, the release published, the notes committed, `main`
-  # fast-forwarded) and does only the rest. Past that day, a publish that
-  # failed before the release went live is cut again from a new run.
+  # finished (the hub tags, the release published, the notes merged into
+  # `dev`, `main` fast-forwarded) and does only the rest. Past that day, a
+  # publish that failed before the release went live is cut again from a new
+  # run.
   publish:
     needs: [prepare, build, install-test, hub-set, hub-launch]
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     environment: release
+    timeout-minutes: 20
     steps:
       - name: Make the release token
         id: release-token
