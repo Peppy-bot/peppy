@@ -78,6 +78,50 @@ pub(crate) fn checkout_repo_ref(
     Ok(())
 }
 
+/// Positions `repo`'s working tree on `configured_ref`, fetching that ref
+/// first when the clone does not hold it.
+///
+/// [`clone_repo_shallow`] brings every branch head and no tag, so a branch is
+/// already in the clone. A tag, or a commit that is not a branch head, is
+/// fetched on its own at depth 1 (see [`configured_ref_refspec`]). A ref the
+/// remote does not serve fails with the error of the positioning after that
+/// fetch, or of the fetch itself.
+pub(crate) fn checkout_configured_ref(
+    repo: &Repository,
+    repo_url: &str,
+    configured_ref: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> std::result::Result<(), String> {
+    if checkout_repo_ref(repo, configured_ref).is_ok() {
+        return Ok(());
+    }
+    let refspec = configured_ref_refspec(configured_ref);
+    repo.find_remote("origin")
+        .and_then(|mut remote| {
+            fetch_with_progress(&mut remote, repo_url, &refspec, true, on_progress)
+        })
+        .map_err(|e| format!("fetching `{refspec}` failed: {e}"))?;
+    checkout_repo_ref(repo, configured_ref).map_err(|e| e.to_string())
+}
+
+/// What to fetch for a configured ref the clone does not hold: a ref of 40
+/// hexadecimal characters is a commit, fetched by its hash (a host that
+/// serves commits by hash, as GitHub does, answers it), and any other ref is
+/// a tag, fetched by its full name so that a branch of the same name cannot
+/// stand in for it.
+fn configured_ref_refspec(configured_ref: &str) -> String {
+    let configured_ref = configured_ref.trim();
+    if let Ok(commit) = GitCommit::parse(configured_ref) {
+        return commit.as_str().to_owned();
+    }
+    let tag = if configured_ref.starts_with("refs/tags/") {
+        configured_ref.to_owned()
+    } else {
+        format!("refs/tags/{configured_ref}")
+    };
+    format!("+{tag}:{tag}")
+}
+
 /// Clone `repo_url` into `dst` and check out `repo_ref` if set, emitting
 /// throttled (~500ms) `transfer_progress` lines via `on_progress` so callers
 /// can surface live byte/object counts instead of sitting silent for the
@@ -739,6 +783,30 @@ mod tests {
                  and offers no other credentials; embed them in the repository URL instead"
                     .to_owned()
             )
+        );
+    }
+
+    #[test]
+    fn a_configured_ref_is_fetched_as_a_commit_or_as_a_tag() {
+        let commit = "0123456789ABCDEF0123456789abcdef01234567";
+        assert_eq!(
+            configured_ref_refspec(commit),
+            "0123456789abcdef0123456789abcdef01234567",
+            "40 hexadecimal characters name a commit, fetched by its hash"
+        );
+        assert_eq!(
+            configured_ref_refspec("v1.2.0"),
+            "+refs/tags/v1.2.0:refs/tags/v1.2.0"
+        );
+        assert_eq!(
+            configured_ref_refspec("refs/tags/release/v1"),
+            "+refs/tags/release/v1:refs/tags/release/v1",
+            "a full tag name is fetched as written"
+        );
+        assert_eq!(
+            configured_ref_refspec("0123abc"),
+            "+refs/tags/0123abc:refs/tags/0123abc",
+            "an abbreviated hash is no commit peppy can fetch"
         );
     }
 
