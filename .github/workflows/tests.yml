@@ -37,10 +37,11 @@ env:
 # cargo suites take 16 vCPU with 32 or 64 GB (the heaviest suite peaks near
 # 11 GB) and a root disk of about twice what the suite writes under
 # RUNNER_TEMP: 100 GB for the multi-daemon suite, whose Docker and apptainer
-# images peak near 45 GB, 60 GB for the docs suite (25 GB), and 50 GB for
-# the others (10 GB or less). The shapes are labels on the org runner rather
-# than a runner of .github/runs-on.yml because RunsOn reads that file from
-# dev only, so a pull request could not change or test them.
+# images peak near 45 GB, 80 GB for the workspace suite (36 GB), 60 GB for
+# the docs suite (25 GB), and 50 GB for the others (13 GB or less). The
+# shapes are labels on the org runner rather than a runner of
+# .github/runs-on.yml because RunsOn reads that file from dev only, so a pull
+# request could not change or test them.
 #
 # Each cargo job keeps its build cache on a sticky disk of its own (the
 # cargo-cache action): the target directory as the suite's last run left it,
@@ -114,7 +115,7 @@ jobs:
   workspace-tests:
     needs: changes
     if: needs.changes.outputs.workspace == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=workspace-tests:80gb  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=80gb:gp3:500mbs:6000iops/sticky=workspace-tests:80gb  # custom Peppy AMI
     permissions:
       contents: read
 
