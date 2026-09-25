@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Sequence
+import tempfile
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 from .cli import ReleaseError
@@ -148,6 +150,36 @@ def get_changed_paths(base: str, head: str) -> tuple[str, ...]:
     return tuple(path for path in result.stdout.split("\0") if path)
 
 
+def get_commits_changing(base: str, head: str, path: Path) -> tuple[str, ...]:
+    """Return the commits reachable from *head* and not from *base* that change
+    *path*, newest first.
+
+    Every side of every merge is searched (`--full-history`), and merge commits
+    are left out, so each commit listed is one that made its change itself.
+
+    Raises ReleaseError if either revision cannot be read.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "rev-list",
+            "--full-history",
+            "--no-merges",
+            f"{base}..{head}",
+            "--",
+            path.as_posix(),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to list the commits between '{base}' and '{head}' that "
+            f"change '{path}': {result.stderr.strip()}"
+        )
+    return tuple(result.stdout.split())
+
+
 def get_commit_subjects(base: str | None, head: str = "HEAD") -> list[str]:
     """Return the commit subjects between base and head (newest first).
 
@@ -229,8 +261,12 @@ def has_changes_in_paths(paths: Sequence[Path]) -> bool:
     return bool(result.stdout.strip())
 
 
-def commit_paths(paths: Sequence[Path], message: str) -> None:
-    """Commit exactly *paths*, leaving every other change in the tree alone.
+def commit_paths(
+    paths: Sequence[Path], message: str, *, cwd: Path | None = None
+) -> str:
+    """Commit exactly *paths* in the checkout at *cwd* (the current directory
+    when None), leaving every other change in the tree alone; return the new
+    commit.
 
     ``git commit --only`` takes its content from the named paths rather than the
     index, so an unrelated dirty file or staged change is never swept into the
@@ -241,6 +277,7 @@ def commit_paths(paths: Sequence[Path], message: str) -> None:
     path_args = [str(p) for p in paths]
     staged = subprocess.run(
         ["git", "add", "--", *path_args],
+        cwd=cwd,
         capture_output=True,
         text=True,
     )
@@ -251,6 +288,7 @@ def commit_paths(paths: Sequence[Path], message: str) -> None:
 
     committed = subprocess.run(
         ["git", "commit", "--only", "-m", message, "--", *path_args],
+        cwd=cwd,
         capture_output=True,
         text=True,
     )
@@ -260,21 +298,98 @@ def commit_paths(paths: Sequence[Path], message: str) -> None:
             f"{committed.stderr.strip() or committed.stdout.strip()}"
         )
 
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if head.returncode != 0:
+        raise ReleaseError(
+            f"failed to read the commit of {', '.join(path_args)}: "
+            f"{head.stderr.strip()}"
+        )
+    return head.stdout.strip()
 
-def push_branch(remote: str, local_branch: str, remote_branch: str) -> None:
-    """Push *local_branch* to ``{remote}/{remote_branch}``.
 
-    The push is a plain (non-forced) one, so it is rejected unless it is a
-    fast-forward. Raises ReleaseError if the push fails.
+def fast_forward_current_branch(commit: str) -> None:
+    """Fast-forward the branch checked out to *commit*, a descendant of it.
+
+    Raises ReleaseError if the fast-forward fails.
     """
     result = subprocess.run(
-        ["git", "push", remote, f"{local_branch}:refs/heads/{remote_branch}"],
+        ["git", "merge", "--ff-only", "--quiet", commit],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         raise ReleaseError(
-            f"failed to push '{local_branch}' to '{remote}/{remote_branch}': "
+            f"failed to fast-forward to '{commit}': "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
+def merge_into_current_branch(commit: str, message: str) -> None:
+    """Merge *commit* into the branch checked out: a fast-forward when the
+    branch is an ancestor of *commit*, else a merge commit with *message*.
+
+    Raises ReleaseError if the merge fails, a conflict included.
+    """
+    result = subprocess.run(
+        ["git", "merge", "--ff", "--no-edit", "-m", message, commit],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to merge '{commit}': "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
+@contextmanager
+def detached_worktree(commit: str) -> Iterator[Path]:
+    """Yield a temporary worktree of this repository, detached at *commit*.
+
+    A commit is made on top of *commit* there while the checkout stays on its
+    branch. The worktree is removed on exit, whatever happens inside.
+
+    Raises ReleaseError if the worktree cannot be added.
+    """
+    with tempfile.TemporaryDirectory(prefix="peppy-worktree-") as parent:
+        tree = Path(parent) / "tree"
+        added = subprocess.run(
+            ["git", "worktree", "add", "--quiet", "--detach", str(tree), commit],
+            capture_output=True,
+            text=True,
+        )
+        if added.returncode != 0:
+            raise ReleaseError(
+                f"failed to add a worktree at '{commit}': {added.stderr.strip()}"
+            )
+        try:
+            yield tree
+        finally:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(tree)],
+                capture_output=True,
+            )
+
+
+def push_branch(remote: str, source: str, remote_branch: str) -> None:
+    """Push *source*, a local branch or a commit, to ``{remote}/{remote_branch}``.
+
+    The push is a plain (non-forced) one, so it is rejected unless it is a
+    fast-forward. Raises ReleaseError if the push fails.
+    """
+    result = subprocess.run(
+        ["git", "push", remote, f"{source}:refs/heads/{remote_branch}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to push '{source}' to '{remote}/{remote_branch}': "
             f"{result.stderr.strip()}"
         )
 
