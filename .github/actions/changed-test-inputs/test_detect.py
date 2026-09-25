@@ -181,11 +181,17 @@ class Detection(unittest.TestCase):
         # runs its cases on every change.
         for path in (
             ".github/actions/hub-ci-peppy/action.yml",
-            ".github/actions/hub-ci-peppy/resolve.py",
             ".github/actions/hub-ci-peppy/test_resolve.py",
         ):
             with self.subTest(path=path):
                 self.assertEqual(selected(select(path)), {})
+
+    def test_the_hub_ci_resolution_runs_the_mocked_release_scripts(self):
+        # The release scripts load resolve.py for their model of the hubs.
+        self.assertEqual(
+            selected(select(".github/actions/hub-ci-peppy/resolve.py")),
+            {"scripts": "true"},
+        )
 
     def test_the_workspace_manifests_run_the_suites_of_crates_alone(self):
         for path in ("Cargo.toml", "Cargo.lock", ".cargo/config.toml"):

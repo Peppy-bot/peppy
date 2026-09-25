@@ -24,8 +24,13 @@ PROD_ROUTER_ENDPOINT_ENV = "PEPPY_PROD_ROUTER_ENDPOINT"
 
 # Env var the release scripts read the GitHub release token from. The release
 # workflow sets it to an installation token of the peppy-release-bot GitHub
-# App, made by the job that runs the stage.
+# App, made by the job that runs the stage. It lasts one hour.
 RELEASE_TOKEN_ENV = "PEPPY_RELEASE_TOKEN"
+
+# Env var the release scripts read the job's own GITHUB_TOKEN from. It only
+# reads, and it lasts as long as the job, so a stage that waits longer than
+# the hour of a release token reads with it.
+JOB_TOKEN_ENV = "PEPPY_JOB_TOKEN"
 
 RELEASE_TRIPLES: tuple[str, ...] = (
     "aarch64-apple-darwin",
@@ -143,15 +148,27 @@ def verify_prod_router_publicly_trusted() -> None:
     _probe_publicly_trusted_tls(host, port)
 
 
+def _require_token(env_var: str) -> str:
+    token = os.environ.get(env_var, "").strip()
+    if not token:
+        raise ReleaseError(f"{env_var} env var is required")
+    return token
+
+
 def require_release_token() -> str:
     """Return the GitHub release token held in the RELEASE_TOKEN_ENV env var.
 
     Raises ReleaseError if it is unset or blank.
     """
-    token = os.environ.get(RELEASE_TOKEN_ENV, "").strip()
-    if not token:
-        raise ReleaseError(f"{RELEASE_TOKEN_ENV} env var is required")
-    return token
+    return _require_token(RELEASE_TOKEN_ENV)
+
+
+def require_job_token() -> str:
+    """Return the job's own GitHub token held in the JOB_TOKEN_ENV env var.
+
+    Raises ReleaseError if it is unset or blank.
+    """
+    return _require_token(JOB_TOKEN_ENV)
 
 
 def validate_release_environment(

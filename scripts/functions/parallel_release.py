@@ -9,9 +9,17 @@ platform, all three at once, and no stage starts a VM:
 - `bindings` (macOS ARM64): the peppylib native bindings for every platform.
 - `apptainer` (Linux): apptainer for the host's architecture.
 - `build` (one per target): one release archive, built from the plan's commit.
-- `publish` (any host): the GitHub release from the three archives, then the
-  notes committed on `dev` and `main` fast-forwarded to it. A publish started
-  again after a failure does only the steps the failure left undone.
+- `hub-check` (Linux): every hub of the hub set the release recorded, read at
+  its commit by the daemon of the host's archive, installed, and its
+  repository index checked there (see release_install_check.py).
+- `hub-launch` (any host): launchers-hub's tests, dispatched on the hub set the
+  release recorded and on the x86_64 archive of the run, waited for until they
+  succeed (see release_hubs.py).
+- `publish` (Linux): the tag of the release on every hub of the set, a check
+  that the archive of the host, installed, reads the default hubs at that
+  tag, the GitHub release from the three archives, then the notes committed
+  on `dev` and `main` fast-forwarded to it. A publish started again after a
+  failure does only the steps the failure left undone.
 
 The provisioning stages exist because a native build cannot produce everything
 it embeds. Every peppy binary carries the peppylib bindings of all three
@@ -37,13 +45,20 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 
-from .build import BuildArtifact, _release_rustflags, build_and_package, release_dist_dir
+from .build import (
+    BUILD_COMMANDS,
+    BuildArtifact,
+    _release_rustflags,
+    build_and_package,
+    release_dist_dir,
+)
 from .cli import (
     RELEASE_TRIPLES,
     ReleaseError,
@@ -52,6 +67,7 @@ from .cli import (
     is_linux,
     is_macos_arm64,
     need_cmd,
+    require_job_token,
     require_release_token,
     run_with_error_handling,
     validate_release_environment,
@@ -69,6 +85,7 @@ from .github import (
     publish_release,
     replace_and_upload_asset,
 )
+from .hub_ci import load_release_set, parse_release_version, resolve
 from .lima import (
     GO_LINUX_AMD64_SHA256,
     GO_LINUX_ARM64_SHA256,
@@ -78,6 +95,8 @@ from .lima import (
     require_prebuilt_peppylib_so,
 )
 from .release_docs_gate import verify_docs_gate
+from .release_hubs import check_launchers, tag_release_hubs
+from .release_install_check import check_hub_set, check_release_install
 from .release_line import (
     ALIGNED_BRANCH,
     GIT_REMOTE,
@@ -155,7 +174,7 @@ class ReleasePlan:
                 raise ReleaseError(f"the release plan {path} has no usable '{name}'")
             fields[name] = value
         return cls(
-            tag=fields["tag"],
+            tag=parse_release_version(fields["tag"]),
             release_commit=fields["release_commit"],
             content=ReleaseContent(
                 title=fields["title"],
@@ -542,7 +561,7 @@ def run_build(*, plan_path: Path, target: str, provisioned_dir: Path) -> None:
     bindings the macOS build made, and the provisioned apptainer builds fill
     the cache the build reads.
     """
-    for cmd in ("git", "cargo", "rustc"):
+    for cmd in BUILD_COMMANDS:
         need_cmd(cmd)
     plan = ReleasePlan.load(plan_path)
     native = get_native_triple()
@@ -631,7 +650,7 @@ def _create_draft_release(
     response = github_api(
         client,
         "POST",
-        f"https://api.github.com/repos/{slug.full}/releases",
+        f"{slug.api_url}/releases",
         json_data=_release_payload(plan),
     )
     return parse_release_response(response)
@@ -719,10 +738,21 @@ def _find_published_release(
     return release
 
 
+def _host_archive(artifacts: list[BuildArtifact]) -> Path:
+    """The archive of the platform this host runs, which the install check
+    installs: the x86_64 Linux one on the publish job's runner."""
+    native = get_native_triple()
+    for artifact in artifacts:
+        if artifact.target_triple == native:
+            return artifact.asset_path
+    raise ReleaseError(f"the release has no archive for this host's {native}")
+
+
 def _publish_release_unless_published(
     client: httpx.Client,
     slug: RepoSlug,
     plan: ReleasePlan,
+    hub_set: resolve.HubSet,
     *,
     notes_committed: bool,
     archives_dir: Path,
@@ -731,6 +761,11 @@ def _publish_release_unless_published(
     """The published GitHub release of *plan*, published from the archives in
     *archives_dir* unless an earlier attempt already published it.
 
+    Before it publishes, it tags every hub of *hub_set* and checks that the
+    installed archive reads the default hubs at that tag; a failure in either
+    publishes nothing. A release already published skips both: its hubs were
+    tagged and checked before it went live.
+
     Notes committed on `dev` without a published release are refused: only a
     publish commits them, and only once the release they describe is live.
     """
@@ -738,7 +773,8 @@ def _publish_release_unless_published(
     if release is not None:
         console.print(
             f"[yellow]{plan.tag} is already published ({release.html_url}); "
-            f"its archives are not uploaded again.[/yellow]",
+            f"its hubs are not tagged again and its archives are not uploaded "
+            f"again.[/yellow]",
             soft_wrap=True,
         )
         return release
@@ -754,6 +790,9 @@ def _publish_release_unless_published(
     artifacts = _stage_archives(archives_dir, dist_dir)
     verify_all_releases(dist_dir)
     console.print("[green]All release archives verified successfully.[/green]")
+    install_archive = _host_archive(artifacts)
+    tag_release_hubs(client, slug.owner, hub_set, plan.tag)
+    check_release_install(install_archive)
     draft = _create_draft_release(client, slug, plan)
     return _upload_archives_and_publish(client, slug, draft, artifacts)
 
@@ -821,7 +860,7 @@ def _write_release_notes(
     release_details = github_api(
         client,
         "GET",
-        f"https://api.github.com/repos/{slug.full}/releases/{release.release_id}",
+        f"{slug.api_url}/releases/{release.release_id}",
     )
     if not isinstance(release_details, dict):
         raise ReleaseError(
@@ -886,28 +925,40 @@ def _commit_notes_and_align_main(
     push_branch(GIT_REMOTE, RELEASE_BRANCH, ALIGNED_BRANCH)
 
 
-def run_publish(*, plan_path: Path, archives_dir: Path) -> None:
+def run_publish(*, plan_path: Path, archives_dir: Path, hub_set_path: Path) -> None:
     """Publish the planned release, doing only the steps not done yet.
 
-    A publish is three steps, in this order, each skipped when it is already
-    done:
+    A publish is these steps, in this order:
 
-    1. The GitHub release: a draft of the plan's tag at the plan's commit,
-       every archive uploaded to it, then published. Skipped when a published
-       release of the tag exists and its tag points at the plan's commit.
-    2. The release notes, written from the published release and committed on
+    1. `dev` is checked: it must be at the plan's commit, or that commit plus
+       the notes commit alone. Any other `dev` took a merge since the build,
+       and the stage stops before it writes anything, a hub tag included.
+    2. The tag of the release, `peppy-release/<tag>`, is put on every hub of
+       the hub set at the commit the set records (`tag_release_hubs`). A tag
+       already there at that commit stays; one at another commit stops the
+       stage.
+    3. The archive of this host's platform, the x86_64 Linux one on the
+       publish job's runner, is installed and must read every default hub at
+       that tag (`check_release_install`).
+    4. The GitHub release: a draft of the plan's tag at the plan's commit,
+       every archive uploaded to it, then published.
+    5. The release notes, written from the published release and committed on
        `dev`. Skipped when `dev` already carries that commit.
-    3. `main` fast-forwarded to `dev`. Skipped when `origin/main` is there.
+    6. `main` fast-forwarded to `dev`. Skipped when `origin/main` is there.
+
+    Steps 2 to 4 are skipped when a published release of the tag exists and
+    its tag points at the plan's commit. A failure in step 1, 2 or 3 publishes
+    nothing; a hub tag without a published binary is read by no peppy, and a
+    new run of the same version tests that hub at the tagged commit.
 
     A publish that fails is started again with "Re-run failed jobs" while the
-    run's archives exist, and the steps the failed attempt finished are then
-    found done. `dev` must be at the plan's commit, or that commit plus the
-    notes commit alone; any other `dev` stops the stage before it writes
-    anything.
+    run's artifacts exist, and the steps the failed attempt finished are then
+    found done.
     """
     need_cmd("git")
     token = require_release_token()
     plan = ReleasePlan.load(plan_path)
+    hub_set = load_release_set(hub_set_path)
 
     repo_root = get_repo_root()
     os.chdir(repo_root)
@@ -922,6 +973,7 @@ def run_publish(*, plan_path: Path, archives_dir: Path) -> None:
         client,
         slug,
         plan,
+        hub_set,
         notes_committed=notes_committed,
         archives_dir=archives_dir,
         repo_root=repo_root,
@@ -962,14 +1014,64 @@ def run_publish(*, plan_path: Path, archives_dir: Path) -> None:
     )
 
 
+# --- hub-check ---
+
+
+def run_hub_check(*, hub_set_path: Path, archive: Path) -> None:
+    """Check every hub of the hub set at its commit with *archive*, the archive
+    of this host's platform: its daemon, installed, reads every hub, and each
+    hub's repository index is checked at its commit (`check_hub_set`)."""
+    need_cmd("git")
+    check_hub_set(load_release_set(hub_set_path), archive)
+
+
+# --- hub-launch ---
+
+
+def run_hub_launch(*, hub_set_path: Path, peppy_run_id: int) -> None:
+    """Run launchers-hub's tests on the hub set and on the archive of the
+    release run *peppy_run_id*, and wait until they succeed.
+
+    The release token dispatches the run. The job's own token reads it until
+    it completes, which takes longer than the hour a release token lasts.
+    """
+    dispatch_token = require_release_token()
+    read_token = require_job_token()
+    hub_set = load_release_set(hub_set_path)
+    slug = github_repo_slug()
+    run = check_launchers(
+        build_github_client(dispatch_token),
+        build_github_client(read_token),
+        slug.owner,
+        hub_set,
+        peppy_run_id,
+        sleep=time.sleep,
+        clock=time.monotonic,
+    )
+    console.print(
+        f"[green]Every launcher of the hub set launches with this release:"
+        f"[/green] {run.html_url}",
+        soft_wrap=True,
+    )
+
+
 # --- command line ---
 
 
 def _release_tag(value: str) -> str:
-    tag = value.strip()
-    if not tag:
-        raise argparse.ArgumentTypeError("release tag cannot be empty")
-    return tag
+    try:
+        return parse_release_version(value)
+    except ReleaseError as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
+
+
+def _run_id(value: str) -> int:
+    run_id = value.strip()
+    if not re.fullmatch(r"[1-9][0-9]*", run_id):
+        raise argparse.ArgumentTypeError(
+            f"expected the id of a workflow run, got {value!r}"
+        )
+    return int(run_id)
 
 
 def _commit_sha(value: str) -> str:
@@ -1000,7 +1102,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--tag",
         required=True,
         type=_release_tag,
-        help="Tag of the release (example: v0.0.1).",
+        help="Tag of the release, v<MAJOR>.<MINOR>.<PATCH> (example: v0.31.2).",
     )
     prepare.add_argument(
         "--release-commit",
@@ -1067,8 +1169,37 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Directory holding the bindings and apptainer archives.",
     )
 
+    hub_check = stages.add_parser(
+        "hub-check",
+        help="Check every hub of the hub set at its commit with this run's archive.",
+    )
+    hub_check.add_argument(
+        "--hub-set", required=True, type=Path, help="The hub set of the release."
+    )
+    hub_check.add_argument(
+        "--archive",
+        required=True,
+        type=Path,
+        help="The archive of this host's platform, built by this run.",
+    )
+
+    hub_launch = stages.add_parser(
+        "hub-launch",
+        help="Run launchers-hub's tests on the hub set and this run's archive.",
+    )
+    hub_launch.add_argument(
+        "--hub-set", required=True, type=Path, help="The hub set of the release."
+    )
+    hub_launch.add_argument(
+        "--peppy-run-id",
+        required=True,
+        type=_run_id,
+        help="The release run whose x86_64 archive the launchers-hub run installs.",
+    )
+
     publish = stages.add_parser(
-        "publish", help="Publish the release from the built archives."
+        "publish",
+        help="Tag the hubs, check the install, and publish the release.",
     )
     publish.add_argument("--plan", required=True, type=Path, help="The release plan.")
     publish.add_argument(
@@ -1076,6 +1207,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         required=True,
         type=Path,
         help="Directory holding the archive of every release target.",
+    )
+    publish.add_argument(
+        "--hub-set",
+        required=True,
+        type=Path,
+        help="The hub set of the release: the hub commits publish tags.",
     )
 
     return parser.parse_args(argv)
@@ -1102,8 +1239,16 @@ def _run_stage(args: argparse.Namespace) -> None:
                 target=args.target,
                 provisioned_dir=args.provisioned,
             )
+        case "hub-check":
+            run_hub_check(hub_set_path=args.hub_set, archive=args.archive)
+        case "hub-launch":
+            run_hub_launch(hub_set_path=args.hub_set, peppy_run_id=args.peppy_run_id)
         case "publish":
-            run_publish(plan_path=args.plan, archives_dir=args.archives)
+            run_publish(
+                plan_path=args.plan,
+                archives_dir=args.archives,
+                hub_set_path=args.hub_set,
+            )
 
 
 def main() -> None:

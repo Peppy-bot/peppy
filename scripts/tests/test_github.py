@@ -30,6 +30,10 @@ UPLOAD_URL = (
 API_BASE = "https://api.github.com/repos/test-owner/test-repo"
 
 
+def test_the_api_url_of_a_repository_is_its_rest_api_root() -> None:
+    assert SLUG.api_url == API_BASE
+
+
 @pytest.fixture()
 def asset_file(tmp_path: Path) -> Path:
     p = tmp_path / "peppy-test.tgz"

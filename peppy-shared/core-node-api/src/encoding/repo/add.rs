@@ -6,7 +6,9 @@ use capnp::message::Builder;
 use crate::repo_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::encoding::{decode_message, encode_message};
+
+use super::git_ref::{GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, decode_git_repo_ref};
 
 /// Discriminant for the type of repository source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -44,7 +46,7 @@ pub enum RepoSource {
     Fs(PathBuf),
     Git {
         repo_url: String,
-        repo_ref: Option<String>,
+        repo_ref: GitRepoRef,
     },
 }
 
@@ -62,18 +64,22 @@ impl RepoSource {
         }
     }
 
-    /// Human-readable label for CLI output.
+    /// Human-readable label for CLI output, as `build` reads the source.
     ///
     /// - `Fs`: path as-written
-    /// - `Git`: `"url (ref: r)"` when a ref is configured, else `"url"`. Code
-    ///   paths that have access to the actual checked-out ref (e.g. the
-    ///   packages cache) may prefer to build their own label.
-    pub fn display_label(&self) -> String {
+    /// - `Git`: `"url (ref: r)"` when a ref is configured, else `"url"`. An
+    ///   entry on `@{peppy-release}` also names the ref `build` reads for
+    ///   it: `"url (ref: @{peppy-release}, reads peppy-release/v0.31.2)"`.
+    pub fn display_label(&self, build: &PeppyBuild) -> String {
         match self {
             RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
-            RepoSource::Git { repo_url, repo_ref } => match repo_ref {
-                Some(r) if !r.is_empty() => format!("{repo_url} (ref: {r})"),
-                _ => repo_url.clone(),
+            RepoSource::Git { repo_url, repo_ref } => match (repo_ref, repo_ref.read_ref(build)) {
+                (GitRepoRef::PeppyRelease, Some(read)) => format!(
+                    "{repo_url} (ref: {PEPPY_RELEASE_REF}, reads {})",
+                    read.short_name()
+                ),
+                (_, Some(read)) => format!("{repo_url} (ref: {})", read.short_name()),
+                (_, None) => repo_url.clone(),
             },
         }
     }
@@ -99,7 +105,7 @@ impl RepoAddRequest {
         }
     }
 
-    pub fn new_git(repo_url: impl Into<String>, repo_ref: Option<String>) -> Self {
+    pub fn new_git(repo_url: impl Into<String>, repo_ref: GitRepoRef) -> Self {
         Self {
             source: RepoSource::Git {
                 repo_url: repo_url.into(),
@@ -136,7 +142,7 @@ impl RepoAddRequest {
                 RepoSource::Git { repo_url, repo_ref } => {
                     let mut git = source.init_git();
                     git.set_repo_url(repo_url);
-                    git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
+                    git.set_repo_ref(repo_ref.to_string().as_str());
                 }
             }
         }
@@ -164,7 +170,7 @@ impl RepoAddRequest {
             Which::Git(git) => {
                 let git = git?;
                 let repo_url = git.get_repo_url()?.to_str()?.to_owned();
-                let repo_ref = optional_text(git.get_repo_ref()?.to_str()?);
+                let repo_ref = decode_git_repo_ref(git.get_repo_ref()?.to_str()?)?;
                 RepoSource::Git { repo_url, repo_ref }
             }
         };
@@ -259,47 +265,60 @@ mod tests {
         assert_eq!(
             RepoSource::Git {
                 repo_url: "https://github.com/org/repo".to_string(),
-                repo_ref: None,
+                repo_ref: GitRepoRef::RemoteHead,
             }
             .kind(),
             RepoSourceKind::Git
         );
     }
 
+    fn git(repo_ref: GitRepoRef) -> RepoSource {
+        RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref,
+        }
+    }
+
     #[test]
     fn source_display_label_fs_is_path() {
         let src = RepoSource::Fs(PathBuf::from("/abs/path/to/repo"));
-        assert_eq!(src.display_label(), "/abs/path/to/repo");
+        assert_eq!(
+            src.display_label(&PeppyBuild::Unreleased),
+            "/abs/path/to/repo"
+        );
     }
 
     #[test]
     fn source_display_label_git_with_ref() {
-        let src = RepoSource::Git {
-            repo_url: "https://github.com/org/repo".to_string(),
-            repo_ref: Some("main".to_string()),
-        };
+        let src = git(GitRepoRef::Named("main".to_string()));
         assert_eq!(
-            src.display_label(),
+            src.display_label(&PeppyBuild::Release("v0.31.2".to_owned())),
             "https://github.com/org/repo (ref: main)"
         );
     }
 
     #[test]
     fn source_display_label_git_without_ref() {
-        let src = RepoSource::Git {
-            repo_url: "https://github.com/org/repo".to_string(),
-            repo_ref: None,
-        };
-        assert_eq!(src.display_label(), "https://github.com/org/repo");
+        let src = git(GitRepoRef::RemoteHead);
+        assert_eq!(
+            src.display_label(&PeppyBuild::Unreleased),
+            "https://github.com/org/repo"
+        );
     }
 
+    /// An entry on `@{peppy-release}` names the ref the running build reads
+    /// for it, which is the only way to tell from `repo list` what it holds.
     #[test]
-    fn source_display_label_git_empty_ref() {
-        let src = RepoSource::Git {
-            repo_url: "https://github.com/org/repo".to_string(),
-            repo_ref: Some(String::new()),
-        };
-        assert_eq!(src.display_label(), "https://github.com/org/repo");
+    fn source_display_label_git_on_the_peppy_release_names_what_it_reads() {
+        let src = git(GitRepoRef::PeppyRelease);
+        assert_eq!(
+            src.display_label(&PeppyBuild::Release("v0.31.2".to_owned())),
+            "https://github.com/org/repo (ref: @{peppy-release}, reads peppy-release/v0.31.2)"
+        );
+        assert_eq!(
+            src.display_label(&PeppyBuild::Unreleased),
+            "https://github.com/org/repo (ref: @{peppy-release}, reads main)"
+        );
     }
 
     #[test]
@@ -316,17 +335,37 @@ mod tests {
 
     #[test]
     fn add_request_new_git_with_ref_roundtrips() {
-        let request =
-            RepoAddRequest::new_git("https://github.com/org/repo", Some("main".to_string()));
-        assert_eq!(
-            request.source,
-            RepoSource::Git {
-                repo_url: "https://github.com/org/repo".to_string(),
-                repo_ref: Some("main".to_string()),
-            }
+        let request = RepoAddRequest::new_git(
+            "https://github.com/org/repo",
+            GitRepoRef::Named("main".to_string()),
         );
+        assert_eq!(request.source, git(GitRepoRef::Named("main".to_string())));
         let bytes = request.encode().expect("encode");
         assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
+    }
+
+    #[test]
+    fn add_request_on_the_peppy_release_roundtrips() {
+        let request =
+            RepoAddRequest::new_git("https://github.com/org/repo", GitRepoRef::PeppyRelease);
+        let bytes = request.encode().expect("encode");
+        assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
+    }
+
+    /// A ref peppy cannot read never crosses the wire as a request the
+    /// daemon would act on: decoding it fails.
+    #[test]
+    fn add_request_decode_refuses_a_ref_peppy_cannot_read() {
+        let mut builder = Builder::new_default();
+        {
+            let request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
+            let mut git = request.init_source().init_git();
+            git.set_repo_url("https://github.com/org/repo");
+            git.set_repo_ref("@{upstream}");
+        }
+        let bytes = encode_message(&builder).expect("encode");
+        let error = RepoAddRequest::decode(&bytes).expect_err("an unknown keyword");
+        assert!(error.to_string().contains("@{peppy-release}"), "{error}");
     }
 
     #[test]
@@ -341,7 +380,8 @@ mod tests {
     fn add_request_without_id_decodes_as_auto() {
         // A request that never pins an id — including bytes a pre-id sender
         // produced — must decode with `id: None`, never a bogus explicit id.
-        let request = RepoAddRequest::new_git("https://github.com/org/repo", None);
+        let request =
+            RepoAddRequest::new_git("https://github.com/org/repo", GitRepoRef::RemoteHead);
         assert_eq!(request.id, None);
         let bytes = request.encode().expect("encode");
         assert_eq!(RepoAddRequest::decode(&bytes).expect("decode").id, None);
@@ -349,8 +389,9 @@ mod tests {
 
     #[test]
     fn add_request_new_git_without_ref_roundtrips() {
-        // An empty ref on the wire decodes back to None via optional_text.
-        let request = RepoAddRequest::new_git("https://github.com/org/repo", None);
+        // An empty ref on the wire decodes back to the remote HEAD.
+        let request =
+            RepoAddRequest::new_git("https://github.com/org/repo", GitRepoRef::RemoteHead);
         let bytes = request.encode().expect("encode");
         assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
     }

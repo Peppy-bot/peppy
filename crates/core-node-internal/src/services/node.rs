@@ -53,8 +53,8 @@ pub(crate) use add::{NodeAddActionContext, dispatch_node_add, log_label_from_sou
 pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
 pub(crate) use feedback::{FeedbackLine, FeedbackStream, stdout_line_sender};
 pub(crate) use git_utils::{
-    checkout_configured_ref, checkout_repo_ref, clone_repo_shallow, clone_with_progress,
-    format_bytes, head_commit,
+    checkout_read_ref, checkout_repo_ref, clone_repo_shallow, clone_with_progress, format_bytes,
+    head_commit,
 };
 pub(crate) use logging::{create_action_log_file, write_error_to_log};
 pub(crate) use run::{

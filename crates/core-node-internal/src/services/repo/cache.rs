@@ -30,7 +30,7 @@ use crate::Result;
 use crate::services::repo::RepoOwners;
 use crate::services::repo::refresh::read_or_create_repos;
 use config::node::Cardinality;
-use core_node_api::encoding::RepoItemKind;
+use core_node_api::encoding::{ReadRef, RepoItemKind};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::repository::{ItemName, ItemTag, ManifestFingerprint, PinKind, PinnedItem};
 use parking_lot::Mutex;
@@ -255,6 +255,17 @@ pub(crate) struct RepoItems {
     pub contracts: Vec<ContractCacheEntry>,
     pub pairings: Vec<PairingCacheEntry>,
     pub mcp_exposures: Vec<McpExposureCacheEntry>,
+}
+
+impl RepoItems {
+    /// How many entries there are, across the five kinds.
+    pub(crate) fn len(&self) -> usize {
+        self.nodes.len()
+            + self.launchers.len()
+            + self.contracts.len()
+            + self.pairings.len()
+            + self.mcp_exposures.len()
+    }
 }
 
 /// Uniform view over the five cache-entry kinds, so the cache plumbing
@@ -660,10 +671,10 @@ pub(crate) fn excluded_repositories_hint(peppy_dirs: &PeppyDirs) -> String {
         .map(|e| e.identity.as_str())
         .collect();
     identities.sort();
-    let plural = if identities.len() == 1 { "y" } else { "ies" };
     format!(
-        ". {} excluded repositor{plural} ({}) {} not indexed at all and may have provided it",
+        ". {} excluded {} ({}) {} not indexed at all and may have provided it",
         identities.len(),
+        crate::services::repo::repository_noun(identities.len()),
         identities.join(", "),
         if identities.len() == 1 { "is" } else { "are" },
     )
@@ -690,7 +701,9 @@ pub fn mcp_exposures_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 }
 
 pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
-    peppy_dirs.conf_dir().join("repositories.json5")
+    peppy_dirs
+        .conf_dir()
+        .join(crate::services::repo::REPOS_FILE)
 }
 
 /// Reads `contracts.json5` (no memoization: contract resolution is a
@@ -754,14 +767,15 @@ pub(crate) fn resolve_cached_artifact_path(
         EntryOrigin::Fs { path } => Ok(path.clone()),
         EntryOrigin::Git {
             repo_url,
-            repo_ref,
+            read_ref,
             commit,
             path,
+            ..
         } => {
             let checkout = crate::services::node::cache::git::ensure_checkout_at_commit(
                 peppy_dirs,
                 repo_url,
-                repo_ref.as_deref(),
+                read_ref.as_ref().map(ReadRef::git_name).as_deref(),
                 commit,
                 on_feedback,
             )?;
@@ -890,14 +904,15 @@ pub(crate) fn resolve_pinned_bytes(
         EntryOrigin::Fs { path } => path.clone(),
         EntryOrigin::Git {
             repo_url,
-            repo_ref,
+            read_ref,
             commit,
             path,
+            ..
         } => {
             let checkout = crate::services::node::cache::git::ensure_checkout_at_commit(
                 peppy_dirs,
                 repo_url,
-                repo_ref.as_deref(),
+                read_ref.as_ref().map(ReadRef::git_name).as_deref(),
                 commit,
                 on_feedback,
             )
@@ -1065,6 +1080,27 @@ pub(crate) mod test_support {
         GitCommit::parse(&fingerprint(seed).as_str()[..40]).expect("40 hex chars is a commit")
     }
 
+    /// Writes `content` as the `repositories.json5` of `peppy_dirs`.
+    pub(crate) fn write_repos(peppy_dirs: &PeppyDirs, content: &str) {
+        write_conf_file(peppy_dirs, crate::services::repo::REPOS_FILE, content);
+    }
+
+    /// Writes `content` as the `excluded_repositories.json5` of `peppy_dirs`.
+    pub(crate) fn write_excluded_repos(peppy_dirs: &PeppyDirs, content: &str) {
+        write_conf_file(
+            peppy_dirs,
+            crate::services::repo::EXCLUDED_REPOS_FILE,
+            content,
+        );
+    }
+
+    fn write_conf_file(peppy_dirs: &PeppyDirs, file_name: &str, content: &str) {
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).expect("create the conf dir");
+        std::fs::write(conf_dir.join(file_name), content)
+            .unwrap_or_else(|e| panic!("write {file_name}: {e}"));
+    }
+
     pub(crate) fn fs_origin(path: &str) -> EntryOrigin {
         EntryOrigin::Fs {
             path: PathBuf::from(path),
@@ -1080,6 +1116,7 @@ pub(crate) mod test_support {
         EntryOrigin::Git {
             repo_url: repo_url.to_owned(),
             repo_ref: Some(repo_ref.to_owned()),
+            read_ref: Some(ReadRef::Named(repo_ref.to_owned())),
             commit: commit(seed),
             path: RepoRelativePath::parse(path).expect("test path is repository-relative"),
         }
@@ -1717,6 +1754,7 @@ mod tests {
                 "demo",
                 EntryOrigin::Git {
                     repo_url: repo_url.clone(),
+                    read_ref: Some(ReadRef::Named(branch.clone())),
                     repo_ref: Some(branch),
                     commit,
                     path: RepoRelativePath::parse("launchers/demo.json5").unwrap(),
@@ -1834,6 +1872,7 @@ mod tests {
             sha,
             EntryOrigin::Git {
                 repo_url: source_repo_dir.display().to_string(),
+                read_ref: Some(ReadRef::Named(branch.clone())),
                 repo_ref: Some(branch),
                 commit,
                 path: RepoRelativePath::parse("camera/peppy.json5").unwrap(),
@@ -1874,6 +1913,7 @@ mod tests {
             pinned_sha.clone(),
             EntryOrigin::Git {
                 repo_url: source_repo_dir.display().to_string(),
+                read_ref: Some(ReadRef::Named(branch.clone())),
                 repo_ref: Some(branch),
                 commit,
                 path: RepoRelativePath::parse("camera/peppy.json5").unwrap(),
@@ -1909,6 +1949,7 @@ mod tests {
             fingerprint("whatever"),
             EntryOrigin::Git {
                 repo_url: source_repo_dir.display().to_string(),
+                read_ref: Some(ReadRef::Named(branch.clone())),
                 repo_ref: Some(branch),
                 commit,
                 path: RepoRelativePath::parse("elsewhere/peppy.json5").unwrap(),

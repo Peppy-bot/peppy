@@ -5,7 +5,8 @@ name: Parallel release
 # Actions tab. Each archive builds natively on a runner of its own platform,
 # all three at once, so no runner has to start a VM:
 #
-#   prepare ──> provision (x3) ──> build (x3) ──> install-test (x3) ──> publish
+#   prepare ──> provision (x3) ──> build (x3) ─┬─> install-test (x3) ──────┬─> publish
+#                                              └─> hub-set ──> hub-launch ─┘
 #
 # The provision jobs build what every archive embeds but only one platform
 # builds natively: the peppylib bindings (macOS) and apptainer (one Linux
@@ -17,13 +18,32 @@ name: Parallel release
 # prints them. The install-test jobs install each archive before publish makes
 # it the one users download.
 #
+# The release also publishes the hub content its peppy reads. hub-set records
+# the commit of each hub the release tests (the hubs of
+# .github/actions/hub-ci-peppy/resolve.py) and checks every hub at its commit
+# with the x86_64 archive; hub-launch runs launchers-hub's tests, which launch
+# every launcher, on those commits and that archive. Before it publishes the
+# release, publish tags each hub `peppy-release/<tag>` at its recorded commit:
+# that tag is where a peppy of this version reads its default hubs. The
+# launchers-hub run takes up to about 75 minutes and publish waits for it, so
+# publish starts about 75 to 80 minutes after the builds end.
+# Nothing is published when a job before publish fails, or when publish fails
+# before its release step.
+#
+# A merge into `dev` while the release runs stops it at the first step of
+# publish, before any hub is tagged: the release tags the commit its archives
+# come from and fast-forwards `main` to `dev`. Start a new run from the new
+# `dev` tip.
+#
 # The Linux stages run on RunsOn runners: the x86_64 ones in the shape of the
 # cargo suites of tests.yml with the peppy-ubuntu24 image, the aarch64 ones on
 # `release-arm64` with its arm64 build, peppy-ubuntu24-aarch64 (see
-# .github/runs-on.yml). prepare and publish run on demand, never spot: publish
-# creates the release and moves `dev` and `main`, and prepare can push a docs
-# pull request branch, so neither may stop part way and start again. The
-# provision and build stages run on spot. They only build and upload an
+# .github/runs-on.yml). The 2 vCPU jobs, prepare, hub-set, hub-launch and
+# publish, run on demand, never spot. They cost little, and three of them act
+# outside the run: prepare can push a docs pull request branch, hub-launch
+# starts a launchers-hub run, and publish tags the hubs, creates the release
+# and moves `dev` and `main`. None of those may stop part way and start again.
+# The provision and build stages run on spot. They only build and upload an
 # artifact, so a stage that AWS interrupts can run again: once this run ends,
 # RunsOn re-runs its failed jobs and the jobs that wait on them in a second
 # attempt, the interrupted one on demand, and that attempt reads the release
@@ -37,7 +57,10 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag of the release (example v0.0.1)
+        description: >-
+          Tag of the release, v<MAJOR>.<MINOR>.<PATCH> with digits only (example
+          v0.31.2): a peppy binary reads the hubs at their tag
+          peppy-release/<its version>
         required: true
         type: string
       minor_docs_pr:
@@ -57,22 +80,38 @@ on:
 # part way can leave a published release whose notes are not yet committed on
 # `dev`. So every job has a timeout: a stage that hangs would otherwise hold
 # the group, and every later release with it, for GitHub's default of six
-# hours. Each is about three times the slowest run of its stage in recent
-# releases; publish has more room, since a publish stopped part way has to be
-# re-run to finish (see publish).
+# hours. The timeouts of prepare, provision and build are about three times
+# the slowest run of the stage in recent releases; publish has more room,
+# since a publish stopped part way has to be re-run to finish (see publish).
+# hub-set and hub-launch set their own.
 concurrency:
   group: release
   cancel-in-progress: false
 
-# Every write (the release and its archives, the docs pull requests, and the
-# pushes to `dev` and `main`) goes through an installation token of the
-# peppy-release-bot GitHub App, so the jobs' own token only reads. The App's
-# client ID and private key are secrets of the `release` environment, whose
-# deployment branch rule admits runs from `dev` alone, and prepare and publish
-# are the only jobs that name it. Each of the two makes its own token, scoped
-# to this repository and to the permissions its writes need. A token lasts an
-# hour from the step that makes it, so a job's writes have to fit in that
-# hour, and it is revoked when its job ends.
+# Every write (the release and its archives, the docs pull requests, the
+# pushes to `dev` and `main`, the dispatch of launchers-hub's tests and the hub
+# tags) goes through an installation token of the peppy-release-bot GitHub
+# App, so the jobs' own token only reads. The App's client ID and private key
+# are secrets of the `release` environment, whose deployment branch rule admits
+# runs from `dev` alone. Three jobs make a token, each scoped to the
+# repositories and the permissions its writes need:
+#
+# - prepare: this repository, contents and pull requests, for the docs pull
+#   requests.
+# - hub-launch: launchers-hub, actions, for the dispatch of its tests alone.
+# - publish: this repository and every hub of the hub set, contents and
+#   workflows, for the release, the pushes to `dev` and `main`, and the hub
+#   tags.
+#
+# A token lasts an hour from the step that makes it, so a job's writes have to
+# fit in that hour, and it is revoked when its job ends. hub-launch reads the
+# launchers-hub run it dispatched with the job's own token, which lasts as
+# long as the job.
+#
+# The environment also holds PRIVATE_NODES_HUB_DEPLOY_KEY, the deploy key that
+# reads private-nodes-hub. hub-set loads it and reads the public hubs over
+# https, so the steps that read the hubs need no App permission on them.
+# hub-set names the environment for that key alone.
 permissions:
   contents: read
 
@@ -283,22 +322,156 @@ jobs:
         with:
           archive: archive-${{ matrix.target }}
 
-  # Collects the three archives and publishes the release, then commits the
-  # notes on `dev` and fast-forwards `main`. The peppy-release-bot App is the
-  # bypass actor of the branch rulesets on `dev` and `main`, which is what
-  # lets its two direct pushes land; the checkout keeps its token for them.
-  # The token writes contents (the release, its archives and both pushes) and
-  # workflows: the fast-forward of `main` carries every commit `dev` took
+  # Records the hub set of the release: the commit of every hub the release
+  # tests, each hub at its tag `peppy-release/<tag>` where an earlier run of
+  # this version left one, else at the head of its main. The artifact hub-set
+  # holds it, and every later job reads the commits it records, never a
+  # branch: main can move while the release runs. The job's `hubs` output
+  # names the hubs of the set, for the token of publish, which tags them all.
+  # A hub that already carries the tag was tagged by an earlier run of this
+  # version that stopped in publish; nobody can move or delete the tag, so the
+  # set holds that hub at the tagged commit, and the job summary names it.
+  #
+  # The job then checks the set with the x86_64 archive of this release (the
+  # hub-check stage, see scripts/functions/release_install_check.py): an
+  # isolated daemon reads every hub of the set at its commit with `peppy repo
+  # refresh --strict`, and each hub's repository index is checked at its
+  # commit, as the hub's own CI checks it.
+  hub-set:
+    needs: build
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
+    environment: release
+    timeout-minutes: 30
+    outputs:
+      hubs: ${{ steps.record.outputs.hubs }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Before the deploy key is loaded, so the provisioning never reaches it.
+      - uses: ./.github/actions/release-host-env
+
+      # The key is loaded into an ssh-agent whose socket every later step of
+      # the job reads private-nodes-hub through: the recording of the set, and
+      # the daemon and the checkouts of the check.
+      - name: Load the deploy key of private-nodes-hub
+        env:
+          PRIVATE_NODES_HUB_DEPLOY_KEY: ${{ secrets.PRIVATE_NODES_HUB_DEPLOY_KEY }}
+        run: ./.github/actions/hub-ci-peppy/load-private-hub-key.sh
+
+      - name: Record the hub commits this release tests and tags
+        id: record
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          python3 .github/actions/hub-ci-peppy/resolve.py release-set \
+            --tag "$TAG" \
+            --output "$RUNNER_TEMP/hub-set/hub-set.json"
+
+      # A re-run of this job records the set again, and replaces the set of
+      # the attempt before, which the jobs after it then re-run with.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hub-set
+          path: ${{ runner.temp }}/hub-set/
+          retention-days: 1
+          overwrite: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: archive-x86_64-unknown-linux-gnu
+          path: ${{ runner.temp }}/archive
+
+      - name: Check every hub of the set with the x86_64 archive
+        run: |
+          ./scripts/parallel_release.sh hub-check \
+            --hub-set "$RUNNER_TEMP/hub-set/hub-set.json" \
+            --archive "$RUNNER_TEMP/archive/peppy-x86_64-unknown-linux-gnu.tgz" \
+            < /dev/null
+
+  # Runs launchers-hub's tests on the hub set and on the x86_64 archive of this
+  # release run: the run the dispatch starts checks out the launchers-hub
+  # commit of the set, pins every other hub at its commit of the set, and plans
+  # and launches every launcher combination. It runs at the same time as
+  # install-test. The release token dispatches the run and can do nothing else:
+  # it is scoped to launchers-hub and to actions. The run takes up to about 75
+  # minutes, longer than the hour that token lasts, so the stage reads it with
+  # the job's own token, which reads the public launchers-hub for as long as
+  # the job runs. The timeout covers a full run with room to spare; the stage
+  # gives up on its own after 170 minutes, naming the run.
+  hub-launch:
+    needs: hub-set
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
+    environment: release
+    timeout-minutes: 180
+    steps:
+      - name: Make the release token
+        id: release-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.PEPPY_RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.PEPPY_RELEASE_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: launchers-hub
+          permission-actions: write
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/release-host-env
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: hub-set
+          path: ${{ runner.temp }}/hub-set
+
+      - name: Launch every launcher of the hub set
+        env:
+          PEPPY_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
+          PEPPY_JOB_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/parallel_release.sh hub-launch \
+            --hub-set "$RUNNER_TEMP/hub-set/hub-set.json" \
+            --peppy-run-id "$GITHUB_RUN_ID" \
+            < /dev/null
+
+  # Collects the three archives and the hub set, and publishes, in this order
+  # (see run_publish in scripts/functions/parallel_release.py):
+  #
+  # 1. `dev` is checked to be where the builds left it. A merge into `dev`
+  #    since then stops the release here, before any hub is tagged.
+  # 2. Each hub gets the tag `peppy-release/<tag>` at the commit of the hub
+  #    set. A tag already there at that commit stays; a tag at another commit
+  #    stops the release. No tag is ever moved or deleted.
+  # 3. The x86_64 archive, installed with a PEPPY_HOME of its own, must read
+  #    every default hub at that tag (`peppy repo refresh --strict`).
+  # 4. The release is published, the notes are committed on `dev`, and
+  #    `main` is fast-forwarded to it.
+  #
+  # A failure in step 1, 2 or 3 publishes nothing. A hub tag without a
+  # published release is read by no peppy, and a new run of the same version
+  # tests that hub at the tagged commit.
+  #
+  # The peppy-release-bot App is the bypass actor of the branch rulesets on
+  # `dev` and `main`, which is what lets its two direct pushes land; the
+  # checkout keeps its token for them. The token covers this repository and
+  # every hub of the hub set, which hub-set names in its `hubs` output. It
+  # writes contents (the release, its archives, both pushes and the hub tags)
+  # and workflows: the fast-forward of `main` carries every commit `dev` took
   # since the last release, and GitHub refuses a push that changes a file
   # under .github/workflows/ from an App token without that permission.
   #
   # A publish that fails is started again with "Re-run failed jobs" while the
   # run's artifacts exist (one day). The re-run finds what the failed attempt
-  # finished (the release published, the notes committed, `main`
+  # finished (the hub tags, the release published, the notes committed, `main`
   # fast-forwarded) and does only the rest. Past that day, a publish that
   # failed before the release went live is cut again from a new run.
   publish:
-    needs: [prepare, build, install-test]
+    needs: [prepare, build, install-test, hub-set, hub-launch]
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     environment: release
     timeout-minutes: 20
@@ -310,7 +483,7 @@ jobs:
           client-id: ${{ secrets.PEPPY_RELEASE_BOT_CLIENT_ID }}
           private-key: ${{ secrets.PEPPY_RELEASE_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
+          repositories: ${{ github.event.repository.name }},${{ needs.hub-set.outputs.hubs }}
           permission-contents: write
           permission-workflows: write
 
@@ -335,12 +508,18 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/archives
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: hub-set
+          path: ${{ runner.temp }}/hub-set
+
       # Cancelling the run signals this step's shell alone: without the trap,
       # the shell exits and the release script carries on uploading to (or
       # publishing) the draft on its own. The trap hands the interrupt to
-      # pixi, which passes it on to the script so it deletes the draft before
-      # exiting, and ignores the runner's follow-up SIGTERM so that cleanup is
-      # not cut short. A signal ends `wait` early, hence the loop.
+      # pixi, which passes it on to the script so it stops the daemon of the
+      # install check and deletes the draft before exiting, and ignores the
+      # runner's follow-up SIGTERM so that cleanup is not cut short. A signal
+      # ends `wait` early, hence the loop.
       - name: Publish the release
         env:
           PEPPY_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
@@ -348,6 +527,7 @@ jobs:
           ./scripts/parallel_release.sh publish \
             --plan "$RUNNER_TEMP/release-plan/release-plan.json" \
             --archives "$RUNNER_TEMP/archives" \
+            --hub-set "$RUNNER_TEMP/hub-set/hub-set.json" \
             < /dev/null &
           publish_pid=$!
           trap 'trap "" INT TERM; kill -INT "$publish_pid" || true' INT TERM

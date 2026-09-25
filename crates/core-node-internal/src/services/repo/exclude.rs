@@ -1,7 +1,8 @@
 use crate::Result;
 use crate::services::repo::refresh::reindex_after_change;
 use crate::services::repo::{
-    json_entry_identity, normalize_repo_entries, repo_source_to_json, source_identity,
+    EXCLUDED_REPOS_FILE, entry_identity, normalize_repo_entries, parse_repo_entry,
+    repo_source_to_json, source_identity,
 };
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
@@ -70,7 +71,7 @@ async fn handle_repo_exclude_request(
 pub(crate) fn read_excluded_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> {
     let conf_dir = peppy_dirs.conf_dir();
     std::fs::create_dir_all(&conf_dir)?;
-    let repos_path = conf_dir.join("excluded_repositories.json5");
+    let repos_path = conf_dir.join(EXCLUDED_REPOS_FILE);
 
     let mut repos: Vec<Value> = if repos_path.exists() {
         let content = std::fs::read_to_string(&repos_path)?;
@@ -118,16 +119,11 @@ impl ExclusionSet {
         let mut entries = Vec::new();
 
         for e in &raw {
-            let Some(kind) = e
-                .get("type")
-                .and_then(|v| v.as_str())
-                .and_then(RepoSourceKind::parse)
-            else {
+            let Ok(source) = parse_repo_entry(e) else {
                 continue;
             };
-            let Some(identity) = json_entry_identity(e) else {
-                continue;
-            };
+            let kind = source.kind();
+            let identity = source_identity(&source);
 
             if kind == RepoSourceKind::Fs {
                 fs_paths.push(PathBuf::from(&identity));
@@ -176,7 +172,7 @@ fn handle_repo_exclude_request_inner(
         ));
     }
 
-    let repos_path = peppy_dirs.conf_dir().join("excluded_repositories.json5");
+    let repos_path = peppy_dirs.conf_dir().join(EXCLUDED_REPOS_FILE);
 
     let _guard = crate::services::repo::repos_file_lock().lock();
 
@@ -190,7 +186,7 @@ fn handle_repo_exclude_request_inner(
     let new_identity = identity.trim();
     let is_duplicate = repos
         .iter()
-        .any(|entry| json_entry_identity(entry).is_some_and(|existing| existing == new_identity));
+        .any(|entry| entry_identity(entry).is_some_and(|existing| existing == new_identity));
 
     if is_duplicate {
         return Ok((

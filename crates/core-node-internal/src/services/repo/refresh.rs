@@ -2,32 +2,32 @@ use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::cache as node_cache;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
-use crate::services::node::{checkout_configured_ref, clone_repo_shallow, head_commit};
-use crate::services::repo::cache::{
-    ContractCacheEntry, LauncherCacheEntry, McpExposureCacheEntry, NodeCacheEntry,
-    PairingCacheEntry, RepoCacheEntry, RepoItems, write_repo_cache,
-};
+use crate::services::node::{checkout_read_ref, clone_repo_shallow, head_commit};
+use crate::services::repo::cache::{RepoCacheEntry, RepoItems, write_repo_cache};
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::index::{
     PublishedItem, ReadSource, build_cache_entries, read_published_items,
 };
+use crate::services::repo::init::write_default_repos;
 use crate::services::repo::status::{self, RepoStatus, RepoStatusFailure};
-use crate::services::repo::{RepoOwners, normalize_repo_entries, source_identity};
+use crate::services::repo::{
+    REPOS_FILE, RepoOwners, normalize_repo_entries, parse_repo_entry, source_identity,
+};
 use core_node_api::ActionId;
 use core_node_api::encoding::{
-    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
-    RepoSourceKind,
+    GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, ReadRef, RepoRefreshFeedback, RepoRefreshGoal,
+    RepoRefreshGoalResponse, RepoRefreshResult, RepoSource, RepoSourceKind,
 };
 use core_node_api::names;
-use daemon_config::consts::PeppyDirs;
+use daemon_config::consts::{PeppyDirs, peppy_build};
 use daemon_config::repository::GitCommit;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
 use serde_json::Value;
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeSet, HashSet};
+use std::path::Path;
 use std::time::SystemTime;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -133,60 +133,23 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 }
             });
 
-            let dirs = peppy_dirs;
-            let scan = tokio::task::spawn_blocking(move || -> Result<RefreshCounts> {
-                let _guard = crate::services::repo::refresh_lock().lock();
-                let mut emit = |fb: RepoRefreshFeedback| {
-                    let _ = tx.send(fb);
-                };
-                let refreshed = process_refresh(&dirs, SystemTime::now(), &mut emit)?;
-                // Written whether or not a repository failed: the whole
-                // point of containing a failure is that the repositories
-                // that did update take effect, and that the ones that
-                // did not keep the entries they last published. Caches
-                // store every entry so that `repo list` can display every
-                // source and users can pick a specific `sha256`.
-                write_all_caches(&dirs, &refreshed)?;
-                Ok(RefreshCounts {
-                    nodes: count_unique(&refreshed.nodes),
-                    launchers: count_unique(&refreshed.launchers),
-                    contracts: count_unique(&refreshed.contracts),
-                    pairings: count_unique(&refreshed.pairings),
-                    mcp_exposures: count_unique(&refreshed.mcp_exposures),
-                    failures: refreshed.failures,
-                })
-            })
+            let refreshed = refresh_and_write_caches(
+                &peppy_dirs,
+                peppy_build(),
+                RefreshScope::Every,
+                SystemTime::now(),
+                move |feedback| {
+                    let _ = tx.send(feedback);
+                },
+            )
             .await;
 
-            let result = match scan {
-                Ok(Ok(counts)) if counts.failures.is_empty() => RepoRefreshResult::success(
-                    counts.nodes,
-                    counts.launchers,
-                    counts.contracts,
-                    counts.pairings,
-                    counts.mcp_exposures,
-                ),
-                // A repository that could not be read does not fail the
-                // run. The refresh did everything it could: it published
-                // the caches, every other repository is current, and this
-                // one still serves what it last published. Reporting that
-                // as a failure takes down whatever ran the refresh, which
-                // on a fresh install is the installer itself, over a hub
-                // that was briefly unreachable. The report names them so
-                // the caller can say so and offer the retry.
-                Ok(Ok(counts)) => RepoRefreshResult::success_with_failure_report(
-                    counts.nodes,
-                    counts.launchers,
-                    counts.contracts,
-                    counts.pairings,
-                    counts.mcp_exposures,
-                    failure_report(&counts.failures),
-                ),
-                Ok(Err(e)) => {
+            let result = match refreshed {
+                Ok(refreshed) => refresh_result(&refreshed),
+                Err(e) => {
                     warn!("Repo refresh failed: {}", e);
                     RepoRefreshResult::failure(e.to_string())
                 }
-                Err(e) => RepoRefreshResult::failure(format!("task panicked: {}", e)),
             };
 
             // Flush all pending feedbacks before completing: the end-of-stream
@@ -201,17 +164,34 @@ impl GoalHandler for RepoRefreshGoalHandler {
     }
 }
 
-/// Unique-identity counts for the five caches, plus the repositories
-/// that failed. What one refresh has to report back. Named fields rather
-/// than a tuple: five `u32`s in a row are indistinguishable at the call
-/// site, and swapping two of them would go unnoticed.
-struct RefreshCounts {
-    nodes: u32,
-    launchers: u32,
-    contracts: u32,
-    pairings: u32,
-    mcp_exposures: u32,
-    failures: Vec<RepoFailure>,
+/// What one refresh reports back: the unique identities in each of the
+/// five caches, and the repositories that failed.
+///
+/// A repository that could not be read does not fail the run. The refresh
+/// did everything it could: it published the caches, every other
+/// repository is current, and this one still serves what it last
+/// published. Reporting that as a failure takes down whatever ran the
+/// refresh, which on a fresh install is the installer itself, over a hub
+/// that was briefly unreachable. The report names them so the caller can
+/// say so and offer the retry.
+fn refresh_result(refreshed: &RefreshedRepos) -> RepoRefreshResult {
+    let items = &refreshed.items;
+    let nodes = count_unique(&items.nodes);
+    let launchers = count_unique(&items.launchers);
+    let contracts = count_unique(&items.contracts);
+    let pairings = count_unique(&items.pairings);
+    let mcp_exposures = count_unique(&items.mcp_exposures);
+    if refreshed.failures.is_empty() {
+        return RepoRefreshResult::success(nodes, launchers, contracts, pairings, mcp_exposures);
+    }
+    RepoRefreshResult::success_with_failure_report(
+        nodes,
+        launchers,
+        contracts,
+        pairings,
+        mcp_exposures,
+        failure_report(&refreshed.failures),
+    )
 }
 
 /// One message naming every repository that failed and why, so a user
@@ -237,21 +217,157 @@ pub(crate) fn failure_report(failures: &[RepoFailure]) -> String {
 /// path, where a user who just added, removed or excluded a repository
 /// to unblock themselves needs to know whether it worked.
 pub(crate) async fn reindex_after_change(peppy_dirs: &PeppyDirs) -> Option<String> {
-    let dirs = peppy_dirs.clone();
-    let outcome = tokio::task::spawn_blocking(move || -> Result<Vec<RepoFailure>> {
-        let _guard = crate::services::repo::refresh_lock().lock();
-        let refreshed = process_refresh(&dirs, SystemTime::now(), &mut |_| {})?;
-        write_all_caches(&dirs, &refreshed)?;
-        Ok(refreshed.failures)
-    })
+    let refreshed = refresh_and_write_caches(
+        peppy_dirs,
+        peppy_build(),
+        RefreshScope::Every,
+        SystemTime::now(),
+        |_| {},
+    )
     .await;
-
-    match outcome {
-        Ok(Ok(failures)) if failures.is_empty() => None,
-        Ok(Ok(failures)) => Some(failure_report(&failures)),
-        Ok(Err(e)) => Some(format!("re-indexing failed: {e}")),
-        Err(e) => Some(format!("re-indexing task panicked: {e}")),
+    match refreshed {
+        Ok(refreshed) if refreshed.failures.is_empty() => None,
+        Ok(refreshed) => Some(failure_report(&refreshed.failures)),
+        Err(e) => Some(format!("re-indexing failed: {e}")),
     }
+}
+
+/// Refreshes the repositories `scope` names, with `@{peppy-release}`
+/// resolved for `build`, and publishes the caches of the result, under
+/// [`refresh_lock`](crate::services::repo::refresh_lock). Runs on tokio's
+/// blocking pool: a refresh clones repositories over the network. A panic
+/// of the refresh is returned as an error.
+///
+/// The caches are written whether or not a repository failed: the whole
+/// point of containing a failure is that the repositories that did update
+/// take effect, and that the ones that did not keep the entries they last
+/// published. Caches store every entry so that `repo list` can display
+/// every source and users can pick a specific `sha256`.
+pub(crate) async fn refresh_and_write_caches(
+    peppy_dirs: &PeppyDirs,
+    build: PeppyBuild,
+    scope: RefreshScope,
+    now: SystemTime,
+    mut on_feedback: impl FnMut(RepoRefreshFeedback) + Send + 'static,
+) -> Result<RefreshedRepos> {
+    let peppy_dirs = peppy_dirs.clone();
+    tokio::task::spawn_blocking(move || {
+        let _guard = crate::services::repo::refresh_lock().lock();
+        let refreshed = process_refresh(&peppy_dirs, &build, &scope, now, &mut on_feedback)?;
+        write_all_caches(&peppy_dirs, &refreshed)?;
+        Ok(refreshed)
+    })
+    .await?
+}
+
+/// The repositories on `@{peppy-release}` that this machine last read at
+/// another ref than `build` reads for them: after an upgrade or a downgrade,
+/// the release tags of the version that read them, or the `main` of a build
+/// that is not a release.
+///
+/// A repository is judged by its own status line (see [`status_line_of`]).
+/// A repository with no status line of its own has never been read here as
+/// it is configured, so there is nothing of another version to replace, and
+/// the next `repo refresh` reads it.
+pub(crate) fn release_repositories_read_for_another_version(
+    repos: &[Value],
+    exclusions: &ExclusionSet,
+    statuses: &[RepoStatus],
+    build: &PeppyBuild,
+) -> BTreeSet<u64> {
+    let expected_read_ref = GitRepoRef::PeppyRelease.read_ref(build);
+    repos
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id")?.as_u64()?;
+            let source = parse_repo_entry(entry).ok()?;
+            let RepoSource::Git {
+                repo_ref: GitRepoRef::PeppyRelease,
+                ..
+            } = &source
+            else {
+                return None;
+            };
+            let identity = source_identity(&source);
+            if exclusions.is_excluded(&identity) {
+                return None;
+            }
+            let status = status_line_of(statuses, id, &identity)?;
+            (status.read_ref != expected_read_ref).then_some(id)
+        })
+        .collect()
+}
+
+/// The status line of the repository with `id` and `identity`. Matched on
+/// identity as well as id: an id repointed at another path, url or ref is a
+/// different repository, and the line of the old one describes reads this
+/// source never made.
+fn status_line_of<'a>(
+    statuses: &'a [RepoStatus],
+    id: u64,
+    identity: &str,
+) -> Option<&'a RepoStatus> {
+    statuses
+        .iter()
+        .find(|status| status.id == id && status.identity == identity)
+}
+
+/// What [`refresh_release_repositories_for_this_version`] did.
+#[derive(Debug)]
+pub(crate) enum VersionRefresh {
+    /// Every repository on `@{peppy-release}` was read for this version, or
+    /// never read on this machine as it is configured: nothing to read
+    /// again.
+    NotNeeded,
+    /// The repositories with these ids were read again, and these of them
+    /// failed.
+    Refreshed {
+        ids: BTreeSet<u64>,
+        failures: Vec<RepoFailure>,
+    },
+}
+
+/// Reads again every repository on `@{peppy-release}` that was read for
+/// another peppy version (see
+/// [`release_repositories_read_for_another_version`]), and only those.
+///
+/// The daemon runs this at start, before any listener answers, so it never
+/// serves the hub content of another version and a `repo refresh` that
+/// arrives meanwhile is not refused as a refresh already in progress. A
+/// repository whose read fails keeps its previous entries, as in any
+/// refresh, and is read again at the next start. A version change never
+/// writes `repositories.json5`: the entries name `@{peppy-release}`, not a
+/// version.
+pub(crate) async fn refresh_release_repositories_for_this_version(
+    peppy_dirs: &PeppyDirs,
+    build: &PeppyBuild,
+    now: SystemTime,
+) -> Result<VersionRefresh> {
+    let ids = {
+        let _guard = crate::services::repo::repos_file_lock().lock();
+        let repos = read_or_create_repos(peppy_dirs)?;
+        release_repositories_read_for_another_version(
+            &repos,
+            &ExclusionSet::load(peppy_dirs),
+            &status::read(peppy_dirs),
+            build,
+        )
+    };
+    if ids.is_empty() {
+        return Ok(VersionRefresh::NotNeeded);
+    }
+    let refreshed = refresh_and_write_caches(
+        peppy_dirs,
+        build.clone(),
+        RefreshScope::Only(ids.clone()),
+        now,
+        |_| {},
+    )
+    .await?;
+    Ok(VersionRefresh::Refreshed {
+        ids,
+        failures: refreshed.failures,
+    })
 }
 
 /// A repository that was skipped during refresh because it appears in the
@@ -333,15 +449,12 @@ impl std::fmt::Display for RepoFailure {
 }
 
 /// Aggregated output of [`process_refresh`]: all entries that belong in
-/// the caches (freshly read, plus previous entries retained for
-/// repositories that failed), the repositories skipped by the exclusion
-/// list, and the repositories that failed.
+/// the caches, the repositories skipped by the exclusion list, and the
+/// repositories that failed.
 pub(crate) struct RefreshedRepos {
-    pub(crate) nodes: Vec<NodeCacheEntry>,
-    pub(crate) launchers: Vec<LauncherCacheEntry>,
-    pub(crate) contracts: Vec<ContractCacheEntry>,
-    pub(crate) pairings: Vec<PairingCacheEntry>,
-    pub(crate) mcp_exposures: Vec<McpExposureCacheEntry>,
+    /// Freshly read, plus previous entries retained for repositories that
+    /// failed and kept for repositories outside the refresh's scope.
+    pub(crate) items: RepoItems,
     /// Reported to the client through [`RepoRefreshFeedback::Excluded`]
     /// as the scan runs, so the handler has nothing left to do with it;
     /// kept on the result because the tests assert against it.
@@ -357,32 +470,23 @@ pub(crate) struct RefreshedRepos {
 /// fails its read keeps serving what it last published, so its
 /// identities do not vanish out from under launchers that reference
 /// them.
-struct PreviousCaches {
-    nodes: Vec<NodeCacheEntry>,
-    launchers: Vec<LauncherCacheEntry>,
-    contracts: Vec<ContractCacheEntry>,
-    pairings: Vec<PairingCacheEntry>,
-    mcp_exposures: Vec<McpExposureCacheEntry>,
-}
-
-impl PreviousCaches {
-    /// A cache that cannot be read is treated as empty rather than fatal:
-    /// this runs on the recovery path, where refusing to start because
-    /// the fallback is also broken helps nobody.
-    fn load(peppy_dirs: &PeppyDirs) -> Self {
-        fn read<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Vec<E> {
-            crate::services::repo::cache::load_repo_cache::<E>(peppy_dirs).unwrap_or_else(|e| {
-                warn!("Could not read the previous {} cache: {e}", E::KIND);
-                Vec::new()
-            })
-        }
-        Self {
-            nodes: read(peppy_dirs),
-            launchers: read(peppy_dirs),
-            contracts: read(peppy_dirs),
-            pairings: read(peppy_dirs),
-            mcp_exposures: read(peppy_dirs),
-        }
+///
+/// A cache that cannot be read is treated as empty rather than fatal:
+/// this runs on the recovery path, where refusing to start because the
+/// fallback is also broken helps nobody.
+fn load_previous_caches(peppy_dirs: &PeppyDirs) -> RepoItems {
+    fn read<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Vec<E> {
+        crate::services::repo::cache::load_repo_cache::<E>(peppy_dirs).unwrap_or_else(|e| {
+            warn!("Could not read the previous {} cache: {e}", E::KIND);
+            Vec::new()
+        })
+    }
+    RepoItems {
+        nodes: read(peppy_dirs),
+        launchers: read(peppy_dirs),
+        contracts: read(peppy_dirs),
+        pairings: read(peppy_dirs),
+        mcp_exposures: read(peppy_dirs),
     }
 }
 
@@ -401,24 +505,37 @@ fn retained_entries<E: RepoCacheEntry>(
         .collect()
 }
 
+/// The previous entries of every kind that `repo_id` owns (see
+/// [`retained_entries`]).
+fn retained_items(previous: &RepoItems, owners: &RepoOwners, repo_id: u64) -> RepoItems {
+    RepoItems {
+        nodes: retained_entries(&previous.nodes, owners, repo_id),
+        launchers: retained_entries(&previous.launchers, owners, repo_id),
+        contracts: retained_entries(&previous.contracts, owners, repo_id),
+        pairings: retained_entries(&previous.pairings, owners, repo_id),
+        mcp_exposures: retained_entries(&previous.mcp_exposures, owners, repo_id),
+    }
+}
+
 /// Publishes every cache file from one refresh result. The five entry
 /// caches must always move together: rewriting only a subset leaves the
 /// untouched files still listing items from repositories that are no
 /// longer configured. The status file moves with them so it always
 /// describes the entries that are actually on disk.
 pub(crate) fn write_all_caches(peppy_dirs: &PeppyDirs, refreshed: &RefreshedRepos) -> Result<()> {
-    write_repo_cache(peppy_dirs, &refreshed.nodes)?;
-    write_repo_cache(peppy_dirs, &refreshed.launchers)?;
-    write_repo_cache(peppy_dirs, &refreshed.contracts)?;
-    write_repo_cache(peppy_dirs, &refreshed.pairings)?;
-    write_repo_cache(peppy_dirs, &refreshed.mcp_exposures)?;
+    let items = &refreshed.items;
+    write_repo_cache(peppy_dirs, &items.nodes)?;
+    write_repo_cache(peppy_dirs, &items.launchers)?;
+    write_repo_cache(peppy_dirs, &items.contracts)?;
+    write_repo_cache(peppy_dirs, &items.pairings)?;
+    write_repo_cache(peppy_dirs, &items.mcp_exposures)?;
     status::write(peppy_dirs, &refreshed.statuses)?;
 
     // Pruned only once the caches that could still name a checkout have
     // been replaced, so nothing is dropped while it is still reachable. A
     // repository whose read failed keeps its previous entries, so its
     // checkouts stay live along with them.
-    let removed = node_cache::git::prune_checkouts(peppy_dirs, live_checkouts(refreshed));
+    let removed = node_cache::git::prune_checkouts(peppy_dirs, live_checkouts(items));
     if removed > 0 {
         debug!("Removed {removed} cached git checkout(s) no repository cache points at");
     }
@@ -427,65 +544,55 @@ pub(crate) fn write_all_caches(peppy_dirs: &PeppyDirs, refreshed: &RefreshedRepo
 
 /// Every `(repo_url, commit)` the five caches still resolve through the
 /// checkout cache.
-fn live_checkouts(refreshed: &RefreshedRepos) -> impl Iterator<Item = (&str, &GitCommit)> {
+fn live_checkouts(items: &RepoItems) -> impl Iterator<Item = (&str, &GitCommit)> {
     fn checkouts<E: RepoCacheEntry>(entries: &[E]) -> impl Iterator<Item = (&str, &GitCommit)> {
         entries.iter().filter_map(|entry| entry.origin().checkout())
     }
-    checkouts(&refreshed.nodes)
-        .chain(checkouts(&refreshed.launchers))
-        .chain(checkouts(&refreshed.contracts))
-        .chain(checkouts(&refreshed.pairings))
-        .chain(checkouts(&refreshed.mcp_exposures))
+    checkouts(&items.nodes)
+        .chain(checkouts(&items.launchers))
+        .chain(checkouts(&items.contracts))
+        .chain(checkouts(&items.pairings))
+        .chain(checkouts(&items.mcp_exposures))
 }
-
-/// Parse a JSON entry from repositories.json5 into a `RepoSource`.
-pub(crate) fn parse_repo_entry(entry: &Value) -> Option<RepoSource> {
-    let typ = entry.get("type")?.as_str()?;
-    match typ {
-        "fs" => {
-            let path = entry.get("path")?.as_str()?;
-            Some(RepoSource::Fs(PathBuf::from(path)))
-        }
-        "git" => {
-            let url = entry.get("url")?.as_str()?.to_owned();
-            let repo_ref = entry
-                .get("ref")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_owned());
-            Some(RepoSource::Git {
-                repo_url: url,
-                repo_ref,
-            })
-        }
-        _ => None,
-    }
-}
-
-const DEFAULT_REPOS_TEMPLATE: &str = include_str!("../../../assets/default_repositories.json5");
 
 /// Reads the repositories.json5 config file, creating it with defaults if it
-/// does not exist yet.  Ensures every entry has an integer `id` field
-/// (auto-assigns missing ids) and returns entries sorted by `id`.
+/// does not exist yet (see [`write_default_repos`]). Ensures every entry has
+/// an integer `id` field (auto-assigns missing ids) and returns entries
+/// sorted by `id`.
 pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> {
     let conf_dir = peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir)?;
-    let repos_path = conf_dir.join("repositories.json5");
+    let repos_path = conf_dir.join(REPOS_FILE);
+    if !repos_path.exists() {
+        write_default_repos(&conf_dir)?;
+    }
 
-    let mut repos: Vec<Value> = if repos_path.exists() {
-        let content = std::fs::read_to_string(&repos_path)?;
-        serde_json5::from_str(&content).map_err(|e| {
-            core_node_api::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
-        })?
-    } else {
-        std::fs::write(&repos_path, DEFAULT_REPOS_TEMPLATE)?;
-        serde_json5::from_str(DEFAULT_REPOS_TEMPLATE).map_err(|e| {
-            core_node_api::Error::Decoding(format!("failed to parse default repositories: {e}"))
-        })?
-    };
+    let content = std::fs::read_to_string(&repos_path)?;
+    let mut repos: Vec<Value> = serde_json5::from_str(&content).map_err(|e| {
+        core_node_api::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
+    })?;
 
     normalize_repo_entries(&mut repos, &repos_path, "repositories")?;
 
     Ok(repos)
+}
+
+/// Which configured repositories one refresh reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RefreshScope {
+    /// Every configured repository: what `repo refresh` does.
+    Every,
+    /// Only the repositories with these ids. Every other repository keeps
+    /// the entries it holds and its status, as they stand.
+    Only(BTreeSet<u64>),
+}
+
+impl RefreshScope {
+    fn includes(&self, id: u64) -> bool {
+        match self {
+            RefreshScope::Every => true,
+            RefreshScope::Only(ids) => ids.contains(&id),
+        }
+    }
 }
 
 /// Main synchronous processing: reads repos, walks each source, returns
@@ -511,8 +618,16 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 /// bytes must establish that itself.
 /// `now` is passed in rather than read from the clock so that tests are
 /// deterministic.
+///
+/// Reads the repositories `scope` names, with `@{peppy-release}` resolved
+/// for `build`. A repository outside `scope` is not read: it keeps the
+/// entries the caches hold for it and its status line, in its own slot of
+/// the id order, so the caches written from the result still hold every
+/// repository.
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
+    build: &PeppyBuild,
+    scope: &RefreshScope,
     now: SystemTime,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) -> Result<RefreshedRepos> {
@@ -522,7 +637,7 @@ pub(crate) fn process_refresh(
         let exclusions = ExclusionSet::load(peppy_dirs);
         (repos, exclusions)
     };
-    let previous = PreviousCaches::load(peppy_dirs);
+    let previous = load_previous_caches(peppy_dirs);
     // Resolved once for the whole refresh: retention asks which repository
     // owns an entry for every previous entry of all five kinds, of every
     // repository that failed.
@@ -532,16 +647,7 @@ pub(crate) fn process_refresh(
     let mut failures: Vec<RepoFailure> = Vec::new();
     let mut statuses: Vec<RepoStatus> = Vec::new();
 
-    let mut global_seen_nodes: HashSet<(String, String)> = HashSet::new();
-    let mut global_seen_launchers: HashSet<(String, String)> = HashSet::new();
-    let mut global_seen_contracts: HashSet<(String, String)> = HashSet::new();
-    let mut global_seen_pairings: HashSet<(String, String)> = HashSet::new();
-    let mut global_seen_mcp_exposures: HashSet<(String, String)> = HashSet::new();
-    let mut all_nodes: Vec<NodeCacheEntry> = Vec::new();
-    let mut all_launchers: Vec<LauncherCacheEntry> = Vec::new();
-    let mut all_contracts: Vec<ContractCacheEntry> = Vec::new();
-    let mut all_pairings: Vec<PairingCacheEntry> = Vec::new();
-    let mut all_mcp_exposures: Vec<McpExposureCacheEntry> = Vec::new();
+    let mut merged = MergedItems::default();
     let excluded_repos: Vec<ExcludedRepo> = exclusions
         .entries
         .iter()
@@ -563,15 +669,20 @@ pub(crate) fn process_refresh(
 
         // An entry peppy cannot parse has no source kind or identity to
         // record, so it is reported but gets no status line.
-        let Some(source) = parse_repo_entry(entry) else {
-            failures.push(RepoFailure {
-                id,
-                label: entry.to_string(),
-                kind: RepoFailureKind::Unreachable,
-                detail: "unrecognized repository entry".to_owned(),
-                retained: 0,
-            });
-            continue;
+        let source = match parse_repo_entry(entry) {
+            Ok(source) => source,
+            Err(error) => {
+                if scope.includes(id) {
+                    failures.push(RepoFailure {
+                        id,
+                        label: entry.to_string(),
+                        kind: RepoFailureKind::Unreachable,
+                        detail: error.to_string(),
+                        retained: 0,
+                    });
+                }
+                continue;
+            }
         };
 
         let identity = source_identity(&source);
@@ -581,17 +692,31 @@ pub(crate) fn process_refresh(
             continue;
         }
 
-        let read = match &source {
-            RepoSource::Fs(path) => read_fs_repo(path, &exclusions, on_feedback),
+        let previous_status = status_line_of(&previous_statuses, id, &identity);
+
+        if !scope.includes(id) {
+            statuses.extend(previous_status.cloned());
+            let kept = retained_items(&previous, &owners, id);
+            merged.merge(kept, on_feedback);
+            continue;
+        }
+
+        let (read, read_ref) = match &source {
+            RepoSource::Fs(path) => (read_fs_repo(path, &exclusions, on_feedback), None),
             RepoSource::Git { repo_url, repo_ref } => {
-                let ref_suffix = repo_ref
-                    .as_deref()
-                    .map(|r| format!(" (ref {})", r))
-                    .unwrap_or_default();
                 on_feedback(RepoRefreshFeedback::Progress {
-                    message: format!("Cloning {}{}", repo_url, ref_suffix),
+                    message: format!("Cloning {}", source.display_label(build)),
                 });
-                read_git_repo(repo_url, repo_ref.as_deref(), peppy_dirs, on_feedback)
+                let read_ref = repo_ref.read_ref(build);
+                let read = read_git_repo(
+                    repo_url,
+                    repo_ref,
+                    read_ref.as_ref(),
+                    build,
+                    peppy_dirs,
+                    on_feedback,
+                );
+                (read, read_ref)
             }
         };
 
@@ -609,6 +734,7 @@ pub(crate) fn process_refresh(
                     identity: identity.clone(),
                     source_type: source.kind(),
                     last_read_unix_secs: Some(stamp),
+                    read_ref,
                     // Cleared on success, so a repository that recovered
                     // stops reporting an old failure.
                     last_failure: None,
@@ -616,41 +742,23 @@ pub(crate) fn process_refresh(
                 items
             }
             Err((kind, detail)) => {
-                // Matched on identity as well as id: an id repointed at
-                // another path or url is a different repository, and
-                // carrying the old read timestamp forward would date
-                // entries this source never published.
-                let previous_read = previous_statuses
-                    .iter()
-                    .find(|s| s.id == id && s.identity == identity)
-                    .and_then(|s| s.last_read_unix_secs);
-                let retained = RepoItems {
-                    nodes: retained_entries(&previous.nodes, &owners, id),
-                    launchers: retained_entries(&previous.launchers, &owners, id),
-                    contracts: retained_entries(&previous.contracts, &owners, id),
-                    pairings: retained_entries(&previous.pairings, &owners, id),
-                    mcp_exposures: retained_entries(&previous.mcp_exposures, &owners, id),
-                };
-                let count = retained.nodes.len()
-                    + retained.launchers.len()
-                    + retained.contracts.len()
-                    + retained.pairings.len()
-                    + retained.mcp_exposures.len();
+                let retained = retained_items(&previous, &owners, id);
                 let failure = RepoFailure {
                     id,
-                    label: source.display_label(),
+                    label: source.display_label(build),
                     kind,
                     detail,
-                    retained: count,
+                    retained: retained.len(),
                 };
                 statuses.push(RepoStatus {
                     id,
                     identity: identity.clone(),
                     source_type: source.kind(),
                     // Carried forward untouched: the retained entries are
-                    // still the ones read at that time, and overwriting it
-                    // with now would claim they are current.
-                    last_read_unix_secs: previous_read,
+                    // still the ones read at that time and at that ref, and
+                    // overwriting them would claim they are current.
+                    last_read_unix_secs: previous_status.and_then(|s| s.last_read_unix_secs),
+                    read_ref: previous_status.and_then(|s| s.read_ref.clone()),
                     last_failure: Some(RepoStatusFailure {
                         kind: failure.kind.as_str().to_owned(),
                         message: failure.detail.clone(),
@@ -666,51 +774,66 @@ pub(crate) fn process_refresh(
             }
         };
 
-        // Merged in this repository's own slot in the id-ordered loop,
-        // retained or not, so priority order and the first-seen discovery
-        // feedback stay exactly as they would have been.
-        merge_published(
-            items.nodes,
-            &mut global_seen_nodes,
-            &mut all_nodes,
-            on_feedback,
-        );
-        merge_published(
-            items.launchers,
-            &mut global_seen_launchers,
-            &mut all_launchers,
-            on_feedback,
-        );
-        merge_published(
-            items.contracts,
-            &mut global_seen_contracts,
-            &mut all_contracts,
-            on_feedback,
-        );
-        merge_published(
-            items.pairings,
-            &mut global_seen_pairings,
-            &mut all_pairings,
-            on_feedback,
-        );
-        merge_published(
-            items.mcp_exposures,
-            &mut global_seen_mcp_exposures,
-            &mut all_mcp_exposures,
-            on_feedback,
-        );
+        merged.merge(items, on_feedback);
     }
 
     Ok(RefreshedRepos {
-        nodes: all_nodes,
-        launchers: all_launchers,
-        contracts: all_contracts,
-        pairings: all_pairings,
-        mcp_exposures: all_mcp_exposures,
+        items: merged.items,
         excluded: excluded_repos,
         failures,
         statuses,
     })
+}
+
+/// Every repository's entries, merged in id order, with the `(name, tag)`
+/// identities of each kind seen so far.
+#[derive(Default)]
+struct MergedItems {
+    items: RepoItems,
+    seen_nodes: HashSet<(String, String)>,
+    seen_launchers: HashSet<(String, String)>,
+    seen_contracts: HashSet<(String, String)>,
+    seen_pairings: HashSet<(String, String)>,
+    seen_mcp_exposures: HashSet<(String, String)>,
+}
+
+impl MergedItems {
+    /// Merges one repository's entries. Called in the repository's own slot
+    /// in the id-ordered loop, whether they were read, retained or kept, so
+    /// priority order and the first-seen discovery feedback stay exactly as
+    /// they would have been.
+    fn merge(&mut self, items: RepoItems, on_feedback: &mut dyn FnMut(RepoRefreshFeedback)) {
+        merge_published(
+            items.nodes,
+            &mut self.seen_nodes,
+            &mut self.items.nodes,
+            on_feedback,
+        );
+        merge_published(
+            items.launchers,
+            &mut self.seen_launchers,
+            &mut self.items.launchers,
+            on_feedback,
+        );
+        merge_published(
+            items.contracts,
+            &mut self.seen_contracts,
+            &mut self.items.contracts,
+            on_feedback,
+        );
+        merge_published(
+            items.pairings,
+            &mut self.seen_pairings,
+            &mut self.items.pairings,
+            on_feedback,
+        );
+        merge_published(
+            items.mcp_exposures,
+            &mut self.seen_mcp_exposures,
+            &mut self.items.mcp_exposures,
+            on_feedback,
+        );
+    }
 }
 
 /// Appends one repository's entries to the running cross-repo collection,
@@ -775,8 +898,8 @@ fn read_fs_repo(
     )
 }
 
-/// Reads a repository held by a remote, at the commit its configured ref
-/// currently points at.
+/// Reads a repository held by a remote, at the commit `read_ref`, the ref
+/// `build` reads for `repo_ref`, currently points at.
 ///
 /// What survives the read is the index the repository published and the
 /// commit it was read at, which is what lets another machine read the same
@@ -784,7 +907,9 @@ fn read_fs_repo(
 /// because it is already the tree every item read here resolves to.
 fn read_git_repo(
     repo_url: &str,
-    repo_ref: Option<&str>,
+    repo_ref: &GitRepoRef,
+    read_ref: Option<&ReadRef>,
+    build: &PeppyBuild,
     peppy_dirs: &PeppyDirs,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) -> ReadResult {
@@ -803,38 +928,33 @@ fn read_git_repo(
     })
     .map_err(unreachable)?;
 
-    // Recorded as configured rather than as resolved: it is what attributes
-    // an entry back to its repository, and what a later fetch of the pinned
-    // commit starts from.
-    let configured_ref = repo_ref.map(str::trim).filter(|r| !r.is_empty());
-
-    // Positioned on the configured ref before the commit is read, so the
-    // pin follows the line of development the repository was added for
+    // Positioned on the ref this build reads before the commit is read, so
+    // the pin follows the line of development the repository was added for
     // rather than whatever the remote's default branch happens to be. A tag,
     // or a commit that is not a branch head, is fetched first, since the
     // clone holds branch heads only. A ref the remote does not serve is a
     // refusal: pinning the default branch instead would publish a different
     // tree under the same repository id without saying so.
-    if let Some(configured_ref) = configured_ref {
-        checkout_configured_ref(&repo, repo_url, configured_ref, &mut |line| {
+    if let Some(read) = read_ref {
+        checkout_read_ref(&repo, repo_url, read, &mut |line| {
             on_feedback(RepoRefreshFeedback::Progress {
                 message: line.to_owned(),
             });
         })
-        .map_err(|e| {
-            unreachable(format!(
-                "{repo_url} does not serve the configured ref `{configured_ref}`: {e}"
-            ))
-        })?;
+        .map_err(|e| unreachable(ref_not_served(repo_url, repo_ref, read, build, &e)))?;
     }
     let commit = head_commit(&repo)
         .map_err(|e| unreachable(format!("the clone of {repo_url} has no usable commit: {e}")))?;
 
+    // The configured ref is what attributes an entry back to its repository,
+    // and the ref it was read at is what a later fetch of the pinned commit
+    // starts from, so the origin records both.
     let items = read_published_items(
         tmp.path(),
         &ReadSource::Git {
             repo_url: repo_url.to_owned(),
-            repo_ref: configured_ref.map(str::to_owned),
+            repo_ref: repo_ref.configured().map(str::to_owned),
+            read_ref: read_ref.cloned(),
             commit: commit.clone(),
         },
     )?;
@@ -850,12 +970,42 @@ fn read_git_repo(
     Ok(items)
 }
 
+/// Why a git repository was not read: the remote does not serve `read`,
+/// the ref `build` reads for `repo_ref`.
+fn ref_not_served(
+    repo_url: &str,
+    repo_ref: &GitRepoRef,
+    read: &ReadRef,
+    build: &PeppyBuild,
+    error: &str,
+) -> String {
+    match (repo_ref, build) {
+        (GitRepoRef::PeppyRelease, PeppyBuild::Release(version)) => format!(
+            "{repo_url} does not carry the tag `{}`, which `{PEPPY_RELEASE_REF}` reads in peppy \
+             {version}: {error}",
+            read.short_name()
+        ),
+        (GitRepoRef::PeppyRelease, PeppyBuild::Unreleased) => format!(
+            "{repo_url} does not serve `{}`, which `{PEPPY_RELEASE_REF}` reads in a peppy build \
+             that is not a release: {error}",
+            read.short_name()
+        ),
+        _ => format!(
+            "{repo_url} does not serve the configured ref `{}`: {error}",
+            read.short_name()
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::node::checkout_repo_ref;
     use crate::services::node::test_git_daemon::GitDaemon;
-    use crate::services::repo::cache::repositories_list_path;
+    use crate::services::repo::cache::test_support::{write_excluded_repos, write_repos};
+    use crate::services::repo::cache::{
+        EntryOrigin, LauncherCacheEntry, NodeCacheEntry, repositories_list_path,
+    };
     use config::consts::NODE_CONFIG_FILE;
 
     /// A fixed instant for every refresh under test, so nothing depends
@@ -889,7 +1039,10 @@ mod tests {
             nodes_hub.get("url").unwrap().as_str().unwrap(),
             "https://github.com/Peppy-bot/nodes-hub.git"
         );
-        assert_eq!(nodes_hub.get("ref").unwrap().as_str().unwrap(), "main");
+        assert_eq!(
+            nodes_hub.get("ref").unwrap().as_str().unwrap(),
+            "@{peppy-release}"
+        );
 
         let launchers_hub = by_id(1001);
         assert_eq!(launchers_hub.get("type").unwrap().as_str().unwrap(), "git");
@@ -1093,6 +1246,21 @@ mod tests {
             .unwrap_or_else(|e| panic!("remove {removed_rel}: {e}"));
     }
 
+    /// Refreshes every configured repository as this binary reads it.
+    fn refresh_every(
+        peppy_dirs: &PeppyDirs,
+        now: SystemTime,
+        on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
+    ) -> Result<RefreshedRepos> {
+        process_refresh(
+            peppy_dirs,
+            &peppy_build(),
+            &RefreshScope::Every,
+            now,
+            on_feedback,
+        )
+    }
+
     /// Publishes only `roots`, then refreshes. For tests that deliberately
     /// leave a repository broken and must not have it re-published.
     fn refresh_publishing(
@@ -1104,7 +1272,7 @@ mod tests {
         for root in roots {
             publish_repo(root);
         }
-        process_refresh(peppy_dirs, now, on_feedback)
+        refresh_every(peppy_dirs, now, on_feedback)
     }
 
     /// Publishes every configured fs repository, then refreshes.
@@ -1117,13 +1285,13 @@ mod tests {
         on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
     ) -> Result<RefreshedRepos> {
         for entry in read_or_create_repos(peppy_dirs)? {
-            if let Some(RepoSource::Fs(path)) = parse_repo_entry(&entry)
+            if let Ok(RepoSource::Fs(path)) = parse_repo_entry(&entry)
                 && path.exists()
             {
                 publish_repo(&path);
             }
         }
-        process_refresh(peppy_dirs, now, on_feedback)
+        refresh_every(peppy_dirs, now, on_feedback)
     }
 
     /// Helper: write a minimal valid peppy.json5 into `dir`.
@@ -1141,20 +1309,6 @@ mod tests {
             ),
         )
         .unwrap();
-    }
-
-    /// Helper: write a repositories.json5 file.
-    fn write_repos(peppy_dirs: &PeppyDirs, content: &str) {
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        std::fs::write(conf_dir.join("repositories.json5"), content).unwrap();
-    }
-
-    /// Helper: write an excluded_repositories.json5 file.
-    fn write_excluded_repos(peppy_dirs: &PeppyDirs, content: &str) {
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        std::fs::write(conf_dir.join("excluded_repositories.json5"), content).unwrap();
     }
 
     /// The load-bearing case: a failure is scoped to the repository that
@@ -1194,6 +1348,7 @@ mod tests {
             refresh_publishing(&peppy_dirs, &[&healthy], TEST_NOW, &mut |_| {}).unwrap();
 
         let names: HashSet<&str> = refreshed
+            .items
             .nodes
             .iter()
             .map(|n| n.node_name.as_str())
@@ -1410,7 +1565,11 @@ mod tests {
 
         let refreshed = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
 
-        assert_eq!(refreshed.nodes.len(), 1, "the healthy repository updated");
+        assert_eq!(
+            refreshed.items.nodes.len(),
+            1,
+            "the healthy repository updated"
+        );
         assert_eq!(refreshed.failures.len(), 1);
         assert_eq!(refreshed.failures[0].kind, RepoFailureKind::Unreachable);
         assert_eq!(
@@ -1511,6 +1670,7 @@ mod tests {
         // `/var` symlink to `/private/var`).
         let two_root = std::fs::canonicalize(&two).unwrap();
         let retained: Vec<&str> = refreshed
+            .items
             .nodes
             .iter()
             .filter(|n| {
@@ -1550,15 +1710,14 @@ mod tests {
         );
 
         let RefreshedRepos {
-            nodes: discovered,
-            excluded,
-            ..
+            items, excluded, ..
         } = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let discovered = items.nodes;
         assert_eq!(discovered.len(), 1, "only non-excluded repo nodes returned");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "one repo should be excluded");
         assert_eq!(excluded[0].source_type, RepoSourceKind::Fs);
-        // `identity` is canonicalized by `json_entry_identity`; the test
+        // `identity` is canonicalized by `entry_identity`; the test
         // path is not, so compare against the canonical form to stay
         // robust on platforms with symlinked tempdirs (e.g. macOS's
         // `/var` → `/private/var`).
@@ -1597,10 +1756,9 @@ mod tests {
         );
 
         let RefreshedRepos {
-            nodes: discovered,
-            excluded,
-            ..
+            items, excluded, ..
         } = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let discovered = items.nodes;
         assert_eq!(
             discovered.len(),
             1,
@@ -1655,10 +1813,9 @@ mod tests {
         );
 
         let RefreshedRepos {
-            nodes: discovered,
-            failures,
-            ..
-        } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+            items, failures, ..
+        } = refresh_every(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let discovered = items.nodes;
         assert!(
             failures.is_empty(),
             "an item the machine does not serve cannot break the read: {failures:?}"
@@ -1686,8 +1843,10 @@ mod tests {
             &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#),
         );
 
-        let RefreshedRepos { nodes, .. } =
-            process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let nodes = refresh_every(&peppy_dirs, TEST_NOW, &mut |_| {})
+            .unwrap()
+            .items
+            .nodes;
         let (url, commit) = nodes[0].origin.checkout().expect("a git origin");
 
         let checkout =
@@ -1723,10 +1882,9 @@ mod tests {
         );
 
         let RefreshedRepos {
-            nodes: discovered,
-            excluded,
-            ..
+            items, excluded, ..
         } = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let discovered = items.nodes;
         assert_eq!(discovered.len(), 1, "FS node should still be found");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "git repo should be excluded");
@@ -1752,10 +1910,9 @@ mod tests {
 
         // No excluded_repositories.json5 file
         let RefreshedRepos {
-            nodes: discovered,
-            excluded,
-            ..
+            items, excluded, ..
         } = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let discovered = items.nodes;
         assert_eq!(discovered.len(), 1, "node should be found normally");
         assert!(excluded.is_empty(), "no repos should be excluded");
     }
@@ -1777,8 +1934,10 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { contracts, .. } =
-            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let contracts = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
+            .unwrap()
+            .items
+            .contracts;
         assert_eq!(contracts.len(), 1, "exactly one contract expected");
         let iface = &contracts[0];
         assert_eq!(iface.contract_name, "uvc_camera");
@@ -1816,8 +1975,10 @@ mod tests {
             &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
         );
 
-        let RefreshedRepos { contracts, .. } =
-            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let contracts = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
+            .unwrap()
+            .items
+            .contracts;
         assert_eq!(contracts.len(), 1, "exactly one contract expected");
         let iface = &contracts[0];
         assert_eq!(iface.contract_name, "uvc_camera");
@@ -1878,8 +2039,10 @@ mod tests {
         );
 
         let mut feedbacks = Vec::new();
-        let RefreshedRepos { contracts, .. } =
-            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |fb| feedbacks.push(fb)).unwrap();
+        let contracts = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |fb| feedbacks.push(fb))
+            .unwrap()
+            .items
+            .contracts;
 
         assert_eq!(
             contracts.len(),
@@ -1945,11 +2108,11 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos {
-            nodes: discovered,
-            launchers,
-            ..
-        } = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let items = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
+            .unwrap()
+            .items;
+        let discovered = items.nodes;
+        let launchers = items.launchers;
         assert_eq!(discovered.len(), 1, "node_a should be the only node");
         assert_eq!(
             launchers.len(),
@@ -2031,8 +2194,10 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { launchers, .. } =
-            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let launchers = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
+            .unwrap()
+            .items
+            .launchers;
         assert_eq!(
             launchers.len(),
             1,
@@ -2061,8 +2226,10 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { launchers, .. } =
-            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let launchers = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
+            .unwrap()
+            .items
+            .launchers;
         write_repo_cache(&peppy_dirs, &launchers).unwrap();
 
         let cache_path = launchers_repo_cache_path(&peppy_dirs);
@@ -2120,8 +2287,10 @@ mod tests {
             &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
         );
 
-        let RefreshedRepos { launchers, .. } =
-            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let launchers = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
+            .unwrap()
+            .items
+            .launchers;
         assert_eq!(launchers.len(), 1, "exactly one launcher expected");
         let launcher = &launchers[0];
         assert_eq!(launcher.launcher_name, "openarm01_teleop");
@@ -2380,7 +2549,7 @@ mod tests {
             peppy_dirs,
             &format!(r#"[{{ "id": 1, "type": "git", "url": "{url}", "ref": "{git_ref}" }}]"#),
         );
-        process_refresh(peppy_dirs, TEST_NOW, &mut |_| {}).expect("the refresh runs")
+        refresh_every(peppy_dirs, TEST_NOW, &mut |_| {}).expect("the refresh runs")
     }
 
     /// The commit `refreshed` read its one node at, after checking that the
@@ -2395,7 +2564,10 @@ mod tests {
             "the repository is read: {:?}",
             refreshed.failures
         );
-        let (url, commit) = refreshed.nodes[0].origin.checkout().expect("a git origin");
+        let (url, commit) = refreshed.items.nodes[0]
+            .origin
+            .checkout()
+            .expect("a git origin");
         let checkout = crate::services::node::cache::git::checkout_dir_for(peppy_dirs, url, commit);
         assert!(
             checkout.join(".git").join("shallow").exists(),
@@ -2448,7 +2620,7 @@ mod tests {
 
         let refreshed = refresh_git_repo_on(&peppy_dirs, &url, "v9");
 
-        assert!(refreshed.nodes.is_empty());
+        assert!(refreshed.items.nodes.is_empty());
         assert_eq!(refreshed.failures.len(), 1);
         let failure = &refreshed.failures[0];
         assert_eq!(failure.kind, RepoFailureKind::Unreachable);
@@ -2459,5 +2631,263 @@ mod tests {
             "{}",
             failure.detail
         );
+    }
+    fn release(version: &str) -> PeppyBuild {
+        PeppyBuild::Release(version.to_owned())
+    }
+
+    fn status_line(id: u64, identity: &str, read_ref: Option<&str>) -> RepoStatus {
+        RepoStatus {
+            id,
+            identity: identity.to_owned(),
+            source_type: RepoSourceKind::Git,
+            last_read_unix_secs: Some(1),
+            read_ref: read_ref.map(ReadRef::from_git_name),
+            last_failure: None,
+        }
+    }
+
+    /// Which repositories the daemon reads again at start: only those on
+    /// `@{peppy-release}` that this machine read as they are configured, and
+    /// read for another version than the one running.
+    #[test]
+    fn the_start_reads_again_only_release_repositories_read_for_another_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let hub = |id: u64, git_ref: &str| {
+            serde_json::json!({
+                "id": id,
+                "type": "git",
+                "url": format!("https://example.com/hub{id}.git"),
+                "ref": git_ref,
+            })
+        };
+        let repos = vec![
+            hub(1, "@{peppy-release}"),
+            hub(2, "@{peppy-release}"),
+            hub(3, "@{peppy-release}"),
+            hub(4, "@{peppy-release}"),
+            hub(5, "@{peppy-release}"),
+            hub(6, "peppy-release/v0.31.1"),
+        ];
+        let current = "refs/tags/peppy-release/v0.31.2";
+        let statuses = vec![
+            // Read for this version.
+            status_line(
+                1,
+                "https://example.com/hub1.git@@{peppy-release}",
+                Some(current),
+            ),
+            // Read for the previous version.
+            status_line(
+                2,
+                "https://example.com/hub2.git@@{peppy-release}",
+                Some("refs/tags/peppy-release/v0.31.1"),
+            ),
+            // The id was read as another repository: its line is not this
+            // repository's.
+            status_line(3, "https://example.com/hub3.git@main", Some("main")),
+            // 4 was never read on this machine: no status line.
+            // Excluded below.
+            status_line(
+                5,
+                "https://example.com/hub5.git@@{peppy-release}",
+                Some("main"),
+            ),
+            // Pinned to one tag: it reads that tag in every version.
+            status_line(
+                6,
+                "https://example.com/hub6.git@peppy-release/v0.31.1",
+                None,
+            ),
+        ];
+        write_excluded_repos(
+            &peppy_dirs,
+            r#"[{ "id": 1, "type": "git", "url": "https://example.com/hub5.git", "ref": "@{peppy-release}" }]"#,
+        );
+
+        let ids = release_repositories_read_for_another_version(
+            &repos,
+            &ExclusionSet::load(&peppy_dirs),
+            &statuses,
+            &release("v0.31.2"),
+        );
+
+        assert_eq!(ids, BTreeSet::from([2]));
+    }
+
+    /// A hub with a branch and a tag both named `peppy-release/v0.31.2`, at
+    /// different commits: a release build of v0.31.2 reads the tag.
+    #[test]
+    fn a_release_build_reads_its_tag_even_beside_a_branch_of_the_same_name() {
+        let served = tempfile::tempdir().unwrap();
+        let src = served.path().join("hub");
+        let repo = git2::Repository::init(&src).expect("init repo");
+        write_peppy_json5(&src.join("arm"), "arm", "v1");
+        publish_and_commit(&repo, &src, &["arm/peppy.json5"]);
+        let branched = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("peppy-release/v0.31.2", &branched, false)
+            .expect("the branch of the tag's name");
+        std::fs::write(src.join("notes.txt"), "tagged").unwrap();
+        publish_and_commit(&repo, &src, &["arm/peppy.json5", "notes.txt"]);
+        let tagged = repo.head().unwrap().peel_to_commit().unwrap();
+        let signature = git2::Signature::now("Peppy", "peppy@example.com").unwrap();
+        repo.tag(
+            "peppy-release/v0.31.2",
+            tagged.as_object(),
+            &signature,
+            "v0.31.2",
+            false,
+        )
+        .expect("tag the release");
+        std::fs::write(src.join("notes.txt"), "after the release").unwrap();
+        publish_and_commit(&repo, &src, &["arm/peppy.json5", "notes.txt"]);
+
+        let daemon = GitDaemon::serve(served.path());
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "git", "url": "{}", "ref": "@{{peppy-release}}" }}]"#,
+                daemon.url("hub")
+            ),
+        );
+
+        let refreshed = process_refresh(
+            &peppy_dirs,
+            &release("v0.31.2"),
+            &RefreshScope::Every,
+            TEST_NOW,
+            &mut |_| {},
+        )
+        .unwrap();
+
+        assert!(refreshed.failures.is_empty(), "{:?}", refreshed.failures);
+        let release_tag = Some(ReadRef::ReleaseTag("v0.31.2".to_owned()));
+        let EntryOrigin::Git {
+            repo_ref,
+            read_ref,
+            commit,
+            ..
+        } = &refreshed.items.nodes[0].origin
+        else {
+            panic!("the hub is a git repository");
+        };
+        assert_eq!(commit.as_str(), tagged.id().to_string());
+        assert_ne!(tagged.id(), branched.id());
+        assert_eq!(repo_ref.as_deref(), Some("@{peppy-release}"));
+        assert_eq!(read_ref, &release_tag);
+        assert_eq!(refreshed.statuses[0].read_ref, release_tag);
+    }
+
+    /// A hub tagged for two releases, served over `git://`, with the
+    /// commits of the two tags.
+    fn hub_tagged_for_two_releases(base: &Path) -> (String, String) {
+        let src = base.join("hub");
+        let repo = git2::Repository::init(&src).expect("init repo");
+        let signature = git2::Signature::now("Peppy", "peppy@example.com").unwrap();
+        let mut commits = Vec::new();
+        for (version, note) in [("v0.31.1", "first"), ("v0.31.2", "second")] {
+            write_peppy_json5(&src.join("arm"), "arm", "v1");
+            std::fs::write(src.join("notes.txt"), note).unwrap();
+            publish_and_commit(&repo, &src, &["arm/peppy.json5", "notes.txt"]);
+            let commit = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.tag(
+                &format!("peppy-release/{version}"),
+                commit.as_object(),
+                &signature,
+                version,
+                false,
+            )
+            .unwrap();
+            commits.push(commit.id().to_string());
+        }
+        (commits[0].clone(), commits[1].clone())
+    }
+
+    fn cached_node_commit(peppy_dirs: &PeppyDirs) -> String {
+        let nodes: Vec<NodeCacheEntry> =
+            crate::services::repo::cache::load_repo_cache(peppy_dirs).unwrap();
+        nodes[0].origin.commit().unwrap().as_str().to_owned()
+    }
+
+    /// After an upgrade, the start reads the hub again at the tag of the new
+    /// version and leaves `repositories.json5` byte for byte as it was. Once
+    /// read for the running version, the next start reads nothing. When the
+    /// hub cannot be read, the repository keeps the entries it holds, and
+    /// the start after that tries again.
+    #[tokio::test]
+    async fn a_version_change_reads_the_release_repositories_again() {
+        let served = tempfile::tempdir().unwrap();
+        let (first, second) = hub_tagged_for_two_releases(served.path());
+        let daemon = GitDaemon::serve(served.path());
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "git", "url": "{}", "ref": "@{{peppy-release}}" }}]"#,
+                daemon.url("hub")
+            ),
+        );
+        let repos_file = std::fs::read(repositories_list_path(&peppy_dirs)).unwrap();
+
+        let read_for_the_old_version = process_refresh(
+            &peppy_dirs,
+            &release("v0.31.1"),
+            &RefreshScope::Every,
+            TEST_NOW,
+            &mut |_| {},
+        )
+        .unwrap();
+        write_all_caches(&peppy_dirs, &read_for_the_old_version).unwrap();
+        assert_eq!(cached_node_commit(&peppy_dirs), first);
+
+        let upgraded = refresh_release_repositories_for_this_version(
+            &peppy_dirs,
+            &release("v0.31.2"),
+            TEST_NOW,
+        )
+        .await
+        .unwrap();
+        let VersionRefresh::Refreshed { ids, failures } = upgraded else {
+            panic!("the hub was read for another version");
+        };
+        assert_eq!(ids, BTreeSet::from([1]));
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(cached_node_commit(&peppy_dirs), second);
+        assert_eq!(
+            std::fs::read(repositories_list_path(&peppy_dirs)).unwrap(),
+            repos_file,
+            "a version change never writes repositories.json5"
+        );
+
+        assert!(matches!(
+            refresh_release_repositories_for_this_version(
+                &peppy_dirs,
+                &release("v0.31.2"),
+                TEST_NOW
+            )
+            .await
+            .unwrap(),
+            VersionRefresh::NotNeeded
+        ));
+
+        drop(daemon);
+        for _ in 0..2 {
+            let unreachable = refresh_release_repositories_for_this_version(
+                &peppy_dirs,
+                &release("v0.31.3"),
+                TEST_NOW,
+            )
+            .await
+            .unwrap();
+            let VersionRefresh::Refreshed { failures, .. } = unreachable else {
+                panic!("a hub not read for v0.31.3 is read again at each start");
+            };
+            assert_eq!(failures.len(), 1);
+            assert_eq!(cached_node_commit(&peppy_dirs), second);
+        }
     }
 }

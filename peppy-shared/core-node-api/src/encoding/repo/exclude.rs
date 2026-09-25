@@ -6,7 +6,9 @@ use crate::repo_capnp;
 use crate::{Payload, Result};
 
 use crate::encoding::RepoSource;
-use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::encoding::{decode_message, encode_message};
+
+use super::git_ref::{GitRepoRef, decode_git_repo_ref};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoExcludeRequest {
@@ -20,7 +22,7 @@ impl RepoExcludeRequest {
         }
     }
 
-    pub fn new_git(repo_url: impl Into<String>, repo_ref: Option<String>) -> Self {
+    pub fn new_git(repo_url: impl Into<String>, repo_ref: GitRepoRef) -> Self {
         Self {
             source: RepoSource::Git {
                 repo_url: repo_url.into(),
@@ -41,7 +43,7 @@ impl RepoExcludeRequest {
                 RepoSource::Git { repo_url, repo_ref } => {
                     let mut git = source.init_git();
                     git.set_repo_url(repo_url);
-                    git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
+                    git.set_repo_ref(repo_ref.to_string().as_str());
                 }
             }
         }
@@ -61,7 +63,7 @@ impl RepoExcludeRequest {
             Which::Git(git) => {
                 let git = git?;
                 let repo_url = git.get_repo_url()?.to_str()?.to_owned();
-                let repo_ref = optional_text(git.get_repo_ref()?.to_str()?);
+                let repo_ref = decode_git_repo_ref(git.get_repo_ref()?.to_str()?)?;
                 RepoSource::Git { repo_url, repo_ref }
             }
         };
@@ -153,13 +155,15 @@ mod tests {
 
     #[test]
     fn exclude_request_new_git_round_trips_with_ref() {
-        let request =
-            RepoExcludeRequest::new_git("https://github.com/org/repo", Some("main".to_owned()));
+        let request = RepoExcludeRequest::new_git(
+            "https://github.com/org/repo",
+            GitRepoRef::Named("main".to_owned()),
+        );
         assert_eq!(
             request.source,
             RepoSource::Git {
                 repo_url: "https://github.com/org/repo".to_owned(),
-                repo_ref: Some("main".to_owned()),
+                repo_ref: GitRepoRef::Named("main".to_owned()),
             }
         );
         let payload = request.encode().expect("encode");
@@ -169,8 +173,10 @@ mod tests {
 
     #[test]
     fn exclude_request_new_git_round_trips_without_ref() {
-        // An absent ref encodes as the empty string and decodes back to `None`.
-        let request = RepoExcludeRequest::new_git("https://github.com/org/repo", None);
+        // An absent ref encodes as the empty string and decodes back to the
+        // remote HEAD.
+        let request =
+            RepoExcludeRequest::new_git("https://github.com/org/repo", GitRepoRef::RemoteHead);
         let payload = request.encode().expect("encode");
         let decoded = RepoExcludeRequest::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, request);
@@ -178,7 +184,7 @@ mod tests {
             decoded.source,
             RepoSource::Git {
                 repo_url: "https://github.com/org/repo".to_owned(),
-                repo_ref: None,
+                repo_ref: GitRepoRef::RemoteHead,
             }
         );
     }

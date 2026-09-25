@@ -22,6 +22,8 @@ from functions.release_docs_gate import (
     verify_docs_gate,
 )
 
+from .helpers import unwrapped
+
 DEV_COMMIT = "1111111111111111111111111111111111111111"
 
 
@@ -32,11 +34,6 @@ def _no_prompts() -> object:
         "functions.cli.Prompt.ask", side_effect=AssertionError("prompted")
     ), patch("functions.cli.Confirm.ask", side_effect=AssertionError("prompted")):
         yield
-
-
-def _unwrapped(console_output: str) -> str:
-    """Console output with rich's line wrapping undone, for phrase assertions."""
-    return " ".join(console_output.split())
 
 
 def _ancestry_resolver(ancestry: dict[tuple[str, str], bool]):
@@ -91,7 +88,7 @@ def test_last_shipped_commit_is_the_latest_release_tag_when_main_lags_it(
 
     assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == LATEST_TAG
 
-    err = _unwrapped(capfd.readouterr().err)
+    err = unwrapped(capfd.readouterr().err)
     assert f"origin/main is behind the latest release {LATEST_TAG}" in err
 
 
@@ -321,7 +318,7 @@ def test_docs_check_base_is_the_commit_a_merged_docs_pull_request_settled(
     # so the check starts there instead of drawing new gaps from the same code.
     assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == JUDGED_COMMIT
 
-    err = _unwrapped(capfd.readouterr().err)
+    err = unwrapped(capfd.readouterr().err)
     assert f"was already judged up to {JUDGED_COMMIT[:12]}" in err
     assert f"its gaps closed by {JUDGED_PR_URL}" in err
 
@@ -443,7 +440,7 @@ def test_docs_gate_opens_the_optional_polish_pr_and_continues(
     assert mock_open_pr.call_args.args[2] == branch
     assert "minor polish" in mock_open_pr.call_args.args[3]
     assert "reword the intro" in mock_open_pr.call_args.args[4]
-    err = _unwrapped(capfd.readouterr().err)
+    err = unwrapped(capfd.readouterr().err)
     assert "pull/8" in err
     assert "does not block" in err
 
@@ -563,7 +560,7 @@ def test_docs_gate_opens_a_pr_and_stops_the_release(
     assert mock_open_pr.call_args.args[2] == branch
     # The log points at the pull request that has to merge first, and at the
     # new run that follows it.
-    err = _unwrapped(capfd.readouterr().err)
+    err = unwrapped(capfd.readouterr().err)
     assert "pull/7" in err
     assert "start a new run of the release from 'dev'" in err
 
@@ -671,7 +668,7 @@ def test_docs_gate_continues_when_the_updater_finds_gaps_already_covered(
 
     mock_push_branch.assert_not_called()
     mock_open_pr.assert_not_called()
-    assert "already documented" in _unwrapped(capfd.readouterr().err)
+    assert "already documented" in unwrapped(capfd.readouterr().err)
 
 
 @patch("functions.release_docs_gate._push_docs_sync_branch")

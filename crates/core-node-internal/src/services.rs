@@ -31,7 +31,7 @@ use config::{
     schema::PeppySchema,
 };
 use core_node_api::{ActionId, ServiceId, TopicId};
-use daemon_config::consts::{PEPPY_GIT_TAG, PeppyDirs};
+use daemon_config::consts::{PEPPY_GIT_TAG, PeppyDirs, peppy_build};
 use futures::future::{BoxFuture, FutureExt, select_all, try_join_all};
 use names_generator2::get_random;
 use node_stack::NodeStack;
@@ -805,6 +805,47 @@ impl CoreNode {
         }
     }
 
+    /// Reads again the repositories on `@{peppy-release}` that this machine
+    /// read for another peppy version, so the daemon never serves hub content
+    /// that was not released with it. Runs before any listener exists: a
+    /// request that arrives meanwhile, the installer's `repo refresh` among
+    /// them, waits for the daemon rather than being refused as a refresh
+    /// already in progress. A failure is logged and the daemon starts with
+    /// the entries it holds; the next start tries again.
+    async fn refresh_release_repositories_for_this_version(&self) {
+        let outcome = repo::refresh_release_repositories_for_this_version(
+            &self.peppy_dirs,
+            &peppy_build(),
+            std::time::SystemTime::now(),
+        )
+        .await;
+        match outcome {
+            Ok(repo::VersionRefresh::NotNeeded) => {}
+            Ok(repo::VersionRefresh::Refreshed { ids, failures }) => {
+                info!(
+                    "Read again {} {} on @{{peppy-release}} that were read for another peppy \
+                     version: {}",
+                    ids.len(),
+                    repo::repository_noun(ids.len()),
+                    ids.iter()
+                        .map(u64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                if !failures.is_empty() {
+                    tracing::warn!(
+                        "{} They are read again at the next start of the daemon.",
+                        repo::failure_report(&failures)
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                "Could not read again the repositories on @{{peppy-release}} read for another \
+                 peppy version: {e}"
+            ),
+        }
+    }
+
     /// Boots the core node: registers every service listener and runs until the
     /// messaging session is torn down. The optional `ready` sender fires once
     /// all listeners are registered (used by tests and the serve runner to
@@ -817,6 +858,10 @@ impl CoreNode {
     ///   clear stale state from a previous run; see [`clear_instances_dir`].
     /// - **Writes/updates `repositories.json5`** via [`repo::ensure_default_repos`]
     ///   so newly-bundled default repos land in pre-existing user configs.
+    /// - **Reads again the repositories on `@{peppy-release}` that were read
+    ///   for another peppy version** (see
+    ///   [`repo::refresh_release_repositories_for_this_version`]), before any
+    ///   listener answers.
     pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
         // Boot exactly once per instance: a second `start` would re-run the
         // destructive setup below and register every listener twice.
@@ -849,6 +894,8 @@ impl CoreNode {
         if let Err(e) = repo::ensure_default_repos(&self.peppy_dirs) {
             tracing::warn!("Failed to sync default repositories: {}", e);
         }
+
+        self.refresh_release_repositories_for_this_version().await;
 
         let core_node_name = self.node_name(); // The core node binds to itself
         info!(

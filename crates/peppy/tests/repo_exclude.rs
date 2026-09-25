@@ -1,4 +1,5 @@
 use super::common::setup;
+use core_node_api::encoding::GitRepoRef;
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 
@@ -28,7 +29,7 @@ fn repo_exclude_with_git_ref_succeeds() {
     let result = RepoCommand {
         command: RepoCommands::Exclude {
             source: "https://github.com/org/repo.git".to_string(),
-            git_ref: Some("v1.0.0".to_string()),
+            git_ref: Some(GitRepoRef::Named("v1.0.0".to_string())),
         },
     }
     .execute(&ctx);
@@ -134,7 +135,7 @@ fn repo_exclude_fs_path_with_ref_fails() {
                 .to_str()
                 .unwrap()
                 .to_string(),
-            git_ref: Some("main".to_string()),
+            git_ref: Some(GitRepoRef::Named("main".to_string())),
         },
     }
     .execute(&ctx);
@@ -157,7 +158,7 @@ fn repo_exclude_https_url_with_ref_treated_as_git() {
     let result = RepoCommand {
         command: RepoCommands::Exclude {
             source: "https://github.com/org/repo".to_string(),
-            git_ref: Some("main".to_string()),
+            git_ref: Some(GitRepoRef::Named("main".to_string())),
         },
     }
     .execute(&ctx);

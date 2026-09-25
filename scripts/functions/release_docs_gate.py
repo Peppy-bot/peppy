@@ -157,7 +157,7 @@ def _last_judged_commit(
     response = github_api(
         client,
         "GET",
-        f"https://api.github.com/repos/{slug.full}/pulls"
+        f"{slug.api_url}/pulls"
         f"?base={RELEASE_BRANCH}&state=closed&sort=updated&direction=desc"
         f"&per_page={_JUDGED_LOOKUP_PAGE_SIZE}",
     )
@@ -263,7 +263,7 @@ def _find_open_docs_sync_pr(
     response = github_api(
         client,
         "GET",
-        f"https://api.github.com/repos/{slug.full}/pulls"
+        f"{slug.api_url}/pulls"
         f"?head={slug.owner}:{branch}&base={RELEASE_BRANCH}&state=open",
     )
     if not isinstance(response, list):
@@ -320,7 +320,7 @@ def _open_docs_pr(
     response = github_api(
         client,
         "POST",
-        f"https://api.github.com/repos/{slug.full}/pulls",
+        f"{slug.api_url}/pulls",
         json_data={
             "title": title,
             "head": branch,

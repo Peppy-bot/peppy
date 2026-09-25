@@ -182,15 +182,16 @@ pub fn materialized_checkout(
 /// commit that is any of their tips — which is what a pin read from a
 /// freshly refreshed repository is — is already here and the checkout is
 /// the whole job. A commit the refs have since moved past is fetched by
-/// its own hash, falling back to deepening `repo_ref`; one the remote no
-/// longer holds is refused rather than silently answered with a tip.
+/// its own hash, falling back to deepening `read_ref`, the ref the entry was
+/// read at; one the remote no longer holds is refused rather than silently
+/// answered with a tip.
 ///
 /// Blocking; callers inside tokio should run this via
 /// [`tokio::task::spawn_blocking`].
 pub fn ensure_checkout_at_commit(
     peppy_dirs: &PeppyDirs,
     repo_url: &str,
-    repo_ref: Option<&str>,
+    read_ref: Option<&str>,
     commit: &GitCommit,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PathBuf, String> {
@@ -218,12 +219,12 @@ pub fn ensure_checkout_at_commit(
     ));
     let repo = clone_repo_shallow(repo_url, &dir, &mut |line| on_feedback(line))?;
 
-    // Positioned on the pinned commit rather than on `repo_ref`: an entry
+    // Positioned on the pinned commit rather than on `read_ref`: an entry
     // pins bytes, and the clone above is the same one `repo refresh` makes,
-    // so the head the pin was read from is already here. `repo_ref` is what
+    // so the head the pin was read from is already here. `read_ref` is what
     // the deepening fallback starts from when it is not.
     if checkout_repo_ref(&repo, commit.as_str()).is_err() {
-        fetch_commit(&repo, repo_url, repo_ref, commit, on_feedback)?;
+        fetch_commit(&repo, repo_url, read_ref, commit, on_feedback)?;
         checkout_repo_ref(&repo, commit.as_str()).map_err(|e| {
             format!("Failed to check out commit {commit} of {repo_url} after fetching it: {e}")
         })?;
@@ -347,7 +348,7 @@ pub fn prune_checkouts<'a>(
 fn fetch_commit(
     repo: &git2::Repository,
     repo_url: &str,
-    repo_ref: Option<&str>,
+    read_ref: Option<&str>,
     commit: &GitCommit,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<(), String> {
@@ -364,7 +365,7 @@ fn fetch_commit(
         return Ok(());
     }
 
-    let refspec = repo_ref.unwrap_or("HEAD");
+    let refspec = read_ref.unwrap_or("HEAD");
     on_feedback(&format!(
         "{repo_url} does not serve commits by hash; fetching the full history of {refspec}"
     ));

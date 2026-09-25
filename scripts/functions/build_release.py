@@ -22,7 +22,7 @@ import os
 import sys
 from pathlib import Path
 
-from .build import BuildArtifact, build_and_package
+from .build import BUILD_COMMANDS, BuildArtifact, build_and_package
 from .cli import (
     ReleaseError,
     console,
@@ -37,9 +37,6 @@ from .docker import main as build_base_images_main
 from .lima import ensure_lima_vm, ensure_rust_in_vm, find_limactl, stop_lima_vm
 from .repo import get_repo_root, has_uncommitted_changes
 from .verify_release import verify_all_releases
-
-# Commands a local build needs on this host.
-BUILD_COMMANDS = ("git", "cargo", "rustc")
 
 _NO_MODE_MESSAGE = (
     'releases publish only from the "Parallel release" workflow '

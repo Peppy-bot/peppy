@@ -1,4 +1,5 @@
 use super::common::setup;
+use core_node_api::encoding::GitRepoRef;
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 
@@ -30,7 +31,7 @@ fn repo_add_with_git_ref_succeeds() {
     let result = RepoCommand {
         command: RepoCommands::Add {
             source: "https://github.com/org/repo.git".to_string(),
-            git_ref: Some("v1.0.0".to_string()),
+            git_ref: Some(GitRepoRef::Named("v1.0.0".to_string())),
             top: false,
             id: None,
         },
@@ -146,7 +147,7 @@ fn repo_add_fs_path_with_ref_fails() {
                 .to_str()
                 .unwrap()
                 .to_string(),
-            git_ref: Some("main".to_string()),
+            git_ref: Some(GitRepoRef::Named("main".to_string())),
             top: false,
             id: None,
         },
@@ -270,7 +271,7 @@ fn repo_add_https_url_with_ref_treated_as_git() {
     let result = RepoCommand {
         command: RepoCommands::Add {
             source: "https://github.com/org/repo".to_string(),
-            git_ref: Some("main".to_string()),
+            git_ref: Some(GitRepoRef::Named("main".to_string())),
             top: false,
             id: None,
         },
