@@ -53,8 +53,14 @@ concurrency:
   cancel-in-progress: false
 
 # Every write (the release and its archives, the docs pull requests, and the
-# pushes to `dev` and `main`) goes through the PEPPY_RELEASE_TOKEN secret, so
-# the jobs' own token only reads.
+# pushes to `dev` and `main`) goes through an installation token of the
+# peppy-release-bot GitHub App, so the jobs' own token only reads. The App's
+# client ID and private key are secrets of the `release` environment, whose
+# deployment branch rule admits runs from `dev` alone, and prepare and publish
+# are the only jobs that name it. Each of the two makes its own token, scoped
+# to this repository and to the permissions its writes need. A token lasts an
+# hour from the step that makes it, so a job's writes have to fit in that
+# hour, and it is revoked when its job ends.
 permissions:
   contents: read
 
@@ -64,10 +70,13 @@ defaults:
 
 jobs:
   # Checks that `dev` can be released at the commit this run builds, runs the
-  # docs gate and drafts the notes, all recorded in the release plan. The
-  # checkout keeps the release token for the docs pull request branches.
+  # docs gate and drafts the notes, all recorded in the release plan. Its
+  # release token pushes the branches of the docs pull requests and opens
+  # them, so it writes contents and pull requests; the checkout keeps it for
+  # those pushes.
   prepare:
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
+    environment: release
     steps:
       - name: Require a run from dev
         run: |
@@ -76,13 +85,24 @@ jobs:
             exit 1
           fi
 
+      - name: Make the release token
+        id: release-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.PEPPY_RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.PEPPY_RELEASE_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
       # Full history brings the tags the notes are drafted from and the
       # `main` the docs check diffs against.
       - uses: actions/checkout@v7
         with:
           ref: dev
           fetch-depth: 0
-          token: ${{ secrets.PEPPY_RELEASE_TOKEN }}
+          token: ${{ steps.release-token.outputs.token }}
 
       - uses: ./.github/actions/release-host-env
         with:
@@ -96,7 +116,7 @@ jobs:
       # stops unless --skip-prod-cert-check is among the extra arguments.
       - name: Check the release and draft its notes
         env:
-          PEPPY_RELEASE_TOKEN: ${{ secrets.PEPPY_RELEASE_TOKEN }}
+          PEPPY_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           PEPPY_PROD_ROUTER_ENDPOINT: ${{ vars.PEPPY_PROD_ROUTER_ENDPOINT }}
           TAG: ${{ inputs.tag }}
@@ -238,9 +258,13 @@ jobs:
           archive: archive-${{ matrix.target }}
 
   # Collects the three archives and publishes the release, then commits the
-  # notes on `dev` and fast-forwards `main`. The checkout keeps the release
-  # token for those pushes: the branch rulesets on `dev` and `main` let only
-  # their bypass actors push directly, so the token has to belong to one.
+  # notes on `dev` and fast-forwards `main`. The peppy-release-bot App is the
+  # bypass actor of the branch rulesets on `dev` and `main`, which is what
+  # lets its two direct pushes land; the checkout keeps its token for them.
+  # The token writes contents (the release, its archives and both pushes) and
+  # workflows: the fast-forward of `main` carries every commit `dev` took
+  # since the last release, and GitHub refuses a push that changes a file
+  # under .github/workflows/ from an App token without that permission.
   #
   # A publish that fails is started again with "Re-run failed jobs" while the
   # run's artifacts exist (one day). The re-run finds what the failed attempt
@@ -250,12 +274,24 @@ jobs:
   publish:
     needs: [prepare, build, install-test]
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
+    environment: release
     steps:
+      - name: Make the release token
+        id: release-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.PEPPY_RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.PEPPY_RELEASE_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-workflows: write
+
       - uses: actions/checkout@v7
         with:
           ref: dev
           fetch-depth: 0
-          token: ${{ secrets.PEPPY_RELEASE_TOKEN }}
+          token: ${{ steps.release-token.outputs.token }}
 
       - uses: ./.github/actions/release-host-env
         with:
@@ -280,7 +316,7 @@ jobs:
       # not cut short. A signal ends `wait` early, hence the loop.
       - name: Publish the release
         env:
-          PEPPY_RELEASE_TOKEN: ${{ secrets.PEPPY_RELEASE_TOKEN }}
+          PEPPY_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
         run: |
           ./scripts/parallel_release.sh publish \
             --plan "$RUNNER_TEMP/release-plan/release-plan.json" \

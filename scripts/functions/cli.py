@@ -23,8 +23,8 @@ console = Console(stderr=True)
 PROD_ROUTER_ENDPOINT_ENV = "PEPPY_PROD_ROUTER_ENDPOINT"
 
 # Env var the release scripts read the GitHub release token from. The release
-# workflow passes it from a repository secret of the same name, and GitHub
-# rejects secret names that start with GITHUB_.
+# workflow sets it to an installation token of the peppy-release-bot GitHub
+# App, made by the job that runs the stage.
 RELEASE_TOKEN_ENV = "PEPPY_RELEASE_TOKEN"
 
 RELEASE_TRIPLES: tuple[str, ...] = (
