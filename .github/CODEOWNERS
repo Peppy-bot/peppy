@@ -1,0 +1,3 @@
+# A change to CI (the workflows, their actions, the runner settings and this
+# file) needs the review of an owner.
+/.github/ @Peppy-bot/peppy-super-admin
