@@ -703,7 +703,7 @@ pub fn seed_docs_repo(
     std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
 
     peppy::commands::repo::RepoCommand {
-        command: peppy::commands::repo::RepoCommands::Refresh,
+        command: peppy::commands::repo::RepoCommands::Refresh { strict: false },
     }
     .execute(ctx)
     .expect("repo refresh should discover the seeded documents");

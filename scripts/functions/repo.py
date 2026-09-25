@@ -107,6 +107,47 @@ def is_ancestor(ancestor: str, descendant: str) -> bool:
     )
 
 
+def get_parents(commit: str) -> tuple[str, ...]:
+    """Return the parents of *commit*, in order: none for a root commit, two or
+    more for a merge.
+
+    Raises ReleaseError if *commit* cannot be read.
+    """
+    result = subprocess.run(
+        ["git", "rev-list", "--parents", "--max-count=1", commit],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to read the parents of '{commit}': {result.stderr.strip()}"
+        )
+    # One line: the commit itself, then its parents.
+    return tuple(result.stdout.split()[1:])
+
+
+def get_changed_paths(base: str, head: str) -> tuple[str, ...]:
+    """Return every path that differs between *base* and *head*, relative to
+    the repository root.
+
+    Renames are listed as the path removed and the path added, so a moved file
+    never passes for a change to one path alone.
+
+    Raises ReleaseError if either revision cannot be read.
+    """
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "--no-renames", "-z", base, head],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to list the paths changed between '{base}' and '{head}': "
+            f"{result.stderr.strip()}"
+        )
+    return tuple(path for path in result.stdout.split("\0") if path)
+
+
 def get_commit_subjects(base: str | None, head: str = "HEAD") -> list[str]:
     """Return the commit subjects between base and head (newest first).
 
@@ -275,39 +316,4 @@ def switch_branch(branch: str) -> None:
     if result.returncode != 0:
         raise ReleaseError(
             f"failed to switch back to '{branch}': {result.stderr.strip()}"
-        )
-
-
-def is_branch_checked_out(branch: str) -> bool:
-    """Return True if *branch* is the checked-out branch of any worktree.
-
-    Raises ReleaseError if the worktree list cannot be read.
-    """
-    result = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise ReleaseError(f"failed to list git worktrees: {result.stderr.strip()}")
-    return f"branch refs/heads/{branch}" in result.stdout.splitlines()
-
-
-def set_branch_ref(branch: str, commit: str) -> None:
-    """Point the local *branch* at *commit* without checking it out.
-
-    Only safe when *branch* is checked out nowhere (see `is_branch_checked_out`),
-    because moving the ref under a worktree that has it checked out leaves that
-    worktree's index disagreeing with HEAD.
-
-    Raises ReleaseError if the ref cannot be updated.
-    """
-    result = subprocess.run(
-        ["git", "update-ref", f"refs/heads/{branch}", commit],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to point '{branch}' at {commit}: {result.stderr.strip()}"
         )

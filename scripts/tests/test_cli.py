@@ -63,7 +63,7 @@ def test_prompt_yn_default_no() -> None:
         mock_ask.assert_called_once_with("Continue?", default=False)
 
 
-# The prod-router gate runs first on the prod path; patch it out for the tests
+# The prod-router gate runs first; patch it out for the tests
 # that exercise the token/command checks (the gate has its own tests below).
 def test_validate_release_environment_missing_token() -> None:
     with patch.dict(os.environ, {}, clear=True), patch(
@@ -81,20 +81,8 @@ def test_validate_release_environment_valid_token() -> None:
     assert token == "test-token"
 
 
-def test_validate_release_environment_no_token_required_skips_prod_gate() -> None:
-    # require_token=False (the --local path) must skip BOTH the token check and the
-    # publicly-trusted prod-router gate. (--base-images skips structurally: it never
-    # calls validate_release_environment at all.)
-    with patch.dict(os.environ, {}, clear=True), patch(
-        "functions.cli.verify_prod_router_publicly_trusted"
-    ) as gate:
-        token = validate_release_environment(required_commands=(), require_token=False)
-    assert token == ""
-    gate.assert_not_called()
-
-
-def test_validate_release_environment_runs_prod_gate_on_prod_path() -> None:
-    # The prod path (require_token=True) invokes the gate before anything else.
+def test_validate_release_environment_runs_prod_gate() -> None:
+    # The gate runs before anything else.
     with patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "test-token"}), patch(
         "functions.cli.verify_prod_router_publicly_trusted"
     ) as gate:
@@ -115,7 +103,7 @@ def test_validate_release_environment_skip_prod_router_check_bypasses_gate() -> 
 
 
 def test_validate_release_environment_skip_prod_router_check_still_requires_token() -> None:
-    # Skipping the cert gate must not weaken the rest of the prod path.
+    # Skipping the cert gate must not weaken the other checks.
     with patch.dict(os.environ, {}, clear=True), patch(
         "functions.cli.verify_prod_router_publicly_trusted"
     ) as gate:

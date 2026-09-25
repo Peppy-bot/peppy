@@ -139,7 +139,7 @@ fn seeded(
     .expect("write repos file");
 
     RepoCommand {
-        command: RepoCommands::Refresh,
+        command: RepoCommands::Refresh { strict: false },
     }
     .execute(ctx)
     .expect("repo refresh should succeed");
