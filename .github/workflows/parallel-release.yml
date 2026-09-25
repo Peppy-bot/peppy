@@ -25,9 +25,11 @@ name: Parallel release
 # pull request branch, so neither may stop part way and start again. The
 # provision and build stages run on spot. They only build and upload an
 # artifact, so a stage that AWS interrupts can run again: once this run ends,
-# RunsOn re-runs its failed and cancelled jobs in a second attempt, the
-# interrupted one on demand, and that attempt reads the release plan and the
-# artifacts the first attempt uploaded.
+# RunsOn re-runs its failed jobs and the jobs that wait on them in a second
+# attempt, the interrupted one on demand, and that attempt reads the release
+# plan and the artifacts the first attempt uploaded. Both stages turn
+# fail-fast off, so an interrupted leg fails alone and the second attempt runs
+# that leg again, not its siblings.
 # RunsOn has no macOS, so the macOS stages run on a Blacksmith macOS runner.
 # The install tests run on GitHub-hosted runners (see the install-test
 # action).
@@ -53,7 +55,11 @@ on:
 
 # One release at a time, and never cancelled for a newer one: a release stopped
 # part way can leave a published release whose notes are not yet committed on
-# `dev`.
+# `dev`. So every job has a timeout: a stage that hangs would otherwise hold
+# the group, and every later release with it, for GitHub's default of six
+# hours. Each is about three times the slowest run of its stage in recent
+# releases; publish has more room, since a publish stopped part way leaves a
+# partial release.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -74,6 +80,7 @@ jobs:
   # checkout keeps the release token for the docs pull request branches.
   prepare:
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
+    timeout-minutes: 40
     steps:
       - name: Require a run from dev
         run: |
@@ -131,9 +138,11 @@ jobs:
 
   # Waits for prepare, which stops a release that must not be built. The same
   # three runner types as the builds, each building what it builds natively.
+  # A leg that fails leaves the others running, as in build.
   provision:
     needs: prepare
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: bindings
@@ -146,6 +155,7 @@ jobs:
             stage: apptainer
             runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops  # custom Peppy AMI
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
         with:
@@ -167,10 +177,13 @@ jobs:
           retention-days: 1
 
   # One archive per runner, all three in parallel, each from the commit the
-  # plan pins. A failed build cancels the others: a release needs all three.
+  # plan pins. A failed build leaves the others running: a spot interruption
+  # fails one leg alone, and the second attempt then builds only that leg.
+  # publish still waits for all three.
   build:
     needs: [prepare, provision]
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
@@ -180,6 +193,7 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops  # custom Peppy AMI
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -256,6 +270,7 @@ jobs:
   publish:
     needs: [prepare, build, install-test]
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
