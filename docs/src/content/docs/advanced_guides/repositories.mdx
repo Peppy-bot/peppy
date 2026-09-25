@@ -15,11 +15,15 @@ Repositories tell Peppy where to look for nodes, launchers, contracts, pairings,
 
 Out of the box, five repositories are configured:
 
-- **`nodes-hub`** (`https://github.com/Peppy-bot/nodes-hub.git`, tracked on `main`, id `1000`): a curated collection of ready-to-use nodes.
-- **`launchers-hub`** (`https://github.com/Peppy-bot/launchers-hub.git`, tracked on `main`, id `1001`): community launch files that compose nodes from the hubs.
-- **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, tracked on `main`, id `1002`): shared contract definitions that nodes claim by `name:tag` in `manifest.implements`.
-- **`mcp-hub`** (`https://github.com/Peppy-bot/mcp-hub.git`, tracked on `main`, id `1003`): [MCP exposure](/advanced_guides/mcp/) documents that a launcher lists by `name:tag` and the server built into `peppy` serves.
-- **`pairings-hub`** (`https://github.com/Peppy-bot/pairings-hub.git`, tracked on `main`, id `1004`): shared pairing definitions that nodes play roles in by `name:tag` in `depends_on.pairings`; see [Pairing](/advanced_guides/pairing/).
+- **`nodes-hub`** (`https://github.com/Peppy-bot/nodes-hub.git`, `ref: "@{peppy-release}"`, id `1000`): a curated collection of ready-to-use nodes.
+- **`launchers-hub`** (`https://github.com/Peppy-bot/launchers-hub.git`, `ref: "@{peppy-release}"`, id `1001`): community launch files that compose nodes from the hubs.
+- **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, `ref: "@{peppy-release}"`, id `1002`): shared contract definitions that nodes claim by `name:tag` in `manifest.implements`.
+- **`mcp-hub`** (`https://github.com/Peppy-bot/mcp-hub.git`, `ref: "@{peppy-release}"`, id `1003`): [MCP exposure](/advanced_guides/mcp/) documents that a launcher lists by `name:tag` and the server built into `peppy` serves.
+- **`pairings-hub`** (`https://github.com/Peppy-bot/pairings-hub.git`, `ref: "@{peppy-release}"`, id `1004`): shared pairing definitions that nodes play roles in by `name:tag` in `depends_on.pairings`; see [Pairing](/advanced_guides/pairing/).
+
+A release build of Peppy reads, in each default hub, the tag `peppy-release/<its version>`: Peppy `v0.32.0` reads `peppy-release/v0.32.0`. The Peppy release tests these hub commits together with that version before it creates the tags, and nobody can move or delete the tags. So the content of the default hubs changes only when you install another Peppy version. A build of Peppy without a release version reads the hubs' `main` branch.
+
+Peppy writes these entries when it creates `repositories.json5`. Neither the start of the daemon nor `peppy repo init` changes an entry the file already holds, so an entry of a default hub with another `ref` reads that ref. To read the hub content released with your Peppy version, set its `ref` to `"@{peppy-release}"`, or delete `~/.peppy/conf/repositories.json5` and run [`peppy repo init`](#initialize-the-defaults) to write the default entries again, then `peppy repo refresh`.
 
 The `id` is the priority key when several repositories provide the same `name:tag`, so the defaults resolve in this order.
 
@@ -46,7 +50,8 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 // repositories.json5
 [
   { id: 1, type: "fs",  path: "/home/user" },
-  { id: 2, type: "git", url: "https://github.com/Peppy-bot/nodes-hub.git", ref: "main" },
+  { id: 2, type: "git", url: "https://github.com/Peppy-bot/nodes-hub.git", ref: "@{peppy-release}" },
+  { id: 3, type: "git", url: "https://github.com/org/robot-nodes.git", ref: "feature/gripper" },
 ]
 ```
 
@@ -55,9 +60,11 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 | Type | Fields | Description |
 |------|--------|-------------|
 | `fs` | `path` | A local directory, read through its committed [`peppy_repository.json5`](#the-repository-index). |
-| `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and reads the same committed index. Use `ref` to pin a branch, tag, or commit. The `url` is HTTPS or an SSH URL (see [Private git repositories over SSH](#private-git-repositories-over-ssh)). |
+| `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and reads the same committed index. Use `ref` to pin a branch, tag, or commit, or write `@{peppy-release}` to read the hub content released with your Peppy version (see below). The `url` is HTTPS or an SSH URL (see [Private git repositories over SSH](#private-git-repositories-over-ssh)). |
 
 These are the only two source types. An entry with any other `type` fails its read as `unreachable` with an "unrecognized repository entry" detail.
+
+`ref: "@{peppy-release}"` always resolves to a tag, never to a branch. In a release build of Peppy it reads the tag `peppy-release/<version>` of that build; in a build without a release version it reads `main`. Only the Peppy-bot hubs carry `peppy-release/` tags, so for a repository of another organization, `ref` names a branch, a tag, or a commit. Git refuses every branch or tag name that contains `@{`, so no ref of a repository can clash with `@{peppy-release}`; any other `ref` value that contains `@{` (such as `main@{1}` or `@{upstream}`) is refused, and the entry fails its read as `unreachable`. Every other `ref` value is passed to git as written, so `ref: "peppy-release/v0.31.2"` pins the hubs of that one release.
 
 An `fs` repository is a path only this machine can read, so a deployment resolved from one must keep
 all of its instances on this daemon in a federated launch; serve the nodes from a `git` repository
@@ -111,7 +118,7 @@ Syncs `repositories.json5` with the bundled default template. If the file does n
 peppy repo list
 ```
 
-Shows the indexed nodes grouped by the repository that provides them. Each group is headed by the repository's display label (path for `fs`, `url (ref: r)` for `git`) followed by the node count and source kind, then lists each node's name, tag, and path.
+Shows the indexed nodes grouped by the repository that provides them. Each group is headed by the repository's display label (path for `fs`, `url (ref: r)` for `git`) followed by the node count and source kind, then lists each node's name, tag, and path. A `git` repository on `@{peppy-release}` also names the ref this Peppy reads for it, as in `https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0)`.
 
 The list reflects the index, not the filesystem, so it shows what will actually resolve at launch. A node added to a local repository does not appear until you run `peppy repo index <path>` and then `peppy repo refresh`, which is also when it becomes launchable.
 
@@ -133,13 +140,13 @@ Every matching identity is listed with where it is stored, names the pattern mat
 camera
 
 3 items match `camera`
-┌──────────────┬─────────────────────────┬────────────────────────────────────────────────────────────┬──────────────────────────────────────┬──────────┐
-│ KIND         │ ITEM                    │ REPOSITORY                                                 │ PATH                                 │ SHA256   │
-├──────────────┼─────────────────────────┼────────────────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┤
-│ mcp exposure │ camera_and_recording:v1 │ https://github.com/Peppy-bot/mcp-hub.git (ref: main)       │ recording/camera_and_recording.json5 │ 583f9ac9 │
-│ contract     │ rgb_camera:v1           │ https://github.com/Peppy-bot/contracts-hub.git (ref: main) │ cameras/rgb_camera.json5             │ 4594da02 │
-│ node         │ sim_rgb_camera:v1       │ https://github.com/Peppy-bot/nodes-hub.git (ref: main)     │ sim_rgb_camera/peppy.json5           │ 9f2c1a77 │
-└──────────────┴─────────────────────────┴────────────────────────────────────────────────────────────┴──────────────────────────────────────┴──────────┘
+┌──────────────┬─────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────┬──────────────────────────────────────┬──────────┐
+│ KIND         │ ITEM                    │ REPOSITORY                                                                                          │ PATH                                 │ SHA256   │
+├──────────────┼─────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┤
+│ mcp exposure │ camera_and_recording:v1 │ https://github.com/Peppy-bot/mcp-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0)       │ recording/camera_and_recording.json5 │ 583f9ac9 │
+│ contract     │ rgb_camera:v1           │ https://github.com/Peppy-bot/contracts-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0) │ cameras/rgb_camera.json5             │ 4594da02 │
+│ node         │ sim_rgb_camera:v1       │ https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0)     │ sim_rgb_camera/peppy.json5           │ 9f2c1a77 │
+└──────────────┴─────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────────┴──────────┘
 ```
 
 The `SHA256` column shows the first eight characters of each document's fingerprint, as the `PIN` cells of [`peppy repo show`](#show-what-a-query-matches) do. A `@<sha256>` query takes the complete 64-character fingerprint; `--json` carries fingerprints whole.
@@ -158,10 +165,10 @@ A report's first lines name each document of the identity with its kind, reposit
 
 ```text
 ^rgb_camera$:^v1$
-  contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 a4e66999c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8)
+  contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0) at cameras/rgb_camera.json5 (sha256 a4e66999c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8)
 
 Implemented by 2 indexed nodes
-  https://github.com/Peppy-bot/nodes-hub.git (ref: main):
+  https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0):
     ┌──────────────────┬─────┬────────┬────────────────────────┬──────────────────────────────┐
     │ NODE             │ TAG │ SLOT   │ PIN                    │ PATH                         │
     ├──────────────────┼─────┼────────┼────────────────────────┼──────────────────────────────┤
@@ -170,7 +177,7 @@ Implemented by 2 indexed nodes
     └──────────────────┴─────┴────────┴────────────────────────┴──────────────────────────────┘
 
 Consumed by 1 indexed node
-  https://github.com/Peppy-bot/nodes-hub.git (ref: main):
+  https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0):
     ┌──────────────────┬─────┬──────────────────────┬──────────┬────────────────────────────────────────────┐
     │ NODE             │ TAG │ SLOT                 │ PIN      │ PATH                                       │
     ├──────────────────┼─────┼──────────────────────┼──────────┼────────────────────────────────────────────┤
@@ -182,10 +189,10 @@ For a **node**, the report reads the same cache the other way: one section per p
 
 ```text
 ^sim_rgb_camera$:^v1$
-  node sim_rgb_camera:v1 published by https://github.com/Peppy-bot/nodes-hub.git (ref: main) at sim_rgb_camera/peppy.json5 (sha256 34d40c0140066c9055879c2d4bd022a7f665752ab834247a9ff69e4fd68a1899)
+  node sim_rgb_camera:v1 published by https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0) at sim_rgb_camera/peppy.json5 (sha256 34d40c0140066c9055879c2d4bd022a7f665752ab834247a9ff69e4fd68a1899)
 
 Slot engine (sim_rgb_camera_link:v1 as viewer, one) can pair with 2 indexed nodes
-  https://github.com/Peppy-bot/nodes-hub.git (ref: main):
+  https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0):
     ┌────────────┬─────┬────────┬────────────────────────────┬──────────┬────────────────────────┐
     │ NODE       │ TAG │ ROLE   │ SLOT                       │ PIN      │ PATH                   │
     ├────────────┼─────┼────────┼────────────────────────────┼──────────┼────────────────────────┤
@@ -225,6 +232,7 @@ peppy repo refresh [--strict]
 Re-scans all configured repositories and rebuilds the node, launcher, contract, pairing, and MCP exposure indexes. `peppy repo update` is accepted as an alias. During refresh, Peppy:
 
 - Reads `repositories.json5` (creates it with defaults on first run).
+- Resolves `ref: "@{peppy-release}"` to the ref this Peppy reads: the tag `peppy-release/<version>` in a release build, `main` in any other build.
 - Skips any repository or path listed in `excluded_repositories.json5`.
 - Reads local directories in place and shallow-clones git repositories. A shallow clone holds the head of every branch and no tag, so when a git repository's `ref` names a tag, or a commit that is not the head of a branch, Peppy fetches that ref on its own before it reads the repository.
 - Records what each repository's committed [`peppy_repository.json5`](#the-repository-index) publishes: nodes and their tags, together with the contract and pairing links each node's manifest declares, launchers (one per name, no tag), and contracts, pairings, and MCP exposures (keyed by their manifest `name:tag`). A repository without that file fails its read with instructions to run `peppy repo index`.
@@ -232,6 +240,8 @@ Re-scans all configured repositories and rebuilds the node, launcher, contract, 
 - Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, `~/.peppy/cache/contracts.json5`, `~/.peppy/cache/pairings.json5`, and `~/.peppy/cache/mcp_exposures.json5`, and records per-repository read status in `~/.peppy/cache/repo_status.json5`.
 
 On completion it prints a summary, for example `Repository refresh complete. 12 node(s), 3 launcher(s), 5 contract(s), 2 pairing(s), 1 MCP exposure(s) found.`
+
+When you install another Peppy version, the daemon reads the repositories on `@{peppy-release}` again at its next start, at the tags of the new version, before it answers any request. That start takes as long as the fetch of those repositories. If a repository cannot be read then, it keeps the entries it holds and the daemon tries again at its next start.
 
 When **multiple repositories** provide the same `name:tag` pair, the repository with the lower `id` takes priority. The shadowed entry is still recorded and shown in `repo list` but does not override the primary source.
 
@@ -248,8 +258,8 @@ The run itself still succeeds. A repository that could not be read is a state to
 ```text
 Repository refresh complete. 26 node(s), 4 launcher(s), 8 contract(s), 2 pairing(s), 0 MCP exposure(s) found.
 2 of the configured repositories could not be updated. Every other repository was updated normally.
-  - repository 1000 (https://github.com/Peppy-bot/nodes-hub.git (ref: main)) contradicts itself [conflict]: duplicate key `v1`: already declared at uvc_camera_video_reconstruction/python/peppy.json5, declared again at uvc_camera_video_reconstruction/rust/peppy.json5. Kept 18 entries from its last successful read
-  - repository 1002 (https://github.com/Peppy-bot/contracts-hub.git (ref: main)) could not be read [unreachable]: failed to connect to github.com. Kept 8 entries from its last successful read
+  - repository 1000 (https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0)) contradicts itself [conflict]: duplicate key `v1`: already declared at uvc_camera_video_reconstruction/python/peppy.json5, declared again at uvc_camera_video_reconstruction/rust/peppy.json5. Kept 18 entries from its last successful read
+  - repository 1002 (https://github.com/Peppy-bot/contracts-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0)) could not be read [unreachable]: failed to connect to github.com. Kept 8 entries from its last successful read
 Run `peppy repo refresh` again to pick those repositories up.
 ```
 
@@ -263,7 +273,7 @@ Two kinds of failure are reported, and the distinction matters because they send
 
 | Kind | Meaning | Typical cause |
 | --- | --- | --- |
-| `unreachable` | The repository could not be read at all. | Network outage, a bad git ref, a local path that is not mounted, a root with no committed `peppy_repository.json5`, an unrecognized entry in `repositories.json5`. |
+| `unreachable` | The repository could not be read at all. | Network outage, a bad git ref, a `peppy-release/<version>` tag that the hub does not carry, a local path that is not mounted, a root with no committed `peppy_repository.json5`, an unrecognized entry in `repositories.json5`. |
 | `conflict` | The repository was read fine, but its committed index contradicts itself or the tree. | An index that fails to parse (a duplicate key, an unknown field, an illegal path), or a listed path that is missing, is of another kind, or declares another identity. |
 
 An `unreachable` repository is an outage, so the fix is usually to wait or fix connectivity. A `conflict` is a content bug in the repository, and the message names the exact files, so the fix is a change to that repository.
@@ -277,7 +287,7 @@ A machine that has **never** read a repository successfully has nothing to fall 
 ### Add a repository
 
 ```sh
-peppy repo add <source> [--ref <tag-or-branch>] [--top | --id <id>]
+peppy repo add <source> [--ref <branch, tag, commit, or @{peppy-release}>] [--top | --id <id>]
 ```
 
 Adds a new repository to `repositories.json5`. The source format is auto-detected:
@@ -294,6 +304,9 @@ peppy repo add git@github.com:org/private-repo.git
 
 # Git repository pinned to a branch or tag
 peppy repo add https://github.com/org/repo.git --ref v2.0
+
+# A Peppy-bot hub that follows the Peppy release, at a pinned id
+peppy repo add git@github.com:Peppy-bot/private-nodes-hub.git --ref @{peppy-release} --id 2000
 
 # Give the new repo top priority (lower `id` than every existing entry)
 peppy repo add /path/to/my/nodes --top
@@ -317,7 +330,7 @@ Removes a repository by its numeric ID (shown by `peppy repo list`). The reposit
 ### Exclude a repository
 
 ```sh
-peppy repo exclude <source> [--ref <tag-or-branch>]
+peppy repo exclude <source> [--ref <branch, tag, commit, or @{peppy-release}>]
 ```
 
 Adds a source to `excluded_repositories.json5`. Excluded repositories are skipped during `peppy repo refresh`, and the repository index is automatically refreshed after the exclusion. You can exclude an entire repository or a specific subdirectory within a local repository:
@@ -326,9 +339,14 @@ Adds a source to `excluded_repositories.json5`. Excluded repositories are skippe
 # Exclude a whole git repository
 peppy repo exclude https://github.com/org/repo.git
 
+# Exclude a default hub
+peppy repo exclude https://github.com/Peppy-bot/mcp-hub.git --ref @{peppy-release}
+
 # Exclude a subdirectory of a local repository
 peppy repo exclude /home/user/projects/private-nodes
 ```
+
+An exclusion matches a git repository by its `url` and its `ref` as written in `repositories.json5`, so a default hub is excluded with `--ref @{peppy-release}`.
 
 ## The repository index
 

@@ -13,12 +13,14 @@
 //! entries themselves: it is per repository, not per entry, and keeping
 //! it separate leaves the entry caches' on-disk shape untouched.
 //!
-//! Deliberately records a timestamp and not a revision. Knowing *when*
-//! entries were last read is enough for everything here; recording which
-//! commit they came from is a larger change to what a cache holds.
+//! It records when a repository was last read and, for a git repository,
+//! the ref that read resolved to, not the commit: the time keeps stale
+//! entries visible, and the ref tells the daemon at start whether a
+//! repository on `@{peppy-release}` was read for the version that runs
+//! (see `refresh::release_repositories_read_for_another_version`).
 
 use crate::Result;
-use core_node_api::encoding::RepoSourceKind;
+use core_node_api::encoding::{ReadRef, RepoSourceKind};
 use daemon_config::consts::PeppyDirs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,6 +51,13 @@ pub(crate) struct RepoStatus {
     /// to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_read_unix_secs: Option<u64>,
+    /// The git ref the last read that produced entries was positioned on
+    /// (see the `read_ref` of
+    /// [`crate::services::repo::cache::EntryOrigin::Git`]). `None` for an fs
+    /// repository, for a git repository that follows the remote's HEAD, and
+    /// on a machine that has never read the repository successfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_ref: Option<ReadRef>,
     /// Absent once a read succeeds, so a repository that recovered does
     /// not keep reporting an old failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -120,6 +129,7 @@ mod tests {
             identity: format!("https://example.com/{id}.git"),
             source_type: RepoSourceKind::Git,
             last_read_unix_secs: Some(1_753_900_000),
+            read_ref: Some(ReadRef::Named("main".to_owned())),
             last_failure: None,
         }
     }

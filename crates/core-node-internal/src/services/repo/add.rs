@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::read_or_create_repos;
-use crate::services::repo::{json_entry_identity, repo_source_to_json, source_identity};
+use crate::services::repo::{entry_identity, repo_source_to_json, source_identity};
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
@@ -98,7 +98,7 @@ fn handle_repo_add_request_inner(
     let new_identity = identity.trim();
     let is_duplicate = repos
         .iter()
-        .any(|entry| json_entry_identity(entry).is_some_and(|existing| existing == new_identity));
+        .any(|entry| entry_identity(entry).is_some_and(|existing| existing == new_identity));
 
     if is_duplicate {
         return RepoAddResponse::failure(format!("repository '{}' already exists", new_identity))

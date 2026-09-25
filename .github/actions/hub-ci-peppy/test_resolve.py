@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
-"""Tests for the resolution of the peppy build and the hubs of a hub's CI job.
+"""Tests for the resolution of the peppy build and the hubs of a hub's CI job,
+and of the hub set of a peppy release.
 
-Every case runs a pure function of resolve.py on fixed input data: an event
-payload, the branch heads `git ls-remote` reports, a REST response. Nothing
-touches the network. The last cases hold the hub list to the defaults peppy
-bundles and the artifact names to the workflows that upload them, which are
-files of this repository, so the changes job of tests.yml runs these cases on
-every change.
+Every case runs a function of resolve.py on fixed input data: an event
+payload, the refs `git ls-remote` reports, a REST response. Nothing touches
+the network: where a case runs the I/O around a decision, `git ls-remote`,
+`ssh-add` and the commands are stand-ins. The last cases hold the hub list to
+the defaults peppy bundles and the artifact names, the tokens and the deploy
+key to the workflows that use them, which are files of this repository, so
+the changes job of tests.yml runs these cases on every change.
 """
 
+import io
 import json
+import os
 import re
+import subprocess
+import tempfile
 import unittest
+import urllib.error
+import urllib.request
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import resolve
 from resolve import Arch, HubOrigin, PeppyBuildKind, PeppyBuildPolicy, ResolveError
@@ -129,10 +139,12 @@ def explicit_set_text(replaced=None, left_out=()):
 
 def installed_peppy():
     return resolve.InstalledPeppy(
-        kind=PeppyBuildKind.LATEST_RELEASE,
+        build=resolve.PeppyBuild(
+            kind=PeppyBuildKind.LATEST_RELEASE,
+            source=resolve.latest_release_url(Arch.X86_64),
+            description="the latest release",
+        ),
         version="peppy v0.31.3",
-        source=resolve.latest_release_url(Arch.X86_64),
-        description="the latest release",
     )
 
 
@@ -254,8 +266,16 @@ class HubsByBranch(unittest.TestCase):
         self.assertNotIn("A branch", hub_set.notes[0])
 
     def test_the_private_hub_is_looked_up_only_with_the_deploy_key(self):
-        self.assertIn(PRIVATE_NODES_HUB, resolve.sibling_hubs(NODES_HUB, True))
-        self.assertNotIn(PRIVATE_NODES_HUB, resolve.sibling_hubs(NODES_HUB, False))
+        readable, unreadable = resolve.sibling_hubs(NODES_HUB, True)
+        self.assertIn(PRIVATE_NODES_HUB, readable)
+        self.assertEqual(unreadable, [])
+        readable, unreadable = resolve.sibling_hubs(NODES_HUB, False)
+        self.assertNotIn(PRIVATE_NODES_HUB, readable)
+        self.assertEqual(unreadable, [PRIVATE_NODES_HUB])
+
+    def test_the_siblings_are_every_other_hub_by_id(self):
+        readable, _ = resolve.sibling_hubs(PRIVATE_NODES_HUB, False)
+        self.assertEqual(readable, list(resolve.HUBS[:-1]))
 
     def test_the_private_hub_under_test_needs_no_deploy_key(self):
         hub_set = choose_by_branch(under_test=PRIVATE_NODES_HUB, key=False)
@@ -649,6 +669,340 @@ class ExplicitSet(unittest.TestCase):
         )
 
 
+VERSION = "v0.31.2"
+RELEASE_TAG = "peppy-release/v0.31.2"
+
+
+def tag_object_of(hub):
+    """The object an annotated tag of the release is, in `hub`."""
+    return commit_of(hub, "tag object")
+
+
+def release_ls_remote_output(hub, tagged, annotated):
+    """What `git ls-remote` reports for the release patterns of `hub`: the
+    head of `main`, and the tag of the release when `tagged`, annotated or
+    lightweight."""
+    lines = [f"{commit_of(hub, 'main')}\trefs/heads/main"]
+    if tagged and annotated:
+        lines.append(f"{tag_object_of(hub)}\trefs/tags/{RELEASE_TAG}")
+        lines.append(f"{commit_of(hub, RELEASE_TAG)}\trefs/tags/{RELEASE_TAG}^{{}}")
+    elif tagged:
+        lines.append(f"{commit_of(hub, RELEASE_TAG)}\trefs/tags/{RELEASE_TAG}")
+    return "\n".join(lines) + "\n"
+
+
+class FakeRemotes:
+    """`git ls-remote` of every hub, as the release reads them."""
+
+    def __init__(self, test, tagged_in=(), annotated=True):
+        self.test = test
+        self.tagged_in = tagged_in
+        self.annotated = annotated
+        self.urls = []
+
+    def __call__(self, url, patterns):
+        self.test.assertEqual(patterns, resolve.release_ref_patterns(VERSION))
+        self.urls.append(url)
+        (hub,) = [hub for hub in resolve.HUBS if hub.clone_url == url]
+        return release_ls_remote_output(hub, hub.name in self.tagged_in, self.annotated)
+
+
+def read_release_set(test, tagged_in=(), annotated=True, key=True):
+    """The release set of VERSION as read from hubs of which those named by
+    `tagged_in` carry its tag, with the deploy key loaded when `key`."""
+    remotes = FakeRemotes(test, tagged_in, annotated)
+    with (
+        patch.object(resolve, "agent_holds_a_key", return_value=key),
+        patch.object(resolve, "ls_remote", side_effect=remotes),
+    ):
+        return resolve.read_release_set(VERSION), remotes
+
+
+def release_set_text(**replaced):
+    """A release set as `release-set` writes it, every hub at main, with the
+    entries of `replaced` (by hub name) swapped in."""
+    entries = {
+        hub.name: {"ref": "main", "commit": commit_of(hub, "main")}
+        for hub in resolve.HUBS
+    }
+    entries.update(replaced)
+    return json.dumps({"hubs": entries})
+
+
+class ReleaseVersion(unittest.TestCase):
+    def test_a_release_version_is_v_major_minor_patch(self):
+        for text, version in (
+            ("v0.31.2", "v0.31.2"),
+            (" v0.31.2\n", "v0.31.2"),
+            ("v10.0.123", "v10.0.123"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(resolve.parse_release_version(text), version)
+
+    def test_every_other_form_is_refused(self):
+        for text in (
+            "v0.31.2-rc1",
+            "0.31.2",
+            "v0.31",
+            "v0.31.2.1",
+            "V0.31.2",
+            "v0.31.x",
+            "v0..2",
+            "v0.3\u0661.2",
+            "",
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(ResolveError) as refused:
+                    resolve.parse_release_version(text)
+                self.assertIn("v<MAJOR>.<MINOR>.<PATCH>", str(refused.exception))
+                self.assertIn(
+                    "Every published peppy binary reads the hub tags "
+                    "peppy-release/<its version>, and a binary of any other "
+                    "version reads the hubs' main",
+                    str(refused.exception),
+                )
+
+    def test_the_hub_tag_of_a_release(self):
+        self.assertEqual(resolve.hub_release_tag(VERSION), RELEASE_TAG)
+
+
+class ReleaseRefs(unittest.TestCase):
+    def test_the_patterns_name_main_the_tag_and_the_commit_it_names(self):
+        self.assertEqual(
+            resolve.release_ref_patterns(VERSION),
+            [
+                "refs/heads/main",
+                f"refs/tags/{RELEASE_TAG}",
+                f"refs/tags/{RELEASE_TAG}^{{}}",
+            ],
+        )
+
+    def test_an_annotated_tag_is_peeled_to_its_commit(self):
+        output = (
+            f"{'1' * 40}\trefs/heads/main\n"
+            f"{'2' * 40}\trefs/tags/{RELEASE_TAG}\n"
+            f"{'3' * 40}\trefs/tags/{RELEASE_TAG}^{{}}\n"
+        )
+        self.assertEqual(resolve.parse_ls_remote_tags(output), {RELEASE_TAG: "3" * 40})
+
+    def test_a_lightweight_tag_names_its_commit(self):
+        output = f"{'2' * 40}\trefs/tags/{RELEASE_TAG}\n"
+        self.assertEqual(resolve.parse_ls_remote_tags(output), {RELEASE_TAG: "2" * 40})
+
+    def test_tags_are_keyed_by_their_exact_name(self):
+        output = (
+            f"{'4' * 40}\trefs/tags/x/refs/tags/{RELEASE_TAG}\n"
+            f"{'5' * 40}\trefs/heads/{RELEASE_TAG}\n"
+        )
+        self.assertEqual(
+            resolve.parse_ls_remote_tags(output),
+            {f"x/refs/tags/{RELEASE_TAG}": "4" * 40},
+        )
+
+
+class ReleaseSet(unittest.TestCase):
+    def test_without_a_tag_every_hub_is_at_the_head_of_main(self):
+        hub_set, remotes = read_release_set(self)
+        self.assertEqual(
+            [resolved.hub for resolved in hub_set.hubs], list(resolve.HUBS)
+        )
+        for resolved in hub_set.hubs:
+            with self.subTest(hub=resolved.hub.name):
+                self.assertEqual(resolved.origin, HubOrigin.MAIN)
+                self.assertEqual(resolved.ref, "main")
+                self.assertEqual(resolved.commit, commit_of(resolved.hub, "main"))
+        self.assertEqual(hub_set.notes, ())
+        # The private hub is read over ssh, through the deploy key.
+        self.assertIn("git@github.com:Peppy-bot/private-nodes-hub.git", remotes.urls)
+
+    def test_a_hub_that_carries_the_tag_is_at_the_commit_it_names(self):
+        tagged_in = {"contracts-hub", "private-nodes-hub"}
+        hub_set, _ = read_release_set(self, tagged_in=tagged_in)
+        for resolved in hub_set.hubs:
+            with self.subTest(hub=resolved.hub.name):
+                if resolved.hub.name in tagged_in:
+                    self.assertEqual(resolved.origin, HubOrigin.RELEASE_TAG)
+                    self.assertEqual(resolved.ref, RELEASE_TAG)
+                    # The commit, never the annotated tag's own object.
+                    self.assertEqual(
+                        resolved.commit, commit_of(resolved.hub, RELEASE_TAG)
+                    )
+                else:
+                    self.assertEqual(resolved.origin, HubOrigin.MAIN)
+                    self.assertEqual(resolved.commit, commit_of(resolved.hub, "main"))
+        (note,) = hub_set.notes
+        self.assertIn(
+            f"contracts-hub, private-nodes-hub already carry `{RELEASE_TAG}`", note
+        )
+        self.assertIn("start a new run with the next patch number", note)
+
+    def test_a_lightweight_tag_is_used_too(self):
+        hub_set, _ = read_release_set(self, tagged_in={"mcp-hub"}, annotated=False)
+        mcp_hub = by_name(hub_set)["mcp-hub"]
+        self.assertEqual(mcp_hub.origin, HubOrigin.RELEASE_TAG)
+        self.assertEqual(mcp_hub.commit, commit_of(mcp_hub.hub, RELEASE_TAG))
+
+    def test_without_the_deploy_key_nothing_is_read(self):
+        with self.assertRaises(ResolveError) as refused:
+            read_release_set(self, key=False)
+        self.assertIn("private-nodes-hub", str(refused.exception))
+        self.assertIn("load-private-hub-key.sh", str(refused.exception))
+
+    def test_a_hub_with_neither_the_tag_nor_main_is_refused(self):
+        with self.assertRaises(ResolveError) as refused:
+            resolve.choose_release_hub(
+                NODES_HUB, VERSION, resolve.HubRefs(heads={}, tags={})
+            )
+        self.assertEqual(
+            str(refused.exception),
+            f"nodes-hub carries no tag `{RELEASE_TAG}` and has no branch `main`",
+        )
+
+    def test_the_tag_needs_no_main(self):
+        resolved = resolve.choose_release_hub(
+            NODES_HUB, VERSION, resolve.HubRefs(heads={}, tags={RELEASE_TAG: "7" * 40})
+        )
+        self.assertEqual(resolved.commit, "7" * 40)
+
+
+class ReleaseSetFile(unittest.TestCase):
+    def test_the_recorded_set_reads_back_as_it_was_written(self):
+        hub_set, _ = read_release_set(self, tagged_in={"launchers-hub"})
+        text = json.dumps(resolve.release_set_document(hub_set))
+        read_back = resolve.parse_release_set(text)
+        self.assertEqual(
+            [(r.hub, r.ref, r.commit) for r in read_back.hubs],
+            [(r.hub, r.ref, r.commit) for r in hub_set.hubs],
+        )
+
+    def test_the_recorded_set_is_an_explicit_set_launchers_hub_takes(self):
+        hub_set, _ = read_release_set(self)
+        text = resolve.compact_json(resolve.release_set_document(hub_set))
+        pins = resolve.parse_explicit_set(text)
+        self.assertEqual(list(pins), list(resolve.HUBS))
+
+    def test_a_release_set_leaving_out_a_hub_is_refused(self):
+        entries = json.loads(release_set_text())["hubs"]
+        del entries["private-nodes-hub"]
+        with self.assertRaises(ResolveError) as refused:
+            resolve.parse_release_set(json.dumps({"hubs": entries}))
+        self.assertIn("leaves out private-nodes-hub", str(refused.exception))
+
+    def test_the_release_repositories_file_pins_every_hub_at_its_commit(self):
+        hub_set = resolve.parse_release_set(
+            release_set_text(**{"mcp-hub": {"ref": RELEASE_TAG, "commit": "9" * 40}})
+        )
+        entries = json.loads(resolve.release_repositories_file(hub_set))
+        self.assertEqual(
+            entries,
+            [
+                {
+                    "id": hub.repository_id,
+                    "type": "git",
+                    "url": hub.clone_url,
+                    "ref": "9" * 40
+                    if hub.name == "mcp-hub"
+                    else commit_of(hub, "main"),
+                }
+                for hub in resolve.HUBS
+            ],
+        )
+        self.assertEqual(
+            entries[-1]["url"], "git@github.com:Peppy-bot/private-nodes-hub.git"
+        )
+
+    def test_the_index_check_of_mcp_hub_validates_its_exposures(self):
+        checkout = Path("/checkouts/hub")
+        for hub in resolve.HUBS:
+            with self.subTest(hub=hub.name):
+                expected = ["repo", "index", "/checkouts/hub", "--check"]
+                if hub.name == "mcp-hub":
+                    expected.append("--validate-mcp-exposures")
+                self.assertEqual(resolve.index_check_arguments(hub, checkout), expected)
+
+    def test_the_hub_names_of_a_set_are_one_comma_separated_list(self):
+        hub_set = resolve.parse_release_set(release_set_text())
+        self.assertEqual(
+            resolve.hub_names(hub_set), ",".join(hub.name for hub in resolve.HUBS)
+        )
+
+
+class ReleaseSummaries(unittest.TestCase):
+    def test_the_set_summary_names_every_hub_and_the_tag_note(self):
+        hub_set, _ = read_release_set(self, tagged_in={"pairings-hub"})
+        summary = resolve.release_set_summary(VERSION, hub_set)
+        rows = [line for line in summary.splitlines() if line.startswith("| ")]
+        self.assertEqual(len(rows), 2 + len(resolve.HUBS))
+        pairings_hub = resolve.HUBS_BY_NAME["pairings-hub"]
+        self.assertIn(
+            f"| pairings-hub | 1004 | its tag of this peppy release | `{RELEASE_TAG}` "
+            f"| `{commit_of(pairings_hub, RELEASE_TAG)}` |",
+            rows,
+        )
+        self.assertIn("- pairings-hub already carries", summary)
+
+
+class ReleaseCommands(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.summary = self.directory / "summary.md"
+        self.outputs = self.directory / "outputs"
+        for path in (self.summary, self.outputs):
+            path.touch()
+        environment = patch.dict(
+            os.environ,
+            {
+                "GITHUB_STEP_SUMMARY": str(self.summary),
+                "GITHUB_OUTPUT": str(self.outputs),
+            },
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def run_main(self, *argv):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            status = resolve.main(list(argv))
+        return status, output.getvalue()
+
+    def test_release_set_records_the_set_and_names_its_hubs(self):
+        output = self.directory / "hub-set" / "hub-set.json"
+        remotes = FakeRemotes(self, tagged_in={"nodes-hub"})
+        with (
+            patch.object(resolve, "agent_holds_a_key", return_value=True),
+            patch.object(resolve, "ls_remote", side_effect=remotes),
+        ):
+            status, log = self.run_main(
+                "release-set", "--tag", VERSION, "--output", str(output)
+            )
+        self.assertEqual(status, 0)
+        hub_set = resolve.parse_release_set(output.read_text())
+        self.assertEqual(by_name(hub_set)["nodes-hub"].ref, RELEASE_TAG)
+        self.assertEqual(
+            self.outputs.read_text(),
+            f"hubs={','.join(hub.name for hub in resolve.HUBS)}\n",
+        )
+        self.assertIn(
+            "### The hub commits peppy v0.31.2 tests and tags", self.summary.read_text()
+        )
+        self.assertIn('set: {"hubs":{"nodes-hub":', log)
+
+    def test_a_malformed_version_is_refused_before_any_hub_is_read(self):
+        output = self.directory / "hub-set.json"
+        with patch.object(resolve, "ls_remote", side_effect=AssertionError("read")):
+            status, log = self.run_main(
+                "release-set", "--tag", "v0.31.2-rc1", "--output", str(output)
+            )
+        self.assertEqual(status, 1)
+        self.assertTrue(log.startswith("::error::`v0.31.2-rc1` is not a peppy release"))
+        self.assertFalse(output.exists())
+
+    def test_without_a_subcommand_the_action_runs(self):
+        self.assertIsNone(resolve.parse_arguments([]).command)
+
+
 class JobFiles(unittest.TestCase):
     HUB_PATH = "/runner/work/nodes-hub/nodes-hub"
 
@@ -774,101 +1128,82 @@ class JobFiles(unittest.TestCase):
         )
 
 
-def json5_to_json(text):
-    """The JSON5 of default_repositories.json5 as JSON: `//` and `/* */`
-    comments dropped, bare keys quoted, trailing commas removed. Strings are
-    copied through untouched, so the `//` of a URL stays."""
-    return drop_trailing_commas(quote_bare_keys(drop_comments(text)))
+class Io(unittest.TestCase):
+    def test_a_failed_request_names_what_failed_and_the_http_status(self):
+        error = urllib.error.HTTPError(
+            "https://api.github.com/repos/x", 404, "Not Found", {}, None
+        )
+        with (
+            patch.object(resolve.urllib.request, "urlopen", side_effect=error),
+            self.assertRaises(ResolveError) as refused,
+        ):
+            resolve.github_get_json("/repos/x", {}, "token")
+        self.assertEqual(
+            str(refused.exception),
+            "GET https://api.github.com/repos/x failed: HTTP 404 Not Found",
+        )
+
+    def test_an_unreachable_host_names_what_failed_and_why(self):
+        request = urllib.request.Request("https://peppy.bot/latest/x.tgz")
+        error = urllib.error.URLError("no route to host")
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(resolve.urllib.request, "urlopen", side_effect=error),
+            self.assertRaises(ResolveError) as refused,
+        ):
+            resolve.download(request, Path(directory) / "x.tgz")
+        self.assertEqual(
+            str(refused.exception),
+            "downloading https://peppy.bot/latest/x.tgz failed: no route to host",
+        )
+
+    def test_a_git_that_fails_names_its_command_and_its_error(self):
+        failed = subprocess.CompletedProcess(
+            [], 128, stdout="", stderr="fatal: not a git repository\n"
+        )
+        with (
+            patch.object(resolve.subprocess, "run", return_value=failed) as run,
+            self.assertRaises(ResolveError) as refused,
+        ):
+            resolve.checkout_head("/work/hub")
+        self.assertEqual(
+            run.call_args.args[0], ["git", "-C", "/work/hub", "rev-parse", "HEAD"]
+        )
+        self.assertEqual(
+            str(refused.exception),
+            "git -C /work/hub rev-parse HEAD failed: fatal: not a git repository",
+        )
 
 
-def string_end(text, start):
-    """The index just past the double-quoted string starting at `start`."""
-    index = start + 1
-    while text[index] != '"':
-        index += 2 if text[index] == "\\" else 1
-    return index + 1
-
-
-def drop_comments(text):
-    out, index = [], 0
-    while index < len(text):
-        if text[index] == '"':
-            end = string_end(text, index)
-            out.append(text[index:end])
-            index = end
-        elif text.startswith("//", index):
-            newline = text.find("\n", index)
-            index = len(text) if newline == -1 else newline
-        elif text.startswith("/*", index):
-            index = text.index("*/", index + 2) + 2
-        else:
-            out.append(text[index])
-            index += 1
-    return "".join(out)
-
-
-BARE_KEY = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*(?=\s*:)")
-
-
-def quote_bare_keys(text):
-    out, index = [], 0
-    while index < len(text):
-        if text[index] == '"':
-            end = string_end(text, index)
-            out.append(text[index:end])
-            index = end
-            continue
-        key = BARE_KEY.match(text, index)
-        if key:
-            out.append(json.dumps(key.group()))
-            index = key.end()
-            continue
-        out.append(text[index])
-        index += 1
-    return "".join(out)
-
-
-TRAILING_COMMA = re.compile(r",(?=\s*[\]}])")
-
-
-def drop_trailing_commas(text):
-    out, index = [], 0
-    while index < len(text):
-        if text[index] == '"':
-            end = string_end(text, index)
-            out.append(text[index:end])
-            index = end
-            continue
-        if TRAILING_COMMA.match(text, index):
-            index += 1
-            continue
-        out.append(text[index])
-        index += 1
-    return "".join(out)
+# The `id:` and the `url:` of each entry of default_repositories.json5, each
+# on a line of its own, as the file writes them. Anchored at the start of a
+# line, so the `//` comments above the entries never match.
+DEFAULT_ID = re.compile(r"^\s*id:\s*(\d+),", re.MULTILINE)
+DEFAULT_URL = re.compile(r'^\s*url:\s*"([^"]+)",', re.MULTILINE)
 
 
 class RepositoryFacts(unittest.TestCase):
-    def test_the_json5_reader_reads_what_the_defaults_file_is_written_in(self):
-        text = """
-        // a comment with "quotes" and a trailing comma,
-        [
-          /* block */ { id: 1, type: "git", url: "https://x//y", ref: "a,]" },
-        ]
-        """
-        self.assertEqual(
-            json.loads(json5_to_json(text)),
-            [{"id": 1, "type": "git", "url": "https://x//y", "ref": "a,]"}],
-        )
-
     def test_the_public_hubs_are_the_defaults_peppy_bundles(self):
-        defaults_path = (
+        defaults = (
             REPOSITORY_ROOT
             / "crates/core-node-internal/assets/default_repositories.json5"
-        )
-        defaults = json.loads(json5_to_json(defaults_path.read_text()))
+        ).read_text()
+        ids = [int(match) for match in DEFAULT_ID.findall(defaults)]
+        urls = DEFAULT_URL.findall(defaults)
+        self.assertEqual(len(ids), len(urls), "an entry lacks its id or its url")
         self.assertEqual(
-            {entry["id"]: entry["url"] for entry in defaults},
+            dict(zip(ids, urls)),
             {hub.repository_id: hub.clone_url for hub in PUBLIC_HUBS},
+        )
+
+    def test_the_hub_release_tag_is_the_one_peppy_reads(self):
+        git_ref = (
+            REPOSITORY_ROOT / "peppy-shared/core-node-api/src/encoding/repo/git_ref.rs"
+        ).read_text()
+        self.assertIn(
+            "pub const PEPPY_RELEASE_TAG_PREFIX: &str = "
+            f'"{resolve.HUB_RELEASE_TAG_PREFIX}";',
+            git_ref,
         )
 
     def test_the_private_hub_is_in_the_reserved_id_band(self):
@@ -904,6 +1239,66 @@ class RepositoryFacts(unittest.TestCase):
                     resolve.release_run_artifact_name(arch),
                     name_template.replace("${{ matrix.target }}", arch.triple),
                 )
+
+    def release_script_has_line(self, script, line):
+        path = REPOSITORY_ROOT / "scripts" / script
+        lines = [text.strip() for text in path.read_text().splitlines()]
+        self.assertTrue(line in lines, f"{path} has no line `{line}`")
+
+    def test_the_hub_launch_token_dispatches_in_launchers_hub_alone(self):
+        launchers_hub = resolve.HUBS_BY_NAME["launchers-hub"]
+        self.assert_workflow_has_line(
+            "parallel-release.yml", f"repositories: {launchers_hub.name}"
+        )
+        self.assert_workflow_has_line(
+            "parallel-release.yml", "permission-actions: write"
+        )
+
+    def test_the_hub_launch_stage_reads_its_run_with_the_job_token(self):
+        self.release_script_has_line(
+            "functions/cli.py", 'JOB_TOKEN_ENV = "PEPPY_JOB_TOKEN"'
+        )
+        self.assert_workflow_has_line(
+            "parallel-release.yml", "PEPPY_JOB_TOKEN: ${{ github.token }}"
+        )
+
+    def test_the_release_publish_token_covers_peppy_and_every_hub_of_the_set(self):
+        # publish tags every hub of the recorded set, whose names release-set
+        # writes to its `hubs` output and the hub-set job passes on.
+        self.assert_workflow_has_line(
+            "parallel-release.yml", "hubs: ${{ steps.record.outputs.hubs }}"
+        )
+        self.assert_workflow_has_line(
+            "parallel-release.yml",
+            "repositories: ${{ github.event.repository.name }},"
+            "${{ needs.hub-set.outputs.hubs }}",
+        )
+
+    def test_the_release_loads_the_deploy_key_where_it_reads_the_hubs(self):
+        workflow = (
+            REPOSITORY_ROOT / ".github/workflows/parallel-release.yml"
+        ).read_text()
+        # hub-set records the set and checks every hub of it.
+        self.assertEqual(
+            workflow.count(
+                "run: ./.github/actions/hub-ci-peppy/load-private-hub-key.sh"
+            ),
+            1,
+        )
+        self.assertEqual(
+            workflow.count(
+                "PRIVATE_NODES_HUB_DEPLOY_KEY: ${{ secrets.PRIVATE_NODES_HUB_DEPLOY_KEY }}"
+            ),
+            1,
+        )
+
+    def test_the_action_and_the_release_run_one_deploy_key_script(self):
+        script = ACTION_DIR / "load-private-hub-key.sh"
+        self.assertTrue(os.access(script, os.X_OK), f"{script} is not executable")
+        action = (ACTION_DIR / "action.yml").read_text()
+        self.assertIn(
+            """run: '"$GITHUB_ACTION_PATH/load-private-hub-key.sh"'""", action
+        )
 
     def test_the_action_forwards_every_output_the_script_writes(self):
         # A composite action forwards only the outputs it declares, and an

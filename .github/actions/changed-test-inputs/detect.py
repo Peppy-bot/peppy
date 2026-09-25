@@ -56,18 +56,20 @@ SUITES = {
 # under crates/ is gated on the moment its manifest lands.
 WORKSPACE_SUITE = "workspace"
 
-# Suites with no cargo package: each one's whole world is a single tree,
+# Suites with no cargo package: each one's whole world is a few trees,
 # toolchain included.
 #
 # The release scripts split across two of them because their two halves cost
 # orders of magnitude apart. The mocked half runs the whole tree in about a
-# second, so it is gated on the whole tree. The install half installs a
+# second, so it is gated on the whole tree, and on the resolve.py of the
+# hub-ci-peppy action, which the release scripts load for their model of the
+# hubs (scripts/functions/hub_ci.py). The install half installs a
 # release archive on a fresh runner, so it is gated on the files that decide
 # what gets installed and how: a change to the release-notes drafter or the
 # docs gate cannot alter what install.sh does to a machine.
 TREE_SUITES = {
     # pixi run test-fast
-    "scripts": ["scripts/**"],
+    "scripts": ["scripts/**", ".github/actions/hub-ci-peppy/resolve.py"],
     # The install-script job, and the install-archive job on a push to main.
     # install.sh is what the runner runs; build_release.sh and
     # build/build_release/cli produce the archive it installs
@@ -125,7 +127,8 @@ JOBS = {
 # tested by the changes job before it is trusted and changes what runs rather
 # than how a suite runs, release-host-env belongs to the release workflow, and
 # hub-ci-peppy is the action of the hubs' CI, whose cases the changes job runs
-# on every change.
+# on every change (its resolve.py is an input of the release scripts, listed
+# with them).
 CI_INPUTS = [
     ".github/workflows/tests.yml",
     ".github/runs-on.yml",

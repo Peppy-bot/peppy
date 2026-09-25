@@ -2,7 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use core_node::repositories_list_path;
-use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
+use core_node_api::encoding::{GitRepoRef, RepoAddRequest, RepoAddResponse};
 use peppylib::core_node::transport::poll;
 use std::time::Duration;
 
@@ -46,7 +46,7 @@ async fn listen_for_repo_add_second_git_succeed() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://example.com/packages.git", None),
+        &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
     .await;
     assert!(resp.success, "repo_add should succeed");
@@ -72,7 +72,7 @@ async fn listen_for_repo_add_git_succeed() {
         &started,
         &RepoAddRequest::new_git(
             "https://github.com/example/repo.git",
-            Some("main".to_string()),
+            GitRepoRef::Named("main".to_string()),
         ),
     )
     .await;
@@ -112,7 +112,8 @@ async fn listen_for_repo_add_fs_succeed() {
 async fn listen_for_repo_add_duplicate_fails() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let request = RepoAddRequest::new_git("https://example.com/packages.git", None);
+    let request =
+        RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead);
 
     // First add should succeed
     let resp = send_repo_add(&started, &request).await;
@@ -149,7 +150,7 @@ async fn listen_for_repo_add_fails_when_duplicate_ids_in_file() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://example.com/new.git", None),
+        &RepoAddRequest::new_git("https://example.com/new.git", GitRepoRef::RemoteHead),
     )
     .await;
     assert!(
@@ -175,7 +176,7 @@ async fn listen_for_repo_add_assigns_id_after_manual_entry() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://example.com/packages.git", None),
+        &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
     .await;
     assert!(resp.success, "repo_add should succeed");
@@ -216,7 +217,8 @@ async fn listen_for_repo_add_top_assigns_min_minus_one() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://example.com/packages.git", None).with_top(true),
+        &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead)
+            .with_top(true),
     )
     .await;
     assert!(resp.success, "repo_add with top should succeed");
@@ -247,7 +249,8 @@ async fn listen_for_repo_add_top_sorts_first() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://example.com/packages.git", None).with_top(true),
+        &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead)
+            .with_top(true),
     )
     .await;
     assert!(resp.success);
@@ -273,7 +276,8 @@ async fn listen_for_repo_add_top_on_empty_uses_default_floor() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://example.com/x.git", None).with_top(true),
+        &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
+            .with_top(true),
     )
     .await;
     assert!(resp.success);
@@ -297,7 +301,7 @@ async fn listen_for_repo_add_no_top_on_empty_uses_default_floor() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://example.com/x.git", None),
+        &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead),
     )
     .await;
     assert!(resp.success);
@@ -322,7 +326,8 @@ async fn listen_for_repo_add_top_fails_when_min_is_zero() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://example.com/x.git", None).with_top(true),
+        &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
+            .with_top(true),
     )
     .await;
     assert!(!resp.success, "top=true on min=0 must fail");
@@ -341,14 +346,16 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
 
     let resp1 = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://example.com/first.git", None).with_top(true),
+        &RepoAddRequest::new_git("https://example.com/first.git", GitRepoRef::RemoteHead)
+            .with_top(true),
     )
     .await;
     assert!(resp1.success);
 
     let resp2 = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://example.com/second.git", None).with_top(true),
+        &RepoAddRequest::new_git("https://example.com/second.git", GitRepoRef::RemoteHead)
+            .with_top(true),
     )
     .await;
     assert!(resp2.success);
@@ -385,7 +392,8 @@ async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://example.com/x.git", None).with_top(false),
+        &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
+            .with_top(false),
     )
     .await;
     assert!(resp.success);
@@ -411,14 +419,20 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
 
     let resp_main = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://github.com/example/repo.git", Some("main".into())),
+        &RepoAddRequest::new_git(
+            "https://github.com/example/repo.git",
+            GitRepoRef::Named("main".to_string()),
+        ),
     )
     .await;
     assert!(resp_main.success, "first add should succeed");
 
     let resp_dev = send_repo_add(
         &started,
-        &RepoAddRequest::new_git("https://github.com/example/repo.git", Some("dev".into())),
+        &RepoAddRequest::new_git(
+            "https://github.com/example/repo.git",
+            GitRepoRef::Named("dev".to_string()),
+        ),
     )
     .await;
     assert!(

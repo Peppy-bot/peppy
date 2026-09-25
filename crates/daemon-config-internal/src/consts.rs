@@ -25,6 +25,13 @@ pub const PEPPY_VERSION: &str = match PEPPY_GIT_TAG {
     None => "unknown",
 };
 
+/// The build this binary is, as far as a repository entry on
+/// `@{peppy-release}` goes: a release build reads the hub tags of its own
+/// version, any other build reads the hubs' `main`.
+pub fn peppy_build() -> core_node_api::encoding::PeppyBuild {
+    core_node_api::encoding::PeppyBuild::from_git_tag(PEPPY_GIT_TAG)
+}
+
 /// Default base container image for Rust nodes (Ubuntu 24.04 + Rust via rustup, build-essential).
 pub const DEFAULT_RUST_BASE_IMAGE: &str = "peppybot/rust-cargo-base:latest";
 

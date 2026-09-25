@@ -22,7 +22,7 @@ use crate::services::repo::cache::{
 use crate::services::repo::refresh::RepoFailureKind;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
-use core_node_api::encoding::RepoItemKind;
+use core_node_api::encoding::{ReadRef, RepoItemKind};
 use daemon_config::contract::PeppyContractParser;
 use daemon_config::launcher::PeppyLauncherParser;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
@@ -196,9 +196,12 @@ pub(crate) enum ReadSource {
     /// A clone of a remote, read at one commit.
     Git {
         repo_url: String,
-        /// The ref the repository is configured to follow, absent when it
-        /// follows whatever the remote's default branch is.
+        /// The ref the repository is configured to follow, as written,
+        /// absent when it follows whatever the remote's default branch is.
         repo_ref: Option<String>,
+        /// The git ref the clone was positioned on (see the `read_ref` of
+        /// [`EntryOrigin::Git`]).
+        read_ref: Option<ReadRef>,
         commit: GitCommit,
     },
 }
@@ -214,10 +217,12 @@ impl ReadSource {
             ReadSource::Git {
                 repo_url,
                 repo_ref,
+                read_ref,
                 commit,
             } => EntryOrigin::Git {
                 repo_url: repo_url.clone(),
                 repo_ref: repo_ref.clone(),
+                read_ref: read_ref.clone(),
                 commit: commit.clone(),
                 path: path.clone(),
             },
@@ -1384,6 +1389,7 @@ mod tests {
             &ReadSource::Git {
                 repo_url: "https://example.invalid/hub".to_owned(),
                 repo_ref: Some("main".to_owned()),
+                read_ref: Some(ReadRef::Named("main".to_owned())),
                 commit: commit.clone(),
             },
         )

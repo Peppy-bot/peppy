@@ -157,6 +157,7 @@ pub fn git_origin(repo_url: &str, repo_ref: &str, path: &str, seed: &str) -> ser
         "source_type": "git",
         "repo_url": repo_url,
         "repo_ref": repo_ref,
+        "read_ref": repo_ref,
         "commit": head_commit_of(repo_url, repo_ref, seed),
         "path": path,
     })

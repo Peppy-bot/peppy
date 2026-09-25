@@ -658,6 +658,7 @@ mod tests {
             origin: EntryOrigin::Git {
                 repo_url: "https://github.com/acme/hub".to_owned(),
                 repo_ref: None,
+                read_ref: None,
                 commit: GitCommit::parse(&"b".repeat(40)).expect("valid commit"),
                 path: RepoRelativePath::parse(&format!("{name}.json5")).expect("valid path"),
             },

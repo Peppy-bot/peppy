@@ -1,7 +1,9 @@
 use crate::Result;
+use crate::services::repo::{REPOS_FILE, repository_noun};
 use daemon_config::consts::PeppyDirs;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::path::Path;
 use tracing::info;
 
 const DEFAULT_REPOS_TEMPLATE: &str = include_str!("../../../assets/default_repositories.json5");
@@ -15,28 +17,48 @@ pub enum InitOutcome {
     Updated { added: usize },
 }
 
+/// Writes the bundled default template as `repositories.json5` in
+/// `conf_dir`, verbatim so its comments and formatting are preserved.
+///
+/// The one way peppy creates the file, whether `repo init`, the daemon's
+/// start or the first read of the repository list gets there first.
+pub(crate) fn write_default_repos(conf_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(conf_dir)?;
+    std::fs::write(conf_dir.join(REPOS_FILE), DEFAULT_REPOS_TEMPLATE)?;
+    Ok(())
+}
+
+/// The default entries of the bundled template, parsed.
+fn default_entries() -> Result<Vec<Value>> {
+    serde_json5::from_str(DEFAULT_REPOS_TEMPLATE).map_err(|e| {
+        core_node_api::Error::Decoding(format!("failed to parse default repositories: {e}")).into()
+    })
+}
+
 /// Ensures `repositories.json5` exists and contains every entry from the
 /// bundled default template.
 ///
 /// - If the file does not exist, the default template is written verbatim
-///   so its comments and formatting are preserved.
+///   so its comments and formatting are preserved (see
+///   [`write_default_repos`]).
 /// - If the file exists, default entries whose `id` is not already present
-///   are appended verbatim. An existing entry with the same `id` claims that
-///   slot regardless of its `type`, `url`, or `ref`, so users who change a
-///   default's branch (or repoint it entirely) never get the default re-added
-///   alongside their edit.
+///   are appended verbatim, and the file is rewritten with `json5_pretty`,
+///   which drops its comments. An existing entry with the same `id` claims
+///   that slot regardless of its `type`, `url`, or `ref`, so users who
+///   change a default's branch (or repoint it entirely) never get the
+///   default re-added alongside their edit.
 ///
 /// Runs at daemon startup and is also exposed via `peppy repo init` so
 /// users can resync after upgrading peppy without restarting the daemon.
 pub fn ensure_default_repos(peppy_dirs: &PeppyDirs) -> Result<InitOutcome> {
     let conf_dir = peppy_dirs.conf_dir();
     std::fs::create_dir_all(&conf_dir)?;
-    let repos_path = conf_dir.join("repositories.json5");
+    let repos_path = conf_dir.join(REPOS_FILE);
 
     let _guard = crate::services::repo::repos_file_lock().lock();
 
     if !repos_path.exists() {
-        std::fs::write(&repos_path, DEFAULT_REPOS_TEMPLATE)?;
+        write_default_repos(&conf_dir)?;
         return Ok(InitOutcome::Created);
     }
 
@@ -44,47 +66,49 @@ pub fn ensure_default_repos(peppy_dirs: &PeppyDirs) -> Result<InitOutcome> {
     let mut existing: Vec<Value> = serde_json5::from_str(&content).map_err(|e| {
         core_node_api::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
     })?;
-    let defaults: Vec<Value> = serde_json5::from_str(DEFAULT_REPOS_TEMPLATE).map_err(|e| {
-        core_node_api::Error::Decoding(format!("failed to parse default repositories: {e}"))
-    })?;
+    let added = append_missing_defaults(&mut existing, default_entries()?);
+    if added == 0 {
+        return Ok(InitOutcome::Updated { added: 0 });
+    }
 
+    existing.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
+    let serialized = json5_pretty::to_string_pretty(&existing).map_err(|e| {
+        core_node_api::Error::Encoding(format!("failed to serialize repositories: {e}"))
+    })?;
+    std::fs::write(&repos_path, serialized)?;
+    info!(
+        "Added {added} missing default {} to repositories.json5",
+        repository_noun(added)
+    );
+    Ok(InitOutcome::Updated { added })
+}
+
+/// Appends each default entry whose `id` no existing entry holds, and
+/// returns how many it appended.
+fn append_missing_defaults(existing: &mut Vec<Value>, defaults: Vec<Value>) -> usize {
     let existing_ids: HashSet<u64> = existing
         .iter()
         .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
         .collect();
-
-    let mut added = 0usize;
-    for default_entry in defaults {
-        let Some(default_id) = default_entry.get("id").and_then(|v| v.as_u64()) else {
-            continue;
-        };
-        if existing_ids.contains(&default_id) {
-            continue;
-        }
-        existing.push(default_entry);
-        added += 1;
-    }
-
-    if added > 0 {
-        existing.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
-        let serialized = json5_pretty::to_string_pretty(&existing).map_err(|e| {
-            core_node_api::Error::Encoding(format!("failed to serialize repositories: {e}"))
-        })?;
-        std::fs::write(&repos_path, serialized)?;
-        info!(
-            "Added {} missing default repositor{} to repositories.json5",
-            added,
-            if added == 1 { "y" } else { "ies" }
-        );
-    }
-
-    Ok(InitOutcome::Updated { added })
+    let missing: Vec<Value> = defaults
+        .into_iter()
+        .filter(|default_entry| {
+            default_entry
+                .get("id")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|id| !existing_ids.contains(&id))
+        })
+        .collect();
+    let added = missing.len();
+    existing.extend(missing);
+    added
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::repo::cache::repositories_list_path;
+    use crate::services::repo::cache::test_support::write_repos;
 
     /// Helper: read repositories.json5 as a Vec<Value>.
     fn read_repos(peppy_dirs: &PeppyDirs) -> Vec<Value> {
@@ -114,6 +138,12 @@ mod tests {
         // Verbatim write preserves comments from the json5 template.
         let written = std::fs::read_to_string(&repos_path).unwrap();
         assert_eq!(written, DEFAULT_REPOS_TEMPLATE);
+        assert!(
+            read_repos(&peppy_dirs)
+                .iter()
+                .all(|entry| entry.get("ref").and_then(|v| v.as_str()) == Some("@{peppy-release}")),
+            "every default follows the peppy release"
+        );
     }
 
     /// A user upgrades peppy and a new entry (`launchers-hub`) is added
@@ -125,16 +155,12 @@ mod tests {
     fn adds_missing_default_when_file_already_has_some_defaults() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        let repos_path = conf_dir.join("repositories.json5");
-        std::fs::write(
-            &repos_path,
+        write_repos(
+            &peppy_dirs,
             r#"[
                 { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes-hub.git", "ref": "main" }
             ]"#,
-        )
-        .unwrap();
+        );
 
         ensure_default_repos(&peppy_dirs).unwrap();
 
@@ -153,15 +179,12 @@ mod tests {
     fn preserves_user_repos_when_adding_defaults() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        std::fs::write(
-            conf_dir.join("repositories.json5"),
+        write_repos(
+            &peppy_dirs,
             r#"[
                 { "id": 1, "type": "fs", "path": "/home/me/my_nodes" }
             ]"#,
-        )
-        .unwrap();
+        );
 
         ensure_default_repos(&peppy_dirs).unwrap();
 
@@ -187,18 +210,14 @@ mod tests {
     fn no_changes_when_all_defaults_already_present() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        let repos_path = conf_dir.join("repositories.json5");
-        std::fs::write(&repos_path, DEFAULT_REPOS_TEMPLATE).unwrap();
+        write_repos(&peppy_dirs, DEFAULT_REPOS_TEMPLATE);
+        let repos_path = repositories_list_path(&peppy_dirs);
         let content_before = std::fs::read_to_string(&repos_path).unwrap();
 
         let outcome = ensure_default_repos(&peppy_dirs).unwrap();
 
         // Nothing needs adding when the file already holds every default, and
-        // the file is left byte-for-byte unchanged. Asserted directly on the
-        // outcome + content (deterministic) rather than via filesystem mtime +
-        // a sleep, which depended on wall-clock granularity.
+        // the file is left byte-for-byte unchanged.
         assert_eq!(outcome, InitOutcome::Updated { added: 0 });
         let content_after = std::fs::read_to_string(&repos_path).unwrap();
         assert_eq!(
@@ -211,15 +230,12 @@ mod tests {
     fn is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        std::fs::write(
-            conf_dir.join("repositories.json5"),
+        write_repos(
+            &peppy_dirs,
             r#"[
                 { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes-hub.git", "ref": "main" }
             ]"#,
-        )
-        .unwrap();
+        );
 
         ensure_default_repos(&peppy_dirs).unwrap();
         let after_first = read_repos(&peppy_dirs);
@@ -240,16 +256,13 @@ mod tests {
     fn skips_default_when_id_is_already_taken() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        std::fs::write(
-            conf_dir.join("repositories.json5"),
+        write_repos(
+            &peppy_dirs,
             r#"[
                 { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes-hub.git", "ref": "feature/v0.10.0" },
                 { "id": 1001, "type": "fs", "path": "/some/where" }
             ]"#,
-        )
-        .unwrap();
+        );
 
         ensure_default_repos(&peppy_dirs).unwrap();
 

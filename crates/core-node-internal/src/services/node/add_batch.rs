@@ -675,6 +675,7 @@ mod tests {
                 origin: EntryOrigin::Git {
                     repo_url: "https://example.com/hub".to_owned(),
                     repo_ref: Some("main".to_owned()),
+                    read_ref: Some(core_node_api::encoding::ReadRef::Named("main".to_owned())),
                     commit: GitCommit::parse(&"a".repeat(40)).expect("valid commit"),
                     path: RepoRelativePath::parse(&format!("{name}/peppy.json5"))
                         .expect("valid path"),

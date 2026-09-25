@@ -38,6 +38,7 @@ RELEASE_NOTES_DIR = Path("docs/src/content/releases")
 class ReleaseNotesInput:
     """All data needed to generate a release notes file."""
 
+    # The release tag, v<MAJOR>.<MINOR>.<PATCH>.
     tag: str
     description: str
     release_details: dict[str, Any]
@@ -113,26 +114,10 @@ def build_atom_entry(
     )
 
 
-def _normalize_tag(tag: str) -> tuple[str, str]:
-    """Normalize a tag to ensure it has a 'v' prefix.
-
-    Returns (tag_title, version) where tag_title always starts with 'v'.
-    """
-    tag = tag.strip()
-    if tag.lower().startswith("v"):
-        version = tag[1:]
-        tag_title = f"v{version}"
-    else:
-        version = tag
-        tag_title = f"v{version}"
-    return tag_title, version
-
-
 def release_notes_file(tag: str) -> Path:
-    """The release notes file of *tag*, relative to the repository root."""
-    _, version = _normalize_tag(tag)
-    basename = tag if tag.lower().startswith("v") else f"v{version}"
-    return RELEASE_NOTES_DIR / f"{basename}.html"
+    """The release notes file of the release tag *tag*, relative to the
+    repository root."""
+    return RELEASE_NOTES_DIR / f"{tag}.html"
 
 
 def generate_release_notes_file(notes_input: ReleaseNotesInput, repo_root: Path) -> Path:
@@ -143,8 +128,7 @@ def generate_release_notes_file(notes_input: ReleaseNotesInput, repo_root: Path)
 
     Returns the path to the written file.
     """
-    tag_title, version = _normalize_tag(notes_input.tag)
-
+    tag = notes_input.tag
     release_date = extract_release_date(notes_input.release_details)
     date_text = f"{_MONTH_NAMES[release_date.month - 1]} {release_date.day}, {release_date.year}"
 
@@ -156,17 +140,16 @@ def generate_release_notes_file(notes_input: ReleaseNotesInput, repo_root: Path)
     )
     updated_iso = updated_dt.isoformat().replace("+00:00", "Z")
 
-    docs_url = f"https://docs.peppy.bot/releases/v{version.replace('.', '-')}/"
-    entry_id = docs_url
+    entry_id = f"https://docs.peppy.bot/releases/{tag.replace('.', '-')}/"
 
     article = build_article_html(
-        tag_title, notes_input.description, date_text, notes_input.body_html
+        tag, notes_input.description, date_text, notes_input.body_html
     )
     entry_xml = build_atom_entry(
-        tag_title, notes_input.description, updated_iso, entry_id, article
+        tag, notes_input.description, updated_iso, entry_id, article
     )
 
-    release_file = repo_root / release_notes_file(notes_input.tag)
+    release_file = repo_root / release_notes_file(tag)
     release_file.parent.mkdir(parents=True, exist_ok=True)
     release_file.write_text(entry_xml, encoding="utf-8")
     console.print(f"Wrote docs release notes: [bold]{release_file}[/bold]")
@@ -186,7 +169,7 @@ def fetch_release_body_html(
 
     If the HTML body is empty but markdown exists, wraps markdown in <pre><code>.
     """
-    release_url = f"https://api.github.com/repos/{slug.full}/releases/{release_id}"
+    release_url = f"{slug.api_url}/releases/{release_id}"
 
     # Get markdown body as fallback
     details_json = github_api(client, "GET", release_url)

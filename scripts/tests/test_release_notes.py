@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from functions.release_notes import (
     ReleaseNotesInput,
     generate_release_notes_file,
@@ -13,16 +11,8 @@ from functions.release_notes import (
 )
 
 
-@pytest.mark.parametrize(
-    ("tag", "expected"),
-    [
-        ("v0.3.0", "docs/src/content/releases/v0.3.0.html"),
-        # A tag without its 'v' still names the file the docs link to.
-        ("0.3.0", "docs/src/content/releases/v0.3.0.html"),
-    ],
-)
-def test_release_notes_file_is_named_after_the_tag(tag: str, expected: str) -> None:
-    assert release_notes_file(tag) == Path(expected)
+def test_release_notes_file_is_named_after_the_tag() -> None:
+    assert release_notes_file("v0.3.0") == Path("docs/src/content/releases/v0.3.0.html")
 
 
 def _notes_input(description: str) -> ReleaseNotesInput:

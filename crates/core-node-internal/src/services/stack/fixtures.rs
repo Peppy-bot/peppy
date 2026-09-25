@@ -87,6 +87,7 @@ pub(super) fn test_root_pin(node_name: &str) -> PinnedItem {
         origin: EntryOrigin::Git {
             repo_url: "https://example.com/hub".to_owned(),
             repo_ref: Some("main".to_owned()),
+            read_ref: Some(core_node_api::encoding::ReadRef::Named("main".to_owned())),
             commit: GitCommit::parse(&"b".repeat(40)).expect("valid commit"),
             path: RepoRelativePath::parse(&format!("{node_name}/peppy.json5")).expect("valid path"),
         },
