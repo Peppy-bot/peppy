@@ -1,7 +1,10 @@
 #!/bin/sh
 set -eu
 
-# Build and publish a GitHub Release for peppy.
+# Build peppy release archives on this host without publishing them (--local),
+# or build and push the Docker base images (--base-images). Releases publish
+# only from the "Parallel release" workflow
+# (.github/workflows/parallel-release.yml).
 # Thin wrapper that delegates to the Python implementation via pixi.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

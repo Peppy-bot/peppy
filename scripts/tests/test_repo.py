@@ -14,12 +14,12 @@ from functions.repo import (
     fetch_tag,
     find_commit,
     get_commit,
+    get_changed_paths,
     get_commit_subjects,
+    get_parents,
     has_changes_in_paths,
     is_ancestor,
-    is_branch_checked_out,
     push_branch,
-    set_branch_ref,
     switch_branch,
     switch_to_new_branch,
 )
@@ -114,6 +114,59 @@ def test_find_commit_is_none_for_a_revision_naming_no_commit(returncode: int) ->
         return_value=_mock_git("", returncode=returncode),
     ):
         assert find_commit("abc123") is None
+
+
+def test_get_parents_lists_the_parents_in_order() -> None:
+    with patch(
+        "functions.repo.subprocess.run", return_value=_mock_git("ccc aaa bbb\n")
+    ) as run:
+        assert get_parents("ccc") == ("aaa", "bbb")
+    assert run.call_args.args[0] == [
+        "git",
+        "rev-list",
+        "--parents",
+        "--max-count=1",
+        "ccc",
+    ]
+
+
+def test_get_parents_of_a_root_commit_is_empty() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("aaa\n")):
+        assert get_parents("aaa") == ()
+
+
+def test_get_parents_raises_on_an_unknown_commit() -> None:
+    with patch(
+        "functions.repo.subprocess.run", return_value=_mock_git("", returncode=128)
+    ):
+        with pytest.raises(ReleaseError, match="failed to read the parents of 'nope'"):
+            get_parents("nope")
+
+
+def test_get_changed_paths_lists_every_path_without_renames() -> None:
+    # NUL-separated, so a path is read back whole whatever characters it holds.
+    with patch(
+        "functions.repo.subprocess.run",
+        return_value=_mock_git("docs/a b.html\0old.rs\0new.rs\0"),
+    ) as run:
+        assert get_changed_paths("aaa", "bbb") == ("docs/a b.html", "old.rs", "new.rs")
+    assert run.call_args.args[0] == [
+        "git",
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        "aaa",
+        "bbb",
+    ]
+
+
+def test_get_changed_paths_raises_when_git_errors() -> None:
+    with patch(
+        "functions.repo.subprocess.run", return_value=_mock_git("", returncode=128)
+    ):
+        with pytest.raises(ReleaseError, match="failed to list the paths changed"):
+            get_changed_paths("aaa", "bbb")
 
 
 def test_is_ancestor_reads_exit_code() -> None:
@@ -258,42 +311,3 @@ def test_switch_branch_raises_on_failure() -> None:
     with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
         with pytest.raises(ReleaseError, match="failed to switch back to 'dev'"):
             switch_branch("dev")
-
-
-# --- local branch refs ---
-
-
-_WORKTREE_LIST = (
-    "worktree /repo\n"
-    "HEAD 1111111111111111111111111111111111111111\n"
-    "branch refs/heads/dev\n"
-    "\n"
-    "worktree /repo-main\n"
-    "HEAD 2222222222222222222222222222222222222222\n"
-    "branch refs/heads/main\n"
-)
-
-
-def test_is_branch_checked_out_finds_branch_in_another_worktree() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git(_WORKTREE_LIST)):
-        assert is_branch_checked_out("main") is True
-        assert is_branch_checked_out("release") is False
-
-
-def test_is_branch_checked_out_ignores_prefix_matches() -> None:
-    # 'main' must not match a worktree sitting on 'maintenance'.
-    listing = "worktree /repo\nHEAD 1111\nbranch refs/heads/maintenance\n"
-    with patch("functions.repo.subprocess.run", return_value=_mock_git(listing)):
-        assert is_branch_checked_out("main") is False
-
-
-def test_set_branch_ref_updates_ref_without_checkout() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
-        set_branch_ref("main", "abc123")
-    assert run.call_args.args[0] == ["git", "update-ref", "refs/heads/main", "abc123"]
-
-
-def test_set_branch_ref_raises_on_failure() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
-        with pytest.raises(ReleaseError, match="failed to point 'main' at abc123"):
-            set_branch_ref("main", "abc123")

@@ -241,6 +241,12 @@ jobs:
   # notes on `dev` and fast-forwards `main`. The checkout keeps the release
   # token for those pushes: the branch rulesets on `dev` and `main` let only
   # their bypass actors push directly, so the token has to belong to one.
+  #
+  # A publish that fails is started again with "Re-run failed jobs" while the
+  # run's artifacts exist (one day). The re-run finds what the failed attempt
+  # finished (the release published, the notes committed, `main`
+  # fast-forwarded) and does only the rest. Past that day, a publish that
+  # failed before the release went live is cut again from a new run.
   publish:
     needs: [prepare, build, install-test]
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
@@ -289,16 +295,3 @@ jobs:
             wait "$publish_pid" || status=$?
           done
           exit "$status"
-
-      # A pending-upload manifest outlives the run only when the archives were
-      # verified but never published. Copied into dist/ of a `dev` checkout at
-      # the same commit, the next ./scripts/build_release.sh run offers to
-      # publish them without rebuilding; they are only useful while `dev`
-      # stays at that commit, hence the short retention.
-      - name: Keep the verified but unpublished archives
-        if: failure() && hashFiles('dist/pending-upload.json') != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: release-dist
-          path: dist/
-          retention-days: 7
