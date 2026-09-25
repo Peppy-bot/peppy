@@ -23,6 +23,8 @@ Out of the box, five repositories are configured:
 
 A release build of Peppy reads, in each default hub, the tag `peppy-release/<its version>`: Peppy `v0.32.0` reads `peppy-release/v0.32.0`. The Peppy release tests these hub commits together with that version before it creates the tags, and nobody can move or delete the tags. So the content of the default hubs changes only when you install another Peppy version. A build of Peppy without a release version reads the hubs' `main` branch.
 
+Peppy writes these entries when it creates `repositories.json5`. Neither the start of the daemon nor `peppy repo init` changes an entry the file already holds, so an entry of a default hub with another `ref` reads that ref. To read the hub content released with your Peppy version, set its `ref` to `"@{peppy-release}"`, or delete `~/.peppy/conf/repositories.json5` and run [`peppy repo init`](#initialize-the-defaults) to write the default entries again, then `peppy repo refresh`.
+
 The `id` is the priority key when several repositories provide the same `name:tag`, so the defaults resolve in this order.
 
 Add your own local directory with `peppy repo add /path/to/my/nodes`, then `peppy repo index /path/to/my/nodes` and `peppy repo refresh`, so Peppy can discover nodes you create locally. A repository publishes through its committed index, so all three steps are needed before a local node resolves.
