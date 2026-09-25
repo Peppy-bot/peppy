@@ -219,14 +219,14 @@ The show reads the same caches as the search and needs no daemon. A query nothin
 ### Refresh the index
 
 ```sh
-peppy repo refresh
+peppy repo refresh [--strict]
 ```
 
 Re-scans all configured repositories and rebuilds the node, launcher, contract, pairing, and MCP exposure indexes. `peppy repo update` is accepted as an alias. During refresh, Peppy:
 
 - Reads `repositories.json5` (creates it with defaults on first run).
 - Skips any repository or path listed in `excluded_repositories.json5`.
-- Reads local directories in place and shallow-clones git repositories.
+- Reads local directories in place and shallow-clones git repositories. A shallow clone holds the head of every branch and no tag, so when a git repository's `ref` names a tag, or a commit that is not the head of a branch, Peppy fetches that ref on its own before it reads the repository.
 - Records what each repository's committed [`peppy_repository.json5`](#the-repository-index) publishes: nodes and their tags, together with the contract and pairing links each node's manifest declares, launchers (one per name, no tag), and contracts, pairings, and MCP exposures (keyed by their manifest `name:tag`). A repository without that file fails its read with instructions to run `peppy repo index`.
 - Reports each discovered node, launcher, contract, pairing, MCP exposure, and excluded repository in real time.
 - Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, `~/.peppy/cache/contracts.json5`, `~/.peppy/cache/pairings.json5`, and `~/.peppy/cache/mcp_exposures.json5`, and records per-repository read status in `~/.peppy/cache/repo_status.json5`.
@@ -253,7 +253,9 @@ Repository refresh complete. 26 node(s), 4 launcher(s), 8 contract(s), 2 pairing
 Run `peppy repo refresh` again to pick those repositories up.
 ```
 
-This is also what lets the [installer](/guides/installation/) finish on a machine whose network is flaky. Its last step is a refresh, so a hub that happens to be unreachable used to end an install that had otherwise worked. Now the install completes, tells you which repositories it could not read, and leaves you the same retry.
+This is also what lets the [installer](/guides/installation/) finish on a machine whose network is flaky. Its last step is a refresh, and a hub that happens to be unreachable does not end an install that otherwise worked: the install completes, tells you which repositories it could not read, and leaves you the same retry.
+
+With `--strict`, the same report fails the command: `peppy repo refresh --strict` prints it and exits with an error. The repositories that read cleanly are still indexed and the failed ones still keep their entries; only the exit status differs. Use it where a repository that cannot be read must stop what comes next, as in CI, where a later step would otherwise fail with an error that does not name the repository.
 
 Only a refresh that could not run at all fails: a `repositories.json5` that does not parse or that lists the same `id` twice, or caches that cannot be written. Nothing was read in that case, so there is nothing to contain.
 

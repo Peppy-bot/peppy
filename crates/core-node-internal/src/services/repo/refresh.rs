@@ -2,7 +2,7 @@ use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::cache as node_cache;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
-use crate::services::node::{checkout_repo_ref, clone_repo_shallow, head_commit};
+use crate::services::node::{checkout_configured_ref, clone_repo_shallow, head_commit};
 use crate::services::repo::cache::{
     ContractCacheEntry, LauncherCacheEntry, McpExposureCacheEntry, NodeCacheEntry,
     PairingCacheEntry, RepoCacheEntry, RepoItems, write_repo_cache,
@@ -810,12 +810,18 @@ fn read_git_repo(
 
     // Positioned on the configured ref before the commit is read, so the
     // pin follows the line of development the repository was added for
-    // rather than whatever the remote's default branch happens to be. A ref
-    // the remote no longer serves is a refusal: pinning the default branch
-    // instead would publish a different tree under the same repository id
-    // without saying so.
+    // rather than whatever the remote's default branch happens to be. A tag,
+    // or a commit that is not a branch head, is fetched first, since the
+    // clone holds branch heads only. A ref the remote does not serve is a
+    // refusal: pinning the default branch instead would publish a different
+    // tree under the same repository id without saying so.
     if let Some(configured_ref) = configured_ref {
-        checkout_repo_ref(&repo, configured_ref).map_err(|e| {
+        checkout_configured_ref(&repo, repo_url, configured_ref, &mut |line| {
+            on_feedback(RepoRefreshFeedback::Progress {
+                message: line.to_owned(),
+            });
+        })
+        .map_err(|e| {
             unreachable(format!(
                 "{repo_url} does not serve the configured ref `{configured_ref}`: {e}"
             ))
@@ -847,6 +853,8 @@ fn read_git_repo(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::node::checkout_repo_ref;
+    use crate::services::node::test_git_daemon::GitDaemon;
     use crate::services::repo::cache::repositories_list_path;
     use config::consts::NODE_CONFIG_FILE;
 
@@ -2334,5 +2342,122 @@ mod tests {
         let head = repo.head().expect("head");
         let head_oid = head.target().expect("head oid");
         assert_eq!(head_oid.to_string(), target_sha);
+    }
+
+    /// A repository at `base/hub` that publishes `arm:v1` at each of two
+    /// commits on its only branch, with the annotated tag `v1` on the first.
+    /// Returns the two commits, oldest first.
+    ///
+    /// Served over `git://` (see [`GitDaemon`]), its clone is a depth-1 clone
+    /// of the branch head: it holds neither the tag nor the first commit.
+    fn hub_with_a_tag_behind_its_head(base: &Path) -> (String, String) {
+        let src = base.join("hub");
+        let repo = git2::Repository::init(&src).expect("init repo");
+        // The daemon hands out a commit by its hash only when the repository
+        // allows it, as GitHub does.
+        repo.config()
+            .expect("repository config")
+            .set_bool("uploadpack.allowReachableSHA1InWant", true)
+            .expect("allow fetches by hash");
+
+        write_peppy_json5(&src.join("arm"), "arm", "v1");
+        publish_and_commit(&repo, &src, &["arm/peppy.json5"]);
+        let tagged = repo.head().expect("head").peel_to_commit().expect("commit");
+        let signature =
+            git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
+        repo.tag("v1", tagged.as_object(), &signature, "v1", false)
+            .expect("tag the first commit");
+
+        std::fs::write(src.join("notes.txt"), "second").expect("write notes");
+        publish_and_commit(&repo, &src, &["arm/peppy.json5", "notes.txt"]);
+        let head = repo.head().expect("head").peel_to_commit().expect("commit");
+        (tagged.id().to_string(), head.id().to_string())
+    }
+
+    /// Refreshes one git repository at `url`, configured on `git_ref`.
+    fn refresh_git_repo_on(peppy_dirs: &PeppyDirs, url: &str, git_ref: &str) -> RefreshedRepos {
+        write_repos(
+            peppy_dirs,
+            &format!(r#"[{{ "id": 1, "type": "git", "url": "{url}", "ref": "{git_ref}" }}]"#),
+        );
+        process_refresh(peppy_dirs, TEST_NOW, &mut |_| {}).expect("the refresh runs")
+    }
+
+    /// The commit `refreshed` read its one node at, after checking that the
+    /// read went through a shallow clone, which is what makes the fetch of
+    /// the configured ref necessary.
+    fn commit_read_through_a_shallow_clone(
+        peppy_dirs: &PeppyDirs,
+        refreshed: &RefreshedRepos,
+    ) -> String {
+        assert!(
+            refreshed.failures.is_empty(),
+            "the repository is read: {:?}",
+            refreshed.failures
+        );
+        let (url, commit) = refreshed.nodes[0].origin.checkout().expect("a git origin");
+        let checkout = crate::services::node::cache::git::checkout_dir_for(peppy_dirs, url, commit);
+        assert!(
+            checkout.join(".git").join("shallow").exists(),
+            "the clone at {} is shallow",
+            checkout.display()
+        );
+        commit.as_str().to_owned()
+    }
+
+    #[test]
+    fn process_refresh_fetches_a_configured_tag_the_clone_does_not_hold() {
+        let served = tempfile::tempdir().unwrap();
+        let (tagged, _head) = hub_with_a_tag_behind_its_head(served.path());
+        let daemon = GitDaemon::serve(served.path());
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+
+        let refreshed = refresh_git_repo_on(&peppy_dirs, &daemon.url("hub"), "v1");
+
+        assert_eq!(
+            commit_read_through_a_shallow_clone(&peppy_dirs, &refreshed),
+            tagged
+        );
+    }
+
+    #[test]
+    fn process_refresh_fetches_a_configured_commit_that_is_no_branch_head() {
+        let served = tempfile::tempdir().unwrap();
+        let (older, _head) = hub_with_a_tag_behind_its_head(served.path());
+        let daemon = GitDaemon::serve(served.path());
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+
+        let refreshed = refresh_git_repo_on(&peppy_dirs, &daemon.url("hub"), &older);
+
+        assert_eq!(
+            commit_read_through_a_shallow_clone(&peppy_dirs, &refreshed),
+            older
+        );
+    }
+
+    #[test]
+    fn process_refresh_refuses_a_configured_ref_the_remote_does_not_serve() {
+        let served = tempfile::tempdir().unwrap();
+        hub_with_a_tag_behind_its_head(served.path());
+        let daemon = GitDaemon::serve(served.path());
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+        let url = daemon.url("hub");
+
+        let refreshed = refresh_git_repo_on(&peppy_dirs, &url, "v9");
+
+        assert!(refreshed.nodes.is_empty());
+        assert_eq!(refreshed.failures.len(), 1);
+        let failure = &refreshed.failures[0];
+        assert_eq!(failure.kind, RepoFailureKind::Unreachable);
+        assert!(
+            failure
+                .detail
+                .starts_with(&format!("{url} does not serve the configured ref `v9`: ")),
+            "{}",
+            failure.detail
+        );
     }
 }

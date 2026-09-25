@@ -1,9 +1,7 @@
 """Build a peppy release on several machines at once, then publish it.
 
-`scripts/build_release.sh` builds every archive on one macOS ARM64 host: the
-macOS target natively and both Linux targets inside a Lima VM. This module cuts
-the same release in stages that `.github/workflows/parallel-release.yml` runs
-on separate runners, so each archive builds natively on a runner of its own
+`.github/workflows/parallel-release.yml` runs the stages of this module on
+separate runners, so each archive builds natively on a runner of its own
 platform, all three at once, and no stage starts a VM:
 
 - `prepare` (any host): the branch, tag and docs checks and the drafted release
@@ -12,7 +10,8 @@ platform, all three at once, and no stage starts a VM:
 - `apptainer` (Linux): apptainer for the host's architecture.
 - `build` (one per target): one release archive, built from the plan's commit.
 - `publish` (any host): the GitHub release from the three archives, then the
-  notes committed on `dev` and `main` fast-forwarded to it.
+  notes committed on `dev` and `main` fast-forwarded to it. A publish started
+  again after a failure does only the steps the failure left undone.
 
 The provisioning stages exist because a native build cannot produce everything
 it embeds. Every peppy binary carries the peppylib bindings of all three
@@ -22,9 +21,8 @@ PEPPY_CROSS_ARCH) looks for apptainer of both Linux architectures, building a
 missing one in a Lima VM. Provisioned by the machines that build them natively,
 the same bindings and apptainer reach every archive.
 
-No stage asks a question: every answer the single-host release prompts for is
-an option of the stage that needs it, and the drafted notes are published as
-they are.
+No stage asks a question: every answer a release needs is an option of the
+stage that needs it, and the drafted notes are published as they are.
 """
 
 from __future__ import annotations
@@ -46,24 +44,6 @@ from pathlib import Path
 import httpx
 
 from .build import BuildArtifact, _release_rustflags, build_and_package, release_dist_dir
-from .build_release import (
-    ALIGNED_BRANCH,
-    DOCS_POLISH_BRANCH_PREFIX,
-    DOCS_SYNC_BRANCH_PREFIX,
-    GIT_REMOTE,
-    RELEASE_BRANCH,
-    _docs_check_base,
-    _docs_polish_pr_body,
-    _docs_sync_pr_body,
-    _find_open_docs_sync_pr,
-    _latest_release_tag,
-    _open_docs_pr,
-    _print_release_content,
-    _publish_pending_upload,
-    _push_docs_sync_branch,
-    _stop_for_docs_pr,
-    _verify_release_branch_state,
-)
 from .cli import (
     RELEASE_TRIPLES,
     ReleaseError,
@@ -76,14 +56,19 @@ from .cli import (
     run_with_error_handling,
     validate_release_environment,
 )
-from .docs import (
-    DOCS_DIR,
-    RequiredChange,
-    check_docs,
-    print_minor_changes,
-    update_docs,
+from .github import (
+    ReleaseInfo,
+    RepoSlug,
+    build_github_client,
+    delete_draft_release,
+    find_draft_releases,
+    find_published_release,
+    github_api,
+    github_repo_slug,
+    parse_release_response,
+    publish_release,
+    replace_and_upload_asset,
 )
-from .github import RepoSlug, build_github_client, github_repo_slug
 from .lima import (
     GO_LINUX_AMD64_SHA256,
     GO_LINUX_ARM64_SHA256,
@@ -92,13 +77,35 @@ from .lima import (
     SO_BUILD_STATE_MARKER,
     require_prebuilt_peppylib_so,
 )
-from .pending_upload import pending_upload_path, record_pending_upload
+from .release_docs_gate import verify_docs_gate
+from .release_line import (
+    ALIGNED_BRANCH,
+    GIT_REMOTE,
+    RELEASE_BRANCH,
+    latest_release_tag,
+    verify_release_branch_state,
+)
+from .release_notes import (
+    ReleaseNotesInput,
+    fetch_release_body_html,
+    generate_release_notes_file,
+    release_notes_file,
+)
 from .release_summary import (
     ReleaseContent,
     collect_release_changes,
     generate_release_content,
 )
-from .repo import get_commit, get_repo_root, has_changes_in_paths
+from .repo import (
+    commit_paths,
+    fetch_tag,
+    get_changed_paths,
+    get_commit,
+    get_parents,
+    get_repo_root,
+    has_changes_in_paths,
+    push_branch,
+)
 from .verify_release import verify_all_releases
 
 # File names the provisioning stages write and the build stage reads.
@@ -267,140 +274,16 @@ def _require_unused_tag(tag: str) -> None:
         )
 
 
-def _close_blocking_docs_gaps(
-    client: httpx.Client,
-    slug: RepoSlug,
-    release_commit: str,
-    docs_dir: Path,
-    blocking: tuple[RequiredChange, ...],
-    base: str,
-) -> None:
-    """Open the pull request closing *blocking* and stop the release.
-
-    Returns only when the updater verifies that every reported gap is already
-    documented, in which case the release continues.
-    """
-    console.print(f"[yellow]'{DOCS_DIR}/' is out of date:[/yellow]")
-    for change in blocking:
-        console.print(f"  [bold]{change.file}[/bold]: {change.change}")
-
-    branch = f"{DOCS_SYNC_BRANCH_PREFIX}{release_commit[:12]}"
-    pr_url = _find_open_docs_sync_pr(client, slug, branch)
-    if pr_url:
-        console.print(
-            "[yellow]A docs pull request is already open for this commit.[/yellow]"
-        )
-        _stop_for_docs_pr(pr_url)
-
-    console.print("Asking Claude to update the docs...")
-    update = update_docs(base, release_commit, blocking)
-    console.print(update.summary)
-
-    if not has_changes_in_paths([docs_dir]):
-        if not update.all_already_covered:
-            raise ReleaseError(
-                f"the check reported '{DOCS_DIR}/' as out of date and the update "
-                f"claimed to close gaps, but nothing changed there, so there is "
-                f"no pull request to open. Update the docs by hand and push them "
-                f"to '{RELEASE_BRANCH}', or rerun with --skip-docs-check if the "
-                f"report is wrong."
-            )
-        console.print(
-            f"[green]The updater verified every reported gap is already "
-            f"documented; '{DOCS_DIR}/' covers the release.[/green]"
-        )
-        return
-
-    _push_docs_sync_branch(branch, docs_dir, "docs: sync with the code being released")
-    pr_url = _open_docs_pr(
-        client,
-        slug,
-        branch,
-        f"docs: sync with the code being released ({release_commit[:12]})",
-        _docs_sync_pr_body(release_commit, blocking),
-    )
-    _stop_for_docs_pr(pr_url)
-
-
-def _open_minor_docs_pr(
-    client: httpx.Client,
-    slug: RepoSlug,
-    release_commit: str,
-    docs_dir: Path,
-    minor: tuple[RequiredChange, ...],
-    base: str,
-) -> None:
-    """Open the optional pull request applying *minor*; the release goes on."""
-    branch = f"{DOCS_POLISH_BRANCH_PREFIX}{release_commit[:12]}"
-    pr_url = _find_open_docs_sync_pr(client, slug, branch)
-    if pr_url:
-        console.print(
-            f"[yellow]A docs-polish pull request is already open for this "
-            f"commit: {pr_url}[/yellow]"
-        )
-        return
-
-    console.print("Asking Claude to apply the minor suggestions...")
-    update = update_docs(base, release_commit, minor)
-    console.print(update.summary)
-
-    if not has_changes_in_paths([docs_dir]):
-        console.print(
-            f"[yellow]The update changed nothing under '{DOCS_DIR}/'; there is "
-            f"no pull request to open.[/yellow]"
-        )
-        return
-
-    _push_docs_sync_branch(branch, docs_dir, "docs: minor polish")
-    pr_url = _open_docs_pr(
-        client,
-        slug,
-        branch,
-        f"docs: minor polish ({release_commit[:12]})",
-        _docs_polish_pr_body(release_commit, minor),
-    )
-    console.print(f"Opened {pr_url}; it does not block this release.")
-
-
-def verify_docs_gate(
-    client: httpx.Client,
-    slug: RepoSlug,
-    release_commit: str,
-    repo_root: Path,
-    *,
-    open_minor_docs_pr: bool,
-) -> None:
-    """The docs freshness gate of the single-host release, answered up front.
-
-    Makes the decisions of `build_release._verify_docs_up_to_date`: blocking
-    gaps get a pull request against `dev` and stop the release, minor
-    suggestions never block. That gate asks whether to open the optional
-    minor-polish pull request; *open_minor_docs_pr* is the answer here.
-    """
-    docs_dir = repo_root / DOCS_DIR
-    if has_changes_in_paths([docs_dir]):
-        raise ReleaseError(
-            f"'{DOCS_DIR}/' has uncommitted changes. The docs check commits "
-            f"that directory onto a branch of its own, which would sweep those "
-            f"edits into the pull request."
-        )
-
-    base = _docs_check_base(client, slug, release_commit)
-    console.print(f"Checking '{DOCS_DIR}/' covers the code changes since {base}...")
-    result = check_docs(base, release_commit)
-    print_minor_changes(result.minor)
-
-    if result.blocking:
-        _close_blocking_docs_gaps(
-            client, slug, release_commit, docs_dir, result.blocking, base
-        )
-        return
-
-    if result.minor and open_minor_docs_pr:
-        _open_minor_docs_pr(
-            client, slug, release_commit, docs_dir, result.minor, base
-        )
-    console.print(f"[green]'{DOCS_DIR}/' is up to date.[/green]")
+def _print_release_content(content: ReleaseContent) -> None:
+    """Print the drafted release content, which nobody reviews before it ships."""
+    console.print()
+    console.print("[bold]Drafted release content[/bold]")
+    console.print(f"  [bold]Title:[/bold] {content.title}")
+    console.print(f"  [bold]Description:[/bold] {content.description}")
+    console.print("  [bold]Notes:[/bold]")
+    for line in content.notes.splitlines():
+        console.print(f"    {line}")
+    console.print()
 
 
 def _draft_release_content(
@@ -412,10 +295,13 @@ def _draft_release_content(
 ) -> ReleaseContent:
     """Draft the release content from the changes since the last release.
 
-    The same draft the single-host release offers for review. Nobody reviews
-    it here, so it is printed for the log instead.
+    Collects everything merged between the previous published release and the
+    release commit (the commit subjects, the code diff, and the user
+    documentation diff) and asks Claude to draft the title, description and
+    notes as a self-contained list of user-facing changes. Nobody reviews the
+    draft, so it is printed for the log.
     """
-    previous_tag = _latest_release_tag(client, slug)
+    previous_tag = latest_release_tag(client, slug)
     if previous_tag:
         console.print(f"Listing changes since last release [bold]{previous_tag}[/bold]...")
     else:
@@ -448,7 +334,7 @@ def run_prepare(
     repo_root = get_repo_root()
     os.chdir(repo_root)
 
-    dev_commit = _verify_release_branch_state()
+    dev_commit = verify_release_branch_state()
     if dev_commit != release_commit:
         raise ReleaseError(
             f"'{RELEASE_BRANCH}' is at {dev_commit[:12]}, but this run builds "
@@ -652,8 +538,9 @@ def run_build(*, plan_path: Path, target: str, provisioned_dir: Path) -> None:
     """Build and verify the release archive of *target* on a host of its own.
 
     The provisioned bindings are embedded through PEPPYLIB_PREBUILT_SO_DIR, the
-    way the Lima build of the single-host release embeds them, and the
-    provisioned apptainer builds fill the cache the build reads.
+    way a Linux build in the Lima VM of `build_release.sh --local` embeds the
+    bindings the macOS build made, and the provisioned apptainer builds fill
+    the cache the build reads.
     """
     for cmd in ("git", "cargo", "rustc"):
         need_cmd(cmd)
@@ -692,7 +579,7 @@ def run_build(*, plan_path: Path, target: str, provisioned_dir: Path) -> None:
 
 def _stage_archives(archives_dir: Path, dist_dir: Path) -> list[BuildArtifact]:
     """Copy the archive of every release target into the dist directory, where
-    the pending-upload manifest and the publish step expect them."""
+    the archive verification and the uploads read them."""
     dist_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[BuildArtifact] = []
     for triple in RELEASE_TRIPLES:
@@ -706,14 +593,317 @@ def _stage_archives(archives_dir: Path, dist_dir: Path) -> list[BuildArtifact]:
     return artifacts
 
 
-def run_publish(*, plan_path: Path, archives_dir: Path) -> None:
-    """Publish the planned release from the archives every build stage made.
+def _release_payload(plan: ReleasePlan) -> dict[str, object]:
+    """The JSON payload for POST /repos/{owner}/{repo}/releases.
 
-    `dev` must still be at the commit the archives were built from: the
-    release tags that commit and fast-forwards `main` to `dev`. Past that
-    check this is the publish step of the single-host release, pending-upload
-    manifest included, so a publish that fails leaves a dist directory that
-    build_release.sh offers to publish on its next run.
+    Always a draft, published only once every archive is uploaded, and tagged
+    at the exact commit the archives were built from rather than at a branch
+    name, so a push to `dev` during the upload cannot retag the release.
+    """
+    return {
+        "tag_name": plan.tag,
+        "name": plan.content.title,
+        "target_commitish": plan.release_commit,
+        "draft": True,
+        "body": plan.content.notes,
+    }
+
+
+def _create_draft_release(
+    client: httpx.Client, slug: RepoSlug, plan: ReleasePlan
+) -> ReleaseInfo:
+    """Create the draft release the archives are uploaded to.
+
+    The draft is invisible until every upload succeeds. Drafts of the same tag
+    that an earlier attempt could not clean up (a killed process, a lost CI
+    runner, a failed cleanup request) are deleted first, so the release never
+    has more than one.
+    """
+    for draft in find_draft_releases(client, slug, plan.tag):
+        console.print(
+            f"[yellow]Deleting a draft release of {plan.tag} left by an "
+            f"earlier run: {draft.html_url}[/yellow]",
+            soft_wrap=True,
+        )
+        delete_draft_release(client, draft.release_id, slug)
+
+    console.print(f"Creating draft release [bold]{slug.full}@{plan.tag}[/bold]...")
+    response = github_api(
+        client,
+        "POST",
+        f"https://api.github.com/repos/{slug.full}/releases",
+        json_data=_release_payload(plan),
+    )
+    return parse_release_response(response)
+
+
+def _upload_archives_and_publish(
+    client: httpx.Client,
+    slug: RepoSlug,
+    draft: ReleaseInfo,
+    artifacts: list[BuildArtifact],
+) -> ReleaseInfo:
+    """Upload every archive to the draft, then publish it.
+
+    Returns the published release, whose URL names its tag where the draft's
+    names an untagged placeholder.
+
+    The draft is deleted on any failure, an interrupt included (a cancelled
+    CI run), so no half-uploaded release lingers on GitHub; the failure itself
+    propagates to the caller.
+    """
+    try:
+        for artifact in artifacts:
+            replace_and_upload_asset(
+                client, draft.release_id, artifact.asset_name, artifact.asset_path, slug
+            )
+
+        console.print("Publishing release...")
+        return parse_release_response(publish_release(client, draft.release_id, slug))
+    except BaseException:
+        console.print(
+            "[red]Upload or publish did not finish. Cleaning up draft release...[/red]"
+        )
+        try:
+            if delete_draft_release(client, draft.release_id, slug):
+                console.print("[yellow]Draft release deleted.[/yellow]")
+            else:
+                console.print(
+                    f"[yellow]The release went live before the failure, so it is "
+                    f"left in place: https://github.com/{slug.full}/releases[/yellow]",
+                    soft_wrap=True,
+                )
+        except Exception as cleanup_err:
+            console.print(
+                f"[red]WARNING: Failed to delete draft release "
+                f"(id={draft.release_id}): {cleanup_err}[/red]\n"
+                f"[red]Manual cleanup required: "
+                f"https://github.com/{slug.full}/releases[/red]"
+            )
+        raise
+
+
+def _require_tag_at_release_commit(plan: ReleasePlan) -> None:
+    """Stop unless the remote tag of *plan* points at the plan's commit.
+
+    A published release of the tag is this run's release only when its tag
+    names the commit the archives were built from. Any other commit means the
+    tag was published from somewhere else, and nothing of this run belongs on
+    it.
+    """
+    fetch_tag(GIT_REMOTE, plan.tag)
+    tagged_commit = get_commit(f"refs/tags/{plan.tag}")
+    if tagged_commit != plan.release_commit:
+        raise ReleaseError(
+            f"a release of {plan.tag} is already published, but its tag points "
+            f"at {tagged_commit[:12]}, not at {plan.release_commit[:12]}, the "
+            f"commit this run built its archives from. Nothing is published "
+            f"over it; find out how {plan.tag} was published, and release this "
+            f"commit under a new tag."
+        )
+
+
+def _find_published_release(
+    client: httpx.Client, slug: RepoSlug, plan: ReleasePlan
+) -> ReleaseInfo | None:
+    """The published release of the plan's tag, or None while there is none.
+
+    An earlier attempt of this publish that got past the publish request
+    leaves one. It is taken for this run's release only once its tag is
+    checked to point at the plan's commit (`_require_tag_at_release_commit`).
+    """
+    release = find_published_release(client, slug, plan.tag)
+    if release is None:
+        return None
+    _require_tag_at_release_commit(plan)
+    return release
+
+
+def _publish_release_unless_published(
+    client: httpx.Client,
+    slug: RepoSlug,
+    plan: ReleasePlan,
+    *,
+    notes_committed: bool,
+    archives_dir: Path,
+    repo_root: Path,
+) -> ReleaseInfo:
+    """The published GitHub release of *plan*, published from the archives in
+    *archives_dir* unless an earlier attempt already published it.
+
+    Notes committed on `dev` without a published release are refused: only a
+    publish commits them, and only once the release they describe is live.
+    """
+    release = _find_published_release(client, slug, plan)
+    if release is not None:
+        console.print(
+            f"[yellow]{plan.tag} is already published ({release.html_url}); "
+            f"its archives are not uploaded again.[/yellow]",
+            soft_wrap=True,
+        )
+        return release
+    if notes_committed:
+        raise ReleaseError(
+            f"the release notes of {plan.tag} are committed on "
+            f"'{RELEASE_BRANCH}', but no published release of {plan.tag} "
+            f"exists. Only a publish commits them, once the release is live, so "
+            f"find out what removed the release before publishing it again."
+        )
+
+    dist_dir = release_dist_dir(repo_root)
+    artifacts = _stage_archives(archives_dir, dist_dir)
+    verify_all_releases(dist_dir)
+    console.print("[green]All release archives verified successfully.[/green]")
+    draft = _create_draft_release(client, slug, plan)
+    return _upload_archives_and_publish(client, slug, draft, artifacts)
+
+
+def _is_release_notes_commit(
+    commit: str, release_commit: str, notes_file: Path
+) -> bool:
+    """Whether *commit* is the notes commit of the release of *release_commit*.
+
+    A publish commits the notes as a single commit on top of the release
+    commit: *release_commit* is its only parent, and the release notes file of
+    the tag (*notes_file*, relative to the repository root) is the only path
+    it changes.
+    """
+    if get_parents(commit) != (release_commit,):
+        return False
+    return get_changed_paths(release_commit, commit) == (notes_file.as_posix(),)
+
+
+def _dev_carries_release_notes(
+    dev_commit: str, plan: ReleasePlan, notes_file: Path
+) -> bool:
+    """Whether `dev` already carries the release notes commit of *plan*.
+
+    False when `dev` is at the plan's commit, where every publish starts. True
+    when `dev` is that commit plus the notes commit alone
+    (`_is_release_notes_commit`), which an earlier attempt leaves once it
+    pushed the notes. Any other `dev` moved on since the archives were built,
+    and the release cannot go on from it: it tags the commit its archives come
+    from and fast-forwards `main` to `dev`.
+    """
+    if dev_commit == plan.release_commit:
+        return False
+    if _is_release_notes_commit(dev_commit, plan.release_commit, notes_file):
+        return True
+    raise ReleaseError(
+        f"'{RELEASE_BRANCH}' moved to {dev_commit[:12]} while the archives "
+        f"were built from {plan.release_commit[:12]}. The release tags the "
+        f"commit its archives come from and fast-forwards '{ALIGNED_BRANCH}' "
+        f"to '{RELEASE_BRANCH}', so the two must match; start a new run "
+        f"from the current '{RELEASE_BRANCH}'."
+    )
+
+
+def _main_already_at(commit: str) -> bool:
+    """Whether `origin/main`, as the branch check fetched it, is at *commit*."""
+    return get_commit(f"{GIT_REMOTE}/{ALIGNED_BRANCH}") == commit
+
+
+def _write_release_notes(
+    client: httpx.Client,
+    slug: RepoSlug,
+    plan: ReleasePlan,
+    release: ReleaseInfo,
+    repo_root: Path,
+) -> Path:
+    """Write the docs release notes of the published *release*; return the file.
+
+    The notes carry the release as GitHub renders it, its body as HTML and
+    its publication date, so they are written from the published release
+    rather than from the plan alone.
+    """
+    console.print("Fetching release notes...")
+    body_html = fetch_release_body_html(client, release.release_id, slug)
+    release_details = github_api(
+        client,
+        "GET",
+        f"https://api.github.com/repos/{slug.full}/releases/{release.release_id}",
+    )
+    if not isinstance(release_details, dict):
+        raise ReleaseError(
+            "unexpected GitHub API response for the release (expected JSON object)"
+        )
+    notes_input = ReleaseNotesInput(
+        tag=plan.tag,
+        description=plan.content.description,
+        release_details=release_details,
+        body_html=body_html,
+    )
+    return generate_release_notes_file(notes_input, repo_root)
+
+
+def _commit_release_notes(notes_path: Path, tag: str) -> None:
+    """Commit the release notes on `dev` and push it.
+
+    The commit takes the notes file alone, so any other change in the working
+    tree is left untouched. Notes the tree already holds as written leave
+    nothing to commit, and `dev` as it is.
+    """
+    if not has_changes_in_paths([notes_path]):
+        console.print(
+            f"[yellow]'{RELEASE_BRANCH}' already holds the release notes of "
+            f"{tag} as written; there is nothing to commit.[/yellow]"
+        )
+        return
+    commit_paths([notes_path], f"docs: add release notes for {tag}")
+    console.print(f"Pushing the release notes on '{RELEASE_BRANCH}' to {GIT_REMOTE}...")
+    push_branch(GIT_REMOTE, RELEASE_BRANCH, RELEASE_BRANCH)
+
+
+def _commit_notes_and_align_main(
+    client: httpx.Client,
+    slug: RepoSlug,
+    plan: ReleasePlan,
+    release: ReleaseInfo,
+    *,
+    notes_committed: bool,
+    repo_root: Path,
+) -> None:
+    """Commit the notes of the published *release* on `dev`, then fast-forward
+    `main` to `dev`, each unless an earlier attempt already did it.
+
+    `main` moves with a refspec push, so the working tree never leaves `dev`.
+    """
+    if notes_committed:
+        console.print(
+            f"[yellow]The release notes of {plan.tag} are already committed on "
+            f"'{RELEASE_BRANCH}'.[/yellow]"
+        )
+    else:
+        notes_path = _write_release_notes(client, slug, plan, release, repo_root)
+        _commit_release_notes(notes_path, plan.tag)
+
+    if _main_already_at(get_commit("HEAD")):
+        console.print(
+            f"[yellow]'{ALIGNED_BRANCH}' is already at '{RELEASE_BRANCH}'.[/yellow]"
+        )
+        return
+    console.print(f"Fast-forwarding '{ALIGNED_BRANCH}' to '{RELEASE_BRANCH}'...")
+    push_branch(GIT_REMOTE, RELEASE_BRANCH, ALIGNED_BRANCH)
+
+
+def run_publish(*, plan_path: Path, archives_dir: Path) -> None:
+    """Publish the planned release, doing only the steps not done yet.
+
+    A publish is three steps, in this order, each skipped when it is already
+    done:
+
+    1. The GitHub release: a draft of the plan's tag at the plan's commit,
+       every archive uploaded to it, then published. Skipped when a published
+       release of the tag exists and its tag points at the plan's commit.
+    2. The release notes, written from the published release and committed on
+       `dev`. Skipped when `dev` already carries that commit.
+    3. `main` fast-forwarded to `dev`. Skipped when `origin/main` is there.
+
+    A publish that fails is started again with "Re-run failed jobs" while the
+    run's archives exist, and the steps the failed attempt finished are then
+    found done. `dev` must be at the plan's commit, or that commit plus the
+    notes commit alone; any other `dev` stops the stage before it writes
+    anything.
     """
     need_cmd("git")
     token = require_release_token()
@@ -721,28 +911,55 @@ def run_publish(*, plan_path: Path, archives_dir: Path) -> None:
 
     repo_root = get_repo_root()
     os.chdir(repo_root)
-    dev_commit = _verify_release_branch_state()
-    if dev_commit != plan.release_commit:
-        raise ReleaseError(
-            f"'{RELEASE_BRANCH}' moved to {dev_commit[:12]} while the archives "
-            f"were built from {plan.release_commit[:12]}. The release tags the "
-            f"commit its archives come from and fast-forwards '{ALIGNED_BRANCH}' "
-            f"to '{RELEASE_BRANCH}', so the two must match; start a new run "
-            f"from the current '{RELEASE_BRANCH}'."
-        )
-
-    dist_dir = release_dist_dir(repo_root)
-    artifacts = _stage_archives(archives_dir, dist_dir)
-    verify_all_releases(dist_dir)
-    console.print("[green]All release archives verified successfully.[/green]")
-
-    manifest_path = pending_upload_path(repo_root)
-    pending = record_pending_upload(
-        manifest_path, plan.tag, plan.release_commit, plan.content, artifacts
+    dev_commit = verify_release_branch_state()
+    notes_committed = _dev_carries_release_notes(
+        dev_commit, plan, release_notes_file(plan.tag)
     )
+
     slug = github_repo_slug()
     client = build_github_client(token)
-    _publish_pending_upload(client, slug, pending, manifest_path, repo_root)
+    release = _publish_release_unless_published(
+        client,
+        slug,
+        plan,
+        notes_committed=notes_committed,
+        archives_dir=archives_dir,
+        repo_root=repo_root,
+    )
+
+    # The release is live, so a failure past this point leaves only the git
+    # side unfinished, which is what the re-run of this stage is for.
+    try:
+        _commit_notes_and_align_main(
+            client,
+            slug,
+            plan,
+            release,
+            notes_committed=notes_committed,
+            repo_root=repo_root,
+        )
+    except ReleaseError as e:
+        raise ReleaseError(
+            f"{e}\n"
+            f"The GitHub release {plan.tag} is published ({release.html_url}), "
+            f"so what is left is on '{RELEASE_BRANCH}' and '{ALIGNED_BRANCH}'. "
+            f"Re-run the failed publish job: it finds the release published and "
+            f"does only the steps left."
+        ) from e
+
+    console.print(
+        f"[green]Release notes committed on '{RELEASE_BRANCH}' and "
+        f"'{ALIGNED_BRANCH}' fast-forwarded to it.[/green] They feed "
+        "https://forum.peppy.bot/c/peppy-os/announcements/6 and "
+        "https://docs.peppy.bot/reference/changelog/"
+    )
+    # Last, so the run's output ends on the outcome and where to read it.
+    # soft_wrap keeps the URL whole on a narrow CI console.
+    console.print(
+        f"\n[bold green]Released {plan.tag}.[/bold green] "
+        f"Release notes: {release.html_url}",
+        soft_wrap=True,
+    )
 
 
 # --- command line ---
