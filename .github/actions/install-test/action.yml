@@ -14,9 +14,11 @@ inputs:
 runs:
   using: composite
   steps:
-    # A self-hosted box outlives its jobs: install.sh would change it for
-    # every job after this one, and a second run would no longer start from
-    # a fresh machine.
+    # Only a GitHub-hosted runner is both discarded after the job and booted
+    # from the stock image the tests assume: a self-hosted runner either
+    # outlives its jobs, so install.sh would change it for every job after
+    # this one, or boots an image provisioned for builds, which already
+    # carries what install.sh installs.
     - name: Refuse a runner that outlives the job
       if: runner.environment != 'github-hosted'
       shell: bash
@@ -34,7 +36,7 @@ runs:
     # release build needs is installed: the tests start from the image as a
     # user's machine would, and a build toolchain would put packages on it
     # (fuse2fs, uidmap) that install.sh is there to install. Pinned to the
-    # version the self-hosted boxes are provisioned with.
+    # version the CI image is provisioned with.
     - name: Install pixi
       shell: bash
       run: |

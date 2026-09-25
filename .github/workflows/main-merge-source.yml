@@ -21,11 +21,9 @@ jobs:
   # at all, and a required check that never reports leaves the pull request
   # blocked just the same.
   main-from-dev:
-    # The self-hosted runner, as everywhere else here. This job is the gate on
-    # `main` and does nothing but read the event payload, but it still queues
-    # behind whatever else the box is building, so a release pull request can
-    # wait on it.
-    runs-on: self-hosted
+    # The smallest runner: this job is the gate on `main` and does nothing but
+    # read the event payload.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a  # custom Peppy AMI
     # The head branch comes off the event payload. Nothing here reads the
     # repository, so the job runs with no token.
     permissions: {}

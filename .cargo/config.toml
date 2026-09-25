@@ -6,11 +6,11 @@
 # Why this exists:
 #   Each test build of the peppylib path dependency hashes to a new cache key,
 #   and uv's built-wheel cache is APPEND-ONLY (it never evicts). Thousands of
-#   throwaway test builds of the ~457 MB `_peppylib.abi3.so` had accumulated
-#   ~800 GB in ~/.cache/uv (on dev machines and on the reused self-hosted CI
-#   runner alike). Routing them under target/ means `cargo clean` — or just
-#   deleting target/ — reclaims them, and the global cache stays clean. The
-#   `strip = true` release profile (Cargo.toml) shrinks each entry on top of this.
+#   throwaway test builds of the ~457 MB `_peppylib.abi3.so` add up to hundreds
+#   of gigabytes in ~/.cache/uv on any machine that keeps its home directory.
+#   Routing them under target/ means `cargo clean` (or just deleting target/)
+#   reclaims them, and the global cache stays clean. The `strip = true` release
+#   profile (Cargo.toml) shrinks each entry on top of this.
 #
 # `relative = true` resolves the path against this config file's parent (the
 # workspace root) and is expanded to an absolute path before being handed to

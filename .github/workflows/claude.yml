@@ -55,7 +55,7 @@ jobs:
         && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
         && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
 
-    runs-on: self-hosted
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a  # custom Peppy AMI
     permissions:
       contents: read
     outputs:
@@ -93,12 +93,11 @@ jobs:
     needs: authorize
     if: needs.authorize.outputs.is_admin == 'true'
 
-    # The self-hosted runner, as everywhere else here. This job installs its
-    # own toolchain and contends with the long cargo and container builds that
-    # occupy the box, so an `@claude` mention can wait behind a test run; it
-    # also holds `contents: write` and the Claude credential on a machine that
-    # persists between jobs, which the admin gate above is what limits.
-    runs-on: self-hosted
+    # A build runner of its own at half the suites' size, on the CI image, so
+    # Claude can build and test the workspace it edits. The job holds
+    # `contents: write` and the Claude credential, which the admin gate above
+    # is what limits; the runner is discarded when the job ends.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=8/ram=16+32/family=c8a+c7a+m8a+m7a  # custom Peppy AMI
 
     permissions:
       contents: write # push the branch when Claude is asked to make a change

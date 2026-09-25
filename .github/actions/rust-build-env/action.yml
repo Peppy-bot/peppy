@@ -8,46 +8,11 @@ description: >-
 runs:
   using: composite
   steps:
-    # A job that checks out sparsely leaves this workspace sparse for the job
-    # after it. actions/checkout writes core.sparseCheckout into the
-    # repository's local config, `git sparse-checkout disable` clears it in the
-    # worktree config, and checkout then unsets extensions.worktreeConfig — so
-    # git reads the local `true` again, with .git/info/sparse-checkout still
-    # beside it. On a runner discarded with the job none of that survives; on
-    # these boxes one workspace serves every job of this repository, and the
-    # next one is handed a partial tree while git calls it clean.
-    #
-    # That cost a run on 2026-09-18: release-scripts stopped at
-    # "./scripts/run_tests.sh: No such file or directory" and container-e2e at
-    # "could not find `Cargo.toml`", each on a box whose checkout had just
-    # reported success, and each blaming the file it could not see rather than
-    # the job before it.
-    #
-    # Only the workspace checkout is repaired. A job that wants a partial tree
-    # takes it in a directory of its own (see peppy-shared), which this leaves
-    # alone.
-    - name: Repair a workspace an earlier job left sparse
-      shell: bash
-      run: |
-        set -euo pipefail
-        cd "$GITHUB_WORKSPACE"
-        git rev-parse --git-dir > /dev/null 2>&1 || exit 0
-        # Exits 128 with "this worktree is not sparse", which is the ordinary
-        # case and says nothing.
-        git sparse-checkout list > /dev/null 2>&1 || exit 0
-        echo "::warning::${RUNNER_NAME:-this runner} handed this job a sparse" \
-          "workspace left by an earlier one; restoring the full checkout."
-        git sparse-checkout disable || true
-        git config --unset-all core.sparseCheckout || true
-        rm -f "$(git rev-parse --git-dir)/info/sparse-checkout"
-        git checkout --force HEAD
-
-    # Nothing here installs a toolchain. A box that runs these suites is
-    # provisioned before it takes a job, by setup_machine.sh --ci-runner, and
-    # a box missing any of it is a provisioning failure to fix once on that
-    # box. The one caller whose host is a fresh image each run is
-    # release-host-env, which runs the same script with --build-only before
-    # this action, so what it leaves behind is what is checked below.
+    # Nothing here installs a toolchain. A CI job boots the peppy-ubuntu24
+    # image, which setup_machine.sh --ci-runner provisioned, and a gap in it is
+    # a provisioning failure to fix once in the image. A release stage on
+    # another image runs release-host-env first, which runs the same script
+    # with --build-only, so what it leaves behind is what is checked below.
     #
     # What a job does have to do is PATH. The runner executes steps in a shell
     # that is neither a login nor an interactive one, so the profile edits the
@@ -85,7 +50,7 @@ runs:
           echo "::error::${RUNNER_NAME:-this host} is missing ${list%, }." \
             "Hosts are provisioned with setup_machine.sh:" \
             "https://gist.github.com/godardt/b20a8817e2991eba0bd0d613855627e0" \
-            "(--ci-runner on a self-hosted box, --build-only on a release runner)."
+            "(--ci-runner for the peppy-ubuntu24 CI image, --build-only on a release runner)."
           exit 1
         fi
         rustc --version
@@ -104,10 +69,10 @@ runs:
     # profile, is keyed to the path of the install's starter binary and would
     # have to be rewritten for every apptainer version the build cache holds.
     #
-    # Set per job rather than in the host's provisioning because it does not
-    # survive a reboot, and a box that came back up without it fails every
-    # container suite on it. A kernel that never had the restriction (Ubuntu
-    # 22.04) has no knob to clear, hence the existence check.
+    # Set per job rather than in the image's provisioning because it does not
+    # survive a reboot, and every runner boots for its job. A kernel that
+    # never had the restriction (Ubuntu 22.04) has no knob to clear, hence the
+    # existence check.
     - name: Allow unprivileged user namespaces
       shell: bash
       run: |
@@ -124,9 +89,7 @@ runs:
     # concurrent mount dies with "could not open /dev/loop8: no such file or
     # directory". Create the remaining nodes up front; the loop major is 7 and
     # the kernel accepts device nodes whether or not udev would have made them.
-    # Like the knob above these are lost on reboot, so they are made here; on a
-    # box that has already run a container suite since booting, every one of
-    # them exists and the loop does nothing.
+    # Like the knob above these are lost on reboot, so every job makes them.
     - name: Create loop devices for parallel container mounts
       shell: bash
       run: |

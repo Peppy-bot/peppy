@@ -1,0 +1,47 @@
+# RunsOn runners for this repository's workflows.
+#
+# Every repository inherits the org config in Peppy-bot/.github-private: the
+# runner `peppy-ci-ubuntu-24.04-x86_64` and the image `peppy-ubuntu24`. Its
+# top-level keys are not deep-merged with this file. This file defines
+# `runners:`, so it replaces the org runner list, and the org runner is copied
+# below unchanged; keep it identical to the org definition. This file does not
+# define `images:`, so `peppy-ubuntu24` is still inherited.
+#
+# RunsOn sets EC2 tags only from a runner definition, and every instance must
+# carry `Environment:shared` and `Stack:github-action-runners`, so every job
+# names one of these runners with `runner=` and adjusts it with labels.
+#
+# This repository is public, so RunsOn reads this file from dev alone: a pull
+# request cannot change or test what it defines. The CI jobs therefore shape
+# the org runner with labels, and this file holds only what labels cannot
+# express.
+runners:
+  # The org runner, copied verbatim.
+  peppy-ci-ubuntu-24.04-x86_64:
+    cpu: 16
+    ram: 32
+    volume: 100gb:gp3
+    sticky: build-cache:40gb
+    family: ["c5", "m6i", "c6i", "m4", "m5", "c7i", "m7i"]
+    spot: price-capacity-optimized
+    tags:
+      - Environment:shared
+      - Stack:github-action-runners
+
+  # The Linux aarch64 release stages, which build natively on Graviton. The
+  # org runner and peppy-ubuntu24 are x64 only, so this boots RunsOn's stock
+  # arm64 image and the stage provisions its toolchain with setup_machine.sh
+  # --build-only (the release-host-env action). 16 vCPU and 32 GB, the core
+  # count of the x86_64 stages (a Graviton vCPU is a full core, as on the AMD
+  # families those stages use), and on demand: a release stage must not be
+  # interrupted. The release runs from dev, which is where RunsOn reads this.
+  release-arm64:
+    cpu: 16
+    ram: 32
+    family: ["c7g", "c8g"]
+    image: ubuntu24-full-arm64       # RunsOn standard image
+    volume: 150gb:gp3:500mbs:6000iops
+    spot: false
+    tags:
+      - Environment:shared
+      - Stack:github-action-runners

@@ -38,29 +38,25 @@ runs:
           rm -rf "$library/${tap%%/*}/homebrew-${tap#*/}"
         done
 
-    # The release is the one workflow on hosted runners, because it builds for
-    # macOS and arm64 while the rest of CI runs on self-hosted boxes that are
-    # provisioned before they take a job. A hosted runner is a fresh image
-    # each run, so this is where a release stage installs what it builds with.
+    # Every release stage starts from a fresh image. The x86_64 stages boot
+    # the peppy-ubuntu24 CI image, which this script already provisioned, and
+    # find everything in place; the aarch64 stages boot RunsOn's stock arm64
+    # image and the macOS stages a Blacksmith macOS image, which ship none of
+    # it. So this is where a release stage installs what it builds with.
     #
-    # It installs it with the very script those boxes are provisioned by, so
-    # the two cannot drift. They did: this step used to carry a hand-written
-    # copy of the package list and the toolchain installs, the shared script
-    # grew Go, and the release then failed on the one runner image that ships
-    # none — "blacksmith-16vcpu-ubuntu-2404-arm ... is missing go", raised by
-    # rust-build-env below, which checks what the shared script installs.
-    #
-    # The script lives in a gist because the other repository that provisions
-    # with it, the Peppy superproject, is private and this one is public. It
-    # is fetched rather than vendored for the same reason the boxes run it:
+    # It installs it with the very script the CI image is built with, so the
+    # two cannot drift: rust-build-env below checks for exactly what that
+    # script installs. The script lives in a gist because the other
+    # repository that provisions with it, the Peppy superproject, is private
+    # and this one is public. It is fetched rather than vendored so there is
     # one copy, edited in one place. --build-only is the subset a release
     # stage needs (the apptainer build dependencies, Rust with clippy, Go,
-    # pixi and uv) and leaves out what only a full development machine or a
-    # self-hosted runner uses, qemu, Node, Docker and the rest among them.
+    # pixi and uv) and leaves out what only a full development machine or the
+    # CI image uses, qemu, Node, Docker and the rest among them.
     #
     # The script names its install directories on $GITHUB_PATH itself, so the
     # steps after this one find what it installed.
-    - name: Provision this host the way the self-hosted boxes are provisioned
+    - name: Provision this host the way the CI image is provisioned
       shell: bash
       env:
         SETUP_MACHINE_URL: https://gist.githubusercontent.com/godardt/b20a8817e2991eba0bd0d613855627e0/raw/setup_machine.sh

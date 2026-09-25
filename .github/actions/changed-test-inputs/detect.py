@@ -70,10 +70,10 @@ TREE_SUITES = {
     "scripts": ["scripts/**"],
     # The install-archive and install-script jobs. install.sh is what the
     # runner runs; build_release.sh and build/build_release/cli produce the
-    # archive it installs (`build_release.sh --local --tag test`); the
-    # install-test action, run_tests.sh, conftest and the two test modules
-    # are what drives it; and the manifests pin the pixi environment the
-    # tests run in.
+    # archive it installs (`build_release.sh --local --tag test`), with its
+    # build cache kept by the cargo-cache action; the install-test action,
+    # run_tests.sh, conftest and the two test modules are what drives it; and
+    # the manifests pin the pixi environment the tests run in.
     "install_script": [
         "scripts/install.sh",
         "scripts/build_release.sh",
@@ -87,6 +87,7 @@ TREE_SUITES = {
         "scripts/tests/test_install_in_docker.py",
         "scripts/pixi.toml",
         "scripts/pixi.lock",
+        ".github/actions/cargo-cache/**",
         ".github/actions/install-test/**",
     ],
 }
@@ -112,15 +113,17 @@ JOBS = {
     "peppy-shared": ["peppy_shared_packages", "peppy_shared_peppylib_py"],
 }
 
-# CI plumbing every suite runs through: the workflow, and the one action every
-# job of it starts with. An action is an input of the jobs that use it and of
-# no other, which is why the rest of `.github/actions` is not here: the cargo
-# plumbing is listed below for the suites that build with it, the detection
-# itself is tested by the changes job before it is trusted and changes what
-# runs rather than how a suite runs, and release-host-env belongs to the
-# release workflow.
+# CI plumbing every suite runs through: the workflow, the runner definitions
+# its jobs name, and the one action every job of it starts with. An action is
+# an input of the jobs that use it and of no other, which is why the rest of
+# `.github/actions` is not here: the cargo plumbing is listed below for the
+# suites that build with it (and the cargo-cache action again for the install
+# suite, whose archive build keeps its cache there), the detection itself is
+# tested by the changes job before it is trusted and changes what runs rather
+# than how a suite runs, and release-host-env belongs to the release workflow.
 CI_INPUTS = [
     ".github/workflows/tests.yml",
+    ".github/runs-on.yml",
     ".github/actions/rust-build-env/**",
 ]
 
@@ -129,7 +132,6 @@ CI_INPUTS = [
 CARGO_CI_INPUTS = [
     ".github/actions/cargo-cache/**",
     ".github/actions/cargo-suite/**",
-    ".github/actions/reclaim-data-root/**",
 ]
 
 # What the `peppy` workspace resolves itself from: an input of the suites that

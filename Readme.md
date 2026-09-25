@@ -100,25 +100,14 @@ Then the toolchains, each from its own project's recommended installer:
 
 When Go is installed from the tarball, add `/usr/local/go/bin` to your `~/.profile`. Docker group membership only applies to new logins, so log out and back in before running the multi-daemon suite.
 
-### Self-hosted CI runners
+### CI runners
 
-The workflows install nothing. They use the toolchain the box was provisioned with, and the first step of every job stops the run naming anything missing rather than installing it, so a box is prepared once and then simply takes work. Provisioning happens outside this repository; it installs everything listed above, and two things beyond it:
+CI runs on [RunsOn](https://runs-on.com) runners: each job gets an EC2 instance of its own, sized by the job's `runs-on:` label, and the instance is discarded when the job ends. The CI jobs shape the org runner with labels in their workflow; [`.github/runs-on.yml`](./.github/runs-on.yml) defines only the arm64 runner of the release, since RunsOn reads that file from `dev` alone. The exceptions are the install.sh tests, which run on GitHub-hosted runners because they must start from the stock image a user's machine starts from, and the macOS release stages, which run on Blacksmith because RunsOn has no macOS. Every RunsOn job but the aarch64 release stages boots `peppy-ubuntu24`, an image built weekly with `setup_machine.sh --ci-runner`, the script that provisions a development machine, so it carries everything listed above, plus two things beyond it:
 
-- **passwordless sudo** for the user the Actions runner executes as. Each container suite installs a peppy release under the job's own directory and runs `peppy container setup`, which writes an AppArmor profile keyed to that install's path, and a job has no terminal for `sudo` to prompt at.
+- **passwordless sudo** for the runner's user. Each container suite installs a peppy release under the job's own directory and runs `peppy container setup`, which writes an AppArmor profile keyed to that install's path, and a job has no terminal for `sudo` to prompt at.
 - **the aarch64 cross toolchain** (`rustup target add aarch64-unknown-linux-gnu` and `gcc-aarch64-linux-gnu`) that the cross-check job builds with.
 
-Install the toolchains **as the runner's own user**, not `root` and not through `sudo`: rustup, pixi and uv install into `$HOME`, and a run under `sudo` puts them where the runner will never look. Two steps afterwards, both needed:
-
-```
-# 1. docker group membership and anything new on PATH only reach new sessions
-sudo systemctl restart 'actions.runner.*'
-
-# 2. the runner service does not source ~/.profile, so name the toolchains in
-#    its own environment file, <runner-dir>/.env, then restart it again:
-PATH=$HOME/.cargo/bin:/usr/local/go/bin:$HOME/.pixi/bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-```
-
-A box that has not had this done is not a neutral member of the pool: every job targets a bare `self-hosted` label, so an unprepared runner takes work it cannot complete and fails it. Provision first, then register.
+The workflows install nothing on that image: the first step of every cargo job stops the run naming any tool that is missing. A cargo suite keeps its build cache (its target directory, the cargo registry and the build scripts' tool cache in `~/.peppy/tmp`) on a sticky disk of its own, which RunsOn restores from the newest snapshot of the same branch, or of `dev` for a branch's first run, and snapshots again after the job.
 
 ### Build
 
