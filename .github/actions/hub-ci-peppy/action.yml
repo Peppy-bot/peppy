@@ -1,0 +1,102 @@
+name: Hub CI peppy
+description: >-
+  Gives a hub's CI job the peppy and the sibling hubs it runs against. A change
+  that spans several repositories lands as pull requests that share one head
+  branch name, the set name: each sibling hub runs at the head of its branch of
+  that name, or at the head of main when it has none, next to the checkout of
+  the hub under test. The peppy is the latest release, a peppy dev build or the
+  archive of a peppy release run (see PEPPY_BUILD_POLICY in resolve.py). The
+  action unpacks that peppy under RUNNER_TEMP and puts its bin on PATH, exports
+  PEPPY_HOME, and writes the repositories.json5 there that pins every hub of
+  the set. It starts no daemon. It reports the set to the job summary and to
+  the `set` output. It never waits: a peppy dev build that is not ready fails
+  the job with the way to go on.
+
+inputs:
+  hub-path:
+    description: The checkout of the hub under test.
+    default: ${{ github.workspace }}
+  set:
+    description: >-
+      An explicit set as JSON, which replaces the lookup by branch name:
+      {"hubs": {"<hub>": {"ref": "<label>", "commit": "<40 hex>"}}}. It names
+      every public hub, and the hub under test at the commit of its checkout.
+      private-nodes-hub is optional.
+    default: ""
+  peppy-run-id:
+    description: >-
+      The id of a peppy workflow run whose artifact
+      `archive-<arch>-unknown-linux-gnu` is the peppy to install, whatever the
+      policy.
+    default: ""
+  private-nodes-hub-deploy-key:
+    description: >-
+      The SSH deploy key of private-nodes-hub. Without it, private-nodes-hub is
+      left out of the set and the job summary says so.
+    default: ""
+  github-token:
+    description: The token for the GitHub REST API calls on peppy's workflow runs and artifacts.
+    default: ${{ github.token }}
+
+outputs:
+  set:
+    description: >-
+      The resolved set as compact JSON: {"name": <set name or null>, "peppy":
+      {"build": "latest-release" | "dev-build" | "release-run", "version":
+      "<peppy --version>", "source": "<download URL or run URL>"}, "hubs":
+      {"<hub>": {"ref": "<branch, label or checkout>", "commit": "<40 hex>"}}}.
+    value: ${{ steps.resolve.outputs.set }}
+  peppy-version:
+    description: What the installed `peppy --version` prints.
+    value: ${{ steps.resolve.outputs.peppy-version }}
+
+runs:
+  using: composite
+  steps:
+    # peppy authenticates ssh clones through the ssh-agent, so the agent's
+    # socket is exported through GITHUB_ENV: the resolution below reads the
+    # branch heads of private-nodes-hub through it, and so does the daemon a
+    # later step of the job starts. The agent is this job's own and dies with
+    # the runner.
+    #
+    # github.com's host key is pinned, not trusted on first sight: the scan
+    # must fingerprint exactly GitHub's published ed25519 key, or the job
+    # stops before any private bytes move. It lands in ~/.ssh/known_hosts,
+    # where libgit2, peppy's git transport, checks it.
+    - name: Give the daemon the private hub's deploy key
+      if: inputs.private-nodes-hub-deploy-key != ''
+      shell: bash
+      env:
+        PRIVATE_NODES_HUB_DEPLOY_KEY: ${{ inputs.private-nodes-hub-deploy-key }}
+      run: |
+        set -euo pipefail
+
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        scan="$(ssh-keyscan -t ed25519 github.com 2>/dev/null)"
+        fingerprint="$(ssh-keygen -lf - <<<"$scan" | awk '{print $2}')"
+        if [ "$fingerprint" != "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU" ]; then
+          echo "github.com fingerprints as $fingerprint, not GitHub's published ed25519 key" >&2
+          exit 1
+        fi
+        printf '%s\n' "$scan" >>~/.ssh/known_hosts
+
+        eval "$(ssh-agent -a "$RUNNER_TEMP/private-hub-agent.sock")" >/dev/null
+        key="$(mktemp "$RUNNER_TEMP/private-hub-key.XXXXXX")"
+        printf '%s\n' "${PRIVATE_NODES_HUB_DEPLOY_KEY%$'\n'}" >"$key"
+        chmod 600 "$key"
+        ssh-add "$key"
+        rm -f "$key"
+        echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >>"$GITHUB_ENV"
+
+    # Every value reaches the script through the environment rather than a
+    # `${{ }}` expansion in its source, so it is data the script parses.
+    - name: Resolve the set and install its peppy
+      id: resolve
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/resolve.py"
+      env:
+        INPUT_HUB_PATH: ${{ inputs.hub-path }}
+        INPUT_SET: ${{ inputs.set }}
+        INPUT_PEPPY_RUN_ID: ${{ inputs.peppy-run-id }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        PRIVATE_HUB_KEY_LOADED: ${{ inputs.private-nodes-hub-deploy-key != '' }}

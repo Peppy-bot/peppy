@@ -176,6 +176,17 @@ class Detection(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(selected(select(path)), {})
 
+    def test_the_hub_ci_action_gates_no_suite(self):
+        # The hubs' CI runs it, and no job of tests.yml does; the changes job
+        # runs its cases on every change.
+        for path in (
+            ".github/actions/hub-ci-peppy/action.yml",
+            ".github/actions/hub-ci-peppy/resolve.py",
+            ".github/actions/hub-ci-peppy/test_resolve.py",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(selected(select(path)), {})
+
     def test_the_workspace_manifests_run_the_suites_of_crates_alone(self):
         for path in ("Cargo.toml", "Cargo.lock", ".cargo/config.toml"):
             with self.subTest(path=path):

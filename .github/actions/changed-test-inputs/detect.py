@@ -61,19 +61,20 @@ WORKSPACE_SUITE = "workspace"
 #
 # The release scripts split across two of them because their two halves cost
 # orders of magnitude apart. The mocked half runs the whole tree in about a
-# second, so it is gated on the whole tree. The install half builds a release
-# archive and installs it on a fresh runner, so it is gated on the files that
-# decide what gets installed and how: a change to the release-notes drafter
-# or the docs gate cannot alter what install.sh does to a machine.
+# second, so it is gated on the whole tree. The install half installs a
+# release archive on a fresh runner, so it is gated on the files that decide
+# what gets installed and how: a change to the release-notes drafter or the
+# docs gate cannot alter what install.sh does to a machine.
 TREE_SUITES = {
     # pixi run test-fast
     "scripts": ["scripts/**"],
-    # The install-archive and install-script jobs. install.sh is what the
-    # runner runs; build_release.sh and build/build_release/cli produce the
-    # archive it installs (`build_release.sh --local --tag test`), with its
-    # build cache kept by the cargo-cache action; the install-test action,
-    # run_tests.sh, conftest and the two test modules are what drives it; and
-    # the manifests pin the pixi environment the tests run in.
+    # The install-script job, and the install-archive job on a push to main.
+    # install.sh is what the runner runs; build_release.sh and
+    # build/build_release/cli produce the archive it installs
+    # (`build_release.sh --local --tag dev-<commit>`), with its build cache
+    # kept by the cargo-cache action; the install-test action, run_tests.sh,
+    # conftest and the two test modules are what drives it; and the manifests
+    # pin the pixi environment the tests run in.
     "install_script": [
         "scripts/install.sh",
         "scripts/build_release.sh",
@@ -101,6 +102,9 @@ PEPPYLIB_PY = "peppylib-py"
 
 # The outputs each conditionally-run job of tests.yml reads. A job all of
 # whose outputs came out empty or false is skipped, and the report says so.
+# install-archive is not here: it builds the peppy dev build of every pull
+# request and of every push to dev whatever changed, and reads the
+# install_script gate on a push to main alone.
 JOBS = {
     "workspace-tests": [WORKSPACE_SUITE],
     "container-e2e": ["container_e2e"],
@@ -108,7 +112,6 @@ JOBS = {
     "docs-integration": ["docs_integration"],
     "cross-check": ["cross_check"],
     "release-scripts": ["scripts"],
-    "install-archive": ["install_script"],
     "install-script": ["install_script"],
     "peppy-shared": ["peppy_shared_packages", "peppy_shared_peppylib_py"],
 }
@@ -120,7 +123,9 @@ JOBS = {
 # suites that build with it (and the cargo-cache action again for the install
 # suite, whose archive build keeps its cache there), the detection itself is
 # tested by the changes job before it is trusted and changes what runs rather
-# than how a suite runs, and release-host-env belongs to the release workflow.
+# than how a suite runs, release-host-env belongs to the release workflow, and
+# hub-ci-peppy is the action of the hubs' CI, whose cases the changes job runs
+# on every change.
 CI_INPUTS = [
     ".github/workflows/tests.yml",
     ".github/runs-on.yml",

@@ -104,6 +104,16 @@ jobs:
             --start-directory .github/actions/changed-test-inputs \
             --pattern 'test_*.py' --verbose
 
+      # The hubs' CI resolves the peppy and the hubs it runs against with the
+      # hub-ci-peppy action. Its cases read files of this repository besides
+      # the action (the defaults peppy bundles, and the workflows that upload
+      # the archives the action installs), so they run on every change.
+      - name: Test the hub CI peppy resolution
+        run: |
+          python3 -m unittest discover \
+            --start-directory .github/actions/hub-ci-peppy \
+            --pattern 'test_*.py' --verbose
+
       - name: Detect changed test inputs
         id: changes
         uses: ./.github/actions/changed-test-inputs
@@ -224,9 +234,9 @@ jobs:
   # The release scripts test in two halves because they cost orders of
   # magnitude apart. This job runs the mocked tests, about a second for all of
   # them, on any change under scripts/. The install.sh tests need a release
-  # archive and a fresh machine, so they run in install-archive and
-  # install-script, gated on the far narrower set of files that decide what
-  # gets installed and how.
+  # archive and a fresh machine, so they run in install-script, on the archive
+  # install-archive builds, gated on the far narrower set of files that decide
+  # what gets installed and how.
   release-scripts:
     needs: changes
     if: needs.changes.outputs.scripts == 'true'
@@ -246,14 +256,23 @@ jobs:
       - name: Run the mocked release scripts tests
         run: ./scripts/run_tests.sh -m 'not install'
 
-  # Builds the release archive the install.sh tests install, from this
-  # change, the way a release host builds it, with the release target
-  # directory, the cargo registry and the tool cache on the job's sticky disk.
-  # The job that installs the archive needs the stock Ubuntu image, so the
-  # two are separate jobs.
+  # Builds the release archive of this change for x86_64 Linux, the way a
+  # release host builds it, with the release target directory, the cargo
+  # registry and the tool cache on the job's sticky disk. The archive is the
+  # peppy dev build of the commit, versioned `dev-<first 12 characters of the
+  # commit>`. install-script installs it with install.sh, and the hub-ci-peppy
+  # action, which the hubs' CI runs, installs it as the peppy of a set when
+  # its policy is dev builds (PEPPY_BUILD_POLICY in its resolve.py). The job
+  # that installs the archive here needs the stock Ubuntu image, so the two
+  # are separate jobs.
+  #
+  # It runs on every pull request and on every push to dev: the action finds
+  # the dev build of a peppy branch by the commit at its head, and takes the
+  # one of the head of dev for a set that has no peppy branch. A push to main
+  # builds it for install-script alone, when the install inputs changed.
   install-archive:
     needs: changes
-    if: needs.changes.outputs.install_script == 'true'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/dev' || needs.changes.outputs.install_script == 'true'
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=install-archive:50gb  # custom Peppy AMI
     permissions:
       contents: read
@@ -270,17 +289,27 @@ jobs:
         with:
           suite: install-archive
 
+      # The version names the head commit of a pull request, the commit its
+      # branch is at, which is what the action looks the build up by. For a
+      # pull request the checkout, like github.sha, is the merge commit GitHub
+      # makes for the run.
       - name: Build the release archive of this runner's platform
-        run: ./scripts/build_release.sh --local --tag test
+        env:
+          HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ./scripts/build_release.sh --local --tag "dev-${HEAD_COMMIT:0:12}"
 
       # The installing job runs on ubuntu-24.04, so this runner must build the
       # x86_64 archive; a runner of another architecture fails here, by name.
+      # A build of a push to dev is kept 90 days: under the dev builds
+      # policy, every hub pull request without a peppy branch of its name
+      # takes the dev build of the head of dev, and dev can go more than 14
+      # days without a push.
       - uses: actions/upload-artifact@v7
         with:
-          name: install-archive
+          name: peppy-dev-x86_64-unknown-linux-gnu
           path: dist/peppy-x86_64-unknown-linux-gnu.tgz
           if-no-files-found: error
-          retention-days: 1
+          retention-days: ${{ github.ref == 'refs/heads/dev' && 90 || 14 }}
 
   # Installs that archive with this change's install.sh on a fresh Ubuntu
   # x86_64 runner, and runs the container path of install.sh in Docker (see
@@ -288,7 +317,8 @@ jobs:
   # every platform before it publishes; this job is the early warning for
   # the one platform a pull request can build cheaply.
   install-script:
-    needs: install-archive
+    needs: [changes, install-archive]
+    if: needs.changes.outputs.install_script == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -301,7 +331,7 @@ jobs:
 
       - uses: ./.github/actions/install-test
         with:
-          archive: install-archive
+          archive: peppy-dev-x86_64-unknown-linux-gnu
 
   # The sealed peppy-shared tree: the cargo packages of its workspace together
   # with the peppylib Python bindings built from them. It runs the units the
