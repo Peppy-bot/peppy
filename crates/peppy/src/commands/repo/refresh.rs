@@ -16,11 +16,11 @@ use peppylib::core_node::transport::send_goal;
 const IDLE_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 3600;
 
-pub(super) fn repo_refresh(ctx: &Arc<AppContext>) -> Result<()> {
-    crate::commands::block_on(repo_refresh_async(ctx))
+pub(super) fn repo_refresh(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
+    crate::commands::block_on(repo_refresh_async(ctx, strict))
 }
 
-async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
+async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     let mut action_handle = send_goal(
@@ -92,15 +92,25 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
         result.total_mcp_exposures_found
     );
 
-    // A repository that could not be read is not a failed command: every
-    // other repository updated, and this one still serves the entries it
-    // last published. Naming it and naming the retry is the whole
-    // response, and it is what lets an install finish on a hub that was
-    // briefly unreachable rather than stopping there.
-    if !result.failure_report.is_empty() {
-        warn!("{}", result.failure_report);
-        warn!("Run `peppy repo refresh` again to pick those repositories up.");
+    if result.failure_report.is_empty() {
+        return Ok(());
     }
+    // With `--strict`, the report is the error: a CI job or a release
+    // check stops here, at the refresh, rather than later in a test that
+    // fails for want of what this repository publishes.
+    if strict {
+        return Err(Error::ExecutionFailed(format!(
+            "{}\nThe refresh ran with --strict, so a repository that could not be read fails it.",
+            result.failure_report
+        )));
+    }
+    // Otherwise a repository that could not be read is not a failed
+    // command: every other repository updated, and this one still serves
+    // the entries it last published. Naming it and naming the retry is the
+    // whole response, and it is what lets an install finish on a hub that
+    // was briefly unreachable rather than stopping there.
+    warn!("{}", result.failure_report);
+    warn!("Run `peppy repo refresh` again to pick those repositories up.");
     Ok(())
 }
 

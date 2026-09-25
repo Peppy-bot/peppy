@@ -1,13 +1,14 @@
 use super::common::setup;
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
+use peppy::test_support::ServeCommandEmulation;
 
 #[test]
 fn repo_refresh_succeeds_with_default_repos() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
     let result = RepoCommand {
-        command: RepoCommands::Refresh,
+        command: RepoCommands::Refresh { strict: false },
     }
     .execute(&ctx);
 
@@ -46,7 +47,7 @@ fn repo_refresh_succeeds_after_adding_fs_repo() {
     std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
 
     let result = RepoCommand {
-        command: RepoCommands::Refresh,
+        command: RepoCommands::Refresh { strict: false },
     }
     .execute(&ctx);
 
@@ -57,16 +58,13 @@ fn repo_refresh_succeeds_after_adding_fs_repo() {
     );
 }
 
-/// A repository that cannot be read does not fail the command. The
-/// installer runs `repo refresh` as its last step, so a hub that is
-/// offline, or a repository root with no committed
-/// `peppy_repository.json5`, would otherwise end an install that had
-/// worked up to that point. The command reports what it could not read
-/// and leaves the user with a retry.
-#[test]
-fn repo_refresh_succeeds_when_a_repository_cannot_be_read() {
-    let (_rt, serve, ctx, _work_dir) = setup();
-
+/// Configures three fs repositories: one that reads, one that never
+/// published an index, and one whose path does not exist. Returns the
+/// readable repository's directory (kept alive by the caller) and the
+/// missing repository's path.
+fn seed_one_readable_and_two_unreadable_repositories(
+    serve: &ServeCommandEmulation,
+) -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
     let healthy = tempfile::tempdir().expect("temp node dir");
     std::fs::write(
         healthy.path().join("peppy.json5"),
@@ -92,18 +90,32 @@ fn repo_refresh_succeeds_when_a_repository_cannot_be_read() {
     )
     .expect("write peppy.json5");
 
+    let never_mounted = serve.temp_dir().join("never_mounted");
     let conf_dir = serve.temp_dir().join("conf");
     std::fs::create_dir_all(&conf_dir).expect("create conf dir");
     let repos_content = serde_json::to_string_pretty(&serde_json::json!([
         { "id": 1, "type": "fs", "path": healthy.path().to_string_lossy() },
         { "id": 2, "type": "fs", "path": unpublished.path().to_string_lossy() },
-        { "id": 3, "type": "fs", "path": serve.temp_dir().join("never_mounted").to_string_lossy() },
+        { "id": 3, "type": "fs", "path": never_mounted.to_string_lossy() },
     ]))
     .expect("serialize repos");
     std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+    (healthy, unpublished, never_mounted)
+}
+
+/// A repository that cannot be read does not fail the command. The
+/// installer runs `repo refresh` as its last step, so a hub that is
+/// offline, or a repository root with no committed
+/// `peppy_repository.json5`, would otherwise end an install that had
+/// worked up to that point. The command reports what it could not read
+/// and leaves the user with a retry.
+#[test]
+fn repo_refresh_succeeds_when_a_repository_cannot_be_read() {
+    let (_rt, serve, ctx, _work_dir) = setup();
+    let _repositories = seed_one_readable_and_two_unreadable_repositories(&serve);
 
     let result = RepoCommand {
-        command: RepoCommands::Refresh,
+        command: RepoCommands::Refresh { strict: false },
     }
     .execute(&ctx);
 
@@ -122,6 +134,39 @@ fn repo_refresh_succeeds_when_a_repository_cannot_be_read() {
         cache.contains("reachable_node"),
         "the readable repository still updated:\n{cache}"
     );
+}
+
+/// With `--strict`, the same failures fail the command, and its error is
+/// the report that names each repository it could not read. The
+/// repositories that did read still update.
+#[test]
+fn repo_refresh_strict_fails_naming_each_repository_it_could_not_read() {
+    let (_rt, serve, ctx, _work_dir) = setup();
+    let (_healthy, unpublished, never_mounted) =
+        seed_one_readable_and_two_unreadable_repositories(&serve);
+
+    let error = RepoCommand {
+        command: RepoCommands::Refresh { strict: true },
+    }
+    .execute(&ctx)
+    .expect_err("--strict fails when a repository cannot be read")
+    .to_string();
+
+    assert!(
+        error.contains("2 of the configured repositories could not be updated"),
+        "{error}"
+    );
+    for missing in [unpublished.path(), never_mounted.as_path()] {
+        assert!(
+            error.contains(&format!("({})", missing.display())),
+            "the error names {}: {error}",
+            missing.display()
+        );
+    }
+    let peppy_dirs = daemon_config::consts::PeppyDirs::new(serve.temp_dir());
+    let cache = std::fs::read_to_string(core_node::nodes_repo_cache_path(&peppy_dirs))
+        .expect("the node cache should be published");
+    assert!(cache.contains("reachable_node"), "{cache}");
 }
 
 /// A `pairing/v1` document in an fs repo is discovered by `repo refresh`

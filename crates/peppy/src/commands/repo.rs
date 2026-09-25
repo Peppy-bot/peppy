@@ -114,8 +114,18 @@ pub enum RepoCommands {
         json: bool,
     },
     /// Update repository indexes
+    ///
+    /// A repository that cannot be read does not fail the command: it keeps
+    /// the entries it last published, every other repository updates, and
+    /// the command names it in a report. With `--strict`, the same report
+    /// fails the command, for CI and release checks that must not go on with
+    /// a repository they could not read.
     #[clap(alias = "update")]
-    Refresh,
+    Refresh {
+        /// Fail when any repository could not be read.
+        #[arg(long)]
+        strict: bool,
+    },
     /// Add a new repository
     Add {
         /// Repository source.
@@ -185,7 +195,7 @@ impl Command for RepoCommand {
             RepoCommands::List => list::list_repos(ctx),
             RepoCommands::Search { query, json } => search::repo_search(&query, json),
             RepoCommands::Show { query, json } => show::repo_show(&query, json),
-            RepoCommands::Refresh => refresh::repo_refresh(ctx),
+            RepoCommands::Refresh { strict } => refresh::repo_refresh(ctx, strict),
             RepoCommands::Add {
                 source,
                 git_ref,
