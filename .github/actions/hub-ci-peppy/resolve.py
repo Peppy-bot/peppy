@@ -16,19 +16,14 @@ any daemon starts. It reports the set to the job summary and to the action's
 `set` output.
 
 The peppy release (.github/workflows/parallel-release.yml) runs its
-subcommands, which read and check the set of hub commits the release tests
-and then tags:
-
-- `release-tags --tag <version>` lists the hubs that already carry the hub tag
-  of the version, `peppy-release/<version>`.
-- `release-set --tag <version> --output <file>` records the release set: each
-  hub at the commit of that tag where it carries it, and at the head of `main`
-  where it does not.
-- `release-repositories --set <file> --peppy-home <dir>` writes the
-  repositories.json5 that pins every hub of a release set.
-- `release-index-checks --set <file> --dir <dir>` checks out every hub of a
-  release set at its commit and checks its repository index with the peppy on
-  PATH.
+subcommand `release-set --tag <version> --output <file>`, which records the
+set of hub commits the release tests and then tags: each hub at the commit of
+its tag of the version, `peppy-release/<version>`, where it carries it, and at
+the head of `main` where it does not. The step's `hubs` output names the hubs
+of that set. The release scripts (scripts/functions/hub_ci.py) load this
+module for everything else they know of the hubs: the hub list, the parser of
+a release set, the hub tag of a release, the grammar of a release version,
+and the checks of a hub at its commit.
 
 The decisions are pure functions of their inputs (the event, the refs
 `git ls-remote` reports, the REST responses), tested in test_resolve.py. The
@@ -39,6 +34,7 @@ reads its outputs from. Standard library only: it runs on the runner's python3.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -287,22 +283,20 @@ def hub_is_readable(hub: Hub, private_key_loaded: bool) -> bool:
     return hub.visibility is Visibility.PUBLIC or private_key_loaded
 
 
-def sibling_hubs(under_test: Hub, private_key_loaded: bool) -> list[Hub]:
-    """The hubs this job runs next to its checkout, by repository id."""
-    return [
-        hub
-        for hub in HUBS
-        if hub is not under_test and hub_is_readable(hub, private_key_loaded)
-    ]
-
-
-def unreadable_hubs(under_test: Hub, private_key_loaded: bool) -> list[Hub]:
-    """The hubs left out of the set for want of the deploy key."""
-    return [
-        hub
-        for hub in HUBS
-        if hub is not under_test and not hub_is_readable(hub, private_key_loaded)
-    ]
+def sibling_hubs(
+    under_test: Hub, private_key_loaded: bool
+) -> tuple[list[Hub], list[Hub]]:
+    """The hubs next to the hub under test, by repository id: those this job
+    reads, and those it leaves out of the set for want of the deploy key."""
+    readable, unreadable = [], []
+    for hub in HUBS:
+        if hub is under_test:
+            continue
+        if hub_is_readable(hub, private_key_loaded):
+            readable.append(hub)
+        else:
+            unreadable.append(hub)
+    return readable, unreadable
 
 
 def branches_to_look_up(fallback: str, set_name: str | None) -> list[str]:
@@ -360,14 +354,9 @@ def choose_hubs_by_branch(
 
     `heads_by_hub` holds the branch heads of every sibling hub.
     """
-    siblings = [
-        choose_sibling(hub, set_name, heads_by_hub[hub])
-        for hub in sibling_hubs(under_test, private_key_loaded)
-    ]
-    notes = [
-        no_deploy_key_note(hub, set_name)
-        for hub in unreadable_hubs(under_test, private_key_loaded)
-    ]
+    readable, unreadable = sibling_hubs(under_test, private_key_loaded)
+    siblings = [choose_sibling(hub, set_name, heads_by_hub[hub]) for hub in readable]
+    notes = [no_deploy_key_note(hub, set_name) for hub in unreadable]
     return HubSet(
         name=set_name,
         hubs=ordered([checkout_hub(under_test, checkout_commit), *siblings]),
@@ -511,17 +500,21 @@ def choose_hubs_from_explicit_set(
 HUB_RELEASE_TAG_PREFIX = "peppy-release/"
 
 # The one form of version a peppy release publishes and a peppy binary reads
-# hub tags for: v<MAJOR>.<MINOR>.<PATCH>, with digits only in each part.
+# hub tags for (`PeppyBuild::from_git_tag` in peppy-shared/core-node-api):
+# v<MAJOR>.<MINOR>.<PATCH>, with digits only in each part.
 RELEASE_VERSION_PATTERN = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 
 
 def parse_release_version(text: str) -> str:
+    """The release version `text` names, surrounding whitespace dropped."""
     version = text.strip()
     if not RELEASE_VERSION_PATTERN.fullmatch(version):
         raise ResolveError(
             f"`{text}` is not a peppy release version: a release is "
             "v<MAJOR>.<MINOR>.<PATCH>, with digits only in each part (example "
-            "v0.31.2)"
+            "v0.31.2). Every published peppy binary reads the hub tags "
+            f"{HUB_RELEASE_TAG_PREFIX}<its version>, and a binary of any other "
+            "version reads the hubs' main instead of what the release tested."
         )
     return version
 
@@ -651,9 +644,10 @@ def parse_release_set(text: str) -> HubSet:
     )
 
 
-def index_check_command(hub: Hub, checkout: Path) -> list[str]:
-    """The check of the repository index of `hub`, checked out at `checkout`."""
-    return ["peppy", "repo", "index", str(checkout), "--check", *hub.index_arguments]
+def index_check_arguments(hub: Hub, checkout: Path) -> list[str]:
+    """The arguments of `peppy` that check the repository index of `hub`,
+    checked out at `checkout`."""
+    return ["repo", "index", str(checkout), "--check", *hub.index_arguments]
 
 
 def release_set_summary(version: str, hub_set: HubSet) -> str:
@@ -673,23 +667,10 @@ def release_set_summary(version: str, hub_set: HubSet) -> str:
     return "\n".join(lines) + "\n"
 
 
-def release_tags_summary(version: str, hub_set: HubSet) -> str:
-    """The job summary of `release-tags`: the hubs that already carry the tag
-    of `version`, which every run of `version` tests at the tagged commit."""
-    tag = hub_release_tag(version)
-    heading = f"### The hubs that carry `{tag}`"
-    tagged = tagged_hubs(hub_set.hubs)
-    if not tagged:
-        return (
-            f"{heading}\n\nNo hub carries `{tag}`: a run of {version} tests every "
-            f"hub at the head of `{HUB_MAIN_BRANCH}`.\n"
-        )
-    lines = [heading, "", "| Hub | Commit |", "| --- | --- |"]
-    lines.extend(
-        f"| {resolved.hub.name} | `{resolved.commit}` |" for resolved in tagged
-    )
-    lines.extend(["", release_tag_note(version, tagged)])
-    return "\n".join(lines) + "\n"
+def hub_names(hub_set: HubSet) -> str:
+    """The hubs of a set, comma-separated: the `repositories` of a token that
+    reaches every one of them."""
+    return ",".join(resolved.hub.name for resolved in hub_set.hubs)
 
 
 # The choice of the peppy build -----------------------------------------------
@@ -847,14 +828,21 @@ def release_run_artifact(
 
 
 @dataclass(frozen=True)
-class InstalledPeppy:
+class PeppyBuild:
+    """The peppy build a job installs, and where it comes from."""
+
     kind: PeppyBuildKind
-    # `peppy --version`.
-    version: str
     # The download URL, or the URL of the run the archive comes from.
     source: str
     # What the build is, for the job summary.
     description: str
+
+
+@dataclass(frozen=True)
+class InstalledPeppy:
+    build: PeppyBuild
+    # `peppy --version`.
+    version: str
 
 
 # What the job is given -------------------------------------------------------
@@ -912,9 +900,9 @@ def set_output(hub_set: HubSet, peppy: InstalledPeppy) -> dict:
     return {
         "name": hub_set.name,
         "peppy": {
-            "build": peppy.kind.value,
+            "build": peppy.build.kind.value,
             "version": peppy.version,
-            "source": peppy.source,
+            "source": peppy.build.source,
         },
         "hubs": hubs_document(hub_set),
     }
@@ -961,7 +949,8 @@ def summary_markdown(
         "",
         heading,
         "",
-        f"**peppy**: `{peppy.version}`, {peppy.description} ({peppy.source})",
+        f"**peppy**: `{peppy.version}`, {peppy.build.description} "
+        f"({peppy.build.source})",
         "",
         *hub_table(hub_set),
     ]
@@ -986,17 +975,19 @@ def git_environment() -> dict[str, str]:
     }
 
 
-def ls_remote(url: str, patterns: Sequence[str]) -> str:
-    """What `git ls-remote` reports for `patterns` in the repository at `url`."""
+def run_git(arguments: Sequence[str]) -> str:
+    """What `git <arguments>` prints; a git that fails stops the job."""
     result = subprocess.run(
-        ["git", "ls-remote", url, *patterns],
-        capture_output=True,
-        text=True,
-        env=git_environment(),
+        ["git", *arguments], capture_output=True, text=True, env=git_environment()
     )
     if result.returncode != 0:
-        raise ResolveError(f"git ls-remote {url} failed: {result.stderr.strip()}")
+        raise ResolveError(f"git {' '.join(arguments)} failed: {result.stderr.strip()}")
     return result.stdout
+
+
+def ls_remote(url: str, patterns: Sequence[str]) -> str:
+    """What `git ls-remote` reports for `patterns` in the repository at `url`."""
+    return run_git(["ls-remote", url, *patterns])
 
 
 def ls_remote_heads(url: str, branches: Sequence[str]) -> dict[str, str]:
@@ -1040,15 +1031,6 @@ def read_release_set_file(path: Path) -> HubSet:
     return parse_release_set(text)
 
 
-def run_git(arguments: Sequence[str]) -> str:
-    result = subprocess.run(
-        ["git", *arguments], capture_output=True, text=True, env=git_environment()
-    )
-    if result.returncode != 0:
-        raise ResolveError(f"git {' '.join(arguments)} failed: {result.stderr.strip()}")
-    return result.stdout
-
-
 def check_out_commit(resolved: ResolvedHub, destination: Path) -> None:
     """Check out `resolved` at its commit in `destination`, fetching that commit
     alone, whatever branch or tag holds it now."""
@@ -1077,12 +1059,7 @@ def check_out_commit(resolved: ResolvedHub, destination: Path) -> None:
 
 
 def checkout_head(hub_path: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", hub_path, "rev-parse", "HEAD"], capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        raise ResolveError(f"{hub_path} is not a git checkout: {result.stderr.strip()}")
-    return result.stdout.strip()
+    return run_git(["-C", hub_path, "rev-parse", "HEAD"]).strip()
 
 
 def github_request(url: str, token: str) -> urllib.request.Request:
@@ -1105,40 +1082,37 @@ def github_request(url: str, token: str) -> urllib.request.Request:
     return request
 
 
+def open_url(
+    request: urllib.request.Request, timeout: float, action: str
+) -> http.client.HTTPResponse:
+    """The response to `request`. A request that fails stops the job, the
+    message naming `action`."""
+    try:
+        return urllib.request.urlopen(request, timeout=timeout)
+    except urllib.error.HTTPError as error:
+        raise ResolveError(
+            f"{action} failed: HTTP {error.code} {error.reason}"
+        ) from error
+    except urllib.error.URLError as error:
+        raise ResolveError(f"{action} failed: {error.reason}") from error
+
+
 def github_get_json(path: str, query: Mapping[str, object], token: str) -> dict:
     url = f"{GITHUB_API}{path}"
     if query:
         url = f"{url}?{urllib.parse.urlencode(query)}"
-    try:
-        with urllib.request.urlopen(
-            github_request(url, token), timeout=API_TIMEOUT_SECONDS
-        ) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as error:
-        raise ResolveError(
-            f"GET {url} failed: HTTP {error.code} {error.reason}"
-        ) from error
-    except urllib.error.URLError as error:
-        raise ResolveError(f"GET {url} failed: {error.reason}") from error
+    request = github_request(url, token)
+    with open_url(request, API_TIMEOUT_SECONDS, f"GET {url}") as response:
+        return json.load(response)
 
 
 def download(request: urllib.request.Request, destination: Path) -> None:
-    try:
-        with (
-            urllib.request.urlopen(
-                request, timeout=DOWNLOAD_TIMEOUT_SECONDS
-            ) as response,
-            destination.open("wb") as file,
-        ):
-            shutil.copyfileobj(response, file)
-    except urllib.error.HTTPError as error:
-        raise ResolveError(
-            f"downloading {request.full_url} failed: HTTP {error.code} {error.reason}"
-        ) from error
-    except urllib.error.URLError as error:
-        raise ResolveError(
-            f"downloading {request.full_url} failed: {error.reason}"
-        ) from error
+    action = f"downloading {request.full_url}"
+    with (
+        open_url(request, DOWNLOAD_TIMEOUT_SECONDS, action) as response,
+        destination.open("wb") as file,
+    ):
+        shutil.copyfileobj(response, file)
 
 
 def run_artifacts(run_id: int, name: str, token: str) -> list[Artifact]:
@@ -1170,10 +1144,8 @@ def download_artifact_archive(
 
 @dataclass(frozen=True)
 class FetchedPeppy:
-    kind: PeppyBuildKind
+    build: PeppyBuild
     archive: Path
-    source: str
-    description: str
 
 
 def fetch_latest_release(arch: Arch, work_dir: Path) -> FetchedPeppy:
@@ -1181,7 +1153,7 @@ def fetch_latest_release(arch: Arch, work_dir: Path) -> FetchedPeppy:
     archive = work_dir / arch.archive_name
     download(urllib.request.Request(url, headers={"User-Agent": USER_AGENT}), archive)
     return FetchedPeppy(
-        PeppyBuildKind.LATEST_RELEASE, archive, url, "the latest release"
+        PeppyBuild(PeppyBuildKind.LATEST_RELEASE, url, "the latest release"), archive
     )
 
 
@@ -1201,10 +1173,12 @@ def fetch_dev_build(set_name: str | None, token: str, work_dir: Path) -> Fetched
     )
     archive = download_artifact_archive(artifact, Arch.X86_64, token, work_dir)
     return FetchedPeppy(
-        PeppyBuildKind.DEV_BUILD,
+        PeppyBuild(
+            PeppyBuildKind.DEV_BUILD,
+            run.url,
+            f"the dev build of peppy branch `{branch}` at `{commit}`",
+        ),
         archive,
-        run.url,
-        f"the dev build of peppy branch `{branch}` at `{commit}`",
     )
 
 
@@ -1216,7 +1190,10 @@ def fetch_release_run(
     artifact = release_run_artifact(url, run_artifacts(run_id, name, token), name)
     archive = download_artifact_archive(artifact, arch, token, work_dir)
     return FetchedPeppy(
-        PeppyBuildKind.RELEASE_RUN, archive, url, "the archive of a peppy release run"
+        PeppyBuild(
+            PeppyBuildKind.RELEASE_RUN, url, "the archive of a peppy release run"
+        ),
+        archive,
     )
 
 
@@ -1366,10 +1343,8 @@ def resolve_hub_set(inputs: ActionInputs, checkout_commit: str) -> HubSet:
         )
     set_name = inputs.trigger.set_name
     branches = branches_to_look_up(HUB_MAIN_BRANCH, set_name)
-    heads_by_hub = {
-        hub: ls_remote_heads(hub.clone_url, branches)
-        for hub in sibling_hubs(inputs.under_test, inputs.private_key_loaded)
-    }
+    readable, _ = sibling_hubs(inputs.under_test, inputs.private_key_loaded)
+    heads_by_hub = {hub: ls_remote_heads(hub.clone_url, branches) for hub in readable}
     return choose_hubs_by_branch(
         inputs.under_test,
         checkout_commit,
@@ -1408,12 +1383,7 @@ def install_peppy(
     peppy = unpack_peppy(fetched.archive, dist_dir)
     shutil.rmtree(work_dir)
     append_to_runner_file("GITHUB_PATH", f"{dist_dir / 'bin'}\n")
-    return InstalledPeppy(
-        kind=fetched.kind,
-        version=peppy_version(peppy),
-        source=fetched.source,
-        description=fetched.description,
-    )
+    return InstalledPeppy(build=fetched.build, version=peppy_version(peppy))
 
 
 def write_repositories_file(peppy_home: Path, text: str) -> None:
@@ -1437,7 +1407,7 @@ def report_set(
 ) -> None:
     """Write the set to the log, the action's outputs and the job summary."""
     resolved_set = compact_json(set_output(hub_set, installed))
-    print(f"Installed {installed.version} ({installed.source})")
+    print(f"Installed {installed.version} ({installed.build.source})")
     print(f"set: {resolved_set}")
     append_to_runner_file(
         "GITHUB_OUTPUT", f"set={resolved_set}\npeppy-version={installed.version}\n"
@@ -1453,7 +1423,7 @@ def report_set(
             hub_set,
             installed,
             set_explanation,
-            peppy_build_notes(installed.kind, inputs.trigger.from_fork),
+            peppy_build_notes(installed.build.kind, inputs.trigger.from_fork),
         ),
     )
 
@@ -1469,56 +1439,20 @@ def run(inputs: ActionInputs) -> None:
     report_set(hub_set, installed, inputs)
 
 
-# The release subcommands -----------------------------------------------------
-
-
-def run_release_tags(version: str) -> None:
-    """List, in the log and the job summary, the hubs that already carry the
-    tag of `version`."""
-    summary = release_tags_summary(version, read_release_set(version))
-    print(summary, end="")
-    append_to_runner_file("GITHUB_STEP_SUMMARY", summary)
+# The release subcommand ------------------------------------------------------
 
 
 def run_release_set(version: str, output: Path) -> None:
-    """Record the release set of `version` in `output`, and report it in the
-    log and the job summary."""
+    """Record the release set of `version` in `output`, name its hubs in the
+    step's `hubs` output, and report it in the log and the job summary."""
     hub_set = read_release_set(version)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(release_set_document(hub_set), indent=2) + "\n")
+    append_to_runner_file("GITHUB_OUTPUT", f"hubs={hub_names(hub_set)}\n")
     summary = release_set_summary(version, hub_set)
     print(summary, end="")
     print(f"set: {compact_json(release_set_document(hub_set))}")
     append_to_runner_file("GITHUB_STEP_SUMMARY", summary)
-
-
-def run_release_repositories(set_path: Path, peppy_home: Path) -> None:
-    write_repositories_file(
-        peppy_home, release_repositories_file(read_release_set_file(set_path))
-    )
-
-
-def run_release_index_checks(set_path: Path, directory: Path) -> None:
-    """Check the repository index of every hub of the release set, at its
-    commit. Every hub is checked, and the failure names each one that
-    failed."""
-    hub_set = read_release_set_file(set_path)
-    require_private_hub_key(agent_holds_a_key())
-    failed = []
-    for resolved in hub_set.hubs:
-        checkout = directory / resolved.hub.name
-        check_out_commit(resolved, checkout)
-        command = index_check_command(resolved.hub, checkout)
-        print(
-            f"{resolved.hub.name} at {resolved.commit}: {' '.join(command)}", flush=True
-        )
-        if subprocess.run(command).returncode != 0:
-            failed.append(resolved.hub.name)
-    if failed:
-        raise ResolveError(
-            f"the repository index check of {', '.join(failed)} failed at the "
-            "commit of the release set; the log above says why"
-        )
 
 
 # The command line ------------------------------------------------------------
@@ -1528,49 +1462,20 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Without a subcommand, what the hub-ci-peppy action runs: the set "
-            "of a hub's CI job, and its peppy. The subcommands serve the peppy "
+            "of a hub's CI job, and its peppy. The subcommand serves the peppy "
             "release."
         )
     )
     commands = parser.add_subparsers(dest="command", metavar="subcommand")
-    release_tags = commands.add_parser(
-        "release-tags",
-        help="List the hubs that already carry the hub tag of a peppy release.",
-    )
     release_set = commands.add_parser(
         "release-set",
         help="Record the hub commits a peppy release tests and tags.",
     )
-    for command in (release_tags, release_set):
-        command.add_argument(
-            "--tag", required=True, help="The peppy release (example v0.31.2)."
-        )
+    release_set.add_argument(
+        "--tag", required=True, help="The peppy release (example v0.31.2)."
+    )
     release_set.add_argument(
         "--output", required=True, type=Path, help="Where to write the release set."
-    )
-    release_repositories = commands.add_parser(
-        "release-repositories",
-        help="Write the repositories.json5 that pins every hub of a release set.",
-    )
-    release_index_checks = commands.add_parser(
-        "release-index-checks",
-        help="Check the repository index of every hub of a release set.",
-    )
-    for command in (release_repositories, release_index_checks):
-        command.add_argument(
-            "--set", required=True, type=Path, help="The release set to read."
-        )
-    release_repositories.add_argument(
-        "--peppy-home",
-        required=True,
-        type=Path,
-        help="The data root of the daemon; the file goes to its conf directory.",
-    )
-    release_index_checks.add_argument(
-        "--dir",
-        required=True,
-        type=Path,
-        help="Where to check out each hub, in a directory named after it.",
     )
     return parser.parse_args(argv)
 
@@ -1579,14 +1484,8 @@ def run_command(arguments: argparse.Namespace) -> None:
     match arguments.command:
         case None:
             run(inputs_from_environment())
-        case "release-tags":
-            run_release_tags(parse_release_version(arguments.tag))
         case "release-set":
             run_release_set(parse_release_version(arguments.tag), arguments.output)
-        case "release-repositories":
-            run_release_repositories(arguments.set, arguments.peppy_home)
-        case "release-index-checks":
-            run_release_index_checks(arguments.set, arguments.dir)
 
 
 def main(argv: Sequence[str]) -> int:

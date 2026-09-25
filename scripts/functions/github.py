@@ -57,6 +57,11 @@ class RepoSlug:
     def full(self) -> str:
         return f"{self.owner}/{self.repo}"
 
+    @property
+    def api_url(self) -> str:
+        """The root of the repository's endpoints in the GitHub REST API."""
+        return f"https://api.github.com/repos/{self.full}"
+
 
 @dataclass(frozen=True)
 class ReleaseInfo:
@@ -390,10 +395,7 @@ def delete_asset_if_exists(
     Lists all assets for the release, finds one matching asset_name,
     and DELETEs it. No-op if the asset doesn't exist.
     """
-    assets_url = (
-        f"https://api.github.com/repos/{slug.full}/releases/{release_id}/assets"
-    )
-    assets = github_api(client, "GET", assets_url)
+    assets = github_api(client, "GET", f"{slug.api_url}/releases/{release_id}/assets")
 
     if not isinstance(assets, list):
         return
@@ -402,7 +404,7 @@ def delete_asset_if_exists(
         if isinstance(asset, dict) and asset.get("name") == asset_name:
             asset_id = asset.get("id")
             if asset_id is not None:
-                delete_url = f"https://api.github.com/repos/{slug.full}/releases/assets/{asset_id}"
+                delete_url = f"{slug.api_url}/releases/assets/{asset_id}"
                 github_api(client, "DELETE", delete_url)
             break
 
@@ -434,7 +436,7 @@ def find_draft_releases(
         releases = github_api(
             client,
             "GET",
-            f"https://api.github.com/repos/{slug.full}/releases"
+            f"{slug.api_url}/releases"
             f"?per_page={_RELEASES_PAGE_SIZE}&page={page}",
         )
         if not isinstance(releases, list):
@@ -464,7 +466,7 @@ def delete_draft_release(
     GitHub, so the release a failure cleans up may already be live; that one
     is left alone. Returns True when the draft was deleted.
     """
-    url = f"https://api.github.com/repos/{slug.full}/releases/{release_id}"
+    url = f"{slug.api_url}/releases/{release_id}"
     release = github_api(client, "GET", url)
     if not isinstance(release, dict):
         raise ReleaseError(
@@ -482,7 +484,7 @@ def publish_release(
     slug: RepoSlug,
 ) -> dict[str, Any] | list[Any] | None:
     """Publish a draft release by setting draft=False."""
-    url = f"https://api.github.com/repos/{slug.full}/releases/{release_id}"
+    url = f"{slug.api_url}/releases/{release_id}"
     return github_api(client, "PATCH", url, json_data={"draft": False})
 
 
@@ -500,7 +502,7 @@ def find_published_release(
     result = github_api(
         client,
         "GET",
-        f"https://api.github.com/repos/{slug.full}/releases/tags/{tag}",
+        f"{slug.api_url}/releases/tags/{tag}",
         none_on_404=True,
     )
     if result is None:
@@ -527,7 +529,7 @@ def get_latest_release(
     result = github_api(
         client,
         "GET",
-        f"https://api.github.com/repos/{slug.full}/releases/latest",
+        f"{slug.api_url}/releases/latest",
         none_on_404=True,
     )
     if result is None:

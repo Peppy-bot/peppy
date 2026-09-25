@@ -14,6 +14,9 @@ from pathlib import Path
 
 from .cli import RELEASE_TRIPLES, ReleaseError, console
 
+# Commands a release build needs on its host.
+BUILD_COMMANDS = ("git", "cargo", "rustc")
+
 
 @dataclass(frozen=True)
 class BuildArtifact:

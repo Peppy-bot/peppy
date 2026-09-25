@@ -1,19 +1,24 @@
 """Tests for functions.release_install_check.
 
 The archive is a stand-in whose `peppy` is a shell script that records how it
-is called. The wait for the daemon runs on a fake clock and a fake sleep, and
-the stop of the daemon on real processes that either stop on SIGTERM or
-ignore it. No case sleeps or depends on how fast the host is.
+is called. The checkout of each hub at its commit and the ssh-agent that holds
+the deploy key are stand-ins too. The wait for the daemon runs on a fake clock
+and a fake sleep, and the stop of the daemon on real processes that either
+stop on SIGTERM or ignore it. No case sleeps or depends on how fast the host
+is.
 """
 
 from __future__ import annotations
 
 import io
+import json
 import os
 import select
 import signal
 import subprocess
 import tarfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import patch
@@ -21,12 +26,16 @@ from unittest.mock import patch
 import pytest
 
 from functions.cli import ReleaseError
+from functions.hub_ci import resolve
 from functions.release_install_check import (
     DAEMON_STATE_FILE,
+    run_hub_set_check,
     run_install_check,
     stop_daemon,
     wait_for_daemon,
 )
+
+from .helpers import HUB_COMMITS, FakeTime, hub_set_document
 
 FAKE_PEPPY = """#!/bin/sh
 echo "$* | PEPPY_HOME=$PEPPY_HOME | PEPPY_MESSAGING_PORT=$PEPPY_MESSAGING_PORT" >> "$FAKE_PEPPY_CALLS"
@@ -34,9 +43,16 @@ case "$1 $2" in
   "container setup") exit "${FAKE_SETUP_STATUS:-0}" ;;
   "service serve") exec sleep 1000 ;;
   "repo refresh") exit "${FAKE_REFRESH_STATUS:-0}" ;;
+  "repo index")
+    case " ${FAKE_FAILING_INDEXES:-} " in
+      *" $(basename "$3") "*) exit 1 ;;
+    esac
+    exit 0 ;;
 esac
 exit 64
 """
+
+HUB_SET = resolve.parse_release_set(json.dumps(hub_set_document()))
 
 
 def _archive(tmp_path: Path, peppy: str | None = FAKE_PEPPY) -> Path:
@@ -67,33 +83,67 @@ class NoSleep:
 
 @dataclass
 class InstallCheck:
-    """The install check of the fake archive in work_dir.
+    """The checks of the fake archive in work_dir.
 
     The daemon's state file is there before the daemon starts, so the wait
     for it returns at once: the wait itself is tested on its own below. Every
-    daemon the check stops is recorded, stopped for real.
+    daemon a check stops is recorded, stopped for real, and so is every hub it
+    checks out, at the commit it checks it out at.
     """
 
     archive: Path
     work_dir: Path
     calls: Path
     stopped: list[subprocess.Popen] = field(default_factory=list)
+    checked_out: list[tuple[str, str, Path]] = field(default_factory=list)
+    deploy_key_loaded: bool = True
 
     def _recording_stop(self, process: subprocess.Popen) -> None:
         stop_daemon(process)
         self.stopped.append(process)
 
+    def _recording_check_out(
+        self, resolved: resolve.ResolvedHub, destination: Path
+    ) -> None:
+        destination.mkdir(parents=True)
+        self.checked_out.append((resolved.hub.name, resolved.commit, destination))
+
     def __call__(self, archive: Path | None = None) -> None:
-        with patch(
-            "functions.release_install_check.stop_daemon",
-            side_effect=self._recording_stop,
-        ):
+        """Check that the install reads the default hubs."""
+        with self._stand_ins():
             run_install_check(
                 archive or self.archive,
                 self.work_dir,
                 sleep=NoSleep().sleep,
                 clock=NoSleep().clock,
             )
+
+    def check_hub_set(self) -> None:
+        """Check every hub of HUB_SET with the install."""
+        with self._stand_ins():
+            run_hub_set_check(
+                HUB_SET,
+                self.archive,
+                self.work_dir,
+                sleep=NoSleep().sleep,
+                clock=NoSleep().clock,
+            )
+
+    @contextmanager
+    def _stand_ins(self) -> Iterator[None]:
+        with (
+            patch(
+                "functions.release_install_check.stop_daemon",
+                side_effect=self._recording_stop,
+            ),
+            patch.object(
+                resolve, "check_out_commit", side_effect=self._recording_check_out
+            ),
+            patch.object(
+                resolve, "agent_holds_a_key", return_value=self.deploy_key_loaded
+            ),
+        ):
+            yield
 
 
 @pytest.fixture
@@ -110,6 +160,9 @@ def _calls(path: Path) -> list[list[str]]:
     if not path.exists():
         return []
     return [line.split(" | ") for line in path.read_text().splitlines()]
+
+
+# --- the install check of publish ---
 
 
 def test_the_check_readies_apptainer_serves_and_refreshes_strictly(
@@ -183,67 +236,138 @@ def test_an_archive_that_is_no_archive_is_refused(
         install(broken)
 
 
+# --- the hub-check stage ---
+
+
+def test_the_hub_check_pins_the_set_refreshes_and_checks_every_index(
+    install: InstallCheck,
+) -> None:
+    install.check_hub_set()
+
+    home = install.work_dir / "home"
+    assert (home / "conf" / "repositories.json5").read_text() == (
+        resolve.release_repositories_file(HUB_SET)
+    )
+    checkouts = install.work_dir / "hubs"
+    assert install.checked_out == [
+        (name, commit, checkouts / name) for name, commit in HUB_COMMITS.items()
+    ]
+    calls = _calls(install.calls)
+    assert [call[0].split()[:2] for call in calls[:2]] == [
+        ["container", "setup"],
+        ["service", "serve"],
+    ]
+    assert [call[0].split() for call in calls[2:]] == [
+        ["repo", "refresh", "--strict"],
+        *(
+            resolve.index_check_arguments(resolved.hub, checkouts / resolved.hub.name)
+            for resolved in HUB_SET.hubs
+        ),
+    ]
+    # Every command runs with the daemon's PEPPY_HOME and messaging port.
+    assert {call[1] for call in calls} == {f"PEPPY_HOME={home}"}
+    assert len({call[2] for call in calls}) == 1
+    [daemon] = install.stopped
+    assert daemon.returncode is not None
+
+
+def test_a_failed_index_check_names_every_hub_that_failed(
+    install: InstallCheck,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("FAKE_FAILING_INDEXES", "launchers-hub private-nodes-hub")
+
+    with pytest.raises(ReleaseError) as excinfo:
+        install.check_hub_set()
+
+    assert str(excinfo.value).startswith(
+        "the repository index check of launchers-hub, private-nodes-hub failed"
+    )
+    # Every hub was checked, those after a failure included.
+    assert [name for name, _, _ in install.checked_out] == list(HUB_COMMITS)
+    [daemon] = install.stopped
+    assert daemon.returncode is not None
+    assert "The daemon's log:" in capfd.readouterr().err
+
+
+def test_a_hub_the_daemon_cannot_read_fails_before_any_index_check(
+    install: InstallCheck, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_REFRESH_STATUS", "1")
+
+    with pytest.raises(
+        ReleaseError, match=r"`peppy repo refresh --strict` failed \(exit 1\)"
+    ):
+        install.check_hub_set()
+
+    assert install.checked_out == []
+
+
+def test_the_hub_check_needs_the_deploy_key(install: InstallCheck) -> None:
+    install.deploy_key_loaded = False
+
+    with pytest.raises(ReleaseError, match="no deploy key is loaded"):
+        install.check_hub_set()
+
+    assert _calls(install.calls) == []
+    assert not (install.work_dir / "dist").exists()
+
+
 # --- the wait for the daemon ---
 
 
 class FakeDaemon:
-    """A daemon process as the wait sees it: running until it exits with
+    """A daemon process as the wait sees it: running until it writes
+    *state_file* at its *serves_at_poll*-th poll, or until it exits with
     *exit_status* after *polls_before_exit* polls, or running for ever."""
 
     def __init__(
-        self, polls_before_exit: int | None = None, exit_status: int = 1
+        self,
+        state_file: Path,
+        *,
+        serves_at_poll: int | None = None,
+        polls_before_exit: int | None = None,
+        exit_status: int = 1,
     ) -> None:
         self.polls = 0
+        self.state_file = state_file
+        self.serves_at_poll = serves_at_poll
         self.polls_before_exit = polls_before_exit
         self.exit_status = exit_status
 
     def poll(self) -> int | None:
         self.polls += 1
+        if self.polls == self.serves_at_poll:
+            self.state_file.write_text("{}")
         if self.polls_before_exit is not None and self.polls > self.polls_before_exit:
             return self.exit_status
         return None
 
 
-class FakeTime:
-    """A clock that moves only when the wait sleeps; a sleep can make the
-    state file appear."""
-
-    def __init__(
-        self, state_file: Path, appears_after_sleeps: int | None = None
-    ) -> None:
-        self.now = 0.0
-        self.sleeps = 0
-        self.state_file = state_file
-        self.appears_after_sleeps = appears_after_sleeps
-
-    def clock(self) -> float:
-        return self.now
-
-    def sleep(self, seconds: float) -> None:
-        self.sleeps += 1
-        self.now += seconds
-        if self.sleeps == self.appears_after_sleeps:
-            self.state_file.write_text("{}")
-
-
 def test_the_wait_ends_once_the_daemon_writes_its_state(tmp_path: Path) -> None:
     state_file = tmp_path / DAEMON_STATE_FILE
-    time = FakeTime(state_file, appears_after_sleeps=3)
+    time = FakeTime()
 
-    wait_for_daemon(FakeDaemon(), state_file, sleep=time.sleep, clock=time.clock)
+    wait_for_daemon(
+        FakeDaemon(state_file, serves_at_poll=3),
+        state_file,
+        sleep=time.sleep,
+        clock=time.clock,
+    )
 
-    assert time.sleeps == 3
+    assert time.sleeps == [1.0, 1.0, 1.0]
 
 
 def test_a_daemon_that_exits_before_it_serves_fails_the_wait(tmp_path: Path) -> None:
     state_file = tmp_path / DAEMON_STATE_FILE
-    time = FakeTime(state_file)
+    time = FakeTime()
 
     with pytest.raises(
         ReleaseError, match="the daemon exited with status 2 before it served"
     ):
         wait_for_daemon(
-            FakeDaemon(polls_before_exit=2, exit_status=2),
+            FakeDaemon(state_file, polls_before_exit=2, exit_status=2),
             state_file,
             sleep=time.sleep,
             clock=time.clock,
@@ -254,12 +378,14 @@ def test_a_daemon_that_never_serves_fails_the_wait_at_its_timeout(
     tmp_path: Path,
 ) -> None:
     state_file = tmp_path / DAEMON_STATE_FILE
-    time = FakeTime(state_file)
+    time = FakeTime()
 
     with pytest.raises(
         ReleaseError, match="the daemon did not serve within 60 seconds"
     ):
-        wait_for_daemon(FakeDaemon(), state_file, sleep=time.sleep, clock=time.clock)
+        wait_for_daemon(
+            FakeDaemon(state_file), state_file, sleep=time.sleep, clock=time.clock
+        )
 
     assert time.now == 60.0
 

@@ -4,10 +4,10 @@ The hub-set job of .github/workflows/parallel-release.yml records the hub set
 of the release with .github/actions/hub-ci-peppy/resolve.py: every hub, each at
 the commit of its tag of this release (`peppy-release/<tag>`) where it carries
 one, and at the head of its `main` where it does not. The set is an explicit
-set, `{"hubs": {"<hub>": {"ref": "<label>", "commit": "<40 hex>"}}}`, the schema
-launchers-hub's tests take as their `set` input. Every later stage reads the
-commits the set records and never a branch, since `main` can move while the
-release runs.
+set, the schema launchers-hub's tests take as their `set` input, and the
+stages read it with the parser of resolve.py (see hub_ci.py). Every later
+stage reads the commits the set records and never a branch, since `main` can
+move while the release runs.
 
 Two stages use the set here:
 
@@ -20,28 +20,20 @@ Two stages use the set here:
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
 
 from .cli import ReleaseError, console
-from .github import github_api
-
-# The prefix of the tag a release puts on each hub it tested. A release build
-# of peppy `v0.31.2` reads the tag `peppy-release/v0.31.2` of each hub it
-# bundles (PEPPY_RELEASE_TAG_PREFIX in
-# peppy-shared/core-node-api/src/encoding/repo/git_ref.rs, which the tests hold
-# this prefix to).
-HUB_RELEASE_TAG_PREFIX = "peppy-release/"
+from .github import RepoSlug, github_api
+from .hub_ci import resolve
 
 # The hub whose tests launch every launcher of the set, and the workflow that
 # runs them. The workflow runs as `main` defines it, and checks out the
 # launchers-hub commit of the set.
-LAUNCHERS_HUB = "launchers-hub"
+LAUNCHERS_HUB = resolve.HUBS_BY_NAME["launchers-hub"]
 LAUNCHERS_WORKFLOW = "tests.yml"
 LAUNCHERS_WORKFLOW_BRANCH = "main"
 
@@ -55,113 +47,13 @@ RUN_WAIT_TIMEOUT_SECONDS = 170 * 60.0
 # is well on its way. This many failures in a row end the wait.
 MAX_FAILED_RUN_READS = 5
 
-_GITHUB_API = "https://api.github.com"
-_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
-# What GitHub accepts as a repository name, the key of each hub of the set.
-_REPOSITORY_NAME_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
-_HUB_SET_SHAPE = '{"hubs": {"<hub>": {"ref": "<label>", "commit": "<40 hex>"}}}'
 
-
-def hub_release_tag(tag: str) -> str:
-    """The tag the release of *tag* puts on each hub it tested."""
-    return f"{HUB_RELEASE_TAG_PREFIX}{tag}"
-
-
-# --- the hub set ---
-
-
-@dataclass(frozen=True)
-class RecordedHub:
-    """A hub of the set: its repository name, the label of where its commit
-    came from (`main` or its tag of the release), and the commit."""
-
-    name: str
-    ref: str
-    commit: str
-
-
-@dataclass(frozen=True)
-class HubSet:
-    """The hubs the release tests and tags, in the order the set lists them."""
-
-    hubs: tuple[RecordedHub, ...]
-
-    @classmethod
-    def load(cls, path: Path) -> HubSet:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError as e:
-            raise ReleaseError(f"cannot read the hub set {path}: {e}") from e
-        return cls.parse(text, source=str(path))
-
-    @classmethod
-    def parse(cls, text: str, *, source: str) -> HubSet:
-        try:
-            document = json.loads(text)
-        except json.JSONDecodeError as e:
-            raise ReleaseError(f"the hub set {source} is not JSON: {e}") from e
-        if (
-            not isinstance(document, dict)
-            or set(document) != {"hubs"}
-            or not isinstance(document["hubs"], dict)
-            or not document["hubs"]
-        ):
-            raise ReleaseError(
-                f"the hub set {source} must have the shape {_HUB_SET_SHAPE} and "
-                "name at least one hub"
-            )
-        return cls(
-            hubs=tuple(
-                _parse_recorded_hub(name, entry, source)
-                for name, entry in document["hubs"].items()
-            )
-        )
-
-    def hub(self, name: str) -> RecordedHub:
-        for hub in self.hubs:
-            if hub.name == name:
-                return hub
-        names = ", ".join(hub.name for hub in self.hubs)
-        raise ReleaseError(f"the hub set names no {name}; it names {names}")
-
-    def compact_json(self) -> str:
-        """The set as one line of JSON, in the schema it was read from."""
-        document = {
-            "hubs": {
-                hub.name: {"ref": hub.ref, "commit": hub.commit} for hub in self.hubs
-            }
-        }
-        return json.dumps(document, separators=(",", ":"))
-
-
-def _parse_recorded_hub(name: str, entry: object, source: str) -> RecordedHub:
-    if not _REPOSITORY_NAME_PATTERN.fullmatch(name):
-        raise ReleaseError(
-            f"the hub set {source} names `{name}`, which is not a repository name"
-        )
-    if (
-        not isinstance(entry, dict)
-        or set(entry) != {"ref", "commit"}
-        or not all(isinstance(value, str) for value in entry.values())
-        or not entry["ref"]
-    ):
-        raise ReleaseError(
-            f"the entry of {name} in the hub set {source} must have the shape "
-            f'{{"ref": "<label>", "commit": "<40 hex>"}}, got {json.dumps(entry)}'
-        )
-    if not _COMMIT_PATTERN.fullmatch(entry["commit"]):
-        raise ReleaseError(
-            f"the hub set {source} records `{entry['commit']}` for {name}, which "
-            "is not a 40-character lowercase hex commit"
-        )
-    return RecordedHub(name=name, ref=entry["ref"], commit=entry["commit"])
+def hub_repository(owner: str, hub: resolve.Hub) -> RepoSlug:
+    """The repository of *hub* under *owner*, the owner of the release."""
+    return RepoSlug(owner=owner, repo=hub.name)
 
 
 # --- the hub tags ---
-
-
-def _repository_api(owner: str, repository: str) -> str:
-    return f"{_GITHUB_API}/repos/{owner}/{repository}"
 
 
 @dataclass(frozen=True)
@@ -186,21 +78,28 @@ def _parse_git_object(response: Any, what: str) -> _GitObject:
 
 
 def read_hub_tag_commit(
-    client: httpx.Client, owner: str, hub: str, hub_tag: str
+    client: httpx.Client, repository: RepoSlug, hub_tag: str
 ) -> str | None:
-    """The commit *hub_tag* names in *hub*, or None when the hub has no such tag.
+    """The commit *hub_tag* names in *repository*, or None when the hub has no
+    such tag.
 
     An annotated tag names a tag object, which names the commit, so the tag is
     followed down to its commit.
     """
-    api = _repository_api(owner, hub)
-    what = f"the tag {hub_tag} of {hub}"
-    ref = github_api(client, "GET", f"{api}/git/ref/tags/{hub_tag}", none_on_404=True)
+    what = f"the tag {hub_tag} of {repository.repo}"
+    ref = github_api(
+        client,
+        "GET",
+        f"{repository.api_url}/git/ref/tags/{hub_tag}",
+        none_on_404=True,
+    )
     if ref is None:
         return None
     git_object = _parse_git_object(ref, what)
     while git_object.type == "tag":
-        tag_object = github_api(client, "GET", f"{api}/git/tags/{git_object.sha}")
+        tag_object = github_api(
+            client, "GET", f"{repository.api_url}/git/tags/{git_object.sha}"
+        )
         git_object = _parse_git_object(tag_object, what)
     if git_object.type != "commit":
         raise ReleaseError(
@@ -210,18 +109,17 @@ def read_hub_tag_commit(
 
 
 def _create_hub_tag(
-    client: httpx.Client, owner: str, hub: RecordedHub, hub_tag: str, tag: str
+    client: httpx.Client, repository: RepoSlug, commit: str, hub_tag: str, tag: str
 ) -> None:
-    """Create the annotated tag *hub_tag* of *hub* at its recorded commit."""
-    api = _repository_api(owner, hub.name)
+    """Create the annotated tag *hub_tag* of *repository* at *commit*."""
     tag_object = github_api(
         client,
         "POST",
-        f"{api}/git/tags",
+        f"{repository.api_url}/git/tags",
         json_data={
             "tag": hub_tag,
             "message": f"Released with peppy {tag}",
-            "object": hub.commit,
+            "object": commit,
             "type": "commit",
         },
     )
@@ -229,22 +127,23 @@ def _create_hub_tag(
     if not isinstance(sha, str):
         raise ReleaseError(
             f"unexpected GitHub API response for the new tag {hub_tag} of "
-            f"{hub.name} (expected its sha): {json.dumps(tag_object)[:500]}"
+            f"{repository.repo} (expected its sha): {json.dumps(tag_object)[:500]}"
         )
     github_api(
         client,
         "POST",
-        f"{api}/git/refs",
+        f"{repository.api_url}/git/refs",
         json_data={"ref": f"refs/tags/{hub_tag}", "sha": sha},
     )
 
 
 def _tagged_elsewhere_message(
-    hub_tag: str, tag: str, misplaced: list[tuple[RecordedHub, str]]
+    hub_tag: str, tag: str, misplaced: list[tuple[resolve.ResolvedHub, str]]
 ) -> str:
     lines = "\n".join(
-        f"  {hub.name}: tagged at {tagged[:12]}, tested at {hub.commit[:12]}"
-        for hub, tagged in misplaced
+        f"  {resolved.hub.name}: tagged at {tagged[:12]}, tested at "
+        f"{resolved.commit[:12]}"
+        for resolved, tagged in misplaced
     )
     return (
         f"{hub_tag} already names another commit than the one this run tested "
@@ -257,7 +156,7 @@ def _tagged_elsewhere_message(
 
 
 def tag_release_hubs(
-    client: httpx.Client, owner: str, hub_set: HubSet, tag: str
+    client: httpx.Client, owner: str, hub_set: resolve.HubSet, tag: str
 ) -> None:
     """Put the tag of the release *tag* on every hub of *hub_set*, at the
     commit the set records.
@@ -268,28 +167,30 @@ def tag_release_hubs(
     is read before any is tagged, so that stop leaves every hub as it was. No
     tag is ever moved or deleted.
     """
-    hub_tag = hub_release_tag(tag)
+    hub_tag = resolve.hub_release_tag(tag)
     console.print(f"Reading the tag {hub_tag} of every hub...")
     tagged = {
-        hub.name: read_hub_tag_commit(client, owner, hub.name, hub_tag)
-        for hub in hub_set.hubs
+        resolved.hub: read_hub_tag_commit(
+            client, hub_repository(owner, resolved.hub), hub_tag
+        )
+        for resolved in hub_set.hubs
     }
     misplaced = [
-        (hub, tagged[hub.name])
-        for hub in hub_set.hubs
-        if tagged[hub.name] not in (None, hub.commit)
+        (resolved, tagged[resolved.hub])
+        for resolved in hub_set.hubs
+        if tagged[resolved.hub] not in (None, resolved.commit)
     ]
     if misplaced:
         raise ReleaseError(_tagged_elsewhere_message(hub_tag, tag, misplaced))
 
-    for hub in hub_set.hubs:
-        if tagged[hub.name] == hub.commit:
-            console.print(
-                f"{hub.name} already carries {hub_tag} at {hub.commit[:12]}; it stays."
-            )
+    for resolved in hub_set.hubs:
+        at_commit = f"{hub_tag} at {resolved.commit[:12]}"
+        if tagged[resolved.hub] == resolved.commit:
+            console.print(f"{resolved.hub.name} already carries {at_commit}; it stays.")
             continue
-        _create_hub_tag(client, owner, hub, hub_tag, tag)
-        console.print(f"Tagged {hub.name} {hub_tag} at {hub.commit[:12]}.")
+        repository = hub_repository(owner, resolved.hub)
+        _create_hub_tag(client, repository, resolved.commit, hub_tag, tag)
+        console.print(f"Tagged {resolved.hub.name} {at_commit}.")
 
 
 # --- the launchers-hub run ---
@@ -299,13 +200,16 @@ def tag_release_hubs(
 class DispatchedRun:
     """The launchers-hub run a dispatch started."""
 
-    repository: str
+    repository: RepoSlug
     run_id: int
-    html_url: str
 
     @property
     def api_url(self) -> str:
-        return f"{_GITHUB_API}/repos/{self.repository}/actions/runs/{self.run_id}"
+        return f"{self.repository.api_url}/actions/runs/{self.run_id}"
+
+    @property
+    def html_url(self) -> str:
+        return f"https://github.com/{self.repository.full}/actions/runs/{self.run_id}"
 
 
 @dataclass(frozen=True)
@@ -314,7 +218,7 @@ class RunState:
     conclusion: str | None
 
 
-def parse_dispatch_response(response: Any, repository: str) -> DispatchedRun:
+def parse_dispatch_response(response: Any, repository: RepoSlug) -> DispatchedRun:
     """The run a workflow dispatch started, from the dispatch's response.
 
     The response names the run it started. Without that, nothing tells which
@@ -322,34 +226,31 @@ def parse_dispatch_response(response: Any, repository: str) -> DispatchedRun:
     from the list of runs.
     """
     run_id = response.get("workflow_run_id") if isinstance(response, dict) else None
-    html_url = response.get("html_url") if isinstance(response, dict) else None
     if not isinstance(run_id, int) or isinstance(run_id, bool):
         raise ReleaseError(
-            f"the dispatch of {LAUNCHERS_WORKFLOW} in {repository} answered "
+            f"the dispatch of {LAUNCHERS_WORKFLOW} in {repository.full} answered "
             f"without a workflow_run_id, so the run it started is unknown: "
             f"{json.dumps(response)[:500]}"
         )
-    if not isinstance(html_url, str) or not html_url:
-        html_url = f"https://github.com/{repository}/actions/runs/{run_id}"
-    return DispatchedRun(repository=repository, run_id=run_id, html_url=html_url)
+    return DispatchedRun(repository=repository, run_id=run_id)
 
 
 def dispatch_launchers_tests(
-    client: httpx.Client, owner: str, hub_set: HubSet, peppy_run_id: int
+    client: httpx.Client, owner: str, hub_set: resolve.HubSet, peppy_run_id: int
 ) -> DispatchedRun:
     """Start launchers-hub's tests on *hub_set*, with the peppy archive of the
-    release run *peppy_run_id*."""
-    repository = f"{owner}/{hub_set.hub(LAUNCHERS_HUB).name}"
+    release run *peppy_run_id*. The set names every hub, launchers-hub among
+    them."""
+    repository = hub_repository(owner, LAUNCHERS_HUB)
     response = github_api(
         client,
         "POST",
-        f"{_GITHUB_API}/repos/{repository}/actions/workflows/"
-        f"{LAUNCHERS_WORKFLOW}/dispatches",
+        f"{repository.api_url}/actions/workflows/{LAUNCHERS_WORKFLOW}/dispatches",
         json_data={
             "ref": LAUNCHERS_WORKFLOW_BRANCH,
             "inputs": {
                 "peppy-run-id": str(peppy_run_id),
-                "set": hub_set.compact_json(),
+                "set": resolve.compact_json(resolve.release_set_document(hub_set)),
             },
         },
     )
@@ -437,7 +338,7 @@ def check_launchers(
     dispatch_client: httpx.Client,
     read_client: httpx.Client,
     owner: str,
-    hub_set: HubSet,
+    hub_set: resolve.HubSet,
     peppy_run_id: int,
     *,
     sleep: Callable[[float], None],
@@ -451,7 +352,7 @@ def check_launchers(
     """
     run = dispatch_launchers_tests(dispatch_client, owner, hub_set, peppy_run_id)
     console.print(
-        f"Dispatched {LAUNCHERS_WORKFLOW} of {run.repository}: {run.html_url}",
+        f"Dispatched {LAUNCHERS_WORKFLOW} of {run.repository.full}: {run.html_url}",
         soft_wrap=True,
     )
     state = wait_for_run(

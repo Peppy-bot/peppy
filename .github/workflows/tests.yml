@@ -233,10 +233,11 @@ jobs:
 
   # The release scripts test in two halves because they cost orders of
   # magnitude apart. This job runs the mocked tests, about a second for all of
-  # them, on any change under scripts/. The install.sh tests need a release
-  # archive and a fresh machine, so they run in install-script, on the archive
-  # install-archive builds, gated on the far narrower set of files that decide
-  # what gets installed and how.
+  # them, on any change under scripts/ and to the resolve.py of the
+  # hub-ci-peppy action, which the scripts load. The install.sh tests need a
+  # release archive and a fresh machine, so they run in install-script, on the
+  # archive install-archive builds, gated on the far narrower set of files
+  # that decide what gets installed and how.
   release-scripts:
     needs: changes
     if: needs.changes.outputs.scripts == 'true'

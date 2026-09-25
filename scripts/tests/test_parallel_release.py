@@ -40,16 +40,18 @@ from functions.parallel_release import (
     _upload_archives_and_publish,
     _write_tarball,
     apptainer_archive_name,
-    parse_release_tag,
     run_apptainer,
     run_bindings,
     run_build,
+    run_hub_check,
     run_prepare,
     run_publish,
 )
 from functions.release_summary import ReleaseContent
 from functions.repo import commit_paths as real_commit_paths
 from functions.repo import push_branch as real_push_branch
+
+from .helpers import HUB_COMMITS, hub_set_document, unwrapped
 
 RELEASE_COMMIT = "1111111111111111111111111111111111111111"
 OTHER_COMMIT = "2222222222222222222222222222222222222222"
@@ -82,10 +84,6 @@ def _no_prompts() -> object:
         "functions.cli.Prompt.ask", side_effect=AssertionError("prompted")
     ), patch("functions.cli.Confirm.ask", side_effect=AssertionError("prompted")):
         yield
-
-
-def _unwrapped(output: str) -> str:
-    return " ".join(output.split())
 
 
 def _cache_root(tmp_path: Path) -> Path:
@@ -157,47 +155,23 @@ def test_release_plan_rejects_a_tag_no_release_publishes(tmp_path: Path) -> None
         path
     )
 
-    with pytest.raises(ReleaseError, match="is not a release tag"):
+    with pytest.raises(ReleaseError, match="is not a peppy release version"):
         ReleasePlan.load(path)
 
 
-# --- the release tag ---
+# --- command line ---
 
 
-@pytest.mark.parametrize(
-    ("value", "tag"),
-    [("v0.31.2", "v0.31.2"), (" v0.31.2\n", "v0.31.2"), ("v10.0.123", "v10.0.123")],
-)
-def test_a_release_tag_is_v_major_minor_patch(value: str, tag: str) -> None:
-    assert parse_release_tag(value) == tag
-
-
-@pytest.mark.parametrize(
-    "value",
-    ["v0.31.2-rc1", "0.31.2", "v0.31", "v0.31.2.1", "V0.31.2", "v0.3x.2", "v0.3\u0661.2", ""],
-)
-def test_every_other_tag_is_refused_with_the_reason(value: str) -> None:
-    with pytest.raises(ReleaseError) as excinfo:
-        parse_release_tag(value)
-
-    message = _unwrapped(str(excinfo.value))
-    assert "v<MAJOR>.<MINOR>.<PATCH>, with digits only in each part" in message
-    assert (
-        "Every published peppy binary reads the hub tags peppy-release/<its "
-        "version>, and a binary of any other version reads the hubs' main"
-    ) in message
-
-
-@pytest.mark.parametrize("tag", ["v0.31.2-rc1", "0.31.2", "v0.31"])
 def test_prepare_refuses_a_tag_no_release_publishes(
-    tag: str, capsys: pytest.CaptureFixture[str]
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # The grammar of a release tag is resolve.py's, whose tests hold every form.
     with pytest.raises(SystemExit) as exc_info:
         _parse_args(
             [
                 "prepare",
                 "--tag",
-                tag,
+                "v0.31.2-rc1",
                 "--release-commit",
                 RELEASE_COMMIT,
                 "--no-minor-docs-pr",
@@ -207,10 +181,7 @@ def test_prepare_refuses_a_tag_no_release_publishes(
         )
 
     assert exc_info.value.code == 2
-    assert "reads the hubs' main" in _unwrapped(capsys.readouterr().err)
-
-
-# --- command line ---
+    assert "reads the hubs' main" in unwrapped(capsys.readouterr().err)
 
 
 def test_prepare_takes_every_answer_up_front() -> None:
@@ -248,6 +219,15 @@ def test_prepare_rejects_missing_or_malformed_answers(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as exc_info:
         _parse_args(["prepare", *argv])
     assert exc_info.value.code == 2
+
+
+def test_hub_check_takes_the_hub_set_and_the_archive() -> None:
+    args = _parse_args(
+        ["hub-check", "--hub-set", "hub-set.json", "--archive", "peppy.tgz"]
+    )
+
+    assert args.hub_set == Path("hub-set.json")
+    assert args.archive == Path("peppy.tgz")
 
 
 def test_hub_launch_takes_the_hub_set_and_the_run_id() -> None:
@@ -375,7 +355,7 @@ def test_prepare_writes_the_plan_without_asking_anything(
     prepare_mocks.fetch_tag.assert_called_once_with("origin", "v0.2.0")
     prepare_mocks.collect.assert_called_once_with("v0.2.0", RELEASE_COMMIT, tmp_path)
     # Nobody reviews the draft, so the log shows it.
-    output = _unwrapped(capfd.readouterr().err)
+    output = unwrapped(capfd.readouterr().err)
     assert CONTENT.title in output
     assert CONTENT.description in output
 
@@ -681,21 +661,6 @@ def test_build_refuses_an_apptainer_archive_for_another_architecture(
 API_PATH = f"/repos/{SLUG.full}"
 NOTES_FILE = "docs/src/content/releases/v0.3.0.html"
 HUB_TAG = "peppy-release/v0.3.0"
-# The hub set the hub-set job records: every hub at a commit of its own.
-HUB_COMMITS = {
-    name: f"{index:x}" * 40
-    for index, name in enumerate(
-        (
-            "nodes-hub",
-            "launchers-hub",
-            "contracts-hub",
-            "mcp-hub",
-            "pairings-hub",
-            "private-nodes-hub",
-        ),
-        start=10,
-    )
-}
 
 
 def _built_archives(directory: Path) -> Path:
@@ -998,9 +963,7 @@ def install_check(events: list[str]) -> InstallCheck:
 
 
 def _hub_set_text() -> str:
-    return json.dumps(
-        {"hubs": {name: {"ref": "main", "commit": commit} for name, commit in HUB_COMMITS.items()}}
-    )
+    return json.dumps(hub_set_document())
 
 
 @pytest.fixture
@@ -1273,7 +1236,7 @@ def test_publish_refuses_a_hub_tag_at_another_commit_and_tags_no_hub(
     with pytest.raises(ReleaseError) as excinfo:
         publish()
 
-    message = _unwrapped(str(excinfo.value))
+    message = unwrapped(str(excinfo.value))
     assert (
         f"{HUB_TAG} already names another commit than the one this run tested"
     ) in message
@@ -1344,7 +1307,7 @@ def test_publish_refuses_a_hub_set_it_cannot_read(
 ) -> None:
     (tmp_path / "hub-set.json").write_text('{"hubs": {}}')
 
-    with pytest.raises(ReleaseError, match="must have the shape"):
+    with pytest.raises(ReleaseError, match="leaves out nodes-hub"):
         publish()
 
     assert github.requests == []
@@ -1627,7 +1590,7 @@ def test_publish_interrupt_leaves_a_release_that_went_live(
     with pytest.raises(KeyboardInterrupt):
         _upload_archives_and_publish(MagicMock(), SLUG, draft, [])
 
-    output = _unwrapped(capfd.readouterr().err)
+    output = unwrapped(capfd.readouterr().err)
     assert "Draft release deleted." not in output
     assert (
         "The release went live before the failure, so it is left in place: "
@@ -1661,4 +1624,33 @@ def test_failed_draft_cleanup_warns_and_keeps_the_upload_error(
         )
 
     mock_publish.assert_not_called()
-    assert "Manual cleanup required" in _unwrapped(capfd.readouterr().err)
+    assert "Manual cleanup required" in unwrapped(capfd.readouterr().err)
+
+
+# --- hub-check ---
+
+
+def test_hub_check_checks_the_recorded_set_with_the_archive(tmp_path: Path) -> None:
+    hub_set_path = tmp_path / "hub-set.json"
+    hub_set_path.write_text(_hub_set_text())
+    archive = tmp_path / "peppy-x86_64-unknown-linux-gnu.tgz"
+
+    with patch("functions.parallel_release.check_hub_set") as check_hub_set:
+        run_hub_check(hub_set_path=hub_set_path, archive=archive)
+
+    [(hub_set, checked_archive)] = [call.args for call in check_hub_set.call_args_list]
+    assert {r.hub.name: r.commit for r in hub_set.hubs} == HUB_COMMITS
+    assert checked_archive == archive
+
+
+def test_hub_check_refuses_a_hub_set_it_cannot_read(tmp_path: Path) -> None:
+    hub_set_path = tmp_path / "hub-set.json"
+    hub_set_path.write_text("not json")
+
+    with (
+        patch("functions.parallel_release.check_hub_set") as check_hub_set,
+        pytest.raises(ReleaseError, match="is not JSON"),
+    ):
+        run_hub_check(hub_set_path=hub_set_path, archive=tmp_path / "peppy.tgz")
+
+    check_hub_set.assert_not_called()

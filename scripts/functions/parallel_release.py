@@ -9,6 +9,9 @@ platform, all three at once, and no stage starts a VM:
 - `bindings` (macOS ARM64): the peppylib native bindings for every platform.
 - `apptainer` (Linux): apptainer for the host's architecture.
 - `build` (one per target): one release archive, built from the plan's commit.
+- `hub-check` (Linux): every hub of the hub set the release recorded, read at
+  its commit by the daemon of the host's archive, installed, and its
+  repository index checked there (see release_install_check.py).
 - `hub-launch` (any host): launchers-hub's tests, dispatched on the hub set the
   release recorded and on the x86_64 archive of the run, waited for until they
   succeed (see release_hubs.py).
@@ -49,7 +52,13 @@ from pathlib import Path
 
 import httpx
 
-from .build import BuildArtifact, _release_rustflags, build_and_package, release_dist_dir
+from .build import (
+    BUILD_COMMANDS,
+    BuildArtifact,
+    _release_rustflags,
+    build_and_package,
+    release_dist_dir,
+)
 from .cli import (
     RELEASE_TRIPLES,
     ReleaseError,
@@ -76,6 +85,7 @@ from .github import (
     publish_release,
     replace_and_upload_asset,
 )
+from .hub_ci import load_release_set, parse_release_version, resolve
 from .lima import (
     GO_LINUX_AMD64_SHA256,
     GO_LINUX_ARM64_SHA256,
@@ -85,8 +95,8 @@ from .lima import (
     require_prebuilt_peppylib_so,
 )
 from .release_docs_gate import verify_docs_gate
-from .release_hubs import HubSet, check_launchers, tag_release_hubs
-from .release_install_check import check_release_install
+from .release_hubs import check_launchers, tag_release_hubs
+from .release_install_check import check_hub_set, check_release_install
 from .release_line import (
     ALIGNED_BRANCH,
     GIT_REMOTE,
@@ -124,28 +134,6 @@ BINDINGS_DIR_NAME = "so"
 
 def apptainer_archive_name(arch: str) -> str:
     return f"apptainer-{arch}.tgz"
-
-
-# The one form of tag a release publishes: v<MAJOR>.<MINOR>.<PATCH>, with
-# digits only in each part. It is the form peppy reads hub tags for
-# (`PeppyBuild::from_git_tag` in peppy-shared/core-node-api), and the release
-# tags the hubs `peppy-release/<tag>`, so a binary of any other version would
-# read the hubs' `main` instead of what the release tested.
-_RELEASE_TAG_PATTERN = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
-
-
-def parse_release_tag(value: str) -> str:
-    """The release tag *value* names, surrounding whitespace dropped."""
-    tag = value.strip()
-    if not _RELEASE_TAG_PATTERN.fullmatch(tag):
-        raise ReleaseError(
-            f"{value!r} is not a release tag: a release is tagged "
-            f"v<MAJOR>.<MINOR>.<PATCH>, with digits only in each part (example "
-            f"v0.31.2). Every published peppy binary reads the hub tags "
-            f"peppy-release/<its version>, and a binary of any other version "
-            f"reads the hubs' main instead of what the release tested."
-        )
-    return tag
 
 
 # --- the release plan ---
@@ -186,7 +174,7 @@ class ReleasePlan:
                 raise ReleaseError(f"the release plan {path} has no usable '{name}'")
             fields[name] = value
         return cls(
-            tag=parse_release_tag(fields["tag"]),
+            tag=parse_release_version(fields["tag"]),
             release_commit=fields["release_commit"],
             content=ReleaseContent(
                 title=fields["title"],
@@ -573,7 +561,7 @@ def run_build(*, plan_path: Path, target: str, provisioned_dir: Path) -> None:
     bindings the macOS build made, and the provisioned apptainer builds fill
     the cache the build reads.
     """
-    for cmd in ("git", "cargo", "rustc"):
+    for cmd in BUILD_COMMANDS:
         need_cmd(cmd)
     plan = ReleasePlan.load(plan_path)
     native = get_native_triple()
@@ -662,7 +650,7 @@ def _create_draft_release(
     response = github_api(
         client,
         "POST",
-        f"https://api.github.com/repos/{slug.full}/releases",
+        f"{slug.api_url}/releases",
         json_data=_release_payload(plan),
     )
     return parse_release_response(response)
@@ -764,7 +752,7 @@ def _publish_release_unless_published(
     client: httpx.Client,
     slug: RepoSlug,
     plan: ReleasePlan,
-    hub_set: HubSet,
+    hub_set: resolve.HubSet,
     *,
     notes_committed: bool,
     archives_dir: Path,
@@ -872,7 +860,7 @@ def _write_release_notes(
     release_details = github_api(
         client,
         "GET",
-        f"https://api.github.com/repos/{slug.full}/releases/{release.release_id}",
+        f"{slug.api_url}/releases/{release.release_id}",
     )
     if not isinstance(release_details, dict):
         raise ReleaseError(
@@ -970,7 +958,7 @@ def run_publish(*, plan_path: Path, archives_dir: Path, hub_set_path: Path) -> N
     need_cmd("git")
     token = require_release_token()
     plan = ReleasePlan.load(plan_path)
-    hub_set = HubSet.load(hub_set_path)
+    hub_set = load_release_set(hub_set_path)
 
     repo_root = get_repo_root()
     os.chdir(repo_root)
@@ -1026,6 +1014,17 @@ def run_publish(*, plan_path: Path, archives_dir: Path, hub_set_path: Path) -> N
     )
 
 
+# --- hub-check ---
+
+
+def run_hub_check(*, hub_set_path: Path, archive: Path) -> None:
+    """Check every hub of the hub set at its commit with *archive*, the archive
+    of this host's platform: its daemon, installed, reads every hub, and each
+    hub's repository index is checked at its commit (`check_hub_set`)."""
+    need_cmd("git")
+    check_hub_set(load_release_set(hub_set_path), archive)
+
+
 # --- hub-launch ---
 
 
@@ -1038,7 +1037,7 @@ def run_hub_launch(*, hub_set_path: Path, peppy_run_id: int) -> None:
     """
     dispatch_token = require_release_token()
     read_token = require_job_token()
-    hub_set = HubSet.load(hub_set_path)
+    hub_set = load_release_set(hub_set_path)
     slug = github_repo_slug()
     run = check_launchers(
         build_github_client(dispatch_token),
@@ -1061,7 +1060,7 @@ def run_hub_launch(*, hub_set_path: Path, peppy_run_id: int) -> None:
 
 def _release_tag(value: str) -> str:
     try:
-        return parse_release_tag(value)
+        return parse_release_version(value)
     except ReleaseError as e:
         raise argparse.ArgumentTypeError(str(e)) from e
 
@@ -1170,6 +1169,20 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Directory holding the bindings and apptainer archives.",
     )
 
+    hub_check = stages.add_parser(
+        "hub-check",
+        help="Check every hub of the hub set at its commit with this run's archive.",
+    )
+    hub_check.add_argument(
+        "--hub-set", required=True, type=Path, help="The hub set of the release."
+    )
+    hub_check.add_argument(
+        "--archive",
+        required=True,
+        type=Path,
+        help="The archive of this host's platform, built by this run.",
+    )
+
     hub_launch = stages.add_parser(
         "hub-launch",
         help="Run launchers-hub's tests on the hub set and this run's archive.",
@@ -1226,6 +1239,8 @@ def _run_stage(args: argparse.Namespace) -> None:
                 target=args.target,
                 provisioned_dir=args.provisioned,
             )
+        case "hub-check":
+            run_hub_check(hub_set_path=args.hub_set, archive=args.archive)
         case "hub-launch":
             run_hub_launch(hub_set_path=args.hub_set, peppy_run_id=args.peppy_run_id)
         case "publish":

@@ -2,10 +2,10 @@
 
 The GitHub API is a respx stand-in and the wait's sleep and clock are fakes,
 so no case touches the network or sleeps. The tag steps of a whole publish,
-in their order, are in test_parallel_release.py. What ties this module to
-files outside scripts/ (the tag peppy reads, the tokens of the release
-workflow) is held by .github/actions/hub-ci-peppy/test_resolve.py, which runs
-on every change.
+in their order, are in test_parallel_release.py. The hub set, its parser and
+the hub tag of a release are resolve.py's, whose tests
+(.github/actions/hub-ci-peppy/test_resolve.py) also hold the tag peppy reads
+and the tokens of the release workflow; they run on every change.
 """
 
 from __future__ import annotations
@@ -13,126 +13,38 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Iterator
-from pathlib import Path
 
 import httpx
 import pytest
 import respx
 
 from functions.cli import ReleaseError
+from functions.github import RepoSlug
+from functions.hub_ci import resolve
 from functions.release_hubs import (
-    LAUNCHERS_HUB,
     DispatchedRun,
-    HubSet,
     RunState,
     check_launchers,
-    hub_release_tag,
     parse_dispatch_response,
     read_hub_tag_commit,
     require_successful_run,
     wait_for_run,
 )
 
+from .helpers import FakeTime, hub_set_document, unwrapped
+
 OWNER = "test-owner"
 HUB_TAG = "peppy-release/v0.3.0"
-LAUNCHERS_COMMIT = "b" * 40
-HUB_SET_TEXT = json.dumps(
-    {
-        "hubs": {
-            "nodes-hub": {"ref": "main", "commit": "a" * 40},
-            "launchers-hub": {"ref": HUB_TAG, "commit": LAUNCHERS_COMMIT},
-            "private-nodes-hub": {"ref": "main", "commit": "c" * 40},
-        }
-    }
-)
-HUB_SET = HubSet.parse(HUB_SET_TEXT, source="hub-set.json")
-RUN = DispatchedRun(
-    repository=f"{OWNER}/launchers-hub",
-    run_id=4242,
-    html_url=f"https://github.com/{OWNER}/launchers-hub/actions/runs/4242",
-)
-
-
-def _unwrapped(text: str) -> str:
-    return " ".join(text.split())
-
-
-# --- the hub set ---
-
-
-def test_a_hub_set_keeps_every_hub_in_its_order() -> None:
-    assert [(hub.name, hub.ref, hub.commit) for hub in HUB_SET.hubs] == [
-        ("nodes-hub", "main", "a" * 40),
-        ("launchers-hub", HUB_TAG, LAUNCHERS_COMMIT),
-        ("private-nodes-hub", "main", "c" * 40),
-    ]
-
-
-def test_a_hub_set_is_passed_on_as_one_line_of_its_schema() -> None:
-    text = HUB_SET.compact_json()
-
-    assert "\n" not in text
-    assert json.loads(text) == json.loads(HUB_SET_TEXT)
-
-
-def test_a_hub_set_is_loaded_from_its_file(tmp_path: Path) -> None:
-    path = tmp_path / "hub-set.json"
-    path.write_text(HUB_SET_TEXT)
-
-    assert HubSet.load(path) == HUB_SET
-
-
-def test_a_missing_hub_set_file_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(ReleaseError, match="cannot read the hub set"):
-        HubSet.load(tmp_path / "hub-set.json")
-
-
-def test_a_hub_is_found_by_name_and_a_missing_one_is_refused() -> None:
-    assert HUB_SET.hub("launchers-hub").commit == LAUNCHERS_COMMIT
-    with pytest.raises(ReleaseError, match="names no mcp-hub; it names nodes-hub"):
-        HUB_SET.hub("mcp-hub")
-
-
-@pytest.mark.parametrize(
-    ("text", "refusal"),
-    [
-        ("not json", "is not JSON"),
-        ("[]", "must have the shape"),
-        ('{"hubs": {}}', "must have the shape"),
-        ('{"hubs": {}, "name": "x"}', "must have the shape"),
-        ('{"hubs": {"nodes-hub": "main"}}', "entry of nodes-hub"),
-        (
-            '{"hubs": {"nodes-hub": {"ref": "", "commit": "' + "a" * 40 + '"}}}',
-            "entry of nodes-hub",
-        ),
-        ('{"hubs": {"nodes-hub": {"ref": "main"}}}', "entry of nodes-hub"),
-        (
-            '{"hubs": {"nodes-hub": {"ref": "main", "commit": "main"}}}',
-            "records `main`",
-        ),
-        (
-            '{"hubs": {"nodes-hub": {"ref": "main", "commit": "' + "A" * 40 + '"}}}',
-            "records `AAAA",
-        ),
-        (
-            '{"hubs": {"../peppy": {"ref": "main", "commit": "' + "a" * 40 + '"}}}',
-            "not a repository name",
-        ),
-    ],
-)
-def test_a_malformed_hub_set_is_refused(text: str, refusal: str) -> None:
-    with pytest.raises(ReleaseError, match=re.escape(refusal)):
-        HubSet.parse(text, source="hub-set.json")
+# The hub set the hub-set job records, launchers-hub at its tag of the release.
+HUB_SET_DOCUMENT = hub_set_document({"launchers-hub": HUB_TAG})
+HUB_SET = resolve.parse_release_set(json.dumps(HUB_SET_DOCUMENT))
+RUN = DispatchedRun(repository=RepoSlug(OWNER, "launchers-hub"), run_id=4242)
 
 
 # --- the hub tags ---
 
-
-def test_the_hub_tag_of_a_release() -> None:
-    assert hub_release_tag("v0.3.0") == HUB_TAG
-
-
-HUB_API = f"https://api.github.com/repos/{OWNER}/nodes-hub"
+NODES_HUB = RepoSlug(OWNER, "nodes-hub")
+HUB_API = NODES_HUB.api_url
 
 
 def test_a_hub_without_the_tag_has_no_tag_commit(
@@ -142,7 +54,7 @@ def test_a_hub_without_the_tag_has_no_tag_commit(
         return_value=httpx.Response(404, json={"message": "Not Found"})
     )
 
-    assert read_hub_tag_commit(github_client, OWNER, "nodes-hub", HUB_TAG) is None
+    assert read_hub_tag_commit(github_client, NODES_HUB, HUB_TAG) is None
 
 
 def test_a_tag_is_followed_down_to_its_commit(
@@ -165,7 +77,7 @@ def test_a_tag_is_followed_down_to_its_commit(
         )
     )
 
-    assert read_hub_tag_commit(github_client, OWNER, "nodes-hub", HUB_TAG) == "3" * 40
+    assert read_hub_tag_commit(github_client, NODES_HUB, HUB_TAG) == "3" * 40
 
 
 def test_a_tag_that_names_no_commit_is_refused(
@@ -178,7 +90,7 @@ def test_a_tag_that_names_no_commit_is_refused(
     )
 
     with pytest.raises(ReleaseError, match="names a tree"):
-        read_hub_tag_commit(github_client, OWNER, "nodes-hub", HUB_TAG)
+        read_hub_tag_commit(github_client, NODES_HUB, HUB_TAG)
 
 
 def test_a_malformed_ref_response_is_refused(
@@ -189,42 +101,24 @@ def test_a_malformed_ref_response_is_refused(
     )
 
     with pytest.raises(ReleaseError, match="unexpected GitHub API response"):
-        read_hub_tag_commit(github_client, OWNER, "nodes-hub", HUB_TAG)
+        read_hub_tag_commit(github_client, NODES_HUB, HUB_TAG)
 
 
 # --- the launchers-hub run ---
 
-DISPATCH_URL = (
-    f"https://api.github.com/repos/{OWNER}/launchers-hub/actions/workflows/"
-    "tests.yml/dispatches"
-)
+DISPATCH_URL = f"{RUN.repository.api_url}/actions/workflows/tests.yml/dispatches"
 
 
 def _dispatch_response(run_id: int = RUN.run_id) -> dict:
     return {
         "workflow_run_id": run_id,
-        "run_url": f"https://api.github.com/repos/{OWNER}/launchers-hub/actions/runs/{run_id}",
+        "run_url": f"{RUN.repository.api_url}/actions/runs/{run_id}",
         "html_url": f"https://github.com/{OWNER}/launchers-hub/actions/runs/{run_id}",
     }
 
 
 def _run_response(status: str, conclusion: str | None = None) -> dict:
     return {"id": RUN.run_id, "status": status, "conclusion": conclusion}
-
-
-class FakeTime:
-    """A clock that moves only when the wait sleeps."""
-
-    def __init__(self) -> None:
-        self.now = 1000.0
-        self.sleeps: list[float] = []
-
-    def clock(self) -> float:
-        return self.now
-
-    def sleep(self, seconds: float) -> None:
-        self.sleeps.append(seconds)
-        self.now += seconds
 
 
 def _states(*states: RunState | ReleaseError) -> Callable[[], RunState]:
@@ -260,11 +154,11 @@ def test_a_dispatch_response_without_the_run_id_is_refused(response: object) -> 
         parse_dispatch_response(response, RUN.repository)
 
     assert "answered without a workflow_run_id, so the run it started is unknown" in (
-        _unwrapped(str(excinfo.value))
+        unwrapped(str(excinfo.value))
     )
 
 
-def test_a_dispatch_response_without_its_page_gets_the_run_page() -> None:
+def test_a_dispatched_run_has_its_page_and_its_api_url() -> None:
     run = parse_dispatch_response({"workflow_run_id": 7}, RUN.repository)
 
     assert run.html_url == f"https://github.com/{OWNER}/launchers-hub/actions/runs/7"
@@ -331,7 +225,7 @@ def test_the_wait_stops_after_too_many_failed_reads_in_a_row() -> None:
             max_failed_reads=3,
         )
 
-    message = _unwrapped(str(excinfo.value))
+    message = unwrapped(str(excinfo.value))
     assert f"reading the run {RUN.html_url} failed 3 times in a row" in message
     assert "Status: 504" in message
 
@@ -350,7 +244,7 @@ def test_the_wait_stops_at_its_timeout() -> None:
         )
 
     assert time.sleeps == [60.0, 60.0, 60.0]
-    assert f"the run {RUN.html_url} did not complete within 3 minutes" in _unwrapped(
+    assert f"the run {RUN.html_url} did not complete within 3 minutes" in unwrapped(
         str(excinfo.value)
     )
 
@@ -364,7 +258,7 @@ def test_any_other_conclusion_fails_naming_the_run(conclusion: str | None) -> No
     with pytest.raises(ReleaseError) as excinfo:
         require_successful_run(RunState("completed", conclusion), RUN)
 
-    message = _unwrapped(str(excinfo.value))
+    message = unwrapped(str(excinfo.value))
     assert f"the launchers-hub run {RUN.html_url} concluded `{conclusion}`" in message
     assert "nothing is published" in message
 
@@ -417,10 +311,15 @@ def test_launchers_hub_tests_run_on_the_set_and_the_release_run(
 
     assert run == RUN
     [dispatch] = launchers_hub["dispatches"]
-    assert json.loads(dispatch.content) == {
+    payload = json.loads(dispatch.content)
+    dispatched_set = payload["inputs"]["set"]
+    assert payload == {
         "ref": "main",
-        "inputs": {"peppy-run-id": "18000000001", "set": HUB_SET.compact_json()},
+        "inputs": {"peppy-run-id": "18000000001", "set": dispatched_set},
     }
+    # The set goes on as one line of the schema it was recorded in.
+    assert "\n" not in dispatched_set
+    assert json.loads(dispatched_set) == HUB_SET_DOCUMENT
     # The release token dispatches; the job token, which outlives it, reads.
     assert dispatch.headers["Authorization"] == "Bearer release-token"
     assert {read.headers["Authorization"] for read in launchers_hub["reads"]} == {
@@ -469,27 +368,6 @@ def test_launchers_hub_tests_that_fail_fail_the_stage(
             OWNER,
             HUB_SET,
             18000000001,
-            sleep=time.sleep,
-            clock=time.clock,
-        )
-
-
-def test_a_set_without_launchers_hub_dispatches_nothing(
-    mock_api: respx.MockRouter,
-) -> None:
-    hub_set = HubSet.parse(
-        json.dumps({"hubs": {"nodes-hub": {"ref": "main", "commit": "a" * 40}}}),
-        source="hub-set.json",
-    )
-    time = FakeTime()
-
-    with pytest.raises(ReleaseError, match=f"names no {LAUNCHERS_HUB}"):
-        check_launchers(
-            _client("release-token"),
-            _client("job-token"),
-            OWNER,
-            hub_set,
-            1,
             sleep=time.sleep,
             clock=time.clock,
         )

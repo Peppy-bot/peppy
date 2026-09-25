@@ -14,9 +14,10 @@
 # peppy's git transport, checks it.
 #
 # The hub-ci-peppy action runs this script through $GITHUB_ACTION_PATH, and the
-# jobs of the peppy release that read private-nodes-hub run it from their
-# checkout. It is a script because a composite action that another repository
-# calls cannot use a local action beside it, and both have to run it.
+# hub-set job of the peppy release, which reads private-nodes-hub, runs it from
+# its checkout. It is a script because a composite action that another
+# repository calls cannot use a local action beside it, and both have to run
+# it.
 set -euo pipefail
 
 if [ -z "${PRIVATE_NODES_HUB_DEPLOY_KEY:-}" ]; then

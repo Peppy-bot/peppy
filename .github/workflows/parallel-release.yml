@@ -19,14 +19,14 @@ name: Parallel release
 # it the one users download.
 #
 # The release also publishes the hub content its peppy reads. hub-set records
-# the commit of each hub the release tests (the six hubs of
-# .github/actions/hub-ci-peppy/resolve.py) and checks each hub's repository
-# index with the x86_64 archive; hub-launch runs launchers-hub's tests, which
-# launch every launcher, on those commits and that archive. Before it
-# publishes the release, publish tags each hub `peppy-release/<tag>` at its
-# recorded commit: that tag is where a peppy of this version reads its default
-# hubs. The launchers-hub run takes up to about 75 minutes and publish waits
-# for it, so publish starts about 75 to 80 minutes after the builds end.
+# the commit of each hub the release tests (the hubs of
+# .github/actions/hub-ci-peppy/resolve.py) and checks every hub at its commit
+# with the x86_64 archive; hub-launch runs launchers-hub's tests, which launch
+# every launcher, on those commits and that archive. Before it publishes the
+# release, publish tags each hub `peppy-release/<tag>` at its recorded commit:
+# that tag is where a peppy of this version reads its default hubs. The
+# launchers-hub run takes up to about 75 minutes and publish waits for it, so
+# publish starts about 75 to 80 minutes after the builds end.
 # Nothing is published when a job before publish fails, or when publish fails
 # before its release step.
 #
@@ -84,8 +84,9 @@ concurrency:
 # - prepare: this repository, contents and pull requests, for the docs pull
 #   requests.
 # - hub-launch: launchers-hub, actions, for the dispatch of its tests alone.
-# - publish: this repository and the six hubs, contents and workflows, for the
-#   release, the pushes to `dev` and `main`, and the hub tags.
+# - publish: this repository and every hub of the hub set, contents and
+#   workflows, for the release, the pushes to `dev` and `main`, and the hub
+#   tags.
 #
 # A token lasts an hour from the step that makes it, so a job's writes have to
 # fit in that hour, and it is revoked when its job ends. hub-launch reads the
@@ -93,8 +94,8 @@ concurrency:
 # long as the job.
 #
 # The environment also holds PRIVATE_NODES_HUB_DEPLOY_KEY, the deploy key that
-# reads private-nodes-hub. prepare and hub-set load it and read the public hubs
-# over https, so the steps that read the hubs need no App permission on them.
+# reads private-nodes-hub. hub-set loads it and reads the public hubs over
+# https, so the steps that read the hubs need no App permission on them.
 # hub-set names the environment for that key alone.
 permissions:
   contents: read
@@ -108,8 +109,7 @@ jobs:
   # docs gate and drafts the notes, all recorded in the release plan. Its
   # release token pushes the branches of the docs pull requests and opens
   # them, so it writes contents and pull requests; the checkout keeps it for
-  # those pushes. It then lists the hubs that already carry the tag of this
-  # release.
+  # those pushes.
   prepare:
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     environment: release
@@ -172,23 +172,6 @@ jobs:
             --plan "$RUNNER_TEMP/release-plan/release-plan.json" \
             "${extra_args[@]}" \
             < /dev/null
-
-      # The listing below reads every hub, private-nodes-hub through its
-      # deploy key. The key is loaded after the step that runs Claude, so no
-      # step that runs Claude reaches it.
-      - name: Load the deploy key of private-nodes-hub
-        env:
-          PRIVATE_NODES_HUB_DEPLOY_KEY: ${{ secrets.PRIVATE_NODES_HUB_DEPLOY_KEY }}
-        run: ./.github/actions/hub-ci-peppy/load-private-hub-key.sh
-
-      # A hub that carries `peppy-release/<tag>` already was tagged by an
-      # earlier run of this version that stopped in publish. Nobody can move
-      # or delete the tag, so hub-set tests that hub at the tagged commit; the
-      # log and the job summary name each such hub and its commit.
-      - name: List the hubs that already carry the tag of this release
-        env:
-          TAG: ${{ inputs.tag }}
-        run: python3 .github/actions/hub-ci-peppy/resolve.py release-tags --tag "$TAG"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -314,28 +297,43 @@ jobs:
   # tests, each hub at its tag `peppy-release/<tag>` where an earlier run of
   # this version left one, else at the head of its main. The artifact hub-set
   # holds it, and every later job reads the commits it records, never a
-  # branch: main can move while the release runs. The job then checks the set
-  # with the x86_64 archive of this release: an isolated daemon reads every
-  # hub of the set at its commit with `peppy repo refresh --strict`, and each
-  # hub's repository index is checked at its commit, as the hub's own CI
-  # checks it.
+  # branch: main can move while the release runs. The job's `hubs` output
+  # names the hubs of the set, for the token of publish, which tags them all.
+  # A hub that already carries the tag was tagged by an earlier run of this
+  # version that stopped in publish; nobody can move or delete the tag, so the
+  # set holds that hub at the tagged commit, and the job summary names it.
+  #
+  # The job then checks the set with the x86_64 archive of this release (the
+  # hub-check stage, see scripts/functions/release_install_check.py): an
+  # isolated daemon reads every hub of the set at its commit with `peppy repo
+  # refresh --strict`, and each hub's repository index is checked at its
+  # commit, as the hub's own CI checks it.
   hub-set:
     needs: build
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     environment: release
     timeout-minutes: 30
+    outputs:
+      hubs: ${{ steps.record.outputs.hubs }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      # Before the deploy key is loaded, so the provisioning never reaches it.
+      - uses: ./.github/actions/release-host-env
+
+      # The key is loaded into an ssh-agent whose socket every later step of
+      # the job reads private-nodes-hub through: the recording of the set, and
+      # the daemon and the checkouts of the check.
       - name: Load the deploy key of private-nodes-hub
         env:
           PRIVATE_NODES_HUB_DEPLOY_KEY: ${{ secrets.PRIVATE_NODES_HUB_DEPLOY_KEY }}
         run: ./.github/actions/hub-ci-peppy/load-private-hub-key.sh
 
       - name: Record the hub commits this release tests and tags
+        id: record
         env:
           TAG: ${{ inputs.tag }}
         run: |
@@ -357,77 +355,12 @@ jobs:
           name: archive-x86_64-unknown-linux-gnu
           path: ${{ runner.temp }}/archive
 
-      # Unpacked whole, as install.sh unpacks it: the daemon needs its bundled
-      # router and apptainer beside the binary.
-      - name: Install the x86_64 archive of this release
+      - name: Check every hub of the set with the x86_64 archive
         run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/peppy-dist"
-          tar -xzf "$RUNNER_TEMP/archive/peppy-x86_64-unknown-linux-gnu.tgz" \
-            -C "$RUNNER_TEMP/peppy-dist"
-          echo "$RUNNER_TEMP/peppy-dist/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/peppy-dist/bin/peppy" --version
-
-      # Every hub at its id and pinned to its recorded commit, so the daemon
-      # adds none of its defaults on top.
-      - name: Give the daemon the hubs of the set
-        run: |
-          set -euo pipefail
-          peppy_home="$RUNNER_TEMP/peppy-home"
-          python3 .github/actions/hub-ci-peppy/resolve.py release-repositories \
-            --set "$RUNNER_TEMP/hub-set/hub-set.json" \
-            --peppy-home "$peppy_home"
-          echo "PEPPY_HOME=$peppy_home" >> "$GITHUB_ENV"
-
-      # The daemon refuses to start where its apptainer cannot run
-      # unprivileged, which on Ubuntu 24.04 takes an AppArmor profile for this
-      # install's `starter`. `peppy container setup` writes it through the
-      # passwordless sudo of the runner image, keyed to this install's path.
-      - name: Ready the bundled apptainer for unprivileged use
-        run: peppy container setup < /dev/null
-
-      # The CLI finds the daemon through PEPPY_HOME/daemon_state.json5, so the
-      # job's own PEPPY_HOME is discovery and isolation from any other daemon
-      # in one, and the daemon gets a port of its own. Core-node names must be
-      # unique among daemons that can reach each other, hence the run id and
-      # attempt in the name.
-      - name: Start an isolated peppy daemon
-        run: |
-          set -euo pipefail
-          PEPPY_MESSAGING_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-          echo "PEPPY_MESSAGING_PORT=$PEPPY_MESSAGING_PORT" >> "$GITHUB_ENV"
-          export PEPPY_MESSAGING_PORT
-
-          nohup peppy service serve \
-            --core-node-name "release-hub-set-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            > "$RUNNER_TEMP/peppy-serve.log" 2>&1 &
-          for _ in $(seq 1 30); do
-            if [ -f "$PEPPY_HOME/daemon_state.json5" ]; then exit 0; fi
-            sleep 1
-          done
-          echo "the daemon did not come up within 30 seconds" >&2
-          exit 1
-
-      # With --strict, a hub the daemon cannot read at its recorded commit
-      # fails the step. It also fills the caches mcp-hub's index check reads
-      # the contracts from.
-      - name: Read every hub of the set
-        run: peppy repo refresh --strict
-
-      - name: Check the repository index of every hub
-        run: |
-          python3 .github/actions/hub-ci-peppy/resolve.py release-index-checks \
-            --set "$RUNNER_TEMP/hub-set/hub-set.json" \
-            --dir "$RUNNER_TEMP/hubs"
-
-      - name: Show the daemon log
-        if: failure()
-        run: |
-          if [ -f "$RUNNER_TEMP/peppy-serve.log" ]; then
-            cat "$RUNNER_TEMP/peppy-serve.log"
-          else
-            echo "No daemon was started."
-          fi
+          ./scripts/parallel_release.sh hub-check \
+            --hub-set "$RUNNER_TEMP/hub-set/hub-set.json" \
+            --archive "$RUNNER_TEMP/archive/peppy-x86_64-unknown-linux-gnu.tgz" \
+            < /dev/null
 
   # Runs launchers-hub's tests on the hub set and on the x86_64 archive of this
   # release run: the run the dispatch starts checks out the launchers-hub
@@ -497,11 +430,11 @@ jobs:
   # The peppy-release-bot App is the bypass actor of the branch rulesets on
   # `dev` and `main`, which is what lets its two direct pushes land; the
   # checkout keeps its token for them. The token covers this repository and
-  # the six hubs. It writes contents (the release, its archives, both pushes
-  # and the hub tags) and workflows: the fast-forward of `main` carries every
-  # commit `dev` took since the last release, and GitHub refuses a push that
-  # changes a file under .github/workflows/ from an App token without that
-  # permission.
+  # every hub of the hub set, which hub-set names in its `hubs` output. It
+  # writes contents (the release, its archives, both pushes and the hub tags)
+  # and workflows: the fast-forward of `main` carries every commit `dev` took
+  # since the last release, and GitHub refuses a push that changes a file
+  # under .github/workflows/ from an App token without that permission.
   #
   # A publish that fails is started again with "Re-run failed jobs" while the
   # run's artifacts exist (one day). The re-run finds what the failed attempt
@@ -520,7 +453,7 @@ jobs:
           client-id: ${{ secrets.PEPPY_RELEASE_BOT_CLIENT_ID }}
           private-key: ${{ secrets.PEPPY_RELEASE_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }},nodes-hub,launchers-hub,contracts-hub,mcp-hub,pairings-hub,private-nodes-hub
+          repositories: ${{ github.event.repository.name }},${{ needs.hub-set.outputs.hubs }}
           permission-contents: write
           permission-workflows: write
 
