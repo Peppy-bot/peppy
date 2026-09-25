@@ -423,9 +423,10 @@ fn in_reach<'a>(ids: impl IntoIterator<Item = &'a str>) -> String {
     }
 }
 
-/// An adjustment target the selection does not define is skipped; a target
-/// nothing can define is a dead reference, refused here once for every
-/// selection.
+/// A launcher adjustment target the selection does not define is skipped; a
+/// target nothing in the entry's reach can define is a dead reference, refused
+/// here once for every selection. A fragment's own entries name the
+/// instances that fragment deploys, checked where the fragment is read.
 fn check_targets(
     launcher: &PeppyLauncher,
     loaded: &LoadedComposition,
@@ -452,23 +453,6 @@ fn check_targets(
                 origin: origin.clone(),
                 in_reach: in_reach(beside.iter().copied()),
             });
-        }
-    }
-    let definable = ids_beside(launcher, loaded, None, launcher.components.iter());
-    for fragment in launcher
-        .components
-        .iter()
-        .flat_map(|axis| loaded.options_of(&axis.name))
-        .flat_map(|(_, option)| option.all_fragments())
-    {
-        for adjustment in &fragment.body.adjustments {
-            if !definable.contains(adjustment.target.as_str()) {
-                return Err(CompositionError::TargetDefinedNowhere {
-                    target: adjustment.target.to_string(),
-                    origin: fragment.origin.clone(),
-                    in_reach: in_reach(definable.iter().copied()),
-                });
-            }
         }
     }
     Ok(())

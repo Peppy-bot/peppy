@@ -562,18 +562,6 @@ pub enum CompositionError {
     },
 
     #[error(
-        "two fragments adjust the same thing: {first} and {second} both write \
-         `{target}.{field}`. Fragments refuse to fight over one value; the launcher \
-         specializes fragments"
-    )]
-    AdjustmentsConflict {
-        target: String,
-        field: String,
-        first: String,
-        second: String,
-    },
-
-    #[error(
         "adjustment in {origin} cannot append to slot `{slot}` on `{target}`: the slot holds \
          {holds}, and `add_links` appends only to a slot bound as an array. Bind `{slot}` as an \
          array in the launcher, or, where its node declares it `one` or `zero_or_one`, declare \

@@ -1512,9 +1512,6 @@ fn a_target_a_stack_option_and_a_copy_option_both_define_is_refused() {
         instance(&launch.launcher, "cam_inst").arguments["streamed"],
         AnyType::Bool(true)
     );
-    // The copy option defines the same id, and no copy of it runs, so the
-    // write is the stack's alone.
-    assert!(launch.report.copies.is_empty());
 }
 
 #[test]

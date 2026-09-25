@@ -7,6 +7,7 @@ use super::super::types::{
     Deployment, DeploymentInstance, LauncherFramework, LinkTargets, LinkValue, PeppyLauncher,
     Selection, split_link_target,
 };
+use super::adjustments::Routed;
 use super::constraints::{self, ConstraintInPlay, ConstraintScope};
 use super::error::CompositionError;
 use super::expand::{
@@ -190,6 +191,8 @@ pub(super) struct CopyRequest<'a> {
     /// The copy's own adjustments, run after the launcher's and before
     /// `arguments`.
     pub adjustments: &'a [OriginatedAdjustment<'a>],
+    /// The launcher's adjustments, routed.
+    pub routed: &'a [Routed<'a>],
     pub origin: CopyOrigin,
 }
 
@@ -273,6 +276,7 @@ pub(super) fn compose_copy(
         with,
         arguments,
         adjustments,
+        routed,
         origin,
     } = request;
     check_copy_name(name)?;
@@ -320,7 +324,6 @@ pub(super) fn compose_copy(
     // An entry reaching an instance the option can define, running or
     // not, is the copy's: its skip is reported under the copy's name.
     let definable = loaded.definable_ids();
-    let routed = prepared.routed();
     let launcher_adjustments = routed
         .iter()
         .filter(|routed| {

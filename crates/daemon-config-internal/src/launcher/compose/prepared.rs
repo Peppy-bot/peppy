@@ -109,6 +109,7 @@ impl PreparedLauncher {
         let framework = self.stack_framework(&selection)?;
         let mut taken = bare.core_nodes.clone();
         let mut copies: Vec<ComposedCopy> = Vec::new();
+        let routed = self.routed();
         // The words scoped to a copy, `NAME.option`, laid over the copy's
         // settings.
         let scoped_words = |name: &Name,
@@ -136,6 +137,7 @@ impl PreparedLauncher {
                         with: &with,
                         arguments: &settings.arguments,
                         adjustments: &settings.adjustments,
+                        routed: &routed,
                         origin: CopyOrigin::File,
                     },
                     &taken,
@@ -234,6 +236,7 @@ impl PreparedLauncher {
             &argument_overrides(request.arguments)?,
         );
         let bare = self.compose_stack(stack.selection)?;
+        let routed = self.routed();
         let copy = compose_copy(
             self,
             stack.selection,
@@ -245,6 +248,7 @@ impl PreparedLauncher {
                 with: &settings.with,
                 arguments: &settings.arguments,
                 adjustments: &settings.adjustments,
+                routed: &routed,
                 origin,
             },
             &stack.launcher.core_nodes,
@@ -339,6 +343,7 @@ impl PreparedLauncher {
         // records that describe them, so a slot one of them pairs into is
         // not handed back as vacant.
         let mut released = HashSet::new();
+        let routed = self.routed();
         for record in remaining {
             let with: BTreeMap<String, String> = record
                 .selection
@@ -361,6 +366,7 @@ impl PreparedLauncher {
                     with: &with,
                     arguments: &ArgumentOverrides::default(),
                     adjustments: &[],
+                    routed: &routed,
                     origin: CopyOrigin::Join,
                 },
                 &[],
@@ -385,17 +391,17 @@ impl PreparedLauncher {
         let routed = self.routed();
         let mut launcher_adjustments = Vec::new();
         let mut in_copies = Vec::new();
-        for entry in routed
+        for routed in routed
             .iter()
             .filter(|routed| routed.entry.selected_in(selection))
         {
-            if entry.copy_axes.is_empty() {
-                launcher_adjustments.push(entry.entry.originated());
+            if routed.copy_axes.is_empty() {
+                launcher_adjustments.push(routed.entry.originated());
             }
-            in_copies.extend(entry.copy_axes.iter().map(|axis| SkippedAdjustment {
-                target: entry.entry.adjustment.target.to_string(),
+            in_copies.extend(routed.copy_axes.iter().map(|axis| SkippedAdjustment {
+                target: routed.entry.adjustment.target.to_string(),
                 reason: SkipReason::RunsInCopies((*axis).to_owned()),
-                origin: entry.entry.origin.clone(),
+                origin: routed.entry.origin.clone(),
             }));
         }
         let deployments_origin = self.top_level_origin("deployments");

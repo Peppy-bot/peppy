@@ -426,7 +426,7 @@ fn a_launch_time_join_names_an_option_and_a_copy() {
         "launch",
         "fleet",
         "--join",
-        "openarm_v2_sim:alpha",
+        "openarm_sim:alpha",
         "--join",
         "so101_sim:charlie",
         "--with",
@@ -442,7 +442,7 @@ fn a_launch_time_join_names_an_option_and_a_copy() {
             .iter()
             .map(|join| (join.option.as_str(), join.name.as_str()))
             .collect::<Vec<_>>(),
-        [("openarm_v2_sim", "alpha"), ("so101_sim", "charlie")]
+        [("openarm_sim", "alpha"), ("so101_sim", "charlie")]
     );
     assert_eq!(with.words, ["alpha.xr_commander"]);
     let cli = StackCli::try_parse_from([
@@ -450,7 +450,7 @@ fn a_launch_time_join_names_an_option_and_a_copy() {
         "resolve",
         "fleet",
         "--join",
-        "openarm_v2_sim:alpha,so101_sim:bravo",
+        "openarm_sim:alpha,so101_sim:bravo",
         "--with",
         "bravo.xr_commander",
     ])
@@ -464,7 +464,7 @@ fn a_launch_time_join_names_an_option_and_a_copy() {
             .iter()
             .map(|join| (join.option.as_str(), join.name.as_str()))
             .collect::<Vec<_>>(),
-        [("openarm_v2_sim", "alpha"), ("so101_sim", "bravo")]
+        [("openarm_sim", "alpha"), ("so101_sim", "bravo")]
     );
     assert_eq!(with.words, ["bravo.xr_commander"]);
     let error = StackCli::try_parse_from(["stack", "launch", "fleet", "--join", "real"])
@@ -483,9 +483,9 @@ fn a_launch_time_join_takes_several_copies_in_one_word() {
         "build",
         "fleet",
         "--join",
-        "openarm_v2_sim:alpha,so101_sim:charlie",
+        "openarm_sim:alpha,so101_sim:charlie",
         "--join",
-        "openarm_v1_sim:bravo",
+        "openarm_sim:bravo",
     ])
     .unwrap();
     let StackCommands::Build(LauncherArgs { joins, .. }) = cli.command else {
@@ -498,9 +498,9 @@ fn a_launch_time_join_takes_several_copies_in_one_word() {
             .map(|join| (join.option.as_str(), join.name.as_str()))
             .collect::<Vec<_>>(),
         [
-            ("openarm_v2_sim", "alpha"),
+            ("openarm_sim", "alpha"),
             ("so101_sim", "charlie"),
-            ("openarm_v1_sim", "bravo"),
+            ("openarm_sim", "bravo"),
         ]
     );
 }

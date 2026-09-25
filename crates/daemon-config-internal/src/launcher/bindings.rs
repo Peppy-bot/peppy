@@ -2091,8 +2091,9 @@ mod tests {
         assert_eq!(
             out.errors[0].to_string(),
             "`the_camera` fills `cons1.links.cameras` from outside any copy, and every member of \
-             `cameras` belongs to a copy. Add the instance from a copy's own fragment with \
-             `add_links: { cameras: [\"<id>\"] }` on `cons1`, and drop it from `cons1`'s `links`"
+             `cameras` belongs to a copy. Add the instance from the launcher's `adjustments` under \
+             the copy's option, with `add_links: { cameras: [\"<id>\"] }` on `cons1`, and drop it \
+             from `cons1`'s `links`"
         );
     }
 

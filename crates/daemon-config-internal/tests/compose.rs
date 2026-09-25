@@ -147,6 +147,97 @@ fn the_file_deploys_the_flat_document() {
     );
 }
 
+/// A launcher's own `adjustments` name at least one entry, the rule a
+/// fragment and an option hold to as well.
+#[test]
+fn a_launchers_empty_adjustments_list_is_refused() {
+    let error = PeppyLauncherParser::from_content(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "a", options: { on: { deployments: [] } } }],
+        adjustments: [],
+        deployments: [{ a: "on" }]
+    }"#,
+    )
+    .expect_err("an empty list names nothing")
+    .to_string();
+    assert!(
+        error.contains("`adjustments` names no entry"),
+        "got: {error}"
+    );
+}
+
+/// `null` is neither entries nor absence, under the launcher's own key, a
+/// fragment file's and a copy's alike.
+#[test]
+fn a_null_adjustments_key_is_refused_wherever_it_is_written() {
+    for (document, site) in [
+        (
+            r#"{ peppy_schema: "launcher/v1",
+               components: [{ name: "a", options: { on: { deployments: [] } } }],
+               adjustments: null, deployments: [{ a: "on" }] }"#,
+            "the launcher",
+        ),
+        (
+            r#"{ peppy_schema: "launcher/v1",
+               components: [{ name: "a", cardinality: "zero_or_more", options: { on: { deployments: [] } } }],
+               deployments: [{ a: "on", instances: [{ instance_id: "alpha", adjustments: null }] }] }"#,
+            "a copy",
+        ),
+    ] {
+        let error = PeppyLauncherParser::from_content(document)
+            .expect_err(site)
+            .to_string();
+        assert!(error.contains("expected a sequence"), "{site}: {error}");
+    }
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("fragments/a.json5"),
+        &fragment_file(r#"deployments: [], adjustments: null"#),
+    );
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{ peppy_schema: "launcher/v1",
+           components: [{ name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } }],
+           deployments: [] }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+    let error = compose(&parsed, &launcher, &words(&["on"])).expect_err("a fragment file");
+    assert!(
+        error.to_string().contains("expected a sequence"),
+        "got: {error}"
+    );
+}
+
+/// An option entry's and a copy's `adjustments` hold to the same rule.
+#[test]
+fn an_entrys_or_a_copys_empty_adjustments_list_is_refused() {
+    for (deployments, label) in [
+        (
+            r#"[{ a: "on", adjustments: [] }]"#,
+            "`adjustments` of `a: on`",
+        ),
+        (
+            r#"[{ a: "on", instances: [{ instance_id: "alpha", adjustments: [] }] }]"#,
+            "copy `alpha`",
+        ),
+    ] {
+        let error = PeppyLauncherParser::from_content(&format!(
+            r#"{{
+            peppy_schema: "launcher/v1",
+            components: [{{ name: "a", cardinality: "zero_or_more", options: {{ on: {{ deployments: [] }} }} }}],
+            deployments: {deployments}
+        }}"#
+        ))
+        .expect_err("an empty list names nothing")
+        .to_string();
+        assert!(
+            error.contains(label) && error.contains("`adjustments` names no entry"),
+            "got: {error}"
+        );
+    }
+}
+
 #[test]
 fn a_selection_swaps_the_deployed_option_and_pulls_in_fragments_in_order() {
     let dir = tempdir().unwrap();
@@ -721,18 +812,17 @@ fn an_adjustment_target_defined_nowhere_is_refused() {
     assert_eq!(in_reach, "no instance runs beside it to target");
 }
 
-/// A fragment file's own adjustments run before the launcher's, and an
-/// option's entry writing the same field wins without a conflict: the
-/// launcher owns the file.
+/// A fragment's own adjustments run before the launcher's, and an option's
+/// entry writing the same field wins: the launcher owns the file.
 #[test]
-fn a_fragment_files_adjustments_run_before_the_options_and_the_options_win() {
+fn a_fragments_adjustments_run_before_the_options_and_the_options_win() {
     let dir = tempdir().unwrap();
     write(
         &dir.path().join("fragments/a.json5"),
         &fragment_file(
             r#"
             deployments: [{ source: { name: "a", tag: "v1" }, instances: [{ instance_id: "a_inst" }] }],
-            adjustments: [ { target: "panel", set_arguments: { rate: 10 } } ],
+            adjustments: [ { target: "a_inst", set_arguments: { rate: 10 } } ],
         "#,
         ),
     );
@@ -743,12 +833,10 @@ fn a_fragment_files_adjustments_run_before_the_options_and_the_options_win() {
             components: [
                 { name: "a", cardinality: "zero_or_one", options: { on: {
                     fragments: ["fragments/a.json5"],
-                    adjustments: [ { target: "panel", set_arguments: { rate: 20 } } ],
+                    adjustments: [ { target: "a_inst", set_arguments: { rate: 20 } } ],
                 } } },
             ],
-            deployments: [
-                { source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] },
-            ],
+            deployments: [],
         }"#,
     );
     let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
@@ -766,109 +854,17 @@ fn a_fragment_files_adjustments_run_before_the_options_and_the_options_win() {
     assert_eq!(origins, ["fragments/a.json5", "l.json5, option `a.on`"]);
 }
 
+/// A fragment's entries apply in list order, as a launcher's do: a slot it
+/// replaces and then appends to holds both writes.
 #[test]
-fn a_fragments_adjustment_target_defined_nowhere_is_refused() {
+fn a_fragments_entries_apply_in_list_order_replace_then_append_included() {
     let dir = tempdir().unwrap();
     write(
         &dir.path().join("fragments/a.json5"),
         &fragment_file(
             r#"
-            adjustments: [ { target: "ghost_inst", set_arguments: { x: 1 } } ],
-        "#,
-        ),
-    );
-    let launcher = write(
-        &dir.path().join("l.json5"),
-        r#"{
-            peppy_schema: "launcher/v1",
-            components: [
-                { name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } },
-            ],
-            deployments: [],
-        }"#,
-    );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let err = compose(&parsed, &launcher, &["on".to_string()]).expect_err("dead target");
-    let CompositionError::TargetDefinedNowhere { target, .. } = &err else {
-        panic!("expected TargetDefinedNowhere, got: {err}");
-    };
-    assert_eq!(target, "ghost_inst");
-}
-
-#[test]
-fn add_links_appends_across_fragments_in_order() {
-    let dir = tempdir().unwrap();
-    write(
-        &dir.path().join("fragments/a.json5"),
-        &fragment_file(
-            r#"
-            deployments: [],
-            adjustments: [
-                { target: "panel", add_links: { observers: ["a_inst"] } },
-            ],
-        "#,
-        ),
-    );
-    write(
-        &dir.path().join("fragments/b.json5"),
-        &fragment_file(
-            r#"
-            deployments: [],
-            adjustments: [
-                { target: "panel", add_links: { observers: ["b_inst"] } },
-            ],
-        "#,
-        ),
-    );
-    let launcher = write(
-        &dir.path().join("l.json5"),
-        r#"{
-            peppy_schema: "launcher/v1",
-            components: [
-                { name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } },
-                { name: "b", cardinality: "zero_or_one", options: { on: "fragments/b.json5" } },
-            ],
-            deployments: [
-                { source: { name: "panel", tag: "v1" },
-                  instances: [{ instance_id: "panel",
-                                links: { observers: ["seed_inst"] } }] },
-                { source: { name: "seed", tag: "v1" }, instances: [{ instance_id: "seed_inst" }] },
-                { source: { name: "a", tag: "v1" }, instances: [{ instance_id: "a_inst" }] },
-                { source: { name: "b", tag: "v1" }, instances: [{ instance_id: "b_inst" }] },
-            ],
-        }"#,
-    );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let (flat, report) = compose(
-        &parsed,
-        &launcher,
-        &["a=on".to_string(), "b=on".to_string()],
-    )
-    .expect("composes");
-    let panel = &flat.deployments[0].instances[0];
-    let LinkValue::Bound(Selection::Array(targets)) = &panel.links["observers"] else {
-        panic!("observers stays an array binding");
-    };
-    assert_eq!(targets.as_slice(), ["seed_inst", "a_inst", "b_inst"]);
-    let added: Vec<&str> = report
-        .applied
-        .iter()
-        .filter(|a| a.change.field() == "links.observers")
-        .map(|a| match &a.change {
-            AppliedChange::LinkAdded { target, .. } => target.as_str(),
-            _ => "",
-        })
-        .collect();
-    assert_eq!(added, ["a_inst", "b_inst"]);
-}
-
-#[test]
-fn replacing_and_appending_to_one_slot_conflict_even_in_one_fragment() {
-    let dir = tempdir().unwrap();
-    write(
-        &dir.path().join("fragments/a.json5"),
-        &fragment_file(
-            r#"
+            deployments: [{ source: { name: "a", tag: "v1" },
+                            instances: [{ instance_id: "panel" }, { instance_id: "seed_inst" }, { instance_id: "a_inst" }] }],
             adjustments: [
                 { target: "panel", set_links: { observers: ["seed_inst"] } },
                 { target: "panel", add_links: { observers: ["a_inst"] } },
@@ -880,41 +876,41 @@ fn replacing_and_appending_to_one_slot_conflict_even_in_one_fragment() {
         &dir.path().join("l.json5"),
         r#"{
             peppy_schema: "launcher/v1",
-            components: [
-                { name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } },
-            ],
-            deployments: [
-                { source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] },
-                { source: { name: "seed", tag: "v1" }, instances: [{ instance_id: "seed_inst" }] },
-                { source: { name: "a", tag: "v1" }, instances: [{ instance_id: "a_inst" }] },
-            ],
+            components: [{ name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } }],
+            deployments: [],
         }"#,
     );
     let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let err = compose(&parsed, &launcher, &words(&["on"]))
-        .expect_err("replace and append are two claims on one entry");
-    let CompositionError::AdjustmentsConflict { field, .. } = &err else {
-        panic!("expected AdjustmentsConflict, got: {err}");
+    let (flat, report) = compose(&parsed, &launcher, &words(&["on"])).expect("composes");
+    let panel = flat.deployments[0]
+        .instances
+        .iter()
+        .find(|instance| instance.instance_id == "panel")
+        .expect("the panel is deployed");
+    let LinkValue::Bound(Selection::Array(targets)) = &panel.links["observers"] else {
+        panic!("observers is an array binding");
     };
-    assert_eq!(field, "links.observers");
+    assert_eq!(targets.as_slice(), ["seed_inst", "a_inst"]);
+    let fields: Vec<String> = report
+        .applied
+        .iter()
+        .map(|entry| entry.change.field())
+        .collect();
+    assert_eq!(fields, ["links.observers", "links.observers"]);
 }
 
+/// A fragment writes only the instances it deploys, so an entry naming
+/// anything else is refused where the fragment is read, naming what it does
+/// deploy.
 #[test]
-fn two_fragments_writing_one_key_are_refused() {
+fn a_fragment_adjusting_an_instance_it_does_not_deploy_is_refused() {
     let dir = tempdir().unwrap();
     write(
         &dir.path().join("fragments/a.json5"),
         &fragment_file(
             r#"
+            deployments: [{ source: { name: "a", tag: "v1" }, instances: [{ instance_id: "a_inst" }] }],
             adjustments: [ { target: "panel", set_arguments: { rate: 10 } } ],
-        "#,
-        ),
-    );
-    write(
-        &dir.path().join("fragments/b.json5"),
-        &fragment_file(
-            r#"
-            adjustments: [ { target: "panel", set_arguments: { rate: 20 } } ],
         "#,
         ),
     );
@@ -924,7 +920,6 @@ fn two_fragments_writing_one_key_are_refused() {
             peppy_schema: "launcher/v1",
             components: [
                 { name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } },
-                { name: "b", cardinality: "zero_or_one", options: { on: "fragments/b.json5" } },
             ],
             deployments: [
                 { source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] },
@@ -932,35 +927,29 @@ fn two_fragments_writing_one_key_are_refused() {
         }"#,
     );
     let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let err = compose(
-        &parsed,
-        &launcher,
-        &["a=on".to_string(), "b=on".to_string()],
-    )
-    .expect_err("fragments must not fight");
-    let CompositionError::AdjustmentsConflict {
-        field,
-        first,
-        second,
-        ..
-    } = &err
-    else {
-        panic!("expected AdjustmentsConflict, got: {err}");
+    let err = compose(&parsed, &launcher, &words(&["on"])).expect_err("a fragment writes its own");
+    let CompositionError::FragmentInvalid { path, detail, .. } = &err else {
+        panic!("expected FragmentInvalid, got: {err}");
     };
-    assert_eq!(field, "arguments.rate");
+    assert_eq!(path, "fragments/a.json5");
     assert!(
-        first.contains("a.json5") && second.contains("b.json5"),
-        "got: {first} / {second}"
+        detail.contains("adjusts `panel`, which it does not deploy")
+            && detail.contains("`a_inst`")
+            && detail.contains("under the option that selects this file"),
+        "got: {detail}"
     );
 }
 
+/// The launcher's own entries apply after a fragment's, and a later one
+/// wins over an earlier one.
 #[test]
-fn the_base_overrides_a_fragment_and_a_later_base_entry_wins() {
+fn the_launchers_own_entries_apply_after_a_fragments_and_a_later_entry_wins() {
     let dir = tempdir().unwrap();
     write(
         &dir.path().join("fragments/a.json5"),
         &fragment_file(
             r#"
+            deployments: [{ source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] }],
             adjustments: [ { target: "panel", set_arguments: { rate: 10 } } ],
         "#,
         ),
@@ -976,9 +965,7 @@ fn the_base_overrides_a_fragment_and_a_later_base_entry_wins() {
                 { target: "panel", set_arguments: { rate: 20 } },
                 { target: "panel", set_arguments: { rate: 30 } },
             ],
-            deployments: [
-                { source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] },
-            ],
+            deployments: [],
         }"#,
     );
     let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
@@ -987,7 +974,7 @@ fn the_base_overrides_a_fragment_and_a_later_base_entry_wins() {
         flat.deployments[0].instances[0].arguments.get("rate"),
         Some(&AnyType::Int(30))
     );
-    // Both base entries and the fragment's contribution are visible, typed.
+    // Both launcher entries and the fragment's contribution are visible, typed.
     let rates: Vec<(Option<AnyType>, AnyType)> = report
         .applied
         .iter()

@@ -811,7 +811,7 @@ mod tests {
         )
         .with_joins(vec![
             LaunchJoin {
-                option: "openarm_v2_sim".to_owned(),
+                option: "openarm_sim".to_owned(),
                 name: Name::new("alpha").unwrap(),
             },
             LaunchJoin {

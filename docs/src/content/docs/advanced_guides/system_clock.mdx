@@ -214,19 +214,20 @@ An instance that omits `framework.clock` reads wall time. Naming a domain the la
 instance `backbone_inst` binds clock `sim`, which no `framework.clocks` entry declares. Declare it, or name one of `wall`, `operator_station`, `simulation`
 ```
 
-An [adjustment](/guides/launch_files/#adjustments) binds an instance a fragment deploys, written in the launcher under the option that selects the fragment, which is how one control or recorder fragment serves a physical robot and a simulated one:
+An [adjustment](/guides/launch_files/#adjustments) binds an instance a fragment deploys, written in the launcher under the option that selects the fragment, which is how one commander fragment serves a physical robot and a simulated one:
 
 ```json5
 options: {
-  openarm_v2_sim: {
-    fragments: ["openarm/fragments/openarm_v2_sim.json5"],
+  openarm_sim: {
+    fragments: ["openarm/fragments/openarm_sim.json5"],
     adjustments: [
-      { target: "recorder_inst", when: { recorder: "lerobot_recorder" },
-        set_framework: { clock: "simulation" } },
+      { target: "commander_inst", set_framework: { clock: "simulation" } },
     ],
   },
 },
 ```
+
+An instance the fragment deploys itself declares its own clock where it is written, so only the instances a launcher shares between a physical robot and a simulated one need this.
 
 ### Composing declarations
 
