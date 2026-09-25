@@ -30,20 +30,23 @@ runners:
       - Environment:shared
       - Stack:github-action-runners
 
-  # The Linux aarch64 release stages, which build natively on Graviton. The
-  # org runner and peppy-ubuntu24 are x64 only, so this boots
-  # peppy-ubuntu24-aarch64, the arm64 build of the CI image with the same
-  # setup_machine.sh toolchain. 16 vCPU and 32 GB, the core count of the
-  # x86_64 stages (a Graviton vCPU is a full core, as on the AMD families
-  # those stages use), and on demand: a release stage must not be
-  # interrupted. The release runs from dev, which is where RunsOn reads this.
+  # The Linux aarch64 release stages, provision and build, which build
+  # natively on Graviton. The org runner and peppy-ubuntu24 are x64 only, so
+  # this boots peppy-ubuntu24-aarch64, the arm64 build of the CI image with the
+  # same setup_machine.sh toolchain. 16 vCPU with 32 or 64 GB, the core count
+  # of the x86_64 stages (a Graviton vCPU is a full core, as on the AMD
+  # families those stages use), on the Graviton3 and Graviton4 compute and
+  # general purpose families, so that spot has four families to choose from.
+  # On spot, as the x86_64 stages: these stages only build and upload an
+  # artifact, and RunsOn runs one that AWS interrupts again on demand. The
+  # release runs from dev, which is where RunsOn reads this.
   release-arm64:
     cpu: 16
-    ram: 32
-    family: ["c7g", "c8g"]
+    ram: [32, 64]
+    family: ["c8g", "c7g", "m8g", "m7g"]
     image: peppy-ubuntu24-aarch64    # custom Peppy AMI (org config)
     volume: 150gb:gp3:500mbs:6000iops
-    spot: false
+    spot: price-capacity-optimized
     tags:
       - Environment:shared
       - Stack:github-action-runners
