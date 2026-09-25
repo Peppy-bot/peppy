@@ -486,6 +486,35 @@ def publish_release(
     return github_api(client, "PATCH", url, json_data={"draft": False})
 
 
+def find_published_release(
+    client: httpx.Client,
+    slug: RepoSlug,
+    tag: str,
+) -> ReleaseInfo | None:
+    """Return the published release of *tag*, or None when there is none.
+
+    GitHub's releases/tags endpoint answers published releases only (a draft
+    has no tag until it is published) and 404 without one. A draft in the
+    answer all the same is reported as no published release, never as one.
+    """
+    result = github_api(
+        client,
+        "GET",
+        f"https://api.github.com/repos/{slug.full}/releases/tags/{tag}",
+        none_on_404=True,
+    )
+    if result is None:
+        return None
+    if not isinstance(result, dict):
+        raise ReleaseError(
+            "unexpected GitHub API response for the release of a tag "
+            "(expected JSON object)"
+        )
+    if result.get("draft") is True:
+        return None
+    return parse_release_response(result)
+
+
 def get_latest_release(
     client: httpx.Client,
     slug: RepoSlug,

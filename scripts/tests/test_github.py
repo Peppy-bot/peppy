@@ -16,6 +16,7 @@ from functions.github import (
     UploadProgress,
     delete_draft_release,
     find_draft_releases,
+    find_published_release,
     get_latest_release,
     github_api,
     github_upload_asset,
@@ -439,6 +440,60 @@ def test_find_draft_releases_rejects_a_non_list_response(
 
     with pytest.raises(ReleaseError, match="expected JSON array"):
         find_draft_releases(github_client, SLUG, "v0.1.0")
+
+
+# --- find_published_release ---
+
+
+def test_find_published_release_returns_the_release_of_the_tag(
+    mock_api: respx.MockRouter,
+    github_client: httpx.Client,
+) -> None:
+    mock_api.get(f"{API_BASE}/releases/tags/v0.1.0").mock(
+        return_value=httpx.Response(
+            200,
+            json=_release(4, "v0.1.0", draft=False) | {"html_url": "https://t/v0.1.0"},
+        )
+    )
+
+    release = find_published_release(github_client, SLUG, "v0.1.0")
+
+    assert release is not None
+    assert (release.release_id, release.html_url) == (4, "https://t/v0.1.0")
+
+
+def test_find_published_release_is_none_without_one(
+    mock_api: respx.MockRouter,
+    github_client: httpx.Client,
+) -> None:
+    mock_api.get(f"{API_BASE}/releases/tags/v0.1.0").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+
+    assert find_published_release(github_client, SLUG, "v0.1.0") is None
+
+
+def test_find_published_release_never_takes_a_draft_for_one(
+    mock_api: respx.MockRouter,
+    github_client: httpx.Client,
+) -> None:
+    mock_api.get(f"{API_BASE}/releases/tags/v0.1.0").mock(
+        return_value=httpx.Response(200, json=_release(4, "v0.1.0", draft=True))
+    )
+
+    assert find_published_release(github_client, SLUG, "v0.1.0") is None
+
+
+def test_find_published_release_rejects_a_non_object_response(
+    mock_api: respx.MockRouter,
+    github_client: httpx.Client,
+) -> None:
+    mock_api.get(f"{API_BASE}/releases/tags/v0.1.0").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    with pytest.raises(ReleaseError, match="expected JSON object"):
+        find_published_release(github_client, SLUG, "v0.1.0")
 
 
 # --- publish_release ---

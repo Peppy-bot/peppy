@@ -23,8 +23,8 @@ console = Console(stderr=True)
 PROD_ROUTER_ENDPOINT_ENV = "PEPPY_PROD_ROUTER_ENDPOINT"
 
 # Env var the release scripts read the GitHub release token from. The release
-# workflow passes it from a repository secret of the same name, and GitHub
-# rejects secret names that start with GITHUB_.
+# workflow sets it to an installation token of the peppy-release-bot GitHub
+# App, made by the job that runs the stage.
 RELEASE_TOKEN_ENV = "PEPPY_RELEASE_TOKEN"
 
 RELEASE_TRIPLES: tuple[str, ...] = (
@@ -68,14 +68,6 @@ def prompt_yn(label: str, default_yes: bool = False) -> bool:
     Returns True for yes, False for no. Empty input returns the default.
     """
     return Confirm.ask(label, default=default_yes)
-
-
-def prompt_choice(label: str, choices: Sequence[str], default: str) -> str:
-    """Prompt the user to pick one of a fixed set of choices.
-
-    Returns the chosen value. Empty input returns the default.
-    """
-    return Prompt.ask(label, choices=list(choices), default=default)
 
 
 def _probe_publicly_trusted_tls(host: str, port: int, timeout: float = 10.0) -> None:
@@ -163,45 +155,38 @@ def require_release_token() -> str:
 
 
 def validate_release_environment(
-    required_commands: Sequence[str] = ("git", "cargo", "rustc"),
+    required_commands: Sequence[str],
     *,
-    require_token: bool = True,
     skip_prod_router_check: bool = False,
 ) -> str:
-    """Validate the release environment: check token and required commands.
+    """Check what a release needs before it starts: the prod routers, the token,
+    and the commands.
 
-    When require_token is False (for --local mode), skips token validation
-    and returns an empty string for the token.
+    The publicly-trusted prod-router gate runs first
+    (`verify_prod_router_publicly_trusted`), so a system-store-only CLI can
+    never be shipped against a deployment whose routers aren't publicly
+    trusted: the release stops before anything is built.
 
-    For a prod release (require_token=True) this also runs the publicly-trusted
-    prod-router gate up front (`verify_prod_router_publicly_trusted`), so a
-    system-store-only CLI can never be shipped against a deployment whose routers
-    aren't publicly trusted — aborted before anything is built. `--local` skips it
-    (require_token=False) and `--base-images` never reaches this function.
+    Passing skip_prod_router_check=True (the `--skip-prod-cert-check` flag)
+    bypasses that gate while keeping every other check. It exists for releases
+    against a deployment whose routers are known-good or not yet publicly
+    trusted; a loud warning is printed because a CLI shipped this way cannot
+    federate to routers that are not publicly trusted.
 
-    Passing skip_prod_router_check=True (the `--skip-prod-cert-check` flag) bypasses
-    that gate while keeping every other prod check. It exists for releases against a
-    deployment whose routers are known-good or not yet publicly trusted; a loud
-    warning is printed because a CLI shipped this way cannot federate to routers that
-    are not publicly trusted.
-
-    Returns the validated token string (empty if not required).
-    Raises ReleaseError if any check fails.
+    Returns the release token. Raises ReleaseError if any check fails.
     """
-    token = ""
-    if require_token:
-        if skip_prod_router_check:
-            console.print(
-                "[yellow]WARNING: skipping the prod-router publicly-trusted "
-                "certificate check (--skip-prod-cert-check). The shipped CLI trusts "
-                "only the system trust store; if the prod routers are not publicly "
-                "trusted, this release will be unable to federate to them.[/yellow]"
-            )
-        else:
-            # Prove the prod routers are publicly trusted *before* building anything.
-            verify_prod_router_publicly_trusted()
+    if skip_prod_router_check:
+        console.print(
+            "[yellow]WARNING: skipping the prod-router publicly-trusted "
+            "certificate check (--skip-prod-cert-check). The shipped CLI trusts "
+            "only the system trust store; if the prod routers are not publicly "
+            "trusted, this release will be unable to federate to them.[/yellow]"
+        )
+    else:
+        # Prove the prod routers are publicly trusted *before* building anything.
+        verify_prod_router_publicly_trusted()
 
-        token = require_release_token()
+    token = require_release_token()
 
     for cmd in required_commands:
         need_cmd(cmd)

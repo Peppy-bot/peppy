@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tarfile
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
+import respx
 
 from functions.build import BuildArtifact
-from functions.cli import ReleaseError
-from functions.docs import CheckResult, RequiredChange, UpdateOutcome, UpdateResult
-from functions.github import RepoSlug
+from functions.cli import RELEASE_TRIPLES, ReleaseError
+from functions.github import ReleaseInfo, RepoSlug
 from functions.lima import (
     GO_LINUX_ARM64_SHA256,
     GO_VERSION,
@@ -25,9 +29,14 @@ from functions.parallel_release import (
     BINDINGS_ARCHIVE,
     ReleasePlan,
     _apptainer_arches_for,
+    _commit_release_notes,
+    _dev_carries_release_notes,
+    _find_published_release,
     _install_pinned_go,
+    _main_already_at,
     _parse_args,
     _require_unused_tag,
+    _upload_archives_and_publish,
     _write_tarball,
     apptainer_archive_name,
     run_apptainer,
@@ -35,9 +44,10 @@ from functions.parallel_release import (
     run_build,
     run_prepare,
     run_publish,
-    verify_docs_gate,
 )
 from functions.release_summary import ReleaseContent
+from functions.repo import commit_paths as real_commit_paths
+from functions.repo import push_branch as real_push_branch
 
 RELEASE_COMMIT = "1111111111111111111111111111111111111111"
 OTHER_COMMIT = "2222222222222222222222222222222222222222"
@@ -48,8 +58,6 @@ CONTENT = ReleaseContent(
 )
 PLAN = ReleasePlan(tag="v0.3.0", release_commit=RELEASE_COMMIT, content=CONTENT)
 SLUG = RepoSlug(owner="test-owner", repo="test-repo")
-BLOCKING = RequiredChange(file="docs/x.mdx", change="document --verbose", severity="blocking")
-MINOR = RequiredChange(file="docs/y.mdx", change="reword the intro", severity="minor")
 APPTAINER_CACHE = "apptainer-1.5.2-{arch}-nosuid"
 
 
@@ -236,7 +244,7 @@ def prepare_mocks(tmp_path: Path):
     ) as validate, patch(
         "functions.parallel_release.get_repo_root", return_value=tmp_path
     ), patch(
-        "functions.parallel_release._verify_release_branch_state",
+        "functions.parallel_release.verify_release_branch_state",
         return_value=RELEASE_COMMIT,
     ) as branch_state, patch(
         "functions.parallel_release._require_unused_tag"
@@ -247,10 +255,10 @@ def prepare_mocks(tmp_path: Path):
     ) as client, patch(
         "functions.parallel_release.verify_docs_gate"
     ) as docs_gate, patch(
-        "functions.build_release.get_latest_release",
+        "functions.release_line.get_latest_release",
         return_value={"tag_name": "v0.2.0"},
     ), patch(
-        "functions.build_release.fetch_tag"
+        "functions.release_line.fetch_tag"
     ) as fetch_tag, patch(
         "functions.parallel_release.collect_release_changes"
     ) as collect, patch(
@@ -314,178 +322,6 @@ def test_prepare_skips_the_docs_gate_when_asked(
 
     prepare_mocks.docs_gate.assert_not_called()
     assert plan_path.exists()
-
-
-# --- the docs gate ---
-
-
-def _gate(
-    tmp_path: Path, *, open_minor_docs_pr: bool, base: str = "origin/main"
-) -> None:
-    with patch("functions.parallel_release._docs_check_base", return_value=base):
-        verify_docs_gate(
-            MagicMock(),
-            SLUG,
-            RELEASE_COMMIT,
-            tmp_path,
-            open_minor_docs_pr=open_minor_docs_pr,
-        )
-
-
-def _update_result(status: str, change: RequiredChange) -> UpdateResult:
-    return UpdateResult(
-        results=(UpdateOutcome(file=change.file, change=change.change, status=status),),
-        summary="updated",
-    )
-
-
-@patch("functions.parallel_release.has_changes_in_paths", return_value=True)
-def test_docs_gate_refuses_uncommitted_docs(mock_changes: MagicMock, tmp_path: Path) -> None:
-    with pytest.raises(ReleaseError, match="uncommitted changes"):
-        _gate(tmp_path, open_minor_docs_pr=False)
-
-
-@patch("functions.parallel_release._open_docs_pr", return_value="https://github.com/o/r/pull/7")
-@patch("functions.parallel_release._push_docs_sync_branch")
-@patch("functions.parallel_release._find_open_docs_sync_pr", return_value=None)
-@patch("functions.parallel_release.update_docs")
-@patch("functions.parallel_release.check_docs", return_value=CheckResult(changes=(BLOCKING,)))
-@patch("functions.parallel_release.has_changes_in_paths", side_effect=[False, True])
-def test_docs_gate_opens_the_sync_pr_and_stops_on_a_blocking_gap(
-    mock_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find: MagicMock,
-    mock_push: MagicMock,
-    mock_open: MagicMock,
-    tmp_path: Path,
-) -> None:
-    mock_update.return_value = _update_result("implemented", BLOCKING)
-
-    with pytest.raises(SystemExit) as exc_info:
-        _gate(tmp_path, open_minor_docs_pr=False, base="v0.29.0")
-
-    assert exc_info.value.code == 1
-    branch = f"auto/docs-update-{RELEASE_COMMIT[:12]}"
-    # The check and the update diff from the same base, the last shipped commit.
-    mock_check.assert_called_once_with("v0.29.0", RELEASE_COMMIT)
-    mock_update.assert_called_once_with("v0.29.0", RELEASE_COMMIT, (BLOCKING,))
-    mock_push.assert_called_once_with(
-        branch, tmp_path / "docs", "docs: sync with the code being released"
-    )
-    assert mock_open.call_args.args[2] == branch
-
-
-@patch("functions.parallel_release.update_docs")
-@patch("functions.parallel_release._find_open_docs_sync_pr", return_value="https://github.com/o/r/pull/6")
-@patch("functions.parallel_release.check_docs", return_value=CheckResult(changes=(BLOCKING,)))
-@patch("functions.parallel_release.has_changes_in_paths", return_value=False)
-def test_docs_gate_stops_on_the_sync_pr_already_open(
-    mock_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_find: MagicMock,
-    mock_update: MagicMock,
-    tmp_path: Path,
-) -> None:
-    with pytest.raises(SystemExit):
-        _gate(tmp_path, open_minor_docs_pr=False)
-
-    mock_update.assert_not_called()
-
-
-@patch("functions.parallel_release._find_open_docs_sync_pr", return_value=None)
-@patch("functions.parallel_release.update_docs")
-@patch("functions.parallel_release.check_docs", return_value=CheckResult(changes=(BLOCKING,)))
-@patch("functions.parallel_release.has_changes_in_paths", return_value=False)
-def test_docs_gate_continues_when_every_gap_is_already_documented(
-    mock_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find: MagicMock,
-    tmp_path: Path,
-) -> None:
-    mock_update.return_value = _update_result("already_covered", BLOCKING)
-
-    _gate(tmp_path, open_minor_docs_pr=False)
-
-
-@patch("functions.parallel_release._find_open_docs_sync_pr", return_value=None)
-@patch("functions.parallel_release.update_docs")
-@patch("functions.parallel_release.check_docs", return_value=CheckResult(changes=(BLOCKING,)))
-@patch("functions.parallel_release.has_changes_in_paths", return_value=False)
-def test_docs_gate_fails_when_the_update_changes_nothing(
-    mock_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find: MagicMock,
-    tmp_path: Path,
-) -> None:
-    mock_update.return_value = _update_result("implemented", BLOCKING)
-
-    with pytest.raises(ReleaseError, match="nothing changed there"):
-        _gate(tmp_path, open_minor_docs_pr=False)
-
-
-@patch("functions.parallel_release._find_open_docs_sync_pr")
-@patch("functions.parallel_release.update_docs")
-@patch("functions.parallel_release.check_docs", return_value=CheckResult(changes=(MINOR,)))
-@patch("functions.parallel_release.has_changes_in_paths", return_value=False)
-def test_docs_gate_leaves_minor_suggestions_alone_when_declined(
-    mock_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find: MagicMock,
-    tmp_path: Path,
-    capfd: pytest.CaptureFixture[str],
-) -> None:
-    _gate(tmp_path, open_minor_docs_pr=False)
-
-    mock_find.assert_not_called()
-    mock_update.assert_not_called()
-    # Still printed for whoever reads the log.
-    assert "reword the intro" in capfd.readouterr().err
-
-
-@patch("functions.parallel_release._open_docs_pr", return_value="https://github.com/o/r/pull/8")
-@patch("functions.parallel_release._push_docs_sync_branch")
-@patch("functions.parallel_release._find_open_docs_sync_pr", return_value=None)
-@patch("functions.parallel_release.update_docs")
-@patch("functions.parallel_release.check_docs", return_value=CheckResult(changes=(MINOR,)))
-@patch("functions.parallel_release.has_changes_in_paths", side_effect=[False, True])
-def test_docs_gate_opens_the_polish_pr_when_accepted_and_continues(
-    mock_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find: MagicMock,
-    mock_push: MagicMock,
-    mock_open: MagicMock,
-    tmp_path: Path,
-    capfd: pytest.CaptureFixture[str],
-) -> None:
-    mock_update.return_value = _update_result("implemented", MINOR)
-
-    _gate(tmp_path, open_minor_docs_pr=True)
-
-    branch = f"auto/docs-polish-{RELEASE_COMMIT[:12]}"
-    mock_push.assert_called_once_with(branch, tmp_path / "docs", "docs: minor polish")
-    assert mock_open.call_args.args[2] == branch
-    assert "does not block" in _unwrapped(capfd.readouterr().err)
-
-
-@patch("functions.parallel_release.update_docs")
-@patch("functions.parallel_release._find_open_docs_sync_pr", return_value="https://github.com/o/r/pull/5")
-@patch("functions.parallel_release.check_docs", return_value=CheckResult(changes=(MINOR,)))
-@patch("functions.parallel_release.has_changes_in_paths", return_value=False)
-def test_docs_gate_reuses_the_polish_pr_already_open(
-    mock_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_find: MagicMock,
-    mock_update: MagicMock,
-    tmp_path: Path,
-) -> None:
-    _gate(tmp_path, open_minor_docs_pr=True)
-
-    mock_update.assert_not_called()
 
 
 # --- provisioning ---
@@ -765,100 +601,724 @@ def test_build_refuses_an_apptainer_archive_for_another_architecture(
 
 # --- publish ---
 
+API_PATH = f"/repos/{SLUG.full}"
+NOTES_FILE = "docs/src/content/releases/v0.3.0.html"
+
 
 def _built_archives(directory: Path) -> Path:
+    """The archive of every release target, as the build jobs upload them."""
     directory.mkdir(parents=True)
-    for triple in (
-        "aarch64-apple-darwin",
-        "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu",
-    ):
+    for triple in RELEASE_TRIPLES:
         (directory / f"peppy-{triple}.tgz").write_bytes(f"archive {triple}".encode())
     return directory
 
 
-@pytest.fixture
-def publish_mocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("PEPPY_RELEASE_TOKEN", "token")
-    plan_path = tmp_path / "release-plan.json"
-    PLAN.write(plan_path)
-    with patch("functions.parallel_release.need_cmd"), patch(
-        "functions.parallel_release.get_repo_root", return_value=tmp_path
-    ), patch(
-        "functions.parallel_release._verify_release_branch_state",
-        return_value=RELEASE_COMMIT,
-    ) as branch_state, patch(
-        "functions.parallel_release.verify_all_releases"
-    ) as verify, patch(
-        "functions.parallel_release.github_repo_slug", return_value=SLUG
-    ), patch(
-        "functions.parallel_release.build_github_client"
-    ) as client, patch(
-        "functions.parallel_release._publish_pending_upload"
-    ) as publish:
-        yield MagicMock(
-            plan_path=plan_path,
-            branch_state=branch_state,
-            verify=verify,
-            client=client,
-            publish=publish,
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    )
+    return result.stdout.strip()
+
+
+@dataclass(frozen=True)
+class ReleaseRepo:
+    """A checkout of `dev` and the `origin` it pushes to, as the publish job
+    gets them: `main` at the last shipped commit, `dev` one release commit
+    past it, both pushed."""
+
+    path: Path
+    origin: Path
+    shipped_commit: str
+    release_commit: str
+
+    def remote_commit(self, ref: str) -> str:
+        return _git(self.origin, "rev-parse", ref)
+
+    def commit_on_dev(self, files: dict[str, str], message: str) -> str:
+        """Commit *files* on `dev` and push it; return the commit."""
+        for relative, text in files.items():
+            path = self.path / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        _git(self.path, "add", "--", *files)
+        _git(self.path, "commit", "-q", "-m", message)
+        _git(self.path, "push", "-q", "origin", "dev")
+        return _git(self.path, "rev-parse", "HEAD")
+
+    def commit_release_notes(self, tag: str = "v0.3.0") -> str:
+        """The notes commit a publish pushes to `dev`."""
+        return self.commit_on_dev(
+            {f"docs/src/content/releases/{tag}.html": f"<entry>{tag}</entry>\n"},
+            f"docs: add release notes for {tag}",
         )
 
+    def tag_on_origin(self, commit: str) -> None:
+        """Create the release tag on `origin`, as publishing the release does."""
+        _git(self.origin, "tag", PLAN.tag, commit)
 
-def test_publish_records_the_archives_and_publishes_them(
-    tmp_path: Path, publish_mocks: MagicMock
-) -> None:
+    def align_main(self) -> None:
+        _git(self.path, "push", "-q", "origin", "dev:main")
+
+
+@pytest.fixture
+def release_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ReleaseRepo:
+    # Git reads no configuration of the host, so the commits the publish makes
+    # are never signed and always have the same author, whoever runs the suite.
+    gitconfig = tmp_path / "gitconfig"
+    gitconfig.write_text(
+        "[user]\n\tname = Release Test\n\temail = release@example.com\n"
+        "[commit]\n\tgpgsign = false\n"
+        "[tag]\n\tgpgsign = false\n"
+        "[init]\n\tdefaultBranch = main\n"
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", str(origin))
+    path = tmp_path / "repo"
+    path.mkdir()
+    _git(path, "init", "-q")
+    _git(path, "remote", "add", "origin", str(origin))
+    (path / "code.rs").write_text("fn shipped() {}\n")
+    _git(path, "add", "code.rs")
+    _git(path, "commit", "-q", "-m", "shipped")
+    _git(path, "push", "-q", "origin", "main")
+    _git(path, "switch", "-q", "-c", "dev")
+    (path / "code.rs").write_text("fn shipped() {}\nfn released() {}\n")
+    _git(path, "commit", "-q", "-am", "released")
+    _git(path, "push", "-q", "origin", "dev")
+    monkeypatch.chdir(path)
+    return ReleaseRepo(
+        path=path.resolve(),
+        origin=origin,
+        shipped_commit=_git(path, "rev-parse", "main"),
+        release_commit=_git(path, "rev-parse", "dev"),
+    )
+
+
+class FakeGitHub:
+    """The releases API of test-owner/test-repo, as the publish stage uses it.
+
+    The router mocks all of httpx, and any request this fake does not answer
+    fails the test. Every request it answers is recorded in `events`, which
+    tests share with the git steps they record, to check the order of both.
+    """
+
+    def __init__(self, router: respx.MockRouter, events: list[str]) -> None:
+        self.requests: list[str] = []
+        self.releases: dict[int, dict] = {}
+        self.uploads: list[str] = []
+        self.failing_upload: str | None = None
+        self.events = events
+        self._next_id = 7
+        router.route(host="api.github.com").mock(side_effect=self._api)
+        router.route(host="uploads.github.com").mock(side_effect=self._upload)
+
+    def add_release(self, tag: str, *, draft: bool) -> dict:
+        release_id = self._next_id
+        self._next_id += 1
+        release = {
+            "id": release_id,
+            "tag_name": tag,
+            "name": "A release",
+            "body": "- a change",
+            "body_html": "<ul><li>a change</li></ul>",
+            "created_at": "2026-09-25T09:00:00Z",
+            "draft": True,
+            "published_at": None,
+            "html_url": (
+                f"https://github.com/{SLUG.full}/releases/tag/untagged-{release_id}"
+            ),
+        }
+        self.releases[release_id] = release
+        if not draft:
+            self._go_live(release)
+        return release
+
+    def published(self) -> list[dict]:
+        return [r for r in self.releases.values() if not r["draft"]]
+
+    def _go_live(self, release: dict) -> None:
+        release["draft"] = False
+        release["published_at"] = "2026-09-25T10:00:00Z"
+        release["html_url"] = (
+            f"https://github.com/{SLUG.full}/releases/tag/{release['tag_name']}"
+        )
+
+    def _api(self, request: httpx.Request) -> httpx.Response:
+        method = request.method
+        path = request.url.path.removeprefix(API_PATH)
+        self.requests.append(f"{method} {path}")
+        if method == "GET" and (tag := re.fullmatch(r"/releases/tags/(.+)", path)):
+            self.events.append("look up the published release")
+            matching = [r for r in self.published() if r["tag_name"] == tag[1]]
+            if not matching:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, json=matching[0])
+        if method == "GET" and path == "/releases":
+            return httpx.Response(200, json=list(self.releases.values()))
+        if method == "POST" and path == "/releases":
+            payload = json.loads(request.content)
+            self.events.append("create the draft")
+            assert payload["draft"] is True
+            release = self.add_release(payload["tag_name"], draft=True)
+            release.update(
+                name=payload["name"],
+                body=payload["body"],
+                target_commitish=payload["target_commitish"],
+            )
+            return httpx.Response(201, json=release)
+        if method == "GET" and re.fullmatch(r"/releases/\d+/assets", path):
+            return httpx.Response(200, json=[])
+        match = re.fullmatch(r"/releases/(\d+)", path)
+        release = self.releases.get(int(match[1])) if match else None
+        if release is not None and method == "GET":
+            return httpx.Response(200, json=release)
+        if release is not None and method == "DELETE":
+            self.events.append(f"delete draft {release['id']}")
+            del self.releases[release["id"]]
+            return httpx.Response(204)
+        if release is not None and method == "PATCH":
+            assert json.loads(request.content) == {"draft": False}
+            self.events.append("publish")
+            self._go_live(release)
+            return httpx.Response(200, json=release)
+        raise AssertionError(f"unexpected GitHub request: {method} {request.url}")
+
+    def _upload(self, request: httpx.Request) -> httpx.Response:
+        name = request.url.params["name"]
+        self.requests.append(f"UPLOAD {name}")
+        request.read()
+        if name == self.failing_upload:
+            return httpx.Response(422, json={"message": "Validation Failed"})
+        self.events.append(f"upload {name}")
+        self.uploads.append(name)
+        return httpx.Response(201, json={"id": len(self.uploads), "name": name})
+
+
+@pytest.fixture
+def events() -> list[str]:
+    return []
+
+
+@pytest.fixture
+def github(mock_api: respx.MockRouter, events: list[str]) -> FakeGitHub:
+    return FakeGitHub(mock_api, events)
+
+
+def _plan_of(repo: ReleaseRepo) -> ReleasePlan:
+    return ReleasePlan(
+        tag=PLAN.tag, release_commit=repo.release_commit, content=CONTENT
+    )
+
+
+@pytest.fixture
+def publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    release_repo: ReleaseRepo,
+    github: FakeGitHub,
+    events: list[str],
+):
+    """Run the publish stage of the release of `release_repo`'s release commit,
+    against the fake GitHub.
+
+    The archives are the three a build would leave; their contents are not
+    real archives, so verifying them is recorded instead of done.
+    """
+    monkeypatch.setenv("PEPPY_RELEASE_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", SLUG.full)
+    plan_path = tmp_path / "release-plan.json"
+    _plan_of(release_repo).write(plan_path)
     archives = _built_archives(tmp_path / "archives")
 
-    run_publish(plan_path=publish_mocks.plan_path, archives_dir=archives)
+    def run() -> None:
+        with patch(
+            "functions.parallel_release.verify_all_releases",
+            side_effect=lambda dist_dir: events.append("verify the archives"),
+        ):
+            run_publish(plan_path=plan_path, archives_dir=archives)
 
-    dist = tmp_path / "dist"
-    publish_mocks.verify.assert_called_once_with(dist)
-    args = publish_mocks.publish.call_args.args
-    assert args[0] is publish_mocks.client.return_value
-    assert args[1] == SLUG
-    pending = args[2]
-    assert (pending.tag, pending.release_commit, pending.content) == (
-        "v0.3.0",
-        RELEASE_COMMIT,
-        CONTENT,
-    )
-    assert sorted(a.asset_path for a in pending.artifacts) == sorted(dist.glob("peppy-*.tgz"))
-    # The manifest is on disk before the first request, so a failed publish can
-    # be resumed by build_release.sh.
-    assert args[3] == dist / "pending-upload.json"
-    assert args[3].is_file()
+    return run
 
 
-def test_publish_stops_when_dev_moved_during_the_build(
-    tmp_path: Path, publish_mocks: MagicMock
+def _uploaded_names() -> list[str]:
+    return [f"peppy-{triple}.tgz" for triple in RELEASE_TRIPLES]
+
+
+def test_publish_releases_then_commits_the_notes_and_aligns_main(
+    publish,
+    release_repo: ReleaseRepo,
+    github: FakeGitHub,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
-    publish_mocks.branch_state.return_value = OTHER_COMMIT
+    publish()
 
-    with pytest.raises(ReleaseError, match="moved to"):
-        run_publish(plan_path=publish_mocks.plan_path, archives_dir=_built_archives(tmp_path / "a"))
+    [release] = github.published()
+    # The draft carried the drafted content, tagged at the commit the
+    # archives were built from rather than at a branch name.
+    assert release["tag_name"] == "v0.3.0"
+    assert release["name"] == CONTENT.title
+    assert release["body"] == CONTENT.notes
+    assert release["target_commitish"] == release_repo.release_commit
+    assert github.uploads == _uploaded_names()
 
-    publish_mocks.publish.assert_not_called()
+    # `dev` gained the notes commit alone, and `main` followed it.
+    dev = release_repo.remote_commit("dev")
+    assert _git(release_repo.origin, "rev-parse", "dev^") == release_repo.release_commit
+    assert _git(
+        release_repo.origin, "diff", "--name-only", release_repo.release_commit, dev
+    ) == NOTES_FILE
+    assert release_repo.remote_commit("main") == dev
+    notes = _git(release_repo.origin, "show", f"dev:{NOTES_FILE}")
+    assert CONTENT.description in notes
+    assert "Released on September 25, 2026" in notes
+
+    # The run ends on the outcome and the published release, never the
+    # draft's untagged placeholder.
+    err = capfd.readouterr().err
+    assert "untagged" not in err
+    assert err.strip().splitlines()[-1] == (
+        "Released v0.3.0. Release notes: "
+        "https://github.com/test-owner/test-repo/releases/tag/v0.3.0"
+    )
+
+
+def test_publish_does_its_steps_in_order(
+    publish, github: FakeGitHub, events: list[str]
+) -> None:
+    def recorded_push(remote: str, local_branch: str, remote_branch: str) -> None:
+        events.append(f"push {remote_branch}")
+        real_push_branch(remote, local_branch, remote_branch)
+
+    def recorded_commit(paths: list[Path], message: str) -> None:
+        events.append("commit the notes")
+        real_commit_paths(paths, message)
+
+    def recorded_dev_check(*args: object) -> bool:
+        events.append("check dev")
+        return _dev_carries_release_notes(*args)
+
+    with patch(
+        "functions.parallel_release.push_branch", side_effect=recorded_push
+    ), patch(
+        "functions.parallel_release.commit_paths", side_effect=recorded_commit
+    ), patch(
+        "functions.parallel_release._dev_carries_release_notes",
+        side_effect=recorded_dev_check,
+    ):
+        publish()
+
+    # Nothing is written before every check passed, the archives are verified
+    # before the draft exists, and the git side waits for the release to be
+    # live: the notes are read from the published release.
+    assert events == [
+        "check dev",
+        "look up the published release",
+        "verify the archives",
+        "create the draft",
+        *(f"upload {name}" for name in _uploaded_names()),
+        "publish",
+        "commit the notes",
+        "push dev",
+        "push main",
+    ]
+
+
+def test_publish_rerun_does_not_upload_a_release_already_published(
+    publish, release_repo: ReleaseRepo, github: FakeGitHub, events: list[str]
+) -> None:
+    # The earlier attempt published the release, then failed before the notes.
+    github.add_release("v0.3.0", draft=False)
+    release_repo.tag_on_origin(release_repo.release_commit)
+
+    publish()
+
+    assert "create the draft" not in events
+    assert "verify the archives" not in events
+    assert github.uploads == []
+    assert len(github.releases) == 1
+    # The steps left are done.
+    dev = release_repo.remote_commit("dev")
+    assert _git(release_repo.origin, "rev-parse", "dev^") == release_repo.release_commit
+    assert release_repo.remote_commit("main") == dev
+
+
+def test_publish_rerun_does_not_commit_notes_already_committed(
+    publish,
+    release_repo: ReleaseRepo,
+    github: FakeGitHub,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # The earlier attempt pushed the notes, then failed to fast-forward main.
+    github.add_release("v0.3.0", draft=False)
+    release_repo.tag_on_origin(release_repo.release_commit)
+    notes_commit = release_repo.commit_release_notes()
+
+    with patch(
+        "functions.parallel_release.commit_paths",
+        side_effect=AssertionError("committed"),
+    ):
+        publish()
+
+    assert release_repo.remote_commit("dev") == notes_commit
+    assert release_repo.remote_commit("main") == notes_commit
+    assert github.uploads == []
+    assert "already committed" in " ".join(capfd.readouterr().err.split())
+
+
+def test_publish_rerun_does_not_push_main_already_aligned(
+    publish,
+    release_repo: ReleaseRepo,
+    github: FakeGitHub,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # The earlier attempt did everything and failed afterwards.
+    github.add_release("v0.3.0", draft=False)
+    release_repo.tag_on_origin(release_repo.release_commit)
+    notes_commit = release_repo.commit_release_notes()
+    release_repo.align_main()
+
+    with patch(
+        "functions.parallel_release.push_branch", side_effect=AssertionError("pushed")
+    ), patch(
+        "functions.parallel_release.commit_paths",
+        side_effect=AssertionError("committed"),
+    ):
+        publish()
+
+    assert release_repo.remote_commit("dev") == notes_commit
+    assert release_repo.remote_commit("main") == notes_commit
+    assert github.uploads == []
+    assert "Released v0.3.0." in capfd.readouterr().err
+
+
+def test_publish_refuses_dev_moved_on_before_any_request(
+    publish, release_repo: ReleaseRepo, github: FakeGitHub
+) -> None:
+    moved = release_repo.commit_on_dev({"code.rs": "fn merged_since() {}\n"}, "merged")
+
+    with pytest.raises(
+        ReleaseError, match="start a new run from the current 'dev'"
+    ) as excinfo:
+        publish()
+
+    assert f"moved to {moved[:12]}" in str(excinfo.value)
+    assert github.requests == []
+    assert release_repo.remote_commit("dev") == moved
+    assert release_repo.remote_commit("main") == release_repo.shipped_commit
+
+
+def test_publish_refuses_a_published_release_tagged_elsewhere(
+    publish, release_repo: ReleaseRepo, github: FakeGitHub
+) -> None:
+    github.add_release("v0.3.0", draft=False)
+    release_repo.tag_on_origin(release_repo.shipped_commit)
+
+    with pytest.raises(ReleaseError, match="its tag points at") as excinfo:
+        publish()
+
+    assert release_repo.shipped_commit[:12] in str(excinfo.value)
+    assert release_repo.release_commit[:12] in str(excinfo.value)
+    assert github.uploads == []
+    assert release_repo.remote_commit("dev") == release_repo.release_commit
+    assert release_repo.remote_commit("main") == release_repo.shipped_commit
+
+
+def test_publish_refuses_notes_committed_without_a_published_release(
+    publish, release_repo: ReleaseRepo, github: FakeGitHub, events: list[str]
+) -> None:
+    release_repo.commit_release_notes()
+
+    with pytest.raises(ReleaseError, match="no published release of v0.3.0 exists"):
+        publish()
+
+    assert "create the draft" not in events
+    assert release_repo.remote_commit("main") == release_repo.shipped_commit
+
+
+def test_publish_deletes_a_draft_an_earlier_attempt_left(
+    publish, github: FakeGitHub, events: list[str]
+) -> None:
+    leftover = github.add_release("v0.3.0", draft=True)
+
+    publish()
+
+    deleted = events.index(f"delete draft {leftover['id']}")
+    assert deleted < events.index("create the draft")
+    assert leftover["id"] not in github.releases
+    assert len(github.releases) == 1
+
+
+def test_publish_rerun_after_a_failed_upload_publishes_the_release(
+    publish, release_repo: ReleaseRepo, github: FakeGitHub
+) -> None:
+    github.failing_upload = "peppy-x86_64-unknown-linux-gnu.tgz"
+
+    with pytest.raises(ReleaseError, match="failed to upload asset"):
+        publish()
+
+    # The half-uploaded draft is gone, and nothing reached git.
+    assert github.releases == {}
+    assert release_repo.remote_commit("dev") == release_repo.release_commit
+
+    github.failing_upload = None
+    publish()
+
+    [release] = github.published()
+    assert release["tag_name"] == "v0.3.0"
+    assert release_repo.remote_commit("main") == release_repo.remote_commit("dev")
+
+
+def test_publish_rerun_after_a_failed_push_finishes_only_the_git_side(
+    publish, release_repo: ReleaseRepo, github: FakeGitHub
+) -> None:
+    def rejected_main_push(remote: str, local_branch: str, remote_branch: str) -> None:
+        if remote_branch == "main":
+            raise ReleaseError("failed to push 'dev' to 'origin/main': rejected")
+        real_push_branch(remote, local_branch, remote_branch)
+
+    with patch(
+        "functions.parallel_release.push_branch", side_effect=rejected_main_push
+    ), pytest.raises(ReleaseError) as excinfo:
+        publish()
+
+    # The release is live, so the failure points at the re-run, which does
+    # only what is left.
+    message = " ".join(str(excinfo.value).split())
+    assert "rejected" in message
+    assert "The GitHub release v0.3.0 is published" in message
+    assert "Re-run the failed publish job" in message
+    notes_commit = release_repo.remote_commit("dev")
+    assert release_repo.remote_commit("main") == release_repo.shipped_commit
+    # GitHub created the tag when the release was published.
+    release_repo.tag_on_origin(release_repo.release_commit)
+
+    publish()
+
+    assert len(github.published()) == 1
+    assert github.uploads == _uploaded_names()
+    assert release_repo.remote_commit("dev") == notes_commit
+    assert release_repo.remote_commit("main") == notes_commit
 
 
 def test_publish_stops_when_an_archive_is_missing(
-    tmp_path: Path, publish_mocks: MagicMock
+    publish, tmp_path: Path, github: FakeGitHub, events: list[str]
 ) -> None:
-    archives = _built_archives(tmp_path / "archives")
-    (archives / "peppy-x86_64-unknown-linux-gnu.tgz").unlink()
+    (tmp_path / "archives" / "peppy-x86_64-unknown-linux-gnu.tgz").unlink()
 
     with pytest.raises(ReleaseError, match="x86_64-unknown-linux-gnu archive is missing"):
-        run_publish(plan_path=publish_mocks.plan_path, archives_dir=archives)
+        publish()
 
-    publish_mocks.publish.assert_not_called()
+    assert "create the draft" not in events
 
 
 def test_publish_requires_the_release_token(
-    tmp_path: Path, publish_mocks: MagicMock, monkeypatch: pytest.MonkeyPatch
+    publish, monkeypatch: pytest.MonkeyPatch, events: list[str]
 ) -> None:
     monkeypatch.setenv("PEPPY_RELEASE_TOKEN", " ")
 
     with pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN env var is required"):
-        run_publish(plan_path=publish_mocks.plan_path, archives_dir=tmp_path)
+        publish()
 
-    publish_mocks.publish.assert_not_called()
+    assert events == []
+
+
+# --- the checks that let a publish run again ---
+
+
+def test_dev_at_the_release_commit_carries_no_notes(release_repo: ReleaseRepo) -> None:
+    assert (
+        _dev_carries_release_notes(
+            release_repo.release_commit, _plan_of(release_repo), Path(NOTES_FILE)
+        )
+        is False
+    )
+
+
+def test_dev_one_notes_commit_past_the_release_carries_the_notes(
+    release_repo: ReleaseRepo,
+) -> None:
+    notes_commit = release_repo.commit_release_notes()
+
+    assert (
+        _dev_carries_release_notes(
+            notes_commit, _plan_of(release_repo), Path(NOTES_FILE)
+        )
+        is True
+    )
+
+
+def _merge_notes_from_a_side_branch(repo: ReleaseRepo) -> str:
+    _git(repo.path, "switch", "-q", "-c", "side")
+    path = repo.path / NOTES_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("<entry>v0.3.0</entry>\n")
+    _git(repo.path, "add", NOTES_FILE)
+    _git(repo.path, "commit", "-q", "-m", "notes on a side branch")
+    _git(repo.path, "switch", "-q", "dev")
+    _git(repo.path, "merge", "-q", "--no-ff", "-m", "merge the notes", "side")
+    return _git(repo.path, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize(
+    "move_dev",
+    [
+        # A change merged since the build.
+        lambda repo: repo.commit_on_dev({"code.rs": "fn merged() {}\n"}, "merged"),
+        # The notes, and a code change in the same commit.
+        lambda repo: repo.commit_on_dev(
+            {NOTES_FILE: "<entry>v0.3.0</entry>\n", "code.rs": "fn merged() {}\n"},
+            "notes and code",
+        ),
+        # The notes of another release.
+        lambda repo: repo.commit_release_notes("v0.2.9"),
+        # The notes commit, then a change merged on top of it.
+        lambda repo: (
+            repo.commit_release_notes(),
+            repo.commit_on_dev({"code.rs": "fn merged() {}\n"}, "merged"),
+        )[-1],
+        # The notes alone, but merged in rather than committed on the release
+        # commit.
+        _merge_notes_from_a_side_branch,
+    ],
+    ids=[
+        "code-change",
+        "notes-and-code",
+        "notes-of-another-tag",
+        "commit-after-the-notes",
+        "notes-merged-in",
+    ],
+)
+def test_dev_moved_any_other_way_is_refused(
+    release_repo: ReleaseRepo, move_dev: Callable[[ReleaseRepo], str]
+) -> None:
+    dev_commit = move_dev(release_repo)
+
+    with pytest.raises(ReleaseError, match="start a new run from the current 'dev'"):
+        _dev_carries_release_notes(dev_commit, _plan_of(release_repo), Path(NOTES_FILE))
+
+
+def test_find_published_release_is_none_while_there_is_none(
+    release_repo: ReleaseRepo, github: FakeGitHub, github_client: httpx.Client
+) -> None:
+    # A draft of the tag is not a published release.
+    github.add_release("v0.3.0", draft=True)
+
+    assert _find_published_release(github_client, SLUG, _plan_of(release_repo)) is None
+
+
+def test_find_published_release_checks_the_tag_before_answering(
+    release_repo: ReleaseRepo, github: FakeGitHub, github_client: httpx.Client
+) -> None:
+    published = github.add_release("v0.3.0", draft=False)
+    release_repo.tag_on_origin(release_repo.release_commit)
+
+    release = _find_published_release(github_client, SLUG, _plan_of(release_repo))
+
+    assert release is not None
+    assert release.release_id == published["id"]
+    assert release.html_url.endswith("/releases/tag/v0.3.0")
+
+
+def test_notes_the_tree_already_holds_leave_nothing_to_commit(
+    release_repo: ReleaseRepo,
+) -> None:
+    notes_commit = release_repo.commit_release_notes()
+
+    with patch(
+        "functions.parallel_release.push_branch", side_effect=AssertionError("pushed")
+    ):
+        _commit_release_notes(release_repo.path / NOTES_FILE, "v0.3.0")
+
+    assert _git(release_repo.path, "rev-parse", "HEAD") == notes_commit
+
+
+def test_main_already_at_reads_origin_main(release_repo: ReleaseRepo) -> None:
+    assert _main_already_at(release_repo.shipped_commit) is True
+    assert _main_already_at(release_repo.release_commit) is False
+
+
+# --- the draft release ---
+
+UNTAGGED_DRAFT_URL = "https://github.com/t/releases/tag/untagged-1"
+
+
+@patch("functions.parallel_release.delete_draft_release", return_value=True)
+@patch("functions.parallel_release.publish_release")
+@patch("functions.parallel_release.replace_and_upload_asset", side_effect=KeyboardInterrupt)
+def test_upload_interrupt_deletes_the_draft(
+    mock_upload: MagicMock,
+    mock_publish: MagicMock,
+    mock_delete_draft: MagicMock,
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    client = MagicMock()
+    draft = ReleaseInfo(release_id=1, html_url=UNTAGGED_DRAFT_URL)
+    archives = _built_archives(tmp_path / "archives")
+
+    # The interrupt a cancelled CI run hands the script.
+    with pytest.raises(KeyboardInterrupt):
+        _upload_archives_and_publish(
+            client,
+            SLUG,
+            draft,
+            [BuildArtifact(p.name, p, "t") for p in sorted(archives.iterdir())],
+        )
+
+    mock_delete_draft.assert_called_once_with(client, 1, SLUG)
+    mock_publish.assert_not_called()
+    assert "Draft release deleted." in capfd.readouterr().err
+
+
+@patch("functions.parallel_release.delete_draft_release", return_value=False)
+@patch("functions.parallel_release.publish_release", side_effect=KeyboardInterrupt)
+@patch("functions.parallel_release.replace_and_upload_asset")
+def test_publish_interrupt_leaves_a_release_that_went_live(
+    mock_upload: MagicMock,
+    mock_publish: MagicMock,
+    mock_delete_draft: MagicMock,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    draft = ReleaseInfo(release_id=1, html_url=UNTAGGED_DRAFT_URL)
+
+    with pytest.raises(KeyboardInterrupt):
+        _upload_archives_and_publish(MagicMock(), SLUG, draft, [])
+
+    output = _unwrapped(capfd.readouterr().err)
+    assert "Draft release deleted." not in output
+    assert (
+        "The release went live before the failure, so it is left in place: "
+        "https://github.com/test-owner/test-repo/releases"
+    ) in output
+
+
+@patch(
+    "functions.parallel_release.delete_draft_release",
+    side_effect=ReleaseError("cleanup failed"),
+)
+@patch("functions.parallel_release.publish_release")
+@patch(
+    "functions.parallel_release.replace_and_upload_asset",
+    side_effect=ReleaseError("upload timeout"),
+)
+def test_failed_draft_cleanup_warns_and_keeps_the_upload_error(
+    mock_upload: MagicMock,
+    mock_publish: MagicMock,
+    mock_delete_draft: MagicMock,
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    draft = ReleaseInfo(release_id=1, html_url=UNTAGGED_DRAFT_URL)
+    archive = _built_archives(tmp_path / "archives") / "peppy-aarch64-apple-darwin.tgz"
+
+    # The original error is raised, not the cleanup error.
+    with pytest.raises(ReleaseError, match="upload timeout"):
+        _upload_archives_and_publish(
+            MagicMock(), SLUG, draft, [BuildArtifact(archive.name, archive, "t")]
+        )
+
+    mock_publish.assert_not_called()
+    assert "Manual cleanup required" in _unwrapped(capfd.readouterr().err)

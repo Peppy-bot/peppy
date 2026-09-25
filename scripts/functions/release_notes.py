@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from .cli import ReleaseError, console, prompt_yn
+from .cli import console
 from .github import RepoSlug, github_api
 
 _MONTH_NAMES = [
@@ -27,6 +27,11 @@ _MONTH_NAMES = [
     "November",
     "December",
 ]
+
+
+# Where the release notes files live, relative to the repository root. The
+# docs site builds its changelog from them.
+RELEASE_NOTES_DIR = Path("docs/src/content/releases")
 
 
 @dataclass(frozen=True)
@@ -123,16 +128,18 @@ def _normalize_tag(tag: str) -> tuple[str, str]:
     return tag_title, version
 
 
-def generate_release_notes_file(
-    notes_input: ReleaseNotesInput,
-    releases_dir: Path,
-    *,
-    confirm_overwrite: bool = True,
-) -> Path:
-    """Generate and write the release notes HTML/Atom entry file.
+def release_notes_file(tag: str) -> Path:
+    """The release notes file of *tag*, relative to the repository root."""
+    _, version = _normalize_tag(tag)
+    basename = tag if tag.lower().startswith("v") else f"v{version}"
+    return RELEASE_NOTES_DIR / f"{basename}.html"
 
-    The output file is named {releases_dir}/v{version}.html.
-    If the file already exists and confirm_overwrite is True, prompts the user.
+
+def generate_release_notes_file(notes_input: ReleaseNotesInput, repo_root: Path) -> Path:
+    """Write the release notes HTML/Atom entry file of the release.
+
+    The file is `release_notes_file` of the tag under *repo_root*, written
+    over whatever it holds: the release is its only source.
 
     Returns the path to the written file.
     """
@@ -159,22 +166,8 @@ def generate_release_notes_file(
         tag_title, notes_input.description, updated_iso, entry_id, article
     )
 
-    releases_dir.mkdir(parents=True, exist_ok=True)
-    file_basename = (
-        f"v{version}"
-        if not notes_input.tag.lower().startswith("v")
-        else notes_input.tag
-    )
-    release_file = releases_dir / f"{file_basename}.html"
-
-    if release_file.exists() and confirm_overwrite:
-        if not prompt_yn(
-            f"Release notes file already exists at '{release_file}'. Overwrite?",
-        ):
-            raise ReleaseError(
-                f"refusing to overwrite existing release notes file: {release_file}"
-            )
-
+    release_file = repo_root / release_notes_file(notes_input.tag)
+    release_file.parent.mkdir(parents=True, exist_ok=True)
     release_file.write_text(entry_xml, encoding="utf-8")
     console.print(f"Wrote docs release notes: [bold]{release_file}[/bold]")
     return release_file
