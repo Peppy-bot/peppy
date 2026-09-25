@@ -38,13 +38,13 @@ runs:
           rm -rf "$library/${tap%%/*}/homebrew-${tap#*/}"
         done
 
-    # Every release stage starts from a fresh image. The x86_64 stages boot
-    # the peppy-ubuntu24 CI image, which this script already provisioned, and
-    # find everything in place; the aarch64 stages boot RunsOn's stock arm64
-    # image and the macOS stages a Blacksmith macOS image, which ship none of
-    # it. So this is where a release stage installs what it builds with.
+    # Every release stage starts from a fresh image. The Linux stages boot a
+    # peppy CI image, peppy-ubuntu24 on x86_64 and peppy-ubuntu24-aarch64 on
+    # aarch64, which this script already provisioned, and find everything in
+    # place; the macOS stages boot a Blacksmith macOS image, which ships none
+    # of it. So this is where a release stage installs what it builds with.
     #
-    # It installs it with the very script the CI image is built with, so the
+    # It installs it with the very script the CI images are built with, so the
     # two cannot drift: rust-build-env below checks for exactly what that
     # script installs. The script lives in a gist because the other
     # repository that provisions with it, the Peppy superproject, is private
