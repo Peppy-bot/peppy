@@ -277,6 +277,10 @@ def launchers_hub(mock_api: respx.MockRouter) -> dict:
 
     def dispatch(request: httpx.Request) -> httpx.Response:
         seen["dispatches"].append(request)
+        # As GitHub does: the response names the run only when the request
+        # asks for it, and is 204 with no body otherwise.
+        if json.loads(request.content).get("return_run_details") is not True:
+            return httpx.Response(204)
         return httpx.Response(
             200, json=seen.get("dispatch_response", _dispatch_response())
         )
@@ -316,6 +320,7 @@ def test_launchers_hub_tests_run_on_the_set_and_the_release_run(
     assert payload == {
         "ref": "main",
         "inputs": {"peppy-run-id": "18000000001", "set": dispatched_set},
+        "return_run_details": True,
     }
     # The set goes on as one line of the schema it was recorded in.
     assert "\n" not in dispatched_set

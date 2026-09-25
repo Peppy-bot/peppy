@@ -252,6 +252,8 @@ def dispatch_launchers_tests(
                 "peppy-run-id": str(peppy_run_id),
                 "set": resolve.compact_json(resolve.release_set_document(hub_set)),
             },
+            # Without it, GitHub answers 204 with no body, which names no run.
+            "return_run_details": True,
         },
     )
     return parse_dispatch_response(response, repository)
