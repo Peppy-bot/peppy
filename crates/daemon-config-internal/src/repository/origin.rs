@@ -28,13 +28,20 @@ pub enum EntryOrigin {
     },
     Git {
         repo_url: String,
-        /// The ref the repository is configured to follow, absent when it
-        /// follows whatever the remote's default branch is. Kept beside the
-        /// commit because a fetch starts from a ref before it can reach a
-        /// commit, and because `entry_belongs_to_repo` attributes an entry
-        /// to its configured repository by url and ref.
+        /// The ref the repository is configured to follow, as written in
+        /// `repositories.json5` (`@{peppy-release}` included), absent when it
+        /// follows whatever the remote's default branch is. It is what
+        /// `RepoOwners` attributes an entry to its configured repository by,
+        /// together with the url.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         repo_ref: Option<String>,
+        /// The git ref the tree was read at: the configured ref, or the ref
+        /// `@{peppy-release}` resolved to in the peppy that read it. Absent
+        /// when the repository follows the remote's default branch. Kept
+        /// beside the commit because a fetch starts from a ref before it can
+        /// reach a commit, and `@{peppy-release}` is no ref git can fetch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        read_ref: Option<String>,
         /// The commit the tree was read at.
         commit: GitCommit,
         /// Path within the repository to the file that declares the item.
@@ -102,6 +109,16 @@ impl EntryOrigin {
         match self {
             EntryOrigin::Fs { .. } => None,
             EntryOrigin::Git { repo_ref, .. } => repo_ref.as_deref(),
+        }
+    }
+
+    /// The git ref a git origin was read at. `None` for a filesystem
+    /// origin, and for a git origin that follows the remote's default
+    /// branch.
+    pub fn read_ref(&self) -> Option<&str> {
+        match self {
+            EntryOrigin::Fs { .. } => None,
+            EntryOrigin::Git { read_ref, .. } => read_ref.as_deref(),
         }
     }
 

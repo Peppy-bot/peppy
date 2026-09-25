@@ -221,6 +221,7 @@ mod tests {
             origin: EntryOrigin::Git {
                 repo_url: "https://github.com/acme/nodes-hub".to_owned(),
                 repo_ref: Some("main".to_owned()),
+                read_ref: Some("main".to_owned()),
                 commit: GitCommit::parse(&"b".repeat(40)).expect("valid commit"),
                 path: RepoRelativePath::parse("camera/peppy.json5").expect("valid path"),
             },

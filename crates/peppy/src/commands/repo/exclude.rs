@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node_api::encoding::{RepoExcludeRequest, RepoSource};
+use core_node_api::encoding::{GitRepoRef, RepoExcludeRequest, RepoSource};
 use tracing::{info, warn};
 
 use crate::commands::CALLER_INSTANCE_ID;
@@ -16,7 +16,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) fn exclude_repo(
     ctx: &Arc<AppContext>,
     source_str: &str,
-    git_ref: Option<String>,
+    git_ref: Option<GitRepoRef>,
 ) -> Result<()> {
     let repo_source = parse_repo_source(source_str, git_ref)?;
     let label = repo_source_label(&repo_source);

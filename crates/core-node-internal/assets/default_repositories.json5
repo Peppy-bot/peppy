@@ -5,38 +5,44 @@
 // ID BANDS: entries here stay below 2000, and ids are never reused. Ids
 // >= 2000 are reserved for repositories pinned explicitly (`peppy repo add
 // --id`, e.g. organization setups registering a private collection), so a
-// pinned id can never collide with a default a future release ships — a
+// pinned id can never collide with a default a future release ships. A
 // collision would silently skip that default, since defaults are only
 // appended for ids not already taken.
+//
+// REF: `ref: "@{peppy-release}"` reads, in each hub, the tag
+// `peppy-release/<version>` of the running peppy release: the hub content
+// the release was tested with. A build without a release version reads the
+// hub's `main`. Write a branch, a tag or a commit in `ref` to read that
+// instead.
 [
   {
     id: 1000,
     type: "git",
     url: "https://github.com/Peppy-bot/nodes-hub.git",
-    ref: "main"
+    ref: "@{peppy-release}"
   },
   {
     id: 1001,
     type: "git",
     url: "https://github.com/Peppy-bot/launchers-hub.git",
-    ref: "main"
+    ref: "@{peppy-release}"
   },
   {
     id: 1002,
     type: "git",
     url: "https://github.com/Peppy-bot/contracts-hub.git",
-    ref: "main"
+    ref: "@{peppy-release}"
   },
   {
     id: 1003,
     type: "git",
     url: "https://github.com/Peppy-bot/mcp-hub.git",
-    ref: "main"
+    ref: "@{peppy-release}"
   },
   {
     id: 1004,
     type: "git",
     url: "https://github.com/Peppy-bot/pairings-hub.git",
-    ref: "main"
+    ref: "@{peppy-release}"
   },
 ]

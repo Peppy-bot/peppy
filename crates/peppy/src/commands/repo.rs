@@ -16,15 +16,24 @@ pub use show::show_rendered;
 use std::sync::Arc;
 
 use clap::Subcommand;
-use core_node_api::encoding::RepoSource;
+use core_node_api::encoding::{GitRepoRef, RepoSource};
+use daemon_config::consts::peppy_build;
 use std::path::PathBuf;
 
 use super::Command;
 use crate::{context::AppContext, error::Result};
 
-/// Human-readable label for a repository source (used in CLI output).
+/// Human-readable label for a repository source as this binary reads it
+/// (used in CLI output).
 pub(super) fn repo_source_label(source: &RepoSource) -> String {
-    source.display_label()
+    source.display_label(&peppy_build())
+}
+
+/// Parses `--ref` into the same value a `ref` in `repositories.json5`
+/// parses into, so the command line and the file cannot disagree about
+/// `@{peppy-release}`.
+fn parse_git_ref(raw: &str) -> std::result::Result<GitRepoRef, String> {
+    GitRepoRef::parse(raw).map_err(|e| e.to_string())
 }
 
 #[derive(Subcommand)]
@@ -133,12 +142,16 @@ pub enum RepoCommands {
         /// Supported formats:
         /// - Local path: `/path/to/directory`
         /// - Git URL: `https://github.com/org/repo.git`
-        /// - Git URL with ref: `https://github.com/org/repo.git --ref tag-or-branch`
+        /// - Git URL with ref: `https://github.com/org/repo.git --ref <branch, tag, commit, or @{peppy-release}>`
         /// - Plain URL: `https://example.com/packages`
         source: String,
-        /// Git ref (tag/branch/commit) to track (git sources only).
-        #[arg(long = "ref")]
-        git_ref: Option<String>,
+        /// Git ref to track (git sources only): a branch, a tag, a commit,
+        /// or `@{peppy-release}`, which reads the tag
+        /// `peppy-release/<version>` of this peppy release (the hub content
+        /// the release was tested with; only the Peppy-bot hubs carry these
+        /// tags), or `main` in a build without a release version.
+        #[arg(long = "ref", value_parser = parse_git_ref)]
+        git_ref: Option<GitRepoRef>,
         /// Give the new repo top priority (assigns an id below the current min).
         #[arg(long)]
         top: bool,
@@ -163,12 +176,14 @@ pub enum RepoCommands {
         /// Supported formats:
         /// - Local path: `/path/to/directory`
         /// - Git URL: `https://github.com/org/repo.git`
-        /// - Git URL with ref: `https://github.com/org/repo.git --ref tag-or-branch`
+        /// - Git URL with ref: `https://github.com/org/repo.git --ref <branch, tag, commit, or @{peppy-release}>`
         /// - Plain URL: `https://example.com/packages`
         source: String,
-        /// Git ref (tag/branch/commit) to track (git sources only).
-        #[arg(long = "ref")]
-        git_ref: Option<String>,
+        /// Git ref of the repository to exclude (git sources only), as it is
+        /// written in `repositories.json5`: a branch, a tag, a commit, or
+        /// `@{peppy-release}`.
+        #[arg(long = "ref", value_parser = parse_git_ref)]
+        git_ref: Option<GitRepoRef>,
     },
 }
 
@@ -205,6 +220,82 @@ impl Command for RepoCommand {
             RepoCommands::Remove { id } => remove::remove_repo(ctx, id),
             RepoCommands::Exclude { source, git_ref } => {
                 exclude::exclude_repo(ctx, &source, git_ref)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct RepoCli {
+        #[command(subcommand)]
+        command: RepoCommands,
+    }
+
+    fn add_ref(git_ref: &str) -> std::result::Result<Option<GitRepoRef>, clap::Error> {
+        RepoCli::try_parse_from([
+            "repo",
+            "add",
+            "https://github.com/org/repo.git",
+            "--ref",
+            git_ref,
+        ])
+        .map(|cli| match cli.command {
+            RepoCommands::Add { git_ref, .. } => git_ref,
+            _ => unreachable!("`repo add` parses into `Add`"),
+        })
+    }
+
+    fn exclude_ref(git_ref: &str) -> std::result::Result<Option<GitRepoRef>, clap::Error> {
+        RepoCli::try_parse_from([
+            "repo",
+            "exclude",
+            "https://github.com/org/repo.git",
+            "--ref",
+            git_ref,
+        ])
+        .map(|cli| match cli.command {
+            RepoCommands::Exclude { git_ref, .. } => git_ref,
+            _ => unreachable!("`repo exclude` parses into `Exclude`"),
+        })
+    }
+
+    /// `--ref` parses into the value the same `ref` in `repositories.json5`
+    /// parses into, for `repo add` and `repo exclude` alike.
+    #[test]
+    fn ref_on_the_command_line_parses_as_in_the_file() {
+        for parse in [add_ref, exclude_ref] {
+            for raw in [
+                "@{peppy-release}",
+                "peppy-release/v0.31.2",
+                "peppy-release",
+                "main",
+            ] {
+                assert_eq!(
+                    parse(raw).expect(raw),
+                    Some(GitRepoRef::parse(raw).expect(raw)),
+                    "{raw}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ref_on_the_command_line_is_refused_as_in_the_file() {
+        for parse in [add_ref, exclude_ref] {
+            for raw in [
+                "@{Peppy-Release}",
+                "@{peppy-releases}",
+                "@{upstream}",
+                "main@{1}",
+            ] {
+                let error = parse(raw).expect_err(raw).to_string();
+                let refusal = GitRepoRef::parse(raw).expect_err(raw).to_string();
+                assert!(error.contains(&refusal), "{raw}: {error}");
             }
         }
     }

@@ -14,6 +14,9 @@ pub use exclude::listen_for_repo_exclude;
 pub use init::{InitOutcome, ensure_default_repos};
 pub use list::listen_for_repo_list;
 pub use refresh::listen_for_repo_refresh;
+pub(crate) use refresh::{
+    VersionRefresh, failure_report, refresh_release_repositories_for_this_version,
+};
 pub use remove::listen_for_repo_remove;
 pub use search::{
     Consumer, Implementer, IndexedNode, MatchedItem, Observer, Participant, PinStatus,
@@ -23,14 +26,20 @@ pub use search::{
 
 use crate::services::repo::cache::{EntryOrigin, NodeCacheEntry, UNOWNED_REPO_ID};
 use crate::services::repo::exclude::ExclusionSet;
-use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos};
-use core_node_api::encoding::RepoSource;
-use daemon_config::consts::PeppyDirs;
+use crate::services::repo::refresh::read_or_create_repos;
+use core_node_api::encoding::{GitRepoRef, GitRepoRefError, RepoSource};
+use daemon_config::consts::{PeppyDirs, peppy_build};
 use serde_json::Value;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
+
+/// The file in `conf/` that lists the repositories peppy reads.
+pub(crate) const REPOS_FILE: &str = "repositories.json5";
+
+/// The file in `conf/` that lists the repositories and subtrees peppy skips.
+pub(crate) const EXCLUDED_REPOS_FILE: &str = "excluded_repositories.json5";
 
 /// Guards read-modify-write cycles on repositories.json5 and
 /// excluded_repositories.json5 to prevent concurrent corruption.
@@ -65,12 +74,48 @@ pub(crate) fn repo_source_to_json(id: u64, source: &RepoSource) -> Value {
         RepoSource::Git { repo_url, repo_ref } => {
             map.insert("type".to_string(), Value::String("git".to_string()));
             map.insert("url".to_string(), Value::String(repo_url.clone()));
-            if let Some(r) = repo_ref {
-                map.insert("ref".to_string(), Value::String(r.to_string()));
+            if let Some(r) = repo_ref.configured() {
+                map.insert("ref".to_string(), Value::String(r.to_owned()));
             }
         }
     }
     Value::Object(map)
+}
+
+/// Why an entry of `repositories.json5` or `excluded_repositories.json5`
+/// describes no repository peppy can read.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum RepoEntryError {
+    /// No `type`, a `type` peppy does not know, or no field that type needs.
+    #[error("unrecognized repository entry")]
+    Unrecognized,
+    /// A git entry whose `ref` peppy cannot read.
+    #[error(transparent)]
+    Ref(#[from] GitRepoRefError),
+}
+
+/// Parses one entry of `repositories.json5` or
+/// `excluded_repositories.json5` into the source it describes.
+///
+/// The one place that reads an entry's fields: identity, attribution,
+/// exclusion and every read of a repository work on the value it returns.
+pub(crate) fn parse_repo_entry(entry: &Value) -> Result<RepoSource, RepoEntryError> {
+    let field = |key: &str| entry.get(key).and_then(|v| v.as_str());
+    match field("type").ok_or(RepoEntryError::Unrecognized)? {
+        "fs" => {
+            let path = field("path").ok_or(RepoEntryError::Unrecognized)?;
+            Ok(RepoSource::Fs(PathBuf::from(path)))
+        }
+        "git" => {
+            let url = field("url").ok_or(RepoEntryError::Unrecognized)?;
+            let repo_ref = GitRepoRef::parse(field("ref").unwrap_or(""))?;
+            Ok(RepoSource::Git {
+                repo_url: url.to_owned(),
+                repo_ref,
+            })
+        }
+        _ => Err(RepoEntryError::Unrecognized),
+    }
 }
 
 /// The canonical identity string for a [`RepoSource`], used for duplicate
@@ -81,46 +126,29 @@ pub(crate) fn repo_source_to_json(id: u64, source: &RepoSource) -> Value {
 /// - `Fs`: canonicalized (absolute, symlink-resolved) when possible, so that
 ///   `./repo` and `/abs/path/to/repo` produce the same identity. Falls back to
 ///   the raw string when the path does not exist.
-/// - `Git`: `repo_url@repo_ref` when a non-empty ref is present, otherwise just
-///   the url, so the same repo pinned to different refs is not collapsed.
-///
-/// Must stay in sync with [`json_entry_identity`], the JSON-entry equivalent.
+/// - `Git`: `repo_url@repo_ref` with the ref as configured when there is
+///   one, otherwise just the url, so the same repo pinned to different refs
+///   is not collapsed. An entry on `@{peppy-release}` is `<url>@@{peppy-release}`
+///   whatever peppy version reads it, and it is a different repository from
+///   an entry pinned to one release tag.
 pub(crate) fn source_identity(source: &RepoSource) -> String {
     match source {
         RepoSource::Fs(path) => std::fs::canonicalize(path)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| path.to_string_lossy().into_owned()),
-        RepoSource::Git { repo_url, repo_ref } => match repo_ref {
-            Some(r) if !r.is_empty() => format!("{repo_url}@{r}"),
-            _ => repo_url.clone(),
+        RepoSource::Git { repo_url, repo_ref } => match repo_ref.configured() {
+            Some(r) => format!("{repo_url}@{r}"),
+            None => repo_url.clone(),
         },
     }
 }
 
-/// Returns the canonical identity for a persisted JSON repo entry.
-///
-/// Must stay in sync with [`source_identity`]:
-/// - `fs`: canonicalized path when possible (falls back to raw string).
-/// - `git`: `url@ref` when a non-empty `ref` field is present, otherwise `url`.
-pub(crate) fn json_entry_identity(entry: &Value) -> Option<String> {
-    let typ = entry.get("type")?.as_str()?;
-    match typ {
-        "fs" => {
-            let path = entry.get("path")?.as_str()?;
-            let canonical = std::fs::canonicalize(path)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| path.to_string());
-            Some(canonical)
-        }
-        "git" => {
-            let url = entry.get("url")?.as_str()?;
-            match entry.get("ref").and_then(|v| v.as_str()) {
-                Some(r) if !r.is_empty() => Some(format!("{url}@{r}")),
-                _ => Some(url.to_string()),
-            }
-        }
-        _ => None,
-    }
+/// The identity of a persisted entry, `None` when the entry describes no
+/// repository peppy can read (see [`parse_repo_entry`]).
+pub(crate) fn entry_identity(entry: &Value) -> Option<String> {
+    parse_repo_entry(entry)
+        .ok()
+        .map(|source| source_identity(&source))
 }
 
 /// The configured repositories, resolved once so that attributing a whole
@@ -152,36 +180,32 @@ enum RepoOwner {
     /// A remote, optionally pinned to a ref.
     Git {
         url: String,
-        /// `None` for a repository that follows whatever branch it is
-        /// given, which therefore matches any ref on its url.
+        /// The ref as configured (`@{peppy-release}` included), which is
+        /// what a cache entry records as its `repo_ref`. `None` for a
+        /// repository that follows whatever branch it is given, which
+        /// therefore matches any ref on its url.
         pinned_ref: Option<String>,
     },
 }
 
 impl RepoOwners {
     /// Resolves the `repositories.json5` entries in `repos`. Entries that
-    /// describe no repository this machine can match against — an
-    /// unrecognized `type`, an `fs` without a `path` — are dropped, since
-    /// nothing could ever attribute to them.
+    /// describe no repository this machine can read (see
+    /// [`parse_repo_entry`]) are dropped, since nothing could ever attribute
+    /// to them.
     pub(crate) fn new(repos: &[Value]) -> Self {
-        let field = |repo: &Value, key: &str| {
-            repo.get(key)
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned)
-        };
         Self(
             repos
                 .iter()
                 .filter_map(|repo| {
-                    let owner = match repo.get("type").and_then(|v| v.as_str())? {
-                        "fs" => RepoOwner::Fs {
-                            root: canonical_root(&field(repo, "path")?),
+                    let owner = match parse_repo_entry(repo).ok()? {
+                        RepoSource::Fs(path) => RepoOwner::Fs {
+                            root: canonical_root(&path),
                         },
-                        "git" => RepoOwner::Git {
-                            url: field(repo, "url")?,
-                            pinned_ref: field(repo, "ref").filter(|r| !r.is_empty()),
+                        RepoSource::Git { repo_url, repo_ref } => RepoOwner::Git {
+                            url: repo_url,
+                            pinned_ref: repo_ref.configured().map(ToOwned::to_owned),
                         },
-                        _ => return None,
                     };
                     Some((repo.get("id").and_then(|v| v.as_u64()), owner))
                 })
@@ -228,15 +252,16 @@ impl RepoOwner {
     }
 }
 
-fn canonical_root(configured: &str) -> PathBuf {
-    std::fs::canonicalize(configured).unwrap_or_else(|_| PathBuf::from(configured))
+fn canonical_root(configured: &Path) -> PathBuf {
+    std::fs::canonicalize(configured).unwrap_or_else(|_| configured.to_path_buf())
 }
 
 /// One configured repository as `repo list` and a search show it.
 pub(crate) struct ListedRepo {
     pub id: u32,
-    /// [`RepoSource::display_label`]: the path of an fs repository, the url
-    /// and ref of a git one.
+    /// [`RepoSource::display_label`] as this binary reads the source: the
+    /// path of an fs repository, the url and ref of a git one, and for a git
+    /// one on `@{peppy-release}` the ref it reads.
     pub label: String,
     pub source: RepoSource,
 }
@@ -249,11 +274,15 @@ pub(crate) struct ListedRepo {
 pub(crate) fn listed_repositories(peppy_dirs: &PeppyDirs) -> crate::Result<Vec<ListedRepo>> {
     let repos = read_or_create_repos(peppy_dirs)?;
     let exclusions = ExclusionSet::load(peppy_dirs);
+    let build = peppy_build();
     let mut listed = Vec::new();
     for entry in &repos {
-        let Some(source) = parse_repo_entry(entry) else {
-            warn!("Skipping unrecognized repository entry: {:?}", entry);
-            continue;
+        let source = match parse_repo_entry(entry) {
+            Ok(source) => source,
+            Err(e) => {
+                warn!("Skipping repository entry {entry}: {e}");
+                continue;
+            }
         };
 
         let identity = source_identity(&source);
@@ -277,7 +306,7 @@ pub(crate) fn listed_repositories(peppy_dirs: &PeppyDirs) -> crate::Result<Vec<L
 
         listed.push(ListedRepo {
             id,
-            label: source.display_label(),
+            label: source.display_label(&build),
             source,
         });
     }
@@ -401,11 +430,12 @@ mod tests {
     // alongside the function, which moved out of the pure wire-codec crate
     // because its `Fs` arm canonicalizes against the real filesystem).
     use super::{
-        ListedRepo, RepoOwners, listed_repositories, nodes_by_repository, source_identity,
+        ListedRepo, RepoEntryError, RepoOwners, listed_repositories, nodes_by_repository,
+        parse_repo_entry, source_identity,
     };
     use crate::services::repo::cache::test_support::{node_entry, owned_by};
     use crate::services::repo::cache::{EntryOrigin, UNOWNED_REPO_ID, repositories_list_path};
-    use core_node_api::encoding::RepoSource;
+    use core_node_api::encoding::{GitRepoRef, GitRepoRefError, PeppyBuild, RepoSource};
     use daemon_config::consts::PeppyDirs;
     use serde_json::Value;
     use std::path::PathBuf;
@@ -414,7 +444,7 @@ mod tests {
         let source = RepoSource::Fs(PathBuf::from(path));
         ListedRepo {
             id,
-            label: source.display_label(),
+            label: source.display_label(&PeppyBuild::Unreleased),
             source,
         }
     }
@@ -558,16 +588,17 @@ mod tests {
         assert!(matches!(listed[0].source, RepoSource::Fs(_)));
     }
 
+    fn git_source(repo_ref: GitRepoRef) -> RepoSource {
+        RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref,
+        }
+    }
+
     #[test]
     fn identity_git_distinguishes_refs() {
-        let a = RepoSource::Git {
-            repo_url: "https://github.com/org/repo".to_string(),
-            repo_ref: Some("main".to_string()),
-        };
-        let b = RepoSource::Git {
-            repo_url: "https://github.com/org/repo".to_string(),
-            repo_ref: Some("dev".to_string()),
-        };
+        let a = git_source(GitRepoRef::Named("main".to_string()));
+        let b = git_source(GitRepoRef::Named("dev".to_string()));
         assert_ne!(source_identity(&a), source_identity(&b));
         assert!(source_identity(&a).contains("main"));
         assert!(source_identity(&b).contains("dev"));
@@ -575,21 +606,77 @@ mod tests {
 
     #[test]
     fn identity_git_without_ref_matches_url() {
-        let src = RepoSource::Git {
-            repo_url: "https://github.com/org/repo".to_string(),
-            repo_ref: None,
-        };
+        let src = git_source(GitRepoRef::RemoteHead);
         assert_eq!(source_identity(&src), "https://github.com/org/repo");
     }
 
+    /// An entry on `@{peppy-release}` keeps one identity on every peppy
+    /// version, and an entry pinned to one release tag is another
+    /// repository.
     #[test]
-    fn identity_git_empty_ref_matches_url() {
-        // Treat empty ref as "no ref" so it matches legacy entries without a ref.
-        let src = RepoSource::Git {
-            repo_url: "https://github.com/org/repo".to_string(),
-            repo_ref: Some(String::new()),
-        };
-        assert_eq!(source_identity(&src), "https://github.com/org/repo");
+    fn identity_git_on_the_peppy_release_is_the_keyword_not_a_tag() {
+        let following = git_source(GitRepoRef::PeppyRelease);
+        let pinned = git_source(GitRepoRef::Named("peppy-release/v0.31.2".to_owned()));
+        assert_eq!(
+            source_identity(&following),
+            "https://github.com/org/repo@@{peppy-release}"
+        );
+        assert_ne!(source_identity(&following), source_identity(&pinned));
+    }
+
+    #[test]
+    fn an_entry_parses_into_the_source_it_describes() {
+        let entry = |value: serde_json::Value| parse_repo_entry(&value);
+        assert_eq!(
+            entry(serde_json::json!({ "type": "git", "url": "https://github.com/org/repo" })),
+            Ok(git_source(GitRepoRef::RemoteHead))
+        );
+        assert_eq!(
+            entry(
+                serde_json::json!({ "type": "git", "url": "https://github.com/org/repo", "ref": "" })
+            ),
+            Ok(git_source(GitRepoRef::RemoteHead)),
+            "an empty ref is no ref"
+        );
+        assert_eq!(
+            entry(serde_json::json!({
+                "type": "git", "url": "https://github.com/org/repo", "ref": "@{peppy-release}"
+            })),
+            Ok(git_source(GitRepoRef::PeppyRelease))
+        );
+        assert_eq!(
+            entry(serde_json::json!({
+                "type": "git", "url": "https://github.com/org/repo", "ref": "peppy-release/v0.31.2"
+            })),
+            Ok(git_source(GitRepoRef::Named(
+                "peppy-release/v0.31.2".to_owned()
+            )))
+        );
+        assert_eq!(
+            entry(serde_json::json!({ "type": "fs", "path": "/home/me/nodes" })),
+            Ok(RepoSource::Fs(PathBuf::from("/home/me/nodes")))
+        );
+    }
+
+    #[test]
+    fn an_entry_peppy_cannot_read_is_refused_with_its_reason() {
+        let entry = |value: serde_json::Value| parse_repo_entry(&value);
+        assert_eq!(
+            entry(serde_json::json!({
+                "type": "git", "url": "https://github.com/org/repo", "ref": "@{upstream}"
+            })),
+            Err(RepoEntryError::Ref(
+                GitRepoRefError::NotThePeppyReleaseKeyword("@{upstream}".to_owned())
+            ))
+        );
+        for unrecognized in [
+            serde_json::json!({ "type": "mystery" }),
+            serde_json::json!({ "url": "https://github.com/org/repo" }),
+            serde_json::json!({ "type": "git" }),
+            serde_json::json!({ "type": "fs" }),
+        ] {
+            assert_eq!(entry(unrecognized), Err(RepoEntryError::Unrecognized));
+        }
     }
 
     #[test]
@@ -629,11 +716,13 @@ mod tests {
         );
     }
 
-    /// A git origin on the shared test url at `repo_ref`.
+    /// A git origin on the shared test url, configured on `repo_ref` and
+    /// read at the same ref.
     fn git_origin(repo_ref: &str) -> EntryOrigin {
         EntryOrigin::Git {
             repo_url: "https://example.com/hub.git".to_owned(),
             repo_ref: Some(repo_ref.to_owned()),
+            read_ref: Some(repo_ref.to_owned()),
             commit: daemon_config::repository::GitCommit::parse(&"a".repeat(40)).unwrap(),
             path: daemon_config::repository::RepoRelativePath::parse("node/peppy.json5").unwrap(),
         }
@@ -676,6 +765,25 @@ mod tests {
         assert!(owns(&dev, &git_origin("dev")));
     }
 
+    /// A repository on `@{peppy-release}` and one pinned to a release tag on
+    /// the same url are two repositories, and each owns only the entries it
+    /// read, whatever ref the keyword resolved to.
+    #[test]
+    fn git_attribution_tells_the_peppy_release_from_a_pinned_release_tag() {
+        let following = git_repo("https://example.com/hub.git", Some("@{peppy-release}"));
+        let pinned = git_repo("https://example.com/hub.git", Some("peppy-release/v0.31.2"));
+        let mut read_for_the_release = git_origin("@{peppy-release}");
+        if let EntryOrigin::Git { read_ref, .. } = &mut read_for_the_release {
+            *read_ref = Some("refs/tags/peppy-release/v0.31.2".to_owned());
+        }
+        let read_for_the_pin = git_origin("peppy-release/v0.31.2");
+
+        assert!(owns(&following, &read_for_the_release));
+        assert!(!owns(&following, &read_for_the_pin));
+        assert!(owns(&pinned, &read_for_the_pin));
+        assert!(!owns(&pinned, &read_for_the_release));
+    }
+
     /// An unpinned repository takes whatever branch was checked out, so
     /// it matches any resolved ref on its url.
     #[test]
@@ -686,6 +794,7 @@ mod tests {
 
         let EntryOrigin::Git {
             repo_ref,
+            read_ref,
             commit,
             path,
             ..
@@ -696,6 +805,7 @@ mod tests {
         let other = EntryOrigin::Git {
             repo_url: "https://example.com/other.git".to_owned(),
             repo_ref,
+            read_ref,
             commit,
             path,
         };

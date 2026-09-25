@@ -257,6 +257,17 @@ pub(crate) struct RepoItems {
     pub mcp_exposures: Vec<McpExposureCacheEntry>,
 }
 
+impl RepoItems {
+    /// How many entries there are, across the five kinds.
+    pub(crate) fn len(&self) -> usize {
+        self.nodes.len()
+            + self.launchers.len()
+            + self.contracts.len()
+            + self.pairings.len()
+            + self.mcp_exposures.len()
+    }
+}
+
 /// Uniform view over the five cache-entry kinds, so the cache plumbing
 /// (write/load/lookup here, collection and cross-repo merging in
 /// `refresh.rs`) exists once instead of once per kind.
@@ -690,7 +701,9 @@ pub fn mcp_exposures_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 }
 
 pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
-    peppy_dirs.conf_dir().join("repositories.json5")
+    peppy_dirs
+        .conf_dir()
+        .join(crate::services::repo::REPOS_FILE)
 }
 
 /// Reads `contracts.json5` (no memoization: contract resolution is a
@@ -754,14 +767,15 @@ pub(crate) fn resolve_cached_artifact_path(
         EntryOrigin::Fs { path } => Ok(path.clone()),
         EntryOrigin::Git {
             repo_url,
-            repo_ref,
+            read_ref,
             commit,
             path,
+            ..
         } => {
             let checkout = crate::services::node::cache::git::ensure_checkout_at_commit(
                 peppy_dirs,
                 repo_url,
-                repo_ref.as_deref(),
+                read_ref.as_deref(),
                 commit,
                 on_feedback,
             )?;
@@ -890,14 +904,15 @@ pub(crate) fn resolve_pinned_bytes(
         EntryOrigin::Fs { path } => path.clone(),
         EntryOrigin::Git {
             repo_url,
-            repo_ref,
+            read_ref,
             commit,
             path,
+            ..
         } => {
             let checkout = crate::services::node::cache::git::ensure_checkout_at_commit(
                 peppy_dirs,
                 repo_url,
-                repo_ref.as_deref(),
+                read_ref.as_deref(),
                 commit,
                 on_feedback,
             )
@@ -1080,6 +1095,7 @@ pub(crate) mod test_support {
         EntryOrigin::Git {
             repo_url: repo_url.to_owned(),
             repo_ref: Some(repo_ref.to_owned()),
+            read_ref: Some(repo_ref.to_owned()),
             commit: commit(seed),
             path: RepoRelativePath::parse(path).expect("test path is repository-relative"),
         }
@@ -1717,6 +1733,7 @@ mod tests {
                 "demo",
                 EntryOrigin::Git {
                     repo_url: repo_url.clone(),
+                    read_ref: Some(branch.clone()),
                     repo_ref: Some(branch),
                     commit,
                     path: RepoRelativePath::parse("launchers/demo.json5").unwrap(),
@@ -1834,6 +1851,7 @@ mod tests {
             sha,
             EntryOrigin::Git {
                 repo_url: source_repo_dir.display().to_string(),
+                read_ref: Some(branch.clone()),
                 repo_ref: Some(branch),
                 commit,
                 path: RepoRelativePath::parse("camera/peppy.json5").unwrap(),
@@ -1874,6 +1892,7 @@ mod tests {
             pinned_sha.clone(),
             EntryOrigin::Git {
                 repo_url: source_repo_dir.display().to_string(),
+                read_ref: Some(branch.clone()),
                 repo_ref: Some(branch),
                 commit,
                 path: RepoRelativePath::parse("camera/peppy.json5").unwrap(),
@@ -1909,6 +1928,7 @@ mod tests {
             fingerprint("whatever"),
             EntryOrigin::Git {
                 repo_url: source_repo_dir.display().to_string(),
+                read_ref: Some(branch.clone()),
                 repo_ref: Some(branch),
                 commit,
                 path: RepoRelativePath::parse("elsewhere/peppy.json5").unwrap(),

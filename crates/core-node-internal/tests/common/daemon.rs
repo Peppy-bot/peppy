@@ -85,6 +85,27 @@ pub async fn start_core_node_with_mock_messenger() -> StartedCoreNode {
     .await
 }
 
+/// Boots the core node on a data root the test prepared, for a test of what
+/// the daemon does at start with the state it finds there.
+pub async fn start_core_node_with_mock_messenger_on(data_dir: TempDir) -> StartedCoreNode {
+    let peppy_dirs = PeppyDirs::new(data_dir.path());
+    let shared_messenger = create_mock_messenger().await;
+    start_core_node_with_messenger(
+        shared_messenger,
+        default_node_arguments(),
+        Some(data_dir),
+        peppy_dirs,
+        daemon_config::peppy_config::PeppyConfig::default(),
+    )
+    .await
+}
+
+/// A data root for [`start_core_node_with_mock_messenger_on`], under the
+/// same test root as every other starter's.
+pub fn new_test_data_dir() -> TempDir {
+    TempDir::new_in(config_test_support::test_tmp_root()).expect("test data dir")
+}
+
 /// Boots the core node with its peppy data root at a stable path under the
 /// system temp dir — i.e. outside `$HOME`, mirroring where dev binaries root
 /// their data (`$TMPDIR/.peppy`, see `daemon_config::consts::resolve_root`).

@@ -1,7 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
-use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse};
+use core_node_api::encoding::{GitRepoRef, RepoExcludeRequest, RepoExcludeResponse};
 use peppylib::core_node::transport::poll;
 use std::time::Duration;
 
@@ -45,7 +45,7 @@ async fn exclude_git_without_ref_succeed() {
 
     let resp = send_repo_exclude(
         &started,
-        &RepoExcludeRequest::new_git("https://example.com/packages.git", None),
+        &RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
     .await;
     assert!(resp.success, "repo_exclude should succeed");
@@ -80,7 +80,7 @@ async fn exclude_git_succeed() {
         &started,
         &RepoExcludeRequest::new_git(
             "https://github.com/example/repo.git",
-            Some("main".to_string()),
+            GitRepoRef::Named("main".to_string()),
         ),
     )
     .await;
@@ -130,7 +130,8 @@ async fn exclude_duplicate_fails() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
-    let request = RepoExcludeRequest::new_git("https://example.com/packages.git", None);
+    let request =
+        RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead);
 
     // First exclude should succeed
     let resp = send_repo_exclude(&started, &request).await;
@@ -161,7 +162,7 @@ async fn exclude_fails_when_duplicate_ids_in_file() {
 
     let resp = send_repo_exclude(
         &started,
-        &RepoExcludeRequest::new_git("https://example.com/new.git", None),
+        &RepoExcludeRequest::new_git("https://example.com/new.git", GitRepoRef::RemoteHead),
     )
     .await;
     assert!(
@@ -188,7 +189,7 @@ async fn exclude_assigns_id_after_manual_entry() {
 
     let resp = send_repo_exclude(
         &started,
-        &RepoExcludeRequest::new_git("https://example.com/packages.git", None),
+        &RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
     .await;
     assert!(resp.success, "repo_exclude should succeed");

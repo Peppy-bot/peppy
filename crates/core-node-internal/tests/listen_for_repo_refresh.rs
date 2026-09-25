@@ -294,6 +294,74 @@ async fn refresh_deduplication() {
     );
 }
 
+// ── Start of the daemon ─────────────
+
+/// A repository on `@{peppy-release}` that this machine read for another
+/// peppy version is read again while the daemon starts, before it reports
+/// ready, at the ref this build reads (`main`, in a test build without a
+/// release version). A refresh sent once the daemon is ready is accepted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_reads_again_a_release_repository_read_for_another_version() {
+    let data_dir = common::new_test_data_dir();
+    let peppy_dirs = daemon_config::consts::PeppyDirs::new(data_dir.path());
+
+    let hub = data_dir.path().join("hub.git");
+    Repository::init_opts(
+        &hub,
+        git2::RepositoryInitOptions::new().initial_head("main"),
+    )
+    .expect("init the hub on main");
+    create_node_dir(&hub, "released_node", "v1");
+    common::publish_and_commit_repo_index(&hub);
+    let hub_url = format!("file://{}", hub.display());
+
+    let conf_dir = peppy_dirs.conf_dir();
+    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
+    std::fs::write(
+        conf_dir.join("repositories.json5"),
+        format!(
+            r#"[{{ "id": 1, "type": "git", "url": "{hub_url}", "ref": "@{{peppy-release}}" }}]"#
+        ),
+    )
+    .expect("write repos file");
+    std::fs::create_dir_all(peppy_dirs.cache_dir()).expect("create cache dir");
+    std::fs::write(
+        peppy_dirs.cache_dir().join("repo_status.json5"),
+        format!(
+            r#"[{{ "id": 1, "identity": "{hub_url}@@{{peppy-release}}", "source_type": "git",
+                 "last_read_unix_secs": 1, "read_ref": "refs/tags/peppy-release/v0.31.1" }}]"#
+        ),
+    )
+    .expect("write the status of a read for another version");
+
+    let started = common::start_core_node_with_mock_messenger_on(data_dir).await;
+
+    let cache = std::fs::read_to_string(nodes_repo_cache_path(&started.peppy_dirs))
+        .expect("the node cache is written before the daemon is ready");
+    let entries: Vec<serde_json::Value> = serde_json5::from_str(&cache).expect("parse cache");
+    let released = entries
+        .iter()
+        .find(|e| e["node_name"] == "released_node")
+        .unwrap_or_else(|| panic!("the hub was read at start: {cache}"));
+    assert_eq!(released["origin"]["repo_ref"], "@{peppy-release}");
+    assert_eq!(released["origin"]["read_ref"], "main");
+
+    // The defaults the daemon appended at start would send a refresh to
+    // the network; this test reads its own hub only.
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "git", "url": "{hub_url}", "ref": "@{{peppy-release}}" }}]"#
+        ),
+    );
+    let result = send_refresh_and_wait(&started).await;
+    assert!(
+        result.goal_response.accepted,
+        "a refresh once ready is accepted"
+    );
+    assert!(result.result.success, "{:?}", result.result.error_message);
+}
+
 // ── Tests with mock messenger (no feedback needed) ─────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

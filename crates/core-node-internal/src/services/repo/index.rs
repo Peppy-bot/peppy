@@ -196,9 +196,12 @@ pub(crate) enum ReadSource {
     /// A clone of a remote, read at one commit.
     Git {
         repo_url: String,
-        /// The ref the repository is configured to follow, absent when it
-        /// follows whatever the remote's default branch is.
+        /// The ref the repository is configured to follow, as written,
+        /// absent when it follows whatever the remote's default branch is.
         repo_ref: Option<String>,
+        /// The git ref the clone was positioned on (see
+        /// [`EntryOrigin::read_ref`]).
+        read_ref: Option<String>,
         commit: GitCommit,
     },
 }
@@ -214,10 +217,12 @@ impl ReadSource {
             ReadSource::Git {
                 repo_url,
                 repo_ref,
+                read_ref,
                 commit,
             } => EntryOrigin::Git {
                 repo_url: repo_url.clone(),
                 repo_ref: repo_ref.clone(),
+                read_ref: read_ref.clone(),
                 commit: commit.clone(),
                 path: path.clone(),
             },
@@ -1384,6 +1389,7 @@ mod tests {
             &ReadSource::Git {
                 repo_url: "https://example.invalid/hub".to_owned(),
                 repo_ref: Some("main".to_owned()),
+                read_ref: Some("main".to_owned()),
                 commit: commit.clone(),
             },
         )

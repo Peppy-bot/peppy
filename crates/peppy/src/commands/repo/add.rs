@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node_api::encoding::{RepoAddRequest, RepoSource};
+use core_node_api::encoding::{GitRepoRef, RepoAddRequest, RepoSource};
 use tracing::info;
 
 use crate::commands::CALLER_INSTANCE_ID;
@@ -16,7 +16,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) fn add_repo(
     ctx: &Arc<AppContext>,
     source_str: &str,
-    git_ref: Option<String>,
+    git_ref: Option<GitRepoRef>,
     top: bool,
     id: Option<u64>,
 ) -> Result<()> {
@@ -80,7 +80,10 @@ async fn add_repo_async(
 /// - Local filesystem paths (absolute or relative)
 /// - Git URLs (contains `.git` or starts with `git@`/`ssh://`)
 /// - Plain HTTP/HTTPS URLs
-pub(crate) fn parse_repo_source(source_str: &str, git_ref: Option<String>) -> Result<RepoSource> {
+pub(crate) fn parse_repo_source(
+    source_str: &str,
+    git_ref: Option<GitRepoRef>,
+) -> Result<RepoSource> {
     if !source::is_probably_remote_source(source_str) {
         // Local filesystem path
         if git_ref.is_some() {
@@ -102,17 +105,17 @@ pub(crate) fn parse_repo_source(source_str: &str, git_ref: Option<String>) -> Re
         let repo_url_str = repo_url.to_bstring().to_string();
         return Ok(RepoSource::Git {
             repo_url: repo_url_str,
-            repo_ref: git_ref,
+            repo_ref: git_ref.unwrap_or(GitRepoRef::RemoteHead),
         });
     }
 
     // A URL that did not parse as a git clone URL above. `--ref` narrows
     // the guess, since only a git source can honour one.
-    if git_ref.is_some() {
+    if let Some(repo_ref) = git_ref {
         if let Ok((repo_url, _repo_path)) = source::parse_git_repo_url_and_path(source_str) {
             return Ok(RepoSource::Git {
                 repo_url: repo_url.to_bstring().to_string(),
-                repo_ref: git_ref,
+                repo_ref,
             });
         }
         return Err(Error::ExecutionFailed(
@@ -155,15 +158,31 @@ mod tests {
 
     #[test]
     fn parse_repo_source_https_without_git_suffix_with_ref_returns_git() {
-        let parsed =
-            parse_repo_source("https://github.com/org/repo", Some("main".to_string())).unwrap();
+        let parsed = parse_repo_source(
+            "https://github.com/org/repo",
+            Some(GitRepoRef::Named("main".to_string())),
+        )
+        .unwrap();
         match parsed {
             RepoSource::Git { repo_url, repo_ref } => {
                 assert!(repo_url.contains("github.com/org/repo"));
-                assert_eq!(repo_ref.as_deref(), Some("main"));
+                assert_eq!(repo_ref, GitRepoRef::Named("main".to_string()));
             }
             other => panic!("expected Git variant, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parse_repo_source_git_follows_the_peppy_release() {
+        let parsed = parse_repo_source(
+            "git@github.com:Peppy-bot/private-nodes-hub.git",
+            Some(GitRepoRef::PeppyRelease),
+        )
+        .unwrap();
+        let RepoSource::Git { repo_ref, .. } = parsed else {
+            panic!("expected Git variant");
+        };
+        assert_eq!(repo_ref, GitRepoRef::PeppyRelease);
     }
 
     #[test]
@@ -171,7 +190,7 @@ mod tests {
         // --ref on a local path is still rejected.
         let tmp = tempfile::tempdir().unwrap();
         let input = tmp.path().to_str().unwrap();
-        let result = parse_repo_source(input, Some("main".to_string()));
+        let result = parse_repo_source(input, Some(GitRepoRef::Named("main".to_string())));
         assert!(result.is_err(), "expected error for fs path with --ref");
         let msg = result.unwrap_err().to_string();
         assert!(
