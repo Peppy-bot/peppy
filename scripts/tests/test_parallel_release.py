@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -39,6 +40,7 @@ from functions.parallel_release import (
     _upload_archives_and_publish,
     _write_tarball,
     apptainer_archive_name,
+    parse_release_tag,
     run_apptainer,
     run_bindings,
     run_build,
@@ -149,6 +151,65 @@ def test_release_plan_rejects_a_file_that_is_not_json(tmp_path: Path) -> None:
         ReleasePlan.load(path)
 
 
+def test_release_plan_rejects_a_tag_no_release_publishes(tmp_path: Path) -> None:
+    path = tmp_path / "release-plan.json"
+    ReleasePlan(tag="v0.3.0-rc1", release_commit=RELEASE_COMMIT, content=CONTENT).write(
+        path
+    )
+
+    with pytest.raises(ReleaseError, match="is not a release tag"):
+        ReleasePlan.load(path)
+
+
+# --- the release tag ---
+
+
+@pytest.mark.parametrize(
+    ("value", "tag"),
+    [("v0.31.2", "v0.31.2"), (" v0.31.2\n", "v0.31.2"), ("v10.0.123", "v10.0.123")],
+)
+def test_a_release_tag_is_v_major_minor_patch(value: str, tag: str) -> None:
+    assert parse_release_tag(value) == tag
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["v0.31.2-rc1", "0.31.2", "v0.31", "v0.31.2.1", "V0.31.2", "v0.3x.2", "v0.3\u0661.2", ""],
+)
+def test_every_other_tag_is_refused_with_the_reason(value: str) -> None:
+    with pytest.raises(ReleaseError) as excinfo:
+        parse_release_tag(value)
+
+    message = _unwrapped(str(excinfo.value))
+    assert "v<MAJOR>.<MINOR>.<PATCH>, with digits only in each part" in message
+    assert (
+        "Every published peppy binary reads the hub tags peppy-release/<its "
+        "version>, and a binary of any other version reads the hubs' main"
+    ) in message
+
+
+@pytest.mark.parametrize("tag", ["v0.31.2-rc1", "0.31.2", "v0.31"])
+def test_prepare_refuses_a_tag_no_release_publishes(
+    tag: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_args(
+            [
+                "prepare",
+                "--tag",
+                tag,
+                "--release-commit",
+                RELEASE_COMMIT,
+                "--no-minor-docs-pr",
+                "--plan",
+                "p",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert "reads the hubs' main" in _unwrapped(capsys.readouterr().err)
+
+
 # --- command line ---
 
 
@@ -186,6 +247,22 @@ def test_prepare_takes_every_answer_up_front() -> None:
 def test_prepare_rejects_missing_or_malformed_answers(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as exc_info:
         _parse_args(["prepare", *argv])
+    assert exc_info.value.code == 2
+
+
+def test_hub_launch_takes_the_hub_set_and_the_run_id() -> None:
+    args = _parse_args(
+        ["hub-launch", "--hub-set", "hub-set.json", "--peppy-run-id", "18000000001"]
+    )
+
+    assert args.hub_set == Path("hub-set.json")
+    assert args.peppy_run_id == 18000000001
+
+
+@pytest.mark.parametrize("run_id", ["abc", "0", "-1", "12a", ""])
+def test_hub_launch_refuses_a_run_id_that_is_no_run(run_id: str) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_args(["hub-launch", "--hub-set", "s", "--peppy-run-id", run_id])
     assert exc_info.value.code == 2
 
 
@@ -603,6 +680,22 @@ def test_build_refuses_an_apptainer_archive_for_another_architecture(
 
 API_PATH = f"/repos/{SLUG.full}"
 NOTES_FILE = "docs/src/content/releases/v0.3.0.html"
+HUB_TAG = "peppy-release/v0.3.0"
+# The hub set the hub-set job records: every hub at a commit of its own.
+HUB_COMMITS = {
+    name: f"{index:x}" * 40
+    for index, name in enumerate(
+        (
+            "nodes-hub",
+            "launchers-hub",
+            "contracts-hub",
+            "mcp-hub",
+            "pairings-hub",
+            "private-nodes-hub",
+        ),
+        start=10,
+    )
+}
 
 
 def _built_archives(directory: Path) -> Path:
@@ -697,8 +790,13 @@ def release_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ReleaseRepo
     )
 
 
+def _sha(text: str) -> str:
+    return hashlib.sha1(text.encode()).hexdigest()
+
+
 class FakeGitHub:
-    """The releases API of test-owner/test-repo, as the publish stage uses it.
+    """The releases API of test-owner/test-repo and the git API of the hubs of
+    test-owner, as the publish stage uses them.
 
     The router mocks all of httpx, and any request this fake does not answer
     fails the test. Every request it answers is recorded in `events`, which
@@ -710,10 +808,69 @@ class FakeGitHub:
         self.releases: dict[int, dict] = {}
         self.uploads: list[str] = []
         self.failing_upload: str | None = None
+        # The tag refs of each hub, by name, at the object each names, and the
+        # annotated tag objects, by sha.
+        self.hub_tags: dict[str, dict[str, dict]] = {}
+        self.tag_objects: dict[str, dict] = {}
         self.events = events
         self._next_id = 7
         router.route(host="api.github.com").mock(side_effect=self._api)
         router.route(host="uploads.github.com").mock(side_effect=self._upload)
+
+    def add_hub_tag(self, hub: str, tag: str, commit: str, *, annotated: bool) -> None:
+        """A tag of *hub* that exists before the publish runs."""
+        if annotated:
+            sha = _sha(f"{hub} {tag} {commit}")
+            self.tag_objects[sha] = {
+                "sha": sha,
+                "tag": tag,
+                "message": "an earlier tag",
+                "object": {"type": "commit", "sha": commit},
+            }
+            target = {"type": "tag", "sha": sha}
+        else:
+            target = {"type": "commit", "sha": commit}
+        self.hub_tags.setdefault(hub, {})[tag] = target
+
+    def hub_tag_commit(self, hub: str, tag: str) -> str | None:
+        target = self.hub_tags.get(hub, {}).get(tag)
+        if target is None:
+            return None
+        if target["type"] == "tag":
+            return self.tag_objects[target["sha"]]["object"]["sha"]
+        return target["sha"]
+
+    def _hub_git(self, request: httpx.Request, hub: str, path: str) -> httpx.Response:
+        method = request.method
+        tags = self.hub_tags.setdefault(hub, {})
+        if method == "GET" and (name := re.fullmatch(r"ref/tags/(.+)", path)):
+            self.events.append(f"read the tag of {hub}")
+            target = tags.get(name[1])
+            if target is None:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, json={"ref": f"refs/tags/{name[1]}", "object": target})
+        if method == "GET" and (sha := re.fullmatch(r"tags/([0-9a-f]{40})", path)):
+            return httpx.Response(200, json=self.tag_objects[sha[1]])
+        if method == "POST" and path == "tags":
+            payload = json.loads(request.content)
+            assert payload["type"] == "commit"
+            tag_sha = _sha(f"{hub} {payload['tag']} {payload['object']}")
+            self.tag_objects[tag_sha] = {
+                "sha": tag_sha,
+                "tag": payload["tag"],
+                "message": payload["message"],
+                "object": {"type": "commit", "sha": payload["object"]},
+            }
+            return httpx.Response(201, json=self.tag_objects[tag_sha])
+        if method == "POST" and path == "refs":
+            payload = json.loads(request.content)
+            name = payload["ref"].removeprefix("refs/tags/")
+            if name in tags:
+                return httpx.Response(422, json={"message": "Reference already exists"})
+            self.events.append(f"tag {hub}")
+            tags[name] = {"type": "tag", "sha": payload["sha"]}
+            return httpx.Response(201, json={"ref": payload["ref"], "object": tags[name]})
+        raise AssertionError(f"unexpected GitHub request: {method} {request.url}")
 
     def add_release(self, tag: str, *, draft: bool) -> dict:
         release_id = self._next_id
@@ -748,6 +905,12 @@ class FakeGitHub:
 
     def _api(self, request: httpx.Request) -> httpx.Response:
         method = request.method
+        hub_git = re.fullmatch(
+            rf"/repos/{SLUG.owner}/([^/]+)/git/(.+)", request.url.path
+        )
+        if hub_git and hub_git[1] != SLUG.repo:
+            self.requests.append(f"{method} {request.url.path}")
+            return self._hub_git(request, hub_git[1], hub_git[2])
         path = request.url.path.removeprefix(API_PATH)
         self.requests.append(f"{method} {path}")
         if method == "GET" and (tag := re.fullmatch(r"/releases/tags/(.+)", path)):
@@ -813,6 +976,33 @@ def _plan_of(repo: ReleaseRepo) -> ReleasePlan:
     )
 
 
+class InstallCheck:
+    """Stands in for the check that the installed archive reads the default
+    hubs: it records the archive it was given, and fails when told to."""
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.archives: list[Path] = []
+        self.failure: ReleaseError | None = None
+
+    def __call__(self, archive: Path) -> None:
+        self.events.append("check the install")
+        self.archives.append(archive)
+        if self.failure is not None:
+            raise self.failure
+
+
+@pytest.fixture
+def install_check(events: list[str]) -> InstallCheck:
+    return InstallCheck(events)
+
+
+def _hub_set_text() -> str:
+    return json.dumps(
+        {"hubs": {name: {"ref": "main", "commit": commit} for name, commit in HUB_COMMITS.items()}}
+    )
+
+
 @pytest.fixture
 def publish(
     tmp_path: Path,
@@ -820,25 +1010,37 @@ def publish(
     release_repo: ReleaseRepo,
     github: FakeGitHub,
     events: list[str],
+    install_check: InstallCheck,
 ):
     """Run the publish stage of the release of `release_repo`'s release commit,
-    against the fake GitHub.
+    against the fake GitHub, on an x86_64 Linux host.
 
     The archives are the three a build would leave; their contents are not
-    real archives, so verifying them is recorded instead of done.
+    real archives, so verifying them and checking the install are recorded
+    instead of done.
     """
     monkeypatch.setenv("PEPPY_RELEASE_TOKEN", "token")
     monkeypatch.setenv("GITHUB_REPOSITORY", SLUG.full)
     plan_path = tmp_path / "release-plan.json"
     _plan_of(release_repo).write(plan_path)
     archives = _built_archives(tmp_path / "archives")
+    hub_set_path = tmp_path / "hub-set.json"
+    hub_set_path.write_text(_hub_set_text())
 
     def run() -> None:
         with patch(
             "functions.parallel_release.verify_all_releases",
             side_effect=lambda dist_dir: events.append("verify the archives"),
+        ), patch(
+            "functions.parallel_release.check_release_install",
+            side_effect=install_check,
+        ), patch(
+            "functions.parallel_release.get_native_triple",
+            return_value="x86_64-unknown-linux-gnu",
         ):
-            run_publish(plan_path=plan_path, archives_dir=archives)
+            run_publish(
+                plan_path=plan_path, archives_dir=archives, hub_set_path=hub_set_path
+            )
 
     return run
 
@@ -910,13 +1112,18 @@ def test_publish_does_its_steps_in_order(
     ):
         publish()
 
-    # Nothing is written before every check passed, the archives are verified
-    # before the draft exists, and the git side waits for the release to be
-    # live: the notes are read from the published release.
+    # Nothing is written before every check passed: `dev` first, so a run
+    # that stops there tags no hub. Every hub is read before any is tagged,
+    # the install is checked once the hubs carry their tag and before the
+    # draft exists, and the git side waits for the release to be live: the
+    # notes are read from the published release.
     assert events == [
         "check dev",
         "look up the published release",
         "verify the archives",
+        *(f"read the tag of {hub}" for hub in HUB_COMMITS),
+        *(f"tag {hub}" for hub in HUB_COMMITS),
+        "check the install",
         "create the draft",
         *(f"upload {name}" for name in _uploaded_names()),
         "publish",
@@ -937,6 +1144,9 @@ def test_publish_rerun_does_not_upload_a_release_already_published(
 
     assert "create the draft" not in events
     assert "verify the archives" not in events
+    # Its hubs were tagged and its install checked before it went live.
+    assert not [request for request in github.requests if "/git/" in request]
+    assert "check the install" not in events
     assert github.uploads == []
     assert len(github.releases) == 1
     # The steps left are done.
@@ -995,7 +1205,7 @@ def test_publish_rerun_does_not_push_main_already_aligned(
 
 
 def test_publish_refuses_dev_moved_on_before_any_request(
-    publish, release_repo: ReleaseRepo, github: FakeGitHub
+    publish, release_repo: ReleaseRepo, github: FakeGitHub, events: list[str]
 ) -> None:
     moved = release_repo.commit_on_dev({"code.rs": "fn merged_since() {}\n"}, "merged")
 
@@ -1005,9 +1215,139 @@ def test_publish_refuses_dev_moved_on_before_any_request(
         publish()
 
     assert f"moved to {moved[:12]}" in str(excinfo.value)
+    # No request at all, so no hub is tagged.
     assert github.requests == []
+    assert github.hub_tags == {}
+    assert "check the install" not in events
     assert release_repo.remote_commit("dev") == moved
     assert release_repo.remote_commit("main") == release_repo.shipped_commit
+
+
+def test_publish_tags_every_hub_at_its_recorded_commit(
+    publish, github: FakeGitHub
+) -> None:
+    publish()
+
+    for hub, commit in HUB_COMMITS.items():
+        target = github.hub_tags[hub][HUB_TAG]
+        # An annotated tag, whose object names the recorded commit.
+        assert target["type"] == "tag"
+        tag_object = github.tag_objects[target["sha"]]
+        assert tag_object["object"] == {"type": "commit", "sha": commit}
+        assert tag_object["tag"] == HUB_TAG
+        assert tag_object["message"] == "Released with peppy v0.3.0"
+
+
+def test_publish_keeps_a_hub_tag_already_at_the_recorded_commit(
+    publish, github: FakeGitHub, events: list[str]
+) -> None:
+    # An earlier attempt, or an earlier run of v0.3.0, tagged two hubs.
+    github.add_hub_tag("mcp-hub", HUB_TAG, HUB_COMMITS["mcp-hub"], annotated=True)
+    github.add_hub_tag(
+        "pairings-hub", HUB_TAG, HUB_COMMITS["pairings-hub"], annotated=False
+    )
+    kept = {hub: dict(github.hub_tags[hub]) for hub in ("mcp-hub", "pairings-hub")}
+
+    publish()
+
+    assert [event for event in events if event.startswith("tag ")] == [
+        f"tag {hub}" for hub in HUB_COMMITS if hub not in kept
+    ]
+    for hub, tags in kept.items():
+        assert github.hub_tags[hub] == tags
+    for hub, commit in HUB_COMMITS.items():
+        assert github.hub_tag_commit(hub, HUB_TAG) == commit
+    assert len(github.published()) == 1
+
+
+@pytest.mark.parametrize("annotated", [True, False])
+def test_publish_refuses_a_hub_tag_at_another_commit_and_tags_no_hub(
+    publish,
+    release_repo: ReleaseRepo,
+    github: FakeGitHub,
+    events: list[str],
+    annotated: bool,
+) -> None:
+    github.add_hub_tag("private-nodes-hub", HUB_TAG, OTHER_COMMIT, annotated=annotated)
+
+    with pytest.raises(ReleaseError) as excinfo:
+        publish()
+
+    message = _unwrapped(str(excinfo.value))
+    assert (
+        f"{HUB_TAG} already names another commit than the one this run tested"
+    ) in message
+    assert (
+        f"private-nodes-hub: tagged at {OTHER_COMMIT[:12]}, tested at "
+        f"{HUB_COMMITS['private-nodes-hub'][:12]}"
+    ) in message
+    assert "This publish tagged no hub and publishes nothing." in message
+    # Every hub was read, none tagged, and the tag that was there stays.
+    assert [event for event in events if event.startswith("tag ")] == []
+    assert github.hub_tag_commit("private-nodes-hub", HUB_TAG) == OTHER_COMMIT
+    assert "check the install" not in events
+    assert github.releases == {}
+    assert release_repo.remote_commit("dev") == release_repo.release_commit
+
+
+def test_publish_checks_the_install_of_the_hosts_archive(
+    publish, tmp_path: Path, install_check: InstallCheck
+) -> None:
+    publish()
+
+    [archive] = install_check.archives
+    assert archive.name == "peppy-x86_64-unknown-linux-gnu.tgz"
+    assert archive.read_bytes() == b"archive x86_64-unknown-linux-gnu"
+
+
+def test_publish_publishes_nothing_when_the_install_check_fails(
+    publish,
+    release_repo: ReleaseRepo,
+    github: FakeGitHub,
+    events: list[str],
+    install_check: InstallCheck,
+) -> None:
+    install_check.failure = ReleaseError("`peppy repo refresh --strict` failed (exit 1)")
+
+    with pytest.raises(ReleaseError, match="repo refresh --strict"):
+        publish()
+
+    # The hubs carry their tag, which no published peppy reads.
+    assert [event for event in events if event.startswith("tag ")] == [
+        f"tag {hub}" for hub in HUB_COMMITS
+    ]
+    assert "create the draft" not in events
+    assert github.releases == {}
+    assert release_repo.remote_commit("dev") == release_repo.release_commit
+    assert release_repo.remote_commit("main") == release_repo.shipped_commit
+
+
+def test_publish_rerun_after_a_failed_install_check_keeps_the_tags(
+    publish, github: FakeGitHub, events: list[str], install_check: InstallCheck
+) -> None:
+    install_check.failure = ReleaseError("the daemon did not serve")
+    with pytest.raises(ReleaseError):
+        publish()
+    events.clear()
+    install_check.failure = None
+
+    publish()
+
+    # The re-run finds every tag at its recorded commit and tags nothing.
+    assert [event for event in events if event.startswith("tag ")] == []
+    assert "check the install" in events
+    assert len(github.published()) == 1
+
+
+def test_publish_refuses_a_hub_set_it_cannot_read(
+    publish, tmp_path: Path, github: FakeGitHub
+) -> None:
+    (tmp_path / "hub-set.json").write_text('{"hubs": {}}')
+
+    with pytest.raises(ReleaseError, match="must have the shape"):
+        publish()
+
+    assert github.requests == []
 
 
 def test_publish_refuses_a_published_release_tagged_elsewhere(

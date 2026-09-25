@@ -20,6 +20,7 @@ from functions.cli import (
     need_cmd,
     prompt,
     prompt_yn,
+    require_job_token,
     run_with_error_handling,
     validate_release_environment,
     verify_prod_router_publicly_trusted,
@@ -128,6 +129,18 @@ def test_validate_release_environment_whitespace_token_is_empty() -> None:
     ):
         with pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"):
             validate_release_environment(required_commands=())
+
+
+def test_require_job_token_reads_the_job_token() -> None:
+    with patch.dict(os.environ, {"PEPPY_JOB_TOKEN": " job-token "}):
+        assert require_job_token() == "job-token"
+
+
+@pytest.mark.parametrize("environment", [{}, {"PEPPY_JOB_TOKEN": "  "}])
+def test_require_job_token_refuses_a_missing_token(environment: dict[str, str]) -> None:
+    with patch.dict(os.environ, environment, clear=True):
+        with pytest.raises(ReleaseError, match="PEPPY_JOB_TOKEN env var is required"):
+            require_job_token()
 
 
 # --- Publicly-trusted prod-router release gate ---
