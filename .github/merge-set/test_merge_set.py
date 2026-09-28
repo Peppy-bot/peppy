@@ -54,6 +54,9 @@ BOT = "peppy-merge-set[bot]"
 RUN_URL = "https://github.com/Peppy-bot/peppy/actions/runs/99"
 CONTEXT = merge_set.RunContext(bot_login=BOT, run_url=RUN_URL)
 TEST_CHECK = RequiredCheck("test", 15368)
+# The ruleset of the integration branches that requires an approval.
+APPROVAL_RULESET = 20864833
+RULES = BranchRules((TEST_CHECK,), strict=False, approval_rulesets=(APPROVAL_RULESET,))
 
 
 def commit(repository, label="head"):
@@ -112,6 +115,7 @@ def report(pr, **changes):
         checks=((TEST_CHECK, CheckState.PASSED),),
         behind=False,
         stale=(),
+        unbypassed_approval_rulesets=(),
     )
     fields.update(changes)
     return merge_set.PullRequestReport(**fields)
@@ -522,6 +526,7 @@ class Rules(unittest.TestCase):
             BranchRules(
                 (RequiredCheck("test", 15368), RequiredCheck("check-index", None)),
                 strict=False,
+                approval_rulesets=(),
             ),
         )
 
@@ -530,6 +535,33 @@ class Rules(unittest.TestCase):
             [self.rule(("test", 15368)), self.rule(("lint", None), strict=True)]
         )
         self.assertTrue(rules.strict)
+
+    def test_the_rulesets_that_require_an_approval_are_kept_by_id(self):
+        def pull_request_rule(ruleset_id, **parameters):
+            return {
+                "type": "pull_request",
+                "ruleset_id": ruleset_id,
+                "parameters": {
+                    "required_approving_review_count": 0,
+                    "require_code_owner_review": False,
+                    "required_reviewers": [],
+                    **parameters,
+                },
+            }
+
+        rules = merge_set.parse_branch_rules(
+            [
+                {"type": "deletion", "ruleset_id": 1},
+                pull_request_rule(2, required_approving_review_count=1),
+                pull_request_rule(3),
+                pull_request_rule(4, require_code_owner_review=True),
+                pull_request_rule(
+                    5, required_reviewers=[{"reviewer": {"id": 7, "type": "Team"}}]
+                ),
+                pull_request_rule(2, required_approving_review_count=2),
+            ]
+        )
+        self.assertEqual(rules.approval_rulesets, (2, 4, 5))
 
 
 class RequiredChecks(unittest.TestCase):
@@ -839,6 +871,46 @@ class Blockers(unittest.TestCase):
                 self.assertEqual(len(texts), 1, texts)
                 self.assertIn(expected, texts[0])
 
+    def test_only_a_missing_approval_is_waived_for_an_admin(self):
+        unapproved = report(
+            pull_request(NODES_HUB), review=ReviewDecision.REVIEW_REQUIRED
+        )
+        (missing,) = merge_set.set_blockers(
+            self.two_member_state(), self.reports(unapproved)
+        )
+        self.assertTrue(missing.waived_for_admins)
+        self.assertEqual(merge_set.blockers_for([missing], admin=True), [])
+        self.assertEqual(merge_set.blockers_for([missing], admin=False), [missing])
+        refused = report(
+            pull_request(NODES_HUB), review=ReviewDecision.CHANGES_REQUESTED
+        )
+        (changes,) = merge_set.set_blockers(
+            self.two_member_state(), self.reports(refused)
+        )
+        self.assertFalse(changes.waived_for_admins)
+        self.assertEqual(merge_set.blockers_for([changes], admin=True), [changes])
+
+    def test_an_approval_the_app_cannot_bypass_is_not_waived_for_an_admin(self):
+        for rulesets, expected in (
+            (("Protect main and dev",), "of the ruleset `Protect main and dev`."),
+            (("A", "B"), "of the rulesets `A`, `B`."),
+        ):
+            with self.subTest(rulesets=rulesets):
+                unapproved = report(
+                    pull_request(NODES_HUB),
+                    review=ReviewDecision.REVIEW_REQUIRED,
+                    unbypassed_approval_rulesets=rulesets,
+                )
+                (missing,) = merge_set.set_blockers(
+                    self.two_member_state(), self.reports(unapproved)
+                )
+                self.assertFalse(missing.waived_for_admins)
+                self.assertEqual(
+                    missing.text,
+                    "nodes-hub#1 needs an approving review. No admin merges it "
+                    "without one: the merge-set App is not a bypass actor " + expected,
+                )
+
     def test_a_review_no_rule_asks_for_does_not_block(self):
         nodes_report = report(
             pull_request(NODES_HUB), review=ReviewDecision.NOT_REQUIRED
@@ -908,6 +980,45 @@ class Dashboards(unittest.TestCase):
             body,
         )
 
+    def test_a_set_that_lacks_approvals_alone_is_ready_for_an_admin(self):
+        state = set_state(
+            member(PEPPY, pull_request(PEPPY, 512)),
+            member(NODES_HUB, pull_request(NODES_HUB, 88)),
+        )
+        missing = merge_set.Blocker(
+            NODES_HUB, "nodes-hub#88 needs an approving review.", waived_for_admins=True
+        )
+        body = merge_set.render_set_dashboard(state, [missing], 0)
+        self.assertIn("**Ready to merge for an admin.**", body)
+        self.assertIn(merge_set.ADMIN_WAIVER, body)
+        self.assertIn("- nodes-hub#88 needs an approving review.", body)
+        self.assertIn("| `" + commit(NODES_HUB)[:7] + "` | not approved |", body)
+        self.assertIn("| `" + commit(PEPPY)[:7] + "` | ready |", body)
+        self.assertNotIn("What blocks the merge", body)
+
+    def test_a_blocked_set_names_its_missing_approvals_apart(self):
+        state = set_state(
+            member(PEPPY, pull_request(PEPPY, 512)),
+            member(NODES_HUB, pull_request(NODES_HUB, 88)),
+        )
+        blockers = [
+            merge_set.Blocker(PEPPY, "peppy#512 is a draft: mark it ready for review."),
+            merge_set.Blocker(
+                NODES_HUB,
+                "nodes-hub#88 needs an approving review.",
+                waived_for_admins=True,
+            ),
+        ]
+        body = merge_set.render_set_dashboard(state, blockers, 0)
+        self.assertIn(
+            "**What blocks the merge**\n\n- peppy#512 is a draft: mark it ready for review.\n\n"
+            f"Approvals are missing too. {merge_set.ADMIN_WAIVER}\n\n"
+            "- nodes-hub#88 needs an approving review.",
+            body,
+        )
+        self.assertIn("| blocked |", body)
+        self.assertIn("| not approved |", body)
+
     def test_the_ticked_boxes_are_read_by_their_marker(self):
         body = (
             "- [x] <!-- merge-set:merge --> Merge the 2 pull requests\n"
@@ -964,7 +1075,7 @@ class MergeMessages(unittest.TestCase):
             failure="Base branch was modified.",
             not_tried=(contracts,),
         )
-        text = merge_set.render_merge_report(SET_NAME, ["alice"], outcome)
+        text = merge_set.render_merge_report(SET_NAME, ["alice"], outcome, [])
         self.assertIn("which @alice asked for, stopped", text)
         self.assertIn("- peppy#512 merged as `aaaaaaa`.", text)
         self.assertIn("- nodes-hub#88 did not merge: Base branch was modified.", text)
@@ -1000,10 +1111,9 @@ class FakeGitHub:
         self.bot_login = BOT
         self.heads = {}
         self.pulls = {repository.name: [] for repository in merge_set.REPOSITORIES}
-        self.rules = {
-            repository.name: BranchRules((TEST_CHECK,), strict=False)
-            for repository in merge_set.REPOSITORIES
-        }
+        self.rules = {repository.name: RULES for repository in merge_set.REPOSITORIES}
+        # The rulesets the App does not bypass, by repository name and id.
+        self.unbypassed = set()
         self.check_runs_of = {}
         self.statuses_of = {}
         self.reviews = {}
@@ -1103,6 +1213,12 @@ class FakeGitHub:
 
     def branch_rules(self, repository):
         return self.rules[repository.name]
+
+    def ruleset_bypass(self, repository, ruleset_id):
+        return merge_set.RulesetBypass(
+            f"Ruleset {ruleset_id}",
+            (repository.name, ruleset_id) not in self.unbypassed,
+        )
 
     def check_runs(self, repository, sha):
         return self.check_runs_of.get((repository.name, sha), [])
@@ -1310,7 +1426,7 @@ class SyncSet(unittest.TestCase):
         self.github.behind.add(self.nodes.label)
         sync(self.github)
         self.assertIn("**Ready to merge.**", self.github.dashboard_body(self.peppy))
-        self.github.rules["nodes-hub"] = BranchRules((TEST_CHECK,), strict=True)
+        self.github.rules["nodes-hub"] = replace(RULES, strict=True)
         sync(self.github)
         self.assertIn(
             "nodes-hub#88 is behind `main`, and the ruleset of that branch requires it "
@@ -1480,6 +1596,91 @@ class SyncMerge(unittest.TestCase):
         ]
         self.tick_merge()
         self.assertEqual(len(self.github.merged), 3)
+
+    def make_admin(self, login="alice", repositories=merge_set.REPOSITORIES):
+        for repository in repositories:
+            self.github.permissions[(repository.name, login)] = "admin"
+
+    def leave_unapproved(self, *pull_requests):
+        # GitHub reports a pull request that lacks an approval as blocked.
+        for pr in pull_requests:
+            self.github.reviews[pr.label] = ReviewDecision.REVIEW_REQUIRED
+            self.github.merge_states[pr.label] = [(True, "blocked")]
+
+    def test_an_admin_merges_a_set_that_lacks_approvals(self):
+        self.leave_unapproved(self.nodes, self.contracts)
+        self.make_admin()
+        self.tick_merge()
+        self.assertEqual(
+            [label for label, _ in self.github.merged],
+            ["peppy#512", "nodes-hub#88", "contracts-hub#9"],
+        )
+        # A pull request blocked for its approval alone is not asked again.
+        self.assertEqual(self.github.sleeps, [])
+        (report_text,) = self.github.reports_on(self.peppy)
+        self.assertRegex(report_text, r"- peppy#512 merged as `[0-9a-f]{7}`\.\n")
+        self.assertRegex(
+            report_text, r"- nodes-hub#88 merged as `[0-9a-f]{7}` without an approval\."
+        )
+        self.assertRegex(
+            report_text,
+            r"- contracts-hub#9 merged as `[0-9a-f]{7}` without an approval\.",
+        )
+
+    def test_a_user_who_is_no_admin_does_not_merge_a_set_that_lacks_approvals(self):
+        self.leave_unapproved(self.nodes)
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn("- nodes-hub#88 needs an approving review.", refusal)
+
+    def test_an_admin_of_some_repositories_of_the_set_alone_is_no_admin_of_it(self):
+        self.leave_unapproved(self.nodes)
+        self.make_admin(repositories=(PEPPY, NODES_HUB))
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+
+    def test_an_admin_merges_nothing_of_a_set_whose_approval_the_app_cannot_bypass(
+        self,
+    ):
+        # GitHub would merge peppy and refuse contracts-hub: the bot merges none.
+        self.leave_unapproved(self.nodes, self.contracts)
+        self.github.unbypassed.add(("contracts-hub", APPROVAL_RULESET))
+        self.make_admin()
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn(
+            "- contracts-hub#9 needs an approving review. No admin merges it without "
+            f"one: the merge-set App is not a bypass actor of the ruleset "
+            f"`Ruleset {APPROVAL_RULESET}`.",
+            refusal,
+        )
+        self.assertNotIn("nodes-hub#88", refusal)
+        self.assertIn(
+            "**What blocks the merge**", self.github.dashboard_body(self.nodes)
+        )
+        for pr in (self.peppy, self.nodes, self.contracts):
+            self.assertEqual(self.github.gates(pr)[-1].state, "pending")
+
+    def test_a_review_that_requests_changes_blocks_an_admin(self):
+        self.github.reviews[self.nodes.label] = ReviewDecision.CHANGES_REQUESTED
+        self.make_admin()
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn("A reviewer requested changes on nodes-hub#88.", refusal)
+
+    def test_an_admin_does_not_merge_an_approved_pull_request_github_blocks(self):
+        # Another rule than the approval blocks it, which the admin does not waive.
+        self.leave_unapproved(self.nodes)
+        self.github.merge_states[self.contracts.label] = [(True, "blocked")]
+        self.make_admin()
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn("GitHub does not merge contracts-hub#9 yet", refusal)
+        self.assertNotIn("nodes-hub#88", refusal)
 
     def test_two_users_who_tick_at_once_get_one_merge(self):
         (on_peppy,) = self.github.comments_on(self.peppy)
@@ -1713,6 +1914,29 @@ class Gateway(unittest.TestCase):
         self.assertEqual(gateway.permission(NODES_HUB, "mallory"), "none")
         self.assertEqual(len(api.calls), 1)
 
+    def test_the_app_bypasses_a_ruleset_that_names_it_as_a_bypass_actor(self):
+        path = f"/repos/Peppy-bot/nodes-hub/rulesets/{APPROVAL_RULESET}"
+        for ruleset, bypassed in (
+            ({"current_user_can_bypass": "always"}, True),
+            ({"current_user_can_bypass": "pull_requests_only"}, True),
+            ({"current_user_can_bypass": "exempt"}, True),
+            ({"current_user_can_bypass": "never"}, False),
+            ({}, False),
+        ):
+            with self.subTest(ruleset=ruleset):
+                api = FakeApi(
+                    {("GET", path): {"name": "Protect main and dev", **ruleset}}
+                )
+                gateway = merge_set.GitHubGateway(api, BOT)
+                expected = merge_set.RulesetBypass("Protect main and dev", bypassed)
+                self.assertEqual(
+                    gateway.ruleset_bypass(NODES_HUB, APPROVAL_RULESET), expected
+                )
+                self.assertEqual(
+                    gateway.ruleset_bypass(NODES_HUB, APPROVAL_RULESET), expected
+                )
+                self.assertEqual(len(api.calls), 1)
+
     def test_the_dashboard_is_the_comment_of_the_bot_with_the_marker(self):
         pr = pull_request(NODES_HUB, 88)
         path = "/repos/Peppy-bot/nodes-hub/issues/88/comments"
@@ -1868,6 +2092,9 @@ class RepositoryFacts(unittest.TestCase):
             f"uses: {resolve.PEPPY_REPOSITORY}/.github/workflows/merge-set-relay.yml@{merge_set.SYNC_WORKFLOW_REF}",
             lines,
         )
+        # A called workflow reads the secrets of the `merge-set` environment
+        # only when its caller hands its secrets on.
+        self.assertIn("secrets: inherit", lines)
         # The workflow_run trigger names the CI workflow of each repository.
         self.assertIn("workflows: [Tests]", lines)
         self.assertIn("name: Tests", workflow_lines(resolve.PEPPY_CI_WORKFLOW))

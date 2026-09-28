@@ -10,8 +10,9 @@ name: Merge set relay
 # repository, never the copy of a pull request: pull_request_target,
 # issue_comment, workflow_run and delete. The key of the merge-set App is a
 # secret of the `merge-set` environment of each repository, which only the
-# default branch reaches. The token this job makes can start workflows of
-# peppy and do nothing else.
+# default branch reaches, and which this job reads because the caller hands
+# its secrets on (`secrets: inherit`). The token this job makes can start
+# workflows of peppy and do nothing else.
 on:
   workflow_call:
 
