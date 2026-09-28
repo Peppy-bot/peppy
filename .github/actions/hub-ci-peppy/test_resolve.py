@@ -11,6 +11,7 @@ key to the workflows that use them, which are files of this repository, so
 the changes job of tests.yml runs these cases on every change.
 """
 
+import http.client
 import io
 import json
 import os
@@ -20,6 +21,7 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
+import urllib.response
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -571,50 +573,41 @@ class DevBuild(unittest.TestCase):
 
     def peppy_ci(self, heads, runs_by_commit, artifacts_by_run):
         """Stand-ins for the reads of peppy: the branch heads of each look in
-        turn, the CI runs of each commit and the artifacts of each run."""
+        turn, and the GitHub API with the CI runs of each commit and the dev
+        build artifacts, (id, expired) pairs, of each run."""
         return (
             patch.object(resolve, "ls_remote_heads", side_effect=heads),
-            patch.object(
-                resolve,
-                "github_get_json",
-                side_effect=lambda path, query, token: runs_by_commit[
-                    query["head_sha"]
-                ],
-            ),
-            patch.object(
-                resolve,
-                "run_artifacts",
-                side_effect=lambda run_id, name, token: artifacts_by_run[run_id],
-            ),
+            FakePeppyApi(runs_by_commit, artifacts_by_run),
         )
 
     def test_the_dev_build_names_the_peppy_branch_and_commit_it_is_the_build_of(
         self,
     ):
-        heads, runs, artifacts = self.peppy_ci(
+        heads, api = self.peppy_ci(
             [{SET_NAME: PEPPY_BRANCH_COMMIT, "dev": PEPPY_DEV_COMMIT}],
             {PEPPY_BRANCH_COMMIT: runs_response((7, "completed", "success"))},
-            {7: dev_build_artifacts((70, False))},
+            {7: [(70, False)]},
         )
         with (
             tempfile.TemporaryDirectory() as directory,
             heads,
-            runs,
-            artifacts,
+            patch.object(resolve, "GitHubReader", return_value=api) as reader,
             patch.object(
                 resolve,
                 "download_artifact_archive",
                 return_value=Path(directory) / Arch.X86_64.archive_name,
-            ),
+            ) as download,
         ):
             fetched = resolve.fetch_dev_build(SET_NAME, "token", Path(directory))
+        reader.assert_called_once_with("token")
+        self.assertEqual(download.call_args.args[0].id, 70)
         self.assertEqual(fetched.build.kind, PeppyBuildKind.DEV_BUILD)
         self.assertEqual(fetched.build.ref, SET_NAME)
         self.assertEqual(fetched.build.commit, PEPPY_BRANCH_COMMIT)
         self.assertEqual(fetched.build.source, resolve.run_url(7))
 
     def test_a_job_that_installs_a_pending_dev_build_fails_with_the_way_on(self):
-        heads, runs, artifacts = self.peppy_ci(
+        heads, api = self.peppy_ci(
             [{SET_NAME: PEPPY_BRANCH_COMMIT, "dev": PEPPY_DEV_COMMIT}],
             {PEPPY_BRANCH_COMMIT: runs_response((7, "in_progress", None))},
             {7: []},
@@ -622,8 +615,7 @@ class DevBuild(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             heads,
-            runs,
-            artifacts,
+            patch.object(resolve, "GitHubReader", return_value=api),
             patch.object(
                 resolve,
                 "download_artifact_archive",
@@ -643,7 +635,7 @@ class DevBuild(unittest.TestCase):
         # The push of `b…` cancels the run of `a…`: the next look reads the
         # new head and finds the build of its run.
         pushed = "b" * 40
-        heads, runs, artifacts = self.peppy_ci(
+        heads, api = self.peppy_ci(
             [
                 {SET_NAME: PEPPY_BRANCH_COMMIT, "dev": PEPPY_DEV_COMMIT},
                 {SET_NAME: pushed, "dev": PEPPY_DEV_COMMIT},
@@ -652,11 +644,11 @@ class DevBuild(unittest.TestCase):
                 PEPPY_BRANCH_COMMIT: runs_response((7, "completed", "cancelled")),
                 pushed: runs_response((8, "in_progress", None)),
             },
-            {7: [], 8: dev_build_artifacts((80, False))},
+            {7: [], 8: [(80, False)]},
         )
-        with heads, runs, artifacts:
-            first = resolve.look_for_dev_build(SET_NAME, "token")
-            second = resolve.look_for_dev_build(SET_NAME, "token")
+        with heads:
+            first = resolve.look_for_dev_build(SET_NAME, api)
+            second = resolve.look_for_dev_build(SET_NAME, api)
         self.assertIsInstance(first, resolve.DevBuildPending)
         self.assertEqual(first.commit, PEPPY_BRANCH_COMMIT)
         self.assertEqual(
@@ -670,11 +662,11 @@ class DevBuild(unittest.TestCase):
         )
 
     def test_a_head_without_a_ci_run_reads_no_artifacts(self):
-        heads, runs, artifacts = self.peppy_ci(
+        heads, api = self.peppy_ci(
             [{"dev": PEPPY_DEV_COMMIT}], {PEPPY_DEV_COMMIT: runs_response()}, {}
         )
-        with heads, runs, artifacts:
-            found = resolve.look_for_dev_build(None, "token")
+        with heads:
+            found = resolve.look_for_dev_build(None, api)
         self.assertEqual(
             found,
             resolve.DevBuildPending(
@@ -682,81 +674,195 @@ class DevBuild(unittest.TestCase):
             ),
         )
 
+    def test_a_failed_read_of_the_peppy_refs_is_transient(self):
+        # peppy is public: git fails to read it only when the network or
+        # GitHub fails.
+        failed = ResolveError("git ls-remote … failed: fatal: unable to access")
+        with (
+            patch.object(resolve, "ls_remote_heads", side_effect=failed),
+            self.assertRaises(resolve.TransientError) as refused,
+        ):
+            resolve.look_for_dev_build(SET_NAME, FakePeppyApi({}, {}))
+        self.assertEqual(str(refused.exception), str(failed))
+
+
+class FakePeppyApi:
+    """A stand-in for the GitHubReader of a job, which answers the two reads
+    of a look: the CI runs of a commit, and the dev build artifacts of a
+    run."""
+
+    RUNS_PATH = (
+        f"/repos/{resolve.PEPPY_REPOSITORY}/actions/workflows/"
+        f"{resolve.PEPPY_CI_WORKFLOW}/runs"
+    )
+    ARTIFACTS_PATH = re.compile(
+        rf"/repos/{resolve.PEPPY_REPOSITORY}/actions/runs/(\d+)/artifacts"
+    )
+
+    def __init__(self, runs_by_commit, artifacts_by_run):
+        self.runs_by_commit = runs_by_commit
+        self.artifacts_by_run = artifacts_by_run
+
+    def get_json(self, path, query):
+        if path == self.RUNS_PATH:
+            return self.runs_by_commit[query["head_sha"]]
+        run_id = int(self.ARTIFACTS_PATH.fullmatch(path).group(1))
+        return artifacts_response(query["name"], *self.artifacts_by_run[run_id])
+
+
+class FakeClock:
+    """The clock of a wait. A sleep moves it on at once, and so can a look."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
 
 class Looks:
     """The results of each look for the dev build in turn: a result, or an
-    error the look raises. It counts the looks."""
+    error the look raises; the last one repeats. Each look takes
+    `seconds_each` on `clock`. It counts the looks."""
 
-    def __init__(self, *results):
+    def __init__(self, *results, clock, seconds_each=0):
         self.results = list(results)
+        self.clock = clock
+        self.seconds_each = seconds_each
         self.count = 0
 
     def __call__(self):
         result = self.results[min(self.count, len(self.results) - 1)]
         self.count += 1
+        self.clock.now += self.seconds_each
         if isinstance(result, Exception):
             raise result
         return result
 
 
+def waiting_line(state):
+    return f"{state}; looking again every {resolve.DEV_BUILD_POLL_SECONDS} s."
+
+
+BAD_GATEWAY = resolve.TransientError(
+    "GET https://api.github.com/x failed: HTTP 502 Bad Gateway"
+)
+
+
 class WaitForDevBuild(unittest.TestCase):
-    """The wait of a `wait-only` job. The sleeps are recorded, not slept."""
+    """The wait of a `wait-only` job, on a fake clock: nothing sleeps."""
+
+    def setUp(self):
+        self.clock = FakeClock()
 
     def wait(self, looks):
-        sleeps = []
         output = io.StringIO()
         with redirect_stdout(output):
-            found = resolve.wait_for_dev_build(looks, sleeps.append)
-        return found, sleeps, output.getvalue()
+            found = resolve.wait_for_dev_build(
+                looks, self.clock.monotonic, self.clock.sleep
+            )
+        return found, output.getvalue()
 
-    def test_an_uploaded_build_ends_the_wait_at_once(self):
-        found, sleeps, log = self.wait(Looks(uploaded_dev_build()))
-        self.assertEqual(found, uploaded_dev_build())
-        self.assertEqual(sleeps, [])
-        self.assertEqual(log, "")
-
-    def test_the_wait_looks_again_until_the_build_is_uploaded(self):
-        looks = Looks(pending_dev_build(), pending_dev_build(), uploaded_dev_build())
-        found, sleeps, log = self.wait(looks)
-        self.assertEqual(found, uploaded_dev_build())
-        self.assertEqual(looks.count, 3)
-        self.assertEqual(sleeps, [resolve.DEV_BUILD_POLL_SECONDS] * 2)
-        waiting = (
-            f"{pending_dev_build().not_ready()}; the next look is in "
-            f"{resolve.DEV_BUILD_POLL_SECONDS} s."
-        )
-        self.assertEqual(log.splitlines(), [waiting, waiting])
-
-    def test_the_wait_stops_after_its_limit(self):
-        looks = Looks(pending_dev_build())
-        sleeps = []
+    def wait_until_refused(self, looks):
         with (
             redirect_stdout(io.StringIO()),
             self.assertRaises(ResolveError) as refused,
         ):
-            resolve.wait_for_dev_build(looks, sleeps.append)
-        self.assertEqual(sum(sleeps), resolve.DEV_BUILD_WAIT_SECONDS)
-        self.assertEqual(looks.count, len(sleeps) + 1)
-        self.assertEqual(
-            str(refused.exception),
-            f"{pending_dev_build().not_ready()} after 20 minutes; re-run this job "
-            "when it is uploaded.",
+            resolve.wait_for_dev_build(looks, self.clock.monotonic, self.clock.sleep)
+        return refused.exception
+
+    def test_an_uploaded_build_ends_the_wait_at_once(self):
+        found, log = self.wait(Looks(uploaded_dev_build(), clock=self.clock))
+        self.assertEqual(found, uploaded_dev_build())
+        self.assertEqual(self.clock.sleeps, [])
+        self.assertEqual(log, "")
+
+    def test_the_wait_looks_again_until_the_build_is_uploaded(self):
+        looks = Looks(
+            pending_dev_build(),
+            pending_dev_build(),
+            uploaded_dev_build(),
+            clock=self.clock,
         )
+        found, log = self.wait(looks)
+        self.assertEqual(found, uploaded_dev_build())
+        self.assertEqual(looks.count, 3)
+        self.assertEqual(self.clock.sleeps, [resolve.DEV_BUILD_POLL_SECONDS] * 2)
+        # The same state is logged once.
+        self.assertEqual(
+            log.splitlines(), [waiting_line(pending_dev_build().not_ready())]
+        )
+
+    def test_the_log_gets_each_new_state_of_the_build(self):
+        queued = resolve.DevBuildPending(PEPPY_BRANCH_COMMIT, "run `r` is `queued`")
+        running = resolve.DevBuildPending(
+            PEPPY_BRANCH_COMMIT, "run `r` is `in_progress`"
+        )
+        _, log = self.wait(
+            Looks(queued, running, running, uploaded_dev_build(), clock=self.clock)
+        )
+        self.assertEqual(
+            log.splitlines(),
+            [waiting_line(queued.not_ready()), waiting_line(running.not_ready())],
+        )
+
+    def test_a_look_that_fails_for_a_transient_cause_does_not_stop_the_wait(self):
+        looks = Looks(
+            pending_dev_build(), BAD_GATEWAY, uploaded_dev_build(), clock=self.clock
+        )
+        found, log = self.wait(looks)
+        self.assertEqual(found, uploaded_dev_build())
+        self.assertEqual(looks.count, 3)
+        self.assertEqual(
+            log.splitlines(),
+            [
+                waiting_line(pending_dev_build().not_ready()),
+                waiting_line(
+                    "peppy dev build not found yet: the look failed (GET "
+                    "https://api.github.com/x failed: HTTP 502 Bad Gateway)"
+                ),
+            ],
+        )
+
+    def test_the_wait_stops_after_its_limit_counting_the_time_of_the_looks(self):
+        looks = Looks(pending_dev_build(), clock=self.clock, seconds_each=1)
+        refused = self.wait_until_refused(looks)
+        # It stops at the first look past the limit, and the looks took part
+        # of the time: the sleeps alone come short of the limit.
+        self.assertGreaterEqual(self.clock.now, resolve.DEV_BUILD_WAIT_SECONDS)
+        self.assertLess(
+            self.clock.now,
+            resolve.DEV_BUILD_WAIT_SECONDS + 1 + resolve.DEV_BUILD_POLL_SECONDS,
+        )
+        self.assertLess(sum(self.clock.sleeps), resolve.DEV_BUILD_WAIT_SECONDS)
+        self.assertEqual(looks.count, len(self.clock.sleeps) + 1)
+        self.assertEqual(
+            str(refused),
+            f"stopped waiting after 20 minutes: {pending_dev_build().not_ready()}; "
+            "re-run this job when the peppy dev build is uploaded.",
+        )
+
+    def test_looks_that_keep_failing_stop_at_the_limit(self):
+        refused = self.wait_until_refused(Looks(BAD_GATEWAY, clock=self.clock))
+        self.assertGreaterEqual(self.clock.now, resolve.DEV_BUILD_WAIT_SECONDS)
+        self.assertIn(f"the look failed ({BAD_GATEWAY})", str(refused))
 
     def test_a_build_that_never_comes_stops_the_wait_at_once(self):
         never = ResolveError(
             "peppy CI run `x` produced no dev build; fix peppy CI first."
         )
-        looks = Looks(pending_dev_build(), never, uploaded_dev_build())
-        sleeps = []
-        with (
-            redirect_stdout(io.StringIO()),
-            self.assertRaises(ResolveError) as refused,
-        ):
-            resolve.wait_for_dev_build(looks, sleeps.append)
-        self.assertIs(refused.exception, never)
+        looks = Looks(
+            pending_dev_build(), never, uploaded_dev_build(), clock=self.clock
+        )
+        refused = self.wait_until_refused(looks)
+        self.assertIs(refused, never)
         self.assertEqual(looks.count, 2)
-        self.assertEqual(sleeps, [resolve.DEV_BUILD_POLL_SECONDS])
+        self.assertEqual(self.clock.sleeps, [resolve.DEV_BUILD_POLL_SECONDS])
 
 
 def action_inputs(trigger=None, explicit_set=None, release_run_id=None, wait_only=True):
@@ -776,25 +882,39 @@ def action_inputs(trigger=None, explicit_set=None, release_run_id=None, wait_onl
 
 
 class WaitForPeppy(unittest.TestCase):
-    def wait_for_peppy(self, inputs, found=None):
-        """What the wait of `inputs` looks for, and what it prints. The look
-        finds `found`, the uploaded build when None."""
+    def wait_for_peppy(self, inputs, *found):
+        """What each look of the wait of `inputs` looks for, with the token of
+        its reader; what the wait prints; and the readers of the looks. The
+        looks find `found` in turn, then the uploaded build."""
         looked_for = []
+        results = iter([*found, uploaded_dev_build()])
 
-        def look(set_name, token):
-            looked_for.append((set_name, token))
-            return found or uploaded_dev_build()
+        def look(set_name, github):
+            looked_for.append((set_name, github.token, id(github)))
+            return next(results)
 
+        clock = FakeClock()
         output = io.StringIO()
         with (
             patch.object(resolve, "look_for_dev_build", side_effect=look),
             redirect_stdout(output),
         ):
-            resolve.wait_for_peppy(inputs, sleep=self.fail)
-        return looked_for, output.getvalue()
+            resolve.wait_for_peppy(inputs, clock.monotonic, clock.sleep)
+        return (
+            [(set_name, token) for set_name, token, _ in looked_for],
+            output.getvalue(),
+            {reader for _, _, reader in looked_for},
+        )
+
+    def test_every_look_of_the_wait_sends_the_etags_of_one_reader(self):
+        looked_for, _, readers = self.wait_for_peppy(
+            action_inputs(), pending_dev_build(), pending_dev_build()
+        )
+        self.assertEqual(looked_for, [(SET_NAME, "token")] * 3)
+        self.assertEqual(len(readers), 1)
 
     def test_the_wait_looks_for_the_dev_build_of_the_peppy_branch_of_the_set(self):
-        looked_for, log = self.wait_for_peppy(action_inputs())
+        looked_for, log, _ = self.wait_for_peppy(action_inputs())
         self.assertEqual(looked_for, [(SET_NAME, "token")])
         self.assertEqual(
             log,
@@ -804,7 +924,7 @@ class WaitForPeppy(unittest.TestCase):
 
     def test_a_job_given_an_explicit_set_waits_for_the_dev_build_of_dev(self):
         explicit_set = resolve.parse_explicit_set(explicit_set_text())
-        looked_for, _ = self.wait_for_peppy(action_inputs(explicit_set=explicit_set))
+        looked_for, _, _ = self.wait_for_peppy(action_inputs(explicit_set=explicit_set))
         self.assertEqual(looked_for, [(None, "token")])
 
     def test_a_job_that_installs_no_dev_build_waits_for_nothing(self):
@@ -816,7 +936,7 @@ class WaitForPeppy(unittest.TestCase):
             (action_inputs(release_run_id=123), "release-run"),
         ):
             with self.subTest(kind=kind):
-                looked_for, log = self.wait_for_peppy(inputs)
+                looked_for, log, _ = self.wait_for_peppy(inputs)
                 self.assertEqual(looked_for, [])
                 self.assertEqual(
                     log,
@@ -1514,19 +1634,115 @@ class JobFiles(unittest.TestCase):
         )
 
 
+class FakeUrlopen:
+    """A stand-in for urlopen that gives the answers to the GET requests in
+    turn, each (status, etag, body), and records the ETag each request
+    sends."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.sent_etags = []
+
+    def __call__(self, request, timeout):
+        self.sent_etags.append(request.get_header("If-none-match"))
+        status, etag, body = self.answers.pop(0)
+        headers = http.client.HTTPMessage()
+        if etag is not None:
+            headers["ETag"] = etag
+        if status == 304:
+            raise urllib.error.HTTPError(
+                request.full_url, 304, "Not Modified", headers, io.BytesIO()
+            )
+        return urllib.response.addinfourl(
+            io.BytesIO(json.dumps(body).encode()), headers, request.full_url, status
+        )
+
+
+class ConditionalRequests(unittest.TestCase):
+    def get_each(self, urlopen, *paths):
+        github = resolve.GitHubReader("token")
+        with patch.object(resolve.urllib.request, "urlopen", side_effect=urlopen):
+            return [github.get_json(path, {"per_page": 100}) for path in paths]
+
+    def test_a_get_sends_the_etag_of_the_last_answer_and_keeps_it_on_304(self):
+        urlopen = FakeUrlopen(
+            (200, '"one"', {"answer": 1}),
+            (304, '"one"', None),
+            (200, '"two"', {"answer": 2}),
+            (304, '"two"', None),
+        )
+        answers = self.get_each(urlopen, "/x", "/x", "/x", "/x")
+        self.assertEqual([answer["answer"] for answer in answers], [1, 1, 2, 2])
+        self.assertEqual(urlopen.sent_etags, [None, '"one"', '"one"', '"two"'])
+
+    def test_each_url_has_its_own_etag(self):
+        urlopen = FakeUrlopen(
+            (200, '"x"', {"answer": "x"}),
+            (200, '"y"', {"answer": "y"}),
+            (304, '"x"', None),
+        )
+        answers = self.get_each(urlopen, "/x", "/y", "/x")
+        self.assertEqual([answer["answer"] for answer in answers], ["x", "y", "x"])
+        self.assertEqual(urlopen.sent_etags, [None, None, '"x"'])
+
+    def test_an_answer_without_an_etag_is_asked_again_in_full(self):
+        urlopen = FakeUrlopen((200, None, {"answer": 1}), (200, None, {"answer": 2}))
+        answers = self.get_each(urlopen, "/x", "/x")
+        self.assertEqual([answer["answer"] for answer in answers], [1, 2])
+        self.assertEqual(urlopen.sent_etags, [None, None])
+
+
 class Io(unittest.TestCase):
     def test_a_failed_request_names_what_failed_and_the_http_status(self):
         error = urllib.error.HTTPError(
             "https://api.github.com/repos/x", 404, "Not Found", {}, None
         )
+        self.addCleanup(error.close)
         with (
             patch.object(resolve.urllib.request, "urlopen", side_effect=error),
             self.assertRaises(ResolveError) as refused,
         ):
-            resolve.github_get_json("/repos/x", {}, "token")
+            resolve.GitHubReader("token").get_json("/repos/x", {})
         self.assertEqual(
             str(refused.exception),
             "GET https://api.github.com/repos/x failed: HTTP 404 Not Found",
+        )
+        # A refused token or a missing run does not pass later.
+        self.assertNotIsInstance(refused.exception, resolve.TransientError)
+
+    def test_a_server_error_or_a_network_failure_is_transient(self):
+        url = "https://api.github.com/repos/x"
+        bad_gateway = urllib.error.HTTPError(url, 502, "Bad Gateway", {}, None)
+        self.addCleanup(bad_gateway.close)
+        for error, reason in (
+            (bad_gateway, "HTTP 502 Bad Gateway"),
+            (urllib.error.URLError("no route to host"), "no route to host"),
+            (ConnectionResetError("reset by peer"), "reset by peer"),
+        ):
+            with (
+                self.subTest(reason=reason),
+                patch.object(resolve.urllib.request, "urlopen", side_effect=error),
+                self.assertRaises(resolve.TransientError) as refused,
+            ):
+                resolve.GitHubReader("token").get_json("/repos/x", {})
+            self.assertEqual(str(refused.exception), f"GET {url} failed: {reason}")
+
+    def test_a_response_cut_while_it_is_read_is_transient(self):
+        class TimesOut(io.RawIOBase):
+            def readinto(self, buffer):
+                raise TimeoutError("The read operation timed out")
+
+        response = urllib.response.addinfourl(
+            TimesOut(), http.client.HTTPMessage(), "https://api.github.com/x", 200
+        )
+        with (
+            patch.object(resolve.urllib.request, "urlopen", return_value=response),
+            self.assertRaises(resolve.TransientError) as refused,
+        ):
+            resolve.GitHubReader("token").get_json("/x", {})
+        self.assertEqual(
+            str(refused.exception),
+            "GET https://api.github.com/x failed: The read operation timed out",
         )
 
     def test_an_unreachable_host_names_what_failed_and_why(self):
@@ -1542,6 +1758,7 @@ class Io(unittest.TestCase):
             str(refused.exception),
             "downloading https://peppy.bot/latest/x.tgz failed: no route to host",
         )
+        self.assertIsInstance(refused.exception, resolve.TransientError)
 
     def test_a_git_that_fails_names_its_command_and_its_error(self):
         failed = subprocess.CompletedProcess(

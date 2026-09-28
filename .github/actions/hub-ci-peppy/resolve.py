@@ -56,12 +56,19 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 from enum import Enum
+from http import HTTPStatus
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 
 class ResolveError(Exception):
     """A reason this job cannot run, worded for the job's log."""
+
+
+class TransientError(ResolveError):
+    """A request that failed for a cause that can pass: a server error of
+    GitHub, or a failure of the network. The wait for the dev build looks again after
+    it. Every other step stops on it, as on any ResolveError."""
 
 
 # The hubs --------------------------------------------------------------------
@@ -160,9 +167,14 @@ PEPPY_CI_WORKFLOW = "tests.yml"
 # runner.
 DEV_BUILD_ARTIFACT = "peppy-dev-x86_64-unknown-linux-gnu"
 # A job that waits for the dev build (the `wait-only` input) looks for it
-# every DEV_BUILD_POLL_SECONDS, and stops after DEV_BUILD_WAIT_SECONDS. Most
-# peppy CI runs upload it 7 to 12 minutes after the push.
-DEV_BUILD_POLL_SECONDS = 30
+# again DEV_BUILD_POLL_SECONDS after each look, and stops after
+# DEV_BUILD_WAIT_SECONDS. Most peppy CI runs upload it 7 to 12 minutes after
+# the push. A look reads the peppy refs with git and makes two GitHub API
+# requests, both conditional (see GitHubReader): a request whose answer did
+# not change since the last look does not count against the rate limit of
+# the job token, 1,000 requests per hour for each repository. Thus a wait
+# uses requests only for the changes of the peppy run.
+DEV_BUILD_POLL_SECONDS = 5
 DEV_BUILD_WAIT_SECONDS = 20 * 60
 
 GITHUB_API = "https://api.github.com"
@@ -821,6 +833,17 @@ class DevBuildPending:
         return f"peppy dev build for `{self.commit}` is not ready ({self.reason})"
 
 
+@dataclass(frozen=True)
+class FailedLook:
+    """A look for the dev build that failed for a transient cause, so that
+    nothing tells whether the build is there. A later look can pass."""
+
+    error: str
+
+    def not_ready(self) -> str:
+        return f"peppy dev build not found yet: the look failed ({self.error})"
+
+
 def no_ci_run_reason(branch: str) -> str:
     if branch == PEPPY_DEV_BRANCH:
         return f"no CI run exists yet for the head of `{branch}`"
@@ -1148,44 +1171,88 @@ def github_request(url: str, token: str) -> urllib.request.Request:
     return request
 
 
-def open_url(
-    request: urllib.request.Request, timeout: float, action: str
-) -> http.client.HTTPResponse:
-    """The response to `request`. A request that fails stops the job, the
-    message naming `action`."""
-    try:
-        return urllib.request.urlopen(request, timeout=timeout)
-    except urllib.error.HTTPError as error:
-        raise ResolveError(
-            f"{action} failed: HTTP {error.code} {error.reason}"
-        ) from error
-    except urllib.error.URLError as error:
-        raise ResolveError(f"{action} failed: {error.reason}") from error
+# What a request raises when it fails: an HTTPError for an error status, an
+# OSError for a failure of the network (a URLError, a timeout, a reset
+# connection), or an HTTPException for a broken response.
+REQUEST_ERRORS = (OSError, http.client.HTTPException)
 
 
-def github_get_json(path: str, query: Mapping[str, object], token: str) -> dict:
-    url = f"{GITHUB_API}{path}"
-    if query:
-        url = f"{url}?{urllib.parse.urlencode(query)}"
-    request = github_request(url, token)
-    with open_url(request, API_TIMEOUT_SECONDS, f"GET {url}") as response:
-        return json.load(response)
+def request_failure(action: str, error: Exception) -> ResolveError:
+    """The error of a request that failed, the message naming `action`. A
+    server error of GitHub and a failure of the network are transient; an
+    error status below 500 (a refused token, a missing run) is not."""
+    if isinstance(error, urllib.error.HTTPError):
+        failure = (
+            TransientError
+            if error.code >= HTTPStatus.INTERNAL_SERVER_ERROR
+            else ResolveError
+        )
+        return failure(f"{action} failed: HTTP {error.code} {error.reason}")
+    if isinstance(error, urllib.error.URLError):
+        return TransientError(f"{action} failed: {error.reason}")
+    return TransientError(f"{action} failed: {error}")
+
+
+@dataclass(frozen=True)
+class KnownAnswer:
+    etag: str
+    answer: dict
+
+
+class GitHubReader:
+    """The GET requests of the GitHub REST API with one token.
+
+    It keeps each answer with its ETag, and sends that ETag with the next GET
+    of the same URL. GitHub then answers 304 when the answer did not change,
+    and a 304 does not count against the rate limit of the token."""
+
+    def __init__(self, token: str):
+        self.token = token
+        self.known_answers: dict[str, KnownAnswer] = {}
+
+    def get_json(self, path: str, query: Mapping[str, object]) -> dict:
+        url = f"{GITHUB_API}{path}"
+        if query:
+            url = f"{url}?{urllib.parse.urlencode(query)}"
+        request = github_request(url, self.token)
+        known = self.known_answers.get(url)
+        if known is not None:
+            request.add_header("If-None-Match", known.etag)
+        try:
+            with urllib.request.urlopen(
+                request, timeout=API_TIMEOUT_SECONDS
+            ) as response:
+                answer = json.load(response)
+                etag = response.headers.get("ETag")
+        except urllib.error.HTTPError as error:
+            if known is not None and error.code == HTTPStatus.NOT_MODIFIED:
+                error.close()
+                return known.answer
+            raise request_failure(f"GET {url}", error) from error
+        except REQUEST_ERRORS as error:
+            raise request_failure(f"GET {url}", error) from error
+        if etag is not None:
+            self.known_answers[url] = KnownAnswer(etag, answer)
+        return answer
 
 
 def download(request: urllib.request.Request, destination: Path) -> None:
-    action = f"downloading {request.full_url}"
-    with (
-        open_url(request, DOWNLOAD_TIMEOUT_SECONDS, action) as response,
-        destination.open("wb") as file,
-    ):
-        shutil.copyfileobj(response, file)
+    try:
+        with (
+            urllib.request.urlopen(
+                request, timeout=DOWNLOAD_TIMEOUT_SECONDS
+            ) as response,
+            destination.open("wb") as file,
+        ):
+            shutil.copyfileobj(response, file)
+    except REQUEST_ERRORS as error:
+        raise request_failure(f"downloading {request.full_url}", error) from error
 
 
-def run_artifacts(run_id: int, name: str, token: str) -> list[Artifact]:
-    response = github_get_json(
+def run_artifacts(run_id: int, name: str, github: GitHubReader) -> list[Artifact]:
+    response = github.get_json(
         f"/repos/{PEPPY_REPOSITORY}/actions/runs/{run_id}/artifacts",
         {"name": name, "per_page": 100},
-        token,
     )
     return parse_artifacts(response, name)
 
@@ -1230,23 +1297,30 @@ def fetch_latest_release(arch: Arch, work_dir: Path) -> FetchedPeppy:
     )
 
 
+def peppy_heads(set_name: str | None) -> dict[str, str]:
+    """The heads of peppy's branch of the set and of `dev`. peppy is public,
+    so a read that fails is a failure of the network or of GitHub."""
+    try:
+        return ls_remote_heads(
+            PEPPY_CLONE_URL, branches_to_look_up(PEPPY_DEV_BRANCH, set_name)
+        )
+    except ResolveError as error:
+        raise TransientError(str(error)) from error
+
+
 def look_for_dev_build(
-    set_name: str | None, token: str
+    set_name: str | None, github: GitHubReader
 ) -> UploadedDevBuild | DevBuildPending:
     """The dev build of the head of peppy's branch of the set, else of `dev`,
     or why it is not there yet. Each look reads that head again, so a look
     after a push to the branch looks for the build of the new head."""
-    heads = ls_remote_heads(
-        PEPPY_CLONE_URL, branches_to_look_up(PEPPY_DEV_BRANCH, set_name)
-    )
-    branch, commit = choose_peppy_branch(set_name, heads)
-    runs = github_get_json(
+    branch, commit = choose_peppy_branch(set_name, peppy_heads(set_name))
+    runs = github.get_json(
         f"/repos/{PEPPY_REPOSITORY}/actions/workflows/{PEPPY_CI_WORKFLOW}/runs",
         {"head_sha": commit, "per_page": 100},
-        token,
     )
     run = latest_ci_run(runs)
-    artifacts = [] if run is None else run_artifacts(run.id, DEV_BUILD_ARTIFACT, token)
+    artifacts = [] if run is None else run_artifacts(run.id, DEV_BUILD_ARTIFACT, github)
     found = dev_build_artifact(run, artifacts, branch, commit)
     if isinstance(found, DevBuildPending):
         return found
@@ -1255,31 +1329,40 @@ def look_for_dev_build(
 
 def wait_for_dev_build(
     look: Callable[[], UploadedDevBuild | DevBuildPending],
+    monotonic: Callable[[], float],
     sleep: Callable[[float], None],
 ) -> UploadedDevBuild:
     """Look for the dev build until it is uploaded, DEV_BUILD_POLL_SECONDS
-    apart, for DEV_BUILD_WAIT_SECONDS at most. A look that finds a build that
-    never comes stops the wait with its error."""
-    found = look()
-    waited_seconds = 0
-    while isinstance(found, DevBuildPending):
-        if waited_seconds >= DEV_BUILD_WAIT_SECONDS:
+    after each look, for DEV_BUILD_WAIT_SECONDS at most. A look that fails
+    for a transient cause is a look that did not find the build. A look that
+    finds a build that never comes stops the wait with its error. The log
+    gets each new state of the build, not each look."""
+    deadline = monotonic() + DEV_BUILD_WAIT_SECONDS
+    logged_state = None
+    while True:
+        try:
+            found = look()
+        except TransientError as error:
+            found = FailedLook(str(error))
+        if isinstance(found, UploadedDevBuild):
+            return found
+        state = found.not_ready()
+        if monotonic() >= deadline:
             raise ResolveError(
-                f"{found.not_ready()} after {DEV_BUILD_WAIT_SECONDS // 60} "
-                "minutes; re-run this job when it is uploaded."
+                f"stopped waiting after {DEV_BUILD_WAIT_SECONDS // 60} minutes: "
+                f"{state}; re-run this job when the peppy dev build is uploaded."
             )
-        print(
-            f"{found.not_ready()}; the next look is in {DEV_BUILD_POLL_SECONDS} s.",
-            flush=True,
-        )
+        if state != logged_state:
+            print(
+                f"{state}; looking again every {DEV_BUILD_POLL_SECONDS} s.",
+                flush=True,
+            )
+            logged_state = state
         sleep(DEV_BUILD_POLL_SECONDS)
-        waited_seconds += DEV_BUILD_POLL_SECONDS
-        found = look()
-    return found
 
 
 def fetch_dev_build(set_name: str | None, token: str, work_dir: Path) -> FetchedPeppy:
-    found = look_for_dev_build(set_name, token)
+    found = look_for_dev_build(set_name, GitHubReader(token))
     if isinstance(found, DevBuildPending):
         raise ResolveError(f"{found.not_ready()}; re-run this job when it is uploaded.")
     archive = download_artifact_archive(found.artifact, Arch.X86_64, token, work_dir)
@@ -1300,7 +1383,9 @@ def fetch_release_run(
 ) -> FetchedPeppy:
     name = release_run_artifact_name(arch)
     url = run_url(run_id)
-    artifact = release_run_artifact(url, run_artifacts(run_id, name, token), name)
+    artifact = release_run_artifact(
+        url, run_artifacts(run_id, name, GitHubReader(token)), name
+    )
     archive = download_artifact_archive(artifact, arch, token, work_dir)
     return FetchedPeppy(
         PeppyBuild(
@@ -1578,7 +1663,9 @@ def run(inputs: ActionInputs) -> None:
 
 
 def wait_for_peppy(
-    inputs: ActionInputs, sleep: Callable[[float], None] = time.sleep
+    inputs: ActionInputs,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Wait until the peppy dev build of the job is uploaded. The other
     builds are there before the job starts, so a job that installs one of
@@ -1593,8 +1680,9 @@ def wait_for_peppy(
         )
         return
     set_name = peppy_set_name(inputs)
+    github = GitHubReader(inputs.github_token)
     found = wait_for_dev_build(
-        lambda: look_for_dev_build(set_name, inputs.github_token), sleep
+        lambda: look_for_dev_build(set_name, github), monotonic, sleep
     )
     print(
         f"The dev build of peppy branch `{found.branch}` at `{found.commit}` is "

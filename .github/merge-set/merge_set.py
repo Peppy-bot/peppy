@@ -1625,7 +1625,7 @@ class GitHubGateway:
         if run_id is None:
             return False
         artifacts = resolve.run_artifacts(
-            run_id, resolve.DEV_BUILD_ARTIFACT, self.api.token
+            run_id, resolve.DEV_BUILD_ARTIFACT, resolve.GitHubReader(self.api.token)
         )
         return resolve.newest_usable(artifacts) is not None
 

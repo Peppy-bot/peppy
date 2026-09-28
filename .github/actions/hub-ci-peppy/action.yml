@@ -43,10 +43,13 @@ inputs:
     description: >-
       `true` makes the action wait until the peppy dev build of the job is
       uploaded, and do nothing else: it installs no peppy, writes no set
-      record, and gives no output. It looks again every DEV_BUILD_POLL_SECONDS
-      and follows each new push to the peppy branch. It fails after
-      DEV_BUILD_WAIT_SECONDS (see resolve.py), or at once when the peppy CI run
-      ends without the build. Thus a small job can do the wait, and the jobs
+      record, and gives no output. It looks again DEV_BUILD_POLL_SECONDS after
+      each look, with conditional requests that cost the rate limit of the
+      token only when an answer changed. It follows each new push to the peppy
+      branch, and goes on after a look that a server error or a network
+      failure stops. It fails after DEV_BUILD_WAIT_SECONDS (see resolve.py), or
+      at once when the peppy CI run ends without the build or when GitHub
+      refuses a request. Thus a small job can do the wait, and the jobs
       that install peppy can start after it, so that no large runner waits.
       Give it the other inputs of the jobs that install peppy.
     default: "false"
