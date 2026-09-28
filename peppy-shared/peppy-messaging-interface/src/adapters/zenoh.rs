@@ -14,10 +14,12 @@
 //! `ReplyStream` the consumer dropped after the first valid response).
 //!
 //! Callback handlers have no intermediate channel: each callback invocation
-//! either forwards into our own `flume::bounded` channel (subscriber /
-//! queryable, where blocking `send` preserves backpressure) or our own tokio
-//! mpsc (`call_service`, where `try_send` silently drops on a closed/full
-//! receiver because the caller only needs the first valid reply).
+//! either forwards into our own `flume` channel (a subscriber, through the
+//! [`crate::subscription_buffer`] sink that decides between backpressure for a
+//! topic and a buffer that never waits for a goal's feedback; a queryable,
+//! where blocking `send` preserves backpressure) or our own tokio mpsc
+//! (`call_service`, where `try_send` silently drops on a closed/full receiver
+//! because the caller only needs the first valid reply).
 //!
 //! The `tests/fifo_noise.rs` integration test pins this invariant: it
 //! asserts zero `zenoh::api::handlers::fifo` ERROR events during a wildcard
@@ -26,8 +28,9 @@
 use crate::error::{Error, Result};
 #[cfg(feature = "router")]
 use crate::router_id::RouterId;
+use crate::subscription_buffer::{Buffering, subscription_channel};
 use crate::types::{
-    ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, IncomingRequest,
+    ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer, IncomingRequest,
     LivelinessEvent, LivelinessToken, LivelinessWatch, Payload, PresenceScope, PublisherQoS,
     ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
     SubscriberQoS, TopicMessage, ZenohResponseToken, service_query_lifetime,
@@ -843,8 +846,13 @@ impl MessengerBackend for ZenohAdapter {
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
         let drop_secondary = recv.drops_secondary_publishes();
-        self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
-            .await
+        self.subscribe_keyexpr(
+            ZenohWireFormat::topic_subscribe(recv),
+            qos,
+            Buffering::Backpressure,
+            drop_secondary,
+        )
+        .await
     }
 
     async fn publish_topic(
@@ -1008,6 +1016,7 @@ impl MessengerBackend for ZenohAdapter {
         sender: &ActionWireSender,
         goal_id: &str,
         qos: SubscriberQoS,
+        buffer: FeedbackBuffer,
     ) -> Result<Subscription> {
         // Action feedback shares the wildcard-link_id keyexpr shape with
         // topic subscribe but doesn't multi-publish per goal — feedback is
@@ -1017,6 +1026,7 @@ impl MessengerBackend for ZenohAdapter {
         self.subscribe_keyexpr(
             ZenohWireFormat::action_feedback_subscribe(sender, goal_id),
             qos,
+            Buffering::Feedback(buffer),
             false,
         )
         .await
@@ -1396,21 +1406,25 @@ impl ZenohAdapter {
         &self,
         keyexpr: String,
         qos: SubscriberQoS,
+        buffering: Buffering,
         drop_secondary: bool,
     ) -> Result<Subscription> {
-        let (tx, rx) = flume::bounded(self.client_config.buffer_sizes.size_for(qos));
+        let (sink, rx) = subscription_channel(
+            &keyexpr,
+            self.client_config.buffer_sizes.size_for(qos),
+            buffering,
+        );
 
         let session = self
             .session
             .as_ref()
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
 
-        // Blocking `flume::Sender::send` (not `try_send`) so Reliable QoS
-        // topics get end-to-end backpressure: if the consumer's buffer is
-        // full, zenoh's reception thread blocks here, propagating the stall
-        // back to the publisher. `Err` only fires once the receiver is
-        // dropped — silently discard, the subscription is going away. See
-        // the module-level "Why callback handlers, not FIFO" doc.
+        // The callback runs on zenoh's reception thread. A topic's full
+        // buffer blocks that thread until the reader takes a message, so the
+        // stall reaches the publisher (backpressure); a goal's feedback stream
+        // never blocks it. See `subscription_buffer` and the module-level
+        // "Why callback handlers, not FIFO" doc.
         let subscriber = session
             .declare_subscriber(&keyexpr)
             .callback(move |sample| {
@@ -1437,8 +1451,7 @@ impl ZenohAdapter {
                 let key_expr = key_expr.as_str();
                 match TopicMessage::from_zbytes(key_expr, payload) {
                     Ok(message) => {
-                        let _ =
-                            tx.send(message.with_source_timestamp_nanos(source_timestamp_nanos));
+                        sink.deliver(message.with_source_timestamp_nanos(source_timestamp_nanos));
                     }
                     Err(err) => {
                         tracing::error!(

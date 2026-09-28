@@ -16,6 +16,7 @@ mod adapters;
 mod error;
 mod probe;
 mod router_id;
+mod subscription_buffer;
 mod types;
 mod wire;
 #[cfg(feature = "zenoh")]
@@ -43,7 +44,7 @@ pub use router_id::RouterId;
 // (reached only through `ResponseToken`'s methods), so naming them directly is
 // not part of the crate's public surface.
 pub use types::{
-    ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, IncomingRequest,
+    ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer, IncomingRequest,
     LivelinessEvent, LivelinessToken, LivelinessWatch, Messenger, MessengerAdapter,
     MessengerBackend, MessengerPublisher, Payload, PresenceScope, PublisherQoS, ReplyStream,
     ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,

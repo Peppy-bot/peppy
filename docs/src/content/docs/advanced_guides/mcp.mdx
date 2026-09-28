@@ -424,7 +424,7 @@ Task handles outlive connections. A client that reconnects can continue and obse
 For a client without the extension, the goal runs inside the call:
 
 1. The server sends the goal and the call stays open until the goal settles or `deadline_ms` passes.
-2. Action feedback is sent as `notifications/progress` under the call's progress token, in order, before the result. A call without a progress token gets no feedback.
+2. Action feedback is sent as `notifications/progress` under the call's progress token, in order, before the result. While the server waits for the client to take one notification, new feedback waits in the goal's [feedback buffer](/advanced_guides/actions/#receiving-feedback), which keeps only the newest messages. A call without a progress token gets no feedback.
 3. Closing the call forwards a request to the action's cooperative cancellation path.
 4. On success, the call returns the structured result. A goal that is rejected, abandoned, expired, cancelled, or past the deadline returns a readable tool error saying which event occurred.
 

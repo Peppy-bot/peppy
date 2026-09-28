@@ -603,6 +603,8 @@ loop {
   </TabItem>
 </Tabs>
 
+Feedback the handle has not read yet waits in the handle's buffer. The buffer holds the newest messages, up to the [subscriber buffer size](/advanced_guides/daemon_config/#zenohmanagedsubscriber_buffers-subscriber-buffer-sizes) of the `feedback_qos` tier you pass to `fire_goal`: 128 messages by default, or 1024 for `sensor_data`. When a message arrives while the buffer is full, the oldest unread message is dropped, so a handle that reads slowly skips older feedback and still gets the newest. The end of the stream is always kept. Receiving never waits for the handle: feedback read late, or never, does not hold up `get_result` or any other message to the node.
+
 Each goal has its own feedback stream, addressed by `goal_id`, so feedback for one goal never reaches another handle, even when several goals run concurrently on the same server. Two terminal errors end the drain loop:
 
 - **Clean close** (`ActionFeedbackChannelClosed`; `RuntimeError` in Python): the server closed this goal's stream: its worker completed the goal (`complete` or `complete_cancelled`) or abandoned it without completing it (an early return or a panic). Call `get_result` to learn the outcome.
