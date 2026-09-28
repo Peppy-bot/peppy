@@ -839,6 +839,25 @@ class Blockers(unittest.TestCase):
                 self.assertEqual(len(texts), 1, texts)
                 self.assertIn(expected, texts[0])
 
+    def test_only_a_missing_approval_is_waived_for_an_admin(self):
+        unapproved = report(
+            pull_request(NODES_HUB), review=ReviewDecision.REVIEW_REQUIRED
+        )
+        (missing,) = merge_set.set_blockers(
+            self.two_member_state(), self.reports(unapproved)
+        )
+        self.assertTrue(missing.waived_for_admins)
+        self.assertEqual(merge_set.blockers_for([missing], admin=True), [])
+        self.assertEqual(merge_set.blockers_for([missing], admin=False), [missing])
+        refused = report(
+            pull_request(NODES_HUB), review=ReviewDecision.CHANGES_REQUESTED
+        )
+        (changes,) = merge_set.set_blockers(
+            self.two_member_state(), self.reports(refused)
+        )
+        self.assertFalse(changes.waived_for_admins)
+        self.assertEqual(merge_set.blockers_for([changes], admin=True), [changes])
+
     def test_a_review_no_rule_asks_for_does_not_block(self):
         nodes_report = report(
             pull_request(NODES_HUB), review=ReviewDecision.NOT_REQUIRED
@@ -908,6 +927,45 @@ class Dashboards(unittest.TestCase):
             body,
         )
 
+    def test_a_set_that_lacks_approvals_alone_is_ready_for_an_admin(self):
+        state = set_state(
+            member(PEPPY, pull_request(PEPPY, 512)),
+            member(NODES_HUB, pull_request(NODES_HUB, 88)),
+        )
+        missing = merge_set.Blocker(
+            NODES_HUB, "nodes-hub#88 needs an approving review.", waived_for_admins=True
+        )
+        body = merge_set.render_set_dashboard(state, [missing], 0)
+        self.assertIn("**Ready to merge for an admin.**", body)
+        self.assertIn(merge_set.ADMIN_WAIVER, body)
+        self.assertIn("- nodes-hub#88 needs an approving review.", body)
+        self.assertIn("| `" + commit(NODES_HUB)[:7] + "` | not approved |", body)
+        self.assertIn("| `" + commit(PEPPY)[:7] + "` | ready |", body)
+        self.assertNotIn("What blocks the merge", body)
+
+    def test_a_blocked_set_names_its_missing_approvals_apart(self):
+        state = set_state(
+            member(PEPPY, pull_request(PEPPY, 512)),
+            member(NODES_HUB, pull_request(NODES_HUB, 88)),
+        )
+        blockers = [
+            merge_set.Blocker(PEPPY, "peppy#512 is a draft: mark it ready for review."),
+            merge_set.Blocker(
+                NODES_HUB,
+                "nodes-hub#88 needs an approving review.",
+                waived_for_admins=True,
+            ),
+        ]
+        body = merge_set.render_set_dashboard(state, blockers, 0)
+        self.assertIn(
+            "**What blocks the merge**\n\n- peppy#512 is a draft: mark it ready for review.\n\n"
+            f"Approvals are missing too. {merge_set.ADMIN_WAIVER}\n\n"
+            "- nodes-hub#88 needs an approving review.",
+            body,
+        )
+        self.assertIn("| blocked |", body)
+        self.assertIn("| not approved |", body)
+
     def test_the_ticked_boxes_are_read_by_their_marker(self):
         body = (
             "- [x] <!-- merge-set:merge --> Merge the 2 pull requests\n"
@@ -964,7 +1022,7 @@ class MergeMessages(unittest.TestCase):
             failure="Base branch was modified.",
             not_tried=(contracts,),
         )
-        text = merge_set.render_merge_report(SET_NAME, ["alice"], outcome)
+        text = merge_set.render_merge_report(SET_NAME, ["alice"], outcome, [])
         self.assertIn("which @alice asked for, stopped", text)
         self.assertIn("- peppy#512 merged as `aaaaaaa`.", text)
         self.assertIn("- nodes-hub#88 did not merge: Base branch was modified.", text)
@@ -1480,6 +1538,68 @@ class SyncMerge(unittest.TestCase):
         ]
         self.tick_merge()
         self.assertEqual(len(self.github.merged), 3)
+
+    def make_admin(self, login="alice", repositories=merge_set.REPOSITORIES):
+        for repository in repositories:
+            self.github.permissions[(repository.name, login)] = "admin"
+
+    def leave_unapproved(self, *pull_requests):
+        # GitHub reports a pull request that lacks an approval as blocked.
+        for pr in pull_requests:
+            self.github.reviews[pr.label] = ReviewDecision.REVIEW_REQUIRED
+            self.github.merge_states[pr.label] = [(True, "blocked")]
+
+    def test_an_admin_merges_a_set_that_lacks_approvals(self):
+        self.leave_unapproved(self.nodes, self.contracts)
+        self.make_admin()
+        self.tick_merge()
+        self.assertEqual(
+            [label for label, _ in self.github.merged],
+            ["peppy#512", "nodes-hub#88", "contracts-hub#9"],
+        )
+        # A pull request blocked for its approval alone is not asked again.
+        self.assertEqual(self.github.sleeps, [])
+        (report_text,) = self.github.reports_on(self.peppy)
+        self.assertRegex(report_text, r"- peppy#512 merged as `[0-9a-f]{7}`\.\n")
+        self.assertRegex(
+            report_text, r"- nodes-hub#88 merged as `[0-9a-f]{7}` without an approval\."
+        )
+        self.assertRegex(
+            report_text,
+            r"- contracts-hub#9 merged as `[0-9a-f]{7}` without an approval\.",
+        )
+
+    def test_a_user_who_is_no_admin_does_not_merge_a_set_that_lacks_approvals(self):
+        self.leave_unapproved(self.nodes)
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn("- nodes-hub#88 needs an approving review.", refusal)
+
+    def test_an_admin_of_some_repositories_of_the_set_alone_is_no_admin_of_it(self):
+        self.leave_unapproved(self.nodes)
+        self.make_admin(repositories=(PEPPY, NODES_HUB))
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+
+    def test_a_review_that_requests_changes_blocks_an_admin(self):
+        self.github.reviews[self.nodes.label] = ReviewDecision.CHANGES_REQUESTED
+        self.make_admin()
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn("A reviewer requested changes on nodes-hub#88.", refusal)
+
+    def test_an_admin_does_not_merge_an_approved_pull_request_github_blocks(self):
+        # Another rule than the approval blocks it, which the admin does not waive.
+        self.leave_unapproved(self.nodes)
+        self.github.merge_states[self.contracts.label] = [(True, "blocked")]
+        self.make_admin()
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn("GitHub does not merge contracts-hub#9 yet", refusal)
+        self.assertNotIn("nodes-hub#88", refusal)
 
     def test_two_users_who_tick_at_once_get_one_merge(self):
         (on_peppy,) = self.github.comments_on(self.peppy)

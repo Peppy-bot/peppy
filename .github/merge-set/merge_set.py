@@ -23,6 +23,13 @@ pull request at a time, so a merge that fails part way leaves the set partly
 merged: the bot then blocks the pull requests that did not merge and reports
 what merged on every pull request of the set.
 
+A user with the admin role on every repository of the set merges it without
+the approvals it lacks, as the rulesets let an admin merge a pull request of
+their own. The App is a bypass actor, for pull requests, of the rulesets that
+require an approval, so the bot enforces the approvals itself: a user
+without that role gets no merge of a set that lacks one. A review that
+requests changes blocks every user.
+
 A hub run is out of date when a job of it ran with another commit of a branch
 of the set than the head of that branch. Every job that runs the hub-ci-peppy
 action uploads the set it ran with, its set record, named after the check run
@@ -786,6 +793,9 @@ class PullRequestReport:
 class Blocker:
     repository: Repository
     text: str
+    # A missing approval, which an admin of every repository of the set
+    # merges without.
+    waived_for_admins: bool = False
 
 
 def short(commit: str) -> str:
@@ -825,8 +835,8 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     label = pull_request.label
     blockers = []
 
-    def block(text: str) -> None:
-        blockers.append(Blocker(repository, text))
+    def block(text: str, waived_for_admins: bool = False) -> None:
+        blockers.append(Blocker(repository, text, waived_for_admins))
 
     if pull_request.base_branch != repository.integration_branch:
         block(
@@ -850,7 +860,7 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     if report.review is ReviewDecision.CHANGES_REQUESTED:
         block(f"A reviewer requested changes on {label}.")
     if report.review is ReviewDecision.REVIEW_REQUIRED:
-        block(f"{label} needs an approving review.")
+        block(f"{label} needs an approving review.", waived_for_admins=True)
     for check, state in report.checks:
         if state is not CheckState.PASSED:
             block(
@@ -897,6 +907,14 @@ def set_blockers(
         blocker
         for member in state.members
         for blocker in member_blockers(state.name, member, reports)
+    ]
+
+
+def blockers_for(blockers: Sequence[Blocker], admin: bool) -> list[Blocker]:
+    """What keeps the set from merging for a user, an admin of every
+    repository of the set or not."""
+    return [
+        blocker for blocker in blockers if not (admin and blocker.waived_for_admins)
     ]
 
 
@@ -955,7 +973,8 @@ def pull_request_cell(member: Member) -> str:
 def render_set_dashboard(
     state: SetState, blockers: Sequence[Blocker], stale_run_count: int
 ) -> str:
-    blocked = {blocker.repository for blocker in blockers}
+    blocked = {blocker.repository for blocker in blockers_for(blockers, admin=True)}
+    unapproved = {blocker.repository for blocker in blockers} - blocked
     lines = [
         DASHBOARD_MARKER,
         f"### Set `{state.name}`",
@@ -971,7 +990,7 @@ def render_set_dashboard(
     lines.extend(
         f"| {member.repository.name} | {pull_request_cell(member)} "
         f"| `{short(member.head)}` "
-        f"| {'blocked' if member.repository in blocked else 'ready'} |"
+        f"| {member_state(member.repository, blocked, unapproved)} |"
         for member in state.members
     )
     if state.left_behind:
@@ -982,15 +1001,7 @@ def render_set_dashboard(
             for repository in state.left_behind
         )
     lines.append("")
-    if blockers:
-        lines.extend(["**What blocks the merge**", ""])
-        lines.extend(f"- {blocker.text}" for blocker in blockers)
-    else:
-        lines.append(
-            "**Ready to merge.** Each pull request is approved, its required "
-            "checks passed, and each hub run ran with the head of every branch "
-            "of the set."
-        )
+    lines.extend(readiness_lines(blockers))
     lines.extend(
         [
             "",
@@ -1006,6 +1017,51 @@ def render_set_dashboard(
             box_line(Action.RERUN, f"Re-run the out-of-date CI of this set ({runs})")
         )
     return "\n".join(lines) + "\n"
+
+
+def member_state(
+    repository: Repository, blocked: set[Repository], unapproved: set[Repository]
+) -> str:
+    if repository in blocked:
+        return "blocked"
+    if repository in unapproved:
+        return "not approved"
+    return "ready"
+
+
+ADMIN_WAIVER = (
+    "An admin of every repository of the set merges it without the approvals."
+)
+
+
+def readiness_lines(blockers: Sequence[Blocker]) -> list[str]:
+    """What the dashboard says of the merge: ready, ready for an admin alone,
+    or what blocks it."""
+    if not blockers:
+        return [
+            "**Ready to merge.** Each pull request is approved, its required "
+            "checks passed, and each hub run ran with the head of every branch "
+            "of the set."
+        ]
+    hard = blockers_for(blockers, admin=True)
+    if not hard:
+        return [
+            "**Ready to merge for an admin.** Each required check passed and "
+            "each hub run ran with the head of every branch of the set, but "
+            f"approvals are missing. {ADMIN_WAIVER}",
+            "",
+            *(f"- {blocker.text}" for blocker in blockers),
+        ]
+    unapproved = [blocker for blocker in blockers if blocker.waived_for_admins]
+    lines = [
+        "**What blocks the merge**",
+        "",
+        *(f"- {blocker.text}" for blocker in hard),
+    ]
+    if unapproved:
+        lines.extend(["", f"Approvals are missing too. {ADMIN_WAIVER}", ""])
+        lines.extend(f"- {blocker.text}" for blocker in unapproved)
+    return lines
 
 
 def render_alone_dashboard(set_name: str) -> str:
@@ -1073,6 +1129,7 @@ MERGE_STATE_BLOCKED = "blocked"
 # has a failed check that no rule requires, `has_hooks` a pre-receive hook.
 MERGEABLE_STATES = frozenset({"clean", "unstable", "has_hooks"})
 WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
+ADMIN_PERMISSION = "admin"
 
 
 @dataclass(frozen=True)
@@ -1108,10 +1165,17 @@ def merge_commit_message(
 
 
 def render_merge_report(
-    set_name: str, requesters: Sequence[str], outcome: MergeOutcome
+    set_name: str,
+    requesters: Sequence[str],
+    outcome: MergeOutcome,
+    unapproved: Sequence[PullRequest],
 ) -> str:
+    """The report of a merge, on every pull request of the set. `unapproved`
+    are the pull requests an admin merged without an approval."""
     merged = [
-        f"- {merged.pull_request.label} merged as `{short(merged.commit)}`."
+        f"- {merged.pull_request.label} merged as `{short(merged.commit)}`"
+        + (" without an approval" if merged.pull_request in unapproved else "")
+        + "."
         for merged in outcome.merged
     ]
     if outcome.failed is None:
@@ -1699,6 +1763,13 @@ def missing_write_access(
     ]
 
 
+def is_admin_of_the_set(gateway: GitHubGateway, state: SetState, login: str) -> bool:
+    return all(
+        gateway.permission(member.repository, login) == ADMIN_PERMISSION
+        for member in state.members
+    )
+
+
 def set_gate(gateway: GitHubGateway, pull_request: PullRequest, gate: Gate) -> None:
     """Report `gate` on the head of the pull request, unless it is there
     already."""
@@ -1752,6 +1823,30 @@ def computed_merge_state(
     return mergeable, state
 
 
+def mergeable_states(unapproved: bool) -> frozenset[str]:
+    """The merge states of a pull request the bot merges. GitHub reports a
+    pull request that lacks an approval as blocked, and the App, a bypass
+    actor of the rulesets that require one, merges it all the same."""
+    if unapproved:
+        return MERGEABLE_STATES | {MERGE_STATE_BLOCKED}
+    return MERGEABLE_STATES
+
+
+def final_merge_state(
+    gateway: GitHubGateway, pull_request: PullRequest, unapproved: bool
+) -> str:
+    """The merge state of a pull request right after the bot set its gate
+    green. GitHub can answer blocked from before the gate turned green, so the
+    bot asks again while it does, unless the pull request lacks an approval
+    and stays blocked for that alone."""
+    waiting = (
+        {MERGE_STATE_UNKNOWN}
+        if unapproved
+        else {MERGE_STATE_UNKNOWN, MERGE_STATE_BLOCKED}
+    )
+    return computed_merge_state(gateway, pull_request, waiting)[1]
+
+
 def merge_in_order(
     gateway: GitHubGateway, set_name: str, pull_requests: Sequence[PullRequest]
 ) -> MergeOutcome:
@@ -1795,7 +1890,8 @@ def merge_the_set(
     context: RunContext,
 ) -> None:
     asked_on = request.dashboard.pull_request
-    blockers = set_blockers(state, reports)
+    admin = is_admin_of_the_set(gateway, state, request.requester)
+    blockers = blockers_for(set_blockers(state, reports), admin)
     if blockers:
         gateway.create_comment(
             asked_on,
@@ -1805,6 +1901,11 @@ def merge_the_set(
         )
         return
     pull_requests = [member.pull_request for member in state.members]
+    unapproved = [
+        pull_request
+        for pull_request in pull_requests
+        if reports[pull_request.label].review is ReviewDecision.REVIEW_REQUIRED
+    ]
     for pull_request in pull_requests:
         gateway.post_gate(
             pull_request, merging_gate(state.name, request.requester, context.run_url)
@@ -1812,16 +1913,14 @@ def merge_the_set(
     merge_states = [
         (
             pull_request,
-            computed_merge_state(
-                gateway, pull_request, {MERGE_STATE_UNKNOWN, MERGE_STATE_BLOCKED}
-            )[1],
+            final_merge_state(gateway, pull_request, pull_request in unapproved),
         )
         for pull_request in pull_requests
     ]
     unmergeable = [
         (pull_request, merge_state)
         for pull_request, merge_state in merge_states
-        if merge_state not in MERGEABLE_STATES
+        if merge_state not in mergeable_states(pull_request in unapproved)
     ]
     if unmergeable:
         block_again(gateway, state.name, pull_requests, dashboards)
@@ -1832,7 +1931,7 @@ def merge_the_set(
         return
     outcome = merge_in_order(gateway, state.name, pull_requests)
     block_again(gateway, state.name, outcome.unmerged, dashboards)
-    report = render_merge_report(state.name, requesters, outcome)
+    report = render_merge_report(state.name, requesters, outcome, unapproved)
     for pull_request in pull_requests:
         gateway.create_comment(pull_request, report)
     for merged in outcome.merged:
