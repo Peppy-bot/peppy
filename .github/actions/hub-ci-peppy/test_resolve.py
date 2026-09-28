@@ -143,8 +143,23 @@ def installed_peppy():
             kind=PeppyBuildKind.LATEST_RELEASE,
             source=resolve.latest_release_url(Arch.X86_64),
             description="the latest release",
+            ref=None,
+            commit=None,
         ),
         version="peppy v0.31.3",
+    )
+
+
+def installed_dev_build():
+    return resolve.InstalledPeppy(
+        build=resolve.PeppyBuild(
+            kind=PeppyBuildKind.DEV_BUILD,
+            source=resolve.run_url(7),
+            description=f"the dev build of peppy branch `{SET_NAME}`",
+            ref=SET_NAME,
+            commit=PEPPY_BRANCH_COMMIT,
+        ),
+        version="peppy dev-aaaaaaaaaaaa",
     )
 
 
@@ -519,6 +534,33 @@ class DevBuild(unittest.TestCase):
         self.assertEqual(
             resolve.parse_artifacts(response, resolve.DEV_BUILD_ARTIFACT), []
         )
+
+    def test_the_dev_build_names_the_peppy_branch_and_commit_it_is_the_build_of(
+        self,
+    ):
+        peppy_heads = {SET_NAME: PEPPY_BRANCH_COMMIT, "dev": PEPPY_DEV_COMMIT}
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(resolve, "ls_remote_heads", return_value=peppy_heads),
+            patch.object(
+                resolve,
+                "github_get_json",
+                return_value=runs_response((7, "completed")),
+            ),
+            patch.object(
+                resolve, "run_artifacts", return_value=self.artifacts((70, False))
+            ),
+            patch.object(
+                resolve,
+                "download_artifact_archive",
+                return_value=Path(directory) / Arch.X86_64.archive_name,
+            ),
+        ):
+            fetched = resolve.fetch_dev_build(SET_NAME, "token", Path(directory))
+        self.assertEqual(fetched.build.kind, PeppyBuildKind.DEV_BUILD)
+        self.assertEqual(fetched.build.ref, SET_NAME)
+        self.assertEqual(fetched.build.commit, PEPPY_BRANCH_COMMIT)
+        self.assertEqual(fetched.build.source, resolve.run_url(7))
 
 
 class ReleaseRun(unittest.TestCase):
@@ -1065,6 +1107,8 @@ class JobFiles(unittest.TestCase):
                 "build": "latest-release",
                 "version": "peppy v0.31.3",
                 "source": "https://peppy.bot/latest/peppy-x86_64-unknown-linux-gnu.tgz",
+                "ref": None,
+                "commit": None,
             },
         )
         self.assertEqual(list(output["hubs"]), [hub.name for hub in resolve.HUBS])
@@ -1077,6 +1121,27 @@ class JobFiles(unittest.TestCase):
                 "ref": SET_NAME,
                 "commit": commit_of(resolve.HUBS_BY_NAME["contracts-hub"], SET_NAME),
             },
+        )
+
+    def test_the_set_output_names_the_branch_and_commit_of_a_dev_build(self):
+        hub_set = choose_by_branch()
+        output = resolve.set_output(hub_set, installed_dev_build())
+        self.assertEqual(output["peppy"]["build"], "dev-build")
+        self.assertEqual(output["peppy"]["ref"], SET_NAME)
+        self.assertEqual(output["peppy"]["commit"], PEPPY_BRANCH_COMMIT)
+
+    def test_the_set_record_holds_the_set_output_on_one_line(self):
+        resolved_set = resolve.compact_json(
+            resolve.set_output(choose_by_branch(), installed_dev_build())
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            record = resolve.write_set_record(Path(directory), resolved_set)
+            self.assertEqual(record.name, resolve.SET_RECORD_FILE)
+            self.assertEqual(record.read_text(), resolved_set + "\n")
+
+    def test_the_set_record_is_named_after_the_check_run_of_its_job(self):
+        self.assertEqual(
+            resolve.set_record_artifact_name(51725241954), "hub-ci-set-51725241954"
         )
 
     def test_the_set_output_is_one_line(self):
@@ -1309,6 +1374,19 @@ class RepositoryFacts(unittest.TestCase):
                 self.assertIn(
                     f"value: ${{{{ steps.resolve.outputs.{output} }}}}", action
                 )
+
+    def test_the_action_uploads_the_set_record_under_the_name_of_its_job(self):
+        # The merge-set bot finds the record of a job by this name
+        # (set_record_artifact_name), and a composite action reads the
+        # check run id of the job it runs in from the `job` context.
+        action = (ACTION_DIR / "action.yml").read_text()
+        lines = [line.strip() for line in action.splitlines()]
+        self.assertIn(
+            f"name: {resolve.SET_RECORD_ARTIFACT_PREFIX}${{{{ job.check_run_id }}}}",
+            lines,
+        )
+        self.assertIn("path: ${{ steps.resolve.outputs.record }}", lines)
+        self.assertIn("if-no-files-found: error", lines)
 
     def test_the_action_gives_the_script_every_variable_it_reads(self):
         action = (ACTION_DIR / "action.yml").read_text()
