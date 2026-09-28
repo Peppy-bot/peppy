@@ -9,9 +9,10 @@ description: >-
   action unpacks that peppy under RUNNER_TEMP and puts its bin on PATH, exports
   PEPPY_HOME, and writes the repositories.json5 there that pins every hub of
   the set. It starts no daemon. It reports the set to the job summary and to
-  the `set` output, and uploads it as the set record of the job. It never
-  waits: a peppy dev build that is not ready fails the job with the way to go
-  on. A job runs it once: the set record is named after the job.
+  the `set` output, and uploads it as the set record of the job. A peppy dev
+  build that is not uploaded yet fails the job with the way to go on. A job
+  runs it once: the set record is named after the job. With `wait-only`, the
+  action instead waits for that dev build and does nothing else.
 
 inputs:
   hub-path:
@@ -38,6 +39,17 @@ inputs:
   github-token:
     description: The token for the GitHub REST API calls on peppy's workflow runs and artifacts.
     default: ${{ github.token }}
+  wait-only:
+    description: >-
+      `true` makes the action wait until the peppy dev build of the job is
+      uploaded, and do nothing else: it installs no peppy, writes no set
+      record, and gives no output. It looks again every DEV_BUILD_POLL_SECONDS
+      and follows each new push to the peppy branch. It fails after
+      DEV_BUILD_WAIT_SECONDS (see resolve.py), or at once when the peppy CI run
+      ends without the build. Thus a small job can do the wait, and the jobs
+      that install peppy can start after it, so that no large runner waits.
+      Give it the other inputs of the jobs that install peppy.
+    default: "false"
 
 outputs:
   set:
@@ -69,7 +81,7 @@ runs:
 
     # Every value reaches the script through the environment rather than a
     # `${{ }}` expansion in its source, so it is data the script parses.
-    - name: Resolve the set and install its peppy
+    - name: Resolve the set, and install its peppy or wait for it
       id: resolve
       shell: bash
       run: python3 "$GITHUB_ACTION_PATH/resolve.py"
@@ -78,6 +90,7 @@ runs:
         INPUT_SET: ${{ inputs.set }}
         INPUT_PEPPY_RUN_ID: ${{ inputs.peppy-run-id }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_WAIT_ONLY: ${{ inputs.wait-only }}
         PRIVATE_HUB_KEY_LOADED: ${{ inputs.private-nodes-hub-deploy-key != '' }}
 
     # The set record: the `set` output of this job, as a file. The merge-set
@@ -87,6 +100,7 @@ runs:
     # branch of the set. The artifact is named after the check run of the job,
     # which is how the bot matches it to the job it lists.
     - name: Record the set this job runs
+      if: inputs.wait-only != 'true'
       uses: actions/upload-artifact@v7
       with:
         name: hub-ci-set-${{ job.check_run_id }}

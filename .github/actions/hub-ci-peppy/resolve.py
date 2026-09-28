@@ -17,6 +17,12 @@ any daemon starts. It reports the set to the job summary and to the action's
 merge-set bot (.github/merge-set/merge_set.py) reads to tell whether a run of
 a hub pull request tested the current head of every branch of its set.
 
+With the action's `wait-only` input, the script instead waits until the peppy
+dev build that the job would install is uploaded, and installs nothing. Thus a
+small job can wait for the build, and the jobs that install peppy can start
+after that job. The build is not ready while its peppy CI run is in progress:
+a push to peppy and a push to a hub at the same time start the CI of both.
+
 The peppy release (.github/workflows/parallel-release.yml) runs its
 subcommand `release-set --tag <version> --output <file>`, which records the
 set of hub commits the release tests and then tags: each hub at the commit of
@@ -43,6 +49,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -50,7 +57,7 @@ import zipfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 
 class ResolveError(Exception):
@@ -152,6 +159,11 @@ PEPPY_CI_WORKFLOW = "tests.yml"
 # The dev build exists for x86_64 alone: install-archive builds on an x86_64
 # runner.
 DEV_BUILD_ARTIFACT = "peppy-dev-x86_64-unknown-linux-gnu"
+# A job that waits for the dev build (the `wait-only` input) looks for it
+# every DEV_BUILD_POLL_SECONDS, and stops after DEV_BUILD_WAIT_SECONDS. Most
+# peppy CI runs upload it 7 to 12 minutes after the push.
+DEV_BUILD_POLL_SECONDS = 30
+DEV_BUILD_WAIT_SECONDS = 20 * 60
 
 GITHUB_API = "https://api.github.com"
 USER_AGENT = "peppy-hub-ci"
@@ -736,29 +748,27 @@ def choose_peppy_branch(
 class CiRun:
     id: int
     status: str
+    # None until the run is completed.
+    conclusion: str | None
     url: str
 
 
-def latest_ci_run(runs_response: Mapping, branch: str, commit: str) -> CiRun:
-    """The most recent peppy CI run of `commit`, the head of `branch`.
+def latest_ci_run(runs_response: Mapping) -> CiRun | None:
+    """The most recent peppy CI run of a commit; None when it has none yet.
 
     The most recent run is the one of the highest id: ids grow with every run
     GitHub creates.
     """
     runs = [
-        CiRun(id=run["id"], status=run["status"], url=run["html_url"])
+        CiRun(
+            id=run["id"],
+            status=run["status"],
+            conclusion=run["conclusion"],
+            url=run["html_url"],
+        )
         for run in runs_response["workflow_runs"]
     ]
-    if runs:
-        return max(runs, key=lambda run: run.id)
-    if branch == PEPPY_DEV_BRANCH:
-        raise ResolveError(
-            f"peppy branch `{branch}` has no dev build: no CI run exists for its "
-            f"head `{commit}`."
-        )
-    raise ResolveError(
-        f"peppy branch `{branch}` has no dev build; open a pull request for it."
-    )
+    return max(runs, key=lambda run: run.id, default=None)
 
 
 @dataclass(frozen=True)
@@ -788,22 +798,59 @@ def newest_usable(artifacts: Sequence[Artifact]) -> Artifact | None:
     return max(usable, key=lambda artifact: artifact.id) if usable else None
 
 
+@dataclass(frozen=True)
+class UploadedDevBuild:
+    """The dev build of `commit`, the head of peppy `branch`, that `run`
+    uploaded."""
+
+    branch: str
+    commit: str
+    run: CiRun
+    artifact: Artifact
+
+
+@dataclass(frozen=True)
+class DevBuildPending:
+    """A dev build that is not uploaded yet, and that a later look can find."""
+
+    commit: str
+    # Why it is not there, worded for the job's log.
+    reason: str
+
+    def not_ready(self) -> str:
+        return f"peppy dev build for `{self.commit}` is not ready ({self.reason})"
+
+
+def no_ci_run_reason(branch: str) -> str:
+    if branch == PEPPY_DEV_BRANCH:
+        return f"no CI run exists yet for the head of `{branch}`"
+    return (
+        f"no CI run exists yet for the head of `{branch}`; open a pull request "
+        "for it if it has none"
+    )
+
+
 def dev_build_artifact(
-    run: CiRun, artifacts: Sequence[Artifact], branch: str, commit: str
-) -> Artifact:
-    """The dev build `run` uploaded.
+    run: CiRun | None, artifacts: Sequence[Artifact], branch: str, commit: str
+) -> Artifact | DevBuildPending:
+    """The dev build `run` uploaded for `commit`, the head of `branch`, or why
+    it is not there yet. `run` is None when `commit` has no CI run yet.
 
     The artifact is used as soon as it is uploaded, whether or not the rest of
-    the run has finished; a run that has not uploaded it yet is not waited for.
+    the run has finished. A cancelled run is pending too: a push to `branch`
+    cancels the run of the commit before it, and a re-run of the cancelled run
+    uploads the build. A run that ended in any other way without a usable
+    build never gives one.
     """
+    if run is None:
+        return DevBuildPending(commit, no_ci_run_reason(branch))
     artifact = newest_usable(artifacts)
     if artifact is not None:
         return artifact
     if run.status != "completed":
-        raise ResolveError(
-            f"peppy dev build for `{commit}` is not ready (run `{run.url}` is "
-            f"`{run.status}`); re-run this job when it finishes."
-        )
+        return DevBuildPending(commit, f"run `{run.url}` is `{run.status}`")
+    if run.conclusion == "cancelled":
+        return DevBuildPending(commit, f"run `{run.url}` was cancelled")
     if artifacts:
         raise ResolveError(
             f"the peppy dev build for `{commit}` expired; re-run peppy CI run "
@@ -1183,7 +1230,12 @@ def fetch_latest_release(arch: Arch, work_dir: Path) -> FetchedPeppy:
     )
 
 
-def fetch_dev_build(set_name: str | None, token: str, work_dir: Path) -> FetchedPeppy:
+def look_for_dev_build(
+    set_name: str | None, token: str
+) -> UploadedDevBuild | DevBuildPending:
+    """The dev build of the head of peppy's branch of the set, else of `dev`,
+    or why it is not there yet. Each look reads that head again, so a look
+    after a push to the branch looks for the build of the new head."""
     heads = ls_remote_heads(
         PEPPY_CLONE_URL, branches_to_look_up(PEPPY_DEV_BRANCH, set_name)
     )
@@ -1193,18 +1245,51 @@ def fetch_dev_build(set_name: str | None, token: str, work_dir: Path) -> Fetched
         {"head_sha": commit, "per_page": 100},
         token,
     )
-    run = latest_ci_run(runs, branch, commit)
-    artifact = dev_build_artifact(
-        run, run_artifacts(run.id, DEV_BUILD_ARTIFACT, token), branch, commit
-    )
-    archive = download_artifact_archive(artifact, Arch.X86_64, token, work_dir)
+    run = latest_ci_run(runs)
+    artifacts = [] if run is None else run_artifacts(run.id, DEV_BUILD_ARTIFACT, token)
+    found = dev_build_artifact(run, artifacts, branch, commit)
+    if isinstance(found, DevBuildPending):
+        return found
+    return UploadedDevBuild(branch, commit, run, found)
+
+
+def wait_for_dev_build(
+    look: Callable[[], UploadedDevBuild | DevBuildPending],
+    sleep: Callable[[float], None],
+) -> UploadedDevBuild:
+    """Look for the dev build until it is uploaded, DEV_BUILD_POLL_SECONDS
+    apart, for DEV_BUILD_WAIT_SECONDS at most. A look that finds a build that
+    never comes stops the wait with its error."""
+    found = look()
+    waited_seconds = 0
+    while isinstance(found, DevBuildPending):
+        if waited_seconds >= DEV_BUILD_WAIT_SECONDS:
+            raise ResolveError(
+                f"{found.not_ready()} after {DEV_BUILD_WAIT_SECONDS // 60} "
+                "minutes; re-run this job when it is uploaded."
+            )
+        print(
+            f"{found.not_ready()}; the next look is in {DEV_BUILD_POLL_SECONDS} s.",
+            flush=True,
+        )
+        sleep(DEV_BUILD_POLL_SECONDS)
+        waited_seconds += DEV_BUILD_POLL_SECONDS
+        found = look()
+    return found
+
+
+def fetch_dev_build(set_name: str | None, token: str, work_dir: Path) -> FetchedPeppy:
+    found = look_for_dev_build(set_name, token)
+    if isinstance(found, DevBuildPending):
+        raise ResolveError(f"{found.not_ready()}; re-run this job when it is uploaded.")
+    archive = download_artifact_archive(found.artifact, Arch.X86_64, token, work_dir)
     return FetchedPeppy(
         PeppyBuild(
             PeppyBuildKind.DEV_BUILD,
-            run.url,
-            f"the dev build of peppy branch `{branch}` at `{commit}`",
-            ref=branch,
-            commit=commit,
+            found.run.url,
+            f"the dev build of peppy branch `{found.branch}` at `{found.commit}`",
+            ref=found.branch,
+            commit=found.commit,
         ),
         archive,
     )
@@ -1287,6 +1372,8 @@ class ActionInputs:
     release_run_id: int | None
     github_token: str
     private_key_loaded: bool
+    # Wait for the peppy dev build of the job, and install nothing.
+    wait_only: bool
     under_test: Hub
     trigger: Trigger
     machine: str
@@ -1339,6 +1426,7 @@ ACTION_VARIABLES = (
     "INPUT_SET",
     "INPUT_PEPPY_RUN_ID",
     "INPUT_GITHUB_TOKEN",
+    "INPUT_WAIT_ONLY",
     "PRIVATE_HUB_KEY_LOADED",
 )
 
@@ -1355,6 +1443,7 @@ def inputs_from_environment() -> ActionInputs:
         private_key_loaded=parse_flag(
             "PRIVATE_HUB_KEY_LOADED", action["PRIVATE_HUB_KEY_LOADED"]
         ),
+        wait_only=parse_flag("`wait-only`", action["INPUT_WAIT_ONLY"]),
         under_test=hub_under_test(required_environment("GITHUB_REPOSITORY")),
         trigger=parse_trigger(
             required_environment("GITHUB_EVENT_NAME"),
@@ -1384,6 +1473,12 @@ def resolve_hub_set(inputs: ActionInputs, checkout_commit: str) -> HubSet:
         inputs.private_key_loaded,
         heads_by_hub,
     )
+
+
+def peppy_set_name(inputs: ActionInputs) -> str | None:
+    """The set name whose peppy branch gives the dev build of the job. A job
+    given an explicit set has none, and runs the dev build of `dev`."""
+    return None if inputs.explicit_set is not None else inputs.trigger.set_name
 
 
 def fetch_peppy(
@@ -1477,9 +1572,34 @@ def run(inputs: ActionInputs) -> None:
     )
     arch = runner_arch(inputs.machine, kind)
     hub_set = resolve_hub_set(inputs, checkout_head(inputs.hub_path))
-    installed = install_peppy(kind, arch, inputs, hub_set.name)
+    installed = install_peppy(kind, arch, inputs, peppy_set_name(inputs))
     write_peppy_home(hub_set, inputs)
     report_set(hub_set, installed, inputs)
+
+
+def wait_for_peppy(
+    inputs: ActionInputs, sleep: Callable[[float], None] = time.sleep
+) -> None:
+    """Wait until the peppy dev build of the job is uploaded. The other
+    builds are there before the job starts, so a job that installs one of
+    them waits for nothing."""
+    kind = choose_peppy_build(
+        PEPPY_BUILD_POLICY, inputs.trigger.from_fork, inputs.release_run_id
+    )
+    if kind is not PeppyBuildKind.DEV_BUILD:
+        print(
+            f"Nothing to wait for: this job installs a `{kind.value}` peppy, not a "
+            "dev build."
+        )
+        return
+    set_name = peppy_set_name(inputs)
+    found = wait_for_dev_build(
+        lambda: look_for_dev_build(set_name, inputs.github_token), sleep
+    )
+    print(
+        f"The dev build of peppy branch `{found.branch}` at `{found.commit}` is "
+        f"uploaded: {found.run.url}"
+    )
 
 
 # The release subcommand ------------------------------------------------------
@@ -1526,7 +1646,11 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
 def run_command(arguments: argparse.Namespace) -> None:
     match arguments.command:
         case None:
-            run(inputs_from_environment())
+            inputs = inputs_from_environment()
+            if inputs.wait_only:
+                wait_for_peppy(inputs)
+            else:
+                run(inputs)
         case "release-set":
             run_release_set(parse_release_version(arguments.tag), arguments.output)
 

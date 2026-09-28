@@ -68,18 +68,23 @@ def pull_request_event(head_branch, head_repository="Peppy-bot/nodes-hub"):
 
 
 def runs_response(*runs):
-    """A workflow runs response of (id, status) pairs."""
+    """A workflow runs response of (id, status, conclusion) triples."""
     return {
         "total_count": len(runs),
         "workflow_runs": [
             {
                 "id": run_id,
                 "status": status,
+                "conclusion": conclusion,
                 "html_url": resolve.run_url(run_id),
             }
-            for run_id, status in runs
+            for run_id, status, conclusion in runs
         ],
     }
+
+
+def ci_run(status, conclusion=None, run_id=7):
+    return resolve.CiRun(run_id, status, conclusion, resolve.run_url(run_id))
 
 
 def artifacts_response(name, *artifacts):
@@ -433,95 +438,124 @@ class PeppyBranch(unittest.TestCase):
             resolve.choose_peppy_branch(SET_NAME, {})
 
 
+def dev_build_artifacts(*artifacts):
+    """Dev build artifacts of (id, expired) pairs."""
+    return resolve.parse_artifacts(
+        artifacts_response(resolve.DEV_BUILD_ARTIFACT, *artifacts),
+        resolve.DEV_BUILD_ARTIFACT,
+    )
+
+
+def uploaded_dev_build(commit=PEPPY_BRANCH_COMMIT, run_id=7):
+    return resolve.UploadedDevBuild(
+        SET_NAME,
+        commit,
+        ci_run("completed", "success", run_id),
+        dev_build_artifacts((run_id * 10, False))[0],
+    )
+
+
+def pending_dev_build(commit=PEPPY_BRANCH_COMMIT):
+    return resolve.DevBuildPending(
+        commit, f"run `{resolve.run_url(7)}` is `in_progress`"
+    )
+
+
 class DevBuild(unittest.TestCase):
-    def artifacts(self, *artifacts):
-        return resolve.parse_artifacts(
-            artifacts_response(resolve.DEV_BUILD_ARTIFACT, *artifacts),
-            resolve.DEV_BUILD_ARTIFACT,
+    def dev_build_artifact(self, run, *artifacts):
+        return resolve.dev_build_artifact(
+            run, dev_build_artifacts(*artifacts), SET_NAME, PEPPY_BRANCH_COMMIT
         )
 
     def test_the_most_recent_run_is_the_one_of_the_highest_id(self):
         run = resolve.latest_ci_run(
-            runs_response((41, "completed"), (43, "in_progress"), (42, "completed")),
-            SET_NAME,
-            PEPPY_BRANCH_COMMIT,
+            runs_response(
+                (41, "completed", "success"),
+                (43, "in_progress", None),
+                (42, "completed", "failure"),
+            )
         )
-        self.assertEqual(run, resolve.CiRun(43, "in_progress", resolve.run_url(43)))
+        self.assertEqual(run, ci_run("in_progress", run_id=43))
 
-    def test_a_peppy_branch_of_the_set_with_no_ci_run_is_refused(self):
-        with self.assertRaises(ResolveError) as refused:
-            resolve.latest_ci_run(runs_response(), SET_NAME, PEPPY_BRANCH_COMMIT)
-        self.assertEqual(
-            str(refused.exception),
-            f"peppy branch `{SET_NAME}` has no dev build; open a pull request for it.",
-        )
-
-    def test_a_dev_head_with_no_ci_run_is_refused(self):
-        with self.assertRaises(ResolveError) as refused:
-            resolve.latest_ci_run(runs_response(), "dev", PEPPY_DEV_COMMIT)
-        self.assertIn(PEPPY_DEV_COMMIT, str(refused.exception))
+    def test_a_commit_without_a_ci_run_has_no_latest_run(self):
+        self.assertIsNone(resolve.latest_ci_run(runs_response()))
 
     def test_the_uploaded_artifact_is_the_dev_build(self):
-        run = resolve.CiRun(7, "completed", resolve.run_url(7))
-        artifact = resolve.dev_build_artifact(
-            run, self.artifacts((70, False)), SET_NAME, PEPPY_BRANCH_COMMIT
-        )
+        artifact = self.dev_build_artifact(ci_run("completed", "success"), (70, False))
         self.assertEqual(artifact.id, 70)
 
     def test_an_artifact_is_used_before_the_run_finishes(self):
-        run = resolve.CiRun(7, "in_progress", resolve.run_url(7))
-        artifact = resolve.dev_build_artifact(
-            run, self.artifacts((70, False)), SET_NAME, PEPPY_BRANCH_COMMIT
-        )
+        artifact = self.dev_build_artifact(ci_run("in_progress"), (70, False))
         self.assertEqual(artifact.id, 70)
 
     def test_a_re_run_artifact_is_used_over_the_expired_one(self):
-        run = resolve.CiRun(7, "completed", resolve.run_url(7))
-        artifact = resolve.dev_build_artifact(
-            run, self.artifacts((70, True), (71, False)), SET_NAME, PEPPY_BRANCH_COMMIT
+        artifact = self.dev_build_artifact(
+            ci_run("completed", "success"), (70, True), (71, False)
         )
         self.assertEqual(artifact.id, 71)
 
-    def test_a_run_that_has_not_finished_is_not_ready(self):
+    def test_a_run_that_has_not_finished_is_pending(self):
         url = resolve.run_url(7)
-        for artifacts in ((), ((70, True),)):
-            with self.subTest(artifacts=artifacts):
-                with self.assertRaises(ResolveError) as refused:
-                    resolve.dev_build_artifact(
-                        resolve.CiRun(7, "in_progress", url),
-                        self.artifacts(*artifacts),
-                        SET_NAME,
-                        PEPPY_BRANCH_COMMIT,
+        for status in ("queued", "in_progress"):
+            for artifacts in ((), ((70, True),)):
+                with self.subTest(status=status, artifacts=artifacts):
+                    pending = self.dev_build_artifact(ci_run(status), *artifacts)
+                    self.assertEqual(
+                        pending,
+                        resolve.DevBuildPending(
+                            PEPPY_BRANCH_COMMIT, f"run `{url}` is `{status}`"
+                        ),
                     )
+                    self.assertEqual(
+                        pending.not_ready(),
+                        f"peppy dev build for `{PEPPY_BRANCH_COMMIT}` is not ready "
+                        f"(run `{url}` is `{status}`)",
+                    )
+
+    def test_a_cancelled_run_is_pending(self):
+        # A push to the branch cancels the run of the commit before it, and a
+        # re-run of the cancelled run uploads the build.
+        pending = self.dev_build_artifact(ci_run("completed", "cancelled"))
+        self.assertEqual(
+            pending,
+            resolve.DevBuildPending(
+                PEPPY_BRANCH_COMMIT, f"run `{resolve.run_url(7)}` was cancelled"
+            ),
+        )
+
+    def test_a_head_without_a_ci_run_is_pending(self):
+        for branch, commit, reason in (
+            (
+                SET_NAME,
+                PEPPY_BRANCH_COMMIT,
+                (
+                    f"no CI run exists yet for the head of `{SET_NAME}`; open a "
+                    "pull request for it if it has none"
+                ),
+            ),
+            ("dev", PEPPY_DEV_COMMIT, "no CI run exists yet for the head of `dev`"),
+        ):
+            with self.subTest(branch=branch):
                 self.assertEqual(
-                    str(refused.exception),
-                    f"peppy dev build for `{PEPPY_BRANCH_COMMIT}` is not ready (run "
-                    f"`{url}` is `in_progress`); re-run this job when it finishes.",
+                    resolve.dev_build_artifact(None, [], branch, commit),
+                    resolve.DevBuildPending(commit, reason),
                 )
 
     def test_a_finished_run_without_the_artifact_produced_no_dev_build(self):
         url = resolve.run_url(7)
-        with self.assertRaises(ResolveError) as refused:
-            resolve.dev_build_artifact(
-                resolve.CiRun(7, "completed", url),
-                self.artifacts(),
-                SET_NAME,
-                PEPPY_BRANCH_COMMIT,
-            )
-        self.assertEqual(
-            str(refused.exception),
-            f"peppy CI run `{url}` produced no dev build; fix peppy CI first.",
-        )
+        for conclusion in ("success", "failure", "timed_out"):
+            with self.subTest(conclusion=conclusion):
+                with self.assertRaises(ResolveError) as refused:
+                    self.dev_build_artifact(ci_run("completed", conclusion))
+                self.assertEqual(
+                    str(refused.exception),
+                    f"peppy CI run `{url}` produced no dev build; fix peppy CI first.",
+                )
 
     def test_an_expired_artifact_is_refused_with_the_way_to_rebuild_it(self):
         url = resolve.run_url(7)
         with self.assertRaises(ResolveError) as refused:
-            resolve.dev_build_artifact(
-                resolve.CiRun(7, "completed", url),
-                self.artifacts((70, True)),
-                SET_NAME,
-                PEPPY_BRANCH_COMMIT,
-            )
+            self.dev_build_artifact(ci_run("completed", "success"), (70, True))
         self.assertEqual(
             str(refused.exception),
             f"the peppy dev build for `{PEPPY_BRANCH_COMMIT}` expired; re-run peppy "
@@ -535,21 +569,38 @@ class DevBuild(unittest.TestCase):
             resolve.parse_artifacts(response, resolve.DEV_BUILD_ARTIFACT), []
         )
 
-    def test_the_dev_build_names_the_peppy_branch_and_commit_it_is_the_build_of(
-        self,
-    ):
-        peppy_heads = {SET_NAME: PEPPY_BRANCH_COMMIT, "dev": PEPPY_DEV_COMMIT}
-        with (
-            tempfile.TemporaryDirectory() as directory,
-            patch.object(resolve, "ls_remote_heads", return_value=peppy_heads),
+    def peppy_ci(self, heads, runs_by_commit, artifacts_by_run):
+        """Stand-ins for the reads of peppy: the branch heads of each look in
+        turn, the CI runs of each commit and the artifacts of each run."""
+        return (
+            patch.object(resolve, "ls_remote_heads", side_effect=heads),
             patch.object(
                 resolve,
                 "github_get_json",
-                return_value=runs_response((7, "completed")),
+                side_effect=lambda path, query, token: runs_by_commit[
+                    query["head_sha"]
+                ],
             ),
             patch.object(
-                resolve, "run_artifacts", return_value=self.artifacts((70, False))
+                resolve,
+                "run_artifacts",
+                side_effect=lambda run_id, name, token: artifacts_by_run[run_id],
             ),
+        )
+
+    def test_the_dev_build_names_the_peppy_branch_and_commit_it_is_the_build_of(
+        self,
+    ):
+        heads, runs, artifacts = self.peppy_ci(
+            [{SET_NAME: PEPPY_BRANCH_COMMIT, "dev": PEPPY_DEV_COMMIT}],
+            {PEPPY_BRANCH_COMMIT: runs_response((7, "completed", "success"))},
+            {7: dev_build_artifacts((70, False))},
+        )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            heads,
+            runs,
+            artifacts,
             patch.object(
                 resolve,
                 "download_artifact_archive",
@@ -561,6 +612,217 @@ class DevBuild(unittest.TestCase):
         self.assertEqual(fetched.build.ref, SET_NAME)
         self.assertEqual(fetched.build.commit, PEPPY_BRANCH_COMMIT)
         self.assertEqual(fetched.build.source, resolve.run_url(7))
+
+    def test_a_job_that_installs_a_pending_dev_build_fails_with_the_way_on(self):
+        heads, runs, artifacts = self.peppy_ci(
+            [{SET_NAME: PEPPY_BRANCH_COMMIT, "dev": PEPPY_DEV_COMMIT}],
+            {PEPPY_BRANCH_COMMIT: runs_response((7, "in_progress", None))},
+            {7: []},
+        )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            heads,
+            runs,
+            artifacts,
+            patch.object(
+                resolve,
+                "download_artifact_archive",
+                side_effect=AssertionError("downloaded"),
+            ),
+            self.assertRaises(ResolveError) as refused,
+        ):
+            resolve.fetch_dev_build(SET_NAME, "token", Path(directory))
+        self.assertEqual(
+            str(refused.exception),
+            f"peppy dev build for `{PEPPY_BRANCH_COMMIT}` is not ready (run "
+            f"`{resolve.run_url(7)}` is `in_progress`); re-run this job when it "
+            "is uploaded.",
+        )
+
+    def test_a_look_follows_a_push_to_the_peppy_branch(self):
+        # The push of `b…` cancels the run of `a…`: the next look reads the
+        # new head and finds the build of its run.
+        pushed = "b" * 40
+        heads, runs, artifacts = self.peppy_ci(
+            [
+                {SET_NAME: PEPPY_BRANCH_COMMIT, "dev": PEPPY_DEV_COMMIT},
+                {SET_NAME: pushed, "dev": PEPPY_DEV_COMMIT},
+            ],
+            {
+                PEPPY_BRANCH_COMMIT: runs_response((7, "completed", "cancelled")),
+                pushed: runs_response((8, "in_progress", None)),
+            },
+            {7: [], 8: dev_build_artifacts((80, False))},
+        )
+        with heads, runs, artifacts:
+            first = resolve.look_for_dev_build(SET_NAME, "token")
+            second = resolve.look_for_dev_build(SET_NAME, "token")
+        self.assertIsInstance(first, resolve.DevBuildPending)
+        self.assertEqual(first.commit, PEPPY_BRANCH_COMMIT)
+        self.assertEqual(
+            second,
+            resolve.UploadedDevBuild(
+                SET_NAME,
+                pushed,
+                ci_run("in_progress", run_id=8),
+                dev_build_artifacts((80, False))[0],
+            ),
+        )
+
+    def test_a_head_without_a_ci_run_reads_no_artifacts(self):
+        heads, runs, artifacts = self.peppy_ci(
+            [{"dev": PEPPY_DEV_COMMIT}], {PEPPY_DEV_COMMIT: runs_response()}, {}
+        )
+        with heads, runs, artifacts:
+            found = resolve.look_for_dev_build(None, "token")
+        self.assertEqual(
+            found,
+            resolve.DevBuildPending(
+                PEPPY_DEV_COMMIT, "no CI run exists yet for the head of `dev`"
+            ),
+        )
+
+
+class Looks:
+    """The results of each look for the dev build in turn: a result, or an
+    error the look raises. It counts the looks."""
+
+    def __init__(self, *results):
+        self.results = list(results)
+        self.count = 0
+
+    def __call__(self):
+        result = self.results[min(self.count, len(self.results) - 1)]
+        self.count += 1
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+class WaitForDevBuild(unittest.TestCase):
+    """The wait of a `wait-only` job. The sleeps are recorded, not slept."""
+
+    def wait(self, looks):
+        sleeps = []
+        output = io.StringIO()
+        with redirect_stdout(output):
+            found = resolve.wait_for_dev_build(looks, sleeps.append)
+        return found, sleeps, output.getvalue()
+
+    def test_an_uploaded_build_ends_the_wait_at_once(self):
+        found, sleeps, log = self.wait(Looks(uploaded_dev_build()))
+        self.assertEqual(found, uploaded_dev_build())
+        self.assertEqual(sleeps, [])
+        self.assertEqual(log, "")
+
+    def test_the_wait_looks_again_until_the_build_is_uploaded(self):
+        looks = Looks(pending_dev_build(), pending_dev_build(), uploaded_dev_build())
+        found, sleeps, log = self.wait(looks)
+        self.assertEqual(found, uploaded_dev_build())
+        self.assertEqual(looks.count, 3)
+        self.assertEqual(sleeps, [resolve.DEV_BUILD_POLL_SECONDS] * 2)
+        waiting = (
+            f"{pending_dev_build().not_ready()}; the next look is in "
+            f"{resolve.DEV_BUILD_POLL_SECONDS} s."
+        )
+        self.assertEqual(log.splitlines(), [waiting, waiting])
+
+    def test_the_wait_stops_after_its_limit(self):
+        looks = Looks(pending_dev_build())
+        sleeps = []
+        with (
+            redirect_stdout(io.StringIO()),
+            self.assertRaises(ResolveError) as refused,
+        ):
+            resolve.wait_for_dev_build(looks, sleeps.append)
+        self.assertEqual(sum(sleeps), resolve.DEV_BUILD_WAIT_SECONDS)
+        self.assertEqual(looks.count, len(sleeps) + 1)
+        self.assertEqual(
+            str(refused.exception),
+            f"{pending_dev_build().not_ready()} after 20 minutes; re-run this job "
+            "when it is uploaded.",
+        )
+
+    def test_a_build_that_never_comes_stops_the_wait_at_once(self):
+        never = ResolveError(
+            "peppy CI run `x` produced no dev build; fix peppy CI first."
+        )
+        looks = Looks(pending_dev_build(), never, uploaded_dev_build())
+        sleeps = []
+        with (
+            redirect_stdout(io.StringIO()),
+            self.assertRaises(ResolveError) as refused,
+        ):
+            resolve.wait_for_dev_build(looks, sleeps.append)
+        self.assertIs(refused.exception, never)
+        self.assertEqual(looks.count, 2)
+        self.assertEqual(sleeps, [resolve.DEV_BUILD_POLL_SECONDS])
+
+
+def action_inputs(trigger=None, explicit_set=None, release_run_id=None, wait_only=True):
+    return resolve.ActionInputs(
+        hub_path="/runner/work/nodes-hub/nodes-hub",
+        explicit_set=explicit_set,
+        release_run_id=release_run_id,
+        github_token="token",
+        private_key_loaded=False,
+        wait_only=wait_only,
+        under_test=NODES_HUB,
+        trigger=trigger
+        or resolve.parse_trigger("pull_request", pull_request_event(SET_NAME)),
+        machine="x86_64",
+        runner_temp=Path("/runner/temp"),
+    )
+
+
+class WaitForPeppy(unittest.TestCase):
+    def wait_for_peppy(self, inputs, found=None):
+        """What the wait of `inputs` looks for, and what it prints. The look
+        finds `found`, the uploaded build when None."""
+        looked_for = []
+
+        def look(set_name, token):
+            looked_for.append((set_name, token))
+            return found or uploaded_dev_build()
+
+        output = io.StringIO()
+        with (
+            patch.object(resolve, "look_for_dev_build", side_effect=look),
+            redirect_stdout(output),
+        ):
+            resolve.wait_for_peppy(inputs, sleep=self.fail)
+        return looked_for, output.getvalue()
+
+    def test_the_wait_looks_for_the_dev_build_of_the_peppy_branch_of_the_set(self):
+        looked_for, log = self.wait_for_peppy(action_inputs())
+        self.assertEqual(looked_for, [(SET_NAME, "token")])
+        self.assertEqual(
+            log,
+            f"The dev build of peppy branch `{SET_NAME}` at `{PEPPY_BRANCH_COMMIT}` "
+            f"is uploaded: {resolve.run_url(7)}\n",
+        )
+
+    def test_a_job_given_an_explicit_set_waits_for_the_dev_build_of_dev(self):
+        explicit_set = resolve.parse_explicit_set(explicit_set_text())
+        looked_for, _ = self.wait_for_peppy(action_inputs(explicit_set=explicit_set))
+        self.assertEqual(looked_for, [(None, "token")])
+
+    def test_a_job_that_installs_no_dev_build_waits_for_nothing(self):
+        fork = resolve.parse_trigger(
+            "pull_request", pull_request_event(SET_NAME, "someone/nodes-hub")
+        )
+        for inputs, kind in (
+            (action_inputs(trigger=fork), "latest-release"),
+            (action_inputs(release_run_id=123), "release-run"),
+        ):
+            with self.subTest(kind=kind):
+                looked_for, log = self.wait_for_peppy(inputs)
+                self.assertEqual(looked_for, [])
+                self.assertEqual(
+                    log,
+                    f"Nothing to wait for: this job installs a `{kind}` peppy, not "
+                    "a dev build.\n",
+                )
 
 
 class ReleaseRun(unittest.TestCase):
@@ -1045,6 +1307,65 @@ class ReleaseCommands(unittest.TestCase):
         self.assertIsNone(resolve.parse_arguments([]).command)
 
 
+class ActionCommand(unittest.TestCase):
+    def environment(self, directory, wait_only):
+        """The variables the runner and action.yml give the script."""
+        event = Path(directory) / "event.json"
+        event.write_text(json.dumps(pull_request_event(SET_NAME)))
+        return patch.dict(
+            os.environ,
+            {
+                "INPUT_HUB_PATH": "/runner/work/nodes-hub/nodes-hub",
+                "INPUT_SET": "",
+                "INPUT_PEPPY_RUN_ID": "",
+                "INPUT_GITHUB_TOKEN": "token",
+                "INPUT_WAIT_ONLY": wait_only,
+                "PRIVATE_HUB_KEY_LOADED": "false",
+                "GITHUB_REPOSITORY": "Peppy-bot/nodes-hub",
+                "GITHUB_EVENT_NAME": "pull_request",
+                "GITHUB_EVENT_PATH": str(event),
+                "RUNNER_TEMP": directory,
+            },
+        )
+
+    def test_wait_only_is_a_flag(self):
+        for text, wait_only in (("true", True), ("false", False)):
+            with (
+                self.subTest(text=text),
+                tempfile.TemporaryDirectory() as directory,
+                self.environment(directory, text),
+            ):
+                self.assertIs(resolve.inputs_from_environment().wait_only, wait_only)
+
+    def test_a_wait_only_that_is_not_a_flag_is_refused(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            self.environment(directory, "yes"),
+            self.assertRaises(ResolveError) as refused,
+        ):
+            resolve.inputs_from_environment()
+        self.assertEqual(
+            str(refused.exception), "`wait-only` must be `true` or `false`, got `yes`"
+        )
+
+    def test_a_wait_only_job_waits_and_installs_nothing(self):
+        for wait_only, called, not_called in (
+            (True, "wait_for_peppy", "run"),
+            (False, "run", "wait_for_peppy"),
+        ):
+            inputs = action_inputs(wait_only=wait_only)
+            with (
+                self.subTest(wait_only=wait_only),
+                patch.object(resolve, "inputs_from_environment", return_value=inputs),
+                patch.object(resolve, called) as expected,
+                patch.object(
+                    resolve, not_called, side_effect=AssertionError(not_called)
+                ),
+            ):
+                self.assertEqual(resolve.main([]), 0)
+                expected.assert_called_once_with(inputs)
+
+
 class JobFiles(unittest.TestCase):
     HUB_PATH = "/runner/work/nodes-hub/nodes-hub"
 
@@ -1387,6 +1708,22 @@ class RepositoryFacts(unittest.TestCase):
         )
         self.assertIn("path: ${{ steps.resolve.outputs.record }}", lines)
         self.assertIn("if-no-files-found: error", lines)
+
+    def test_the_action_names_the_wait_of_the_script(self):
+        action = (ACTION_DIR / "action.yml").read_text()
+        for constant in ("DEV_BUILD_POLL_SECONDS", "DEV_BUILD_WAIT_SECONDS"):
+            with self.subTest(constant=constant):
+                self.assertTrue(hasattr(resolve, constant))
+                self.assertIn(constant, action)
+
+    def test_a_wait_only_job_uploads_no_set_record(self):
+        # The wait writes no record, and the upload fails without one.
+        lines = [
+            line.strip()
+            for line in (ACTION_DIR / "action.yml").read_text().splitlines()
+        ]
+        step = lines.index("- name: Record the set this job runs")
+        self.assertEqual(lines[step + 1], "if: inputs.wait-only != 'true'")
 
     def test_the_action_gives_the_script_every_variable_it_reads(self):
         action = (ACTION_DIR / "action.yml").read_text()
