@@ -358,8 +358,8 @@ async fn a_real_client_drives_action_backed_tasks() {
         assert_eq!(result["structuredContent"], json!({ "frames": 120 }));
 
         // Cancellation walk: tasks/cancel is forwarded cooperatively, and
-        // the goal that ends cancelled completes the task with the tool
-        // error that carries the provider's result.
+        // the goal that ends cancelled ends the task `cancelled`, its status
+        // message carrying the provider's result.
         let task_id = start_record_episode(&client, "wait_for_cancel").await;
         poll_task_until(&client, &task_id, "input_required", |task| {
             task.status() == TaskStatus::InputRequired

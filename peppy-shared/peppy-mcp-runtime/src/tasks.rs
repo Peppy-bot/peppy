@@ -25,9 +25,9 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionExit {
     /// The Peppy action ended cancelled, whoever cancelled it: the client,
-    /// the bridge, or the provider on its own. The call and the task both
-    /// answer with the same tool error, which says the goal was cancelled
-    /// and carries the provider's result.
+    /// the bridge, or the provider on its own. A call answers with a tool
+    /// error that carries the provider's result; a task ends `cancelled`,
+    /// and its status message carries the reason and that result.
     Cancelled(CancelledGoal),
     /// The goal could not run to completion (rejected, abandoned, expired,
     /// or a transport failure); an MCP task settles as `failed` with this
