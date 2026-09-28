@@ -1,4 +1,5 @@
 use super::super::error::{Error, Result};
+use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync};
 use super::lima;
 use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
 use std::path::{Path, PathBuf};
@@ -19,6 +20,29 @@ const LIMA_HOST_GATEWAY: &str = "host.lima.internal";
 
 /// Apptainer's env spelling of its hidden `--tmpdir` flag.
 const APPTAINER_TMPDIR_ENV: &str = "APPTAINER_TMPDIR";
+
+/// The flag that binds the host's NVIDIA driver into a container.
+const NV_FLAG: &str = "--nv";
+
+/// Whether `flags` turn on apptainer's `--nv`. As in apptainer's flag parser,
+/// the flag is `--nv` or `--nv=<bool>`, and the last one wins.
+fn passes_nv(flags: &[String]) -> bool {
+    flags
+        .iter()
+        .rev()
+        .find_map(|flag| nv_flag_value(flag))
+        .unwrap_or(false)
+}
+
+/// The value that `flag` gives `--nv`, or `None` when it is another flag. The
+/// values read as true are the ones apptainer's flag parser reads as true.
+fn nv_flag_value(flag: &str) -> Option<bool> {
+    if flag == NV_FLAG {
+        return Some(true);
+    }
+    let value = flag.strip_prefix(NV_FLAG)?.strip_prefix('=')?;
+    Some(matches!(value, "1" | "t" | "T" | "true" | "TRUE" | "True"))
+}
 
 /// Scratch directory handed to apptainer as its `--tmpdir`.
 ///
@@ -101,6 +125,11 @@ pub(crate) enum Backend {
         /// The Lima backend has no counterpart: apptainer runs inside the
         /// guest, where it reads the guest user's auth files, not this host's.
         registry_auth: RegistryAuth,
+        /// Directory of the host's NVIDIA L4T container manifest, whose shared
+        /// libraries a `--nv` command gets; see
+        /// [`l4t_manifest`](super::l4t_manifest). The Lima backend has no
+        /// counterpart: its guest is a VM on a Mac, never a Jetson.
+        l4t_manifest_dir: PathBuf,
     },
     /// macOS: route commands through a Lima VM.
     Lima {
@@ -477,6 +506,7 @@ impl Apptainer {
                 apptainer_bin,
                 tmp_dir: apptainer_scratch_dir(),
                 registry_auth: RegistryAuth::from_env()?,
+                l4t_manifest_dir: PathBuf::from(L4T_MANIFEST_DIR),
             }
         };
 
@@ -921,6 +951,32 @@ impl Apptainer {
             Backend::Native { registry_auth, .. } => registry_auth.prepare().map(Some),
             Backend::Lima { .. } => Ok(None),
         }
+    }
+
+    /// Puts the shared libraries of the host's NVIDIA L4T container manifest
+    /// into the `--nv` library list of the apptainer install, as a command
+    /// that passes `--nv` needs them on a Jetson; see
+    /// [`l4t_manifest`](super::l4t_manifest). Does nothing on a host without
+    /// the manifest, and under Lima.
+    fn prepare_nv_library_list(&self) -> Result<()> {
+        let Backend::Native {
+            l4t_manifest_dir, ..
+        } = &self.backend
+        else {
+            return Ok(());
+        };
+        let nvliblist = self.apptainer_dir.join(NVLIBLIST_PATH);
+        if let NvliblistSync::Updated { libraries } =
+            l4t_manifest::sync_nvliblist(l4t_manifest_dir, &nvliblist)?
+        {
+            tracing::info!(
+                "Put the {libraries} shared libraries of the NVIDIA L4T container manifest {} \
+                 into the --nv library list {}",
+                l4t_manifest_dir.display(),
+                nvliblist.display()
+            );
+        }
+        Ok(())
     }
 
     /// Translate a string argument: if it is a URI, return as-is; otherwise
@@ -1494,7 +1550,15 @@ impl<'a> ApptainerCommand<'a> {
     /// pointed at the sanitized registry auth file on the native backend, so
     /// it fails here, before spawning, when the user's auth file cannot be
     /// read or parsed.
+    ///
+    /// A command that passes `--nv` first gets the shared libraries of the
+    /// host's NVIDIA L4T container manifest into the `--nv` library list (see
+    /// [`l4t_manifest`](super::l4t_manifest)), so it also fails here when the
+    /// manifest cannot be read or the list cannot be written.
     fn assemble_command(&self) -> Result<Command> {
+        if passes_nv(&self.flags) {
+            self.facade.prepare_nv_library_list()?;
+        }
         let args = self.build_args()?;
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         // The pgid path comes from `lima::guest_pgid_path`, i.e. it is already a

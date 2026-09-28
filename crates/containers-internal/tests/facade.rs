@@ -231,6 +231,98 @@ fn into_std_command_produces_runnable_command() {
     );
 }
 
+/// Directory of the NVIDIA L4T container manifest; only a Jetson has it.
+#[cfg(target_os = "linux")]
+const L4T_MANIFEST_DIR: &str = "/etc/nvidia-container-runtime/host-files-for-container.d";
+
+/// The file names of the L4T manifest's `lib` and `sym` entries that the
+/// host's `ldconfig -p` lists: the names apptainer's `--nv` can resolve.
+#[cfg(target_os = "linux")]
+fn l4t_libraries_the_host_loader_knows() -> Vec<String> {
+    let ld_cache = std::process::Command::new("/sbin/ldconfig")
+        .arg("-p")
+        .output()
+        .expect("ldconfig -p should run");
+    let ld_cache = String::from_utf8_lossy(&ld_cache.stdout);
+    let known: std::collections::HashSet<&str> = ld_cache
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+
+    let mut names = Vec::new();
+    for manifest in fs::read_dir(L4T_MANIFEST_DIR).expect("read the L4T manifest dir") {
+        let manifest = manifest.expect("manifest dir entry").path();
+        if manifest
+            .extension()
+            .is_none_or(|extension| extension != "csv")
+        {
+            continue;
+        }
+        let text = fs::read_to_string(&manifest).expect("read an L4T manifest file");
+        for line in text.lines() {
+            let Some((kind, path)) = line.split_once(',') else {
+                continue;
+            };
+            let Some(name) = std::path::Path::new(path.trim()).file_name() else {
+                continue;
+            };
+            let name = name.to_string_lossy().into_owned();
+            if matches!(kind.trim(), "lib" | "sym")
+                && known.contains(name.as_str())
+                && !names.contains(&name)
+            {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// Integration test, on an NVIDIA Jetson only: a `--nv` command gets every
+/// shared library of the host's L4T container manifest that the host's loader
+/// knows in the container's `/.singularity.d/libs`, where the container's
+/// loader finds it. The CUDA driver of the L4T release opens some of them by
+/// name when it creates a context. Skips on every other host.
+#[cfg(target_os = "linux")]
+#[test]
+fn nv_exec_on_a_jetson_binds_the_l4t_manifest_libraries() {
+    if !std::path::Path::new(L4T_MANIFEST_DIR).is_dir() {
+        eprintln!("SKIPPING: not an NVIDIA Jetson (no {L4T_MANIFEST_DIR})");
+        return;
+    }
+    let Some((facade, _tmp_dir, sif_path)) = build_alpine_container() else {
+        return;
+    };
+    let expected = l4t_libraries_the_host_loader_knows();
+    assert!(
+        !expected.is_empty(),
+        "the host's loader knows no library of the L4T manifest in {L4T_MANIFEST_DIR}"
+    );
+
+    let output = facade
+        .exec(&sif_path.to_string_lossy(), &["ls", "/.singularity.d/libs"])
+        .raw_flag("--nv")
+        .output()
+        .expect("apptainer exec --nv should run");
+    assert!(
+        output.status.success(),
+        "apptainer exec --nv should succeed (exit status: {})\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let bound: std::collections::HashSet<&str> = stdout.lines().collect();
+    let missing: Vec<&String> = expected
+        .iter()
+        .filter(|name| !bound.contains(name.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "--nv did not bind these L4T manifest libraries into /.singularity.d/libs: {missing:?}"
+    );
+}
+
 /// Polls `cond` until it returns `true` or `timeout` elapses. Returns the final
 /// value of `cond`.
 #[cfg(target_os = "macos")]

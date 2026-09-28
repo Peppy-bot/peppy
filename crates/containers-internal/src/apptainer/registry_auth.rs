@@ -22,15 +22,14 @@
 //! apptainer would read into a peppy-owned file without those two OAuth
 //! entries, and points apptainer at the copy through `APPTAINER_AUTH_FILE`.
 
+use super::atomic_file::replace_file;
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Env spelling of apptainer's `--authfile` flag. An explicit `--authfile` in a
 /// node's `apptainer_build_extra_args` still takes precedence over it.
@@ -259,8 +258,6 @@ fn read_registry_credentials(path: &Path) -> Result<SanitizedCredentials> {
 /// renamed over `path`, so a concurrent build never reads a partial file and
 /// the secrets are never readable under a wider mode.
 fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
-
     let dir = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -275,29 +272,7 @@ fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         ));
     }
     fs::set_permissions(dir, fs::Permissions::from_mode(SANITIZED_DIR_MODE))?;
-
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
-    })?;
-    let mut staging_name = file_name.to_os_string();
-    staging_name.push(format!(
-        ".{}.{}.tmp",
-        std::process::id(),
-        WRITE_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let staging = dir.join(staging_name);
-
-    let written = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(SANITIZED_FILE_MODE)
-        .open(&staging)
-        .and_then(|mut file| file.write_all(contents))
-        .and_then(|()| fs::rename(&staging, path));
-    if written.is_err() {
-        let _ = fs::remove_file(&staging);
-    }
-    written
+    replace_file(path, contents, SANITIZED_FILE_MODE)
 }
 
 #[cfg(test)]
