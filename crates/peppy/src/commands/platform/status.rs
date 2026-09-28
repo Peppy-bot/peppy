@@ -8,6 +8,8 @@ use daemon::control::{self as daemon_control, PokeOutcome};
 use daemon_config::consts::PeppyDirs;
 
 use crate::commands::Command;
+use crate::commands::platform::peers::peer_status_label;
+use crate::commands::platform::router::pending_change_lines;
 use crate::commands::platform::{PlatformSession, date_of, federation_is_managed};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -240,14 +242,18 @@ fn human_document(
                     .map(|a| format!(" at {}:{}", a.host, a.port))
                     .unwrap_or_default();
                 out.push_str(&format!("  router    : {}{address}\n", report.router.phase));
-                if report.router.pending_changes {
-                    out.push_str("  pending   : changes wait for the router's next restart\n");
+                if report.router.phase == "stopped" {
+                    out.push_str("              start it with `peppy platform router start`\n");
+                }
+                for line in pending_change_lines(&report.router) {
+                    out.push_str(&format!("  pending   : {line}\n"));
                 }
                 out.push_str(&format!(
                     "  this peer : {}\n",
                     report
                         .peer_status
                         .as_deref()
+                        .map(peer_status_label)
                         .unwrap_or("not listed (removed?)")
                 ));
             }

@@ -9,15 +9,18 @@ use std::sync::Arc;
 use daemon_config::consts::PeppyDirs;
 
 use crate::commands::Command;
+use crate::commands::platform::router::restart_command;
+use crate::commands::platform::unenroll::removal_report;
 use crate::commands::platform::{
     FederationPokeAction, PlatformSession, confirm_restart, date_of, external_router_note,
-    federation_is_managed, poke_federation_and_report, select,
+    federation_is_managed, peers, poke_federation_and_report, select,
 };
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use auth::client::RouterPeer;
 use auth::csr::{self, PeerName};
 use auth::enrollment::{self, EnrollmentBundle};
-use auth::{client, storage};
+use auth::{AuthError, Problem, ProblemKind, client, storage};
 
 pub struct EnrollCommand {
     pub api_url: Option<String>,
@@ -83,14 +86,19 @@ impl Command for EnrollCommand {
         }
 
         let identity = csr::generate_peer_identity(&name)?;
-        let enrolled = client::enroll_peer(
+        let enrolled = match client::enroll_peer(
             &session.http,
             &session.api_url,
             &mut cred,
             &selection.workspace.id,
             &selection.project.id,
             &identity.csr_pem,
-        )?;
+        ) {
+            Ok(enrolled) => enrolled,
+            Err(error) => {
+                return Err(explain_refusal(&session, &mut cred, &selection, error));
+            }
+        };
         let bundle = EnrollmentBundle::from_platform(
             &session.api_url,
             &selection.workspace.id,
@@ -124,10 +132,7 @@ impl Command for EnrollCommand {
                 &old.document.project_id,
                 &old.document.peer_id,
             ) {
-                Ok(_) => println!(
-                    "Removed the previous peer {} ({}); the platform drops it at the router's next restart.",
-                    old.document.peer_name, old.document.peer_id
-                ),
+                Ok(removal) => print!("{}", removal_report(&old.document, &removal)),
                 Err(e) => println!(
                     "Warning: could not remove the previous peer {} ({e}); remove it in the web app.",
                     old.document.peer_id
@@ -140,6 +145,85 @@ impl Command for EnrollCommand {
             return Ok(());
         }
         poke_federation_and_report(&session.dirs, FederationPokeAction::Enroll)
+    }
+}
+
+/// Puts a refused enrollment into words the person can act on. The refusals
+/// with a remedy in the CLI are matched on the kind of the problem; every
+/// other refusal prints as the platform sent it.
+fn explain_refusal(
+    session: &PlatformSession,
+    cred: &mut auth::Credential,
+    selection: &select::Selection,
+    error: AuthError,
+) -> Error {
+    let AuthError::Problem(problem) = &error else {
+        return Error::AuthEngine(error);
+    };
+    match problem.kind {
+        ProblemKind::PeerLimitReached => {
+            // Best effort: the refusal is the answer, the list only explains it.
+            let peers = client::list_peers(
+                &session.http,
+                &session.api_url,
+                cred,
+                &selection.workspace.id,
+                &selection.project.id,
+            )
+            .ok();
+            Error::Auth(full_router_message(
+                problem,
+                peers.as_deref(),
+                &selection.workspace.id,
+                &selection.project.id,
+            ))
+        }
+        ProblemKind::ProvisionerUnavailable => Error::Auth(try_again_message(problem)),
+        _ => Error::AuthEngine(error),
+    }
+}
+
+/// The message for a router that admits no more peers: the refusal, the peers
+/// that hold the slots, and the remedy. A removed peer keeps its slot until the
+/// router restarts, so when one waits the remedy is the restart.
+fn full_router_message(
+    problem: &Problem,
+    peers: Option<&[RouterPeer]>,
+    workspace_id: &str,
+    project_id: &str,
+) -> String {
+    let mut out = problem.to_string();
+    let Some(peers) = peers else {
+        return out;
+    };
+    out.push_str("\n\n");
+    out.push_str(&peers::render_human(project_id, peers, None));
+    let waiting = peers
+        .iter()
+        .filter(|peer| peer.status == "pending_restart")
+        .count();
+    out.push('\n');
+    if waiting == 0 {
+        out.push_str(
+            "Each slot is in use. Remove a peer (`peppy platform unenroll` on its machine), \
+             then restart the router.",
+        );
+        return out;
+    }
+    out.push_str(&format!(
+        "{waiting} removed peer(s) keep a slot until the router restarts. To free the slot:\n    {}",
+        restart_command(workspace_id, project_id)
+    ));
+    out
+}
+
+/// The message for a certificate the platform could not sign in time, with the
+/// delay it asked for. The enrollment is not sent again by the CLI: the call is
+/// not idempotent.
+fn try_again_message(problem: &Problem) -> String {
+    match problem.retry_after_secs {
+        Some(secs) => format!("{problem}. Run the command again in {secs} seconds."),
+        None => format!("{problem}. Run the command again in a moment."),
     }
 }
 
@@ -190,5 +274,88 @@ mod tests {
         let err = peer_name(None, None, None).unwrap_err();
         assert!(err.to_string().contains("--name"), "{err}");
         assert!(peer_name(Some(" bad "), None, None).is_err());
+    }
+
+    fn problem(kind: ProblemKind, retry_after_secs: Option<u64>) -> Problem {
+        Problem {
+            kind,
+            status: 422,
+            title: "Peer limit reached".into(),
+            detail: None,
+            retry_after_secs,
+        }
+    }
+
+    fn peer(id: &str, name: &str, status: &str) -> RouterPeer {
+        RouterPeer {
+            id: id.into(),
+            name: name.into(),
+            certificate_cn: name.into(),
+            status: status.into(),
+            certificate_expires_at: "2027-01-01T00:00:00Z".parse().unwrap(),
+            created_at: "2026-10-03T00:00:00Z".parse().unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_full_router_with_a_removed_peer_names_the_restart() {
+        let message = full_router_message(
+            &problem(ProblemKind::PeerLimitReached, None),
+            Some(&[
+                peer("peer-1", "arm", "connected"),
+                peer("peer-2", "bench", "pending_restart"),
+            ]),
+            "ws-1",
+            "p-1",
+        );
+        assert!(
+            message.starts_with("Peer limit reached\n\nProject p-1\n"),
+            "{message}"
+        );
+        assert!(message.contains("bench"), "{message}");
+        assert!(
+            message.ends_with(
+                "1 removed peer(s) keep a slot until the router restarts. To free the slot:\n    \
+                 peppy platform router restart --workspace ws-1 --project p-1"
+            ),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_full_router_with_no_removed_peer_asks_for_a_removal() {
+        let message = full_router_message(
+            &problem(ProblemKind::PeerLimitReached, None),
+            Some(&[peer("peer-1", "arm", "connected")]),
+            "ws-1",
+            "p-1",
+        );
+        assert!(message.contains("Each slot is in use"), "{message}");
+        assert!(!message.contains("router restart --workspace"), "{message}");
+    }
+
+    #[test]
+    fn a_full_router_whose_peers_cannot_be_listed_prints_the_refusal_alone() {
+        assert_eq!(
+            full_router_message(
+                &problem(ProblemKind::PeerLimitReached, None),
+                None,
+                "ws-1",
+                "p-1"
+            ),
+            "Peer limit reached"
+        );
+    }
+
+    #[test]
+    fn the_try_again_message_gives_the_delay_the_platform_asked_for() {
+        assert_eq!(
+            try_again_message(&problem(ProblemKind::ProvisionerUnavailable, Some(5))),
+            "Peer limit reached. Run the command again in 5 seconds."
+        );
+        assert_eq!(
+            try_again_message(&problem(ProblemKind::ProvisionerUnavailable, None)),
+            "Peer limit reached. Run the command again in a moment."
+        );
     }
 }

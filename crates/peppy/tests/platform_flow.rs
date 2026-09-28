@@ -28,6 +28,7 @@ use peppy::commands::platform::login::LoginCommand;
 use peppy::commands::platform::logout::LogoutCommand;
 use peppy::commands::platform::peers::PeersCommand;
 use peppy::commands::platform::projects::ProjectsCommand;
+use peppy::commands::platform::router::{RouterAction, RouterCommand, RouterCommands};
 use peppy::commands::platform::status::StatusCommand;
 use peppy::commands::platform::unenroll::UnenrollCommand;
 use peppy::commands::platform::whoami::WhoamiCommand;
@@ -226,6 +227,7 @@ fn write_enrollment(dir: &tempfile::TempDir, peer_id: &str, zid: &str) {
         peer_key_pem: storage::secret("key".into()),
         peer_certificate_pem: "cert".into(),
         trust_anchor_pem: "ca".into(),
+        chain_pem: "chain".into(),
         platform_zenoh_config: "{}".into(),
     };
     enrollment::save(&dirs(dir), &bundle).expect("write enrollment");
@@ -606,10 +608,12 @@ fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
         "a PKCS#8 key was minted"
     );
     let cert = std::fs::read_to_string(&enrolled.peer_certificate).unwrap();
-    assert!(
-        cert.contains("leaf") && cert.contains("issuer"),
-        "leaf then chain: {cert}"
+    assert_eq!(
+        cert, "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n",
+        "the peer presents the leaf alone"
     );
+    let chain = std::fs::read_to_string(dirs(&dir).peer_dir().join("chain.crt")).unwrap();
+    assert!(chain.contains("issuer"), "the chain is kept apart: {chain}");
 }
 
 #[test]
@@ -689,13 +693,52 @@ fn enroll_surfaces_the_platform_refusal_and_writes_nothing() {
                 "detail": "this router admits 5 peers; remove one first",
             }));
     });
+    mock_router_and_peers_with(&server, "pending_restart");
+    let dir = authenticated_dir(&server);
+
+    let err = enroll_in(&server, &dir, false).expect_err("refused");
+    let message = err.to_string();
+    assert!(
+        message.starts_with("Peer limit reached: this router admits 5 peers; remove one first"),
+        "the refusal comes first: {message}"
+    );
+    assert!(
+        message.contains("robot-7"),
+        "the peers are listed: {message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "peppy platform router restart --workspace {WORKSPACE} --project {PROJECT}"
+        )),
+        "a removed peer keeps a slot, so the remedy is the restart: {message}"
+    );
+    assert!(enrollment::load(&dirs(&dir)).unwrap().is_none());
+}
+
+/// The platform could not sign in time. The CLI gives the delay the platform
+/// asked for and does not send the enrollment again.
+#[test]
+fn enroll_prints_the_retry_after_delay_and_does_not_retry() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    let refused = server.mock(|when, then| {
+        when.method(POST).path(PEERS_PATH);
+        then.status(503)
+            .header("content-type", "application/problem+json")
+            .header("retry-after", "5")
+            .json_body(json!({
+                "type": "https://peppy.bot/problems/provisioner-unavailable",
+                "title": "Provisioner unavailable", "status": 503,
+            }));
+    });
     let dir = authenticated_dir(&server);
 
     let err = enroll_in(&server, &dir, false).expect_err("refused");
     assert_eq!(
         err.to_string(),
-        "Peer limit reached: this router admits 5 peers; remove one first"
+        "Provisioner unavailable. Run the command again in 5 seconds."
     );
+    assert_eq!(refused.calls(), 1, "the enrollment is sent once");
     assert!(enrollment::load(&dirs(&dir)).unwrap().is_none());
 }
 
@@ -814,21 +857,22 @@ fn unenroll_when_not_enrolled_is_a_no_op() {
 // ─── status / peers ──────────────────────────────────────────────────────
 
 fn mock_router_and_peers(server: &MockServer) {
-    server.mock(|when, then| {
+    mock_router_and_peers_with(server, "connected");
+}
+
+/// A router with two peers, the first in `first_peer_status`, and one change
+/// that waits for a restart.
+fn mock_router_and_peers_with(server: &MockServer, first_peer_status: &'static str) {
+    server.mock(move |when, then| {
         when.method(GET).path(ROUTER_PATH);
-        then.status(200).json_body(json!({
-            "phase": "running", "desired_state": "running", "can_manage_infra": true,
-            "address": { "host": ROUTER_HOST, "port": 7447 },
-            "size": "micro", "entitled_sizes": ["micro"],
-            "pending_changes": false, "pending_change_entries": [],
-            "peers": [ { "id": "peer-1", "status": "connected" } ]
-        }));
+        then.status(200)
+            .json_body(router_body("running", first_peer_status));
     });
-    server.mock(|when, then| {
+    server.mock(move |when, then| {
         when.method(GET).path(PEERS_PATH);
         then.status(200).json_body(json!([
             { "id": "peer-1", "name": "robot-7", "certificate_cn": "robot-7",
-              "status": "connected", "certificate_expires_at": "2027-01-01T00:00:00Z",
+              "status": first_peer_status, "certificate_expires_at": "2027-01-01T00:00:00Z",
               "created_at": "2026-10-03T00:00:00Z" },
             { "id": "peer-2", "name": "bench", "certificate_cn": "bench",
               "status": "unknown", "certificate_expires_at": "2027-01-01T00:00:00Z",
@@ -900,6 +944,139 @@ fn peers_default_to_the_enrolled_project() {
     .execute(&ctx())
     .expect_err("no enrollment and no flags");
     assert!(err.to_string().contains("--project"), "{err}");
+}
+
+// ─── router ──────────────────────────────────────────────────────────────
+
+fn router_body(phase: &str, first_peer_status: &str) -> serde_json::Value {
+    json!({
+        "phase": phase, "desired_state": "running", "can_manage_infra": true,
+        "address": { "host": ROUTER_HOST, "port": 7447 },
+        "size": "micro", "entitled_sizes": ["micro"],
+        "pending_changes": true,
+        "pending_change_entries": [ { "kind": "peer",
+            "description": "peer robot-7 removed", "staged_at": "2026-09-28T10:00:00Z" } ],
+        "peers": [ { "id": "peer-1", "status": first_peer_status } ]
+    })
+}
+
+fn mock_router_action<'a>(server: &'a MockServer, action: &str, phase: &str) -> httpmock::Mock<'a> {
+    let body = router_body(phase, "connected");
+    let path = format!("{ROUTER_PATH}/{action}");
+    server.mock(move |when, then| {
+        when.method(POST).path(path.as_str());
+        then.status(202).json_body(body);
+    })
+}
+
+fn router_command(
+    server: &MockServer,
+    dir: &tempfile::TempDir,
+    action: RouterAction,
+    project: Option<&str>,
+) -> peppy::error::Result<()> {
+    RouterCommand {
+        action,
+        api_url: Some(server.base_url()),
+        workspace: None,
+        project: project.map(str::to_string),
+        yes: true,
+        peppy_dirs: Some(dirs(dir)),
+    }
+    .execute(&ctx())
+}
+
+/// With no flag, the router is the one of the project this machine is enrolled
+/// in: no workspace or project is listed to find it.
+#[test]
+fn router_restart_uses_the_enrolled_project() {
+    let server = MockServer::start();
+    mock_router_and_peers(&server);
+    let restart = mock_router_action(&server, "restart", "restarting");
+    let workspaces = server.mock(|when, then| {
+        when.method(GET).path("/api/workspaces");
+        then.status(500);
+    });
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-1", ZID);
+
+    router_command(&server, &dir, RouterAction::Restart, None).expect("restart");
+
+    assert_eq!(restart.calls(), 1);
+    assert_eq!(workspaces.calls(), 0, "the enrollment names the project");
+}
+
+/// A flag names the project, also on a machine that is not enrolled.
+#[test]
+fn router_restart_takes_the_project_from_the_flag() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    mock_router_and_peers(&server);
+    let restart = mock_router_action(&server, "restart", "restarting");
+    let dir = authenticated_dir(&server);
+
+    router_command(&server, &dir, RouterAction::Restart, Some("Lab")).expect("restart by name");
+
+    assert_eq!(restart.calls(), 1);
+}
+
+/// With no flag and no enrollment the command has no router. It lists the
+/// projects and sends nothing to a router.
+#[test]
+fn router_restart_without_a_target_lists_the_projects_and_does_nothing() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    let restart = mock_router_action(&server, "restart", "restarting");
+    let dir = authenticated_dir(&server);
+
+    let err = router_command(&server, &dir, RouterAction::Restart, None)
+        .expect_err("no project is selected for the person");
+    let message = err.to_string();
+    assert!(message.contains("--project"), "{message}");
+    assert!(
+        message.contains(PROJECT) && message.contains("Lab"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("p-old"),
+        "archived projects are not offered: {message}"
+    );
+    assert_eq!(restart.calls(), 0);
+}
+
+#[test]
+fn router_restart_without_the_permission_says_which_permission() {
+    let server = MockServer::start();
+    mock_router_and_peers(&server);
+    server.mock(|when, then| {
+        when.method(POST).path(format!("{ROUTER_PATH}/restart"));
+        then.status(403)
+            .header("content-type", "application/problem+json")
+            .json_body(json!({ "type": "about:blank", "title": "Forbidden", "status": 403 }));
+    });
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-1", ZID);
+
+    let err = router_command(&server, &dir, RouterAction::Restart, None).expect_err("403");
+    assert!(
+        err.to_string().contains("manage the infrastructure"),
+        "{err}"
+    );
+}
+
+#[test]
+fn router_start_calls_the_start_route() {
+    let server = MockServer::start();
+    mock_router_and_peers(&server);
+    let start = mock_router_action(&server, "start", "provisioning");
+    let restart = mock_router_action(&server, "restart", "restarting");
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-1", ZID);
+
+    router_command(&server, &dir, RouterAction::Start, None).expect("start");
+
+    assert_eq!(start.calls(), 1);
+    assert_eq!(restart.calls(), 0);
 }
 
 // ─── the group ───────────────────────────────────────────────────────────
@@ -984,10 +1161,31 @@ fn every_platform_command_refuses_a_core_node_override() {
         (
             "peers",
             PlatformCommands::Peers {
-                api_url,
+                api_url: api_url.clone(),
                 workspace: None,
                 project: None,
                 json: false,
+            },
+        ),
+        (
+            "router restart",
+            PlatformCommands::Router {
+                command: RouterCommands::Restart {
+                    api_url: api_url.clone(),
+                    workspace: None,
+                    project: None,
+                    yes: true,
+                },
+            },
+        ),
+        (
+            "router start",
+            PlatformCommands::Router {
+                command: RouterCommands::Start {
+                    api_url,
+                    workspace: None,
+                    project: None,
+                },
             },
         ),
     ];

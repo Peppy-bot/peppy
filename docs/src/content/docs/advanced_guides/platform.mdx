@@ -32,9 +32,13 @@ stay in the browser.
 | `peppy platform unenroll [--local-only] [--yes]` | Removes this machine's peer from the platform, deletes the local enrollment, and restarts the daemon standalone. |
 | `peppy platform status [--json]` | Shows the enrollment, whether the daemon runs under it with a verified link, and what the platform reports about the router and this peer. |
 | `peppy platform peers [--workspace <id\|name>] [--project <id\|name>] [--json]` | Lists the peers of a project's cloud router, this machine's project by default. |
+| `peppy platform router restart [--workspace <id\|name>] [--project <id\|name>] [--yes]` | Restarts a project's cloud router, which applies every pending change. |
+| `peppy platform router start [--workspace <id\|name>] [--project <id\|name>]` | Starts a stopped router. |
 
 `--api-url` overrides the backend on any command. `--yes` (`-y`) skips the
-daemon-restart confirmation prompt described under [Enrolling](#enrolling).
+confirmation prompt of the command: the daemon restart described under
+[Enrolling](#enrolling), or the router restart described under
+[The project router](#the-project-router).
 
 ## Signing in
 
@@ -92,9 +96,11 @@ What happens:
    run under.
 4. It writes the enrollment bundle under `~/.peppy/conf/peer/`:
    `enrollment.json5` (the record), `peer.key` (the private key, owner-only),
-   `peer.crt` (the certificate followed by its issuing chain), `ca.crt` (the
-   project CA), and `zenohd.platform.json5` (the peer config the platform
-   rendered, kept for inspection).
+   `peer.crt` (the signed certificate alone), `ca.crt` (the project CA),
+   `chain.crt` (the chain above the certificate, for `openssl verify`), and
+   `zenohd.platform.json5` (the peer config the platform rendered, kept for
+   inspection). The daemon presents `peer.crt` and nothing above it, so the
+   cloud router closes the link when that certificate expires.
 5. Under `zenoh.managed`, it pokes the running daemon over its control socket.
    The daemon's router identity and session namespace cannot change while
    live, so the daemon restarts its generation under the new identity and the
@@ -110,6 +116,25 @@ With no daemon running, the enrollment is written and the daemon joins the
 router when it starts. Under `zenoh.external` the daemon is left alone and the
 command prints where the material is for the operator's router to use.
 
+When the platform refuses the enrollment, the command prints the platform's
+reason. Two refusals come with a remedy:
+
+- **The router admits no more peers.** The command lists the peers of the
+  router. A removed peer keeps its slot until the router restarts, so when one
+  reads `pending_restart` the command prints the `router restart` command that
+  frees the slot.
+- **The platform could not sign the certificate in time.** The command prints
+  the delay the platform asks for. Run it again after that delay.
+
+### The local listener
+
+The managed router listens on all interfaces in plain TCP, so that container
+nodes and the other machines of a LAN stack can reach it. On an enrolled
+machine this also means that a machine on the same network can open a session
+to this router and, through it, reach the project under this peer's
+certificate. Where that is not acceptable, close the messaging port to other
+machines with the firewall of the host.
+
 ### The certificate
 
 The peer certificate is valid for 90 days. `peppy platform status` shows its
@@ -120,7 +145,9 @@ peppy platform enroll --replace
 ```
 
 This enrolls anew (a new peer and a new zenoh identity), restarts the daemon
-under it, and removes the previous peer from the platform.
+under it, and removes the previous peer from the platform. The previous peer
+keeps its slot until the router restarts; see
+[The project router](#the-project-router).
 
 ### Namespace
 
@@ -143,9 +170,15 @@ peppy platform status
 The report has three parts: the enrollment on disk (project, peer, router,
 certificate expiry, files), the daemon (running, under the enrolled identity,
 and whether a fresh handshake to the cloud router validates), and, when you
-are signed in, the platform's view (the router's phase and this peer's
-connection status). `peppy platform peers` lists every peer of the project as
-the platform sees them, marking this machine.
+are signed in, the platform's view (the router's phase, the changes that wait
+for a restart, and this peer's connection status). `peppy platform peers` lists
+every peer of the project as the platform sees them, marking this machine.
+
+A peer reads `connected`, `pending_restart`, or "not reported by the platform".
+The last one is not a failure: the platform could not read the sessions of the
+router, so it has nothing to say about the peer. The daemon part of `status`
+answers from this machine: it makes a TLS handshake with the router and says
+if the link is good.
 
 ## Unenrolling
 
@@ -153,12 +186,47 @@ the platform sees them, marking this machine.
 peppy platform unenroll
 ```
 
-This removes the peer on the platform (the platform drops it at the router's
-next restart), deletes `~/.peppy/conf/peer/`, and pokes the daemon, which
-restarts standalone under `local`. Removing the peer needs a session; a machine
-that cannot sign in can delete only its local enrollment with `--local-only`
-and have the peer removed from the web app. The same restart prompt and
-`--yes` bypass apply as for `enroll`.
+This removes the peer on the platform, deletes `~/.peppy/conf/peer/`, and pokes
+the daemon, which restarts standalone under `local`. Removing the peer needs a
+session; a machine that cannot sign in can delete only its local enrollment
+with `--local-only` and have the peer removed from the web app. The same
+restart prompt and `--yes` bypass apply as for `enroll`.
+
+The cloud router reads its trust anchors when it starts. It refuses the removed
+peer, and frees its slot, from its next restart. The platform does not restart
+a router by itself: the command prints each change that waits and the `router
+restart` command that applies it.
+
+## The project router
+
+One project has one cloud router, so a project names its router.
+
+```sh
+peppy platform router restart
+peppy platform router start
+```
+
+Which router a command acts on:
+
+| Flags | This machine | Router |
+|-------|--------------|--------|
+| `--project` (and `--workspace` when the account has more than one) | enrolled or not | The project the flags name, by id or exact name. |
+| none | enrolled | The project this machine is enrolled in. |
+| none | not enrolled | None. The command stops and lists your projects. |
+
+The command prints the router it found, its phase, its peers and the changes
+that wait, before it acts.
+
+A restart applies every pending change: a removed peer, a new size. It drops
+each peer link for a moment, and the peers connect again on their own. The
+command asks for confirmation on a terminal; `--yes` skips the prompt.
+
+`start` starts a router that was stopped. `peppy platform status` shows the
+phase of the router and names this command when the router is stopped.
+
+Both commands need the permission to manage the infrastructure of the project.
+This is a different permission from the one an enrollment needs, so a person
+who can enroll a machine cannot always restart the router.
 
 ## Federation outside the Peppy platform
 

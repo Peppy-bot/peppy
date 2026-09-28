@@ -1,7 +1,7 @@
 //! The `peppy platform` command group: sign in and out of the platform
 //! (`login`, `logout`, `whoami`), look around it (`workspaces`, `projects`,
-//! `peers`), and join or leave a project's cloud router (`enroll`, `unenroll`,
-//! `status`). Each variant maps to a handler in this module's directory; the
+//! `peers`), join or leave a project's cloud router (`enroll`, `unenroll`,
+//! `status`), and restart or start that router (`router`). Each variant maps to a handler in this module's directory; the
 //! OAuth device flow, token storage, the platform API and the enrollment store
 //! they share live in the separate `auth` engine crate, and the config, URL
 //! and credential preamble they all repeat lives here as [`PlatformSession`].
@@ -18,6 +18,7 @@ pub mod login;
 pub mod logout;
 pub mod peers;
 pub mod projects;
+pub mod router;
 mod select;
 pub mod status;
 pub mod unenroll;
@@ -231,15 +232,12 @@ pub(crate) fn confirm_restart(
     action: &FederationPokeAction,
     daemon_state: Option<&DaemonState>,
 ) -> Result<bool> {
-    use std::io::{IsTerminal, Write};
-
     if yes {
         return Ok(true);
     }
     // A readable state file can outlive a crashed daemon, so probe the recorded
     // pid for real liveness rather than treating readability as "a daemon is up".
-    let daemon_running = daemon_state.is_some_and(DaemonState::is_running);
-    if !daemon_running || !std::io::stdin().is_terminal() {
+    if !daemon_state.is_some_and(DaemonState::is_running) {
         return Ok(true);
     }
     // The restart only wipes a node stack worth warning about when the daemon is
@@ -252,10 +250,22 @@ pub(crate) fn confirm_restart(
         FederationPokeAction::Enroll => "Enrolling",
         FederationPokeAction::Unenroll => "Unenrolling",
     };
-    eprintln!(
+    ask_to_continue(&format!(
         "{verb} changes this machine's router identity and namespace, which restarts the \
          messaging daemon and wipes the running node stack."
-    );
+    ))
+}
+
+/// Prints `warning` and asks the person to continue. Returns `Ok(true)` to
+/// proceed. With no terminal on stdin there is no person to ask, so the answer
+/// is yes: a script is never blocked on a prompt.
+pub(crate) fn ask_to_continue(warning: &str) -> Result<bool> {
+    use std::io::{IsTerminal, Write};
+
+    if !std::io::stdin().is_terminal() {
+        return Ok(true);
+    }
+    eprintln!("{warning}");
     eprint!("Continue? [y/N] ");
     std::io::stderr().flush().ok();
     let mut line = String::new();
@@ -604,6 +614,11 @@ pub enum PlatformCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Restart or start a project's cloud router (this machine's project by default)
+    Router {
+        #[command(subcommand)]
+        command: router::RouterCommands,
+    },
 }
 
 pub struct PlatformCommand {
@@ -700,6 +715,9 @@ impl Command for PlatformCommand {
                 peppy_dirs: None,
             }
             .execute(app_ctx),
+            PlatformCommands::Router { command } => {
+                router::RouterCommand::from(command).execute(app_ctx)
+            }
         }
     }
 }

@@ -27,30 +27,18 @@ impl Command for PeersCommand {
         let mut cred = session.credential()?;
         let enrollment = auth::enrollment::load(&session.dirs).map_err(Error::AuthEngine)?;
 
-        // Flags name the project; otherwise it is the enrolled one.
-        let (workspace_id, project_id) = match (&self.workspace, &self.project, &enrollment) {
-            (None, None, Some(enrollment)) => (
-                enrollment.document.workspace_id.clone(),
-                enrollment.document.project_id.clone(),
-            ),
-            (None, None, None) => {
-                return Err(Error::ExecutionFailed(
-                    "this machine is not enrolled; pass --project <id|name> (and --workspace) \
-                     to name the project whose peers to list"
-                        .to_string(),
-                ));
-            }
-            _ => {
-                let selection = select::resolve_project(
-                    &session.http,
-                    &session.api_url,
-                    &mut cred,
-                    self.workspace.as_deref(),
-                    self.project.as_deref(),
-                )?;
-                (selection.workspace.id, selection.project.id)
-            }
-        };
+        let select::Target {
+            workspace_id,
+            project_id,
+            ..
+        } = select::resolve_target(
+            &session.http,
+            &session.api_url,
+            &mut cred,
+            self.workspace.as_deref(),
+            self.project.as_deref(),
+            enrollment.as_ref().map(|e| &e.document),
+        )?;
         let peers = client::list_peers(
             &session.http,
             &session.api_url,
@@ -89,7 +77,21 @@ impl Command for PeersCommand {
     }
 }
 
-fn render_human(project_id: &str, peers: &[RouterPeer], this_machine: Option<&str>) -> String {
+/// The status of a peer in words for the person. `unknown` is a real state of
+/// the platform: the router's admin space is off or did not answer, so the
+/// platform has nothing to report. It is not a failure of the peer.
+pub(crate) fn peer_status_label(status: &str) -> &str {
+    match status {
+        "unknown" => "not reported by the platform",
+        other => other,
+    }
+}
+
+pub(crate) fn render_human(
+    project_id: &str,
+    peers: &[RouterPeer],
+    this_machine: Option<&str>,
+) -> String {
     let mut out = format!("Project {project_id}\n\n");
     if peers.is_empty() {
         out.push_str("No peers; `peppy platform enroll` adds this machine.\n");
@@ -103,7 +105,7 @@ fn render_human(project_id: &str, peers: &[RouterPeer], this_machine: Option<&st
         .map(|p| {
             [
                 p.name.clone(),
-                p.status.clone(),
+                peer_status_label(&p.status).to_string(),
                 p.certificate_expires_at.format("%Y-%m-%d").to_string(),
                 p.id.clone(),
                 if Some(p.id.as_str()) == this_machine {
@@ -178,11 +180,21 @@ mod tests {
         assert_eq!(
             out,
             "Project p-1\n\n\
-             PEER     STATUS           CERT EXPIRES  ID\n\
-             robot-7  connected        2027-01-01    peer-1  (this machine)\n\
-             arm      pending_restart  2027-01-01    peer-3\n\
-             bench    unknown          2027-01-01    peer-2\n"
+             PEER     STATUS                        CERT EXPIRES  ID\n\
+             robot-7  connected                     2027-01-01    peer-1  (this machine)\n\
+             arm      pending_restart               2027-01-01    peer-3\n\
+             bench    not reported by the platform  2027-01-01    peer-2\n"
         );
+    }
+
+    /// Every status prints as the platform sent it, but `unknown`, which says
+    /// what it means.
+    #[test]
+    fn only_unknown_is_put_into_words() {
+        assert_eq!(peer_status_label("unknown"), "not reported by the platform");
+        for status in ["connected", "pending_restart", "some_future_state"] {
+            assert_eq!(peer_status_label(status), status);
+        }
     }
 
     #[test]

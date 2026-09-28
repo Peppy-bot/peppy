@@ -535,6 +535,18 @@ mod tests {
             ],
             vec!["peppy", "platform", "unenroll", "--local-only", "--yes"],
             vec!["peppy", "platform", "status", "--json"],
+            vec!["peppy", "platform", "router", "restart", "-y"],
+            vec![
+                "peppy",
+                "platform",
+                "router",
+                "restart",
+                "--workspace",
+                "w",
+                "--project",
+                "p",
+            ],
+            vec!["peppy", "platform", "router", "start", "--project", "p"],
             vec![
                 "peppy",
                 "platform",
@@ -555,6 +567,8 @@ mod tests {
         assert!(Cli::try_parse_from(["peppy", "platform", "login", "--yes"]).is_err());
         assert!(Cli::try_parse_from(["peppy", "platform", "list"]).is_err());
         assert!(Cli::try_parse_from(["peppy", "platform", "federate"]).is_err());
+        assert!(Cli::try_parse_from(["peppy", "platform", "router"]).is_err());
+        assert!(Cli::try_parse_from(["peppy", "platform", "router", "stop"]).is_err());
     }
 
     /// `status` is its own command (the enrollment and the router link), not a
