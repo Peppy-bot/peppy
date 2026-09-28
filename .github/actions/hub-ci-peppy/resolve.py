@@ -174,7 +174,7 @@ DEV_BUILD_ARTIFACT = "peppy-dev-x86_64-unknown-linux-gnu"
 # not change since the last look does not count against the rate limit of
 # the job token, 1,000 requests per hour for each repository. Thus a wait
 # uses requests only for the changes of the peppy run.
-DEV_BUILD_POLL_SECONDS = 5
+DEV_BUILD_POLL_SECONDS = 20
 DEV_BUILD_WAIT_SECONDS = 20 * 60
 
 GITHUB_API = "https://api.github.com"
