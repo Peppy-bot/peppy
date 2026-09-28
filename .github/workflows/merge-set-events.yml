@@ -11,7 +11,7 @@ on:
     types: [edited]
   workflow_run:
     workflows: [Tests]
-    types: [completed]
+    types: [requested, in_progress, completed]
   delete:
 
 jobs:

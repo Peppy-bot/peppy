@@ -13,8 +13,8 @@ The `merge-set` commit status is a required check of peppy `dev` and of the
   its branch, gets a green status, and its own merge button merges it.
 - A pull request of a set gets a pending status, so its merge button stays
   blocked, and a comment, the dashboard, that lists every repository of the
-  set, says what blocks the merge, and holds two boxes: "Merge" and "Re-run
-  the out-of-date CI".
+  set with the state of the CI run of its head, says what blocks the merge,
+  and holds two boxes: "Merge" and "Re-run the out-of-date CI".
 
 Ticking "Merge" asks the bot to merge the set. The bot checks every pull
 request of the set, sets the status green on each, checks that GitHub merges
@@ -43,14 +43,16 @@ finished hub run that is out of date.
 The workflow merge-set-events.yml of each repository of a set hands every
 event that can change the set to the relay (the `relay` subcommand, in the
 reusable workflow merge-set-relay.yml), which starts the Merge set workflow of
-peppy (merge-set.yml) for the branch of the event. When the event is a box that
-a user ticked, the relay also answers at once on that pull request, with a
-link to the run it started. The Merge set workflow runs `sync`, one run at a
-time for each set. `sync` holds no state of its own: it reads the
-whole set from GitHub on every run (the branches, the pull requests, their
-checks and reviews, the set records of the hub runs, the dashboards and the
-user who last edited each one), so a run that GitHub drops from its queue
-loses nothing: the next run of the set finds the same ticked box.
+peppy (merge-set.yml) for the branch of the event. The start and the end of
+each CI run, a re-run included, are such events, so the dashboard follows the
+state of the CI. When the event is a box that a user ticked, the relay also
+answers at once on that pull request, with a link to the run it started. The
+Merge set workflow runs `sync`, one run at a time for each set. `sync` holds
+no state of its own: it reads the whole set from GitHub on every run (the
+branches, the pull requests, their checks, CI runs and reviews, the set
+records of the hub runs, the dashboards and the user who last edited each
+one), so a run that GitHub drops from its queue loses nothing: the next run of
+the set finds the same ticked box.
 
 The decisions are pure functions of their inputs, tested in test_merge_set.py.
 The I/O around them is kept thin, in GitHubGateway. Standard library only: it
@@ -562,6 +564,15 @@ def parse_statuses(items: Sequence[Mapping]) -> list[CommitStatus]:
     ]
 
 
+def run_state(completed: bool, conclusion: str | None) -> CheckState:
+    """The state of a check run or of a workflow run."""
+    if not completed:
+        return CheckState.RUNNING
+    if conclusion in PASSING_CONCLUSIONS:
+        return CheckState.PASSED
+    return CheckState.FAILED
+
+
 def required_check_state(
     check: RequiredCheck, runs: Sequence[CheckRun], statuses: Sequence[CommitStatus]
 ) -> CheckState:
@@ -575,11 +586,7 @@ def required_check_state(
     ]
     if matching:
         newest = max(matching, key=lambda run: run.id)
-        if not newest.completed:
-            return CheckState.RUNNING
-        if newest.conclusion in PASSING_CONCLUSIONS:
-            return CheckState.PASSED
-        return CheckState.FAILED
+        return run_state(newest.completed, newest.conclusion)
     status = next(
         (status for status in statuses if status.context == check.context), None
     )
@@ -617,6 +624,56 @@ def parse_review_decision(value: str | None) -> ReviewDecision:
         return ReviewDecision(value)
     except ValueError as error:
         raise MergeSetError(f"`{value}` is not a review decision") from error
+
+
+# The CI runs -----------------------------------------------------------------
+
+# The name of the one CI workflow of peppy and of each hub, which the
+# workflow_run trigger of merge-set-events.yml names too.
+CI_WORKFLOW = "Tests"
+
+
+@dataclass(frozen=True)
+class CiRun:
+    """The newest run of the CI workflow of the head commit of a pull
+    request."""
+
+    url: str
+    # Passed, failed or running.
+    state: CheckState
+
+
+def ci_workflow_ids(
+    repository: Repository, workflows: Sequence[Mapping]
+) -> frozenset[int]:
+    """The ids of the workflows of the repository named as the CI workflow,
+    as the workflow_run trigger finds them: by the name of the workflow. A run
+    carries the `run-name` of its workflow as its own name, so the runs are
+    matched by the id of their workflow."""
+    ids = frozenset(
+        workflow["id"] for workflow in workflows if workflow["name"] == CI_WORKFLOW
+    )
+    if not ids:
+        raise MergeSetError(
+            f"{repository.name} has no workflow named {CI_WORKFLOW}: the "
+            "merge-set bot reads the CI of a pull request from it"
+        )
+    return ids
+
+
+def latest_ci_run(
+    runs: Sequence[Mapping], ci_workflows: frozenset[int]
+) -> CiRun | None:
+    """The newest run of the CI workflow among the runs of a head commit;
+    None when the CI has not started on it. A re-run keeps its run id."""
+    ci_runs = [run for run in runs if run["workflow_id"] in ci_workflows]
+    if not ci_runs:
+        return None
+    newest = max(ci_runs, key=lambda run: run["id"])
+    return CiRun(
+        url=newest["html_url"],
+        state=run_state(newest["status"] == "completed", newest.get("conclusion")),
+    )
 
 
 # The set records of the hub runs ---------------------------------------------
@@ -822,7 +879,8 @@ def latest_run_id(runs: Sequence[Mapping]) -> int | None:
 
 @dataclass(frozen=True)
 class PullRequestReport:
-    """What decides whether a pull request of the set can merge."""
+    """What decides whether a pull request of the set can merge, and the CI
+    of its head commit, which the dashboard shows."""
 
     pull_request: PullRequest
     # Whether it merges into its base without conflicts; None while GitHub
@@ -830,6 +888,8 @@ class PullRequestReport:
     mergeable: bool | None
     review: ReviewDecision
     checks: tuple[tuple[RequiredCheck, CheckState], ...]
+    # None while the CI has not started on the head commit.
+    ci: CiRun | None
     # Behind its base while its rules require it up to date.
     behind: bool
     stale: tuple[StaleJob, ...]
@@ -1034,9 +1094,23 @@ def pull_request_cell(member: Member) -> str:
     return f"{len(member.open_pull_requests)} open pull requests"
 
 
+def ci_cell(member: Member, reports: Mapping[str, PullRequestReport]) -> str:
+    """The CI of the head of a member, linked to its run. A member without
+    one open pull request has no report, and the Pull request cell says why."""
+    if member.pull_request is None:
+        return ""
+    ci = reports[member.pull_request.label].ci
+    if ci is None:
+        return "not started"
+    return f"[{ci.state.value}]({ci.url})"
+
+
 def render_set_dashboard(
-    state: SetState, blockers: Sequence[Blocker], stale_run_count: int
+    state: SetState, reports: Mapping[str, PullRequestReport]
 ) -> str:
+    """The dashboard of a set. Reports are keyed by pull request label."""
+    blockers = set_blockers(state, reports)
+    stale_run_count = len(stale_runs(reports))
     blocked = {blocker.repository for blocker in blockers_for(blockers, admin=True)}
     unapproved = {blocker.repository for blocker in blockers} - blocked
     lines = [
@@ -1048,12 +1122,12 @@ def render_set_dashboard(
         "together: the `merge-set` check keeps the merge button of each one "
         "blocked. Tick the first box below to merge all of them.",
         "",
-        "| Repository | Pull request | Head | State |",
-        "| --- | --- | --- | --- |",
+        "| Repository | Pull request | Head | CI | State |",
+        "| --- | --- | --- | --- | --- |",
     ]
     lines.extend(
         f"| {member.repository.name} | {pull_request_cell(member)} "
-        f"| `{short(member.head)}` "
+        f"| `{short(member.head)}` | {ci_cell(member, reports)} "
         f"| {member_state(member.repository, blocked, unapproved)} |"
         for member in state.members
     )
@@ -1487,6 +1561,7 @@ class GitHubGateway:
         self.rules: dict[str, BranchRules] = {}
         self.bypasses: dict[tuple[str, int], RulesetBypass] = {}
         self.permissions: dict[tuple[str, str], str] = {}
+        self.ci_workflows: dict[str, frozenset[int]] = {}
 
     # Reading the set.
 
@@ -1572,6 +1647,22 @@ class GitHubGateway:
             data["repository"]["pullRequest"]["reviewDecision"]
         )
 
+    def ci_workflows_of(self, repository: Repository) -> frozenset[int]:
+        if repository.name not in self.ci_workflows:
+            self.ci_workflows[repository.name] = ci_workflow_ids(
+                repository,
+                self.api.pages(
+                    f"/repos/{repository.full_name}/actions/workflows", key="workflows"
+                ),
+            )
+        return self.ci_workflows[repository.name]
+
+    def ci_run(self, pull_request: PullRequest) -> CiRun | None:
+        return latest_ci_run(
+            self.pull_request_runs(pull_request),
+            self.ci_workflows_of(pull_request.repository),
+        )
+
     def is_behind(self, pull_request: PullRequest) -> bool:
         comparison = self.api.request(
             "GET",
@@ -1580,16 +1671,18 @@ class GitHubGateway:
         )
         return comparison["behind_by"] > 0
 
-    def hub_runs(self, pull_request: PullRequest) -> list[HubRun]:
-        repository = pull_request.repository
-        runs = self.api.pages(
-            f"/repos/{repository.full_name}/actions/runs",
+    def pull_request_runs(self, pull_request: PullRequest) -> list[Mapping]:
+        """Every workflow run of the head commit of the pull request, for the
+        pull_request event."""
+        return self.api.pages(
+            f"/repos/{pull_request.repository.full_name}/actions/runs",
             {"head_sha": pull_request.head_commit, "event": "pull_request"},
             key="workflow_runs",
         )
-        return [
-            self.hub_run(repository, run) for run in latest_run_of_each_workflow(runs)
-        ]
+
+    def hub_runs(self, pull_request: PullRequest) -> list[HubRun]:
+        runs = latest_run_of_each_workflow(self.pull_request_runs(pull_request))
+        return [self.hub_run(pull_request.repository, run) for run in runs]
 
     def hub_run(self, repository: Repository, run: Mapping) -> HubRun:
         path = f"/repos/{repository.full_name}/actions/runs/{run['id']}"
@@ -1784,6 +1877,7 @@ def read_report(
             (check, required_check_state(check, runs, statuses))
             for check in rules.required_checks
         ),
+        ci=gateway.ci_run(pull_request),
         behind=rules.strict and gateway.is_behind(pull_request),
         stale=(
             tuple(stale_jobs(state, gateway.hub_runs(pull_request)))
@@ -2123,10 +2217,7 @@ def publish(
                     gateway, pull_request, dashboard, render_alone_dashboard(state.name)
                 )
         return
-    reports = read_reports(gateway, state)
-    body = render_set_dashboard(
-        state, set_blockers(state, reports), len(stale_runs(reports))
-    )
+    body = render_set_dashboard(state, read_reports(gateway, state))
     for pull_request in state.open_pull_requests():
         url = write_dashboard(
             gateway, pull_request, dashboards.get(pull_request.label), body
