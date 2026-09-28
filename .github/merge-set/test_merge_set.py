@@ -1125,7 +1125,6 @@ class FakeGitHub:
         self.comments = []
         self.permissions = {}
         self.merge_refusals = {}
-        self.dev_build_ready = True
         # Edits made while the sync runs, by comment id: someone ticks a box
         # after the sync read the comment.
         self.edits_during_the_run = {}
@@ -1234,9 +1233,6 @@ class FakeGitHub:
 
     def hub_runs(self, pr):
         return self.runs.get(pr.label, [])
-
-    def peppy_dev_build_ready(self, sha):
-        return self.dev_build_ready
 
     def gate(self, pr):
         return merge_set.current_gate(self.statuses(pr.repository, pr.head_commit), BOT)
@@ -1735,14 +1731,6 @@ class SyncRerun(unittest.TestCase):
         self.assertIn(
             f"- [Tests #11]({self.running_run.url}) of nodes-hub", report_text
         )
-
-    def test_the_re_run_waits_for_the_peppy_dev_build(self):
-        self.github.dev_build_ready = False
-        self.tick_rerun()
-        self.assertEqual(self.github.reruns, [])
-        (report_text,) = self.github.reports_on(self.peppy)
-        self.assertIn("the dev build of peppy", report_text)
-        self.assertIn("is not ready", report_text)
 
     def test_nothing_is_re_run_when_nothing_is_out_of_date(self):
         (comment,) = self.github.comments_on(self.peppy)
