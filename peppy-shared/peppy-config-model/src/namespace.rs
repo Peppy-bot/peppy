@@ -1,17 +1,18 @@
-//! Workspace namespace: the zenoh session-level namespace prefix used to route
-//! one workspace's robot traffic separately from another's across the platform
+//! Project namespace: the zenoh session-level namespace prefix used to route
+//! one project's robot traffic separately from another's across the platform
 //! hub.
 //!
-//! The value is **always present**. Logged out it resolves to the constant
-//! [`LOCAL_NAMESPACE`] (`"local"`); logged in it resolves to the platform
-//! workspace id (a stable UUID). A logged-out daemon never dials the platform
-//! router, so `local` never reaches it, while two logged-out robots on the same
-//! LAN share `local` and interoperate. The value is parsed into a zenoh non-wild
-//! key expression up front, so an invalid id can never reach a live session:
-//! zenoh's egress prepends `<ns>/` to every declared key and ingress strips it,
-//! so two sessions interoperate iff their namespaces are equal.
+//! The value is **always present**. Not enrolled, it resolves to the constant
+//! [`LOCAL_NAMESPACE`] (`"local"`); enrolled in a platform project it resolves
+//! to that project's id (a stable UUID). An unenrolled daemon never dials the
+//! platform router, so `local` never reaches it, while two unenrolled robots on
+//! the same LAN share `local` and interoperate. The value is parsed into a
+//! zenoh non-wild key expression up front, so an invalid id can never reach a
+//! live session: zenoh's egress prepends `<ns>/` to every declared key and
+//! ingress strips it, so two sessions interoperate iff their namespaces are
+//! equal.
 //!
-//! A namespace is routing context only. It does not enforce workspace
+//! A namespace is routing context only. It does not enforce project
 //! membership and is not a key-expression authorization boundary.
 
 use std::fmt;
@@ -19,12 +20,12 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use zenoh_keyexpr::OwnedNonWildKeyExpr;
 
-/// Namespace used whenever there is no workspace id (logged out). A logged-out
-/// daemon never federates, so `local` never reaches the platform router; two
-/// logged-out robots on the same LAN share it and interoperate.
+/// Namespace used whenever the machine is not enrolled in a project. An
+/// unenrolled daemon never federates, so `local` never reaches the platform
+/// router; two unenrolled robots on the same LAN share it and interoperate.
 pub const LOCAL_NAMESPACE: &str = "local";
 
-/// A validated zenoh session namespace prefix for one workspace.
+/// A validated zenoh session namespace prefix for one project.
 ///
 /// Constructed only through [`Namespace::parse`] or the infallible
 /// [`Namespace::local`]; the wrapped string is guaranteed to be a valid
@@ -53,14 +54,14 @@ impl InvalidNamespace {
 }
 
 impl Namespace {
-    /// The local namespace used when logged out. Infallible: [`LOCAL_NAMESPACE`]
+    /// The local namespace used when not enrolled. Infallible: [`LOCAL_NAMESPACE`]
     /// is a constant, valid non-wild key expression.
     pub fn local() -> Self {
         Self::parse(LOCAL_NAMESPACE)
             .expect("LOCAL_NAMESPACE must be a valid non-wild key expression")
     }
 
-    /// Parse and validate a candidate namespace (a workspace id or the local
+    /// Parse and validate a candidate namespace (a project id or the local
     /// constant). Rejects anything zenoh would not accept as a non-wild key
     /// expression so the value can never poison a live session.
     ///
@@ -84,8 +85,8 @@ impl Namespace {
         }
     }
 
-    /// Whether this is the logged-out [`LOCAL_NAMESPACE`]. This is the
-    /// federation gate, fail-closed by construction: an absent workspace id
+    /// Whether this is the unenrolled [`LOCAL_NAMESPACE`]. This is the
+    /// federation gate, fail-closed by construction: an absent project id
     /// resolves to `local` and an invalid one fails [`Namespace::parse`], so
     /// only a present, valid, non-local namespace ever federates.
     pub fn is_local(&self) -> bool {
@@ -162,10 +163,10 @@ mod tests {
 
     #[test]
     fn is_local_is_the_fail_closed_federation_gate() {
-        assert!(Namespace::local().is_local(), "logged out never federates");
+        assert!(Namespace::local().is_local(), "unenrolled never federates");
         assert!(
             !Namespace::parse(UUID).unwrap().is_local(),
-            "a valid workspace id federates"
+            "a valid project id federates"
         );
     }
 

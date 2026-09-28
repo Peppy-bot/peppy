@@ -434,7 +434,7 @@ impl CoreNodePresence {
 pub enum PresenceScope<'a> {
     /// The namespace the querying session itself was opened under.
     Session,
-    /// One named workspace namespace, observed from a namespace-free session.
+    /// One named project namespace, observed from a namespace-free session.
     Namespace(&'a Namespace),
 }
 

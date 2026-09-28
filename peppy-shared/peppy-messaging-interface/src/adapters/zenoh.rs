@@ -428,7 +428,7 @@ impl ZenohAdapter {
     /// hosted session's `gossip` (peer vs router-relay) and subscriber buffer
     /// sizes are explicit. Used by tests to exercise both messaging modes.
     ///
-    /// `namespace` stamps a workspace namespace onto the hosted session
+    /// `namespace` stamps a project namespace onto the hosted session
     /// (the same `with_router(...).with_namespace(...)` pairing the daemon uses),
     /// so a test that runs a core node off this session and spawns nodes under
     /// that workspace stays routing-consistent with them. `None` leaves the hosted
@@ -703,7 +703,7 @@ impl ZenohAdapter {
         ))
     }
 
-    /// Applies a workspace namespace to this adapter's session, re-rendering
+    /// Applies a project namespace to this adapter's session, re-rendering
     /// the stored session config so a
     /// non-reconnecting session -- which opens `client_config.zenoh_config`
     /// directly -- carries it, and `start_session`'s reconnecting rebuild

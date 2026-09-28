@@ -831,7 +831,7 @@ mod tests {
             namespace: config::namespace::Namespace::local(),
             router_id: None,
         };
-        assert!(local.matches(&state("local", Some("any-per-boot-id-is-fine"), true)));
+        assert!(local.matches(&state("local", Some("abc123"), true)));
         assert!(!local.matches(&state(PROJECT, None, true)));
     }
 

@@ -312,7 +312,7 @@ pub struct ServeOptions {
 /// Runs the daemon until a real stop (SIGINT/SIGTERM, external token, or all
 /// tasks done).
 ///
-/// In-process supervised restart loop: a namespace change (login/logout)
+/// In-process supervised restart loop: an identity change (enroll/unenroll)
 /// tears down the current generation and rebuilds a fresh one under the
 /// SAME PID, with no execv and no external supervisor, so the switch is
 /// uniform across a systemd install, a launchd install, and a bare
