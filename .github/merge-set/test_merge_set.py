@@ -54,6 +54,9 @@ BOT = "peppy-merge-set[bot]"
 RUN_URL = "https://github.com/Peppy-bot/peppy/actions/runs/99"
 CONTEXT = merge_set.RunContext(bot_login=BOT, run_url=RUN_URL)
 TEST_CHECK = RequiredCheck("test", 15368)
+# The ruleset of the integration branches that requires an approval.
+APPROVAL_RULESET = 20864833
+RULES = BranchRules((TEST_CHECK,), strict=False, approval_rulesets=(APPROVAL_RULESET,))
 
 
 def commit(repository, label="head"):
@@ -112,6 +115,7 @@ def report(pr, **changes):
         checks=((TEST_CHECK, CheckState.PASSED),),
         behind=False,
         stale=(),
+        unbypassed_approval_rulesets=(),
     )
     fields.update(changes)
     return merge_set.PullRequestReport(**fields)
@@ -522,6 +526,7 @@ class Rules(unittest.TestCase):
             BranchRules(
                 (RequiredCheck("test", 15368), RequiredCheck("check-index", None)),
                 strict=False,
+                approval_rulesets=(),
             ),
         )
 
@@ -530,6 +535,33 @@ class Rules(unittest.TestCase):
             [self.rule(("test", 15368)), self.rule(("lint", None), strict=True)]
         )
         self.assertTrue(rules.strict)
+
+    def test_the_rulesets_that_require_an_approval_are_kept_by_id(self):
+        def pull_request_rule(ruleset_id, **parameters):
+            return {
+                "type": "pull_request",
+                "ruleset_id": ruleset_id,
+                "parameters": {
+                    "required_approving_review_count": 0,
+                    "require_code_owner_review": False,
+                    "required_reviewers": [],
+                    **parameters,
+                },
+            }
+
+        rules = merge_set.parse_branch_rules(
+            [
+                {"type": "deletion", "ruleset_id": 1},
+                pull_request_rule(2, required_approving_review_count=1),
+                pull_request_rule(3),
+                pull_request_rule(4, require_code_owner_review=True),
+                pull_request_rule(
+                    5, required_reviewers=[{"reviewer": {"id": 7, "type": "Team"}}]
+                ),
+                pull_request_rule(2, required_approving_review_count=2),
+            ]
+        )
+        self.assertEqual(rules.approval_rulesets, (2, 4, 5))
 
 
 class RequiredChecks(unittest.TestCase):
@@ -858,6 +890,27 @@ class Blockers(unittest.TestCase):
         self.assertFalse(changes.waived_for_admins)
         self.assertEqual(merge_set.blockers_for([changes], admin=True), [changes])
 
+    def test_an_approval_the_app_cannot_bypass_is_not_waived_for_an_admin(self):
+        for rulesets, expected in (
+            (("Protect main and dev",), "of the ruleset `Protect main and dev`."),
+            (("A", "B"), "of the rulesets `A`, `B`."),
+        ):
+            with self.subTest(rulesets=rulesets):
+                unapproved = report(
+                    pull_request(NODES_HUB),
+                    review=ReviewDecision.REVIEW_REQUIRED,
+                    unbypassed_approval_rulesets=rulesets,
+                )
+                (missing,) = merge_set.set_blockers(
+                    self.two_member_state(), self.reports(unapproved)
+                )
+                self.assertFalse(missing.waived_for_admins)
+                self.assertEqual(
+                    missing.text,
+                    "nodes-hub#1 needs an approving review. No admin merges it "
+                    "without one: the merge-set App is not a bypass actor " + expected,
+                )
+
     def test_a_review_no_rule_asks_for_does_not_block(self):
         nodes_report = report(
             pull_request(NODES_HUB), review=ReviewDecision.NOT_REQUIRED
@@ -1058,10 +1111,9 @@ class FakeGitHub:
         self.bot_login = BOT
         self.heads = {}
         self.pulls = {repository.name: [] for repository in merge_set.REPOSITORIES}
-        self.rules = {
-            repository.name: BranchRules((TEST_CHECK,), strict=False)
-            for repository in merge_set.REPOSITORIES
-        }
+        self.rules = {repository.name: RULES for repository in merge_set.REPOSITORIES}
+        # The rulesets the App does not bypass, by repository name and id.
+        self.unbypassed = set()
         self.check_runs_of = {}
         self.statuses_of = {}
         self.reviews = {}
@@ -1161,6 +1213,12 @@ class FakeGitHub:
 
     def branch_rules(self, repository):
         return self.rules[repository.name]
+
+    def ruleset_bypass(self, repository, ruleset_id):
+        return merge_set.RulesetBypass(
+            f"Ruleset {ruleset_id}",
+            (repository.name, ruleset_id) not in self.unbypassed,
+        )
 
     def check_runs(self, repository, sha):
         return self.check_runs_of.get((repository.name, sha), [])
@@ -1368,7 +1426,7 @@ class SyncSet(unittest.TestCase):
         self.github.behind.add(self.nodes.label)
         sync(self.github)
         self.assertIn("**Ready to merge.**", self.github.dashboard_body(self.peppy))
-        self.github.rules["nodes-hub"] = BranchRules((TEST_CHECK,), strict=True)
+        self.github.rules["nodes-hub"] = replace(RULES, strict=True)
         sync(self.github)
         self.assertIn(
             "nodes-hub#88 is behind `main`, and the ruleset of that branch requires it "
@@ -1581,6 +1639,29 @@ class SyncMerge(unittest.TestCase):
         self.make_admin(repositories=(PEPPY, NODES_HUB))
         self.tick_merge()
         self.assertEqual(self.github.merged, [])
+
+    def test_an_admin_merges_nothing_of_a_set_whose_approval_the_app_cannot_bypass(
+        self,
+    ):
+        # GitHub would merge peppy and refuse contracts-hub: the bot merges none.
+        self.leave_unapproved(self.nodes, self.contracts)
+        self.github.unbypassed.add(("contracts-hub", APPROVAL_RULESET))
+        self.make_admin()
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn(
+            "- contracts-hub#9 needs an approving review. No admin merges it without "
+            f"one: the merge-set App is not a bypass actor of the ruleset "
+            f"`Ruleset {APPROVAL_RULESET}`.",
+            refusal,
+        )
+        self.assertNotIn("nodes-hub#88", refusal)
+        self.assertIn(
+            "**What blocks the merge**", self.github.dashboard_body(self.nodes)
+        )
+        for pr in (self.peppy, self.nodes, self.contracts):
+            self.assertEqual(self.github.gates(pr)[-1].state, "pending")
 
     def test_a_review_that_requests_changes_blocks_an_admin(self):
         self.github.reviews[self.nodes.label] = ReviewDecision.CHANGES_REQUESTED
@@ -1832,6 +1913,29 @@ class Gateway(unittest.TestCase):
         self.assertEqual(gateway.permission(NODES_HUB, "mallory"), "none")
         self.assertEqual(gateway.permission(NODES_HUB, "mallory"), "none")
         self.assertEqual(len(api.calls), 1)
+
+    def test_the_app_bypasses_a_ruleset_that_names_it_as_a_bypass_actor(self):
+        path = f"/repos/Peppy-bot/nodes-hub/rulesets/{APPROVAL_RULESET}"
+        for ruleset, bypassed in (
+            ({"current_user_can_bypass": "always"}, True),
+            ({"current_user_can_bypass": "pull_requests_only"}, True),
+            ({"current_user_can_bypass": "exempt"}, True),
+            ({"current_user_can_bypass": "never"}, False),
+            ({}, False),
+        ):
+            with self.subTest(ruleset=ruleset):
+                api = FakeApi(
+                    {("GET", path): {"name": "Protect main and dev", **ruleset}}
+                )
+                gateway = merge_set.GitHubGateway(api, BOT)
+                expected = merge_set.RulesetBypass("Protect main and dev", bypassed)
+                self.assertEqual(
+                    gateway.ruleset_bypass(NODES_HUB, APPROVAL_RULESET), expected
+                )
+                self.assertEqual(
+                    gateway.ruleset_bypass(NODES_HUB, APPROVAL_RULESET), expected
+                )
+                self.assertEqual(len(api.calls), 1)
 
     def test_the_dashboard_is_the_comment_of_the_bot_with_the_marker(self):
         pr = pull_request(NODES_HUB, 88)
