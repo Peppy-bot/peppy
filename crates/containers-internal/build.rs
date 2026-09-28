@@ -1162,15 +1162,36 @@ mod apptainer_build {
     // -----------------------------------------------------------------------
 
     /// Libraries `--nv` binds into a container beyond the ones apptainer's
-    /// stock `etc/apptainer/nvliblist.conf` names: the L4T driver's
-    /// resource-manager library, which every EGL, GLX, GL core and NVML
-    /// library of the stock list links against on NVIDIA Tegra hosts
-    /// (Jetson). Without it the bound `libEGL_nvidia.so.0` cannot load, glvnd
-    /// falls through to Mesa, and a node rendering headlessly through EGL
-    /// fails to initialise a display. `--nv` resolves every name through
-    /// `ldconfig -p` and skips the ones a host lacks, so the entries cost a
-    /// desktop driver nothing.
-    const NVLIBLIST_TEGRA_LIBS: &[&str] = &["libnvidia-rmapi-tegra.so"];
+    /// stock `etc/apptainer/nvliblist.conf` names, for the L4T driver of
+    /// NVIDIA Tegra hosts (Jetson):
+    ///
+    /// - The resource-manager library, which every EGL, GLX, GL core and NVML
+    ///   library of the stock list links against. Without it the bound
+    ///   `libEGL_nvidia.so.0` cannot load, glvnd falls through to Mesa, and a
+    ///   node rendering headlessly through EGL fails to initialise a display.
+    /// - The two libraries `libcuda.so.1` opens when it creates a context,
+    ///   `libnvcucompat.so` and `libnvcuextend.so`, and the libraries
+    ///   `libnvcucompat.so` links against, directly or through each other.
+    ///   Without them `cuInit` succeeds, then the first context, which the
+    ///   first allocation of any CUDA program creates, crashes the process
+    ///   with SIGSEGV.
+    ///
+    /// `--nv` resolves every name through `ldconfig -p` and skips the ones a
+    /// host lacks, so the entries cost a desktop driver nothing.
+    const NVLIBLIST_TEGRA_LIBS: &[&str] = &[
+        "libnvidia-rmapi-tegra.so",
+        "libnvcucompat.so",
+        "libnvcuextend.so",
+        "libnvrm_gpu.so",
+        "libnvrm_sync.so",
+        "libnvrm_mem.so",
+        "libnvrm_host1x.so",
+        "libnvrm_chip.so",
+        "libnvos.so",
+        "libnvsocsys.so",
+        "libnvtegrahv.so",
+        "libnvsciipc.so",
+    ];
 
     /// Path of the `--nv` library list inside an apptainer install tree.
     fn nvliblist_path(install_dir: &Path) -> PathBuf {
