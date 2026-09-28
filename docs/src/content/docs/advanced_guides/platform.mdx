@@ -1,28 +1,42 @@
 ---
 title: Platform
-description: Log in to the Peppy platform account with peppy platform login (OAuth device flow), stay logged in across runs, and authenticate CI with a PEPPY_API_KEY
+description: Sign in to the Peppy platform with peppy platform login (OAuth device flow), enroll this machine in a project's cloud router with peppy platform enroll, and check the link with peppy platform status
 sidebar:
   order: 16
 ---
 
-`peppy platform login` authenticates the CLI against the Peppy backend. Peppy is a public
-OAuth client of the project's identity provider (Zitadel): the CLI obtains a
-bearer token through the browser and sends it to the backend, which validates it.
-The CLI never sees your Google/passkey credentials. Those stay in the browser.
+`peppy platform` connects this machine to the Peppy platform in two independent
+steps. **Signing in** (`login`) gives the CLI a session for the platform API.
+**Enrolling** (`enroll`) joins this machine to a project's cloud messaging
+router: the CLI mints a private key and a certificate signing request, the
+platform signs it, and the daemon dials the project's router with that
+certificate from then on. The session is yours; the enrollment is the
+machine's. Logging out does not unenroll, and the daemon never needs a session
+to stay connected.
+
+Peppy is a public OAuth client of the platform's identity provider (Zitadel):
+the CLI obtains a bearer token through the browser and sends it to the backend,
+which validates it. The CLI never sees your Google/passkey credentials. Those
+stay in the browser.
 
 ## Commands
 
 | Command | What it does |
 |---------|--------------|
-| `peppy platform login [--api-url <url>] [--no-browser] [--yes]` | Logs in via the OAuth 2.0 Device Authorization Grant, caches the tokens, and federates a managed router to your workspace's cloud router. |
-| `peppy platform whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
-| `peppy platform list [--api-url <url>] [--json]` | Lists the core nodes registered to your workspace and whether each one is running right now. |
-| `peppy platform logout [--api-url <url>] [--yes]` | Removes this machine from the workspace's core-node registry, revokes the access token on the backend (across replicas), deletes the local credentials, and de-federates a managed router. |
+| `peppy platform login [--api-url <url>] [--no-browser]` | Signs in via the OAuth 2.0 Device Authorization Grant and caches the tokens. |
+| `peppy platform logout` | Revokes the session's tokens at the identity provider and deletes them locally. The enrollment stays. |
+| `peppy platform whoami [--json]` | Shows the signed-in identity, backend, and token validity. |
+| `peppy platform workspaces [--json]` | Lists the workspaces you belong to. |
+| `peppy platform projects [--workspace <id\|name>] [--json]` | Lists the projects of a workspace. |
+| `peppy platform enroll [--workspace <id\|name>] [--project <id\|name>] [--name <peer>] [--replace] [--yes]` | Enrolls this machine as a peer of a project's cloud router and restarts the daemon under the new identity. |
+| `peppy platform unenroll [--local-only] [--yes]` | Removes this machine's peer from the platform, deletes the local enrollment, and restarts the daemon standalone. |
+| `peppy platform status [--json]` | Shows the enrollment, whether the daemon runs under it with a verified link, and what the platform reports about the router and this peer. |
+| `peppy platform peers [--workspace <id\|name>] [--project <id\|name>] [--json]` | Lists the peers of a project's cloud router, this machine's project by default. |
 
-`--yes` (`-y`) skips the daemon-restart confirmation prompt described under
-[Workspace federation](#workspace-federation).
+`--api-url` overrides the backend on any command. `--yes` (`-y`) skips the
+daemon-restart confirmation prompt described under [Enrolling](#enrolling).
 
-## Logging in
+## Signing in
 
 ```sh
 peppy platform login
@@ -30,8 +44,8 @@ peppy platform login
 
 On a terminal this prints a verification URL and a user code, then opens your
 browser at that URL (with the code pre-filled). Approve the request in the
-browser and the CLI stores the tokens. Subsequent commands reuse them: you log
-in once and stay logged in until the refresh token expires; expired access
+browser and the CLI stores the tokens. Subsequent commands reuse them: you sign
+in once and stay signed in until the refresh token expires; expired access
 tokens are refreshed automatically.
 
 Over SSH or anywhere without a browser, use `--no-browser`: the CLI prints the
@@ -46,153 +60,105 @@ peppy platform login --no-browser
 1. The CLI fetches the public `GET {api_url}/cli/auth-config`, which returns the
    `issuer`, the `client_id`, and the exact `scopes` to request.
 2. It runs OIDC discovery against the `issuer`
-   (`{issuer}/.well-known/openid-configuration`) to find the device and token
-   endpoints.
+   (`{issuer}/.well-known/openid-configuration`) to find the device, token and
+   revocation endpoints.
 3. It starts the device flow, opens the browser, and polls until you approve.
 4. It caches the tokens (and the `issuer`/`client_id`, so refresh works offline)
    under `~/.peppy/conf/credentials.json5`.
 
-## Workspace federation
+Every later call to the platform API sends the cached access token as a bearer.
+When it is about to expire, or the backend answers `401`, the CLI exchanges the
+refresh token for a new one and persists the rotation.
 
-Logging in does more than cache a token: it stamps this machine with your
-**workspace namespace**, using the stable `workspace_id` returned by the backend.
-The namespace is messaging routing context only. It is not proof of workspace
-membership, a tenant-isolation boundary, or an authorization policy, and it does
-not enforce ACLs. Under `zenoh.managed`, the daemon also federates its local
-messaging router to the workspace cloud router. Sessions using the same workspace
-namespace can interoperate across that federation, while different namespaces
-take separate routing paths. Logged out, the machine falls back to the `local`
-namespace, which never reaches the cloud router; two logged-out machines on the
-same LAN still discover each other, but nothing leaves the local network.
-
-A session's namespace is fixed once the daemon opens it. Under `zenoh.managed`,
-changing that namespace by logging in or out **restarts the messaging daemon and
-wipes the running node stack**. When a managed daemon is running with user nodes,
-`login` and `logout` confirm first:
-
-```
-Logging in changes this machine's workspace namespace, which restarts the messaging daemon and wipes the running node stack.
-Continue? [y/N]
-```
-
-Pass `--yes` (`-y`) to skip the prompt. It is also skipped automatically when no
-daemon is running or when the stack holds no user nodes; in those cases the
-restart wipes nothing. When stdin is not a terminal the prompt is skipped
-unconditionally so scripts and CI are never blocked, which means a
-non-interactive login on a machine with a loaded stack still wipes it.
-
-Under `zenoh.managed`, `login` is **strict** about federation: after your
-credentials are saved it waits for the daemon to establish the federation link
-and exits non-zero if it cannot (no daemon running, the cloud router is
-unreachable or untrusted, or it times out). You stay authenticated in that case
-(only the command fails), so re-run it once the daemon is reachable. `logout` is
-best-effort and never fails on the de-federation step. How long the daemon waits
-to resolve the cloud router is bounded by
-[`zenoh.managed.federation.connect_timeout_secs`](/advanced_guides/daemon_config/#zenohmanagedfederation-cloud-router-timeout).
-
-With `zenoh.external`, login and logout skip federation and print a note instead;
-the daemon applies the resolved namespace to its sessions on its next manual
-restart. See [Federation outside the Peppy platform](#federation-outside-the-peppy-platform).
-
-### Listing the workspace's core nodes
-
-Once two machines have logged in under the same account, they share a workspace
-namespace and can already address each other. `peppy platform list` is what
-shows you that:
+## Enrolling
 
 ```sh
-peppy platform list
+peppy platform enroll
 ```
 
+Enrollment joins this machine to one project's cloud router. With one workspace
+and one project on the account, the command needs no flags; otherwise name
+them with `--workspace` and `--project` (an id or the exact name). The peer's
+name defaults to this machine's core-node name; `--name` overrides it.
+
+What happens:
+
+1. The CLI resolves the workspace and project.
+2. It mints a P-256 key pair and a certificate signing request whose only
+   subject is the peer name. The private key never leaves the machine.
+3. It posts the request to the project's `router/peers` endpoint. The platform
+   signs it and answers with the certificate, the project CA, the routing
+   namespace (the project id), and the zenoh identity the daemon's router must
+   run under.
+4. It writes the enrollment bundle under `~/.peppy/conf/peer/`:
+   `enrollment.json5` (the record), `peer.key` (the private key, owner-only),
+   `peer.crt` (the certificate followed by its issuing chain), `ca.crt` (the
+   project CA), and `zenohd.platform.json5` (the peer config the platform
+   rendered, kept for inspection).
+5. Under `zenoh.managed`, it pokes the running daemon over its control socket.
+   The daemon's router identity and session namespace cannot change while
+   live, so the daemon restarts its generation under the new identity and the
+   CLI waits for it to come back. A second poke then verifies the mutual-TLS
+   link to the cloud router with a real handshake; a link that does not
+   validate is reported with its reason, and the enrollment is kept.
+
+The restart wipes the running node stack. When a daemon is running with user
+nodes on a terminal, the command asks for confirmation first; `--yes` skips
+the prompt, and a script (no TTY) is never prompted.
+
+With no daemon running, the enrollment is written and the daemon joins the
+router when it starts. Under `zenoh.external` the daemon is left alone and the
+command prints where the material is for the operator's router to use.
+
+### The certificate
+
+The peer certificate is valid for 90 days. `peppy platform status` shows its
+expiry and warns from 14 days out. To mint a new one, run:
+
+```sh
+peppy platform enroll --replace
 ```
-Workspace 4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4 (backend https://api.peppy.dev)
 
-CORE NODE            NETWORK    APPLICATION           REGISTERED
-cn-brave-walrus      linked     online                2026-07-01   (this machine)
-cn-dreamy-elephant   linked     offline               2026-07-14
-cn-frosty-iguana     unlinked   offline               2026-06-02
-lab-bench-external   indirect   online (2 claimants)  -
+This enrolls anew (a new peer and a new zenoh identity), restarts the daemon
+under it, and removes the previous peer from the platform.
+
+### Namespace
+
+An enrolled daemon opens its own session, and every node it spawns, under the
+project's routing namespace. Two machines enrolled in the same project share a
+namespace and address each other across the cloud router, which is the
+foundation for running one stack across both; see
+[Federation](/advanced_guides/federation/). An unenrolled daemon runs under
+`local`. The namespace is routing context only. It is not proof of project
+membership, a tenant-isolation boundary, or an authorization policy: isolation
+comes from each project having its own router and its own certificate
+authority.
+
+### Checking the link
+
+```sh
+peppy platform status
 ```
 
-The listing is **workspace scoped**. It shows the machines logged in to your own
-account and nothing else, and machines in other workspaces are invisible to you
-by design. The platform runs no core node in your workspace either, so every row
-is one of your own machines. A machine is added when it logs in and removed when
-it logs out, so `peppy platform logout` takes a machine off this list.
+The report has three parts: the enrollment on disk (project, peer, router,
+certificate expiry, files), the daemon (running, under the enrolled identity,
+and whether a fresh handshake to the cloud router validates), and, when you
+are signed in, the platform's view (the router's phase and this peer's
+connection status). `peppy platform peers` lists every peer of the project as
+the platform sees them, marking this machine.
 
-#### Two layers, reported separately
+## Unenrolling
 
-A machine reaches the platform through two layers, and they fail independently:
+```sh
+peppy platform unenroll
+```
 
-- The **network** layer is the transport. Your machine's `zenohd` holds a live
-  session with the platform's shared `zenohd`. This is federation, and it knows
-  nothing about core nodes.
-- The **application** layer is your workspace namespace. Your machine's core node
-  declares its presence there, which is what `APPLICATION` reports.
-
-Both are shown because only one of them cannot tell you what to do about a
-machine that is not answering. `linked` beside `offline` is a healthy uplink with
-a dead daemon behind it, so debug the machine. `unlinked` beside `offline` is a
-site the platform cannot reach at all, so debug the network. Reading the
-application column alone, the absence of a signal is exactly as consistent with a
-severed link as with a stopped daemon.
-
-The `NETWORK` column reads:
-
-| Value | Meaning |
-|-------|---------|
-| `linked` | This machine's router holds a live transport session with the platform's shared router. |
-| `indirect` | That session is absent, but the machine is `online` anyway, so its traffic reaches the platform through a router Peppy does not manage. See below. |
-| `unlinked` | No session, and the machine is `offline`. The site is unreachable. |
-| `unknown` | The platform could not read its router's session list, so no row's network status is known; or the session is absent while the application layer is itself unavailable, in which case `indirect` and `unlinked` cannot be told apart and neither is guessed at. |
-
-The `APPLICATION` column reads:
-
-| Value | Meaning |
-|-------|---------|
-| `online` | The machine's daemon is running and reachable on the shared router right now. |
-| `offline` | The machine is registered but its daemon is stopped or unreachable. |
-| `online (N claimants)` | `N` different daemons are claiming this core-node name at once. This is a name collision, and it is worth acting on: the losing daemon refuses to start, so a collision is often why a machine will not come up. |
-| `unknown` | The platform could not read liveness at all, so no row's status is known. The list of machines itself is still accurate. A warning explains this on stderr. |
-
-`indirect` is what a machine configured with
-[`zenoh.external`](/advanced_guides/daemon_config/#zenohexternal-use-an-operator-run-router)
-looks like once it has been registered: Peppy no longer manages the router
-carrying its traffic, so the router identity the platform has on file for it
-stops connecting, while the machine keeps reaching your workspace through the
-router you run. The status exists so the two columns can never contradict each
-other by reporting a machine as both `unlinked` and `online`.
-
-The reverse pairing is real too, and it is the reason the column earns its keep.
-A daemon killed hard enough to leave its `zenohd` running keeps that router
-connected, so the row reads `linked` and `offline`: the uplink is fine, the
-daemon is not.
-
-A row with `-` under `REGISTERED` is running on the wire but was never registered
-with the platform. That is the normal appearance of a daemon configured with
-[`zenoh.external`](/advanced_guides/daemon_config/#zenohexternal-use-an-operator-run-router):
-it adopts its cached workspace namespace but never pulls federation config, so
-the platform is never told about it.
-
-`REGISTERED` is the date a machine first registered, in UTC. There is
-deliberately no "last seen" column: the platform's other timestamp records when
-a machine last asserted its identity, which is not the same as when it was last
-running. A machine that has been up for a week without re-registering would
-look a week stale. Liveness lives in the `APPLICATION` column and nowhere else.
-`--json` exposes the re-registration time under its own name,
-`last_registered_at`.
-
-Two caveats worth knowing:
-
-- Default core-node names are hashes of the machine's UID, so the roster may not
-  tell you which machine is which. `peppy stack list` is where host names live.
-  Set [`core_node_name`](/advanced_guides/daemon_config/) to give a machine a
-  name you recognize.
-- Neither `online` nor `linked` is an authenticated statement. The messaging
-  transport does not authenticate daemons, so anything that can reach the router
-  can open a session and claim a name. `NETWORK` reports what the platform's
-  router observes on the wire, not an identity it has vouched for. A `REGISTERED`
-  date is backed by a bearer token; a live status is not.
+This removes the peer on the platform (the platform drops it at the router's
+next restart), deletes `~/.peppy/conf/peer/`, and pokes the daemon, which
+restarts standalone under `local`. Removing the peer needs a session; a machine
+that cannot sign in can delete only its local enrollment with `--local-only`
+and have the peer removed from the web app. The same restart prompt and
+`--yes` bypass apply as for `enroll`.
 
 ## Federation outside the Peppy platform
 
@@ -213,58 +179,19 @@ zenoh: {
 `zenohd -l tcp/0.0.0.0:7448`) and make sure every machine, and every node
 environment on it, can reach that host and port. Peppy dials this router, adopts
 it, and never starts, restarts, reconfigures, or federates it: its lifecycle is
-yours. No login, no backend, and no cloud router is involved.
+yours. No sign-in, no backend, and no cloud router is involved.
 
-### Stay logged out on every machine
-
-Every session carries a **namespace**, and it is applied under `zenoh.external`
-exactly as it is under `zenoh.managed`. It is `local` when logged out and the
-workspace namespace when logged in (see
-[Workspace federation](#workspace-federation)). External mode changes which
-router Peppy dials, not how sessions are namespaced: the daemon stamps its own
-session, and every node it spawns, with whatever namespace the local credentials
-resolve to. A shared router forwards traffic between namespaces without matching
-it, so a machine on a workspace namespace and a machine on `local` discover
-nothing from each other even though both are connected to your router.
-
-So keep all the machines on the same namespace, and the only namespace you can
-count on without the platform is `local`:
-
-```sh
-peppy platform logout
-```
-
-Then restart the daemon on that machine (see below).
-
-Being signed in is not by itself what changes the namespace. A workspace
-namespace is cached in `~/.peppy/conf/credentials.json5` under a `router` block,
-and only managed-mode federation ever writes it there. `peppy platform login`
-clears that block, and external mode never re-pulls it, so a fresh login under
-`zenoh.external` still resolves to `local`.
-
-The case that bites is a machine that **previously ran in managed mode while
-logged in** and was then switched to `zenoh.external`. Its credentials still
-carry the cached `router` block, the daemon reads it with no staleness check,
-and that machine silently comes up on the workspace namespace while its
-logged-out peers sit on `local`. Nothing warns about the mismatch. Logging out
-removes the block; you can also confirm it is gone by checking that
-`credentials.json5` has no `router` key.
-
-### Applying a change
-
-External mode has no federation control socket, so `login` and `logout` cannot
-poke the daemon and never restart it. A namespace change, like any other
-`peppy_config.json5` change, reaches sessions only when the daemon is restarted
-by hand: stop it (`peppy service stop`, or `systemctl stop` your unit) and start
-it again. A session's namespace is fixed once it is open, so nothing changes
-until that restart happens.
-
-### Checklist
-
-1. Start your Zenoh router and make it reachable from every machine.
-2. On each machine, set `zenoh.external.endpoint` to that router's dial address.
-3. On each machine, run `peppy platform logout`.
-4. Restart the daemon on each machine.
+Every session carries a namespace under `zenoh.external` exactly as it does
+under `zenoh.managed`: `local` when the machine is not enrolled, the project
+namespace when it is. A shared router forwards traffic between namespaces
+without matching it, so an enrolled machine and an unenrolled one discover
+nothing from each other even though both are connected to your router. Keep
+every machine on the same namespace; without the platform that is `local`, so
+unenroll each machine (`peppy platform unenroll --local-only` when it has no
+session) and restart its daemon. External mode has no federation control
+socket, so `enroll` and `unenroll` never restart the daemon: a namespace change
+reaches sessions only when you restart it by hand (`peppy service stop`, then
+start it again).
 
 ## Backend
 
@@ -278,61 +205,41 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 local backends (loopback / `*.localhost`); anything else must be `https`. Debug
 builds accept remote plain `http` with a warning.
 
-## CI and automation
-
-For non-interactive use, set `PEPPY_API_KEY` to a Zitadel service-user personal
-access token (PAT). It is used directly as the bearer: no browser, no refresh,
-and it is never written to disk. A PAT short-circuits every other credential
-source, so CI never opens a browser. If the PAT is revoked, requests start
-failing with 401 and you must rotate it. A PAT principal shows up as
-`kind: "machine"` under `peppy platform whoami`.
-
 ## Credential storage
 
 Tokens live at `~/.peppy/conf/credentials.json5`, written owner-only (`0600`).
-The root honors `PEPPY_HOME`.
+The enrollment lives beside it under `~/.peppy/conf/peer/`, with the private
+key and the record owner-only. The root honors `PEPPY_HOME`.
 
 Tokens are never printed and `Authorization` headers are redacted in verbose
 output.
 
-## Logging out
+## Signing out
 
 ```sh
 peppy platform logout
 ```
 
-This calls `POST {api_url}/logout`, which denylists the presented access token
-across all backend replicas (sub-second), then deletes the local credentials.
-The effect is near-immediate for the logged-out token. It revokes only the
-token you presented; a session on another device keeps working.
+This revokes the refresh token and then the access token at the identity
+provider, then deletes the local session. The backend checks every bearer with
+the identity provider, so a revoked token stops working at once. It revokes
+only the tokens this machine holds; a session on another device keeps working.
 
-Logout also deregisters this machine's core node, sending `DELETE
-{api_url}/me/core-nodes/{core_node_name}` so the machine stops appearing in
-`peppy platform list`. A logged-out machine no longer federates or pulls config,
-so leaving its row behind would misrepresent it. This step is best-effort, like
-the token revocation above: if the backend is unreachable the row is left behind
-and logout still completes, and a `zenoh.external` daemon that never registered
-has nothing to remove.
-
-Logout also returns this machine to the `local` namespace. Under `zenoh.managed`,
-it de-federates the router, restarts the daemon, and wipes the running node stack,
-with the same confirmation prompt and `--yes` bypass (see
-[Workspace federation](#workspace-federation)). Under `zenoh.external`,
-the operator's federation is left untouched and the namespace changes on the
-next manual daemon restart (see
-[Federation outside the Peppy platform](#federation-outside-the-peppy-platform)).
+Signing out leaves the enrollment in place: the daemon keeps its certificate
+and its link to the project router, and only the CLI's platform calls need a
+new `peppy platform login`.
 
 ## Environment variables
 
 | Variable | Purpose |
 |----------|---------|
-| `PEPPY_API_KEY` | PAT for non-interactive auth (highest-priority credential). |
 | `PEPPY_API_URL` | Override the backend base URL. |
-| `PEPPY_HOME` | Override the `~/.peppy` data root (also moves the credentials file). |
+| `PEPPY_HOME` | Override the `~/.peppy` data root (also moves the credentials file and the enrollment). |
 | `NO_COLOR` | Disable colored output. |
 
-## Running one stack across your workspace's machines
+## Running one stack across your project's machines
 
-Once two machines are logged into the same workspace they share a namespace and
-can address each other, which is the foundation for running a single Peppy stack
-across both. See [Federation](/advanced_guides/federation/).
+Once two machines are enrolled in the same project they share a namespace and
+can address each other through the project's cloud router, which is the
+foundation for running a single Peppy stack across both. See
+[Federation](/advanced_guides/federation/).

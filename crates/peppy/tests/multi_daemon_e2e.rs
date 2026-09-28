@@ -126,13 +126,9 @@ fn external_daemon_config(core_node: &str, router_port: u16) -> String {
 }
 
 fn managed_daemon_config(core_node: &str) -> String {
-    let mut managed = ManagedZenohConfig::default();
-    // The pinned router links below do not need a backend. Keep the armed
-    // federation task's failed backend resolution from delaying startup.
-    managed.federation.connect_timeout_secs = 1;
     let config = PeppyConfig {
         core_node_name: Some(core_node.to_string()),
-        zenoh: ZenohConfig::Managed(managed),
+        zenoh: ZenohConfig::Managed(ManagedZenohConfig::default()),
         ..PeppyConfig::default()
     };
     serde_json::to_string(&config).expect("full daemon config should serialize")
@@ -867,8 +863,8 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
 /// collision daemon dials both A and B so its name claim does not depend on
 /// multi-hop relay.
 ///
-/// The federation task still boots armed, but this test has no backend and its
-/// one-second resolution attempt fails before the daemon proceeds standalone.
+/// No machine is enrolled in a platform project, so each daemon boots its
+/// router standalone and the federation task only reports the pinned config.
 /// The static cross-machine links belong to zenohd itself, not that task, and a
 /// pinned config survives peppy's router watchdog restarts unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

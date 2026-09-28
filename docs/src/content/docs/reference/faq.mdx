@@ -20,7 +20,7 @@ Peppy is written in [Rust](https://rust-lang.org/). Nodes communicate over [Zeno
 <details>
 <summary>Can Peppy instances on different machines communicate with each other?</summary>
 
-Yes. Core nodes connect into a unified network through [federation](/advanced_guides/federation/): each core node manages its own machine, and a single launch can place nodes across machines, with the coordinator resolving every deployment once and the other machines running exactly what it resolved. Machines join the same network by logging into a shared workspace with [`peppy platform login`](/advanced_guides/platform/).
+Yes. Core nodes connect into a unified network through [federation](/advanced_guides/federation/): each core node manages its own machine, and a single launch can place nodes across machines, with the coordinator resolving every deployment once and the other machines running exactly what it resolved. Machines join the same network by enrolling in the same project with [`peppy platform enroll`](/advanced_guides/platform/).
 </details>
 
 <details>

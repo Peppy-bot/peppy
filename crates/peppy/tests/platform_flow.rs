@@ -1,12 +1,16 @@
-//! Command-level platform tests (`peppy platform login` / `logout` / `whoami`) with
-//! every HTTP endpoint mocked (`httpmock`): the public `/cli/auth-config`, OIDC
-//! discovery, the Zitadel device/token endpoints, and the backend `/me` +
-//! `/logout`. All auth state is isolated per test via the `peppy_dirs` seam
-//! pointed at a tempdir (no `PEPPY_HOME` mutation, so tests run in parallel);
-//! the credentials file and `peppy_config.json5` both land there. The engine
-//! internals (resolver, router-config cache, federation-target resolution) are
-//! covered by the `auth` crate's own tests.
+//! Command-level platform tests with every HTTP endpoint mocked (`httpmock`):
+//! the public `/cli/auth-config`, OIDC discovery, the Zitadel device, token and
+//! revocation endpoints, and the backend's `/me`, workspace, project and
+//! router-peer routes. All state is isolated per test via the `peppy_dirs`
+//! seam pointed at a tempdir (no `PEPPY_HOME` mutation, so tests run in
+//! parallel); the credentials file, the enrollment bundle and
+//! `peppy_config.json5` all land there. A running daemon is stood in for by a
+//! stub on the control socket. The engine internals (resolver, the platform
+//! client, the enrollment store, the CSR) are covered by the `auth` crate's
+//! own tests.
 
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,19 +19,32 @@ use httpmock::prelude::*;
 use secrecy::ExposeSecret;
 use serde_json::json;
 
+use auth::enrollment::{self, EnrollmentBundle, EnrollmentDocument, RouterEndpoint};
 use auth::storage::{self, Credentials, ProfileCreds};
 use daemon::state::DaemonState;
 use peppy::commands::Command;
-use peppy::commands::platform::list::ListCommand;
+use peppy::commands::platform::enroll::EnrollCommand;
 use peppy::commands::platform::login::LoginCommand;
 use peppy::commands::platform::logout::LogoutCommand;
+use peppy::commands::platform::peers::PeersCommand;
+use peppy::commands::platform::projects::ProjectsCommand;
+use peppy::commands::platform::status::StatusCommand;
+use peppy::commands::platform::unenroll::UnenrollCommand;
 use peppy::commands::platform::whoami::WhoamiCommand;
+use peppy::commands::platform::workspaces::WorkspacesCommand;
 use peppy::commands::platform::{PlatformCommand, PlatformCommands};
 use peppy::context::AppContext;
 
+const WORKSPACE: &str = "4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4";
+const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
+const ZID: &str = "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5";
+const ROUTER_HOST: &str = "rtr-p.us-east-1.robocloud.dev.peppy.bot";
+const PEERS_PATH: &str = "/api/workspace/4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4/projects/550e8400-e29b-41d4-a716-446655440000/router/peers";
+const ROUTER_PATH: &str = "/api/workspace/4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4/projects/550e8400-e29b-41d4-a716-446655440000/router";
+
 /// Builds the cli/auth-config + OIDC discovery + device-authorization + token mocks
 /// for a server whose issuer is its own base URL, with the device grant
-/// succeeding immediately. Returns nothing; the mocks live on the server.
+/// succeeding immediately.
 fn mock_login_endpoints(server: &MockServer, access_token: &str) {
     let base = server.base_url();
 
@@ -39,15 +56,7 @@ fn mock_login_endpoints(server: &MockServer, access_token: &str) {
             "scopes": "openid profile email offline_access urn:zitadel:iam:org:project:id:proj-id:aud",
         }));
     });
-
-    server.mock(|when, then| {
-        when.method(GET).path("/.well-known/openid-configuration");
-        then.status(200).json_body(json!({
-            "device_authorization_endpoint": format!("{base}/oauth/v2/device_authorization"),
-            "token_endpoint": format!("{base}/oauth/v2/token"),
-        }));
-    });
-
+    mock_discovery(server);
     server.mock(|when, then| {
         when.method(POST).path("/oauth/v2/device_authorization");
         then.status(200).json_body(json!({
@@ -59,7 +68,6 @@ fn mock_login_endpoints(server: &MockServer, access_token: &str) {
             "interval": 0,
         }));
     });
-
     server.mock(|when, then| {
         when.method(POST).path("/oauth/v2/token");
         then.status(200).json_body(json!({
@@ -72,20 +80,76 @@ fn mock_login_endpoints(server: &MockServer, access_token: &str) {
     });
 }
 
+fn mock_discovery(server: &MockServer) {
+    let base = server.base_url();
+    server.mock(|when, then| {
+        when.method(GET).path("/.well-known/openid-configuration");
+        then.status(200).json_body(json!({
+            "issuer": base,
+            "device_authorization_endpoint": format!("{base}/oauth/v2/device_authorization"),
+            "token_endpoint": format!("{base}/oauth/v2/token"),
+            "revocation_endpoint": format!("{base}/oauth/v2/revoke"),
+        }));
+    });
+}
+
 /// `GET /me` returning a `human` principal plus an unknown future field, so the
 /// test also exercises tolerant deserialization.
 fn mock_me(server: &MockServer) -> httpmock::Mock<'_> {
     server.mock(|when, then| {
         when.method(GET).path("/me");
         then.status(200).json_body(json!({
-            "id": "550e8400-e29b-41d4-a716-446655440000",
             "sub": "user-123",
             "kind": "human",
             "username": "alice",
             "email": "alice@example.com",
-            "role": "user",
-            "owner_principal_id": null,
+            "region": "us-east-1",
             "some_future_field": "ignored by a tolerant client",
+        }));
+    })
+}
+
+fn mock_workspaces_and_projects(server: &MockServer) {
+    server.mock(|when, then| {
+        when.method(GET).path("/api/workspaces");
+        then.status(200).json_body(json!([
+            { "id": WORKSPACE, "name": "Alice's workspace", "tier": "free",
+              "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z" }
+        ]));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path(format!("/api/workspace/{WORKSPACE}/projects"));
+        then.status(200).json_body(json!([
+            { "id": PROJECT, "workspace_id": WORKSPACE, "name": "Lab", "robot_count": 1,
+              "live_session_count": 0, "created_at": "2026-10-01T00:00:00Z",
+              "updated_at": "2026-10-01T00:00:00Z" },
+            { "id": "p-old", "workspace_id": WORKSPACE, "name": "Old", "robot_count": 0,
+              "live_session_count": 0, "created_at": "2026-10-01T00:00:00Z",
+              "updated_at": "2026-10-01T00:00:00Z", "archived_at": "2026-10-02T00:00:00Z" }
+        ]));
+    });
+}
+
+/// `POST .../router/peers` answering a signed enrollment for any request.
+fn mock_enroll<'a>(server: &'a MockServer, zid: &str) -> httpmock::Mock<'a> {
+    let zid = zid.to_string();
+    server.mock(move |when, then| {
+        // Only a PEM signing request is answered, so a call count of one proves
+        // the CLI posted what it minted.
+        when.method(POST)
+            .path(PEERS_PATH)
+            .body_includes("-----BEGIN CERTIFICATE REQUEST-----");
+        then.status(201).json_body(json!({
+            "peer": { "id": "peer-1", "name": "robot-7", "certificate_cn": "robot-7",
+                      "status": "unknown", "certificate_expires_at": "2027-01-01T00:00:00Z",
+                      "created_at": "2026-10-03T00:00:00Z" },
+            "certificate": "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n",
+            "chain": "-----BEGIN CERTIFICATE-----\nissuer\n-----END CERTIFICATE-----\n",
+            "trust_anchor": "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n",
+            "zenoh_id": zid,
+            "namespace": PROJECT,
+            "zenoh_config": format!("{{ connect: {{ endpoints: [\"tls/{ROUTER_HOST}:7447\"] }} }}"),
         }));
     })
 }
@@ -98,6 +162,10 @@ fn creds_path(dir: &tempfile::TempDir) -> PathBuf {
     dir.path().join("conf").join("credentials.json5")
 }
 
+fn dirs(dir: &tempfile::TempDir) -> PeppyDirs {
+    PeppyDirs::new(dir.path())
+}
+
 /// Writes the minimal explicit external-router variant. Config completion fills
 /// unrelated defaulted sections while leaving `zenoh.external` untouched.
 fn write_external_zenoh_config(dir: &tempfile::TempDir) {
@@ -108,845 +176,6 @@ fn write_external_zenoh_config(dir: &tempfile::TempDir) {
         r#"{ zenoh: { external: { endpoint: "tcp/127.0.0.1:7447" } } }"#,
     )
     .expect("write external peppy config");
-}
-
-#[test]
-fn login_persists_credentials_and_resolves_identity() {
-    let server = MockServer::start();
-    mock_login_endpoints(&server, "access-token-1");
-    let me = mock_me(&server);
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = creds_path(&dir);
-
-    // Strict federation: with no daemon running (no control socket), login fails
-    // *after* persisting the credentials. This is the canonical "creds kept on a
-    // federation failure" check: the user is authenticated, only the command
-    // exits non-zero.
-    let err = LoginCommand {
-        api_url: Some(server.base_url()),
-        no_browser: true,
-        yes: true,
-        peppy_dirs: Some(PeppyDirs::new(dir.path())),
-    }
-    .execute(&ctx())
-    .expect_err("login fails strictly when no daemon is running to federate");
-    assert!(
-        err.to_string().contains("federation"),
-        "the error explains the federation failure: {err}"
-    );
-
-    // The single session is still persisted, with identity cached.
-    let creds = storage::load(&path).expect("load creds");
-    let pc = creds.session.as_ref().expect("session present");
-    assert_eq!(pc.access_token.expose_secret(), "access-token-1");
-    assert_eq!(pc.refresh_token.expose_secret(), "the-refresh-token");
-    assert_eq!(pc.subject, "user-123");
-    assert_eq!(pc.username, "alice");
-    assert_eq!(pc.issuer, server.base_url());
-    assert_eq!(pc.client_id, "cli-client-id");
-
-    // `/me` was consulted (the tolerant parse succeeded).
-    assert!(me.calls() >= 1, "GET /me should have been called");
-}
-
-#[test]
-fn external_login_succeeds_without_a_daemon_control_socket() {
-    let server = MockServer::start();
-    mock_login_endpoints(&server, "external-access-token");
-    let _me = mock_me(&server);
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    write_external_zenoh_config(&dir);
-    let peppy_dirs = PeppyDirs::new(dir.path());
-    let control_socket = peppy_dirs
-        .runtime_config_dir()
-        .join("federation_control.sock");
-    assert!(
-        !control_socket.exists(),
-        "the test must start without a daemon control socket"
-    );
-
-    LoginCommand {
-        api_url: Some(server.base_url()),
-        no_browser: true,
-        yes: true,
-        peppy_dirs: Some(peppy_dirs),
-    }
-    .execute(&ctx())
-    .expect("external login must not require a running daemon");
-
-    assert!(
-        !control_socket.exists(),
-        "external login must not create or require federation control"
-    );
-    let creds = storage::load(&creds_path(&dir)).expect("load external login credentials");
-    assert_eq!(
-        creds
-            .session
-            .expect("external login session")
-            .access_token
-            .expose_secret(),
-        "external-access-token"
-    );
-}
-
-#[test]
-fn login_pokes_the_running_daemon_to_refederate() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
-
-    let server = MockServer::start();
-    mock_login_endpoints(&server, "access-token-1");
-    let _me = mock_me(&server);
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let peppy_dirs = PeppyDirs::new(dir.path());
-    let runtime = peppy_dirs.runtime_config_dir();
-    std::fs::create_dir_all(&runtime).expect("runtime dir");
-    // Matches `daemon_control::FEDERATION_CONTROL_SOCK` (the wire contract).
-    let socket = runtime.join("federation_control.sock");
-
-    // A stub daemon: accept one poke, capture the request line, reply ok.
-    let listener = UnixListener::bind(&socket).expect("bind stub control socket");
-    let stub = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept poke");
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("read poke request");
-        stream
-            .write_all(b"{\"status\":\"ok\",\"applied\":\"tls/cap:7443\"}\n")
-            .expect("reply");
-        line.trim().to_string()
-    });
-
-    LoginCommand {
-        api_url: Some(server.base_url()),
-        no_browser: true,
-        yes: true,
-        peppy_dirs: Some(peppy_dirs),
-    }
-    .execute(&ctx())
-    .expect("login should succeed");
-
-    let request = stub.join().expect("stub thread");
-    assert_eq!(
-        request, "refederate",
-        "login must poke the daemon to refederate"
-    );
-}
-
-#[test]
-fn login_seeds_peppy_config_with_resource_servers_block() {
-    let server = MockServer::start();
-    mock_login_endpoints(&server, "access-token-3");
-    let _me = mock_me(&server);
-
-    let dir = tempfile::tempdir().expect("temp dir");
-
-    // The federation poke fails (no daemon) so login exits non-zero, but the
-    // config seeding happens earlier in the flow; ignore the federation error.
-    let _ = LoginCommand {
-        api_url: Some(server.base_url()),
-        no_browser: true,
-        yes: true,
-        peppy_dirs: Some(PeppyDirs::new(dir.path())),
-    }
-    .execute(&ctx());
-
-    // A login on a machine that never ran the daemon still seeds
-    // peppy_config.json5 with the resource_servers block (build's default URL,
-    // which is the dev backend in this debug test build).
-    let config = std::fs::read_to_string(dir.path().join("conf").join("peppy_config.json5"))
-        .expect("peppy_config.json5 was created by the CLI");
-    assert!(
-        config.contains("resource_servers:"),
-        "resource_servers block missing:\n{config}"
-    );
-    assert!(
-        config.contains(r#"api: "http://127.0.0.1:3000""#),
-        "default api URL missing:\n{config}"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn login_writes_credentials_file_0600() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let server = MockServer::start();
-    mock_login_endpoints(&server, "access-token-2");
-    let _me = mock_me(&server);
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = creds_path(&dir);
-
-    // No daemon ⇒ login exits non-zero on the federation step, but the
-    // credentials file is written (0600) earlier; ignore the federation error.
-    let _ = LoginCommand {
-        api_url: Some(server.base_url()),
-        no_browser: true,
-        yes: true,
-        peppy_dirs: Some(PeppyDirs::new(dir.path())),
-    }
-    .execute(&ctx());
-
-    let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "credentials must be owner-only");
-}
-
-/// Writes a config that pins `core_node_name`, so logout can resolve the name to
-/// deregister without a daemon ever having run in the tempdir. The daemon state
-/// file takes precedence over this in production; the precedence itself is unit
-/// tested next to the resolver.
-fn write_core_node_name_config(dir: &tempfile::TempDir, core_node_name: &str) {
-    let config_dir = dir.path().join("conf");
-    std::fs::create_dir_all(&config_dir).expect("config dir");
-    std::fs::write(
-        config_dir.join("peppy_config.json5"),
-        format!("{{ core_node_name: \"{core_node_name}\" }}"),
-    )
-    .expect("write peppy config");
-}
-
-/// Seed a logged-in session under `dir` and run logout against `server`, with
-/// `core_node_name` pinned in the config so the deregistration has a name.
-/// Returns the credentials path so the caller can assert the session was cleared.
-fn logout_with_core_node(
-    server: &MockServer,
-    dir: &tempfile::TempDir,
-    core_node_name: &str,
-) -> PathBuf {
-    write_core_node_name_config(dir, core_node_name);
-    let path = creds_path(dir);
-    storage::save(
-        &path,
-        &Credentials {
-            session: Some(seeded_creds(server, 9_999_999_999)),
-            ..Default::default()
-        },
-    )
-    .expect("seed creds");
-
-    LogoutCommand {
-        api_url: Some(server.base_url()),
-        yes: true,
-        peppy_dirs: Some(PeppyDirs::new(dir.path())),
-    }
-    .execute(&ctx())
-    .expect("logout");
-    path
-}
-
-#[test]
-fn logout_deregisters_this_machines_core_node() {
-    let server = MockServer::start();
-    // Matching on the header as well as the path means an unauthenticated DELETE
-    // (or one under some other token) does not match, and `calls()` reads 0.
-    // Ordering against the revocation is deliberately NOT asserted here: the
-    // `/logout` mock is stateless, so a DELETE sent after it would look
-    // identical, and httpmock exposes no ordered request log to tell them apart.
-    // What ordering exists for, keeping a live token under the DELETE, is
-    // covered from the other side by
-    // `deregistration_never_refreshes_the_token_logout_is_about_to_revoke`.
-    let deregister = server.mock(|when, then| {
-        when.method(DELETE)
-            .path("/me/core-nodes/cn-logout-me")
-            .header("Authorization", "Bearer seeded-access");
-        then.status(204);
-    });
-    let logout = server.mock(|when, then| {
-        when.method(POST).path("/logout");
-        then.status(202);
-    });
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = logout_with_core_node(&server, &dir, "cn-logout-me");
-
-    assert_eq!(
-        deregister.calls(),
-        1,
-        "logout must deregister this machine's core node"
-    );
-    assert!(logout.calls() >= 1, "POST /logout should have been called");
-    assert!(
-        storage::load(&path).expect("load creds").session.is_none(),
-        "local credentials must be removed after logout"
-    );
-}
-
-#[test]
-fn deregistration_never_refreshes_the_token_logout_is_about_to_revoke() {
-    // A 401 is the one trigger the refreshing `authed_*` helpers act on. If
-    // `deregister_core_node` ever routes through them, it mints and persists a
-    // NEW access token here, and the revocation immediately after would still
-    // revoke the old one, leaving the new token valid until its own expiry. That
-    // fires whenever the access token has expired but the refresh token has not,
-    // which is the ordinary state of an idle CLI.
-    //
-    // A refresh does OIDC discovery and then posts to the token endpoint, so
-    // mounting both and asserting neither is touched catches it. The type
-    // signature (`&str`, not `&mut Credential`) is what makes it impossible;
-    // this is the behavioral guard that fails if the signature is widened.
-    let server = MockServer::start();
-    let base = server.base_url();
-    let discovery = server.mock(|when, then| {
-        when.method(GET).path("/.well-known/openid-configuration");
-        then.status(200).json_body(json!({
-            "device_authorization_endpoint": format!("{base}/oauth/v2/device_authorization"),
-            "token_endpoint": format!("{base}/oauth/v2/token"),
-        }));
-    });
-    let token = server.mock(|when, then| {
-        when.method(POST).path("/oauth/v2/token");
-        then.status(200).json_body(json!({
-            "access_token": "refreshed-access",
-            "refresh_token": "refreshed-refresh",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-            "scope": "openid",
-        }));
-    });
-    let deregister = server.mock(|when, then| {
-        when.method(DELETE).path("/me/core-nodes/cn-stale-token");
-        then.status(401);
-    });
-    let logout = server.mock(|when, then| {
-        when.method(POST).path("/logout");
-        then.status(202);
-    });
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = logout_with_core_node(&server, &dir, "cn-stale-token");
-
-    // Asserted before the call count, so a refreshing implementation reports the
-    // property it broke rather than the retry that broke it.
-    assert_eq!(
-        discovery.calls(),
-        0,
-        "deregistration must not begin a token refresh"
-    );
-    assert_eq!(
-        token.calls(),
-        0,
-        "deregistration must not mint a token the revocation that follows would not cover"
-    );
-    assert_eq!(
-        deregister.calls(),
-        1,
-        "the 401 is reported, not retried under a new token"
-    );
-    assert!(logout.calls() >= 1, "a 401 must not stop the revocation");
-    assert!(
-        storage::load(&path).expect("load creds").session.is_none(),
-        "a 401 must not stop the local credentials being cleared"
-    );
-}
-
-#[test]
-fn logout_completes_when_deregistration_finds_nothing_to_remove() {
-    // A 404 is silent success: a daemon in external mode never registered, and a
-    // repeated logout has nothing left to remove.
-    let server = MockServer::start();
-    let deregister = server.mock(|when, then| {
-        when.method(DELETE)
-            .path("/me/core-nodes/cn-never-registered");
-        then.status(404);
-    });
-    let logout = server.mock(|when, then| {
-        when.method(POST).path("/logout");
-        then.status(202);
-    });
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = logout_with_core_node(&server, &dir, "cn-never-registered");
-
-    assert_eq!(deregister.calls(), 1);
-    assert!(logout.calls() >= 1, "a 404 must not stop the revocation");
-    assert!(
-        storage::load(&path).expect("load creds").session.is_none(),
-        "a 404 must not stop the local credentials being cleared"
-    );
-}
-
-#[test]
-fn logout_completes_when_deregistration_fails() {
-    // Every deregistration failure is best effort, exactly like the revocation
-    // itself: the row is left behind and logout still finishes.
-    let server = MockServer::start();
-    let deregister = server.mock(|when, then| {
-        when.method(DELETE).path("/me/core-nodes/cn-backend-down");
-        then.status(503);
-    });
-    let logout = server.mock(|when, then| {
-        when.method(POST).path("/logout");
-        then.status(202);
-    });
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = logout_with_core_node(&server, &dir, "cn-backend-down");
-
-    assert_eq!(deregister.calls(), 1);
-    assert!(logout.calls() >= 1, "a 503 must not stop the revocation");
-    assert!(
-        storage::load(&path).expect("load creds").session.is_none(),
-        "a 503 must not stop the local credentials being cleared"
-    );
-}
-
-#[test]
-fn logout_without_a_resolvable_core_node_name_sends_no_deregistration() {
-    // No daemon state file and no configured name: there is nothing to delete by,
-    // and nothing is guessed. The row is left behind and logout still completes.
-    let server = MockServer::start();
-    let deregister = server.mock(|when, then| {
-        // Any DELETE at all, so the assertion covers a guessed name as well as
-        // the right one.
-        when.method(DELETE);
-        then.status(204);
-    });
-    let logout = server.mock(|when, then| {
-        when.method(POST).path("/logout");
-        then.status(202);
-    });
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = creds_path(&dir);
-    storage::save(
-        &path,
-        &Credentials {
-            session: Some(seeded_creds(&server, 9_999_999_999)),
-            ..Default::default()
-        },
-    )
-    .expect("seed creds");
-
-    LogoutCommand {
-        api_url: Some(server.base_url()),
-        yes: true,
-        peppy_dirs: Some(PeppyDirs::new(dir.path())),
-    }
-    .execute(&ctx())
-    .expect("logout");
-
-    assert_eq!(
-        deregister.calls(),
-        0,
-        "an unresolvable name must not produce a guessed DELETE"
-    );
-    assert!(logout.calls() >= 1);
-    assert!(storage::load(&path).expect("load creds").session.is_none());
-}
-
-#[test]
-fn logout_calls_backend_and_clears_local_credentials() {
-    let server = MockServer::start();
-    let logout = server.mock(|when, then| {
-        when.method(POST).path("/logout");
-        then.status(202);
-    });
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = creds_path(&dir);
-
-    // Seed a logged-in session.
-    let creds = Credentials {
-        session: Some(seeded_creds(&server, 9_999_999_999)),
-        ..Default::default()
-    };
-    storage::save(&path, &creds).expect("seed creds");
-
-    LogoutCommand {
-        api_url: Some(server.base_url()),
-        yes: true,
-        peppy_dirs: Some(PeppyDirs::new(dir.path())),
-    }
-    .execute(&ctx())
-    .expect("logout");
-
-    assert!(logout.calls() >= 1, "POST /logout should have been called");
-    let after = storage::load(&path).expect("load creds");
-    assert!(
-        after.session.is_none(),
-        "local credentials must be removed after logout"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn external_logout_does_not_poke_federation_control() {
-    use std::io::{ErrorKind, Write};
-    use std::os::unix::net::UnixListener;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
-
-    let server = MockServer::start();
-    let logout = server.mock(|when, then| {
-        when.method(POST).path("/logout");
-        then.status(202);
-    });
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    write_external_zenoh_config(&dir);
-    let path = creds_path(&dir);
-    storage::save(
-        &path,
-        &Credentials {
-            session: Some(seeded_creds(&server, 9_999_999_999)),
-            ..Default::default()
-        },
-    )
-    .expect("seed creds");
-
-    let peppy_dirs = PeppyDirs::new(dir.path());
-    let runtime = peppy_dirs.runtime_config_dir();
-    std::fs::create_dir_all(&runtime).expect("runtime dir");
-    let listener = UnixListener::bind(runtime.join("federation_control.sock"))
-        .expect("bind federation-control trap");
-    listener
-        .set_nonblocking(true)
-        .expect("make federation-control trap nonblocking");
-    let command_finished = Arc::new(AtomicBool::new(false));
-    let monitor_finished = Arc::clone(&command_finished);
-    let monitor = std::thread::spawn(move || {
-        loop {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    stream
-                        .write_all(b"{\"status\":\"ok\",\"applied\":null}\n")
-                        .expect("reply to unexpected poke");
-                    return true;
-                }
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    if monitor_finished.load(Ordering::SeqCst) {
-                        return false;
-                    }
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => panic!("federation-control trap failed: {error}"),
-            }
-        }
-    });
-
-    let result = LogoutCommand {
-        api_url: Some(server.base_url()),
-        yes: true,
-        peppy_dirs: Some(peppy_dirs),
-    }
-    .execute(&ctx());
-    command_finished.store(true, Ordering::SeqCst);
-    let poked = monitor.join().expect("join federation-control trap");
-
-    result.expect("external logout succeeds");
-    assert!(!poked, "external logout must not poke federation control");
-    assert!(logout.calls() >= 1, "POST /logout should have been called");
-    assert!(
-        storage::load(&path).expect("load creds").session.is_none(),
-        "external logout clears local credentials"
-    );
-}
-
-#[test]
-fn logout_heals_a_malformed_credentials_file() {
-    // A malformed (e.g. pre-`workspace_id`/unversioned) credentials file fails
-    // to parse with `AuthError::Auth`. Logout treats that as "already logged out",
-    // but it must still rewrite the file to a clean default so the bad file does
-    // not linger on disk (the early "Not logged in" return used to skip the save).
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = creds_path(&dir);
-    std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir conf");
-    // Unversioned old shape ⇒ rejected by `storage::load` with `AuthError::Auth`.
-    std::fs::write(
-        &path,
-        r#"{ session: { api_url: "http://x", issuer: "http://y", client_id: "c",
-            access_token: "a", refresh_token: "r", expires_at: 1, token_type: "Bearer",
-            scope: "openid" } }"#,
-    )
-    .expect("write malformed creds");
-
-    LogoutCommand {
-        // Never contacted: the malformed path returns "Not logged in" before any
-        // backend call. A dummy keeps the test independent of build-default URLs.
-        api_url: Some("http://127.0.0.1:9".to_string()),
-        yes: true,
-        peppy_dirs: Some(PeppyDirs::new(dir.path())),
-    }
-    .execute(&ctx())
-    .expect("logout tolerates a malformed file");
-
-    // The file now parses cleanly (healed to a current-version default) and is
-    // logged out.
-    let after = storage::load(&path).expect("malformed file must be healed, not left on disk");
-    assert!(after.session.is_none(), "healed file is logged out");
-    assert!(after.router.is_none(), "healed file has no router cache");
-}
-
-#[test]
-fn whoami_runs_against_a_seeded_session() {
-    let server = MockServer::start();
-    let _me = mock_me(&server);
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = creds_path(&dir);
-    let creds = Credentials {
-        session: Some(seeded_creds(&server, 9_999_999_999)),
-        ..Default::default()
-    };
-    storage::save(&path, &creds).expect("seed creds");
-
-    // Both the human and the --json formatter must run without error.
-    for json in [false, true] {
-        WhoamiCommand {
-            api_url: Some(server.base_url()),
-            json,
-            peppy_dirs: Some(PeppyDirs::new(dir.path())),
-        }
-        .execute(&ctx())
-        .expect("whoami");
-    }
-}
-
-// ─── `peppy platform list` ────────────────────────────────────────────────
-
-const WORKSPACE: &str = "4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4";
-
-/// A tempdir with a seeded session credential pointing at `server`, ready for a
-/// command that needs to be authenticated.
-fn authenticated_dir(server: &MockServer) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let creds = Credentials {
-        session: Some(seeded_creds(server, 9_999_999_999)),
-        ..Default::default()
-    };
-    storage::save(&creds_path(&dir), &creds).expect("seed creds");
-    dir
-}
-
-/// Mocks `GET /me/core-nodes` with one registered, online core node.
-fn mock_core_nodes<'a>(server: &'a MockServer, core_node_name: &str) -> httpmock::Mock<'a> {
-    server.mock(|when, then| {
-        when.method(GET).path("/me/core-nodes");
-        then.status(200).json_body(json!({
-            "workspace_id": WORKSPACE,
-            "application_status_available": true,
-            "core_nodes": [{
-                "core_node_name": core_node_name,
-                "registered": true,
-                "first_seen_at": "2026-07-01T10:00:00Z",
-                "last_config_pull_at": "2026-07-24T09:12:33Z",
-                "application": { "status": "online", "live_claimants": 1 },
-            }],
-        }));
-    })
-}
-
-fn list_in(server: &MockServer, dir: &tempfile::TempDir, json: bool) -> peppy::error::Result<()> {
-    ListCommand {
-        api_url: Some(server.base_url()),
-        json,
-        peppy_dirs: Some(PeppyDirs::new(dir.path())),
-    }
-    .execute(&ctx())
-}
-
-#[test]
-fn list_renders_the_workspace_roster_in_both_formats() {
-    let server = MockServer::start();
-    let core_nodes = mock_core_nodes(&server, "cn-a1b2c3d4e5");
-    let dir = authenticated_dir(&server);
-
-    for json in [false, true] {
-        list_in(&server, &dir, json).expect("list should succeed");
-    }
-
-    core_nodes.assert_calls(2);
-}
-
-/// Unlike `whoami`, whose output IS the sign-in state, `list` cannot answer at
-/// all without a credential, so it fails rather than printing a document
-/// saying so. `main` maps the error to exit 1.
-#[test]
-fn list_without_a_credential_fails_instead_of_emitting_a_document() {
-    let server = MockServer::start();
-    // No credentials seeded.
-    let dir = tempfile::tempdir().expect("temp dir");
-
-    for json in [false, true] {
-        let error = list_in(&server, &dir, json).expect_err("list must fail unauthenticated");
-        assert!(
-            error.to_string().contains("peppy platform login"),
-            "the error must say how to fix it: {error}"
-        );
-    }
-}
-
-#[test]
-fn list_fails_when_the_backend_is_unreachable() {
-    let server = MockServer::start();
-    let dir = authenticated_dir(&server);
-    // A port nothing listens on, so the request cannot complete. There is
-    // deliberately no local fallback: a local query would answer a different
-    // question than the one the command claims to answer.
-    let unreachable = "http://127.0.0.1:1";
-
-    let error = ListCommand {
-        api_url: Some(unreachable.to_string()),
-        json: false,
-        peppy_dirs: Some(PeppyDirs::new(dir.path())),
-    }
-    .execute(&ctx())
-    .expect_err("an unreachable backend must fail the command");
-
-    assert!(
-        !error.to_string().is_empty(),
-        "the failure must carry a message"
-    );
-}
-
-#[test]
-fn list_surfaces_a_backend_outage_as_a_retryable_error() {
-    let server = MockServer::start();
-    server.mock(|when, then| {
-        when.method(GET).path("/me/core-nodes");
-        then.status(503);
-    });
-    let dir = authenticated_dir(&server);
-
-    let error = list_in(&server, &dir, false).expect_err("a 503 must fail the command");
-
-    assert!(
-        error.to_string().contains("try again"),
-        "a 503 must read as transient: {error}"
-    );
-}
-
-/// A newer CLI against a backend that predates the endpoint. Without the
-/// explicit mapping this reads as an unexplained `returned 404`.
-#[test]
-fn list_explains_a_backend_that_does_not_have_the_endpoint() {
-    let server = MockServer::start();
-    server.mock(|when, then| {
-        when.method(GET).path("/me/core-nodes");
-        then.status(404);
-    });
-    let dir = authenticated_dir(&server);
-
-    let error = list_in(&server, &dir, false).expect_err("a 404 must fail the command");
-
-    assert!(
-        error.to_string().contains("upgrade the platform"),
-        "a 404 must name the cause and the fix: {error}"
-    );
-}
-
-/// `--core-node` redirects a command at another machine's daemon, which no
-/// `platform` command does. The whole group refuses it, rather than each
-/// command silently answering a different question.
-#[test]
-fn every_platform_command_refuses_a_core_node_override() {
-    let server = MockServer::start();
-    // Registered before the commands run, so the call count below is evidence.
-    // A mock added afterwards could not have been hit whatever the guard does.
-    let core_nodes = server.mock(|when, then| {
-        when.method(GET).path("/me/core-nodes");
-        then.status(500);
-    });
-    let redirected = Arc::new(
-        AppContext::from_current_dir()
-            .expect("cwd is readable")
-            .with_core_node_override(Some("robot-7".to_string())),
-    );
-
-    let commands: Vec<(&str, PlatformCommands)> = vec![
-        (
-            "list",
-            PlatformCommands::List {
-                api_url: Some(server.base_url()),
-                json: false,
-            },
-        ),
-        (
-            "whoami",
-            PlatformCommands::Whoami {
-                api_url: Some(server.base_url()),
-                json: false,
-            },
-        ),
-        (
-            "logout",
-            PlatformCommands::Logout {
-                api_url: Some(server.base_url()),
-                yes: true,
-            },
-        ),
-        (
-            "login",
-            PlatformCommands::Login {
-                api_url: Some(server.base_url()),
-                no_browser: true,
-                yes: true,
-            },
-        ),
-    ];
-
-    for (name, command) in commands {
-        let error = PlatformCommand { command }
-            .execute(&redirected)
-            .expect_err(&format!("`platform {name}` must refuse --core-node"));
-        assert!(
-            error.to_string().contains("--core-node"),
-            "`platform {name}` must name the flag it refused: {error}"
-        );
-        assert!(
-            error.to_string().contains("peppy stack list"),
-            "`platform {name}` must point at the command that does show other core nodes: {error}"
-        );
-    }
-
-    // The refusal happens before any work: the backend was never called.
-    assert_eq!(
-        core_nodes.calls(),
-        0,
-        "the override must be refused before any command reaches the backend"
-    );
-}
-
-/// A stale daemon state file must not fail the command, whatever it records.
-///
-/// The marker RULES are pinned as a pure unit in `platform::list`
-/// (`this_machine_name`), where each case is asserted directly rather than
-/// inferred from a command that succeeded. What this covers is the wiring: a
-/// state file on disk is read, and a daemon running in another workspace is a
-/// normal case rather than an error.
-#[test]
-fn a_daemon_in_another_workspace_does_not_fail_the_listing() {
-    let server = MockServer::start();
-    let core_nodes = mock_core_nodes(&server, "cn-local-daemon");
-    let dir = authenticated_dir(&server);
-    // Same core-node name as the listed row, different workspace: the
-    // mid-login case.
-    write_daemon_state(&dir, "cn-local-daemon", "local");
-
-    list_in(&server, &dir, false).expect("a mismatched namespace must not fail the command");
-
-    core_nodes.assert();
-}
-
-/// Writes a daemon state file recording `core_node_name` under `namespace`.
-fn write_daemon_state(dir: &tempfile::TempDir, core_node_name: &str, namespace: &str) {
-    let state = DaemonState::new(
-        core_node_name,
-        "127.0.0.1",
-        7447,
-        "test-git-hash",
-        30,
-        config::namespace::Namespace::parse(namespace).expect("valid namespace"),
-        Some(30),
-    );
-    let path = DaemonState::state_file_in(dir.path());
-    std::fs::create_dir_all(path.parent().expect("state file has a parent"))
-        .expect("state file dir");
-    DaemonState::write_to(&path, &state).expect("write daemon state");
 }
 
 /// A session credential pointing at `server` with the given absolute expiry.
@@ -963,4 +192,818 @@ fn seeded_creds(server: &MockServer, expires_at: i64) -> ProfileCreds {
         subject: "user-123".to_string(),
         username: "alice".to_string(),
     }
+}
+
+/// A tempdir with a seeded session credential pointing at `server`, ready for a
+/// command that needs to be authenticated.
+fn authenticated_dir(server: &MockServer) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let creds = Credentials {
+        session: Some(seeded_creds(server, 9_999_999_999)),
+        ..Default::default()
+    };
+    storage::save(&creds_path(&dir), &creds).expect("seed creds");
+    dir
+}
+
+/// Writes an enrollment in `PROJECT` under `dir`, as a previous `enroll` would
+/// have, with placeholder PEM material.
+fn write_enrollment(dir: &tempfile::TempDir, peer_id: &str, zid: &str) {
+    let bundle = EnrollmentBundle {
+        document: EnrollmentDocument {
+            version: enrollment::ENROLLMENT_VERSION,
+            api_url: "https://api.example".into(),
+            workspace_id: WORKSPACE.into(),
+            project_id: PROJECT.into(),
+            peer_id: peer_id.into(),
+            peer_name: "robot-7".into(),
+            zenoh_id: pmi::RouterId::parse(zid).unwrap(),
+            namespace: config::namespace::Namespace::parse(PROJECT).unwrap(),
+            router: RouterEndpoint::parse(ROUTER_HOST, 7447).unwrap(),
+            certificate_expires_at: 9_999_999_999,
+            enrolled_at: 1_700_000_000,
+        },
+        peer_key_pem: storage::secret("key".into()),
+        peer_certificate_pem: "cert".into(),
+        trust_anchor_pem: "ca".into(),
+        platform_zenoh_config: "{}".into(),
+    };
+    enrollment::save(&dirs(dir), &bundle).expect("write enrollment");
+}
+
+/// Writes a daemon state file recording this generation under `namespace` and
+/// `router_id`, with this test process as the pid (so `is_running` holds) and a
+/// managed router (so commands poke the control socket).
+fn write_daemon_state(dir: &tempfile::TempDir, namespace: &str, router_id: Option<&str>) {
+    let state = DaemonState::new(
+        "cn-local-daemon",
+        "127.0.0.1",
+        7447,
+        "test-git-hash",
+        30,
+        config::namespace::Namespace::parse(namespace).expect("valid namespace"),
+        router_id.map(|id| pmi::RouterId::parse(id).unwrap()),
+        true,
+    );
+    let path = DaemonState::state_file_in(dir.path());
+    std::fs::create_dir_all(path.parent().expect("state file has a parent"))
+        .expect("state file dir");
+    DaemonState::write_to(&path, &state).expect("write daemon state");
+}
+
+/// A stub daemon on the control socket under `dir`. It answers the first poke
+/// with `restarting`, then rewrites the daemon state to the identity the
+/// enrollment now prescribes (as the rebuilt generation would), and answers
+/// the second poke with `reply`. Returns the request lines it saw.
+fn stub_restarting_daemon(
+    dir: &tempfile::TempDir,
+    namespace: &'static str,
+    router_id: Option<&'static str>,
+    reply: &'static str,
+) -> std::thread::JoinHandle<Vec<String>> {
+    let peppy_dirs = dirs(dir);
+    let runtime = peppy_dirs.runtime_config_dir();
+    std::fs::create_dir_all(&runtime).expect("runtime dir");
+    let socket = runtime.join("federation_control.sock");
+    let listener = UnixListener::bind(&socket).expect("bind stub control socket");
+    let root = dir.path().to_path_buf();
+    std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        let answer = |line: &mut String, reply: &str| {
+            let (mut stream, _) = listener.accept().expect("accept poke");
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            line.clear();
+            reader.read_line(line).expect("read poke request");
+            stream.write_all(reply.as_bytes()).expect("reply");
+        };
+        let mut line = String::new();
+        answer(&mut line, "{\"status\":\"restarting\"}\n");
+        seen.push(line.trim().to_string());
+        let state = DaemonState::new(
+            "cn-local-daemon",
+            "127.0.0.1",
+            7447,
+            "test-git-hash",
+            30,
+            config::namespace::Namespace::parse(namespace).unwrap(),
+            router_id.map(|id| pmi::RouterId::parse(id).unwrap()),
+            true,
+        );
+        DaemonState::write_to(&DaemonState::state_file_in(&root), &state).expect("rewrite state");
+        answer(&mut line, reply);
+        seen.push(line.trim().to_string());
+        seen
+    })
+}
+
+// ─── login ───────────────────────────────────────────────────────────────
+
+#[test]
+fn login_persists_credentials_and_resolves_identity() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let me = mock_me(&server);
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+
+    LoginCommand {
+        api_url: Some(server.base_url()),
+        no_browser: true,
+        peppy_dirs: Some(dirs(&dir)),
+    }
+    .execute(&ctx())
+    .expect("login needs no daemon");
+
+    let creds = storage::load(&path).expect("load creds");
+    let pc = creds.session.as_ref().expect("session present");
+    assert_eq!(pc.access_token.expose_secret(), "access-token-1");
+    assert_eq!(pc.refresh_token.expose_secret(), "the-refresh-token");
+    assert_eq!(pc.subject, "user-123");
+    assert_eq!(pc.username, "alice");
+    assert_eq!(pc.issuer, server.base_url());
+    assert_eq!(pc.client_id, "cli-client-id");
+    assert!(me.calls() >= 1, "GET /me should have been called");
+    assert!(
+        !dirs(&dir).runtime_config_dir().exists(),
+        "login never touches the daemon"
+    );
+}
+
+#[test]
+fn login_seeds_peppy_config_with_resource_servers_block() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-3");
+    let _me = mock_me(&server);
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    LoginCommand {
+        api_url: Some(server.base_url()),
+        no_browser: true,
+        peppy_dirs: Some(dirs(&dir)),
+    }
+    .execute(&ctx())
+    .expect("login");
+
+    // A login on a machine that never ran the daemon still seeds
+    // peppy_config.json5 with the resource_servers block (the build's default
+    // URL, the dev backend in this debug test build).
+    let config = std::fs::read_to_string(dir.path().join("conf").join("peppy_config.json5"))
+        .expect("peppy_config.json5 seeded");
+    assert!(config.contains("resource_servers"), "{config}");
+    assert!(
+        config.contains(daemon_config::peppy_config::DEFAULT_API_URL),
+        "{config}"
+    );
+}
+
+#[test]
+fn login_writes_credentials_file_0600() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-2");
+    let _me = mock_me(&server);
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    LoginCommand {
+        api_url: Some(server.base_url()),
+        no_browser: true,
+        peppy_dirs: Some(dirs(&dir)),
+    }
+    .execute(&ctx())
+    .expect("login");
+
+    let mode = std::fs::metadata(creds_path(&dir))
+        .expect("stat")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "credentials must be owner-only");
+}
+
+// ─── logout ──────────────────────────────────────────────────────────────
+
+#[test]
+fn logout_revokes_both_tokens_and_keeps_the_enrollment() {
+    let server = MockServer::start();
+    mock_discovery(&server);
+    let revoke_refresh = server.mock(|when, then| {
+        when.method(POST)
+            .path("/oauth/v2/revoke")
+            .body_includes("token=seeded-refresh")
+            .body_includes("token_type_hint=refresh_token");
+        then.status(200);
+    });
+    let revoke_access = server.mock(|when, then| {
+        when.method(POST)
+            .path("/oauth/v2/revoke")
+            .body_includes("token=seeded-access")
+            .body_includes("token_type_hint=access_token");
+        then.status(200);
+    });
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-1", ZID);
+
+    LogoutCommand {
+        api_url: Some(server.base_url()),
+        peppy_dirs: Some(dirs(&dir)),
+    }
+    .execute(&ctx())
+    .expect("logout");
+
+    assert_eq!(revoke_refresh.calls(), 1);
+    assert_eq!(revoke_access.calls(), 1);
+    let after = storage::load(&creds_path(&dir)).expect("load creds");
+    assert!(after.session.is_none(), "the session is cleared");
+    assert!(
+        enrollment::load(&dirs(&dir)).unwrap().is_some(),
+        "logout leaves the enrollment in place"
+    );
+    assert!(
+        !dirs(&dir).runtime_config_dir().exists(),
+        "logout never pokes the daemon"
+    );
+}
+
+#[test]
+fn logout_clears_the_session_when_revocation_fails() {
+    let server = MockServer::start();
+    mock_discovery(&server);
+    server.mock(|when, then| {
+        when.method(POST).path("/oauth/v2/revoke");
+        then.status(500);
+    });
+    let dir = authenticated_dir(&server);
+
+    LogoutCommand {
+        api_url: Some(server.base_url()),
+        peppy_dirs: Some(dirs(&dir)),
+    }
+    .execute(&ctx())
+    .expect("logout is best effort at the issuer");
+
+    assert!(storage::load(&creds_path(&dir)).unwrap().session.is_none());
+}
+
+#[test]
+fn logout_heals_a_malformed_credentials_file() {
+    // A malformed (unversioned) credentials file fails to parse with
+    // `AuthError::Auth`. Logout treats that as "already logged out", but it must
+    // still rewrite the file to a clean default so the bad file does not linger.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir conf");
+    std::fs::write(
+        &path,
+        r#"{ session: { api_url: "http://x", issuer: "http://y", client_id: "c",
+            access_token: "a", refresh_token: "r", expires_at: 1, token_type: "Bearer",
+            scope: "openid" } }"#,
+    )
+    .expect("write malformed creds");
+
+    LogoutCommand {
+        // Never contacted: the malformed path returns "Not logged in" before any
+        // call. A dummy keeps the test independent of build-default URLs.
+        api_url: Some("http://127.0.0.1:9".to_string()),
+        peppy_dirs: Some(dirs(&dir)),
+    }
+    .execute(&ctx())
+    .expect("logout tolerates a malformed file");
+
+    let after = storage::load(&path).expect("malformed file must be healed, not left on disk");
+    assert!(after.session.is_none(), "healed file is logged out");
+}
+
+// ─── whoami / workspaces / projects ──────────────────────────────────────
+
+#[test]
+fn whoami_runs_against_a_seeded_session() {
+    let server = MockServer::start();
+    let _me = mock_me(&server);
+    let dir = authenticated_dir(&server);
+
+    // Both the human and the --json formatter must run without error.
+    for json in [false, true] {
+        WhoamiCommand {
+            api_url: Some(server.base_url()),
+            json,
+            peppy_dirs: Some(dirs(&dir)),
+        }
+        .execute(&ctx())
+        .expect("whoami");
+    }
+}
+
+#[test]
+fn workspaces_and_projects_list_in_both_formats() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    let dir = authenticated_dir(&server);
+
+    for json in [false, true] {
+        WorkspacesCommand {
+            api_url: Some(server.base_url()),
+            json,
+            peppy_dirs: Some(dirs(&dir)),
+        }
+        .execute(&ctx())
+        .expect("workspaces");
+        ProjectsCommand {
+            api_url: Some(server.base_url()),
+            workspace: None,
+            json,
+            peppy_dirs: Some(dirs(&dir)),
+        }
+        .execute(&ctx())
+        .expect("projects (the only workspace is picked)");
+    }
+    let err = ProjectsCommand {
+        api_url: Some(server.base_url()),
+        workspace: Some("Nope".to_string()),
+        json: false,
+        peppy_dirs: Some(dirs(&dir)),
+    }
+    .execute(&ctx())
+    .expect_err("an unknown workspace is refused");
+    assert!(
+        err.to_string().contains("Alice's workspace"),
+        "lists the choices: {err}"
+    );
+}
+
+#[test]
+fn a_command_that_needs_a_session_fails_without_one() {
+    let server = MockServer::start();
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let err = WorkspacesCommand {
+        api_url: Some(server.base_url()),
+        json: false,
+        peppy_dirs: Some(dirs(&dir)),
+    }
+    .execute(&ctx())
+    .expect_err("no session");
+    assert!(err.to_string().contains("peppy platform login"), "{err}");
+}
+
+// ─── enroll ──────────────────────────────────────────────────────────────
+
+fn enroll_in(
+    server: &MockServer,
+    dir: &tempfile::TempDir,
+    replace: bool,
+) -> peppy::error::Result<()> {
+    EnrollCommand {
+        api_url: Some(server.base_url()),
+        workspace: None,
+        project: None,
+        name: Some("robot-7".to_string()),
+        replace,
+        yes: true,
+        peppy_dirs: Some(dirs(dir)),
+    }
+    .execute(&ctx())
+}
+
+/// The whole enrollment: pick the only workspace and project, post the CSR,
+/// write the bundle, poke the daemon, wait for it to come back under the new
+/// identity, and verify the link with a second poke.
+#[test]
+fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    let enroll = mock_enroll(&server, ZID);
+    let dir = authenticated_dir(&server);
+    write_daemon_state(&dir, "local", Some("7f3a9c1e"));
+    let stub = stub_restarting_daemon(
+        &dir,
+        PROJECT,
+        Some(ZID),
+        "{\"status\":\"ok\",\"applied\":\"tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447\"}\n",
+    );
+
+    enroll_in(&server, &dir, false).expect("enroll");
+
+    assert_eq!(enroll.calls(), 1);
+    let requests = stub.join().expect("stub thread");
+    assert_eq!(requests, ["refederate", "refederate"]);
+    let enrolled = enrollment::load(&dirs(&dir))
+        .expect("the bundle parses")
+        .expect("enrolled");
+    let d = &enrolled.document;
+    assert_eq!(d.workspace_id, WORKSPACE);
+    assert_eq!(d.project_id, PROJECT);
+    assert_eq!(d.peer_id, "peer-1");
+    assert_eq!(d.peer_name, "robot-7");
+    assert_eq!(d.zenoh_id.as_str(), ZID);
+    assert_eq!(d.namespace.as_str(), PROJECT);
+    assert_eq!(d.router.locator(), format!("tls/{ROUTER_HOST}:7447"));
+    assert_eq!(d.api_url, server.base_url());
+    let key = std::fs::read_to_string(&enrolled.peer_key).unwrap();
+    assert!(
+        key.starts_with("-----BEGIN PRIVATE KEY-----"),
+        "a PKCS#8 key was minted"
+    );
+    let cert = std::fs::read_to_string(&enrolled.peer_certificate).unwrap();
+    assert!(
+        cert.contains("leaf") && cert.contains("issuer"),
+        "leaf then chain: {cert}"
+    );
+}
+
+#[test]
+fn enroll_without_a_daemon_writes_the_bundle_and_succeeds() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    let _enroll = mock_enroll(&server, ZID);
+    let dir = authenticated_dir(&server);
+
+    enroll_in(&server, &dir, false).expect("no daemon: the bundle waits for the next start");
+
+    assert!(enrollment::load(&dirs(&dir)).unwrap().is_some());
+}
+
+#[test]
+fn enroll_refuses_a_second_enrollment_without_replace() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    let enroll = mock_enroll(&server, ZID);
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-old", "7f3a9c1e");
+
+    let err = enroll_in(&server, &dir, false).expect_err("already enrolled");
+    assert!(err.to_string().contains("--replace"), "{err}");
+    assert_eq!(enroll.calls(), 0, "nothing is minted");
+    assert_eq!(
+        enrollment::load(&dirs(&dir))
+            .unwrap()
+            .unwrap()
+            .document
+            .peer_id,
+        "peer-old"
+    );
+}
+
+#[test]
+fn enroll_replace_enrolls_anew_then_removes_the_old_peer() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    let enroll = mock_enroll(&server, ZID);
+    let remove_old = server.mock(|when, then| {
+        when.method(DELETE).path(format!("{PEERS_PATH}/peer-old"));
+        then.status(202).json_body(json!({
+            "phase": "running", "desired_state": "running", "can_manage_infra": true,
+            "size": "micro", "entitled_sizes": ["micro"], "pending_changes": true,
+            "pending_change_entries": [], "peers": []
+        }));
+    });
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-old", "7f3a9c1e");
+
+    enroll_in(&server, &dir, true).expect("re-enroll");
+
+    assert_eq!(enroll.calls(), 1);
+    assert_eq!(remove_old.calls(), 1);
+    assert_eq!(
+        enrollment::load(&dirs(&dir))
+            .unwrap()
+            .unwrap()
+            .document
+            .peer_id,
+        "peer-1"
+    );
+}
+
+#[test]
+fn enroll_surfaces_the_platform_refusal_and_writes_nothing() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    server.mock(|when, then| {
+        when.method(POST).path(PEERS_PATH);
+        then.status(422)
+            .header("content-type", "application/problem+json")
+            .json_body(json!({
+                "type": "https://peppy.bot/problems/peer-limit-reached",
+                "title": "Peer limit reached", "status": 422,
+                "detail": "this router admits 5 peers; remove one first",
+            }));
+    });
+    let dir = authenticated_dir(&server);
+
+    let err = enroll_in(&server, &dir, false).expect_err("refused");
+    assert_eq!(
+        err.to_string(),
+        "Peer limit reached: this router admits 5 peers; remove one first"
+    );
+    assert!(enrollment::load(&dirs(&dir)).unwrap().is_none());
+}
+
+#[test]
+fn enroll_in_external_mode_writes_the_bundle_without_poking() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    let _enroll = mock_enroll(&server, ZID);
+    let dir = authenticated_dir(&server);
+    write_external_zenoh_config(&dir);
+
+    enroll_in(&server, &dir, false).expect("external enroll");
+
+    assert!(enrollment::load(&dirs(&dir)).unwrap().is_some());
+    assert!(
+        !dirs(&dir).runtime_config_dir().exists(),
+        "external mode never touches the control socket"
+    );
+}
+
+#[test]
+fn enroll_rejects_a_zenoh_id_the_router_would_refuse() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    let _enroll = mock_enroll(&server, "0abc");
+    let dir = authenticated_dir(&server);
+
+    let err = enroll_in(&server, &dir, false).expect_err("a leading zero is refused");
+    assert!(err.to_string().contains("router id"), "{err}");
+    assert!(enrollment::load(&dirs(&dir)).unwrap().is_none());
+}
+
+// ─── unenroll ────────────────────────────────────────────────────────────
+
+fn unenroll_in(
+    server: &MockServer,
+    dir: &tempfile::TempDir,
+    local_only: bool,
+) -> peppy::error::Result<()> {
+    UnenrollCommand {
+        api_url: Some(server.base_url()),
+        local_only,
+        yes: true,
+        peppy_dirs: Some(dirs(dir)),
+    }
+    .execute(&ctx())
+}
+
+#[test]
+fn unenroll_removes_the_peer_and_the_bundle_and_restarts_the_daemon() {
+    let server = MockServer::start();
+    let remove = server.mock(|when, then| {
+        when.method(DELETE).path(format!("{PEERS_PATH}/peer-1"));
+        then.status(202).json_body(json!({
+            "phase": "running", "desired_state": "running", "can_manage_infra": true,
+            "size": "micro", "entitled_sizes": ["micro"], "pending_changes": true,
+            "pending_change_entries": [], "peers": []
+        }));
+    });
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-1", ZID);
+    write_daemon_state(&dir, PROJECT, Some(ZID));
+    let stub = stub_restarting_daemon(
+        &dir,
+        "local",
+        Some("7f3a9c1e"),
+        "{\"status\":\"ok\",\"applied\":null}\n",
+    );
+
+    unenroll_in(&server, &dir, false).expect("unenroll");
+
+    assert_eq!(remove.calls(), 1);
+    assert_eq!(stub.join().unwrap(), ["refederate", "refederate"]);
+    assert!(enrollment::load(&dirs(&dir)).unwrap().is_none());
+    assert!(!dirs(&dir).peer_dir().exists());
+}
+
+#[test]
+fn unenroll_local_only_skips_the_platform() {
+    let server = MockServer::start();
+    let remove = server.mock(|when, then| {
+        when.method(DELETE).path(format!("{PEERS_PATH}/peer-1"));
+        then.status(500);
+    });
+    // No session at all: local-only must not need one.
+    let dir = tempfile::tempdir().expect("temp dir");
+    write_enrollment(&dir, "peer-1", ZID);
+
+    unenroll_in(&server, &dir, true).expect("local-only unenroll");
+
+    assert_eq!(remove.calls(), 0);
+    assert!(enrollment::load(&dirs(&dir)).unwrap().is_none());
+}
+
+#[test]
+fn unenroll_without_a_session_explains_local_only() {
+    let server = MockServer::start();
+    let dir = tempfile::tempdir().expect("temp dir");
+    write_enrollment(&dir, "peer-1", ZID);
+
+    let err = unenroll_in(&server, &dir, false).expect_err("needs a session");
+    assert!(err.to_string().contains("--local-only"), "{err}");
+    assert!(
+        enrollment::load(&dirs(&dir)).unwrap().is_some(),
+        "nothing was deleted"
+    );
+}
+
+#[test]
+fn unenroll_when_not_enrolled_is_a_no_op() {
+    let server = MockServer::start();
+    let dir = tempfile::tempdir().expect("temp dir");
+    unenroll_in(&server, &dir, false).expect("nothing to do");
+}
+
+// ─── status / peers ──────────────────────────────────────────────────────
+
+fn mock_router_and_peers(server: &MockServer) {
+    server.mock(|when, then| {
+        when.method(GET).path(ROUTER_PATH);
+        then.status(200).json_body(json!({
+            "phase": "running", "desired_state": "running", "can_manage_infra": true,
+            "address": { "host": ROUTER_HOST, "port": 7447 },
+            "size": "micro", "entitled_sizes": ["micro"],
+            "pending_changes": false, "pending_change_entries": [],
+            "peers": [ { "id": "peer-1", "status": "connected" } ]
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path(PEERS_PATH);
+        then.status(200).json_body(json!([
+            { "id": "peer-1", "name": "robot-7", "certificate_cn": "robot-7",
+              "status": "connected", "certificate_expires_at": "2027-01-01T00:00:00Z",
+              "created_at": "2026-10-03T00:00:00Z" },
+            { "id": "peer-2", "name": "bench", "certificate_cn": "bench",
+              "status": "unknown", "certificate_expires_at": "2027-01-01T00:00:00Z",
+              "created_at": "2026-10-03T00:00:00Z" }
+        ]));
+    });
+}
+
+#[test]
+fn status_reports_the_enrollment_the_daemon_and_the_platform() {
+    let server = MockServer::start();
+    mock_router_and_peers(&server);
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-1", ZID);
+
+    for json in [false, true] {
+        StatusCommand {
+            api_url: Some(server.base_url()),
+            json,
+            peppy_dirs: Some(dirs(&dir)),
+        }
+        .execute(&ctx())
+        .expect("status");
+    }
+}
+
+#[test]
+fn status_without_an_enrollment_or_a_session_still_runs() {
+    let server = MockServer::start();
+    let dir = tempfile::tempdir().expect("temp dir");
+    for json in [false, true] {
+        StatusCommand {
+            api_url: Some(server.base_url()),
+            json,
+            peppy_dirs: Some(dirs(&dir)),
+        }
+        .execute(&ctx())
+        .expect("status needs nothing");
+    }
+}
+
+#[test]
+fn peers_default_to_the_enrolled_project() {
+    let server = MockServer::start();
+    mock_router_and_peers(&server);
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-1", ZID);
+
+    for json in [false, true] {
+        PeersCommand {
+            api_url: Some(server.base_url()),
+            workspace: None,
+            project: None,
+            json,
+            peppy_dirs: Some(dirs(&dir)),
+        }
+        .execute(&ctx())
+        .expect("peers");
+    }
+
+    let unenrolled = authenticated_dir(&server);
+    let err = PeersCommand {
+        api_url: Some(server.base_url()),
+        workspace: None,
+        project: None,
+        json: false,
+        peppy_dirs: Some(dirs(&unenrolled)),
+    }
+    .execute(&ctx())
+    .expect_err("no enrollment and no flags");
+    assert!(err.to_string().contains("--project"), "{err}");
+}
+
+// ─── the group ───────────────────────────────────────────────────────────
+
+#[test]
+fn every_platform_command_refuses_a_core_node_override() {
+    let server = MockServer::start();
+    // Registered before the commands run, so the call count below is evidence.
+    let any_api = server.mock(|when, then| {
+        when.path_includes("/");
+        then.status(500);
+    });
+    let redirected = Arc::new(
+        AppContext::from_current_dir()
+            .expect("cwd is readable")
+            .with_core_node_override(Some("robot-7".to_string())),
+    );
+    let api_url = Some(server.base_url());
+
+    let commands: Vec<(&str, PlatformCommands)> = vec![
+        (
+            "login",
+            PlatformCommands::Login {
+                api_url: api_url.clone(),
+                no_browser: true,
+            },
+        ),
+        (
+            "logout",
+            PlatformCommands::Logout {
+                api_url: api_url.clone(),
+            },
+        ),
+        (
+            "whoami",
+            PlatformCommands::Whoami {
+                api_url: api_url.clone(),
+                json: false,
+            },
+        ),
+        (
+            "workspaces",
+            PlatformCommands::Workspaces {
+                api_url: api_url.clone(),
+                json: false,
+            },
+        ),
+        (
+            "projects",
+            PlatformCommands::Projects {
+                api_url: api_url.clone(),
+                workspace: None,
+                json: false,
+            },
+        ),
+        (
+            "enroll",
+            PlatformCommands::Enroll {
+                api_url: api_url.clone(),
+                workspace: None,
+                project: None,
+                name: None,
+                replace: false,
+                yes: true,
+            },
+        ),
+        (
+            "unenroll",
+            PlatformCommands::Unenroll {
+                api_url: api_url.clone(),
+                local_only: false,
+                yes: true,
+            },
+        ),
+        (
+            "status",
+            PlatformCommands::Status {
+                api_url: api_url.clone(),
+                json: false,
+            },
+        ),
+        (
+            "peers",
+            PlatformCommands::Peers {
+                api_url,
+                workspace: None,
+                project: None,
+                json: false,
+            },
+        ),
+    ];
+
+    for (name, command) in commands {
+        let error = PlatformCommand { command }
+            .execute(&redirected)
+            .expect_err(&format!("`platform {name}` must refuse --core-node"));
+        assert!(
+            error.to_string().contains("--core-node"),
+            "`platform {name}` must name the flag it refused: {error}"
+        );
+    }
+    assert_eq!(
+        any_api.calls(),
+        0,
+        "the override must be refused before any command reaches the backend"
+    );
 }

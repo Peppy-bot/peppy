@@ -75,7 +75,7 @@ enum Commands {
         #[command(subcommand)]
         command: repo::RepoCommands,
     },
-    /// Platform account: log in, log out, show the current identity, and list the workspace's core nodes
+    /// Platform account and project router: sign in, enroll this machine, show its status
     Platform {
         #[command(subcommand)]
         command: platform::PlatformCommands,
@@ -510,18 +510,40 @@ mod tests {
         }
     }
 
-    /// The group is spelled `platform`, and only `platform`. The negative half
-    /// is the point: `auth` is gone outright, with no alias, hidden command, or
-    /// compatibility parser to fall back on, so it must fail to parse.
+    /// The group is spelled `platform`, and only `platform`: there is no
+    /// `auth` alias, hidden command, or compatibility parser to fall back on.
     #[test]
     fn platform_subcommands_parse() {
         for args in [
-            vec!["peppy", "platform", "login", "--no-browser", "--yes"],
+            vec!["peppy", "platform", "login", "--no-browser"],
             vec!["peppy", "platform", "login", "--api-url", "http://x:3000"],
-            vec!["peppy", "platform", "logout", "-y"],
+            vec!["peppy", "platform", "logout"],
             vec!["peppy", "platform", "logout", "--api-url", "http://x:3000"],
             vec!["peppy", "platform", "whoami", "--json"],
-            vec!["peppy", "platform", "whoami", "--api-url", "http://x:3000"],
+            vec!["peppy", "platform", "workspaces", "--json"],
+            vec!["peppy", "platform", "projects", "--workspace", "Lab"],
+            vec![
+                "peppy",
+                "platform",
+                "enroll",
+                "--project",
+                "p1",
+                "--name",
+                "robot-7",
+                "--replace",
+                "-y",
+            ],
+            vec!["peppy", "platform", "unenroll", "--local-only", "--yes"],
+            vec!["peppy", "platform", "status", "--json"],
+            vec![
+                "peppy",
+                "platform",
+                "peers",
+                "--workspace",
+                "w",
+                "--project",
+                "p",
+            ],
         ] {
             assert!(
                 Cli::try_parse_from(args.clone()).is_ok(),
@@ -530,18 +552,20 @@ mod tests {
         }
 
         assert!(Cli::try_parse_from(["peppy", "auth", "whoami"]).is_err());
-        assert!(Cli::try_parse_from(["peppy", "auth", "login"]).is_err());
-        assert!(Cli::try_parse_from(["peppy", "auth", "logout"]).is_err());
+        assert!(Cli::try_parse_from(["peppy", "platform", "login", "--yes"]).is_err());
+        assert!(Cli::try_parse_from(["peppy", "platform", "list"]).is_err());
+        assert!(Cli::try_parse_from(["peppy", "platform", "federate"]).is_err());
     }
 
+    /// `status` is its own command (the enrollment and the router link), not a
+    /// spelling of `whoami` (the signed-in identity).
     #[test]
-    fn platform_status_is_an_alias_for_whoami() {
-        let cli = Cli::try_parse_from(["peppy", "platform", "status"])
-            .expect("the status alias should parse");
+    fn platform_status_is_not_whoami() {
+        let cli = Cli::try_parse_from(["peppy", "platform", "status"]).expect("status parses");
         assert!(matches!(
             cli.command,
             Commands::Platform {
-                command: platform::PlatformCommands::Whoami { .. }
+                command: platform::PlatformCommands::Status { .. }
             }
         ));
     }
