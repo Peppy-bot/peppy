@@ -98,6 +98,29 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    #[error("Failed to read the NVIDIA L4T container manifest {path}: {source}")]
+    L4tManifestUnreadable {
+        path: String,
+        source: std::io::Error,
+    },
+
+    #[error("The NVIDIA L4T container manifest {path} is not valid at line {line}: {reason}")]
+    L4tManifestInvalid {
+        path: String,
+        line: usize,
+        reason: String,
+    },
+
+    #[error(
+        "Failed to put the host's NVIDIA L4T driver libraries into the --nv library list \
+         {path} of the bundled apptainer: {source}. A node that passes --nv on an NVIDIA \
+         Jetson needs them, so the user that runs the daemon must be able to write this file."
+    )]
+    NvliblistUpdateFailed {
+        path: String,
+        source: std::io::Error,
+    },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

@@ -80,7 +80,9 @@ const NATIVE_FIXTURE_TMP_DIR: &str = "/opt/peppy-tmp/apptainer";
 /// tests only inspect assembled argv, translated paths, and the no-op kill path.
 /// Its registry credentials come from a file that does not exist, and the
 /// sanitized copy a build command writes lands in [`native_fixture_scratch`],
-/// never next to the host's real credentials.
+/// never next to the host's real credentials. Its NVIDIA L4T manifest
+/// directory does not exist either, so a `--nv` command never reads the host's
+/// manifest.
 fn native_facade() -> Apptainer {
     let scratch = native_fixture_scratch();
     native_facade_with_registry_auth(RegistryAuth {
@@ -97,9 +99,25 @@ fn native_facade_with_registry_auth(registry_auth: RegistryAuth) -> Apptainer {
             apptainer_bin: PathBuf::from("/opt/apptainer/bin/apptainer"),
             tmp_dir: PathBuf::from(NATIVE_FIXTURE_TMP_DIR),
             registry_auth,
+            l4t_manifest_dir: native_fixture_scratch().join("no-such-l4t-manifest-dir"),
         },
         extra_mounts: Vec::new(),
     }
+}
+
+/// [`native_facade`] with the apptainer install tree and the NVIDIA L4T
+/// manifest directory a test controls.
+fn native_facade_with_l4t_manifest(apptainer_dir: &Path, manifest_dir: &Path) -> Apptainer {
+    let mut facade = native_facade();
+    facade.apptainer_dir = apptainer_dir.to_path_buf();
+    let Backend::Native {
+        l4t_manifest_dir, ..
+    } = &mut facade.backend
+    else {
+        unreachable!("native_facade builds the native backend");
+    };
+    *l4t_manifest_dir = manifest_dir.to_path_buf();
+    facade
 }
 
 /// Scratch directory shared by every [`native_facade`] in this test binary.
@@ -438,6 +456,123 @@ fn test_raw_flag_passthrough() {
         args.contains(&"--force".to_string()),
         "should contain --force: {:?}",
         args
+    );
+}
+
+/// A Jetson as a `--nv` command sees it: an install tree holding apptainer's
+/// `--nv` library list, and an L4T manifest naming one shared library.
+struct JetsonFixture {
+    scratch: TempDir,
+}
+
+impl JetsonFixture {
+    const STOCK_LIST: &'static str = "libcuda.so\nlibEGL_nvidia.so\n";
+
+    fn new() -> Self {
+        let scratch = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
+        let fixture = Self { scratch };
+        fs::create_dir_all(fixture.nvliblist().parent().unwrap()).unwrap();
+        fs::write(fixture.nvliblist(), Self::STOCK_LIST).unwrap();
+        fs::create_dir_all(fixture.manifest_dir()).unwrap();
+        fs::write(
+            fixture.manifest_dir().join("drivers.csv"),
+            "lib, /usr/lib/aarch64-linux-gnu/nvidia/libnvcucompat.so\n",
+        )
+        .unwrap();
+        fixture
+    }
+
+    fn apptainer_dir(&self) -> PathBuf {
+        self.scratch.path().join("apptainer")
+    }
+
+    fn manifest_dir(&self) -> PathBuf {
+        self.scratch.path().join("host-files-for-container.d")
+    }
+
+    fn nvliblist(&self) -> PathBuf {
+        self.apptainer_dir().join("etc/apptainer/nvliblist.conf")
+    }
+
+    fn facade(&self) -> Apptainer {
+        native_facade_with_l4t_manifest(&self.apptainer_dir(), &self.manifest_dir())
+    }
+
+    fn list(&self) -> String {
+        fs::read_to_string(self.nvliblist()).unwrap()
+    }
+}
+
+#[test]
+fn a_run_with_nv_puts_the_l4t_manifest_libraries_into_the_nv_list_first() {
+    let jetson = JetsonFixture::new();
+    let facade = jetson.facade();
+
+    facade
+        .run("image.sif")
+        .raw_flag("--nv")
+        .into_std_command()
+        .expect("command should assemble");
+
+    let list = jetson.list();
+    assert!(list.starts_with(JetsonFixture::STOCK_LIST), "{list}");
+    assert!(
+        list.lines().any(|line| line == "libnvcucompat.so"),
+        "the manifest library is missing from the list: {list}"
+    );
+}
+
+#[test]
+fn a_run_with_nv_set_to_true_updates_the_nv_list_too() {
+    let jetson = JetsonFixture::new();
+    let facade = jetson.facade();
+
+    facade
+        .run("image.sif")
+        .raw_flag("--nv=true")
+        .into_std_command()
+        .expect("command should assemble");
+
+    assert_ne!(jetson.list(), JetsonFixture::STOCK_LIST);
+}
+
+#[test]
+fn a_run_without_nv_leaves_the_nv_list_alone() {
+    for flags in [
+        &["--writable-tmpfs"][..],
+        &["--nvccli"],
+        &["--nv=false"],
+        &["--nv", "--nv=false"],
+    ] {
+        let jetson = JetsonFixture::new();
+        let facade = jetson.facade();
+
+        let mut cmd = facade.run("image.sif");
+        for flag in flags {
+            cmd = cmd.raw_flag(flag);
+        }
+        cmd.into_std_command().expect("command should assemble");
+
+        assert_eq!(jetson.list(), JetsonFixture::STOCK_LIST, "for {flags:?}");
+    }
+}
+
+#[test]
+fn a_run_with_nv_fails_before_spawning_when_the_nv_list_cannot_be_updated() {
+    let jetson = JetsonFixture::new();
+    fs::remove_file(jetson.nvliblist()).unwrap();
+    let facade = jetson.facade();
+
+    let error = facade
+        .run("image.sif")
+        .raw_flag("--nv")
+        .into_std_command()
+        .expect_err("a list that cannot be read fails the command");
+
+    assert!(
+        matches!(&error, Error::NvliblistUpdateFailed { path, .. }
+            if *path == jetson.nvliblist().display().to_string()),
+        "{error:?}"
     );
 }
 
@@ -1216,27 +1351,6 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
         "gocryptfs sentinel {:?} is missing; bundled binary may be stale",
         sentinel
     );
-}
-
-/// Verifies the `--nv` library list of the apptainer install names the Tegra
-/// driver libraries, so a container on a Jetson gets the host's NVIDIA EGL
-/// and GL stack rather than falling through to Mesa, and can create a CUDA
-/// context.
-#[cfg(target_os = "linux")]
-#[test]
-fn nvliblist_names_the_tegra_driver_libraries() {
-    let install_dir =
-        linux_apptainer_cache_dir().expect("HOME is not set; cannot locate the apptainer cache");
-    let nvliblist = install_dir.join("etc/apptainer/nvliblist.conf");
-    let contents = std::fs::read_to_string(&nvliblist)
-        .unwrap_or_else(|e| panic!("cannot read {:?}: {e}", nvliblist));
-    for lib in crate::NVLIBLIST_TEGRA_LIBS.split(',') {
-        assert!(
-            contents.lines().any(|line| line.trim() == lib),
-            "{lib} is missing from {:?}; --nv cannot bind the Tegra driver",
-            nvliblist
-        );
-    }
 }
 
 /// Runs the bundled `gocryptfs --version` and confirms it reports the pinned
