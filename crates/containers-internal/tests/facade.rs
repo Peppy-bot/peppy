@@ -323,6 +323,43 @@ fn nv_exec_on_a_jetson_binds_the_l4t_manifest_libraries() {
     );
 }
 
+/// Integration test: a `--nv` command runs on every host, a Jetson, a host
+/// with NVIDIA's desktop driver, and a host without a GPU, where apptainer
+/// only warns that it finds no NVIDIA library. On a host without the L4T
+/// manifest, the `--nv` library list of the bundled apptainer stays exactly
+/// as it was.
+#[cfg(target_os = "linux")]
+#[test]
+fn nv_exec_runs_on_every_host() {
+    let Some((facade, _tmp_dir, sif_path)) = build_alpine_container() else {
+        return;
+    };
+    let nvliblist = Apptainer::resolve_apptainer_dir()
+        .expect("the bundled apptainer should resolve")
+        .join("etc/apptainer/nvliblist.conf");
+    let before = fs::read(&nvliblist).expect("read the --nv library list");
+
+    let output = facade
+        .exec(&sif_path.to_string_lossy(), &["true"])
+        .raw_flag("--nv")
+        .output()
+        .expect("apptainer exec --nv should run");
+    assert!(
+        output.status.success(),
+        "apptainer exec --nv should succeed (exit status: {})\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    if !std::path::Path::new(L4T_MANIFEST_DIR).exists() {
+        assert!(
+            fs::read(&nvliblist).expect("read the --nv library list") == before,
+            "a host without the L4T manifest had its --nv library list {} changed",
+            nvliblist.display()
+        );
+    }
+}
+
 /// Polls `cond` until it returns `true` or `timeout` elapses. Returns the final
 /// value of `cond`.
 #[cfg(target_os = "macos")]

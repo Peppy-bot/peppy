@@ -140,7 +140,7 @@ fn parse_manifest(text: &str, file: &Path) -> Result<Vec<ManifestEntry>> {
 }
 
 /// Reads every `*.csv` file of `manifest_dir`, in file-name order. `None` when
-/// the directory does not exist: the host is not a Jetson.
+/// there is no directory at that path: the host is not a Jetson.
 fn read_manifest(manifest_dir: &Path) -> Result<Option<Vec<ManifestEntry>>> {
     let unreadable = |path: &Path| {
         let path = path.display().to_string();
@@ -148,7 +148,14 @@ fn read_manifest(manifest_dir: &Path) -> Result<Option<Vec<ManifestEntry>>> {
     };
     let dir_entries = match fs::read_dir(manifest_dir) {
         Ok(dir_entries) => dir_entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(None);
+        }
         Err(source) => return Err(unreadable(manifest_dir)(source)),
     };
     let mut files = Vec::new();
@@ -187,17 +194,26 @@ fn shared_library_names(entries: &[ManifestEntry]) -> Vec<String> {
 /// when `names` is empty. The block goes at the end, after one blank line.
 /// The lines outside the block stay as they are, except that trailing blank
 /// lines become one line end. A block that has no end line runs to the end of
-/// the file.
+/// the file. A list without a block, given no names, is returned exactly as it
+/// is, so a host whose manifest holds no shared library never gets its list
+/// written.
 fn with_l4t_block(nvliblist: &str, names: &[String]) -> String {
     let mut outside_block = Vec::new();
+    let mut has_block = false;
     let mut in_block = false;
     for line in nvliblist.lines() {
         match line.trim_end() {
-            BLOCK_BEGIN => in_block = true,
+            BLOCK_BEGIN => {
+                has_block = true;
+                in_block = true;
+            }
             BLOCK_END if in_block => in_block = false,
             _ if in_block => {}
             _ => outside_block.push(line),
         }
+    }
+    if names.is_empty() && !has_block {
+        return nvliblist.to_string();
     }
     let mut out = outside_block.join("\n").trim_end().to_string();
     out.push('\n');
@@ -259,6 +275,7 @@ pub(crate) fn sync_nvliblist(manifest_dir: &Path, nvliblist: &Path) -> Result<Nv
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
     use tempfile::TempDir;
 
     fn scratch() -> TempDir {
@@ -450,6 +467,19 @@ sym,/usr/lib/aarch64-linux-gnu/libnvcucompat.so
     }
 
     #[test]
+    fn a_list_without_a_block_given_no_names_is_returned_exactly() {
+        for list in [
+            STOCK_LIST,
+            "libcuda.so",
+            "libcuda.so\n\n\n",
+            "libcuda.so  \n# end  \n\n",
+            "",
+        ] {
+            assert_eq!(with_l4t_block(list, &[]), list, "for {list:?}");
+        }
+    }
+
+    #[test]
     fn a_block_without_its_end_line_runs_to_the_end_of_the_file() {
         let list = format!("{STOCK_LIST}\n{BLOCK_BEGIN}\nlibnvgone.so\nlibnvhalf");
         assert_eq!(
@@ -494,13 +524,64 @@ sym,/usr/lib/aarch64-linux-gnu/libnvcucompat.so
         fn list(&self) -> String {
             fs::read_to_string(&self.nvliblist).unwrap()
         }
+
+        /// The inode of the list: a write replaces the file, so a new inode
+        /// shows that the list was written.
+        fn list_inode(&self) -> u64 {
+            fs::metadata(&self.nvliblist).unwrap().ino()
+        }
     }
 
     #[test]
     fn a_host_without_the_manifest_leaves_the_list_untouched() {
         let host = Host::new();
+        let before = host.list_inode();
+
+        assert_eq!(host.sync().unwrap(), NvliblistSync::NoManifest);
+
+        assert_eq!(host.list(), STOCK_LIST);
+        assert_eq!(host.list_inode(), before, "the list was written");
+    }
+
+    #[test]
+    fn a_file_in_place_of_the_manifest_dir_is_no_manifest() {
+        let host = Host::new();
+        fs::create_dir_all(host.manifest_dir.parent().unwrap()).unwrap();
+        fs::write(&host.manifest_dir, "not a directory").unwrap();
+
         assert_eq!(host.sync().unwrap(), NvliblistSync::NoManifest);
         assert_eq!(host.list(), STOCK_LIST);
+    }
+
+    /// The manifest directory exists and names no shared library: the list is
+    /// not written, so an apptainer install the daemon cannot write still
+    /// runs `--nv` commands. The stock list here ends in blank lines, which a
+    /// rewrite would drop.
+    #[test]
+    fn a_manifest_without_shared_libraries_does_not_write_the_list() {
+        for manifest in [None, Some("dev, /dev/nvidia0\nlib, /usr/bin/nvidia-smi\n")] {
+            let host = Host::new();
+            let stock_with_blank_lines = format!("{STOCK_LIST}\n\n");
+            fs::write(&host.nvliblist, &stock_with_blank_lines).unwrap();
+            fs::create_dir_all(&host.manifest_dir).unwrap();
+            if let Some(text) = manifest {
+                host.write_manifest("devices.csv", text);
+            }
+            let before = host.list_inode();
+
+            assert_eq!(
+                host.sync().unwrap(),
+                NvliblistSync::Unchanged,
+                "{manifest:?}"
+            );
+
+            assert_eq!(host.list(), stock_with_blank_lines, "{manifest:?}");
+            assert_eq!(
+                host.list_inode(),
+                before,
+                "the list was written: {manifest:?}"
+            );
+        }
     }
 
     #[test]
@@ -542,8 +623,10 @@ sym,/usr/lib/aarch64-linux-gnu/libnvcucompat.so
             host.sync().unwrap(),
             NvliblistSync::Updated { libraries: 1 }
         );
+        let before = host.list_inode();
 
         assert_eq!(host.sync().unwrap(), NvliblistSync::Unchanged);
+        assert_eq!(host.list_inode(), before, "the list was written");
     }
 
     #[test]
