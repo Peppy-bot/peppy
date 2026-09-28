@@ -652,6 +652,7 @@ mod tests {
                 peer_key_pem: auth::storage::secret("key".into()),
                 peer_certificate_pem: "cert".into(),
                 trust_anchor_pem: "ca".into(),
+                chain_pem: "chain".into(),
                 platform_zenoh_config: "{}".into(),
             },
         )

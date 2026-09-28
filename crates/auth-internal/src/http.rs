@@ -15,10 +15,12 @@ use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::error::{Error, Result};
 
-/// A fully-read HTTP response: status code and body text.
+/// A fully-read HTTP response: status code, body text, and the delay of a
+/// `Retry-After` header when the server sent one in seconds.
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+    pub retry_after_secs: Option<u64>,
 }
 
 impl HttpResponse {
@@ -131,6 +133,14 @@ impl HttpClient {
         finish("POST", url, resp)
     }
 
+    /// `POST url` with no body, optionally with a bearer token.
+    pub fn post_empty(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+        let resp = with_bearer(self.agent.post(url), bearer)
+            .send_empty()
+            .map_err(|e| Error::Http(format!("POST {} failed: {e}", redact(url))))?;
+        finish("POST", url, resp)
+    }
+
     /// `DELETE url`, optionally with a bearer token.
     pub fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
         let resp = with_bearer(self.agent.delete(url), bearer)
@@ -157,6 +167,13 @@ fn with_bearer<B>(req: ureq::RequestBuilder<B>, bearer: Option<&str>) -> ureq::R
 
 fn finish(method: &str, url: &str, resp: ureq::http::Response<ureq::Body>) -> Result<HttpResponse> {
     let status = resp.status().as_u16();
+    // Only the delta-seconds form is read. A date form gives no delay, and the
+    // caller then prints the refusal without one.
+    let retry_after_secs = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok());
     let mut resp = resp;
     let body = resp
         .body_mut()
@@ -164,7 +181,11 @@ fn finish(method: &str, url: &str, resp: ureq::http::Response<ureq::Body>) -> Re
         .limit(MAX_RESPONSE_BYTES)
         .read_to_string()
         .map_err(|e| Error::Http(format!("{method} {} failed reading body: {e}", redact(url))))?;
-    Ok(HttpResponse { status, body })
+    Ok(HttpResponse {
+        status,
+        body,
+        retry_after_secs,
+    })
 }
 
 #[cfg(test)]

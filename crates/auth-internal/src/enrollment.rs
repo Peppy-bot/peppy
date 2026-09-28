@@ -4,8 +4,12 @@
 //!
 //! * `enrollment.json5`: the typed [`EnrollmentDocument`] (`0600`).
 //! * `peer.key`: the peer's private key, PKCS#8 PEM (`0600`).
-//! * `peer.crt`: the signed leaf certificate followed by its issuing chain.
+//! * `peer.crt`: the signed leaf certificate alone. The daemon presents it and
+//!   nothing above it, so the cloud router closes the link at the leaf's own
+//!   expiry.
 //! * `ca.crt`: the project CA the cloud router's certificate chains to.
+//! * `chain.crt`: the leaf's issuing chain, for `openssl verify`. The daemon
+//!   does not read it.
 //! * `zenohd.platform.json5`: the peer config the platform rendered, kept for
 //!   inspection only. The daemon renders its own config from the document.
 //!
@@ -35,6 +39,7 @@ pub const ENROLLMENT_FILE: &str = "enrollment.json5";
 pub const PEER_KEY_FILE: &str = "peer.key";
 pub const PEER_CERTIFICATE_FILE: &str = "peer.crt";
 pub const TRUST_ANCHOR_FILE: &str = "ca.crt";
+pub const CHAIN_FILE: &str = "chain.crt";
 pub const PLATFORM_ZENOH_CONFIG_FILE: &str = "zenohd.platform.json5";
 
 /// Where the enrolled machine's router dials: the project's cloud router.
@@ -167,18 +172,17 @@ impl Enrollment {
 pub struct EnrollmentBundle {
     pub document: EnrollmentDocument,
     pub peer_key_pem: SecretString,
-    /// The leaf followed by its issuing chain, as the router presents it.
+    /// The signed leaf alone, as the daemon presents it.
     pub peer_certificate_pem: String,
     pub trust_anchor_pem: String,
+    /// The chain above the leaf, kept for inspection.
+    pub chain_pem: String,
     pub platform_zenoh_config: String,
 }
 
 impl EnrollmentBundle {
     /// Builds the bundle from the platform's enrollment response. The router
-    /// endpoint is read from the rendered config's single `connect` entry; the
-    /// leaf and chain are joined into one PEM bundle so the router presents the
-    /// whole path to the project CA.
-    #[allow(clippy::too_many_arguments)]
+    /// endpoint is read from the rendered config's single `connect` entry.
     pub fn from_platform(
         api_url: &str,
         workspace_id: &str,
@@ -201,18 +205,12 @@ impl EnrollmentBundle {
             certificate_expires_at: enrolled.peer.certificate_expires_at.timestamp(),
             enrolled_at,
         };
-        let mut peer_certificate_pem = enrolled.certificate.trim_end().to_string();
-        peer_certificate_pem.push('\n');
-        let chain = enrolled.chain.trim();
-        if !chain.is_empty() {
-            peer_certificate_pem.push_str(chain);
-            peer_certificate_pem.push('\n');
-        }
         Ok(Self {
             document,
             peer_key_pem,
-            peer_certificate_pem,
+            peer_certificate_pem: enrolled.certificate,
             trust_anchor_pem: enrolled.trust_anchor,
+            chain_pem: enrolled.chain,
             platform_zenoh_config: enrolled.zenoh_config,
         })
     }
@@ -326,6 +324,7 @@ pub fn save(dirs: &PeppyDirs, bundle: &EnrollmentBundle) -> Result<()> {
         &bundle.trust_anchor_pem,
         false,
     )?;
+    publish(&peer_dir.join(CHAIN_FILE), &bundle.chain_pem, false)?;
     publish(
         &peer_dir.join(PLATFORM_ZENOH_CONFIG_FILE),
         &bundle.platform_zenoh_config,
@@ -436,10 +435,10 @@ mod tests {
         assert_eq!(doc.enrolled_at, 1_700_000_000);
         assert_eq!(
             bundle.peer_certificate_pem,
-            "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n\
-             -----BEGIN CERTIFICATE-----\nissuer\n-----END CERTIFICATE-----\n",
-            "the leaf comes first, then the chain, with no blank lines between"
+            "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n",
+            "the peer presents the leaf alone"
         );
+        assert!(bundle.chain_pem.contains("issuer"));
     }
 
     #[test]
@@ -474,6 +473,10 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&loaded.trust_anchor).unwrap(),
             bundle.trust_anchor_pem
+        );
+        assert_eq!(
+            std::fs::read_to_string(dirs.peer_dir().join(CHAIN_FILE)).unwrap(),
+            bundle.chain_pem
         );
         assert_eq!(
             std::fs::read_to_string(dirs.peer_dir().join(PLATFORM_ZENOH_CONFIG_FILE)).unwrap(),

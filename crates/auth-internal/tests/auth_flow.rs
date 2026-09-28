@@ -13,6 +13,7 @@ use serde_json::json;
 
 use auth::client::{self, PeerRemoval};
 use auth::storage::{self, Credentials, ProfileCreds};
+use auth::{AuthError, ProblemKind};
 use auth::{http::HttpClient, resolver};
 
 const WORKSPACE: &str = "ws-1";
@@ -275,10 +276,128 @@ fn a_refused_enrollment_carries_the_platform_problem_detail() {
         "csr",
     )
     .expect_err("422 is a refusal");
+    let AuthError::Problem(problem) = &err else {
+        panic!("expected a problem, got {err:?}");
+    };
+    assert_eq!(problem.kind, ProblemKind::PeerLimitReached);
+    assert_eq!(problem.status, 422);
     assert_eq!(
         err.to_string(),
         "Peer limit reached: this router admits 5 peers; remove one first"
     );
+}
+
+/// The delay the platform asks for reaches the caller as data.
+#[test]
+fn a_refusal_carries_the_retry_after_delay() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path(PEERS_PATH);
+        then.status(503)
+            .header("content-type", "application/problem+json")
+            .header("retry-after", "5")
+            .json_body(json!({
+                "type": "https://peppy.bot/problems/provisioner-unavailable",
+                "title": "Provisioner unavailable",
+                "status": 503,
+            }));
+    });
+    let (_dir, mut cred) = seeded_credential(&server);
+
+    let err = client::enroll_peer(
+        &HttpClient::new(),
+        &server.base_url(),
+        &mut cred,
+        WORKSPACE,
+        PROJECT,
+        "csr",
+    )
+    .expect_err("503 is a refusal");
+    let AuthError::Problem(problem) = err else {
+        panic!("expected a problem, got {err:?}");
+    };
+    assert_eq!(problem.kind, ProblemKind::ProvisionerUnavailable);
+    assert_eq!(problem.retry_after_secs, Some(5));
+}
+
+fn router_status_body(phase: &str) -> serde_json::Value {
+    json!({
+        "phase": phase, "desired_state": "running", "can_manage_infra": true,
+        "size": "micro", "entitled_sizes": ["micro"],
+        "pending_changes": true,
+        "pending_change_entries": [ { "kind": "peer",
+            "description": "peer robot-7 removed", "staged_at": "2026-10-03T00:00:00Z" } ],
+        "peers": []
+    })
+}
+
+#[test]
+fn restarting_and_starting_the_router_post_with_no_body() {
+    let server = MockServer::start();
+    let restart = server.mock(|when, then| {
+        when.method(POST)
+            .path(
+                "/api/workspace/ws-1/projects/550e8400-e29b-41d4-a716-446655440000/router/restart",
+            )
+            .body("");
+        then.status(202).json_body(router_status_body("restarting"));
+    });
+    let start = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/workspace/ws-1/projects/550e8400-e29b-41d4-a716-446655440000/router/start")
+            .body("");
+        then.status(202)
+            .json_body(router_status_body("provisioning"));
+    });
+    let (_dir, mut cred) = seeded_credential(&server);
+    let http = HttpClient::new();
+
+    let restarted =
+        client::restart_router(&http, &server.base_url(), &mut cred, WORKSPACE, PROJECT)
+            .expect("restart");
+    assert_eq!(restart.calls(), 1);
+    assert_eq!(restarted.phase, "restarting");
+    assert!(restarted.can_manage_infra);
+    assert_eq!(restarted.pending_change_entries.len(), 1);
+    assert_eq!(restarted.pending_change_entries[0].kind, "peer");
+    assert_eq!(
+        restarted.pending_change_entries[0].description,
+        "peer robot-7 removed"
+    );
+
+    let started = client::start_router(&http, &server.base_url(), &mut cred, WORKSPACE, PROJECT)
+        .expect("start");
+    assert_eq!(start.calls(), 1);
+    assert_eq!(started.phase, "provisioning");
+}
+
+/// A caller without the permission to manage the infrastructure gets a
+/// problem with status 403, which the command words on its own.
+#[test]
+fn a_restart_without_the_permission_is_a_403_problem() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path(
+            "/api/workspace/ws-1/projects/550e8400-e29b-41d4-a716-446655440000/router/restart",
+        );
+        then.status(403)
+            .header("content-type", "application/problem+json")
+            .json_body(json!({ "type": "about:blank", "title": "Forbidden", "status": 403 }));
+    });
+    let (_dir, mut cred) = seeded_credential(&server);
+
+    let err = client::restart_router(
+        &HttpClient::new(),
+        &server.base_url(),
+        &mut cred,
+        WORKSPACE,
+        PROJECT,
+    )
+    .expect_err("403 is a refusal");
+    let AuthError::Problem(problem) = err else {
+        panic!("expected a problem, got {err:?}");
+    };
+    assert_eq!(problem.status, 403);
 }
 
 #[test]

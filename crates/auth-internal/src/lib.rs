@@ -53,6 +53,6 @@ pub mod storage;
 pub use cli_config::CliConfig;
 pub use client::Principal;
 pub use enrollment::{Enrollment, EnrollmentBundle, EnrollmentDocument, RouterEndpoint};
-pub use error::{Error as AuthError, Result};
+pub use error::{Error as AuthError, Problem, ProblemKind, Result};
 pub use resolver::Credential;
 pub use storage::{Credentials, ProfileCreds};

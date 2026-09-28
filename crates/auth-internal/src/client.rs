@@ -21,7 +21,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use super::http::{HttpClient, HttpResponse};
 use super::resolver::{Credential, SessionContext, refresh_and_persist};
 use super::storage::{self, ProfileCreds};
-use crate::error::{Error, Result};
+use crate::error::{Error, Problem, ProblemKind, Result};
 
 /// The identity the backend reports for the current token (`GET /me`).
 #[derive(Debug, Clone, Deserialize)]
@@ -122,19 +122,38 @@ pub struct RouterPeerStatus {
     pub last_seen_at: Option<DateTime<Utc>>,
 }
 
+/// One change that waits for a router restart to apply.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PendingChange {
+    /// `size`, `peer`, `certificate` or `configuration`.
+    pub kind: String,
+    /// The platform's sentence for the person.
+    pub description: String,
+    pub staged_at: DateTime<Utc>,
+    /// When the platform restarts the router itself, if it set a date.
+    #[serde(default)]
+    pub deadline: Option<DateTime<Utc>>,
+}
+
 /// A project's cloud router (`GET .../router`, and the body of a staged peer
-/// removal).
+/// removal, a restart and a start).
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouterStatus {
     /// `provisioning`, `running`, `restarting`, `stopped` or `degraded`.
     pub phase: String,
     #[serde(default)]
     pub desired_state: String,
+    /// Whether the caller may start, stop and restart the router.
+    #[serde(default)]
+    pub can_manage_infra: bool,
     #[serde(default)]
     pub address: Option<RouterAddress>,
     /// Whether a change (a removed peer, a new size) waits for a restart.
     #[serde(default)]
     pub pending_changes: bool,
+    /// Every change that waits for a restart, oldest first.
+    #[serde(default)]
+    pub pending_change_entries: Vec<PendingChange>,
     #[serde(default)]
     pub peers: Vec<RouterPeerStatus>,
 }
@@ -187,18 +206,7 @@ pub fn enroll_peer(
     project_id: &str,
     csr_pem: &str,
 ) -> Result<RouterPeerEnrolled> {
-    let url = api_path(
-        api_url,
-        &[
-            "api",
-            "workspace",
-            workspace_id,
-            "projects",
-            project_id,
-            "router",
-            "peers",
-        ],
-    )?;
+    let url = router_path(api_url, workspace_id, project_id, &["peers"])?;
     let body = serde_json::json!({ "csr": csr_pem }).to_string();
     let resp = authed(http, cred, |http, bearer| {
         http.post_json(&url, &body, Some(bearer))
@@ -219,18 +227,7 @@ pub fn list_peers(
 ) -> Result<Vec<RouterPeer>> {
     authed_get_json(
         http,
-        &api_path(
-            api_url,
-            &[
-                "api",
-                "workspace",
-                workspace_id,
-                "projects",
-                project_id,
-                "router",
-                "peers",
-            ],
-        )?,
+        &router_path(api_url, workspace_id, project_id, &["peers"])?,
         cred,
     )
 }
@@ -245,19 +242,7 @@ pub fn remove_peer(
     project_id: &str,
     peer_id: &str,
 ) -> Result<PeerRemoval> {
-    let url = api_path(
-        api_url,
-        &[
-            "api",
-            "workspace",
-            workspace_id,
-            "projects",
-            project_id,
-            "router",
-            "peers",
-            peer_id,
-        ],
-    )?;
+    let url = router_path(api_url, workspace_id, project_id, &["peers", peer_id])?;
     let resp = authed(http, cred, |http, bearer| http.delete(&url, Some(bearer)))?;
     match resp.status {
         200 | 202 => Ok(PeerRemoval::Staged(resp.json("router peer removal")?)),
@@ -276,19 +261,73 @@ pub fn router_status(
 ) -> Result<RouterStatus> {
     authed_get_json(
         http,
-        &api_path(
-            api_url,
-            &[
-                "api",
-                "workspace",
-                workspace_id,
-                "projects",
-                project_id,
-                "router",
-            ],
-        )?,
+        &router_path(api_url, workspace_id, project_id, &[])?,
         cred,
     )
+}
+
+/// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/restart`. The
+/// platform answers `202` with the router, now restarting. A restart applies
+/// every pending change and drops each peer link for a moment.
+pub fn restart_router(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut Credential,
+    workspace_id: &str,
+    project_id: &str,
+) -> Result<RouterStatus> {
+    router_action(http, api_url, cred, workspace_id, project_id, "restart")
+}
+
+/// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/start`. The platform
+/// answers `202` with the router and the phase it moves to.
+pub fn start_router(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut Credential,
+    workspace_id: &str,
+    project_id: &str,
+) -> Result<RouterStatus> {
+    router_action(http, api_url, cred, workspace_id, project_id, "start")
+}
+
+/// A bodyless `POST` on the router that the platform accepts with `202` and
+/// the router's status.
+fn router_action(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut Credential,
+    workspace_id: &str,
+    project_id: &str,
+    action: &str,
+) -> Result<RouterStatus> {
+    let url = router_path(api_url, workspace_id, project_id, &[action])?;
+    let resp = authed(http, cred, |http, bearer| {
+        http.post_empty(&url, Some(bearer))
+    })?;
+    match resp.status {
+        200 | 202 => resp.json("router status"),
+        _ => Err(interpret_refusal(&resp, "POST", &url)),
+    }
+}
+
+/// The URL of a project's router, or of `tail` under it.
+fn router_path(
+    api_url: &str,
+    workspace_id: &str,
+    project_id: &str,
+    tail: &[&str],
+) -> Result<String> {
+    let mut segments = vec![
+        "api",
+        "workspace",
+        workspace_id,
+        "projects",
+        project_id,
+        "router",
+    ];
+    segments.extend_from_slice(tail);
+    api_path(api_url, &segments)
 }
 
 /// Joins `segments` onto `api_url` as percent-encoded path segments, so an id
@@ -335,9 +374,11 @@ fn authed_get_json<T: DeserializeOwned>(
     }
 }
 
-/// The subset of an RFC 9457 problem document the CLI renders.
+/// The members of an RFC 9457 problem document the CLI reads.
 #[derive(Deserialize)]
-struct Problem {
+struct ProblemDocument {
+    #[serde(rename = "type", default)]
+    problem_type: String,
     #[serde(default)]
     title: String,
     #[serde(default)]
@@ -346,19 +387,22 @@ struct Problem {
 
 /// The error for a refused request, after the single reactive refresh the
 /// `authed` callers already attempted: a `401` means the session is gone, and
-/// anything else is rendered from the platform's problem body when it has one.
-/// `502`/`503` without a body map to distinct ops-vs-token messages so an
-/// outage is not mistaken for a bad token.
+/// anything else is the platform's problem document when the body carries one,
+/// typed so a command can act on its kind. `502`/`503` without a body map to
+/// distinct ops-vs-token messages so an outage is not mistaken for a bad token.
 fn interpret_refusal(resp: &HttpResponse, method: &str, url: &str) -> Error {
     if resp.status == 401 {
         return Error::NotAuthenticated;
     }
-    if let Ok(problem) = serde_json::from_str::<Problem>(&resp.body)
-        && !problem.title.is_empty()
+    if let Ok(document) = serde_json::from_str::<ProblemDocument>(&resp.body)
+        && !document.title.is_empty()
     {
-        return Error::Http(match problem.detail.filter(|d| !d.is_empty()) {
-            Some(detail) => format!("{}: {detail}", problem.title),
-            None => problem.title,
+        return Error::Problem(Problem {
+            kind: ProblemKind::parse(&document.problem_type),
+            status: resp.status,
+            title: document.title,
+            detail: document.detail,
+            retry_after_secs: resp.retry_after_secs,
         });
     }
     match resp.status {
@@ -429,37 +473,70 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_problem_body_is_rendered_as_title_and_detail() {
-        let resp = HttpResponse {
-            status: 422,
-            body: r#"{"type":"https://peppy.bot/problems/peer-limit-reached",
-                      "title":"Peer limit reached","status":422,
-                      "detail":"the plan allows 5 peers per router"}"#
-                .into(),
-        };
-        assert_eq!(
-            interpret_refusal(&resp, "POST", "u").to_string(),
-            "Peer limit reached: the plan allows 5 peers per router"
-        );
+    fn response(status: u16, body: &str, retry_after_secs: Option<u64>) -> HttpResponse {
+        HttpResponse {
+            status,
+            body: body.into(),
+            retry_after_secs,
+        }
+    }
 
-        let bare = HttpResponse {
-            status: 503,
-            body: String::new(),
+    /// A refusal that carries a problem document is typed: the kind from the
+    /// `type` member, the status, the text for the person, and the delay the
+    /// platform asked for.
+    #[test]
+    fn a_problem_body_becomes_a_typed_problem() {
+        let refusal = interpret_refusal(
+            &response(
+                503,
+                r#"{"type":"https://peppy.bot/problems/provisioner-unavailable",
+                    "title":"Provisioner unavailable","status":503,
+                    "detail":"the certificate was not signed in time"}"#,
+                Some(5),
+            ),
+            "POST",
+            "u",
+        );
+        let Error::Problem(problem) = refusal else {
+            panic!("expected a problem, got {refusal:?}");
         };
+        assert_eq!(problem.kind, ProblemKind::ProvisionerUnavailable);
+        assert_eq!(problem.status, 503);
+        assert_eq!(problem.retry_after_secs, Some(5));
+        assert_eq!(
+            problem.to_string(),
+            "Provisioner unavailable: the certificate was not signed in time"
+        );
+    }
+
+    #[test]
+    fn a_refusal_with_no_problem_body_keeps_its_status_message() {
         assert!(
-            interpret_refusal(&bare, "GET", "u")
+            interpret_refusal(&response(503, "", None), "GET", "u")
                 .to_string()
                 .contains("temporarily")
         );
-        let gone = HttpResponse {
-            status: 401,
-            body: String::new(),
-        };
+        assert!(
+            interpret_refusal(&response(404, "not json", None), "GET", "u")
+                .to_string()
+                .contains("returned 404")
+        );
         assert!(matches!(
-            interpret_refusal(&gone, "GET", "u"),
+            interpret_refusal(&response(401, "", None), "GET", "u"),
             Error::NotAuthenticated
         ));
+    }
+
+    #[test]
+    fn router_paths_end_in_the_given_tail() {
+        assert_eq!(
+            router_path("https://api.example.test", "ws", "p", &[]).unwrap(),
+            "https://api.example.test/api/workspace/ws/projects/p/router"
+        );
+        assert_eq!(
+            router_path("https://api.example.test", "ws", "p", &["peers", "a/b"]).unwrap(),
+            "https://api.example.test/api/workspace/ws/projects/p/router/peers/a%2Fb"
+        );
     }
 
     #[test]
