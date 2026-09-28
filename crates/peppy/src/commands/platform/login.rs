@@ -1,16 +1,21 @@
-//! `peppy platform login`: OAuth 2.0 device-authorization login (RFC 8628).
+//! `peppy platform login`: OAuth 2.0 device-authorization login (RFC 8628),
+//! then the selection of the workspace and the project.
 //!
 //! Fetches the public `/cli/auth-config`, runs OIDC discovery against the
 //! returned issuer, performs the device flow (opening the browser on a TTY),
 //! caches the tokens as the single session, and prints the resolved identity.
-//! Signing in changes nothing about the daemon: joining a project's router is
-//! `peppy platform enroll`.
+//! It then runs the selection `peppy platform configure` runs, unless a context
+//! of this identity exists. Signing in changes nothing about the daemon:
+//! joining a project's router is `peppy platform enroll`.
 
 use std::sync::Arc;
 
 use daemon_config::consts::PeppyDirs;
 
 use crate::commands::Command;
+use crate::commands::platform::PlatformSession;
+use crate::commands::platform::configure::{select_and_save, selected_report};
+use crate::commands::platform::select::Ask;
 use crate::context::AppContext;
 use crate::error::Result;
 use auth::device::{self, TokenSet};
@@ -23,28 +28,33 @@ pub struct LoginCommand {
     pub api_url: Option<String>,
     /// Suppress the automatic browser launch.
     pub no_browser: bool,
+    /// Sign in only; do not select a workspace and a project.
+    pub no_configure: bool,
+    /// How the selection asks the person: on the terminal, from a supplied
+    /// reader, or not at all.
+    pub ask: Ask,
     /// Test seam: override the peppy data dirs (defaults to the global root).
-    /// Both the credentials file and `peppy_config.json5` derive from it, so a
-    /// test isolates all auth state under one tempdir without touching
+    /// The credentials file, the context and `peppy_config.json5` derive from
+    /// it, so a test isolates all state under one tempdir without touching
     /// `PEPPY_HOME`.
     pub peppy_dirs: Option<PeppyDirs>,
 }
 
 impl Command for LoginCommand {
-    fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
-        let super::PlatformSession {
-            dirs,
+    fn execute(mut self, _ctx: &Arc<AppContext>) -> Result<()> {
+        let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
+        let PlatformSession {
             api_url,
             creds_path,
             http,
             ..
-        } = super::PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
+        } = &session;
 
         let policy = profile::build_transport_policy();
-        let cfg = cli_config::fetch(&http, &api_url, policy)?;
-        let endpoints = discovery::discover(&http, &cfg.issuer, policy)?;
+        let cfg = cli_config::fetch(http, api_url, policy)?;
+        let endpoints = discovery::discover(http, &cfg.issuer, policy)?;
         let tokens = run_device_flow(
-            &http,
+            http,
             &endpoints,
             &cfg.client_id,
             &cfg.scopes,
@@ -55,26 +65,26 @@ impl Command for LoginCommand {
         // Load-resilient: a malformed or version-mismatched file fails to parse
         // with `Error::Auth`; start fresh rather than wedge login on it (the
         // stale file self-heals on this save).
-        let mut creds = match storage::load(&creds_path) {
+        let mut creds = match storage::load(creds_path) {
             Ok(creds) => creds,
             Err(auth::AuthError::Auth(_)) => storage::Credentials::default(),
             Err(e) => return Err(e.into()),
         };
-        let pc = client::creds_from_login(&cfg, &api_url, &tokens);
+        let pc = client::creds_from_login(&cfg, api_url, &tokens);
         creds.session = Some(pc.clone());
-        storage::save(&creds_path, &creds)?;
+        storage::save(creds_path, &creds)?;
 
         // Fetch identity using the in-memory credential (the token was minted
         // seconds ago, so there's no need to reload from disk or proactively
         // refresh via the resolver).
-        let mut cred = resolver::session_credential(&creds_path, &pc);
-        match client::get_me(&http, &api_url, &mut cred) {
+        let mut cred = resolver::session_credential(creds_path, &pc);
+        match client::get_me(http, api_url, &mut cred) {
             Ok(principal) => {
                 // Cache display identity against the stored session.
                 if let Some(session) = creds.session.as_mut() {
                     session.subject = principal.sub.clone();
                     session.username = principal.display_name().to_string();
-                    storage::save(&creds_path, &creds)?;
+                    storage::save(creds_path, &creds)?;
                 }
                 println!(
                     "Logged in as {} ({})",
@@ -91,13 +101,41 @@ impl Command for LoginCommand {
             }
         }
 
-        let enrolled = auth::enrollment::load(&dirs).is_ok_and(|e| e.is_some());
+        if !self.no_configure {
+            select_after_sign_in(&session, &mut cred, &mut self.ask);
+        }
+
+        let enrolled = auth::enrollment::load(&session.dirs).is_ok_and(|e| e.is_some());
         if !enrolled {
             println!(
                 "This machine is not enrolled in a project; run `peppy platform enroll` to join one."
             );
         }
         Ok(())
+    }
+}
+
+/// Selects the workspace and the project after a sign-in. A context of this
+/// backend and this identity is kept as it is. Every other stored context
+/// belongs to a different account, so it is removed before the selection.
+///
+/// The sign-in is good whatever happens here, so a selection that cannot
+/// complete prints its reason and the command that runs it again, and does
+/// not fail the login.
+fn select_after_sign_in(session: &PlatformSession, cred: &mut auth::Credential, ask: &mut Ask) {
+    if let Ok(Some(context)) = session.context() {
+        print!("{}", selected_report(session, &context));
+        return;
+    }
+    let selected = auth::context::remove(&session.dirs)
+        .map_err(crate::error::Error::from)
+        .and_then(|()| select_and_save(session, cred, None, None, ask));
+    match selected {
+        Ok(context) => print!("{}", selected_report(session, &context)),
+        Err(e) => println!(
+            "No workspace and project were selected: {e}\n\
+             Run `peppy platform configure` to select them."
+        ),
     }
 }
 

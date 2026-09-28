@@ -1,12 +1,13 @@
 ---
 title: Platform
-description: Sign in to the Peppy platform with peppy platform login (OAuth device flow), enroll this machine in a project's cloud router with peppy platform enroll, and check the link with peppy platform status
+description: Sign in to the Peppy platform with peppy platform login (OAuth device flow), select a workspace and a project, enroll this machine in the project's cloud router with peppy platform enroll, and check the link with peppy platform status
 sidebar:
   order: 16
 ---
 
 `peppy platform` connects this machine to the Peppy platform in two independent
-steps. **Signing in** (`login`) gives the CLI a session for the platform API.
+steps. **Signing in** (`login`) gives the CLI a session for the platform API,
+and selects the workspace and the project the commands act on.
 **Enrolling** (`enroll`) joins this machine to a project's cloud messaging
 router: the CLI mints a private key and a certificate signing request, the
 platform signs it, and the daemon dials the project's router with that
@@ -23,8 +24,13 @@ stay in the browser.
 
 | Command | What it does |
 |---------|--------------|
-| `peppy platform login [--api-url <url>] [--no-browser]` | Signs in via the OAuth 2.0 Device Authorization Grant and caches the tokens. |
-| `peppy platform logout` | Revokes the session's tokens at the identity provider and deletes them locally. The enrollment stays. |
+| `peppy platform login [--api-url <url>] [--no-browser] [--no-configure]` | Signs in via the OAuth 2.0 Device Authorization Grant, caches the tokens, and selects the workspace and the project. |
+| `peppy platform logout` | Revokes the session's tokens at the identity provider and deletes them locally, with the context. The enrollment stays. |
+| `peppy platform configure [--workspace <id\|name>] [--project <id\|name>]` | Selects the workspace and the project the commands act on. |
+| `peppy platform context show [--json]` | Shows the selected workspace and project. |
+| `peppy platform context list [--json]` | Lists every workspace and project, the selected ones marked. |
+| `peppy platform context use [--workspace <id\|name>] [--project <id\|name>]` | Switches to a different workspace and project. |
+| `peppy platform context clear` | Removes the context. |
 | `peppy platform whoami [--json]` | Shows the signed-in identity, backend, and token validity. |
 | `peppy platform workspaces [--json]` | Lists the workspaces you belong to. |
 | `peppy platform projects [--workspace <id\|name>] [--json]` | Lists the projects of a workspace. |
@@ -74,16 +80,97 @@ Every later call to the platform API sends the cached access token as a bearer.
 When it is about to expire, or the backend answers `401`, the CLI exchanges the
 refresh token for a new one and persists the rotation.
 
+After the sign-in, `login` selects the workspace and the project; see
+[Context](#context). `--no-configure` signs in only.
+
+## Context
+
+The context is the workspace and the project you selected. It is the default
+target of the platform commands, so you name a project one time and not on
+each command. It lives in `~/.peppy/conf/platform_context.json5` and belongs
+to one backend and one signed-in identity.
+
+### Selecting
+
+```sh
+peppy platform configure
+```
+
+The selection picks a workspace, then a project of that workspace:
+
+- A flag names it, by id or by exact name: `--workspace`, `--project`.
+- With no flag, the only workspace, or the only project, is selected with no
+  question. Archived projects do not count.
+- With more than one, the command prints a numbered list on a terminal and you
+  type the number.
+- With more than one and no terminal, the command stops, lists the choices,
+  and names the flag to pass.
+
+```
+Workspaces
+  1) Alice's workspace   (free)
+  2) Robotics lab   (team)
+Select a workspace [1-2]: 2
+
+Projects of Robotics lab
+  1) Lab
+  2) Field
+Select a project [1-2]: 1
+
+Context: project Lab (550e8400-e29b-41d4-a716-446655440000) in workspace Robotics lab
+```
+
+`login` runs the same selection after a sign-in. It keeps a context of the
+same identity and asks nothing. When the selection cannot complete, `login`
+prints the reason and the `configure` command, and the sign-in is still good.
+
+### Switching
+
+```sh
+peppy platform context list
+peppy platform context use --project Field
+peppy platform context use                    # select from the lists
+peppy platform context show
+peppy platform context clear
+```
+
+`context list` prints every workspace with its projects and marks the selected
+ones with `*`. `context use` with `--project` alone looks for the project in
+the workspace of the context.
+
+### Which project a command uses
+
+| Command | Order |
+|---------|-------|
+| `enroll`, `projects` | The flags, then the context, then the only choice. |
+| `peers`, `router restart`, `router start` | The flags, then the context, then the project this machine is enrolled in. |
+| `status`, `unenroll` | The project this machine is enrolled in. |
+
+### Context and enrollment
+
+The context is for the CLI only. A switch does not move this machine to a
+different project and does not restart the daemon. When this machine is
+enrolled in a different project than the context names, `configure`, `context
+use`, `context show` and `status` say so. To move the machine, run `peppy
+platform enroll --replace`.
+
+### A context that is out of date
+
+The context holds the ids and the names from the time of the selection. A
+project can be archived, or you can lose access to it, after that. The
+platform then refuses the call, and the command adds that the context can be
+out of date. Run `peppy platform configure` to select again.
+
 ## Enrolling
 
 ```sh
 peppy platform enroll
 ```
 
-Enrollment joins this machine to one project's cloud router. With one workspace
-and one project on the account, the command needs no flags; otherwise name
-them with `--workspace` and `--project` (an id or the exact name). The peer's
-name defaults to this machine's core-node name; `--name` overrides it.
+Enrollment joins this machine to one project's cloud router: the project of
+the [context](#context), or the one that `--workspace` and `--project` name (an
+id or the exact name). The peer's name defaults to this machine's core-node
+name; `--name` overrides it.
 
 What happens:
 
@@ -208,11 +295,12 @@ peppy platform router start
 
 Which router a command acts on:
 
-| Flags | This machine | Router |
-|-------|--------------|--------|
-| `--project` (and `--workspace` when the account has more than one) | enrolled or not | The project the flags name, by id or exact name. |
-| none | enrolled | The project this machine is enrolled in. |
-| none | not enrolled | None. The command stops and lists your projects. |
+| Flags | Context | This machine | Router |
+|-------|---------|--------------|--------|
+| `--project`, `--workspace` | set or not | enrolled or not | The project the flags name, by id or exact name. |
+| none | set | enrolled or not | The project of the context. |
+| none | not set | enrolled | The project this machine is enrolled in. |
+| none | not set | not enrolled | None. The command stops and lists your projects. |
 
 The command prints the router it found, its phase, its peers and the changes
 that wait, before it acts.
@@ -276,8 +364,9 @@ builds accept remote plain `http` with a warning.
 ## Credential storage
 
 Tokens live at `~/.peppy/conf/credentials.json5`, written owner-only (`0600`).
-The enrollment lives beside it under `~/.peppy/conf/peer/`, with the private
-key and the record owner-only. The root honors `PEPPY_HOME`.
+The context lives beside it in `platform_context.json5`; it holds ids and
+names, no secret. The enrollment lives under `~/.peppy/conf/peer/`, with the
+private key and the record owner-only. The root honors `PEPPY_HOME`.
 
 Tokens are never printed and `Authorization` headers are redacted in verbose
 output.
@@ -293,9 +382,9 @@ provider, then deletes the local session. The backend checks every bearer with
 the identity provider, so a revoked token stops working at once. It revokes
 only the tokens this machine holds; a session on another device keeps working.
 
-Signing out leaves the enrollment in place: the daemon keeps its certificate
-and its link to the project router, and only the CLI's platform calls need a
-new `peppy platform login`.
+Signing out removes the context with the session. It leaves the enrollment in
+place: the daemon keeps its certificate and its link to the project router,
+and only the CLI's platform calls need a new `peppy platform login`.
 
 ## Environment variables
 

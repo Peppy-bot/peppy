@@ -22,6 +22,51 @@ pub(crate) fn confirm_prompt(message: &str, reader: Option<&mut dyn BufRead>) ->
     Ok(matches!(response.as_str(), "y" | "yes"))
 }
 
+/// Prints `options` as a numbered list under `title` and asks the person to
+/// select one `what` by its number. Returns the index of the selected option.
+/// If `reader` is provided, reads from it; otherwise reads from stdin.
+///
+/// An answer that is not a number of the list prints the range and asks
+/// again. End of input is an error: there is then no person to ask.
+pub(crate) fn choose_prompt(
+    title: &str,
+    what: &str,
+    options: &[String],
+    mut reader: Option<&mut dyn BufRead>,
+) -> Result<usize> {
+    println!("{title}");
+    for (index, option) in options.iter().enumerate() {
+        println!("  {}) {option}", index + 1);
+    }
+    loop {
+        print!("Select a {what} [1-{}]: ", options.len());
+        io::stdout()
+            .flush()
+            .map_err(|e| Error::ExecutionFailed(format!("Failed to write the prompt: {e}")))?;
+
+        let mut input = String::new();
+        let read = match reader.as_mut() {
+            Some(reader) => reader.read_line(&mut input),
+            None => io::stdin().read_line(&mut input),
+        }
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to read the answer: {e}")))?;
+        if read == 0 {
+            return Err(Error::ExecutionFailed(format!("no {what} was selected")));
+        }
+        match parse_choice(&input, options.len()) {
+            Some(index) => return Ok(index),
+            None => println!("Type a number from 1 to {}.", options.len()),
+        }
+    }
+}
+
+/// The index an answer selects in a list of `count` options numbered from 1,
+/// or `None` when the answer is not a number of the list.
+fn parse_choice(answer: &str, count: usize) -> Option<usize> {
+    let number: usize = answer.trim().parse().ok()?;
+    (1..=count).contains(&number).then(|| number - 1)
+}
+
 /// Formats instance IDs as a comma-separated quoted list.
 pub(crate) fn format_instance_ids(instance_ids: &[String]) -> String {
     instance_ids
@@ -57,6 +102,43 @@ mod tests {
         assert!(!answer("\n"), "a bare newline declines");
         assert!(!answer(""), "EOF declines");
         assert!(!answer("yep\n"), "only y/yes count as yes");
+    }
+
+    fn choose(input: &str) -> Result<usize> {
+        let mut reader = Cursor::new(input.as_bytes().to_vec());
+        choose_prompt(
+            "Projects",
+            "project",
+            &["Lab".to_string(), "Field".to_string()],
+            Some(&mut reader),
+        )
+    }
+
+    #[test]
+    fn a_number_of_the_list_selects_its_option() {
+        assert_eq!(choose("1\n").unwrap(), 0);
+        assert_eq!(choose("  2  \n").unwrap(), 1);
+    }
+
+    #[test]
+    fn a_bad_answer_asks_again() {
+        assert_eq!(choose("0\n3\nLab\n\n2\n").unwrap(), 1);
+    }
+
+    #[test]
+    fn end_of_input_selects_nothing() {
+        let err = choose("").expect_err("no person to ask");
+        assert!(err.to_string().contains("no project was selected"), "{err}");
+        assert!(choose("7\n").is_err(), "a bad answer, then end of input");
+    }
+
+    #[test]
+    fn only_a_number_of_the_list_is_a_choice() {
+        assert_eq!(parse_choice("1", 2), Some(0));
+        assert_eq!(parse_choice("2\n", 2), Some(1));
+        for bad in ["0", "3", "-1", "1.0", "one", ""] {
+            assert_eq!(parse_choice(bad, 2), None, "{bad:?}");
+        }
     }
 
     #[test]

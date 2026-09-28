@@ -1,6 +1,7 @@
 //! `peppy platform peers`: the peers enrolled in a project's cloud router, as
 //! the platform reports them, with this machine marked by its peer id. The
-//! project defaults to the one this machine is enrolled in.
+//! project is the one the flags name, else the project of the context, else
+//! the one this machine is enrolled in.
 
 use std::sync::Arc;
 
@@ -27,25 +28,29 @@ impl Command for PeersCommand {
         let mut cred = session.credential()?;
         let enrollment = auth::enrollment::load(&session.dirs).map_err(Error::AuthEngine)?;
 
-        let select::Target {
-            workspace_id,
-            project_id,
-            ..
-        } = select::resolve_target(
+        let context = session.context()?;
+        let target = select::resolve_target(
             &session.http,
             &session.api_url,
             &mut cred,
             self.workspace.as_deref(),
             self.project.as_deref(),
+            context.as_ref(),
             enrollment.as_ref().map(|e| &e.document),
         )?;
         let peers = client::list_peers(
             &session.http,
             &session.api_url,
             &mut cred,
-            &workspace_id,
-            &project_id,
-        )?;
+            &target.workspace_id,
+            &target.project_id,
+        )
+        .map_err(|error| select::refusal_on(&target, error))?;
+        let select::Target {
+            workspace_id,
+            project_id,
+            ..
+        } = target;
         let this_machine = enrollment
             .as_ref()
             .map(|e| e.document.peer_id.as_str())

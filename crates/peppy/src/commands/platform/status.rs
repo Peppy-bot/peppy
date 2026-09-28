@@ -1,6 +1,7 @@
 //! `peppy platform status`: this machine's enrollment, whether the daemon
-//! runs under it with a verified link to the cloud router, and (when signed
-//! in) what the platform reports about the router and this peer.
+//! runs under it with a verified link to the cloud router, the context the
+//! commands use, and (when signed in) what the platform reports about the
+//! router and this peer.
 
 use std::sync::Arc;
 
@@ -8,6 +9,7 @@ use daemon::control::{self as daemon_control, PokeOutcome};
 use daemon_config::consts::PeppyDirs;
 
 use crate::commands::Command;
+use crate::commands::platform::context::{context_json, enrollment_note};
 use crate::commands::platform::peers::peer_status_label;
 use crate::commands::platform::router::pending_change_lines;
 use crate::commands::platform::{PlatformSession, date_of, federation_is_managed};
@@ -228,6 +230,17 @@ fn human_document(
             out.push_str(&format!("  link      : {}\n", link_line(link)));
         }
     }
+    out.push_str("Context\n");
+    match session.context() {
+        Ok(None) => out.push_str("  none; run `peppy platform configure` to select a project\n"),
+        Ok(Some(context)) => {
+            out.push_str(&format!("  {}\n", context.label()));
+            if let Some(note) = enrollment_note(&context, enrollment.map(|e| &e.document)) {
+                out.push_str(&format!("  {note}\n"));
+            }
+        }
+        Err(e) => out.push_str(&format!("  unavailable: {e}\n")),
+    }
     if enrollment.is_some() {
         out.push_str("Platform\n");
         match platform {
@@ -313,10 +326,15 @@ fn json_document(
         }),
         Err(e) => serde_json::json!({ "error": e.to_string() }),
     };
+    let context = match session.context() {
+        Ok(context) => context_json(context.as_ref()),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    };
     serde_json::json!({
         "enrolled": enrollment.is_some(),
         "enrollment": enrollment_json,
         "daemon": daemon_json,
+        "context": context,
         "platform": platform_json,
     })
 }

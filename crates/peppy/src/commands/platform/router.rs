@@ -1,8 +1,8 @@
 //! `peppy platform router restart` and `start`: act on a project's cloud
 //! router. One project has one router, so the project names it: the
-//! `--workspace`/`--project` flags when they are given, else the project this
-//! machine is enrolled in. The command prints the router it found before it
-//! acts.
+//! `--workspace`/`--project` flags when they are given, else the project of
+//! the context, else the project this machine is enrolled in. The command
+//! prints the router it found before it acts.
 //!
 //! A restart applies every pending change. The router reads its trust anchors
 //! when it starts, so a removed peer is refused, and its slot is free, only
@@ -33,7 +33,7 @@ pub enum RouterCommands {
         /// The workspace, by id or exact name.
         #[arg(long)]
         workspace: Option<String>,
-        /// The project, by id or exact name (else the project this machine is enrolled in).
+        /// The project, by id or exact name (else the project of the context, else of the enrollment).
         #[arg(long)]
         project: Option<String>,
         /// Skip the "this drops each peer link for a moment" prompt.
@@ -47,7 +47,7 @@ pub enum RouterCommands {
         /// The workspace, by id or exact name.
         #[arg(long)]
         workspace: Option<String>,
-        /// The project, by id or exact name (else the project this machine is enrolled in).
+        /// The project, by id or exact name (else the project of the context, else of the enrollment).
         #[arg(long)]
         project: Option<String>,
     },
@@ -117,12 +117,14 @@ impl Command for RouterCommand {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
         let mut cred = session.credential()?;
         let enrollment = auth::enrollment::load(&session.dirs).map_err(Error::AuthEngine)?;
+        let context = session.context()?;
         let target = select::resolve_target(
             &session.http,
             &session.api_url,
             &mut cred,
             self.workspace.as_deref(),
             self.project.as_deref(),
+            context.as_ref(),
             enrollment.as_ref().map(|e| &e.document),
         )?;
 
@@ -132,7 +134,8 @@ impl Command for RouterCommand {
             &mut cred,
             &target.workspace_id,
             &target.project_id,
-        )?;
+        )
+        .map_err(|error| select::refusal_on(&target, error))?;
         print!("{}", describe(&target.label, &before));
 
         if self.action == RouterAction::Restart
@@ -156,7 +159,7 @@ impl Command for RouterCommand {
             &target.workspace_id,
             &target.project_id,
         )
-        .map_err(|error| refusal(error, self.action))?;
+        .map_err(|error| refusal(error, self.action, &target))?;
         println!(
             "The platform accepted the {}. The router is {}.",
             self.action.verb(),
@@ -168,15 +171,17 @@ impl Command for RouterCommand {
 
 /// The error for a refused action. A `403` means the caller may not manage the
 /// infrastructure of the project, which is a different permission from the one
-/// an enrollment needs, so it gets its own words.
-fn refusal(error: AuthError, action: RouterAction) -> Error {
+/// an enrollment needs, so it gets its own words. The command read the router
+/// of `target` just before, so a `403` here is about the action and not about
+/// the project.
+fn refusal(error: AuthError, action: RouterAction, target: &select::Target) -> Error {
     match error {
         AuthError::Problem(problem) if problem.status == 403 => Error::Auth(format!(
             "you cannot {} this router: it needs the permission to manage the infrastructure \
              of the project. Ask an admin of the workspace.",
             action.verb()
         )),
-        other => Error::AuthEngine(other),
+        other => select::refusal_on(target, other),
     }
 }
 
@@ -308,11 +313,21 @@ mod tests {
             detail: None,
             retry_after_secs: None,
         });
-        let message = refusal(forbidden, RouterAction::Restart).to_string();
+        let target = select::Target {
+            workspace_id: "ws-1".into(),
+            project_id: "p-1".into(),
+            label: "project p-1".into(),
+            source: select::TargetSource::Context,
+        };
+        let message = refusal(forbidden, RouterAction::Restart, &target).to_string();
         assert!(message.contains("cannot restart"), "{message}");
         assert!(message.contains("manage the infrastructure"), "{message}");
+        assert!(
+            !message.contains("out of date"),
+            "the router of the context was read just before: {message}"
+        );
 
-        let other = refusal(AuthError::Http("boom".into()), RouterAction::Start);
+        let other = refusal(AuthError::Http("boom".into()), RouterAction::Start, &target);
         assert_eq!(other.to_string(), "boom");
     }
 

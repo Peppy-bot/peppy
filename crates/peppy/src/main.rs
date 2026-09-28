@@ -516,6 +516,22 @@ mod tests {
     fn platform_subcommands_parse() {
         for args in [
             vec!["peppy", "platform", "login", "--no-browser"],
+            vec!["peppy", "platform", "login", "--no-configure"],
+            vec!["peppy", "platform", "configure"],
+            vec![
+                "peppy",
+                "platform",
+                "configure",
+                "--workspace",
+                "w",
+                "--project",
+                "p",
+            ],
+            vec!["peppy", "platform", "context", "show", "--json"],
+            vec!["peppy", "platform", "context", "list"],
+            vec!["peppy", "platform", "context", "use", "--project", "Field"],
+            vec!["peppy", "platform", "context", "use"],
+            vec!["peppy", "platform", "context", "clear"],
             vec!["peppy", "platform", "login", "--api-url", "http://x:3000"],
             vec!["peppy", "platform", "logout"],
             vec!["peppy", "platform", "logout", "--api-url", "http://x:3000"],
@@ -568,6 +584,8 @@ mod tests {
         assert!(Cli::try_parse_from(["peppy", "platform", "list"]).is_err());
         assert!(Cli::try_parse_from(["peppy", "platform", "federate"]).is_err());
         assert!(Cli::try_parse_from(["peppy", "platform", "router"]).is_err());
+        assert!(Cli::try_parse_from(["peppy", "platform", "context"]).is_err());
+        assert!(Cli::try_parse_from(["peppy", "platform", "context", "switch"]).is_err());
         assert!(Cli::try_parse_from(["peppy", "platform", "router", "stop"]).is_err());
     }
 

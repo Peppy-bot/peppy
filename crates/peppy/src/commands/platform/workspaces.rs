@@ -1,5 +1,5 @@
 //! `peppy platform workspaces`: list the workspaces the signed-in account
-//! belongs to.
+//! belongs to. A `*` marks the workspace of the context.
 
 use std::sync::Arc;
 
@@ -23,11 +23,21 @@ impl Command for WorkspacesCommand {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
         let mut cred = session.credential()?;
         let workspaces = client::list_workspaces(&session.http, &session.api_url, &mut cred)?;
+        let context = session.context()?;
+        let is_current = |workspace_id: &str| {
+            context
+                .as_ref()
+                .is_some_and(|c| c.workspace.id == workspace_id)
+        };
 
         if self.json {
             let doc: Vec<_> = workspaces
                 .iter()
-                .map(|w| serde_json::json!({ "id": w.id, "name": w.name, "tier": w.tier }))
+                .map(|w| {
+                    serde_json::json!({
+                        "id": w.id, "name": w.name, "tier": w.tier, "current": is_current(&w.id),
+                    })
+                })
                 .collect();
             println!("{}", serde_json::Value::Array(doc));
             return Ok(());
@@ -36,11 +46,23 @@ impl Command for WorkspacesCommand {
             println!("No workspaces; create one in the web app first.");
             return Ok(());
         }
-        let rows: Vec<[String; 3]> = workspaces
+        let rows: Vec<[String; 4]> = workspaces
             .iter()
-            .map(|w| [w.id.clone(), w.name.clone(), w.tier.clone()])
+            .map(|w| {
+                [
+                    current_mark(is_current(&w.id)),
+                    w.id.clone(),
+                    w.name.clone(),
+                    w.tier.clone(),
+                ]
+            })
             .collect();
-        print!("{}", super::peers::table(["ID", "NAME", "TIER"], &rows));
+        print!("{}", super::peers::table(["", "ID", "NAME", "TIER"], &rows));
         Ok(())
     }
+}
+
+/// The first column of a list: `*` on the row of the context.
+pub(crate) fn current_mark(current: bool) -> String {
+    if current { "*" } else { "" }.to_string()
 }

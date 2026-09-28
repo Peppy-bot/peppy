@@ -63,12 +63,15 @@ impl Command for EnrollCommand {
                 .map(|s| s.core_node_name.as_str()),
             session.config.core_node_name.as_deref(),
         )?;
+        let context = session.context()?;
         let selection = select::resolve_project(
             &session.http,
             &session.api_url,
             &mut cred,
             self.workspace.as_deref(),
             self.project.as_deref(),
+            context.as_ref(),
+            &mut select::Ask::Never,
         )?;
 
         // Confirm before anything is minted, so an aborted enrollment leaves

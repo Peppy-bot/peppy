@@ -1,25 +1,31 @@
 //! The `peppy platform` command group: sign in and out of the platform
-//! (`login`, `logout`, `whoami`), look around it (`workspaces`, `projects`,
-//! `peers`), join or leave a project's cloud router (`enroll`, `unenroll`,
-//! `status`), and restart or start that router (`router`). Each variant maps to a handler in this module's directory; the
+//! (`login`, `logout`, `whoami`), select the workspace and the project the
+//! commands act on (`configure`, `context`), look around the platform
+//! (`workspaces`, `projects`, `peers`), join or leave a project's cloud router
+//! (`enroll`, `unenroll`, `status`), and restart or start that router
+//! (`router`). Each variant maps to a handler in this module's directory; the
 //! OAuth device flow, token storage, the platform API and the enrollment store
 //! they share live in the separate `auth` engine crate, and the config, URL
 //! and credential preamble they all repeat lives here as [`PlatformSession`].
 //!
 //! Signing in and enrolling are independent steps. A session is what the CLI
 //! needs to call the API; an enrollment is what the daemon needs to federate
-//! its router, and it outlives the session. `enroll` and `unenroll` change the
+//! its router, and it outlives the session. The context is the default target
+//! of the commands: it names a project to the CLI and changes nothing on the
+//! daemon. `enroll` and `unenroll` change the
 //! daemon's identity (its router id and session namespace), so they poke the
 //! running daemon over its control socket and wait for it to restart under the
 //! new identity; a poke that finds the identity unchanged verifies the link.
 
+pub mod configure;
+pub mod context;
 pub mod enroll;
 pub mod login;
 pub mod logout;
 pub mod peers;
 pub mod projects;
 pub mod router;
-mod select;
+pub mod select;
 pub mod status;
 pub mod unenroll;
 pub mod whoami;
@@ -198,6 +204,35 @@ impl PlatformSession {
     pub(crate) fn credential(&self) -> Result<auth::Credential> {
         auth::resolver::resolve(&self.creds_path, &self.http).map_err(Error::AuthEngine)
     }
+
+    /// The origin of the platform API this session talks to, as a context
+    /// records it.
+    pub(crate) fn api_origin(&self) -> Result<String> {
+        profile::normalize_api_origin(&self.api_url).map_err(Error::AuthEngine)
+    }
+
+    /// The subject of the signed-in identity as the session cached it, or
+    /// `None` when there is no session or its identity is not known.
+    pub(crate) fn subject(&self) -> Option<String> {
+        storage::load(&self.creds_path)
+            .ok()?
+            .session
+            .map(|session| session.subject)
+            .filter(|subject| !subject.is_empty())
+    }
+
+    /// The context the commands of this session use: the stored one when it
+    /// belongs to this backend and this identity, else `None`. A stored file
+    /// that cannot be read is an error that names `peppy platform configure`.
+    pub(crate) fn context(&self) -> Result<Option<auth::PlatformContext>> {
+        let Some(subject) = self.subject() else {
+            return Ok(None);
+        };
+        let api_origin = self.api_origin()?;
+        Ok(auth::context::load(&self.dirs)
+            .map_err(Error::AuthEngine)?
+            .filter(|context| context.belongs_to(&api_origin, &subject)))
+    }
 }
 
 /// Rejects `--core-node` for the whole `platform` group.
@@ -260,20 +295,12 @@ pub(crate) fn confirm_restart(
 /// proceed. With no terminal on stdin there is no person to ask, so the answer
 /// is yes: a script is never blocked on a prompt.
 pub(crate) fn ask_to_continue(warning: &str) -> Result<bool> {
-    use std::io::{IsTerminal, Write};
+    use std::io::IsTerminal;
 
     if !std::io::stdin().is_terminal() {
         return Ok(true);
     }
-    eprintln!("{warning}");
-    eprint!("Continue? [y/N] ");
-    std::io::stderr().flush().ok();
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line).map_err(Error::Io)?;
-    Ok(matches!(
-        line.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    crate::commands::confirm::confirm_prompt(&format!("{warning}\nContinue? [y/N] "), None)
 }
 
 /// Whether the running daemon's node stack holds any user node, by querying its
@@ -520,7 +547,7 @@ pub(crate) fn date_of(unix: i64) -> String {
 
 #[derive(Subcommand)]
 pub enum PlatformCommands {
-    /// Sign in to the platform via the browser (OAuth device flow)
+    /// Sign in to the platform via the browser (OAuth device flow), then select the workspace and the project
     Login {
         /// Override the backend base URL (else the build default / PEPPY_API_URL).
         #[arg(long = "api-url")]
@@ -528,6 +555,25 @@ pub enum PlatformCommands {
         /// Print the verification URL/code instead of opening a browser.
         #[arg(long = "no-browser")]
         no_browser: bool,
+        /// Sign in only; do not select a workspace and a project.
+        #[arg(long = "no-configure")]
+        no_configure: bool,
+    },
+    /// Select the workspace and the project the platform commands act on
+    Configure {
+        #[arg(long = "api-url")]
+        api_url: Option<String>,
+        /// The workspace, by id or exact name (else you select it from a list).
+        #[arg(long)]
+        workspace: Option<String>,
+        /// The project, by id or exact name (else you select it from a list).
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Show, list, switch or clear the selected workspace and project
+    Context {
+        #[command(subcommand)]
+        command: context::ContextCommands,
     },
     /// Sign out: revoke the session's tokens and clear them locally (the enrollment stays)
     Logout {
@@ -634,12 +680,30 @@ impl Command for PlatformCommand {
             PlatformCommands::Login {
                 api_url,
                 no_browser,
+                no_configure,
             } => login::LoginCommand {
                 api_url,
                 no_browser,
+                no_configure,
+                ask: select::Ask::Terminal,
                 peppy_dirs: None,
             }
             .execute(app_ctx),
+            PlatformCommands::Configure {
+                api_url,
+                workspace,
+                project,
+            } => configure::ConfigureCommand {
+                api_url,
+                workspace,
+                project,
+                ask: select::Ask::Terminal,
+                peppy_dirs: None,
+            }
+            .execute(app_ctx),
+            PlatformCommands::Context { command } => {
+                context::ContextCommand::from(command).execute(app_ctx)
+            }
             PlatformCommands::Logout { api_url } => logout::LogoutCommand {
                 api_url,
                 peppy_dirs: None,

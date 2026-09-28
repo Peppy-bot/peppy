@@ -3,8 +3,9 @@
 //! revocation endpoints, and the backend's `/me`, workspace, project and
 //! router-peer routes. All state is isolated per test via the `peppy_dirs`
 //! seam pointed at a tempdir (no `PEPPY_HOME` mutation, so tests run in
-//! parallel); the credentials file, the enrollment bundle and
-//! `peppy_config.json5` all land there. A running daemon is stood in for by a
+//! parallel); the credentials file, the context, the enrollment bundle and
+//! `peppy_config.json5` all land there. A command that can ask the person is
+//! told how to ask (`Ask`), so no test depends on a terminal. A running daemon is stood in for by a
 //! stub on the control socket. The engine internals (resolver, the platform
 //! client, the enrollment store, the CSR) are covered by the `auth` crate's
 //! own tests.
@@ -19,16 +20,20 @@ use httpmock::prelude::*;
 use secrecy::ExposeSecret;
 use serde_json::json;
 
+use auth::context::{self as platform_context, CONTEXT_VERSION, Named, PlatformContext};
 use auth::enrollment::{self, EnrollmentBundle, EnrollmentDocument, RouterEndpoint};
 use auth::storage::{self, Credentials, ProfileCreds};
 use daemon::state::DaemonState;
 use peppy::commands::Command;
+use peppy::commands::platform::configure::ConfigureCommand;
+use peppy::commands::platform::context::{ContextAction, ContextCommand, ContextCommands};
 use peppy::commands::platform::enroll::EnrollCommand;
 use peppy::commands::platform::login::LoginCommand;
 use peppy::commands::platform::logout::LogoutCommand;
 use peppy::commands::platform::peers::PeersCommand;
 use peppy::commands::platform::projects::ProjectsCommand;
 use peppy::commands::platform::router::{RouterAction, RouterCommand, RouterCommands};
+use peppy::commands::platform::select::Ask;
 use peppy::commands::platform::status::StatusCommand;
 use peppy::commands::platform::unenroll::UnenrollCommand;
 use peppy::commands::platform::whoami::WhoamiCommand;
@@ -312,6 +317,8 @@ fn login_persists_credentials_and_resolves_identity() {
     LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
+        no_configure: true,
+        ask: Ask::Never,
         peppy_dirs: Some(dirs(&dir)),
     }
     .execute(&ctx())
@@ -342,6 +349,8 @@ fn login_seeds_peppy_config_with_resource_servers_block() {
     LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
+        no_configure: true,
+        ask: Ask::Never,
         peppy_dirs: Some(dirs(&dir)),
     }
     .execute(&ctx())
@@ -371,6 +380,8 @@ fn login_writes_credentials_file_0600() {
     LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
+        no_configure: true,
+        ask: Ask::Never,
         peppy_dirs: Some(dirs(&dir)),
     }
     .execute(&ctx())
@@ -382,6 +393,535 @@ fn login_writes_credentials_file_0600() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o600, "credentials must be owner-only");
+}
+
+// ─── context ─────────────────────────────────────────────────────────────
+
+const FIELD: &str = "p-field";
+const SECOND_WORKSPACE: &str = "ws-b";
+const ARM: &str = "p-arm";
+
+/// Two workspaces. The first has the projects Lab and Field, the second has
+/// the project Arm.
+fn mock_two_workspaces(server: &MockServer) -> httpmock::Mock<'_> {
+    let project = |id: &str, workspace: &str, name: &str| {
+        json!({ "id": id, "workspace_id": workspace, "name": name, "robot_count": 0,
+                "live_session_count": 0, "created_at": "2026-10-01T00:00:00Z",
+                "updated_at": "2026-10-01T00:00:00Z" })
+    };
+    let first = json!([
+        project(PROJECT, WORKSPACE, "Lab"),
+        project(FIELD, WORKSPACE, "Field")
+    ]);
+    let second = json!([project(ARM, SECOND_WORKSPACE, "Arm")]);
+    server.mock(move |when, then| {
+        when.method(GET)
+            .path(format!("/api/workspace/{WORKSPACE}/projects"));
+        then.status(200).json_body(first);
+    });
+    server.mock(move |when, then| {
+        when.method(GET)
+            .path(format!("/api/workspace/{SECOND_WORKSPACE}/projects"));
+        then.status(200).json_body(second);
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/api/workspaces");
+        then.status(200).json_body(json!([
+            { "id": WORKSPACE, "name": "Alice's workspace", "tier": "free",
+              "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z" },
+            { "id": SECOND_WORKSPACE, "name": "Robotics lab", "tier": "team",
+              "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z" }
+        ]));
+    })
+}
+
+/// Writes a context selected against `server` by `subject`.
+fn write_context(
+    dir: &tempfile::TempDir,
+    server: &MockServer,
+    subject: &str,
+    workspace: (&str, &str),
+    project: (&str, &str),
+) -> PlatformContext {
+    let context = PlatformContext {
+        version: CONTEXT_VERSION,
+        api_origin: auth::profile::normalize_api_origin(&server.base_url()).unwrap(),
+        subject: subject.into(),
+        workspace: Named {
+            id: workspace.0.into(),
+            name: workspace.1.into(),
+        },
+        project: Named {
+            id: project.0.into(),
+            name: project.1.into(),
+        },
+        selected_at: 1_700_000_000,
+    };
+    platform_context::save(&dirs(dir), &context).expect("write context");
+    context
+}
+
+fn stored_context(dir: &tempfile::TempDir) -> Option<PlatformContext> {
+    platform_context::load(&dirs(dir)).expect("the context file parses")
+}
+
+fn answers(text: &str) -> Ask {
+    Ask::Reader(Box::new(std::io::Cursor::new(text.as_bytes().to_vec())))
+}
+
+fn login_with(
+    server: &MockServer,
+    dir: &tempfile::TempDir,
+    no_configure: bool,
+    ask: Ask,
+) -> peppy::error::Result<()> {
+    LoginCommand {
+        api_url: Some(server.base_url()),
+        no_browser: true,
+        no_configure,
+        ask,
+        peppy_dirs: Some(dirs(dir)),
+    }
+    .execute(&ctx())
+}
+
+#[test]
+fn login_selects_the_only_workspace_and_project_with_no_question() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    mock_workspaces_and_projects(&server);
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    login_with(&server, &dir, false, Ask::Never).expect("login");
+
+    let context = stored_context(&dir).expect("a context was selected");
+    assert_eq!(context.workspace.id, WORKSPACE);
+    assert_eq!(context.workspace.name, "Alice's workspace");
+    assert_eq!(
+        context.project.id, PROJECT,
+        "the archived project does not count"
+    );
+    assert_eq!(context.subject, "user-123");
+    assert_eq!(
+        context.api_origin,
+        auth::profile::normalize_api_origin(&server.base_url()).unwrap()
+    );
+}
+
+#[test]
+fn login_asks_when_there_is_more_than_one_choice() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    mock_two_workspaces(&server);
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    // Workspace 1 of 2, then project 2 of 2.
+    login_with(&server, &dir, false, answers("1\n2\n")).expect("login");
+
+    let context = stored_context(&dir).expect("a context was selected");
+    assert_eq!(context.workspace.id, WORKSPACE);
+    assert_eq!(context.project.id, FIELD);
+    assert_eq!(context.project.name, "Field");
+}
+
+/// A workspace with one project asks one question only.
+#[test]
+fn login_does_not_ask_for_the_only_project_of_the_selected_workspace() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    mock_two_workspaces(&server);
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    login_with(&server, &dir, false, answers("2\n")).expect("login");
+
+    let context = stored_context(&dir).expect("a context was selected");
+    assert_eq!(context.workspace.id, SECOND_WORKSPACE);
+    assert_eq!(context.project.id, ARM);
+}
+
+/// With nobody to ask, the sign-in is still good: the session is kept, no
+/// context is written, and the command succeeds.
+#[test]
+fn login_with_nobody_to_ask_succeeds_and_writes_no_context() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    mock_two_workspaces(&server);
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    login_with(&server, &dir, false, Ask::Never).expect("the sign-in does not fail");
+
+    assert_eq!(stored_context(&dir), None);
+    let creds = storage::load(&creds_path(&dir)).expect("load creds");
+    assert!(creds.session.is_some(), "the session is kept");
+}
+
+#[test]
+fn login_keeps_the_context_of_the_same_identity() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    let workspaces = mock_two_workspaces(&server);
+    let dir = tempfile::tempdir().expect("temp dir");
+    let before = write_context(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        (FIELD, "Field"),
+    );
+
+    login_with(&server, &dir, false, Ask::Never).expect("login");
+
+    assert_eq!(stored_context(&dir), Some(before));
+    assert_eq!(workspaces.calls(), 0, "nothing is selected again");
+}
+
+#[test]
+fn login_as_a_different_identity_replaces_the_context() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    mock_workspaces_and_projects(&server);
+    let dir = tempfile::tempdir().expect("temp dir");
+    write_context(
+        &dir,
+        &server,
+        "someone-else",
+        ("ws-x", "Their workspace"),
+        ("p-x", "Theirs"),
+    );
+
+    login_with(&server, &dir, false, Ask::Never).expect("login");
+
+    let context = stored_context(&dir).expect("a context was selected");
+    assert_eq!(context.subject, "user-123");
+    assert_eq!(context.project.id, PROJECT);
+}
+
+/// The old context belongs to a different account, so it does not stay when
+/// the selection cannot complete.
+#[test]
+fn login_as_a_different_identity_removes_the_context_also_with_nobody_to_ask() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    mock_two_workspaces(&server);
+    let dir = tempfile::tempdir().expect("temp dir");
+    write_context(
+        &dir,
+        &server,
+        "someone-else",
+        ("ws-x", "Their workspace"),
+        ("p-x", "Theirs"),
+    );
+
+    login_with(&server, &dir, false, Ask::Never).expect("login");
+
+    assert_eq!(stored_context(&dir), None);
+}
+
+#[test]
+fn login_no_configure_selects_nothing() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    let workspaces = mock_two_workspaces(&server);
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    login_with(&server, &dir, true, answers("1\n1\n")).expect("login");
+
+    assert_eq!(stored_context(&dir), None);
+    assert_eq!(workspaces.calls(), 0);
+}
+
+fn configure_with(
+    server: &MockServer,
+    dir: &tempfile::TempDir,
+    workspace: Option<&str>,
+    project: Option<&str>,
+    ask: Ask,
+) -> peppy::error::Result<()> {
+    ConfigureCommand {
+        api_url: Some(server.base_url()),
+        workspace: workspace.map(str::to_string),
+        project: project.map(str::to_string),
+        ask,
+        peppy_dirs: Some(dirs(dir)),
+    }
+    .execute(&ctx())
+}
+
+fn context_command(
+    server: &MockServer,
+    dir: &tempfile::TempDir,
+    action: ContextAction,
+    ask: Ask,
+) -> peppy::error::Result<()> {
+    ContextCommand {
+        action,
+        api_url: Some(server.base_url()),
+        ask,
+        peppy_dirs: Some(dirs(dir)),
+    }
+    .execute(&ctx())
+}
+
+/// `configure` always runs the selection, also when a context exists.
+#[test]
+fn configure_replaces_the_context() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = authenticated_dir(&server);
+    write_context(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        (PROJECT, "Lab"),
+    );
+
+    configure_with(&server, &dir, None, None, answers("2\n")).expect("configure");
+
+    let context = stored_context(&dir).expect("context");
+    assert_eq!(context.workspace.id, SECOND_WORKSPACE);
+    assert_eq!(context.project.id, ARM);
+}
+
+#[test]
+fn configure_with_flags_asks_nothing() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = authenticated_dir(&server);
+
+    configure_with(
+        &server,
+        &dir,
+        Some("Alice's workspace"),
+        Some("Field"),
+        Ask::Never,
+    )
+    .expect("configure by name");
+    assert_eq!(stored_context(&dir).expect("context").project.id, FIELD);
+
+    let err = configure_with(&server, &dir, None, None, Ask::Never)
+        .expect_err("more than one workspace and nobody to ask");
+    assert!(err.to_string().contains("--workspace"), "{err}");
+    assert_eq!(
+        stored_context(&dir).expect("context").project.id,
+        FIELD,
+        "a selection that fails writes nothing"
+    );
+}
+
+#[test]
+fn configure_needs_a_session() {
+    let server = MockServer::start();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let err = configure_with(&server, &dir, None, None, Ask::Never).expect_err("no session");
+    assert!(err.to_string().contains("peppy platform login"), "{err}");
+}
+
+/// `--project` alone looks in the workspace of the context.
+#[test]
+fn context_use_switches_the_project_in_the_workspace_of_the_context() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = authenticated_dir(&server);
+    write_context(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        (PROJECT, "Lab"),
+    );
+    write_enrollment(&dir, "peer-1", ZID);
+
+    context_command(
+        &server,
+        &dir,
+        ContextAction::Use {
+            workspace: Some(WORKSPACE.to_string()),
+            project: Some("Field".to_string()),
+        },
+        Ask::Never,
+    )
+    .expect("switch");
+
+    assert_eq!(stored_context(&dir).expect("context").project.id, FIELD);
+    assert_eq!(
+        enrollment::load(&dirs(&dir))
+            .unwrap()
+            .unwrap()
+            .document
+            .project_id,
+        PROJECT,
+        "a switch does not move the machine"
+    );
+    assert!(
+        !dirs(&dir).runtime_config_dir().exists(),
+        "a switch never pokes the daemon"
+    );
+}
+
+#[test]
+fn context_show_list_and_clear() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = authenticated_dir(&server);
+
+    for json in [false, true] {
+        context_command(&server, &dir, ContextAction::Show { json }, Ask::Never)
+            .expect("show with no context");
+    }
+    write_context(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        (FIELD, "Field"),
+    );
+    for json in [false, true] {
+        context_command(&server, &dir, ContextAction::Show { json }, Ask::Never).expect("show");
+        context_command(&server, &dir, ContextAction::List { json }, Ask::Never).expect("list");
+    }
+
+    context_command(&server, &dir, ContextAction::Clear, Ask::Never).expect("clear");
+    assert_eq!(stored_context(&dir), None);
+    context_command(&server, &dir, ContextAction::Clear, Ask::Never).expect("clear two times");
+}
+
+/// A context of a different identity is not the context of this session.
+#[test]
+fn a_context_of_a_different_identity_is_not_used() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = authenticated_dir(&server);
+    write_context(
+        &dir,
+        &server,
+        "someone-else",
+        (WORKSPACE, "Alice's workspace"),
+        (FIELD, "Field"),
+    );
+
+    let err = enroll_in(&server, &dir, false).expect_err("no context, more than one workspace");
+    assert!(
+        err.to_string().contains("peppy platform configure"),
+        "{err}"
+    );
+}
+
+#[test]
+fn enroll_uses_the_context() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let enroll = mock_enroll(&server, ZID);
+    let dir = authenticated_dir(&server);
+    write_context(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        (PROJECT, "Lab"),
+    );
+
+    enroll_in(&server, &dir, false).expect("the context names the project");
+
+    assert_eq!(enroll.calls(), 1);
+    assert_eq!(
+        enrollment::load(&dirs(&dir))
+            .unwrap()
+            .unwrap()
+            .document
+            .project_id,
+        PROJECT
+    );
+}
+
+/// The machine is enrolled in one project and the context names a different
+/// one: `peers` and `router` act on the project of the context.
+#[test]
+fn peers_and_router_use_the_context_before_the_enrollment() {
+    let server = MockServer::start();
+    let field_router = format!("/api/workspace/{WORKSPACE}/projects/{FIELD}/router");
+    let field_peers = server.mock(|when, then| {
+        when.method(GET).path(format!("{field_router}/peers"));
+        then.status(200).json_body(json!([]));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path(field_router.as_str());
+        then.status(200)
+            .json_body(router_body("running", "connected"));
+    });
+    let field_restart = server.mock(|when, then| {
+        when.method(POST).path(format!("{field_router}/restart"));
+        then.status(202)
+            .json_body(router_body("restarting", "connected"));
+    });
+    let enrolled_restart = mock_router_action(&server, "restart", "restarting");
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-1", ZID);
+    write_context(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        (FIELD, "Field"),
+    );
+
+    PeersCommand {
+        api_url: Some(server.base_url()),
+        workspace: None,
+        project: None,
+        json: false,
+        peppy_dirs: Some(dirs(&dir)),
+    }
+    .execute(&ctx())
+    .expect("peers");
+    router_command(&server, &dir, RouterAction::Restart, None).expect("restart");
+
+    assert_eq!(field_peers.calls(), 1);
+    assert_eq!(field_restart.calls(), 1);
+    assert_eq!(enrolled_restart.calls(), 0);
+}
+
+#[test]
+fn a_refusal_on_the_project_of_the_context_names_configure() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path(format!(
+            "/api/workspace/{WORKSPACE}/projects/p-gone/router/peers"
+        ));
+        then.status(404)
+            .header("content-type", "application/problem+json")
+            .json_body(json!({ "type": "about:blank", "title": "Not Found", "status": 404 }));
+    });
+    let dir = authenticated_dir(&server);
+    write_context(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        ("p-gone", "Gone"),
+    );
+
+    let err = PeersCommand {
+        api_url: Some(server.base_url()),
+        workspace: None,
+        project: None,
+        json: false,
+        peppy_dirs: Some(dirs(&dir)),
+    }
+    .execute(&ctx())
+    .expect_err("the project is gone");
+    assert_eq!(
+        err.to_string(),
+        "Not Found. The context can be out of date. Run `peppy platform configure`."
+    );
 }
 
 // ─── logout ──────────────────────────────────────────────────────────────
@@ -406,6 +946,13 @@ fn logout_revokes_both_tokens_and_keeps_the_enrollment() {
     });
     let dir = authenticated_dir(&server);
     write_enrollment(&dir, "peer-1", ZID);
+    write_context(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        (PROJECT, "Lab"),
+    );
 
     LogoutCommand {
         api_url: Some(server.base_url()),
@@ -418,6 +965,11 @@ fn logout_revokes_both_tokens_and_keeps_the_enrollment() {
     assert_eq!(revoke_access.calls(), 1);
     let after = storage::load(&creds_path(&dir)).expect("load creds");
     assert!(after.session.is_none(), "the session is cleared");
+    assert_eq!(
+        platform_context::load(&dirs(&dir)).unwrap(),
+        None,
+        "the context goes with the session"
+    );
     assert!(
         enrollment::load(&dirs(&dir)).unwrap().is_some(),
         "logout leaves the enrollment in place"
@@ -1102,6 +1654,7 @@ fn every_platform_command_refuses_a_core_node_override() {
             PlatformCommands::Login {
                 api_url: api_url.clone(),
                 no_browser: true,
+                no_configure: false,
             },
         ),
         (
@@ -1182,10 +1735,52 @@ fn every_platform_command_refuses_a_core_node_override() {
             "router start",
             PlatformCommands::Router {
                 command: RouterCommands::Start {
+                    api_url: api_url.clone(),
+                    workspace: None,
+                    project: None,
+                },
+            },
+        ),
+        (
+            "configure",
+            PlatformCommands::Configure {
+                api_url: api_url.clone(),
+                workspace: None,
+                project: None,
+            },
+        ),
+        (
+            "context show",
+            PlatformCommands::Context {
+                command: ContextCommands::Show {
+                    api_url: api_url.clone(),
+                    json: false,
+                },
+            },
+        ),
+        (
+            "context list",
+            PlatformCommands::Context {
+                command: ContextCommands::List {
+                    api_url: api_url.clone(),
+                    json: false,
+                },
+            },
+        ),
+        (
+            "context use",
+            PlatformCommands::Context {
+                command: ContextCommands::Use {
                     api_url,
                     workspace: None,
                     project: None,
                 },
+            },
+        ),
+        (
+            "context clear",
+            PlatformCommands::Context {
+                command: ContextCommands::Clear,
             },
         ),
     ];
