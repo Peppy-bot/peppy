@@ -310,11 +310,13 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 name = "auth"
 version = "0.0.1"
 dependencies = [
+ "chrono",
  "daemon-config",
  "httpmock",
  "json5-pretty",
  "peppy-config-model",
  "pmi",
+ "rcgen",
  "secrecy 0.10.3",
  "serde",
  "serde_json",
@@ -3917,6 +3919,7 @@ dependencies = [
  "rand 0.10.2",
  "rustls-native-certs",
  "rustls-pemfile",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

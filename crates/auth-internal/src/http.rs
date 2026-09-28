@@ -58,14 +58,7 @@ impl Default for HttpClient {
 
 impl HttpClient {
     pub fn new() -> Self {
-        Self::with_timeout(DEFAULT_HTTP_TIMEOUT)
-    }
-
-    /// Like [`new`](Self::new) but with an explicit global timeout. The router
-    /// federation path uses this to honor the configurable
-    /// `federation.connect_timeout_secs` instead of the default; every other
-    /// caller stays on [`new`](Self::new).
-    pub fn with_timeout(timeout: Duration) -> Self {
+        let timeout = DEFAULT_HTTP_TIMEOUT;
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             // Use the host platform's trust policy rather than ureq's static
@@ -138,15 +131,7 @@ impl HttpClient {
         finish("POST", url, resp)
     }
 
-    /// `POST url` with no body (used for `/logout`).
-    pub fn post_empty(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
-        let resp = with_bearer(self.agent.post(url), bearer)
-            .send_empty()
-            .map_err(|e| Error::Http(format!("POST {} failed: {e}", redact(url))))?;
-        finish("POST", url, resp)
-    }
-
-    /// `DELETE url` (used for `/me/core-nodes/{core_node_name}`).
+    /// `DELETE url`, optionally with a bearer token.
     pub fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
         let resp = with_bearer(self.agent.delete(url), bearer)
             .call()

@@ -1,33 +1,31 @@
-//! Authenticated calls to the `platform-backend` resource server: `GET /me`,
-//! `POST /logout`, `GET /me/cli/router-config` (fetch the shared router's
-//! connection config), and `POST /me/core-nodes` (claim this machine's
-//! identity). On a `401` with a refreshable session credential the request is
-//! retried once after refreshing (and persisting) the token; a `401` on a PAT is
-//! a hard error (a PAT cannot be refreshed). `502`/`503` map to distinct
-//! messages so an ops problem isn't mistaken for a bad token.
+//! Authenticated calls to the `platform-backend` resource server, typed at the
+//! HTTP boundary. On a `401` the request is retried once after refreshing (and
+//! persisting) the session token. Every other refusal is rendered from the
+//! backend's `application/problem+json` body when it carries one, so the user
+//! sees the platform's own `title` and `detail` (a quota reached, a malformed
+//! request) rather than a bare status code.
 //!
-//! Reading the router config and claiming an identity are separate calls
-//! deliberately. The config is valid for anyone holding the token; the identity
-//! claim is valid only for a daemon generation that has settled its namespace
-//! and owns the router it names. Fusing them let a generation about to be torn
-//! down publish a zid it never ran under.
+//! Response types deserialize tolerantly (unknown fields ignored) because the
+//! CLI is installed on user machines while the backend deploys independently,
+//! so an older CLI routinely meets a newer backend. Status-like fields the
+//! backend enumerates (`RouterPeer::status`, `RouterStatus::phase`) are kept
+//! as strings for the same reason: a value this CLI has not heard of renders
+//! as itself instead of failing the whole listing.
 
+use chrono::{DateTime, Utc};
 use config::namespace::Namespace;
+use pmi::RouterId;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, de::DeserializeOwned};
 
 use super::http::{HttpClient, HttpResponse};
-use super::resolver::{Credential, CredentialKind, refresh_and_persist};
+use super::resolver::{Credential, SessionContext, refresh_and_persist};
 use super::storage::{self, ProfileCreds};
 use crate::error::{Error, Result};
 
-/// The identity the backend reports for the current token. Deserialized
-/// tolerantly: only `sub` is required, everything else is optional so a backend
-/// that adds fields (or omits an optional one) still parses.
+/// The identity the backend reports for the current token (`GET /me`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Principal {
-    #[serde(default)]
-    pub id: Option<String>,
     pub sub: String,
     #[serde(default)]
     pub kind: Option<String>,
@@ -36,9 +34,7 @@ pub struct Principal {
     #[serde(default)]
     pub email: Option<String>,
     #[serde(default)]
-    pub role: Option<String>,
-    #[serde(default)]
-    pub owner_principal_id: Option<String>,
+    pub region: Option<String>,
 }
 
 impl Principal {
@@ -52,327 +48,320 @@ impl Principal {
     }
 }
 
-/// `GET {api_url}/me`, refreshing once on a 401 for session credentials.
-pub fn get_me(http: &HttpClient, api_url: &str, cred: &mut Credential) -> Result<Principal> {
-    authed_get_json(http, api_url, "/me", cred)
+/// One workspace the caller belongs to (`GET /api/workspaces`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Workspace {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub tier: String,
 }
 
-/// The caller's workspace's core nodes, as `GET /me/core-nodes` returns them.
-///
-/// Deserialized tolerantly (unknown fields ignored), and every field the
-/// platform may not know is optional. That is version skew, not a legacy shim:
-/// the CLI is installed on user machines and the backend is deployed
-/// independently, so an older CLI meets a newer backend routinely. Later work
-/// adds a per-entry `network` object to this exact response, and a CLI that
-/// rejected unknown fields would break on that deploy.
+/// One project in a workspace (`GET /api/workspace/{ws}/projects`). An
+/// archived project carries `archived_at`; it owns no running router.
 #[derive(Debug, Clone, Deserialize)]
-pub struct CoreNodeListing {
-    /// The workspace whose core nodes these are, as the backend derives it from
-    /// the authenticated principal.
+pub struct Project {
+    pub id: String,
     pub workspace_id: String,
-    /// Whether the platform could read liveliness at all. When false, every
-    /// entry's application status is null, and that is a different statement
-    /// from every machine being offline.
+    pub name: String,
     #[serde(default)]
-    pub application_status_available: bool,
-    #[serde(default)]
-    pub core_nodes: Vec<CoreNodeEntry>,
+    pub archived_at: Option<DateTime<Utc>>,
 }
 
-/// One core node in the workspace.
-#[derive(Debug, Clone, Deserialize)]
-pub struct CoreNodeEntry {
-    pub core_node_name: String,
-    /// Whether the platform has a registry row for this name. `false` is the
-    /// normal appearance of a `zenoh.external` daemon, which adopts its cached
-    /// workspace namespace but never registers.
-    #[serde(default)]
-    pub registered: bool,
-    /// RFC 3339 UTC, or null on an unregistered entry.
-    #[serde(default)]
-    pub first_seen_at: Option<String>,
-    /// RFC 3339 UTC, or null on an unregistered entry. When that machine last
-    /// asserted its identity, not a liveness signal, which is why it is never
-    /// rendered as "last seen".
-    #[serde(default)]
-    pub last_registered_at: Option<String>,
-    #[serde(default)]
-    pub network: NetworkStatus,
-    #[serde(default)]
-    pub application: ApplicationStatus,
-}
-
-/// Whether this core node's site holds a live transport session with the
-/// platform's shared router.
-///
-/// The network layer and the application layer fail separately, which is the
-/// whole reason both are reported: `linked` with an offline application layer is
-/// a dead daemon behind a healthy uplink (debug the machine), while `unlinked`
-/// with an offline application layer is an unreachable site (debug the network).
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct NetworkStatus {
-    /// `"linked"`, `"indirect"`, `"unlinked"`, or `"unknown"`. Kept as a string
-    /// rather than an enum, like [`ApplicationStatus::status`], so a status this
-    /// CLI has not heard of renders as itself instead of failing the listing.
-    #[serde(default)]
-    pub status: Option<String>,
-    /// The transport identity this site's daemon reported, or null for a name
-    /// that is live on the wire but has no registry row (nothing to join on).
-    #[serde(default)]
-    pub router_zid: Option<String>,
-}
-
-/// Whether a core node's daemon is on the wire. Both fields are null when the
-/// platform could not read liveliness.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ApplicationStatus {
-    /// `"online"`, `"offline"`, or null. Kept as a string rather than an enum
-    /// so a status this CLI has not heard of renders as itself instead of
-    /// failing the whole listing.
-    #[serde(default)]
-    pub status: Option<String>,
-    /// Distinct instance ids claiming the name. More than one is an active
-    /// collision, and the losing daemon refuses to boot.
-    #[serde(default)]
-    pub live_claimants: Option<u32>,
-}
-
-/// `GET {api_url}/me/core-nodes`, refreshing once on a 401 for session
-/// credentials.
-///
-/// A `404` is mapped explicitly: it means the backend predates this endpoint,
-/// which the generic status message would render as an unexplained
-/// `returned 404`. The mapping lives here rather than in
-/// [`interpret_authed_json`] because `404` means something different on every
-/// endpoint (on `DELETE /me/core-nodes/{name}` it means "no such row").
-pub fn list_core_nodes(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut Credential,
-) -> Result<CoreNodeListing> {
-    let url = format!("{}/me/core-nodes", api_url.trim_end_matches('/'));
-    let resp = authed_get(http, &url, cred)?;
-    if resp.status == 404 {
-        return Err(Error::Http(format!(
-            "{api_url} does not support `peppy platform list`; upgrade the platform, \
-             or check --api-url"
-        )));
+impl Project {
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
     }
-    interpret_authed_json(resp, cred, "GET", &url, "/me/core-nodes")
 }
 
-/// The connection config the backend hands the CLI for the caller's private
-/// per-user zenoh router. Deserialized tolerantly (unknown fields ignored) so a
-/// backend that adds fields still parses. The CA the router is validated against
-/// is **not** part of this response; it is CLI-side deployment config (the
-/// trust root the gateway's routers present a cert chained to).
+/// One enrolled router peer of a project.
 #[derive(Debug, Clone, Deserialize)]
-pub struct ZenohRouterConfig {
-    /// The Zenoh locator to dial, `<scheme>/<host>:<port>`, e.g.
-    /// `tls/7f3a….zenoh.localhost:7443`. The host is the capability subdomain
-    /// (the SNI the gateway routes on); TLS terminates at the user's router.
-    pub endpoint: String,
-    /// Transport scheme, `"tls"` today.
-    pub protocol: String,
-    /// How long this config may be reused before re-resolving it. A cache-freshness
-    /// hint only: the router the backend hands back is a single shared one, not a
-    /// per-user resource with a lifetime, and nothing on the backend probes this
-    /// daemon or tears that router down. Reusing a still-fresh config therefore only
-    /// delays this daemon's next re-registration, never the loss of a router.
-    pub reconnect_after_secs: u64,
-    /// The daemon's session namespace, deserialized directly from the backend's
-    /// `workspace_id`. Typed at the HTTP boundary: an invalid workspace id fails
-    /// the pull before anything can be cached or reach a live session.
-    #[serde(rename = "workspace_id")]
+pub struct RouterPeer {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub certificate_cn: String,
+    /// `connected`, `unknown` or `pending_restart` as the platform reports it.
+    pub status: String,
+    pub certificate_expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The one-time answer to an enrollment: the signed material and the identity
+/// the daemon's router must run under. `zenoh_id` and `namespace` are parsed
+/// here, at the boundary, so a value zenoh would refuse fails the enrollment
+/// before anything is written.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RouterPeerEnrolled {
+    pub peer: RouterPeer,
+    /// The leaf certificate, PEM.
+    pub certificate: String,
+    /// The issuing chain (peer issuer, then project CA), PEM.
+    pub chain: String,
+    /// The project CA the cloud router's certificate chains to, PEM.
+    pub trust_anchor: String,
+    pub zenoh_id: RouterId,
     pub namespace: Namespace,
+    /// The peer config the platform rendered for this machine.
+    pub zenoh_config: String,
 }
 
-impl ZenohRouterConfig {
-    /// Splits this config's `<scheme>/<host>:<port>` locator into the
-    /// `(host, port)` a TLS client dials. Thin wrapper over [`split_locator`].
-    pub fn host_port(&self) -> Result<(String, u16)> {
-        split_locator(&self.endpoint)
-    }
+/// Where a project's cloud router listens.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RouterAddress {
+    pub host: String,
+    pub port: u16,
 }
 
-/// Splits a `<scheme>/<host>:<port>` Zenoh locator into the `(host, port)` a TLS
-/// client dials. The host doubles as the SNI the gateway routes on and the name
-/// the router certificate is validated against. A scheme prefix is optional; a
-/// missing/invalid `host:port` is a hard error. Shared by the live response and
-/// the cached endpoint string.
-pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
-    let after_scheme = endpoint
-        .split_once('/')
-        .map(|(_scheme, rest)| rest)
-        .unwrap_or(endpoint);
-    let (host, port) = after_scheme.rsplit_once(':').ok_or_else(|| {
-        Error::Auth(format!(
-            "malformed router endpoint {endpoint:?}: expected `<scheme>/<host>:<port>`"
-        ))
-    })?;
-    if host.is_empty() {
-        return Err(Error::Auth(format!(
-            "malformed router endpoint {endpoint:?}: empty host"
-        )));
-    }
-    let port: u16 = port.parse().map_err(|_| {
-        Error::Auth(format!(
-            "malformed router endpoint {endpoint:?}: invalid port {port:?}"
-        ))
-    })?;
-    Ok((host.to_string(), port))
+/// The platform's view of one peer's connection.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RouterPeerStatus {
+    pub id: String,
+    pub status: String,
+    #[serde(default)]
+    pub last_seen_at: Option<DateTime<Utc>>,
 }
 
-/// `GET {api_url}/me/cli/router-config`: fetch the shared router's connection
-/// config (the daemon's discovery point), refreshing the access token once on a
-/// 401 for session credentials (the same reactive-refresh contract as
-/// [`get_me`]). The daemon dials the returned endpoint over one-way TLS,
-/// verifying the router's certificate and presenting none of its own.
-///
-/// Carries no daemon identity, and the call writes nothing on the backend.
-/// Claiming an identity is [`register_core_node`].
-pub fn fetch_router_config(
+/// A project's cloud router (`GET .../router`, and the body of a staged peer
+/// removal).
+#[derive(Debug, Clone, Deserialize)]
+pub struct RouterStatus {
+    /// `provisioning`, `running`, `restarting`, `stopped` or `degraded`.
+    pub phase: String,
+    #[serde(default)]
+    pub desired_state: String,
+    #[serde(default)]
+    pub address: Option<RouterAddress>,
+    /// Whether a change (a removed peer, a new size) waits for a restart.
+    #[serde(default)]
+    pub pending_changes: bool,
+    #[serde(default)]
+    pub peers: Vec<RouterPeerStatus>,
+}
+
+/// What `DELETE .../router/peers/{id}` answered.
+#[derive(Debug, Clone)]
+pub enum PeerRemoval {
+    /// The platform accepted the removal; it takes effect when the router
+    /// restarts, and the returned status shows the pending change.
+    Staged(RouterStatus),
+    /// The platform holds no such peer any more.
+    AlreadyRemoved,
+}
+
+/// `GET {api_url}/me`, refreshing once on a 401.
+pub fn get_me(http: &HttpClient, api_url: &str, cred: &mut Credential) -> Result<Principal> {
+    authed_get_json(http, &api_path(api_url, &["me"])?, cred)
+}
+
+/// `GET {api_url}/api/workspaces`.
+pub fn list_workspaces(
     http: &HttpClient,
     api_url: &str,
     cred: &mut Credential,
-) -> Result<ZenohRouterConfig> {
-    authed_get_json(http, api_url, "/me/cli/router-config", cred)
+) -> Result<Vec<Workspace>> {
+    authed_get_json(http, &api_path(api_url, &["api", "workspaces"])?, cred)
 }
 
-/// `POST {api_url}/me/core-nodes`: record that this machine runs
-/// `core_node_name` behind the router `router_zid` pins, refreshing the access
-/// token once on a 401 for session credentials.
-///
-/// The platform joins the zid against the shared router's live session list,
-/// which is what separates "the uplink is up, the daemon is not" from "this site
-/// is unreachable". The caller must therefore pass the identity its live router
-/// actually pins, never one read back from disk after the fact.
-pub fn register_core_node(
+/// `GET {api_url}/api/workspace/{workspace_id}/projects`.
+pub fn list_projects(
     http: &HttpClient,
     api_url: &str,
     cred: &mut Credential,
-    core_node_name: &str,
-    router_zid: &pmi::RouterId,
-) -> Result<()> {
-    let body = serde_json::json!({
-        "core_node_name": core_node_name,
-        "router_zid": router_zid.as_str(),
-    })
-    .to_string();
-    let path = "/me/core-nodes";
-    let url = format!("{}{}", api_url.trim_end_matches('/'), path);
-    let resp = authed_post(http, &url, &body, cred)?;
-    // A registration answers `204`, so there is no body to deserialize; the rest
-    // of the status contract is the one every authed call shares.
+    workspace_id: &str,
+) -> Result<Vec<Project>> {
+    authed_get_json(
+        http,
+        &api_path(api_url, &["api", "workspace", workspace_id, "projects"])?,
+        cred,
+    )
+}
+
+/// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/peers` with the PEM
+/// signing request. The platform answers `201` with the signed material.
+pub fn enroll_peer(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut Credential,
+    workspace_id: &str,
+    project_id: &str,
+    csr_pem: &str,
+) -> Result<RouterPeerEnrolled> {
+    let url = api_path(
+        api_url,
+        &[
+            "api",
+            "workspace",
+            workspace_id,
+            "projects",
+            project_id,
+            "router",
+            "peers",
+        ],
+    )?;
+    let body = serde_json::json!({ "csr": csr_pem }).to_string();
+    let resp = authed(http, cred, |http, bearer| {
+        http.post_json(&url, &body, Some(bearer))
+    })?;
     match resp.status {
-        204 => Ok(()),
-        status => Err(interpret_authed_status(status, cred, "POST", &url)),
+        201 => resp.json("router peer enrollment"),
+        _ => Err(interpret_refusal(&resp, "POST", &url)),
     }
 }
 
-/// `POST {api_url}/logout` with the current access token. Returns the status code
-/// so the caller can decide what to print; never refreshes (the token is being
-/// thrown away regardless).
-pub fn logout(http: &HttpClient, api_url: &str, access_token: &str) -> Result<u16> {
-    let url = format!("{}/logout", api_url.trim_end_matches('/'));
-    let resp = http.post_empty(&url, Some(access_token))?;
-    Ok(resp.status)
-}
-
-/// `DELETE {api_url}/me/core-nodes/{core_node_name}`: remove this machine's core
-/// node from the caller's registry on the platform. Returns the status code so
-/// the caller can decide what to print (`204` removed, `404` nothing to remove).
-///
-/// Never refreshes, deliberately, exactly like [`logout`]. `peppy platform
-/// logout` calls this immediately before revoking the very token it holds: a
-/// refresh here would mint a token that the revocation which follows does not
-/// cover, leaving it valid until its own expiry.
-///
-/// The name goes into the path unencoded because the backend accepts only
-/// `[A-Za-z0-9_-]`, which is the daemon's own charset, so a core-node name is
-/// always a literal path segment.
-pub fn deregister_core_node(
+/// `GET {api_url}/api/workspace/{ws}/projects/{p}/router/peers`.
+pub fn list_peers(
     http: &HttpClient,
     api_url: &str,
-    access_token: &str,
-    core_node_name: &str,
-) -> Result<u16> {
-    let url = format!(
-        "{}/me/core-nodes/{core_node_name}",
-        api_url.trim_end_matches('/')
-    );
-    let resp = http.delete(&url, Some(access_token))?;
-    Ok(resp.status)
-}
-
-/// A GET that, on 401 with a session credential, refreshes (and persists) the
-/// token and retries exactly once.
-fn authed_get(http: &HttpClient, url: &str, cred: &mut Credential) -> Result<HttpResponse> {
-    let resp = http.get(url, Some(cred.token.expose_secret()))?;
-    if resp.status == 401 && cred.is_refreshable() {
-        refresh_in_place(http, cred)?;
-        return http.get(url, Some(cred.token.expose_secret()));
-    }
-    Ok(resp)
-}
-
-/// A JSON POST that, on 401 with a session credential, refreshes (and persists)
-/// the token and retries exactly once with the same body.
-fn authed_post(
-    http: &HttpClient,
-    url: &str,
-    body: &str,
     cred: &mut Credential,
-) -> Result<HttpResponse> {
-    let resp = http.post_json(url, body, Some(cred.token.expose_secret()))?;
-    if resp.status == 401 && cred.is_refreshable() {
-        refresh_in_place(http, cred)?;
-        return http.post_json(url, body, Some(cred.token.expose_secret()));
-    }
-    Ok(resp)
+    workspace_id: &str,
+    project_id: &str,
+) -> Result<Vec<RouterPeer>> {
+    authed_get_json(
+        http,
+        &api_path(
+            api_url,
+            &[
+                "api",
+                "workspace",
+                workspace_id,
+                "projects",
+                project_id,
+                "router",
+                "peers",
+            ],
+        )?,
+        cred,
+    )
 }
 
-/// An authenticated `GET {api_url}{path}` whose `200` body deserializes to `T`.
-/// See [`interpret_authed_json`] for the shared status contract.
+/// `DELETE {api_url}/api/workspace/{ws}/projects/{p}/router/peers/{peer_id}`.
+/// A `404` is a definite answer (the peer is already gone), not an error.
+pub fn remove_peer(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut Credential,
+    workspace_id: &str,
+    project_id: &str,
+    peer_id: &str,
+) -> Result<PeerRemoval> {
+    let url = api_path(
+        api_url,
+        &[
+            "api",
+            "workspace",
+            workspace_id,
+            "projects",
+            project_id,
+            "router",
+            "peers",
+            peer_id,
+        ],
+    )?;
+    let resp = authed(http, cred, |http, bearer| http.delete(&url, Some(bearer)))?;
+    match resp.status {
+        200 | 202 => Ok(PeerRemoval::Staged(resp.json("router peer removal")?)),
+        404 => Ok(PeerRemoval::AlreadyRemoved),
+        _ => Err(interpret_refusal(&resp, "DELETE", &url)),
+    }
+}
+
+/// `GET {api_url}/api/workspace/{ws}/projects/{p}/router`.
+pub fn router_status(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut Credential,
+    workspace_id: &str,
+    project_id: &str,
+) -> Result<RouterStatus> {
+    authed_get_json(
+        http,
+        &api_path(
+            api_url,
+            &[
+                "api",
+                "workspace",
+                workspace_id,
+                "projects",
+                project_id,
+                "router",
+            ],
+        )?,
+        cred,
+    )
+}
+
+/// Joins `segments` onto `api_url` as percent-encoded path segments, so an id
+/// taken from a flag can never smuggle a slash or a query into the path.
+fn api_path(api_url: &str, segments: &[&str]) -> Result<String> {
+    let mut url = url::Url::parse(api_url)
+        .map_err(|e| Error::Auth(format!("invalid platform API `{api_url}`: {e}")))?;
+    url.path_segments_mut()
+        .map_err(|_| {
+            Error::Auth(format!(
+                "invalid platform API `{api_url}`: cannot be a base"
+            ))
+        })?
+        .pop_if_empty()
+        .extend(segments);
+    Ok(url.to_string())
+}
+
+/// Runs `request` with the current bearer and, on a `401`, refreshes (and
+/// persists) the session token and retries exactly once.
+fn authed(
+    http: &HttpClient,
+    cred: &mut Credential,
+    request: impl Fn(&HttpClient, &str) -> Result<HttpResponse>,
+) -> Result<HttpResponse> {
+    let resp = request(http, cred.token.expose_secret())?;
+    if resp.status != 401 {
+        return Ok(resp);
+    }
+    refresh_in_place(http, cred)?;
+    request(http, cred.token.expose_secret())
+}
+
+/// An authenticated `GET url` whose `200` body deserializes to `T`.
 fn authed_get_json<T: DeserializeOwned>(
     http: &HttpClient,
-    api_url: &str,
-    path: &str,
+    url: &str,
     cred: &mut Credential,
 ) -> Result<T> {
-    let url = format!("{}{}", api_url.trim_end_matches('/'), path);
-    let resp = authed_get(http, &url, cred)?;
-    interpret_authed_json(resp, cred, "GET", &url, path)
-}
-
-/// The status contract every authenticated `/me*` JSON endpoint shares: a `200`
-/// body deserializes to `T`, and every other status goes through
-/// [`interpret_authed_status`]. `path` doubles as the deserialization context
-/// label, so a new authed endpoint is one line, not a copied block.
-fn interpret_authed_json<T: DeserializeOwned>(
-    resp: HttpResponse,
-    cred: &Credential,
-    method: &str,
-    url: &str,
-    path: &str,
-) -> Result<T> {
+    let resp = authed(http, cred, |http, bearer| http.get(url, Some(bearer)))?;
     match resp.status {
-        200 => resp.json(path),
-        status => Err(interpret_authed_status(status, cred, method, url)),
+        200 => resp.json(url),
+        _ => Err(interpret_refusal(&resp, "GET", url)),
     }
 }
 
-/// The failure half of that contract, shared by the JSON endpoints and the
-/// bodyless ones (which cannot go through [`interpret_authed_json`] at all): a
-/// `401` becomes the credential-specific auth error (after the single reactive
-/// refresh the `authed_*` callers already attempt), `502`/`503` map to distinct
-/// ops-vs-token messages, and any other status to a generic HTTP error.
-///
-/// Split out rather than duplicated so the two interpreters cannot drift on what
-/// a `503` means.
-fn interpret_authed_status(status: u16, cred: &Credential, method: &str, url: &str) -> Error {
-    match status {
-        401 => unauthorized_error(cred),
+/// The subset of an RFC 9457 problem document the CLI renders.
+#[derive(Deserialize)]
+struct Problem {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    detail: Option<String>,
+}
+
+/// The error for a refused request, after the single reactive refresh the
+/// `authed` callers already attempted: a `401` means the session is gone, and
+/// anything else is rendered from the platform's problem body when it has one.
+/// `502`/`503` without a body map to distinct ops-vs-token messages so an
+/// outage is not mistaken for a bad token.
+fn interpret_refusal(resp: &HttpResponse, method: &str, url: &str) -> Error {
+    if resp.status == 401 {
+        return Error::NotAuthenticated;
+    }
+    if let Ok(problem) = serde_json::from_str::<Problem>(&resp.body)
+        && !problem.title.is_empty()
+    {
+        return Error::Http(match problem.detail.filter(|d| !d.is_empty()) {
+            Some(detail) => format!("{}: {detail}", problem.title),
+            None => problem.title,
+        });
+    }
+    match resp.status {
         502 => Error::Auth(
             "the backend's introspection credentials were rejected (server-side problem)"
                 .to_string(),
@@ -385,37 +374,23 @@ fn interpret_authed_status(status: u16, cred: &Credential, method: &str, url: &s
 /// Refreshes a session credential in place via the shared refresh-and-persist
 /// pipeline, then rebuilds the [`Credential`] from the rotated tokens.
 fn refresh_in_place(http: &HttpClient, cred: &mut Credential) -> Result<()> {
-    let CredentialKind::Session(ctx) = &cred.kind else {
-        return Ok(());
-    };
-
     // Load the stored session to refresh from (it may have changed since the
     // credential was built, e.g. another command refreshed in parallel).
-    let creds = storage::load(&ctx.creds_path)?;
+    let creds = storage::load(&cred.session.creds_path)?;
     let Some(pc) = creds.session.as_ref() else {
         return Ok(());
     };
 
-    let updated = refresh_and_persist(http, &ctx.creds_path, pc)?;
+    let updated = refresh_and_persist(http, &cred.session.creds_path, pc)?;
 
     cred.token = storage::secret(updated.access_token.expose_secret().to_string());
-    cred.kind = CredentialKind::Session(super::resolver::SessionContext {
+    cred.session = SessionContext {
         issuer: updated.issuer.clone(),
         client_id: updated.client_id.clone(),
         refresh_token: storage::secret(updated.refresh_token.expose_secret().to_string()),
-        creds_path: ctx.creds_path.clone(),
-    });
+        creds_path: cred.session.creds_path.clone(),
+    };
     Ok(())
-}
-
-/// The 401 message, specialized by credential kind.
-fn unauthorized_error(cred: &Credential) -> Error {
-    match cred.kind {
-        CredentialKind::Pat => {
-            Error::Auth("API key rejected (revoked or expired?), cannot refresh".to_string())
-        }
-        CredentialKind::Session(_) => Error::NotAuthenticated,
-    }
 }
 
 /// Builds the [`ProfileCreds`] to persist after a fresh login.
@@ -438,80 +413,69 @@ pub fn creds_from_login(
 mod tests {
     use super::*;
 
-    fn cfg(endpoint: &str) -> ZenohRouterConfig {
-        ZenohRouterConfig {
-            endpoint: endpoint.to_string(),
-            protocol: "tls".to_string(),
-            reconnect_after_secs: 3000,
-            namespace: Namespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap(),
-        }
-    }
-
     #[test]
-    fn host_port_splits_a_tls_locator() {
-        let (host, port) = cfg("tls/7f3a.zenoh.localhost:7443")
-            .host_port()
-            .expect("valid locator");
-        assert_eq!(host, "7f3a.zenoh.localhost");
-        assert_eq!(port, 7443);
-    }
-
-    #[test]
-    fn host_port_tolerates_a_missing_scheme() {
-        let (host, port) = cfg("cap.zenoh.localhost:7443")
-            .host_port()
-            .expect("scheme is optional");
-        assert_eq!(host, "cap.zenoh.localhost");
-        assert_eq!(port, 7443);
-    }
-
-    #[test]
-    fn host_port_rejects_a_missing_port() {
-        assert!(cfg("tls/cap.zenoh.localhost").host_port().is_err());
-    }
-
-    #[test]
-    fn host_port_rejects_a_non_numeric_port() {
-        assert!(cfg("tls/cap.zenoh.localhost:https").host_port().is_err());
-    }
-
-    #[test]
-    fn host_port_rejects_an_empty_host() {
-        assert!(cfg("tls/:7443").host_port().is_err());
-    }
-
-    #[test]
-    fn router_config_parses_tolerantly() {
-        // A backend that adds an unknown field still deserializes.
-        let json = r#"{
-            "endpoint": "tls/abc.zenoh.localhost:7443",
-            "protocol": "tls",
-            "mode": "client",
-            "reconnect_after_secs": 3000,
-            "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
-            "some_future_field": "ignored"
-        }"#;
-        let cfg: ZenohRouterConfig = serde_json::from_str(json).expect("tolerant parse");
-        assert_eq!(cfg.protocol, "tls");
-        assert_eq!(cfg.reconnect_after_secs, 3000);
+    fn api_paths_are_joined_as_encoded_segments() {
         assert_eq!(
-            cfg.namespace.as_str(),
-            "550e8400-e29b-41d4-a716-446655440000"
+            api_path("https://api.example.test/", &["api", "workspaces"]).unwrap(),
+            "https://api.example.test/api/workspaces"
         );
         assert_eq!(
-            cfg.host_port().unwrap(),
-            ("abc.zenoh.localhost".to_string(), 7443)
+            api_path(
+                "http://127.0.0.1:3000",
+                &["api", "workspace", "ws/../x?y", "projects"]
+            )
+            .unwrap(),
+            "http://127.0.0.1:3000/api/workspace/ws%2F..%2Fx%3Fy/projects"
         );
     }
 
     #[test]
-    fn router_config_rejects_an_invalid_workspace_id() {
-        let json = r#"{
-            "endpoint": "tls/abc.zenoh.localhost:7443",
-            "protocol": "tls",
-            "reconnect_after_secs": 3000,
-            "workspace_id": "**"
-        }"#;
-        assert!(serde_json::from_str::<ZenohRouterConfig>(json).is_err());
+    fn a_problem_body_is_rendered_as_title_and_detail() {
+        let resp = HttpResponse {
+            status: 422,
+            body: r#"{"type":"https://peppy.bot/problems/peer-limit-reached",
+                      "title":"Peer limit reached","status":422,
+                      "detail":"the plan allows 5 peers per router"}"#
+                .into(),
+        };
+        assert_eq!(
+            interpret_refusal(&resp, "POST", "u").to_string(),
+            "Peer limit reached: the plan allows 5 peers per router"
+        );
+
+        let bare = HttpResponse {
+            status: 503,
+            body: String::new(),
+        };
+        assert!(
+            interpret_refusal(&bare, "GET", "u")
+                .to_string()
+                .contains("temporarily")
+        );
+        let gone = HttpResponse {
+            status: 401,
+            body: String::new(),
+        };
+        assert!(matches!(
+            interpret_refusal(&gone, "GET", "u"),
+            Error::NotAuthenticated
+        ));
+    }
+
+    #[test]
+    fn an_enrollment_response_rejects_an_id_zenoh_would_refuse() {
+        let json = |zid: &str| {
+            format!(
+                r#"{{"peer":{{"id":"p","name":"n","certificate_cn":"n","status":"unknown",
+                    "certificate_expires_at":"2027-01-01T00:00:00Z",
+                    "created_at":"2026-10-03T00:00:00Z"}},
+                    "certificate":"c","chain":"","trust_anchor":"t","zenoh_id":"{zid}",
+                    "namespace":"550e8400-e29b-41d4-a716-446655440000","zenoh_config":"{{}}",
+                    "some_future_field":1}}"#
+            )
+        };
+        let ok: RouterPeerEnrolled = serde_json::from_str(&json("7f3a9c1e")).expect("parses");
+        assert_eq!(ok.zenoh_id.as_str(), "7f3a9c1e");
+        assert!(serde_json::from_str::<RouterPeerEnrolled>(&json("0abc")).is_err());
     }
 }

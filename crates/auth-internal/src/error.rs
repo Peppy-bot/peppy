@@ -2,7 +2,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    // -- filesystem (credential cache reads/writes)
+    // -- filesystem (credential and enrollment reads/writes)
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -10,11 +10,11 @@ pub enum Error {
     #[error("{0}")]
     Http(String),
 
-    // -- OAuth / identity failures with a user-actionable message
+    // -- OAuth / identity / enrollment failures with a user-actionable message
     #[error("{0}")]
     Auth(String),
 
-    // -- no usable credential and not on an interactive terminal
-    #[error("Not authenticated. Run `peppy platform login` or set PEPPY_API_KEY.")]
+    // -- no usable session
+    #[error("Not authenticated. Run `peppy platform login`.")]
     NotAuthenticated,
 }
