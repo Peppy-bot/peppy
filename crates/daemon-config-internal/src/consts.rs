@@ -190,13 +190,12 @@ impl PeppyDirs {
         self.root.join("stack_log.log")
     }
 
-    /// Path to the daemon's persisted zenoh router identity.
-    ///
-    /// Sits at the data root beside `daemon_state.json5`, which it resembles:
-    /// daemon-owned state, not user-editable configuration, so it deliberately
-    /// does not live under [`Self::conf_dir`].
-    pub fn router_identity_path(&self) -> PathBuf {
-        self.root.join("router_identity.json5")
+    /// Directory holding this machine's platform enrollment: the router peer
+    /// record, its private key and certificate, and the project's trust anchor.
+    /// Under [`Self::conf_dir`] beside the credentials file, since `peppy
+    /// platform enroll` and `unenroll` own it the way `login` owns the session.
+    pub fn peer_dir(&self) -> PathBuf {
+        self.conf_dir().join("peer")
     }
 
     /// Shared Rust crate cache directory for a given cache key.

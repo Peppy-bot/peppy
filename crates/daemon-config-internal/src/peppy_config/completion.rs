@@ -23,7 +23,6 @@ use std::collections::HashMap;
 
 use super::{
     API_FIELD_SNIPPET, CORE_NODE_NAME_SECTION_SNIPPET, DAEMON_GRACE_FIELD_SNIPPET,
-    FEDERATION_SECTION_SNIPPET, FEDERATION_TIMEOUT_FIELD_SNIPPET,
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET,
     LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, MANAGED_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET,
     SHUTDOWN_GRACE_FIELD_SNIPPET, STANDARD_BUFFER_FIELD_SNIPPET,
@@ -93,17 +92,6 @@ const SECTIONS: &[EntrySpec] = &[
                         },
                     ],
                 },
-                EntrySpec {
-                    key: "federation",
-                    snippet: FEDERATION_SECTION_SNIPPET,
-                    alternatives: &[],
-                    children: &[EntrySpec {
-                        key: "connect_timeout_secs",
-                        snippet: FEDERATION_TIMEOUT_FIELD_SNIPPET,
-                        alternatives: &[],
-                        children: &[],
-                    }],
-                },
             ],
         }],
     },
@@ -142,8 +130,8 @@ const SECTIONS: &[EntrySpec] = &[
 /// A completion result: the rewritten file content plus what was spliced in.
 ///
 /// `added_paths` names each spliced entry as a dot-separated path
-/// ("federation" spelled "zenoh.managed.federation", a nested field
-/// "lifecycle.shutdown_grace_secs"), grouped by the block it was spliced into
+/// ("subscriber_buffers" spelled "zenoh.managed.subscriber_buffers", a nested
+/// field "lifecycle.shutdown_grace_secs"), grouped by the block it was spliced into
 /// (outer blocks first) and in template order within a block. It reflects what
 /// was actually inserted, not merely what was absent.
 ///
@@ -835,7 +823,6 @@ mod tests {
                 "core_node_name",
                 "resource_servers",
                 "zenoh.managed.subscriber_buffers",
-                "zenoh.managed.federation",
                 "lifecycle.shutdown_grace_secs",
             ]
         );
@@ -951,19 +938,20 @@ mod tests {
     }
 
     /// The deepest schema path
-    /// (`zenoh.managed.federation.connect_timeout_secs`, four levels) is
-    /// spliced into its triply nested block, not a shallower one.
+    /// (`zenoh.managed.subscriber_buffers.standard_buffer_size`, four levels)
+    /// is spliced into its triply nested block, not a shallower one.
     #[test]
-    fn empty_federation_block_gains_timeout_at_depth_four() {
-        let completed = complete_config_content(r#"{ zenoh: { managed: { federation: {} } } }"#)
-            .expect("connect_timeout_secs and everything else missing")
-            .content;
+    fn empty_subscriber_buffers_block_gains_fields_at_depth_four() {
+        let completed =
+            complete_config_content(r#"{ zenoh: { managed: { subscriber_buffers: {} } } }"#)
+                .expect("the buffer sizes and everything else missing")
+                .content;
         let config = parse(&completed);
         assert_eq!(config, PeppyConfig::default());
-        // The field landed inside the existing federation block (which the
-        // user spelled compactly), not as a second federation block.
-        assert_eq!(completed.matches("federation: {").count(), 1);
-        assert!(completed.contains("connect_timeout_secs:"));
+        // The fields landed inside the existing block (which the user spelled
+        // compactly), not as a second subscriber_buffers block.
+        assert_eq!(completed.matches("subscriber_buffers: {").count(), 1);
+        assert!(completed.contains("standard_buffer_size:"));
         assert!(complete_config_content(&completed).is_none());
     }
 
@@ -985,7 +973,7 @@ mod tests {
     #[test]
     fn empty_nested_blocks_gain_their_fields() {
         let completed = complete_config_content(
-            "{ zenoh: { managed: { subscriber_buffers: {}, federation: {} } }, lifecycle: {} }",
+            "{ zenoh: { managed: { subscriber_buffers: {} } }, lifecycle: {} }",
         )
         .expect("fields missing")
         .content;
