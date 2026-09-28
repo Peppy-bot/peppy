@@ -11,8 +11,8 @@ use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
 use pmi::{
-    ActionWireReceiver, ActionWireSender, LivelinessEvent, LivelinessToken, LivelinessWatch,
-    PublisherQoS, SenderTarget, ServiceQueryKind,
+    ActionWireReceiver, ActionWireSender, FeedbackBuffer, LivelinessEvent, LivelinessToken,
+    LivelinessWatch, PublisherQoS, SenderTarget, ServiceQueryKind,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -592,10 +592,13 @@ impl ActionGoalHandle {
 
     /// Receives the next feedback message.
     ///
+    /// Feedback waits for this call in the goal's [`FeedbackBuffer`], which
+    /// always keeps the end of the stream.
+    ///
     /// Returns `Err(Error::ActionFeedbackChannelClosed)` when the server
     /// publishes the end-of-stream sentinel: the framework emits it when
-    /// the server begins handling the result request, accepts a cancel,
-    /// or the cancel handler errors.
+    /// the goal reaches its terminal state (the worker completes the goal,
+    /// or drops it without a result).
     ///
     /// Returns `Err(Error::ActionFeedbackProducerGone)` when the producer
     /// instance this goal is pinned to disappears without publishing the
@@ -755,6 +758,13 @@ impl ActionMessenger {
     /// wraps `user_payload` in the per-goal envelope, subscribes to the
     /// matching feedback topic, and polls the goal service.
     ///
+    /// The goal's feedback waits in the buffer `feedback_buffer` selects
+    /// (see [`FeedbackBuffer`]; `feedback_qos` sets the size of a
+    /// keep-latest one) until [`ActionGoalHandle::on_next_feedback`] takes
+    /// it. The buffer never makes the session wait, so feedback left unread
+    /// never holds up the goal's result or any other message to this
+    /// session.
+    ///
     /// `to_target` must match the [`SenderTarget`] the action server used
     /// in [`Self::expose`].
     ///
@@ -783,6 +793,7 @@ impl ActionMessenger {
         target: Option<&ProducerRef>,
         user_payload: Payload,
         feedback_qos: QoSProfile,
+        feedback_buffer: FeedbackBuffer,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
         let goal_id = generate_goal_id();
@@ -825,7 +836,7 @@ impl ActionMessenger {
         // wire keyexpr targets only the discovered producer. Losers cannot
         // publish feedback under this goal_id to a slot we are listening on.
         let feedback_subscription = messenger
-            .subscribe_action_feedback(&sender, &goal_id, feedback_qos.into())
+            .subscribe_action_feedback(&sender, &goal_id, feedback_qos.into(), feedback_buffer)
             .await?;
 
         // Watch the pinned producer's liveliness for the life of this goal,

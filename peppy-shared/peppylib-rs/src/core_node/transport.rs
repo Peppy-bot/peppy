@@ -23,8 +23,14 @@ use core_node_api::names;
 use core_node_api::{ActionGoal, ServiceId, ServiceRequest};
 
 use crate::error::Result;
-use crate::messaging::{ActionGoalHandle, SenderTarget, ServiceTarget};
+use crate::messaging::{ActionGoalHandle, FeedbackBuffer, SenderTarget, ServiceTarget};
 use crate::{ActionMessenger, MessengerHandle, ServiceMessenger};
+
+/// How a caller of a daemon action holds the goal's feedback. That feedback
+/// carries the lines of the work the daemon runs (builds, fetches, launches),
+/// which the caller prints or relays one by one, so the caller keeps every
+/// line until it reads it.
+pub const DAEMON_GOAL_FEEDBACK: FeedbackBuffer = FeedbackBuffer::KeepAll;
 
 /// Routing parameters for a single service poll. Bundled into a struct so
 /// [`poll_core_node_service`] doesn't need a `clippy::too_many_arguments`
@@ -102,6 +108,7 @@ async fn send_core_node_goal(
         None,
         goal_payload,
         QoSProfile::default(),
+        DAEMON_GOAL_FEEDBACK,
         goal_timeout,
     )
     .await

@@ -13,10 +13,12 @@ serde_json = "1.0"
 # tokio `time` and the multi-thread runtime; those arrive transitively via zenoh,
 # so the mock is not built as a standalone zenoh-less backend (see lib.rs).
 tokio = { version = "1", features = ["sync", "rt"] }
-# Used for Subscription / ServiceQueryable channels: a flume bounded
-# channel lets the zenoh reception callback `send` synchronously (with
-# backpressure) from any thread, including zenoh's runtime worker where
-# `tokio::sync::mpsc::Sender::blocking_send` would panic.
+# Used for Subscription / ServiceQueryable channels: a flume channel lets the
+# zenoh reception callback hand a message over synchronously from any thread,
+# including zenoh's runtime worker where
+# `tokio::sync::mpsc::Sender::blocking_send` would panic. A topic's or a
+# queryable's bounded channel blocks that callback when full (backpressure);
+# a goal's feedback channel never does (see src/subscription_buffer.rs).
 flume = "0.12"
 tracing = "0.1"
 derive_more = { version = "2", features = ["from"] }

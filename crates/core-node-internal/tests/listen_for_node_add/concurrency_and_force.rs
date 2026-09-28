@@ -38,6 +38,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
         None,
         first_goal_payload,
         QoSProfile::default(),
+        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
         GOAL_TIMEOUT,
     )
     .await
@@ -121,6 +122,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
         None,
         first_goal_payload,
         QoSProfile::default(),
+        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
         GOAL_TIMEOUT,
     )
     .await

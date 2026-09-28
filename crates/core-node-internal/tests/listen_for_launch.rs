@@ -459,6 +459,7 @@ async fn send_launch_origin_and_wait_observing(
         None,
         goal_payload,
         config::node::QoSProfile::default(),
+        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
         goal_timeout,
     )
     .await

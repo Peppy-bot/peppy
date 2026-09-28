@@ -457,9 +457,10 @@ pub(crate) async fn drive_goal(
     }
 }
 
-/// Settles a goal on an action with feedback: every message is reported to
-/// the surface until the provider closes the stream at the terminal result
-/// (or disappears), then the result reply decides the outcome.
+/// Settles a goal on an action with feedback: every message the goal's
+/// handle yields is reported to the surface until the provider closes the
+/// stream at the terminal result (or disappears), then the result reply
+/// decides the outcome.
 async fn settle_after_feedback(
     handle: &mut GoalHandle,
     messenger: &MessengerHandle,

@@ -17,8 +17,8 @@ use tokio::sync::oneshot;
 
 use crate::error::Error;
 use crate::messaging::{
-    ActionMessenger, MessengerHandle, ProducerRef, ResultStatus, SenderTarget, ServiceMessenger,
-    ServiceTarget, TopicMessenger,
+    ActionMessenger, FeedbackBuffer, MessengerHandle, ProducerRef, ResultStatus, SenderTarget,
+    ServiceMessenger, ServiceTarget, TopicMessenger,
 };
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
@@ -2458,6 +2458,7 @@ async fn action_communication_no_instance_id_target() {
             None, // No target producer
             goal_payload,
             QoSProfile::Reliable,
+            FeedbackBuffer::KeepLatest,
             Duration::from_millis(1000),
         )
         .await
@@ -2706,6 +2707,7 @@ async fn action_communication_with_instance_id_target() {
             )),
             goal_payload,
             QoSProfile::Reliable,
+            FeedbackBuffer::KeepLatest,
             Duration::from_millis(1000),
         )
         .await
@@ -2923,6 +2925,7 @@ async fn action_communication_goal_cancelled() {
         Some(&ProducerRef::new(LISTENER_CORE_NODE, LISTENER_INSTANCE_ID)),
         goal_payload,
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_millis(1000),
     )
     .await
@@ -3196,6 +3199,7 @@ async fn single_action_communication_multiple_polls() {
                 None,
                 case.goal.clone(),
                 QoSProfile::Reliable,
+                FeedbackBuffer::KeepLatest,
                 Duration::from_millis(1000),
             )
             .await
@@ -3398,6 +3402,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
         None, // wildcard target producer
         Payload::from_static(b"go"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(2),
     )
     .await
@@ -3707,6 +3712,7 @@ async fn action_send_goal_full_wildcard_discovers() {
         None, // full-wildcard target — must trigger discovery
         Payload::from_static(b"go"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(2),
     )
     .await
@@ -4025,6 +4031,7 @@ async fn action_send_goal_same_core_distinct_instances_pinned_routes_to_pinned()
             Some(&ProducerRef::new(shared_core, pinned_inst)),
             Payload::from_static(b"go"),
             QoSProfile::Reliable,
+            FeedbackBuffer::KeepLatest,
             Duration::from_secs(2),
         )
         .await
@@ -4121,6 +4128,7 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
         Some(&ProducerRef::new(shared_core, left_inst)),
         Payload::from_static(b"go"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         caller_budget,
     )
     .await;
@@ -4367,6 +4375,7 @@ async fn pinned_calls_issue_zero_probes() {
         Some(&pinned),
         Payload::from_static(b"go"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(5),
     )
     .await

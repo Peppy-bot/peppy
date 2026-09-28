@@ -103,6 +103,23 @@ impl SubscriberBufferSizes {
     }
 }
 
+/// How a goal's feedback subscription holds the messages its reader has not
+/// taken yet. Neither choice makes the transport wait for the reader, so an
+/// unread feedback stream never holds up the other messages to the same
+/// session, such as the goal's result. The end of the stream is always kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedbackBuffer {
+    /// Keep the newest messages, up to the subscriber buffer size of the
+    /// feedback's QoS tier. A message that arrives while the buffer is full
+    /// drops the oldest unread one. For feedback that reports progress, where
+    /// the newest message is what counts.
+    KeepLatest,
+    /// Keep every message until the reader takes it. Memory grows with the
+    /// messages not read yet, so this is for a reader that drains the stream
+    /// without pause and must not miss a message, such as a log it prints.
+    KeepAll,
+}
+
 // The daemon resolves buffer sizes as config types (config must not
 // depend on pmi), so the field mapping lives here on pmi's side of the boundary
 // instead of being re-inlined at each session-construction call site.
@@ -243,12 +260,14 @@ pub trait MessengerBackend {
 
     // ─── Actions ──────────────────────────────────────────────────────────
 
-    /// Subscribe to a specific goal's feedback stream.
+    /// Subscribe to a specific goal's feedback stream, held in `buffer` until
+    /// the reader takes it.
     fn subscribe_action_feedback(
         &self,
         sender: &ActionWireSender,
         goal_id: &str,
         qos: SubscriberQoS,
+        buffer: FeedbackBuffer,
     ) -> impl Future<Output = Result<Subscription>> + Send;
 
     /// Declare the liveliness token advertising that `recv`'s action
@@ -362,17 +381,18 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// Caller-side handle for a topic subscription. The adapter-owned `_guard`
-/// keeps the underlying messenger entity (zenoh `Subscriber<()>`, mock
-/// registration token, etc.) alive for the lifetime of this struct and
-/// releases it cleanly on drop.
+/// Caller-side handle for a topic or goal-feedback subscription. The
+/// adapter-owned `_guard` keeps the underlying messenger entity (zenoh
+/// `Subscriber<()>`, mock registration token, etc.) alive for the lifetime of
+/// this struct and releases it cleanly on drop.
 ///
-/// The channel is `flume::bounded` rather than `tokio::sync::mpsc` because
+/// The channel is a `flume` channel rather than `tokio::sync::mpsc` because
 /// zenoh's reception callback runs synchronously inside zenoh's tokio
-/// runtime; `tokio::sync::mpsc::Sender::blocking_send` panics from inside a
-/// runtime, whereas `flume::Sender::send` just blocks the OS thread when
-/// the buffer is full — preserving end-to-end backpressure for Reliable
-/// QoS topics.
+/// runtime, where `tokio::sync::mpsc::Sender::blocking_send` panics. A
+/// topic's channel is bounded, and a full one blocks the reception thread,
+/// which carries the backpressure to the publisher. A goal's feedback channel
+/// never blocks it: see [`FeedbackBuffer`] and the `subscription_buffer`
+/// module.
 pub struct Subscription {
     pub rx: flume::Receiver<TopicMessage>,
     _guard: Guard,
@@ -1218,13 +1238,15 @@ impl MessengerBackend for Messenger {
         sender: &ActionWireSender,
         goal_id: &str,
         qos: SubscriberQoS,
+        buffer: FeedbackBuffer,
     ) -> Result<Subscription> {
         dispatch!(
             &self.adapter,
             subscribe_action_feedback,
             sender,
             goal_id,
-            qos
+            qos,
+            buffer
         )
     }
 

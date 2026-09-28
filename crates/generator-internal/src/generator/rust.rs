@@ -368,6 +368,7 @@ impl RustGenerator {
                     Some(target),
                     goal_payload,
                     feedback_qos,
+                    peppylib::messaging::FeedbackBuffer::KeepLatest,
                     timeout,
                 )
                 .await?;

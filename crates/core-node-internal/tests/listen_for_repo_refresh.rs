@@ -101,6 +101,7 @@ async fn send_refresh_inner(
         None,
         goal_payload,
         QoSProfile::default(),
+        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
         Duration::from_secs(5),
     )
     .await

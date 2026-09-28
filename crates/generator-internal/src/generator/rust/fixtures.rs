@@ -650,6 +650,7 @@ fn render_exposed_action(
                 Some(&producer),
                 #goal_payload,
                 feedback_qos,
+                peppylib::messaging::FeedbackBuffer::KeepLatest,
                 timeout,
             )
             .await?;
