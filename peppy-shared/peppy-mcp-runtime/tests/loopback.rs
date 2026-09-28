@@ -20,9 +20,9 @@ use rmcp::model::{
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
 use support::{
-    Client, FRAME_URI, GUARD, STATUS_URI, confirmation_accept, connect, connect_logging_progress,
-    connect_with_tasks, fixture_bundle, fixture_exposures, fixture_server, poll_task_until,
-    protocol_error, sample_rgb8_frame, serve_set, start_set,
+    Client, FRAME_URI, GUARD, STATUS_URI, assert_ended_cancelled, confirmation_accept, connect,
+    connect_logging_progress, connect_with_tasks, fixture_bundle, fixture_exposures,
+    fixture_server, poll_task_until, protocol_error, sample_rgb8_frame, serve_set, start_set,
 };
 
 const MS: u64 = 1_000_000;
@@ -357,8 +357,9 @@ async fn a_real_client_drives_action_backed_tasks() {
         };
         assert_eq!(result["structuredContent"], json!({ "frames": 120 }));
 
-        // Cancellation walk: tasks/cancel is forwarded cooperatively and the
-        // Peppy cancelled result settles the task as cancelled.
+        // Cancellation walk: tasks/cancel is forwarded cooperatively, and
+        // the goal that ends cancelled completes the task with the tool
+        // error that carries the provider's result.
         let task_id = start_record_episode(&client, "wait_for_cancel").await;
         poll_task_until(&client, &task_id, "input_required", |task| {
             task.status() == TaskStatus::InputRequired
@@ -380,7 +381,7 @@ async fn a_real_client_drives_action_backed_tasks() {
             task.status().is_terminal()
         })
         .await;
-        assert_eq!(cancelled.status(), TaskStatus::Cancelled);
+        assert_ended_cancelled(&cancelled);
 
         // Reconnect walk: task handles outlive sessions, so a client that
         // disconnects mid-goal can reconnect and keep driving the same handle.
@@ -408,7 +409,7 @@ async fn a_real_client_drives_action_backed_tasks() {
             task.status().is_terminal()
         })
         .await;
-        assert_eq!(cancelled.status(), TaskStatus::Cancelled);
+        assert_ended_cancelled(&cancelled);
         reconnected.cancel().await.expect("client disconnects");
     }
 
@@ -469,7 +470,12 @@ async fn signal_on_cancel(
     context.report_feedback("parked");
     context.cancel_requested().await;
     signal.send(()).expect("the test holds the receiver");
-    Err(peppy_mcp_runtime::ActionExit::Cancelled)
+    Err(peppy_mcp_runtime::ActionExit::Cancelled(
+        peppy_mcp_runtime::CancelledGoal {
+            result: support::cancelled_episode(),
+            reason: None,
+        },
+    ))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

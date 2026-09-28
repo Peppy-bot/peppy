@@ -276,6 +276,74 @@ pub enum ActionOperation {
     LongRunning,
 }
 
+/// What bounds the goal behind an action-backed tool. An action entry
+/// declares exactly one of the two fields the variants are written as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalBound {
+    /// `deadline_ms`: the goal reaches its terminal result within this many
+    /// milliseconds of the call, whatever it reports on the way.
+    WholeGoal { deadline_ms: NonZeroU64 },
+    /// `progress_timeout_ms`: the goal goes at most this many milliseconds
+    /// without a sign of progress. The signs are the goal's admission, each
+    /// feedback message, and the end of its feedback stream, after which
+    /// the result gets one window of its own, so only an action that
+    /// declares feedback can take this bound.
+    Progress { window_ms: NonZeroU64 },
+}
+
+impl GoalBound {
+    /// The bound from the two fields an entry declares it with, exactly one
+    /// of which is set. `owner` names the entry in the error, for example
+    /// "action `load_scene`".
+    pub(crate) fn from_fields(
+        owner: &str,
+        deadline_ms: Option<NonZeroU64>,
+        progress_timeout_ms: Option<NonZeroU64>,
+    ) -> Result<Self, String> {
+        const CHOICE: &str = "declare exactly one: `deadline_ms` bounds the whole goal, \
+                              `progress_timeout_ms` the time the goal may go without a sign of \
+                              progress";
+        match (deadline_ms, progress_timeout_ms) {
+            (Some(deadline_ms), None) => Ok(Self::WholeGoal { deadline_ms }),
+            (None, Some(window_ms)) => Ok(Self::Progress { window_ms }),
+            (Some(_), Some(_)) => Err(format!(
+                "{owner} declares both `deadline_ms` and `progress_timeout_ms`; {CHOICE}"
+            )),
+            (None, None) => Err(format!(
+                "{owner} declares neither `deadline_ms` nor `progress_timeout_ms`; {CHOICE}"
+            )),
+        }
+    }
+
+    /// Refuses a confirmation gate in front of a progress-bound goal: the
+    /// wait for the confirmation is no progress of the goal, and nothing
+    /// would bound it. `owner` names the entry in the error, for example
+    /// "target `recorder` action `record_episode`".
+    pub(crate) fn check_confirmation(
+        self,
+        owner: &str,
+        confirmation_required: bool,
+    ) -> Result<(), String> {
+        match (self, confirmation_required) {
+            (Self::Progress { .. }, true) => Err(format!(
+                "{owner}: `confirmation_required` cannot go with `progress_timeout_ms`: the wait \
+                 for the confirmation is no progress of the goal, and nothing would bound it; \
+                 bound the goal with `deadline_ms`"
+            )),
+            (Self::WholeGoal { .. }, _) | (Self::Progress { .. }, false) => Ok(()),
+        }
+    }
+
+    /// The two fields the bound is written as: `(deadline_ms,
+    /// progress_timeout_ms)`, exactly one of them set.
+    pub(crate) fn to_fields(self) -> (Option<NonZeroU64>, Option<NonZeroU64>) {
+        match self {
+            Self::WholeGoal { deadline_ms } => (Some(deadline_ms), None),
+            Self::Progress { window_ms } => (None, Some(window_ms)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

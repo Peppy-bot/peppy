@@ -550,7 +550,14 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     )
     .await
     .expect("the result is requested");
-    assert_eq!(outcome, GoalOutcome::Cancelled);
+    // The provider ends the goal with the step the cancel reached, which
+    // depends on when the cancel arrived: the body names that same step
+    // twice.
+    let GoalOutcome::Cancelled(body) = outcome else {
+        panic!("the goal ends cancelled, not {outcome:?}");
+    };
+    let total = body["total"].as_str().expect("the total is a u64 decimal");
+    assert_eq!(body["notes"], json!([format!("long#{total}")]));
 
     let handle = fire(json!({
         "steps": 0,

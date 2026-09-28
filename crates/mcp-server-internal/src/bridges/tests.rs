@@ -2,23 +2,36 @@
 //! mock action server running peppylib's production goal engine, and the
 //! bridge settling on each outcome a provider can reach. Every step waits
 //! on the peer's action, never on the clock: the deadline only bounds the
-//! failure path.
+//! failure path. The bound of a goal is tested on a bridge whose clock
+//! moves only when the test advances it (see [`PausedBridge`]), and the
+//! bridge behind a real endpoint over HTTP in [`loopback`].
 
-use super::{Binding, PreparedTask, TaskSurface, drive_goal};
+use super::{
+    AfterCancel, Binding, CancelReason, FeedbackStep, GoalFollow, PreparedTask, Silence,
+    TaskSurface, Turn, after_cancel, drive_goal, next_turn,
+};
 use config::node::{MessageFormat, QoSProfile};
 use message_codec::MessageCodec;
-use message_codec::consumer::{ActionClient, ConsumerIdentity, MemberBinding};
-use peppy_mcp_runtime::ActionExit;
-use peppylib::messaging::{MessengerHandle, NonEmptyPayload, ProducerRef, SenderTarget};
+use message_codec::consumer::{ActionClient, ConsumerError, ConsumerIdentity, MemberBinding};
+use peppy_mcp_catalog::GoalBound;
+use peppy_mcp_runtime::{ActionExit, CancelledGoal};
+use peppylib::PeppyError;
+use peppylib::messaging::{
+    CancelState, GoalContext, MessengerHandle, NonEmptyPayload, ProducerRef, SenderTarget,
+};
 use peppylib::testing::{
     EphemeralRouter, MockActionServerCore, READINESS_TIMEOUT, wait_action_reachable,
 };
 use peppylib::types::Payload;
 use serde_json::{Value, json};
 use std::future::Future;
-use std::sync::Mutex;
+use std::num::NonZeroU64;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
+
+mod loopback;
 
 const CORE_NODE: &str = "test_core";
 const PROVIDER_INSTANCE: &str = "backbone_inst";
@@ -28,39 +41,65 @@ const MEMBER: &str = "move_gripper";
 /// The whole-goal deadline: a bound on the failure path only, every step
 /// below settles the moment the provider acts.
 const DEADLINE: Duration = Duration::from_secs(10);
+/// The bound of the goals a [`PausedBridge`] drives. Its clock stands still
+/// until the test advances it, so the value only sizes the test's steps.
+const WINDOW: Duration = Duration::from_secs(60);
+/// A step of the paused clock that stays inside [`WINDOW`].
+const WITHIN_THE_WINDOW: Duration = WINDOW.saturating_sub(Duration::from_millis(1));
 
 /// The runtime surface, scripted: cancellation fires when the test says so
 /// and every feedback message is kept for the assertions.
 struct ScriptedSurface {
     cancel: CancellationToken,
-    feedback: Mutex<Vec<String>>,
+    feedback: watch::Sender<Vec<String>>,
+    /// How many times the bridge has asked for the client's cancel: once
+    /// per turn of the loop that follows the goal.
+    cancel_watches: watch::Sender<usize>,
 }
 
 impl ScriptedSurface {
     fn new() -> Self {
         Self {
             cancel: CancellationToken::new(),
-            feedback: Mutex::new(Vec::new()),
+            feedback: watch::Sender::new(Vec::new()),
+            cancel_watches: watch::Sender::new(0),
         }
     }
 
+    /// Returns once the bridge follows the admitted goal: its bound is
+    /// armed, and it watches for the client's cancel.
+    async fn followed(&self) {
+        let mut watches = self.cancel_watches.subscribe();
+        tokio::time::timeout(READINESS_TIMEOUT, watches.wait_for(|watches| *watches > 0))
+            .await
+            .expect("the bridge follows the goal")
+            .expect("the surface outlives the wait");
+    }
+
     fn feedback(&self) -> Vec<String> {
-        self.feedback
-            .lock()
-            .expect("no test panicked with the lock")
-            .clone()
+        self.feedback.borrow().clone()
+    }
+
+    /// Returns once the bridge has reported `count` feedback messages.
+    async fn reported(&self, count: usize) {
+        let mut reported = self.feedback.subscribe();
+        tokio::time::timeout(
+            READINESS_TIMEOUT,
+            reported.wait_for(|messages| messages.len() >= count),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("the bridge never reported feedback message {count}"))
+        .expect("the surface outlives the wait");
     }
 }
 
 impl TaskSurface for ScriptedSurface {
     fn report_feedback(&self, message: String) {
-        self.feedback
-            .lock()
-            .expect("no test panicked with the lock")
-            .push(message);
+        self.feedback.send_modify(|messages| messages.push(message));
     }
 
     fn cancel_requested(&self) -> impl Future<Output = ()> + Send {
+        self.cancel_watches.send_modify(|watches| *watches += 1);
         self.cancel.cancelled()
     }
 }
@@ -141,10 +180,26 @@ fn prepared_task(mesh: &Mesh, feedback: Option<MessageCodec>) -> PreparedTask {
             contract: mesh.contract.clone(),
             member: MEMBER.to_owned(),
         },
-        reports_feedback: feedback.is_some(),
+        follow: GoalFollow::WholeGoal {
+            deadline: DEADLINE,
+            reports_feedback: feedback.is_some(),
+        },
         client: ActionClient::new(None, feedback, Some(result_codec())),
         feedback_qos: QoSProfile::Reliable,
-        deadline: DEADLINE,
+    }
+}
+
+fn bridge_identity() -> ConsumerIdentity {
+    ConsumerIdentity {
+        core_node: CORE_NODE.to_owned(),
+        instance_id: BRIDGE_INSTANCE.to_owned(),
+    }
+}
+
+fn member_binding(mesh: &Mesh) -> MemberBinding {
+    MemberBinding {
+        target: mesh.contract.clone(),
+        member: MEMBER.to_owned(),
     }
 }
 
@@ -155,24 +210,234 @@ async fn drive(
     task: &PreparedTask,
     surface: &ScriptedSurface,
 ) -> Result<Value, ActionExit> {
-    let identity = ConsumerIdentity {
-        core_node: CORE_NODE.to_owned(),
-        instance_id: BRIDGE_INSTANCE.to_owned(),
-    };
-    let binding = MemberBinding {
-        target: mesh.contract.clone(),
-        member: MEMBER.to_owned(),
-    };
     drive_goal(
         task,
         &mesh.bridge_messenger,
-        &identity,
-        &binding,
+        &bridge_identity(),
+        &member_binding(mesh),
         &mesh.producer,
         json!({}),
         surface,
     )
     .await
+}
+
+/// A bridge driving one goal on a runtime of its own, whose clock moves
+/// only when the test advances it. The mesh and the provider keep real
+/// time, so between two advances every step is one of the peers acting,
+/// and the bridge's bound sees exactly the time the test gives it. The
+/// runtime runs on one thread, so what the bridge does in one step, such
+/// as showing a message and starting a new window, is never split by an
+/// advance.
+struct PausedBridge {
+    advances: mpsc::UnboundedSender<(Duration, oneshot::Sender<()>)>,
+    /// How many warnings the bridge has logged (see [`BridgeWarnings`]).
+    warnings: watch::Receiver<usize>,
+    /// `None` when the test gave up on the goal before it settled.
+    outcome: tokio::task::JoinHandle<Option<Result<Value, ActionExit>>>,
+}
+
+/// Counts the warnings the bridge logs on the thread it runs on. A feedback
+/// message that does not convert leaves no other trace, so the count is how
+/// a test knows the bridge has taken one.
+struct BridgeWarnings(watch::Sender<usize>);
+
+impl BridgeWarnings {
+    /// The warnings of the bridge's own module, the one these tests sit in.
+    fn counts(metadata: &tracing::Metadata<'_>) -> bool {
+        let bridge_module = module_path!()
+            .strip_suffix("::tests")
+            .expect("the tests sit in the bridge's module");
+        *metadata.level() == tracing::Level::WARN && metadata.target() == bridge_module
+    }
+}
+
+impl tracing::Subscriber for BridgeWarnings {
+    fn register_callsite(
+        &self,
+        _metadata: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        // Every test thread has a subscriber of its own: each event asks the
+        // one of the thread it happens on.
+        tracing::subscriber::Interest::sometimes()
+    }
+
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        Self::counts(metadata)
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        if Self::counts(event.metadata()) {
+            self.0.send_modify(|logged| *logged += 1);
+        }
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+impl PausedBridge {
+    /// Starts driving the goal of `task`, reporting through `surface`.
+    fn drive(mesh: &Mesh, task: PreparedTask, surface: Arc<ScriptedSurface>) -> Self {
+        let (advances, mut advance_requests) =
+            mpsc::unbounded_channel::<(Duration, oneshot::Sender<()>)>();
+        let (logged_warnings, warnings) = watch::channel(0);
+        let messenger = mesh.bridge_messenger.clone();
+        // Zenoh refuses to close a session from a current-thread runtime, so
+        // the session outlives the bridge's runtime even when the test ends
+        // first: the tasks the runtime drops never hold its last handle.
+        let session = mesh.bridge_messenger.clone();
+        let binding = member_binding(mesh);
+        let producer = mesh.producer.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            let _warnings = tracing::subscriber::set_default(BridgeWarnings(logged_warnings));
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .start_paused(true)
+                .build()
+                .expect("the bridge's runtime builds");
+            let outcome = runtime.block_on(async move {
+                // A blocking task that is still running keeps Tokio from
+                // moving the paused clock on its own while the bridge waits
+                // on the mesh: only an advance the test asks for moves it.
+                let (hold_clock, clock_released) = std::sync::mpsc::channel::<()>();
+                let clock_guard = tokio::task::spawn_blocking(move || {
+                    let _ = clock_released.recv();
+                });
+                let mut goal = tokio::spawn(async move {
+                    drive_goal(
+                        &task,
+                        &messenger,
+                        &bridge_identity(),
+                        &binding,
+                        &producer,
+                        json!({}),
+                        surface.as_ref(),
+                    )
+                    .await
+                });
+                let outcome = loop {
+                    tokio::select! {
+                        outcome = &mut goal => break Some(outcome.expect("the bridge does not panic")),
+                        request = advance_requests.recv() => {
+                            // The test dropped its end: it failed, and no one
+                            // reads the outcome.
+                            let Some((by, advanced)) = request else { break None };
+                            tokio::time::advance(by).await;
+                            let _ = advanced.send(());
+                        }
+                    }
+                };
+                drop(hold_clock);
+                clock_guard.await.expect("the clock guard ends");
+                outcome
+            });
+            drop(runtime);
+            drop(session);
+            outcome
+        });
+        Self {
+            advances,
+            warnings,
+            outcome,
+        }
+    }
+
+    /// Moves the bridge's clock forward by `by`, firing every timer due by
+    /// then.
+    async fn advance(&self, by: Duration) {
+        let (advanced, done) = oneshot::channel();
+        self.advances
+            .send((by, advanced))
+            .expect("the bridge still drives its goal");
+        done.await.expect("the bridge's clock advanced");
+    }
+
+    /// Returns once the bridge has logged `count` warnings.
+    async fn logged_warnings(&self, count: usize) {
+        let mut warnings = self.warnings.clone();
+        tokio::time::timeout(
+            READINESS_TIMEOUT,
+            warnings.wait_for(|logged| *logged >= count),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("the bridge never logged warning {count}"))
+        .expect("the bridge's log outlives the wait");
+    }
+
+    /// How the goal ended, as the bridge reports it.
+    async fn outcome(self) -> Result<Value, ActionExit> {
+        // The test's end of the clock stays open while it waits: closing it
+        // tells the bridge the test gave up on the goal.
+        let Self {
+            advances, outcome, ..
+        } = self;
+        let outcome = tokio::time::timeout(READINESS_TIMEOUT, outcome)
+            .await
+            .expect("the bridge settles the goal")
+            .expect("the bridge's runtime does not panic");
+        drop(advances);
+        outcome.expect("the bridge settles while the test waits for it")
+    }
+}
+
+fn percent_codec() -> MessageCodec {
+    codec("move_gripper_feedback", json!({ "percent": "u8" }))
+}
+
+/// One feedback message of the goal: how far it got.
+fn percent(feedback: &MessageCodec, percent: u8) -> NonEmptyPayload {
+    NonEmptyPayload::try_new(encoded(feedback, json!({ "percent": percent })))
+        .expect("an encoded message is never empty")
+}
+
+/// The provider's side of the next goal: accepted as it arrives.
+async fn accepted_goal(provider: &mut MockActionServerCore) -> Arc<GoalContext> {
+    provider
+        .next_goal(READINESS_TIMEOUT)
+        .await
+        .expect("the goal reaches the provider")
+        .accept(Payload::new())
+        .await
+        .expect("the provider accepts the goal")
+}
+
+/// Returns once the provider has seen a cancel request for its goal.
+async fn cancel_seen(context: &GoalContext) {
+    tokio::time::timeout(READINESS_TIMEOUT, context.cancel_signal())
+        .await
+        .expect("the bridge sends the provider a cancel");
+}
+
+fn success() -> Payload {
+    encoded(&result_codec(), json!({ "success": true }))
+}
+
+/// The result the provider ends a cancelled goal with.
+fn cancelled_result() -> Value {
+    json!({ "success": false })
+}
+
+fn cancelled() -> Payload {
+    encoded(&result_codec(), cancelled_result())
+}
+
+/// How the bridge reports a goal the provider ended cancelled with
+/// [`cancelled_result`], with the bridge's own `reason` for the cancel.
+fn ended_cancelled(reason: Option<&str>) -> Result<Value, ActionExit> {
+    Err(ActionExit::Cancelled(CancelledGoal {
+        result: cancelled_result(),
+        reason: reason.map(str::to_owned),
+    }))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -191,7 +456,7 @@ async fn a_feedback_less_goal_settles_on_its_completed_result() {
             .await
             .expect("the provider accepts the goal");
         context
-            .complete(encoded(&result_codec(), json!({ "success": true })))
+            .complete(success())
             .await
             .expect("the provider completes the goal");
         context
@@ -221,19 +486,19 @@ async fn a_feedback_less_goal_settles_cancelled_once_the_provider_honors_the_can
         surface.cancel.cancel();
         context.cancel_signal().await;
         context
-            .complete_cancelled(Payload::new())
+            .complete_cancelled(cancelled())
             .await
             .expect("the provider settles the goal cancelled");
         context
     });
 
-    assert_eq!(outcome, Err(ActionExit::Cancelled));
+    assert_eq!(outcome, ended_cancelled(None));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_goal_with_feedback_reports_it_and_settles_on_its_result() {
     let (mesh, mut provider) = mesh(true).await;
-    let feedback = codec("move_gripper_feedback", json!({ "percent": "u8" }));
+    let feedback = percent_codec();
     let task = prepared_task(&mesh, Some(feedback.clone()));
     let surface = ScriptedSurface::new();
 
@@ -246,14 +511,12 @@ async fn a_goal_with_feedback_reports_it_and_settles_on_its_result() {
             .accept(Payload::new())
             .await
             .expect("the provider accepts the goal");
-        let progress = NonEmptyPayload::try_new(encoded(&feedback, json!({ "percent": 50 })))
-            .expect("an encoded message is never empty");
         context
-            .publish_feedback(progress)
+            .publish_feedback(percent(&feedback, 50))
             .await
             .expect("the provider publishes feedback");
         context
-            .complete(encoded(&result_codec(), json!({ "success": true })))
+            .complete(success())
             .await
             .expect("the provider completes the goal");
         context
@@ -261,4 +524,435 @@ async fn a_goal_with_feedback_reports_it_and_settles_on_its_result() {
 
     assert_eq!(outcome, Ok(json!({ "success": true })));
     assert_eq!(surface.feedback(), vec![r#"{"percent":50}"#.to_owned()]);
+}
+
+/// A goal on an action with feedback, followed as `follow` says.
+fn task_with_feedback(mesh: &Mesh, follow: GoalFollow) -> PreparedTask {
+    PreparedTask {
+        follow,
+        ..prepared_task(mesh, Some(percent_codec()))
+    }
+}
+
+/// A goal on an action with feedback, bounded by its progress: at most
+/// [`WINDOW`] without a sign of it.
+fn progress_task(mesh: &Mesh) -> PreparedTask {
+    task_with_feedback(mesh, GoalFollow::Progress { window: WINDOW })
+}
+
+/// Publishes one feedback message of the goal: how far it got.
+async fn publish_percent(context: &GoalContext, value: u8) {
+    context
+        .publish_feedback(percent(&percent_codec(), value))
+        .await
+        .expect("the provider publishes feedback");
+}
+
+/// Publishes one feedback message that no feedback format decodes.
+async fn publish_garbage(context: &GoalContext) {
+    let garbage =
+        NonEmptyPayload::try_new(Payload::from(vec![0xff; 3])).expect("three bytes are not empty");
+    context
+        .publish_feedback(garbage)
+        .await
+        .expect("the provider publishes feedback");
+}
+
+/// A goal bounded by its progress, driven by a bridge on a paused clock,
+/// with the provider's context and the client's surface of it.
+struct ProgressGoal {
+    bridge: PausedBridge,
+    context: Arc<GoalContext>,
+    surface: Arc<ScriptedSurface>,
+}
+
+impl ProgressGoal {
+    /// Sends the goal of [`progress_task`] and accepts it, returning once
+    /// the bridge follows it: its first window runs from here.
+    async fn accepted(mesh: &Mesh, provider: &mut MockActionServerCore) -> Self {
+        let surface = Arc::new(ScriptedSurface::new());
+        let bridge = PausedBridge::drive(mesh, progress_task(mesh), Arc::clone(&surface));
+        let context = accepted_goal(provider).await;
+        surface.followed().await;
+        Self {
+            bridge,
+            context,
+            surface,
+        }
+    }
+
+    /// An accepted goal whose first feedback message the client has seen.
+    async fn reporting(mesh: &Mesh, provider: &mut MockActionServerCore) -> Self {
+        let goal = Self::accepted(mesh, provider).await;
+        publish_percent(&goal.context, 10).await;
+        goal.surface.reported(1).await;
+        goal
+    }
+
+    /// A whole window goes by without a sign of progress, and the provider
+    /// sees the cancel the bridge sends for it.
+    async fn stall(&self) {
+        self.bridge.advance(WINDOW).await;
+        cancel_seen(&self.context).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_whole_goal_deadline_is_not_pushed_back_by_feedback() {
+    let (mesh, mut provider) = mesh(true).await;
+    let surface = Arc::new(ScriptedSurface::new());
+    let whole_goal = GoalFollow::WholeGoal {
+        deadline: WINDOW,
+        reports_feedback: true,
+    };
+    let bridge = PausedBridge::drive(
+        &mesh,
+        task_with_feedback(&mesh, whole_goal),
+        Arc::clone(&surface),
+    );
+    let context = accepted_goal(&mut provider).await;
+
+    // The same steps a progress window lets through: the second one
+    // crosses the deadline, and the feedback before it does not move it.
+    for step in 1..=2u8 {
+        publish_percent(&context, step * 20).await;
+        surface.reported(usize::from(step)).await;
+        bridge.advance(WITHIN_THE_WINDOW).await;
+    }
+
+    let outcome = bridge.outcome().await;
+    assert!(
+        matches!(outcome, Err(ActionExit::Failed(_))),
+        "the deadline fails the goal: {outcome:?}"
+    );
+    assert!(
+        !context.is_cancelled(),
+        "a whole-goal deadline sends the provider no cancel"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_reaches_a_whole_goal_after_feedback_that_does_not_convert() {
+    let (mesh, mut provider) = mesh(true).await;
+    let task = prepared_task(&mesh, Some(percent_codec()));
+    let surface = ScriptedSurface::new();
+
+    let (outcome, _context) = tokio::join!(drive(&mesh, &task, &surface), async {
+        let context = accepted_goal(&mut provider).await;
+        publish_garbage(&context).await;
+        publish_percent(&context, 50).await;
+        surface.reported(1).await;
+        surface.cancel.cancel();
+        cancel_seen(&context).await;
+        context
+            .complete_cancelled(cancelled())
+            .await
+            .expect("the provider settles the goal cancelled");
+        context
+    });
+
+    assert_eq!(outcome, ended_cancelled(None));
+    assert_eq!(surface.feedback(), vec![r#"{"percent":50}"#.to_owned()]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn feedback_that_does_not_convert_is_a_sign_of_progress() {
+    let (mesh, mut provider) = mesh(true).await;
+    let goal = ProgressGoal::reporting(&mesh, &mut provider).await;
+
+    // The message that does not convert comes just before the window ends,
+    // and starts a new one: the step after it stays inside that window.
+    goal.bridge.advance(WITHIN_THE_WINDOW).await;
+    publish_garbage(&goal.context).await;
+    goal.bridge.logged_warnings(1).await;
+    goal.bridge.advance(WITHIN_THE_WINDOW).await;
+    // A cancel sent for a silence is awaited before the next message is
+    // taken, so once this one is shown, any such cancel has reached the
+    // provider.
+    publish_percent(&goal.context, 20).await;
+    goal.surface.reported(2).await;
+    goal.context
+        .complete(success())
+        .await
+        .expect("the provider completes the goal");
+
+    assert_eq!(goal.bridge.outcome().await, Ok(json!({ "success": true })));
+    assert!(
+        !goal.context.is_cancelled(),
+        "no window went by without a sign of progress"
+    );
+    assert_eq!(
+        goal.surface.feedback(),
+        vec![
+            r#"{"percent":10}"#.to_owned(),
+            r#"{"percent":20}"#.to_owned()
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_goal_that_keeps_reporting_progress_runs_past_one_window() {
+    let (mesh, mut provider) = mesh(true).await;
+    let goal = ProgressGoal::accepted(&mesh, &mut provider).await;
+
+    // Four steps of just under one window each: the goal runs for close to
+    // four windows, and no silence in it lasts one.
+    for step in 1..=4u8 {
+        publish_percent(&goal.context, step * 20).await;
+        goal.surface.reported(usize::from(step)).await;
+        goal.bridge.advance(WITHIN_THE_WINDOW).await;
+    }
+    goal.context
+        .complete(success())
+        .await
+        .expect("the provider completes the goal");
+
+    assert_eq!(goal.bridge.outcome().await, Ok(json!({ "success": true })));
+    assert_eq!(goal.surface.feedback().len(), 4);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_goal_silent_for_one_window_is_cancelled_and_reported_stalled() {
+    let (mesh, mut provider) = mesh(true).await;
+    let goal = ProgressGoal::reporting(&mesh, &mut provider).await;
+
+    goal.stall().await;
+    goal.context
+        .complete_cancelled(cancelled())
+        .await
+        .expect("the provider settles the goal cancelled");
+
+    assert_eq!(
+        goal.bridge.outcome().await,
+        ended_cancelled(Some("no progress within 60000 ms"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_provider_that_ignores_the_cancel_is_reported_one_window_later() {
+    let (mesh, mut provider) = mesh(true).await;
+    let goal = ProgressGoal::reporting(&mesh, &mut provider).await;
+
+    goal.stall().await;
+    // The bridge takes feedback again only once the provider's reply to the
+    // cancel is in, and the reply is timed on the bridge's clock: the window
+    // passes only after this message is shown. The provider reports once
+    // more, then never ends the goal.
+    publish_percent(&goal.context, 20).await;
+    goal.surface.reported(2).await;
+    goal.bridge.advance(WINDOW).await;
+
+    assert_eq!(
+        goal.bridge.outcome().await,
+        Err(ActionExit::Failed(
+            "no progress within 60000 ms; a cancel was sent and the provider did not answer it"
+                .to_owned()
+        ))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_goal_that_completes_after_the_cancel_is_reported_with_its_result() {
+    let (mesh, mut provider) = mesh(true).await;
+    let goal = ProgressGoal::reporting(&mesh, &mut provider).await;
+
+    goal.stall().await;
+    goal.context
+        .complete(success())
+        .await
+        .expect("the provider completes the goal all the same");
+
+    assert_eq!(goal.bridge.outcome().await, Ok(json!({ "success": true })));
+}
+
+/// The provider completes the goal, and no end of its feedback stream
+/// reaches the bridge: a provider without a feedback publisher stands in
+/// for a lost end. The cancel the silence brings is answered with "already
+/// ended", and the bridge reads the result at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_goal_that_ended_unseen_is_reported_with_its_result_once_the_cancel_says_so() {
+    let (mesh, mut provider) = mesh(false).await;
+    let goal = ProgressGoal::accepted(&mesh, &mut provider).await;
+    goal.context
+        .complete(success())
+        .await
+        .expect("the provider completes the goal");
+
+    goal.bridge.advance(WINDOW).await;
+
+    assert_eq!(goal.bridge.outcome().await, Ok(json!({ "success": true })));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_goal_that_ended_unseen_with_its_result_gone_fails_saying_so() {
+    let (mesh, provider) = mesh(false).await;
+    let mut provider = provider.with_result_retention_grace(Duration::ZERO);
+    let goal = ProgressGoal::accepted(&mesh, &mut provider).await;
+    goal.context
+        .complete(success())
+        .await
+        .expect("the provider completes the goal");
+
+    goal.bridge.advance(WINDOW).await;
+
+    assert_eq!(
+        goal.bridge.outcome().await,
+        Err(ActionExit::Failed(
+            "the goal ended, but its result is no longer readable".to_owned()
+        ))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_ends_a_progress_bound_goal_cancelled() {
+    let (mesh, mut provider) = mesh(true).await;
+    let goal = ProgressGoal::reporting(&mesh, &mut provider).await;
+
+    goal.surface.cancel.cancel();
+    cancel_seen(&goal.context).await;
+    goal.context
+        .complete_cancelled(cancelled())
+        .await
+        .expect("the provider settles the goal cancelled");
+
+    assert_eq!(goal.bridge.outcome().await, ended_cancelled(None));
+}
+
+/// Rounds of the turn tests below. Tokio's `select!` polls its branches
+/// from a random one unless it is biased: with two of them ready, the
+/// wrong one wins about one round in three, so an order that is not fixed
+/// fails these rounds all but surely.
+const TURN_ROUNDS: usize = 64;
+
+#[tokio::test(start_paused = true)]
+async fn a_message_already_delivered_wins_over_a_window_that_ran_out() {
+    let surface = ScriptedSurface::new();
+    for round in 0..TURN_ROUNDS {
+        // The window runs out while a message waits to be taken: the goal
+        // showed progress, and is not cancelled for a silence.
+        let mut silence = Silence::new(WINDOW);
+        tokio::time::advance(WINDOW).await;
+        let turn = next_turn(
+            &mut silence,
+            &surface,
+            true,
+            std::future::ready(FeedbackStep::Shown),
+        )
+        .await;
+        assert_eq!(turn, Turn::Feedback(FeedbackStep::Shown), "round {round}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_client_s_cancel_comes_first_and_the_silence_last() {
+    let surface = ScriptedSurface::new();
+    surface.cancel.cancel();
+    for round in 0..TURN_ROUNDS {
+        let mut silence = Silence::new(WINDOW);
+        tokio::time::advance(WINDOW).await;
+        let delivered = || std::future::ready(FeedbackStep::Shown);
+        assert_eq!(
+            next_turn(&mut silence, &surface, true, delivered()).await,
+            Turn::CancelRequested,
+            "round {round}: the client's cancel is taken before anything else"
+        );
+        assert_eq!(
+            next_turn(&mut silence, &surface, false, delivered()).await,
+            Turn::Feedback(FeedbackStep::Shown),
+            "round {round}: once the cancel is sent, a message comes before the silence"
+        );
+        assert_eq!(
+            next_turn(&mut silence, &surface, false, std::future::pending()).await,
+            Turn::Silence,
+            "round {round}: without a message, the window that ran out ends the turn"
+        );
+    }
+}
+
+#[test]
+fn a_progress_bound_is_followed_only_on_an_action_that_reports_feedback() {
+    let window_ms = NonZeroU64::new(60_000).expect("nonzero");
+    assert_eq!(
+        GoalFollow::new(GoalBound::Progress { window_ms }, true),
+        Some(GoalFollow::Progress { window: WINDOW })
+    );
+    assert_eq!(
+        GoalFollow::new(GoalBound::Progress { window_ms }, false),
+        None,
+        "a feedback-less action shows no sign of progress"
+    );
+    let deadline_ms = NonZeroU64::new(10_000).expect("nonzero");
+    assert_eq!(
+        GoalFollow::new(GoalBound::WholeGoal { deadline_ms }, false),
+        Some(GoalFollow::WholeGoal {
+            deadline: DEADLINE,
+            reports_feedback: false,
+        })
+    );
+}
+
+#[test]
+fn the_reply_to_a_cancel_says_whether_to_follow_the_goal_or_read_its_result() {
+    for reason in [CancelReason::Client, CancelReason::Silence] {
+        assert_eq!(
+            after_cancel(Ok(CancelState::Signalled), reason, WINDOW, "goal"),
+            Ok(AfterCancel::KeepFollowing)
+        );
+        assert_eq!(
+            after_cancel(Ok(CancelState::AlreadyTerminal), reason, WINDOW, "goal"),
+            Ok(AfterCancel::ReadTheResult)
+        );
+    }
+}
+
+#[test]
+fn a_cancel_the_provider_cannot_act_on_ends_the_follow_saying_why() {
+    assert_eq!(
+        after_cancel(
+            Ok(CancelState::Unknown),
+            CancelReason::Silence,
+            WINDOW,
+            "goal"
+        ),
+        Err(ActionExit::Failed(
+            "no progress within 60000 ms; a cancel was sent and the provider does not know the goal"
+                .to_owned()
+        ))
+    );
+    assert_eq!(
+        after_cancel(
+            Ok(CancelState::Unknown),
+            CancelReason::Client,
+            WINDOW,
+            "goal"
+        ),
+        Err(ActionExit::Failed(
+            "a cancel was sent and the provider does not know the goal".to_owned()
+        ))
+    );
+
+    let unreachable = || PeppyError::Io(std::io::Error::other("the provider is unreachable"));
+    let error = unreachable().to_string();
+    assert_eq!(
+        after_cancel(
+            Err(ConsumerError::Messaging(unreachable())),
+            CancelReason::Silence,
+            WINDOW,
+            "goal"
+        ),
+        Err(ActionExit::Failed(format!(
+            "no progress within 60000 ms; a cancel was sent and failed: {error}"
+        )))
+    );
+    assert_eq!(
+        after_cancel(
+            Err(ConsumerError::Messaging(unreachable())),
+            CancelReason::Client,
+            WINDOW,
+            "goal"
+        ),
+        Err(ActionExit::Failed(format!(
+            "a cancel was sent and failed: {error}"
+        )))
+    );
 }

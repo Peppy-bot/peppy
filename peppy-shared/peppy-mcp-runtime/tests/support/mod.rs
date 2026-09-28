@@ -12,10 +12,12 @@
 #![allow(dead_code)]
 
 use peppy_mcp_catalog::ExposureBundle;
-use peppy_mcp_runtime::{ActionContext, ActionExit, Clock, ExposureServer, ExposureSet, ToolCall};
+use peppy_mcp_runtime::{
+    ActionContext, ActionExit, CancelledGoal, Clock, ExposureServer, ExposureSet, ToolCall,
+};
 use rmcp::model::{
     ClientCapabilities, ClientInfo, DetailedTask, GetTaskParams, ProgressNotificationParam,
-    ProtocolVersion, UpdateTaskParams,
+    ProtocolVersion, TaskStatus, UpdateTaskParams,
 };
 use rmcp::service::{NotificationContext, RunningService, ServiceError};
 use rmcp::transport::StreamableHttpClientTransport;
@@ -282,9 +284,14 @@ pub fn fixture_server(
     (builder, nanos)
 }
 
+/// The result a recorder goal cancelled before its first frame ends with.
+pub fn cancelled_episode() -> Value {
+    json!({ "frames": 0 })
+}
+
 /// The goal behind both recorder actions: reports `<verb> \`<episode>\``
-/// as feedback, parks on cancellation for `wait_for_cancel`, completes
-/// otherwise.
+/// as feedback, parks on cancellation for `wait_for_cancel` and then ends
+/// cancelled with [`cancelled_episode`], completes otherwise.
 async fn episode_goal(
     verb: &str,
     input: Value,
@@ -297,9 +304,22 @@ async fn episode_goal(
     context.report_feedback(format!("{verb} `{episode}`"));
     if episode == "wait_for_cancel" {
         context.cancel_requested().await;
-        return Err(ActionExit::Cancelled);
+        return Err(ActionExit::Cancelled(CancelledGoal {
+            result: cancelled_episode(),
+            reason: None,
+        }));
     }
     Ok(json!({ "frames": 120 }))
+}
+
+/// Asserts that `task` ended as a task does when its goal ends cancelled:
+/// `cancelled`, its status message saying so with [`cancelled_episode`].
+pub fn assert_ended_cancelled(task: &DetailedTask) {
+    assert_eq!(task.status(), TaskStatus::Cancelled, "{:?}", task.payload);
+    assert_eq!(
+        task.task.status_message,
+        Some(format!("the action was cancelled: {}", cancelled_episode()))
+    );
 }
 
 /// The `recorder.record_episode` handler, behind the confirmation-gated

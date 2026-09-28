@@ -17,7 +17,7 @@ use crate::document::{
     ArgumentName, ExposureSurface, McpExposure, ROBOT_ARGUMENT, RobotSurface, ServiceExposure,
     TopicExposure,
 };
-use crate::policy::ImageFieldMap;
+use crate::policy::{GoalBound, ImageFieldMap};
 use crate::schema::{
     MaxSerializedSize, empty_object_schema, integer_bounds, max_serialized_json_bytes,
     message_format_to_json_schema,
@@ -251,6 +251,18 @@ pub fn build_exposure_bundle(
                 continue;
             };
             let context = format!("target `{target_name}` action `{}`", action.member);
+            // Recorded here and acted on only before the entry is built: the
+            // schema and routing checks below do not depend on the bound, so
+            // their violations are reported alongside this one.
+            let progress_without_feedback = matches!(action.bound, GoalBound::Progress { .. })
+                && declared.feedback_topic.is_none();
+            if progress_without_feedback {
+                violations.push(format!(
+                    "{context}: `progress_timeout_ms` bounds the goal by the signs of progress its \
+                     feedback carries, and contract `{contract_label}` declares no \
+                     `feedback_topic` for the action; bound the goal with `deadline_ms`"
+                ));
+            }
             let goal_request = derive_schema(
                 declared
                     .goal_service
@@ -304,6 +316,9 @@ pub fn build_exposure_bundle(
                 Some(None) => continue,
                 None => None,
             };
+            if progress_without_feedback {
+                continue;
+            }
             tasks.push(TaskEntry {
                 name: action.tool.as_str().to_string(),
                 description: action.description.clone(),
@@ -312,7 +327,7 @@ pub fn build_exposure_bundle(
                 operation: action.operation,
                 safety_sensitive: action.safety_sensitive,
                 confirmation_required: action.confirmation_required,
-                deadline_ms: action.deadline_ms,
+                bound: action.bound,
                 input_schema,
                 output_schema,
                 feedback_schema,

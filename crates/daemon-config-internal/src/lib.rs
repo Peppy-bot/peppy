@@ -104,7 +104,7 @@ pub mod contract {
 pub mod mcp_exposure {
     pub use crate::internal::mcp_exposure::{
         ActionExposure, ActionOperation, ExposureManifest, ExposureTarget, FreshnessPolicy,
-        ImageCodec, ImageFieldMap, ImageRepresentation, JpegQuality, MaxHz, McpExposure,
+        GoalBound, ImageCodec, ImageFieldMap, ImageRepresentation, JpegQuality, MaxHz, McpExposure,
         OversizePolicy, PeppyMcpExposureParser, PinnedContractRef, PublicName, RestrictBounds,
         ServerIdentity, ServiceExposure, ServiceOperation, TopicExposure, UpdatePolicy,
     };
