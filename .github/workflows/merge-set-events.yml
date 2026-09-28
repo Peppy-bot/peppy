@@ -17,6 +17,10 @@ on:
 jobs:
   relay:
     uses: Peppy-bot/peppy/.github/workflows/merge-set-relay.yml@dev
+    # A called workflow reads the secrets of an environment, here the key of
+    # the merge-set App in the `merge-set` environment, only when its caller
+    # hands its secrets on.
+    secrets: inherit
     permissions:
       contents: read
       pull-requests: read
