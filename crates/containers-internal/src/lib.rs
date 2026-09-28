@@ -41,7 +41,8 @@ pub const SQUASHFUSE_VERSION: &str = env!("SQUASHFUSE_VERSION");
 /// Libraries the build script adds to the apptainer install's
 /// `etc/apptainer/nvliblist.conf`, comma-separated: the NVIDIA Tegra
 /// (Jetson) driver libraries `--nv` must bind beyond apptainer's stock list
-/// for the host's EGL, GLX and NVML libraries to load inside a container.
+/// for the host's CUDA, EGL, GLX and NVML libraries to work inside a
+/// container.
 pub const NVLIBLIST_TEGRA_LIBS: &str = env!("NVLIBLIST_TEGRA_LIBS");
 
 /// Name of the apptainer cache directory under `~/.peppy/tmp`, as provisioned

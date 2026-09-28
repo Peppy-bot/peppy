@@ -1220,7 +1220,8 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
 
 /// Verifies the `--nv` library list of the apptainer install names the Tegra
 /// driver libraries, so a container on a Jetson gets the host's NVIDIA EGL
-/// and GL stack rather than falling through to Mesa.
+/// and GL stack rather than falling through to Mesa, and can create a CUDA
+/// context.
 #[cfg(target_os = "linux")]
 #[test]
 fn nvliblist_names_the_tegra_driver_libraries() {
