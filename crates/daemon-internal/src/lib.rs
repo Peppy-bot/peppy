@@ -7,7 +7,7 @@
 //! CLI<->daemon shared surfaces: the on-disk [`state::DaemonState`] handoff
 //! file (the daemon writes it once per generation; client commands read it)
 //! and the [`control`] socket protocol plus its blocking client
-//! ([`control::poke_refederate`], used by `peppy platform login`/`logout`).
+//! ([`control::poke_refederate`], used by `peppy platform enroll`/`unenroll`).
 //!
 //! Consumers (the `peppy` CLI) own everything user-facing and process-level:
 //! clap dispatch, service install/uninstall, the device-flow UX, logging
@@ -27,7 +27,6 @@ mod error;
 mod federation_control;
 mod messaging_router;
 mod router_federation;
-mod router_identity;
 mod serve;
 mod shutdown_signal;
 

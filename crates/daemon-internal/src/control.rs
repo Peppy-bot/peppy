@@ -1,23 +1,23 @@
 //! Client and wire protocol for the daemon's *federation control socket*.
 //!
-//! `peppy platform login`/`logout` run in a separate, short-lived process from the
-//! `serve` daemon; their only shared state is the on-disk credentials file, which
-//! the daemon would otherwise only re-read on its periodic poll (so federation
-//! would lag a login by up to that interval). To apply it immediately, the
-//! command **pokes** the running daemon over a per-user Unix-domain socket: it
-//! sends [`REFEDERATE_VERB`] and waits for the daemon to re-resolve and
-//! (de)federate, so federation is in place by the time the command returns.
+//! `peppy platform enroll`/`unenroll` run in a separate, short-lived process
+//! from the `serve` daemon; their only shared state is the enrollment directory
+//! on disk, which the daemon reads when it builds a generation. To react
+//! immediately, the command **pokes** the running daemon over a per-user
+//! Unix-domain socket: it sends [`REFEDERATE_VERB`] and waits for the daemon to
+//! re-read the enrollment, restart under the new identity when it changed, or
+//! verify the link to the cloud router when it did not.
 //!
-//! The transport is a UDS rather than the daemon's Zenoh session on purpose: the
-//! federation apply *bounces the local zenohd*, which would tear down a Zenoh-
-//! carried ack mid-operation. A UDS is independent of zenohd, so the ack (sent
-//! after the bounce) reliably reports the post-apply state.
+//! The transport is a UDS rather than the daemon's Zenoh session on purpose: an
+//! identity change restarts the whole generation, which would tear down a
+//! Zenoh-carried ack. A UDS is independent of the router, so the `Restarting`
+//! ack is flushed before the teardown begins.
 //!
 //! The socket path is *derived* from [`PeppyDirs`] (not stored anywhere): both
 //! the daemon (the private `federation_control` module) and this client
 //! resolve it the same way, so no discovery handshake is needed. A connect that
-//! is refused or finds no socket simply means "no daemon running"; the command
-//! succeeds and federation is applied the next time `serve` starts.
+//! is refused or finds no socket simply means "no daemon running"; the
+//! enrollment then takes effect the next time `serve` starts.
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
@@ -30,20 +30,18 @@ use serde::{Deserialize, Serialize};
 /// File name of the daemon's federation control socket under the runtime dir.
 pub const FEDERATION_CONTROL_SOCK: &str = "federation_control.sock";
 
-/// The only request the control socket understands: re-resolve the caller's
-/// upstream and (de)federate the local router to match the current credentials.
-/// One verb covers both login (resolves to an upstream) and logout (resolves to
-/// none ⇒ de-federate).
+/// The only request the control socket understands: re-read the enrollment
+/// and reconcile the local router with it. One verb covers both enrolling
+/// (the daemon restarts under the project) and unenrolling (it restarts under
+/// `local`), and a repeat poke verifies the link.
 pub const REFEDERATE_VERB: &str = "refederate";
 
-/// Extra time the client waits for the daemon's ack on top of the configured
-/// federation connect timeout. Kept strictly larger than the daemon-side ack
-/// budget (`APPLY_ACK_SLACK`, which itself covers the verifying poke's TLS probe
-/// and its core-node registration) so the daemon always replies a definite status
-/// (even "timed out applying") before the client gives up, turning a slow apply
-/// into a definite status rather than a client-side timeout. (The `ack_budget_*`
-/// test guards this ordering.)
-pub const POKE_READ_SLACK: Duration = Duration::from_secs(16);
+/// How long the client waits for the daemon's ack. Kept strictly larger than
+/// the daemon-side ack budget (`ACK_BUDGET`, which itself covers the poke's
+/// TLS probe) so the daemon always replies a definite status (even "timed out
+/// verifying") before the client gives up. (The `ack_budget_*` test guards this
+/// ordering.)
+pub const POKE_READ_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// Where the daemon binds (and the client connects to) the federation control
 /// socket for a given [`PeppyDirs`]. Derived, never stored, so both sides agree.
@@ -58,28 +56,22 @@ pub fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ControlResponse {
-    /// Federation is in effect: `Some(ep)` federated to `ep`, `None`
-    /// de-federated.
+    /// The router runs what the enrollment prescribes: `Some(locator)` dialing
+    /// the project's cloud router with the link verified, `None` not enrolled.
     Ok { applied: Option<String> },
     /// An operator-pinned `ZENOH_CONFIG` owns the router config; not auto-managed.
     Pinned,
-    /// The config was applied (the local router was federated), but the TLS link
-    /// to the per-user cloud router could not be established/validated, so
-    /// federation with platform-backend is not actually in effect.
+    /// The router is enrolled, but the mutual-TLS link to the project's cloud
+    /// router could not be established or validated.
     Unreachable { message: String },
-    /// The daemon attempted the apply and it failed (e.g. backend unreachable
-    /// within the federation timeout).
+    /// The daemon could not answer (the enrollment on disk is unreadable, or
+    /// the reconcile timed out).
     Error { message: String },
-    /// Federation is in effect, but the daemon could not register this machine
-    /// with the platform, so the platform's roster entry for it is stale (or
-    /// missing). Distinct from `error` on purpose: the transport is working, and
-    /// wording this as a failed apply would send the user to debug it.
-    NotRegistered { message: String },
-    /// The credentials changed the daemon's *workspace namespace*, which is
-    /// immutable for a live session, so the daemon is restarting its whole
-    /// generation to re-open every session under the new namespace. The daemon
-    /// flushes this ack and only then tears down; the CLI polls the (path-stable)
-    /// control socket until the daemon is back under the expected namespace.
+    /// The enrollment changed the daemon's identity (its router id or session
+    /// namespace), neither of which can change while live, so the daemon is
+    /// restarting its whole generation. It flushes this ack and only then tears
+    /// down; the CLI polls the (path-stable) control socket until the daemon
+    /// is back under the expected identity.
     Restarting,
 }
 
@@ -94,32 +86,31 @@ impl ControlResponse {
 /// What [`poke_refederate`] could determine about the daemon's federation state.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PokeOutcome {
-    /// The daemon acked: `Some(ep)` federated, `None` de-federated.
+    /// The daemon acked: `Some(locator)` enrolled with the link verified,
+    /// `None` not enrolled.
     Applied(Option<String>),
     /// Operator-pinned `ZENOH_CONFIG` owns the router config (not auto-managed).
     Pinned,
-    /// The daemon acked an error (e.g. the backend was unreachable in time).
+    /// The daemon acked an error (the enrollment is unreadable, or the
+    /// reconcile timed out).
     DaemonError(String),
-    /// The daemon federated the local router but the TLS link to the per-user
-    /// cloud router does not validate (e.g. UnknownCA); federation with
-    /// platform-backend is not in effect.
+    /// The router is enrolled but the mutual-TLS link to the project's cloud
+    /// router does not validate (an expired certificate, an untrusted issuer,
+    /// an unreachable router).
     Unreachable(String),
-    /// Federation is in effect, but the platform's record of this machine could
-    /// not be updated, so `peppy platform list` shows a stale entry for it.
-    NotRegistered(String),
     /// No running daemon to poke (no socket, or the connection was refused).
-    /// Federation will be applied the next time `serve` starts.
+    /// The enrollment takes effect the next time `serve` starts.
     DaemonNotRunning,
     /// Connected, but the daemon did not ack within the read deadline.
     TimedOut,
-    /// The credentials changed the daemon's workspace namespace, so the daemon
-    /// acked and is restarting its whole generation. The caller then polls until
-    /// the daemon is back under the expected namespace.
+    /// The enrollment changed the daemon's identity, so the daemon acked and
+    /// is restarting its whole generation. The caller then polls until the
+    /// daemon is back under the expected identity.
     Restarting,
 }
 
-/// Pokes the running daemon over `socket_path` to re-resolve and (re)apply
-/// federation, blocking until it acks or `read_timeout` elapses.
+/// Pokes the running daemon over `socket_path` to re-read its enrollment and
+/// reconcile, blocking until it acks or `read_timeout` elapses.
 ///
 /// Best effort by design: a poke failure must never fail the calling command, so
 /// a missing/refused socket maps to [`PokeOutcome::DaemonNotRunning`] and any
@@ -158,7 +149,6 @@ fn poke_inner(socket_path: &Path, read_timeout: Duration) -> std::io::Result<Pok
         ControlResponse::Ok { applied } => PokeOutcome::Applied(applied),
         ControlResponse::Pinned => PokeOutcome::Pinned,
         ControlResponse::Unreachable { message } => PokeOutcome::Unreachable(message),
-        ControlResponse::NotRegistered { message } => PokeOutcome::NotRegistered(message),
         ControlResponse::Error { message } => PokeOutcome::DaemonError(message),
         ControlResponse::Restarting => PokeOutcome::Restarting,
     })
@@ -221,10 +211,6 @@ mod tests {
             (
                 "{\"status\":\"unreachable\",\"message\":\"received fatal alert: UnknownCA\"}\n",
                 PokeOutcome::Unreachable("received fatal alert: UnknownCA".to_string()),
-            ),
-            (
-                "{\"status\":\"not_registered\",\"message\":\"backend temporarily unavailable\"}\n",
-                PokeOutcome::NotRegistered("backend temporarily unavailable".to_string()),
             ),
         ] {
             let dir = tempfile::tempdir().unwrap();

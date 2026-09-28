@@ -38,7 +38,7 @@ pub(crate) const DAEMON_HEARTBEAT_INTERVAL: Duration =
     Duration::from_secs(daemon_config::peppy_config::DAEMON_HEARTBEAT_INTERVAL_SECS);
 
 /// Bound on the wait for the managed router's configured `connect` links
-/// (operator-pinned federation, an applied cloud upstream) to establish before
+/// (the project's cloud router when enrolled, an operator-pinned federation) to establish before
 /// the boot-time presence check. Link formation is normally tens of
 /// milliseconds; the bound only caps the wait when a configured peer is down
 /// or unresolvable, where the check proceeds standalone (fail-open) and the
@@ -56,16 +56,6 @@ pub struct CoreNodeRunner {
     /// only to construct the probe.
     messenger: Arc<Mutex<Messenger>>,
     messaging_ready: Option<watch::Receiver<bool>>,
-    /// Goes `true` once the [`RouterFederation`](super::router_federation) task's
-    /// *initial* poll has settled (federation applied, or the connect timeout
-    /// elapsed and the daemon proceeds standalone). The runner waits on it —
-    /// after `messaging_ready`, before `start_with_ready` — so the boot-time
-    /// core-node presence check sees the federated mesh, not the
-    /// always-standalone just-started router. Bounded by the
-    /// federation task's own `connect_timeout` and fail-open: a dropped sender
-    /// (federation task torn down) lets the core node proceed. `None` when no
-    /// federation task is armed (mock engine / no backend configured).
-    federation_settled: Option<watch::Receiver<bool>>,
     /// Cancelled at the start of shutdown to stop the core node's clock +
     /// heartbeat publishers before the messaging session is closed. This is the
     /// core node's OWN internal token (publisher-stop), distinct from the shared
@@ -91,7 +81,6 @@ impl CoreNodeRunner {
         root_dir: PathBuf,
         peppy_dirs: PeppyDirs,
         messaging_ready: Option<watch::Receiver<bool>>,
-        federation_settled: Option<watch::Receiver<bool>>,
         peppy_config: daemon_config::peppy_config::PeppyConfig,
         namespace: config::namespace::Namespace,
         name_claim_settle: Duration,
@@ -133,7 +122,6 @@ impl CoreNodeRunner {
             core_node,
             messenger,
             messaging_ready,
-            federation_settled,
             shutdown_token,
             serve_teardown_token,
             core_node_done,
@@ -151,7 +139,6 @@ impl ServeAsyncCommand for CoreNodeRunner {
         let core_node = self.core_node;
         let messenger = self.messenger;
         let mut messaging_ready = self.messaging_ready;
-        let mut federation_settled = self.federation_settled;
         let shutdown_token = self.shutdown_token;
         let serve_teardown_token = self.serve_teardown_token;
         let core_node_done = self.core_node_done;
@@ -173,42 +160,15 @@ impl ServeAsyncCommand for CoreNodeRunner {
                 info!("Messaging session ready. Starting core node...");
             }
 
-            // Wait for the router federation's initial poll to settle before
-            // starting (and thus before `start_with_ready` checks and declares
-            // this daemon's presence), so the check sees the federated mesh: a
-            // same-name daemon reachable only through the per-user cloud
-            // router must refuse boot, not slip past a check that raced the
-            // federation apply. The gate is fired by the federation task
-            // within its `connect_timeout` even when the backend is slow or
-            // unreachable, so this cannot stall boot past that bound; a
-            // closed channel (the federation task tore down first) fails
-            // open to a standalone start.
-            if let Some(mut settled_rx) = federation_settled.take()
-                && !*settled_rx.borrow()
-            {
-                info!(
-                    "Waiting for the initial router federation to settle before \
-                     the core-node presence check..."
-                );
-                if settled_rx.wait_for(|settled| *settled).await.is_err() {
-                    warn!(
-                        "Router federation task exited before its initial poll \
-                         settled; starting the core node against the standalone \
-                         router"
-                    );
-                }
-            }
-
             // A managed router accepts the daemon's session as soon as its
-            // listener binds, while its configured `connect` links (an
-            // operator-pinned federation, the upstream a federation apply just
-            // wrote) are still being dialed. The boot presence check queries
-            // liveliness once, so run it only after those links established or
-            // a same-name daemon behind them is invisible to the check and the
-            // collision is missed. Runs after the federation gate above so an
-            // applied upstream is already in the router config it reads.
-            // Bounded and fail-open: an unreachable peer degrades to a
-            // standalone-looking boot, covered by the runtime collision watch.
+            // listener binds, while its configured `connect` links (the
+            // project's cloud router when enrolled, an operator-pinned
+            // federation) are still being dialed. The boot presence check
+            // queries liveliness once, so run it only after those links
+            // established or a same-name daemon behind them is invisible to the
+            // check and the collision is missed. Bounded and fail-open: an
+            // unreachable peer degrades to a standalone-looking boot, covered
+            // by the runtime collision watch.
             let links_probe = { messenger.lock().await.router_links_probe() };
             if let Some(probe) = links_probe {
                 let endpoints = probe.endpoints().join(", ");

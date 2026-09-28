@@ -10,6 +10,7 @@ config = { workspace = true }
 core-node = { workspace = true }
 daemon-config = { workspace = true }
 json5-pretty = { workspace = true }
+chrono = "0.4"
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
 # Safe wrappers over the libc syscalls the daemon needs (the between-generations
 # waitpid(WNOHANG) reaping and the kill(pid, 0) DaemonState liveness probe), so

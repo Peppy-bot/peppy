@@ -1099,6 +1099,7 @@ name = "daemon"
 version = "0.0.1"
 dependencies = [
  "auth",
+ "chrono",
  "core-node",
  "daemon-config",
  "json5-pretty",
