@@ -9,8 +9,9 @@ description: >-
   action unpacks that peppy under RUNNER_TEMP and puts its bin on PATH, exports
   PEPPY_HOME, and writes the repositories.json5 there that pins every hub of
   the set. It starts no daemon. It reports the set to the job summary and to
-  the `set` output. It never waits: a peppy dev build that is not ready fails
-  the job with the way to go on.
+  the `set` output, and uploads it as the set record of the job. It never
+  waits: a peppy dev build that is not ready fails the job with the way to go
+  on. A job runs it once: the set record is named after the job.
 
 inputs:
   hub-path:
@@ -43,8 +44,10 @@ outputs:
     description: >-
       The resolved set as compact JSON: {"name": <set name or null>, "peppy":
       {"build": "latest-release" | "dev-build" | "release-run", "version":
-      "<peppy --version>", "source": "<download URL or run URL>"}, "hubs":
-      {"<hub>": {"ref": "<branch, label or checkout>", "commit": "<40 hex>"}}}.
+      "<peppy --version>", "source": "<download URL or run URL>", "ref":
+      <peppy branch of a dev build or null>, "commit": <40 hex of a dev build
+      or null>}, "hubs": {"<hub>": {"ref": "<branch, label or checkout>",
+      "commit": "<40 hex>"}}}.
     value: ${{ steps.resolve.outputs.set }}
   peppy-version:
     description: What the installed `peppy --version` prints.
@@ -76,3 +79,16 @@ runs:
         INPUT_PEPPY_RUN_ID: ${{ inputs.peppy-run-id }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         PRIVATE_HUB_KEY_LOADED: ${{ inputs.private-nodes-hub-deploy-key != '' }}
+
+    # The set record: the `set` output of this job, as a file. The merge-set
+    # bot of peppy (.github/merge-set/merge_set.py) reads the records of the
+    # latest run of each workflow of a hub pull request, and holds back the
+    # merge of its set until every record names the current head of every
+    # branch of the set. The artifact is named after the check run of the job,
+    # which is how the bot matches it to the job it lists.
+    - name: Record the set this job runs
+      uses: actions/upload-artifact@v7
+      with:
+        name: hub-ci-set-${{ job.check_run_id }}
+        path: ${{ steps.resolve.outputs.record }}
+        if-no-files-found: error

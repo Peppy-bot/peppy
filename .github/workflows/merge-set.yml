@@ -1,0 +1,97 @@
+name: Merge set
+run-name: Merge set ${{ inputs.branch }}
+
+# Keeps the pull requests of a set together (see .github/merge-set/merge_set.py):
+# it reads the set of the branch again, acts on the boxes a user ticked in its
+# merge-set comments, and writes the `merge-set` status and the merge-set
+# comment of each open pull request of the set. The relay of each repository
+# of a set (merge-set-relay.yml) starts it for every event that can change the
+# set.
+#
+# One run at a time for each set, and no run is cancelled: a run can be in the
+# middle of a merge. GitHub keeps one run of a group waiting and cancels the
+# one that waited before it. That loses nothing: each run reads the whole set
+# again, the ticked boxes and the user who ticked them included.
+#
+# The key of the merge-set App is a secret of the `merge-set` environment,
+# which only runs from `dev` reach, so a branch cannot run a changed copy of
+# this workflow with it. The App bypasses no ruleset: GitHub refuses its
+# merges on the same rules as anyone's.
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: The repository of the event (peppy or a hub)
+        required: true
+        type: string
+      branch:
+        description: The head branch of the pull request of the event, or the branch the event deleted
+        required: true
+        type: string
+      head-repository:
+        description: The repository that holds the branch (another one for a pull request from a fork)
+        required: false
+        type: string
+        default: ""
+      pull-request:
+        description: The number of the pull request of the event, if any
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: merge-set-${{ inputs.branch }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # On demand, never spot: a merge must not stop part way.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
+    timeout-minutes: 15
+    environment:
+      name: merge-set
+      deployment: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - name: Name the repositories of a set
+        id: repositories
+        run: python3 .github/merge-set/merge_set.py repositories
+
+      # Everything the bot reads and writes, in every repository of a set:
+      # contents to merge, pull requests for the merge-set comments and the
+      # reviews, statuses for the gate, checks for the required checks,
+      # actions for the set records and the re-runs, and workflows because
+      # GitHub refuses an App the merge of a pull request that changes
+      # .github/workflows/ without it.
+      - name: Make the merge-set token
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.MERGE_SET_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MERGE_SET_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repositories.outputs.repositories }}
+          permission-actions: write
+          permission-checks: read
+          permission-contents: write
+          permission-pull-requests: write
+          permission-statuses: write
+          permission-workflows: write
+
+      # Every value reaches the script through the environment rather than a
+      # `${{ }}` expansion in its source, so it is data the script parses.
+      - name: Sync the set
+        env:
+          MERGE_SET_TOKEN: ${{ steps.token.outputs.token }}
+          MERGE_SET_BOT_LOGIN: ${{ steps.token.outputs.app-slug }}[bot]
+          EVENT_REPOSITORY: ${{ inputs.repository }}
+          EVENT_BRANCH: ${{ inputs.branch }}
+          EVENT_HEAD_REPOSITORY: ${{ inputs.head-repository }}
+          EVENT_PULL_REQUEST: ${{ inputs.pull-request }}
+        run: python3 .github/merge-set/merge_set.py sync

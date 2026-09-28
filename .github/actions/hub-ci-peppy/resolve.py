@@ -13,7 +13,9 @@ Run without arguments, as the action runs it, the script installs that peppy
 (unpacked whole under RUNNER_TEMP, its `bin` on the job's PATH), gives the job
 a PEPPY_HOME, and writes the repositories.json5 the daemon reads there, before
 any daemon starts. It reports the set to the job summary and to the action's
-`set` output.
+`set` output, and writes it to the set record the action uploads, which the
+merge-set bot (.github/merge-set/merge_set.py) reads to tell whether a run of
+a hub pull request tested the current head of every branch of its set.
 
 The peppy release (.github/workflows/parallel-release.yml) runs its
 subcommand `release-set --tag <version> --output <file>`, which records the
@@ -836,6 +838,10 @@ class PeppyBuild:
     source: str
     # What the build is, for the job summary.
     description: str
+    # The peppy branch and the commit of a dev build; None for the other
+    # builds, which no branch of a set gives.
+    ref: str | None
+    commit: str | None
 
 
 @dataclass(frozen=True)
@@ -903,9 +909,22 @@ def set_output(hub_set: HubSet, peppy: InstalledPeppy) -> dict:
             "build": peppy.build.kind.value,
             "version": peppy.version,
             "source": peppy.build.source,
+            "ref": peppy.build.ref,
+            "commit": peppy.build.commit,
         },
         "hubs": hubs_document(hub_set),
     }
+
+
+# The set record: the `set` output of a job, which the action uploads as the
+# artifact `hub-ci-set-<the check run id of the job>` (see action.yml). The
+# merge-set bot matches each record to its job by that id.
+SET_RECORD_ARTIFACT_PREFIX = "hub-ci-set-"
+SET_RECORD_FILE = "hub-ci-set.json"
+
+
+def set_record_artifact_name(check_run_id: int) -> str:
+    return f"{SET_RECORD_ARTIFACT_PREFIX}{check_run_id}"
 
 
 def release_set_document(hub_set: HubSet) -> dict:
@@ -1153,7 +1172,14 @@ def fetch_latest_release(arch: Arch, work_dir: Path) -> FetchedPeppy:
     archive = work_dir / arch.archive_name
     download(urllib.request.Request(url, headers={"User-Agent": USER_AGENT}), archive)
     return FetchedPeppy(
-        PeppyBuild(PeppyBuildKind.LATEST_RELEASE, url, "the latest release"), archive
+        PeppyBuild(
+            PeppyBuildKind.LATEST_RELEASE,
+            url,
+            "the latest release",
+            ref=None,
+            commit=None,
+        ),
+        archive,
     )
 
 
@@ -1177,6 +1203,8 @@ def fetch_dev_build(set_name: str | None, token: str, work_dir: Path) -> Fetched
             PeppyBuildKind.DEV_BUILD,
             run.url,
             f"the dev build of peppy branch `{branch}` at `{commit}`",
+            ref=branch,
+            commit=commit,
         ),
         archive,
     )
@@ -1191,7 +1219,11 @@ def fetch_release_run(
     archive = download_artifact_archive(artifact, arch, token, work_dir)
     return FetchedPeppy(
         PeppyBuild(
-            PeppyBuildKind.RELEASE_RUN, url, "the archive of a peppy release run"
+            PeppyBuildKind.RELEASE_RUN,
+            url,
+            "the archive of a peppy release run",
+            ref=None,
+            commit=None,
         ),
         archive,
     )
@@ -1402,15 +1434,26 @@ def write_peppy_home(hub_set: HubSet, inputs: ActionInputs) -> None:
     append_to_runner_file("GITHUB_ENV", f"PEPPY_HOME={peppy_home}\n")
 
 
+def write_set_record(runner_temp: Path, resolved_set: str) -> Path:
+    """Write the set record the action uploads, and return its path."""
+    record = runner_temp / "hub-ci-set" / SET_RECORD_FILE
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(resolved_set + "\n")
+    return record
+
+
 def report_set(
     hub_set: HubSet, installed: InstalledPeppy, inputs: ActionInputs
 ) -> None:
-    """Write the set to the log, the action's outputs and the job summary."""
+    """Write the set to the log, the action's outputs, the set record and the
+    job summary."""
     resolved_set = compact_json(set_output(hub_set, installed))
     print(f"Installed {installed.version} ({installed.build.source})")
     print(f"set: {resolved_set}")
+    record = write_set_record(inputs.runner_temp, resolved_set)
     append_to_runner_file(
-        "GITHUB_OUTPUT", f"set={resolved_set}\npeppy-version={installed.version}\n"
+        "GITHUB_OUTPUT",
+        f"set={resolved_set}\npeppy-version={installed.version}\nrecord={record}\n",
     )
     set_explanation = (
         "the explicit `set` input names every hub"
