@@ -627,6 +627,7 @@ fn consumed_action() {
             ".ensure_target_bound(LINK_ID, target)?",
             "peppylib::ActionMessenger::send_goal",
             "Some(target),",
+            "peppylib::messaging::FeedbackBuffer::KeepLatest,",
             "node_runner.messenger().clone()",
         ],
     );

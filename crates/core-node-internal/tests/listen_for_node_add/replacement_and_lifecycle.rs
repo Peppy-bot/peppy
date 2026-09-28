@@ -521,6 +521,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         None,
         first_goal_payload,
         QoSProfile::default(),
+        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
         GOAL_TIMEOUT,
     )
     .await
