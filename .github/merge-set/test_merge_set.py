@@ -2092,6 +2092,9 @@ class RepositoryFacts(unittest.TestCase):
             f"uses: {resolve.PEPPY_REPOSITORY}/.github/workflows/merge-set-relay.yml@{merge_set.SYNC_WORKFLOW_REF}",
             lines,
         )
+        # A called workflow reads the secrets of the `merge-set` environment
+        # only when its caller hands its secrets on.
+        self.assertIn("secrets: inherit", lines)
         # The workflow_run trigger names the CI workflow of each repository.
         self.assertIn("workflows: [Tests]", lines)
         self.assertIn("name: Tests", workflow_lines(resolve.PEPPY_CI_WORKFLOW))
