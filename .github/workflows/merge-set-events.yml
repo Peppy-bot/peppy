@@ -1,0 +1,22 @@
+name: Merge set events
+
+# Hands every event of this repository that can change a set to the merge-set
+# bot through its relay, the reusable workflow merge-set-relay.yml of peppy,
+# which names the events it acts on. This file is the same in peppy and in
+# every hub: each runs its CI in one workflow named Tests.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, closed, ready_for_review, converted_to_draft, edited]
+  issue_comment:
+    types: [edited]
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
+  delete:
+
+jobs:
+  relay:
+    uses: Peppy-bot/peppy/.github/workflows/merge-set-relay.yml@dev
+    permissions:
+      contents: read
+      pull-requests: read
