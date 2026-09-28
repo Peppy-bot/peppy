@@ -166,6 +166,7 @@ impl ActionClient {
             Some(producer),
             payload,
             feedback_qos,
+            peppylib::messaging::FeedbackBuffer::KeepLatest,
             deadline,
         )
         .await?;

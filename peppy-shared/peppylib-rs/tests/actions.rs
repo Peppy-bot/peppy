@@ -1,12 +1,14 @@
 mod common;
+#[path = "support/feedback_flood.rs"]
+mod feedback_flood;
 
 use common::test_node_target;
 use config::node::QoSProfile;
 use peppylib::PeppyError;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, CancelState, ConcurrentAction,
-    EmptyPayloadError, MessengerHandle, NonEmptyPayload, ProducerRef, ResultStatus, SenderTarget,
-    decode_cancel_ack, encode_cancel_ack, wrap_goal_ack, wrap_result_outcome,
+    EmptyPayloadError, FeedbackBuffer, MessengerHandle, NonEmptyPayload, ProducerRef, ResultStatus,
+    SenderTarget, decode_cancel_ack, encode_cancel_ack, wrap_goal_ack, wrap_result_outcome,
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
@@ -112,6 +114,7 @@ async fn action_messenger_communication() {
         Some(&ProducerRef::new(core_node, instance_id)),
         goal_payload,
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(2),
     )
     .await
@@ -221,6 +224,7 @@ async fn setup_goal_handshake(
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"goal data"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(2),
     )
     .await
@@ -440,6 +444,7 @@ async fn concurrent_action_two_goals_independent() {
             Some(&target),
             Payload::from_static(payload),
             QoSProfile::Reliable,
+            FeedbackBuffer::KeepLatest,
             Duration::from_secs(2),
         )
     };
@@ -548,6 +553,7 @@ async fn concurrent_action_cancel_targets_one_goal() {
             Some(&target),
             Payload::from_static(payload),
             QoSProfile::Reliable,
+            FeedbackBuffer::KeepLatest,
             Duration::from_secs(2),
         )
     };
@@ -646,6 +652,7 @@ async fn concurrent_action_reject_then_accept() {
             Some(&target),
             Payload::from_static(payload),
             QoSProfile::Reliable,
+            FeedbackBuffer::KeepLatest,
             Duration::from_secs(2),
         )
     };
@@ -733,6 +740,7 @@ async fn concurrent_action_abandoned_goal_yields_typed_abandoned() {
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"X"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(2),
     )
     .await
@@ -854,6 +862,7 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"X"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(2),
     )
     .await
@@ -989,6 +998,7 @@ async fn concurrent_action_result_parks_until_complete() {
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"A"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(2),
     )
     .await
@@ -1060,6 +1070,7 @@ async fn concurrent_action_multiple_polls_one_goal_all_resolve() {
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"A"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(2),
     )
     .await
@@ -1149,6 +1160,7 @@ async fn concurrent_action_completed_result_expires_after_grace() {
             Some(&target),
             Payload::from_static(payload),
             QoSProfile::Reliable,
+            FeedbackBuffer::KeepLatest,
             Duration::from_secs(2),
         )
     };
@@ -1245,6 +1257,7 @@ async fn concurrent_action_cancel_after_terminal_is_already_terminal() {
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"A"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(2),
     )
     .await
@@ -1369,6 +1382,7 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"native_goal"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(2),
     )
     .await
@@ -1388,6 +1402,7 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"contract_goal"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(2),
     )
     .await
@@ -1546,6 +1561,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
         None,
         Payload::from_static(b"go"),
         QoSProfile::Reliable,
+        FeedbackBuffer::KeepLatest,
         Duration::from_secs(5),
     )
     .await
@@ -1576,4 +1592,274 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
         loser_goal, 0,
         "losing producer must NOT run its goal handler — discovery pins to the winner first",
     );
+}
+
+/// A caller that leaves its goal's feedback unread: the provider publishes
+/// more feedback than the caller's buffer holds, then completes the goal.
+mod unread_feedback {
+    use super::*;
+    use common::{get_client_server, wait_for_topic_subscriber};
+    use config::runtime::DiscoveryConfig;
+    use feedback_flood::{
+        FLOOD_RESULT, Flood, FloodedAction, HANG_GUARD, read_to_the_end, start_flooding_provider,
+    };
+    use peppylib::messaging::{ServiceMessenger, ServiceTarget, SessionScope, TopicMessenger};
+    use peppylib::testing::EphemeralRouter;
+
+    /// The feedback buffer of every session a router test opens: small, so
+    /// that the flood overflows it many times.
+    const ROUTER_BUFFER: usize = 8;
+    /// Feedback a router test's provider publishes.
+    const ROUTER_FLOOD: usize = ROUTER_BUFFER + 100;
+    /// The mock adapter's buffer size (`SubscriberBufferSizes::default()`).
+    const MOCK_BUFFER: usize = 128;
+    /// Feedback a mock test's provider publishes.
+    const MOCK_FLOOD: usize = 200;
+    const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+
+    const CORE: &str = "feedback_core";
+    const PROVIDER: &str = "flood_provider";
+    const CALLER: &str = "flood_caller";
+    const NODE: &str = "feedback_node";
+    const ACTION: &str = "flood";
+    const TOPIC: &str = "provider_news";
+    const SERVICE: &str = "provider_echo";
+
+    #[derive(Clone, Copy)]
+    enum Topology {
+        /// Every session is a client of the router, which relays all traffic.
+        Router,
+        /// Sessions link to each other directly (gossip), the default local
+        /// topology.
+        Peer,
+    }
+
+    async fn session(router: &EphemeralRouter, topology: Topology) -> MessengerHandle {
+        let discovery = DiscoveryConfig {
+            gossip: matches!(topology, Topology::Peer),
+            standard_buffer_size: ROUTER_BUFFER,
+            ..DiscoveryConfig::default()
+        };
+        MessengerHandle::connect(router.host(), router.port())
+            .scope(SessionScope::Discovery(&discovery))
+            .await
+            .expect("the session opens")
+    }
+
+    async fn flood(provider: &MessengerHandle, feedback_count: usize) -> Flood {
+        let action = FloodedAction {
+            core_node: CORE,
+            instance_id: PROVIDER,
+            target: test_node_target(NODE),
+            action_name: ACTION,
+        };
+        start_flooding_provider(provider, action, feedback_count).await
+    }
+
+    async fn send_flood_goal(caller: &MessengerHandle, buffer: FeedbackBuffer) -> ActionGoalHandle {
+        ActionMessenger::send_goal(
+            caller,
+            CORE,
+            CALLER,
+            test_node_target(NODE),
+            ACTION,
+            Some(&ProducerRef::new(CORE, PROVIDER)),
+            Payload::from_static(b"go"),
+            QoSProfile::Standard,
+            buffer,
+            REPLY_TIMEOUT,
+        )
+        .await
+        .expect("the goal is sent")
+    }
+
+    async fn result_without_reading_feedback(caller: &MessengerHandle, goal: &ActionGoalHandle) {
+        let reply = tokio::time::timeout(
+            HANG_GUARD,
+            ActionMessenger::request_result(caller, goal, REPLY_TIMEOUT),
+        )
+        .await
+        .expect("the result request must not hang")
+        .expect("the result must arrive while the feedback stays unread");
+        assert_eq!(reply.status, ResultStatus::Completed);
+        assert_eq!(reply.body.as_ref(), FLOOD_RESULT);
+    }
+
+    async fn caller_gets_the_result_with_feedback_unread(topology: Topology) {
+        let router = EphemeralRouter::start().await.expect("the router starts");
+        let provider = session(&router, topology).await;
+        let caller = session(&router, topology).await;
+        let _flood = flood(&provider, ROUTER_FLOOD).await;
+
+        let goal = send_flood_goal(&caller, FeedbackBuffer::KeepLatest).await;
+        result_without_reading_feedback(&caller, &goal).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_caller_that_never_reads_feedback_gets_the_result_through_the_router() {
+        caller_gets_the_result_with_feedback_unread(Topology::Router).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_caller_that_never_reads_feedback_gets_the_result_over_a_peer_link() {
+        caller_gets_the_result_with_feedback_unread(Topology::Peer).await;
+    }
+
+    /// The flood is over and its feedback still unread: a topic message and a
+    /// service reply from the provider still reach the caller's session.
+    async fn other_messages_flow_with_feedback_unread(topology: Topology) {
+        let router = EphemeralRouter::start().await.expect("the router starts");
+        let provider = session(&router, topology).await;
+        let caller = session(&router, topology).await;
+        let _flood = flood(&provider, ROUTER_FLOOD).await;
+
+        let mut echo =
+            ServiceMessenger::listen(&provider, CORE, PROVIDER, test_node_target(NODE), SERVICE)
+                .await
+                .expect("the service listens");
+        let echo_task = tokio::spawn(async move {
+            while let Ok(true) = echo
+                .handle_next_request(|request| async move { Ok(request.message().payload()) })
+                .await
+            {}
+        });
+        let mut news = TopicMessenger::subscribe(
+            &caller,
+            CORE,
+            CALLER,
+            test_node_target(NODE),
+            TOPIC,
+            &ProducerRef::new(CORE, PROVIDER),
+            QoSProfile::Reliable,
+        )
+        .await
+        .expect("the caller subscribes");
+        let publisher = TopicMessenger::declare_publisher(
+            &provider,
+            CORE,
+            PROVIDER,
+            test_node_target(NODE),
+            None,
+            TOPIC,
+            QoSProfile::Reliable,
+        )
+        .await
+        .expect("the provider declares its publisher");
+        wait_for_topic_subscriber(&provider, CORE, PROVIDER, test_node_target(NODE), TOPIC).await;
+
+        let goal = send_flood_goal(&caller, FeedbackBuffer::KeepLatest).await;
+        result_without_reading_feedback(&caller, &goal).await;
+
+        publisher
+            .publish(Payload::from_static(b"news"))
+            .await
+            .expect("the provider publishes");
+        let message = tokio::time::timeout(HANG_GUARD, news.on_next_message())
+            .await
+            .expect("the topic message must reach the caller")
+            .expect("the subscription stays open");
+        assert_eq!(message.payload_bytes().as_ref(), b"news");
+
+        let reply = tokio::time::timeout(
+            HANG_GUARD,
+            ServiceMessenger::poll(
+                &caller,
+                CORE,
+                CALLER,
+                test_node_target(NODE),
+                SERVICE,
+                ServiceTarget::Producer(&ProducerRef::new(CORE, PROVIDER)),
+                Payload::from_static(b"ping"),
+                REPLY_TIMEOUT,
+            ),
+        )
+        .await
+        .expect("the service call must not hang")
+        .expect("the service reply must reach the caller");
+        assert_eq!(reply.payload_bytes().as_ref(), b"ping");
+        echo_task.abort();
+        drop(goal);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn unread_feedback_leaves_the_callers_other_messages_flowing_through_the_router() {
+        other_messages_flow_with_feedback_unread(Topology::Router).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn unread_feedback_leaves_the_callers_other_messages_flowing_over_a_peer_link() {
+        other_messages_flow_with_feedback_unread(Topology::Peer).await;
+    }
+
+    /// A keep-latest reader that starts after the flood still gets an ordered
+    /// stream that ends with the newest feedback and then the end of the
+    /// stream. Which older messages it skipped depends on when they arrived
+    /// over the network; the mock tests below pin the exact counts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_keep_latest_reader_gets_the_newest_feedback_and_the_end() {
+        let router = EphemeralRouter::start().await.expect("the router starts");
+        let provider = session(&router, Topology::Router).await;
+        let caller = session(&router, Topology::Router).await;
+        let _flood = flood(&provider, ROUTER_FLOOD).await;
+
+        let mut goal = send_flood_goal(&caller, FeedbackBuffer::KeepLatest).await;
+        result_without_reading_feedback(&caller, &goal).await;
+
+        let indexes = read_to_the_end(&mut goal).await;
+        assert!(
+            indexes.windows(2).all(|pair| pair[0] < pair[1]),
+            "the feedback keeps its order: {indexes:?}"
+        );
+        assert_eq!(indexes.last(), Some(&(ROUTER_FLOOD - 1)));
+    }
+
+    /// A keep-all reader that starts after the flood gets every message.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_keep_all_reader_gets_every_feedback_message() {
+        let router = EphemeralRouter::start().await.expect("the router starts");
+        let provider = session(&router, Topology::Router).await;
+        let caller = session(&router, Topology::Router).await;
+        let _flood = flood(&provider, ROUTER_FLOOD).await;
+
+        let mut goal = send_flood_goal(&caller, FeedbackBuffer::KeepAll).await;
+        result_without_reading_feedback(&caller, &goal).await;
+
+        let indexes = read_to_the_end(&mut goal).await;
+        assert_eq!(indexes, (0..ROUTER_FLOOD).collect::<Vec<_>>());
+    }
+
+    /// Floods a goal over the mock adapter, where a publish reaches the
+    /// caller's buffer before it returns, and returns the feedback a reader
+    /// finds once the goal is over: exact counts, whatever the timing.
+    async fn feedback_a_late_mock_reader_finds(buffer: FeedbackBuffer) -> Vec<usize> {
+        let (client, _messenger) = get_client_server().await;
+        let handle = client.caller_handle;
+        let mut flood = flood(&handle, MOCK_FLOOD).await;
+
+        let mut goal = send_flood_goal(&handle, buffer).await;
+        tokio::time::timeout(HANG_GUARD, &mut flood.flooded)
+            .await
+            .expect("the provider must not wait for the reader")
+            .expect("the provider reports the flood");
+        result_without_reading_feedback(&handle, &goal).await;
+        read_to_the_end(&mut goal).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_keep_latest_goal_keeps_the_newest_feedback_up_to_its_buffer() {
+        // The end of the stream takes the slot of the oldest message left.
+        let newest = MOCK_FLOOD - MOCK_BUFFER + 1..MOCK_FLOOD;
+        assert_eq!(
+            feedback_a_late_mock_reader_finds(FeedbackBuffer::KeepLatest).await,
+            newest.collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_keep_all_goal_keeps_every_feedback_message() {
+        assert_eq!(
+            feedback_a_late_mock_reader_finds(FeedbackBuffer::KeepAll).await,
+            (0..MOCK_FLOOD).collect::<Vec<_>>()
+        );
+    }
 }

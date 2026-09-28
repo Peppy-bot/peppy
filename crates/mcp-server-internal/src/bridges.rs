@@ -577,9 +577,10 @@ async fn next_feedback_step(handle: &mut GoalHandle, surface: &impl TaskSurface)
 }
 
 /// Settles a goal on an action with feedback under a whole-goal deadline:
-/// every message is shown to the client (see [`next_feedback_step`]) until
-/// the provider closes the stream at the terminal result (or disappears),
-/// then the result reply decides the outcome.
+/// every message the goal's handle yields is shown to the client (see
+/// [`next_feedback_step`]) until the provider closes the stream at the
+/// terminal result (or disappears), then the result reply decides the
+/// outcome.
 async fn settle_after_feedback(
     handle: &mut GoalHandle,
     messenger: &MessengerHandle,

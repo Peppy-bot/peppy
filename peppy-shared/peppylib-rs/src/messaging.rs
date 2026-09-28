@@ -60,8 +60,9 @@ pub use config::runtime::{BoundMember, CopyTag, ProducerRef};
 // peppylib's own messaging implementation; each submodule imports them directly
 // from `pmi::`.
 pub use pmi::{
-    ActionWireSender, ContractIdentifier, CoreNodePresence, LivelinessEvent, LivelinessToken,
-    LivelinessWatch, NodeIdentifier, PairingIdentifier, SenderTarget, SenderTargetError,
+    ActionWireSender, ContractIdentifier, CoreNodePresence, FeedbackBuffer, LivelinessEvent,
+    LivelinessToken, LivelinessWatch, NodeIdentifier, PairingIdentifier, SenderTarget,
+    SenderTargetError,
 };
 
 use crate::error::{Error, Result};
@@ -681,9 +682,10 @@ impl MessengerHandle {
         // publish fires, the local routing tables may not yet have the client's
         // subscription propagated through the router. Empirically, `Standard`
         // (Drop, Data) loses the first publish in tight in-process tests;
-        // `Important` is delivered reliably. The block-on-congestion semantic
-        // is also the right call for action feedback: it's preferable to
-        // backpressure a fast emitter than to silently drop progress updates.
+        // `Important` is delivered reliably. Block also keeps a congested link
+        // from dropping feedback or the end of the stream on the way. A
+        // caller that reads slowly does not slow the publisher: its feedback
+        // buffer never waits (see `pmi::FeedbackBuffer`).
         let feedback_publisher_factory = actions::ActionFeedbackPublisherFactory::new(
             self.clone(),
             recv.clone(),
@@ -704,10 +706,11 @@ impl MessengerHandle {
         sender: &ActionWireSender,
         goal_id: &str,
         qos: SubscriberQoS,
+        buffer: FeedbackBuffer,
     ) -> Result<PmiSubscription> {
         let messenger = self.messenger.lock().await;
         messenger
-            .subscribe_action_feedback(sender, goal_id, qos)
+            .subscribe_action_feedback(sender, goal_id, qos, buffer)
             .await
             .map_err(Error::PeppyMessagingInterface)
     }

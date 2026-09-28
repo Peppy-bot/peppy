@@ -128,6 +128,7 @@ async fn send_node_run_goal(
         None,
         goal_payload,
         QoSProfile::default(),
+        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
         goal_timeout,
     )
     .await
@@ -452,6 +453,7 @@ async fn send_node_add_and_wait_internal<'a>(
         None,
         goal_payload,
         QoSProfile::default(),
+        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
         goal_timeout,
     )
     .await
@@ -596,6 +598,7 @@ async fn send_node_build_and_wait_internal(
         None,
         goal_payload,
         QoSProfile::default(),
+        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
         goal_timeout,
     )
     .await

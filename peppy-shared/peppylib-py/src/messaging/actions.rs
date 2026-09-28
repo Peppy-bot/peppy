@@ -398,6 +398,7 @@ impl PyActionMessenger {
                 target.as_ref(),
                 Payload::from(user_payload),
                 feedback_qos.into(),
+                peppylib::messaging::FeedbackBuffer::KeepLatest,
                 goal_timeout,
             )
             .await

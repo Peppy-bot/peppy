@@ -1,10 +1,11 @@
 use super::super::error::{Error, Result};
+use super::super::subscription_buffer::{Buffering, SubscriptionSink, subscription_channel};
 use super::super::types::{
-    AbortOnDrop, ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, IncomingRequest,
-    LivelinessEvent, LivelinessToken, LivelinessWatch, Message, Messenger, MessengerAdapter,
-    MessengerBackend, MockResponseToken, Payload, PresenceScope, PublisherQoS, ReplyStream,
-    ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,
-    Subscription, TopicMessage, service_query_lifetime,
+    AbortOnDrop, ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer,
+    IncomingRequest, LivelinessEvent, LivelinessToken, LivelinessWatch, Message, Messenger,
+    MessengerAdapter, MessengerBackend, MockResponseToken, Payload, PresenceScope, PublisherQoS,
+    ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
+    SubscriberQoS, Subscription, TopicMessage, service_query_lifetime,
 };
 use super::super::wire::zenoh_format::ZenohWireFormat;
 use super::super::wire::{
@@ -61,7 +62,7 @@ type MessageLog = Arc<Mutex<HashMap<String, Vec<Message>>>>;
 /// `from_link_id: None` case) — `route_publish` drops non-primary fan-out
 /// for those entries so a multi-link `emit` yields one delivery.
 pub struct MockSubscription {
-    tx: flume::Sender<TopicMessage>,
+    sink: SubscriptionSink,
     drop_secondary: bool,
     /// Cleared when the subscription's handle drops, the mock's undeclare: a
     /// clone of its receiver stops receiving at once, as it does when a Zenoh
@@ -71,7 +72,7 @@ pub struct MockSubscription {
 
 impl MockSubscription {
     fn receives(&self) -> bool {
-        self.declared.load(Ordering::Acquire) && !self.tx.is_disconnected()
+        self.declared.load(Ordering::Acquire) && !self.sink.reader_gone()
     }
 }
 
@@ -85,7 +86,7 @@ impl Drop for MockUndeclare {
 }
 
 /// Shared map of active subscriptions, keyed by pattern. Each pattern maps to
-/// the senders that should receive a fanout when an intersecting topic is
+/// the sinks that should receive a fanout when an intersecting topic is
 /// published.
 pub type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<MockSubscription>>>>;
 
@@ -164,7 +165,7 @@ impl MockAdapter {
 
     /// Mock counterpart of Zenoh's publisher matching status: does any LIVE
     /// subscription intersect `sender`'s publish keyexpr? Dropped
-    /// subscriptions leave stale senders in the map by design (see
+    /// subscriptions leave stale sinks in the map by design (see
     /// `subscribe_keyexpr`); they are excluded here so a wait cannot match a
     /// subscription that no longer receives.
     pub fn topic_has_matching_subscriber(map: &SubscriptionMap, sender: &TopicWireSender) -> bool {
@@ -222,8 +223,13 @@ impl MessengerBackend for MockAdapter {
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
         let drop_secondary = recv.drops_secondary_publishes();
-        self.subscribe_keyexpr(&ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
-            .await
+        self.subscribe_keyexpr(
+            &ZenohWireFormat::topic_subscribe(recv),
+            qos,
+            Buffering::Backpressure,
+            drop_secondary,
+        )
+        .await
     }
 
     async fn publish_topic(
@@ -336,6 +342,7 @@ impl MessengerBackend for MockAdapter {
         sender: &ActionWireSender,
         goal_id: &str,
         qos: SubscriberQoS,
+        buffer: FeedbackBuffer,
     ) -> Result<Subscription> {
         // Action feedback publishes exactly once per goal (see the wire
         // comment on `action_feedback_publish`), so there are no secondaries
@@ -344,6 +351,7 @@ impl MessengerBackend for MockAdapter {
         self.subscribe_keyexpr(
             &ZenohWireFormat::action_feedback_subscribe(sender, goal_id),
             qos,
+            Buffering::Feedback(buffer),
             false,
         )
         .await
@@ -743,7 +751,7 @@ impl MockAdapter {
                 .push(message.clone());
         }
 
-        let senders: Vec<flume::Sender<TopicMessage>> = {
+        let sinks: Vec<SubscriptionSink> = {
             let subscriptions = subscriptions.lock().unwrap();
             let mut matched = Vec::new();
             for (pattern, subs) in subscriptions.iter() {
@@ -754,14 +762,14 @@ impl MockAdapter {
                     if !sub.receives() || (sub.drop_secondary && !is_primary) {
                         continue;
                     }
-                    matched.push(sub.tx.clone());
+                    matched.push(sub.sink.clone());
                 }
             }
             matched
         };
 
-        for sender in senders {
-            let _ = sender.send_async(response.clone()).await;
+        for sink in sinks {
+            sink.deliver_async(response.clone()).await;
         }
         Ok(())
     }
@@ -783,6 +791,7 @@ impl MockAdapter {
         &self,
         topic: &str,
         qos: SubscriberQoS,
+        buffering: Buffering,
         drop_secondary: bool,
     ) -> Result<Subscription> {
         if !self.is_session_connected {
@@ -791,7 +800,11 @@ impl MockAdapter {
             });
         }
 
-        let (tx, rx) = flume::bounded(SubscriberBufferSizes::default().size_for(qos));
+        let (sink, rx) = subscription_channel(
+            topic,
+            SubscriberBufferSizes::default().size_for(qos),
+            buffering,
+        );
         let declared = Arc::new(AtomicBool::new(true));
 
         {
@@ -800,15 +813,15 @@ impl MockAdapter {
                 .entry(topic.to_string())
                 .or_default()
                 .push(MockSubscription {
-                    tx: tx.clone(),
+                    sink,
                     drop_secondary,
                     declared: Arc::clone(&declared),
                 });
         }
 
-        // The mock writes directly into the sender from `publish_keyexpr`, and
+        // The mock writes directly into the sink from `publish_keyexpr`, and
         // the guard undeclares the subscription when its handle drops. The
-        // stale `tx` clone left in the subscriptions map is benign: routing and
+        // stale sink left in the subscriptions map is benign: routing and
         // matching skip an undeclared subscription.
         Ok(Subscription::new(rx, Box::new(MockUndeclare(declared))))
     }
@@ -1655,7 +1668,12 @@ mod tests {
         .expect("sender");
 
         let subscription = messenger
-            .subscribe_action_feedback(&sender, "g7", SubscriberQoS::Standard)
+            .subscribe_action_feedback(
+                &sender,
+                "g7",
+                SubscriberQoS::Standard,
+                FeedbackBuffer::KeepLatest,
+            )
             .await
             .expect("subscribe feedback");
 
