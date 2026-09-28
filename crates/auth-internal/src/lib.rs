@@ -23,6 +23,9 @@
 //! [`enrollment`] persists the result under `~/.peppy/conf/peer/`. The daemon
 //! reads that directory at startup and never holds a bearer token itself.
 //!
+//! The workspace and the project the person selected as the default target of
+//! the commands are the [`context`], a third file with its own lifecycle.
+//!
 //! # Boundary with consumer crates
 //!
 //! This crate owns everything non-interactive: credential and enrollment
@@ -37,6 +40,7 @@
 
 pub mod cli_config;
 pub mod client;
+pub mod context;
 pub mod csr;
 pub mod device;
 pub mod discovery;
@@ -52,6 +56,7 @@ pub mod storage;
 
 pub use cli_config::CliConfig;
 pub use client::Principal;
+pub use context::PlatformContext;
 pub use enrollment::{Enrollment, EnrollmentBundle, EnrollmentDocument, RouterEndpoint};
 pub use error::{Error as AuthError, Problem, ProblemKind, Result};
 pub use resolver::Credential;

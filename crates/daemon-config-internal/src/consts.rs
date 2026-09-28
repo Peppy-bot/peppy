@@ -5,6 +5,10 @@ pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppylib";
 /// (i.e. `conf_dir().join(CREDENTIALS_FILE)`). Written `0600` by the `peppy
 /// login` flow; never committed and never world-readable.
 pub const CREDENTIALS_FILE: &str = "credentials.json5";
+/// Filename of the platform context, stored under `~/.peppy/conf` beside the
+/// credentials: the workspace and the project the person selected as the
+/// default target of the `peppy platform` commands.
+pub const PLATFORM_CONTEXT_FILE: &str = "platform_context.json5";
 
 /// Filename of a repository's index, at the root of the tree peppy is
 /// configured to scan. A repository states there what it publishes and where
