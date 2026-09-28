@@ -251,4 +251,4 @@ pub use links::RouterLinksProbe;
 #[cfg(feature = "router")]
 mod router_config;
 #[cfg(feature = "router")]
-pub(crate) use router_config::{config_override, render_router_config_to_path, router_config_path};
+pub(crate) use router_config::{config_override, router_config_path};

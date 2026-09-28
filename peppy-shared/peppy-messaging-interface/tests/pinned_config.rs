@@ -1,24 +1,20 @@
-//! Operator-pinned `ZENOH_CONFIG`: `refederate` must be a no-op and leave the
-//! pinned config untouched, so the daemon skips a pointless zenohd restart that
-//! could apply nothing.
+//! Operator-pinned `ZENOH_CONFIG`: `with_router` adopts the pinned file verbatim
+//! and reports it as pinned, so the daemon can tell the operator owns the
+//! router's federation instead of claiming it.
 //!
 //! This is an integration test (its own binary) on purpose: it pins a router by
 //! setting the process-global `ZENOH_CONFIG`, and the lib's config-render tests
 //! read that same var. Isolated here, this test is the only reader/writer of it
-//! in its process, so there is no race — do not add other `ZENOH_CONFIG`-sensitive
-//! tests to this file. It exercises the real public path end to end (a hand-pinned
-//! config → `with_router` adopts it → `refederate`), rather than poking internal
-//! state.
+//! in its process, so there is no race. Do not add other `ZENOH_CONFIG`-sensitive
+//! tests to this file. It exercises the real public path end to end (a
+//! hand-pinned config, then `with_router`), rather than poking internal state.
 
 #![cfg(feature = "router")]
 
-use pmi::{
-    RouterId, SubscriberBufferSizes, TlsConfig, ZenohAdapter, ZenohNetProtocol,
-    render_router_config,
-};
+use pmi::{RouterId, SubscriberBufferSizes, ZenohAdapter, ZenohNetProtocol, render_router_config};
 
 #[test]
-fn refederate_is_a_no_op_under_an_operator_pinned_config() {
+fn a_router_built_under_an_operator_pinned_config_reports_it_and_leaves_it_untouched() {
     let port = 59250;
 
     // An operator hand-writes a router config and points `ZENOH_CONFIG` at it.
@@ -49,40 +45,36 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
 
     // Started the proper way: `with_router` resolves the config via `ZENOH_CONFIG`,
     // adopts the pinned file verbatim, and the facade records that it is pinned.
-    let mut adapter = ZenohAdapter::with_router(
+    let adapter = ZenohAdapter::with_router(
         ZenohNetProtocol::Tcp,
         "127.0.0.1",
         port,
         false,
         SubscriberBufferSizes::default(),
-        Vec::new(),
+        vec!["tls/rtr.example:7447".to_string()],
         None,
         RouterId::parse("b0b").expect("a valid router id literal"),
     )
     .expect("build a router adapter from the operator-pinned config");
 
-    let before = std::fs::read_to_string(&cfg_path).expect("read the pinned config");
-
-    let rewrote = adapter
-        .refederate(
-            vec!["tls/cap.zenoh.localhost:7443".to_string()],
-            Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
-        )
-        .expect("refederate under a pinned config succeeds as a no-op");
-
     assert!(
-        !rewrote,
-        "a pinned config must report no rewrite so the caller skips the restart"
+        adapter.router_config_is_pinned(),
+        "a router running the ZENOH_CONFIG file verbatim must report itself pinned"
     );
-    let after = std::fs::read_to_string(&cfg_path).expect("read the config after refederate");
+    let after = std::fs::read_to_string(&cfg_path).expect("read the config after with_router");
     assert_eq!(
-        before, after,
+        pinned_config, after,
         "the operator-pinned config must be left untouched"
     );
     assert!(
-        after.contains(operator_id.as_str()),
-        "the pinned config keeps the operator's own router id, not the one peppy was given"
+        after.contains(operator_id.as_str()) && !after.contains("rtr.example"),
+        "the pinned config keeps the operator's own router id and federation, not what peppy was given"
     );
+
+    // A client adapter owns no router and is therefore never pinned.
+    let client = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", port)
+        .expect("build client adapter");
+    assert!(!client.router_config_is_pinned());
 
     let _ = std::fs::remove_file(&cfg_path);
 }

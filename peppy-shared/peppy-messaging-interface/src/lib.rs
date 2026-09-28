@@ -84,4 +84,4 @@ pub use zenohd::{ZenohEndpoint, ZenohNetProtocol};
 // base `zenoh` feature (no zenohd binary needed) so a client/orchestrator that
 // only renders configs and opens TLS sessions can use them.
 #[cfg(feature = "zenoh")]
-pub use zenoh_config::{TlsConfig, probe_tls_reachable, render_router_config};
+pub use zenoh_config::{ConnectIdentity, TlsConfig, probe_tls_reachable, render_router_config};

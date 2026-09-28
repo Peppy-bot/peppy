@@ -17,6 +17,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::{Error, Result};
 
 /// Maximum characters in a router id.
@@ -44,9 +46,26 @@ const MAX_CHARS: usize = 32;
 /// * **At most 32 digits.** See [`MAX_CHARS`].
 ///
 /// So `RouterId::parse(s).map(|id| id.to_string()) == Ok(s)` for every accepted
-/// `s`: the type is a fixed point, not merely a validated string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// `s`: the type is a fixed point, not merely a validated string. It serializes
+/// as that plain string and fails loudly when deserializing one it would not
+/// accept, so a persisted id is parsed the moment it is read.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct RouterId(String);
+
+impl TryFrom<String> for RouterId {
+    type Error = Error;
+
+    fn try_from(raw: String) -> Result<Self> {
+        Self::parse(&raw)
+    }
+}
+
+impl From<RouterId> for String {
+    fn from(id: RouterId) -> Self {
+        id.0
+    }
+}
 
 impl RouterId {
     /// Parses a router id, rejecting anything zenoh would reject or render
@@ -158,6 +177,19 @@ mod tests {
                 .unwrap_or_else(|e| panic!("generated {generated} should parse: {e}"));
             assert_eq!(reparsed, generated);
         }
+    }
+
+    /// A persisted id is parsed as it is read: the serialized form is the plain
+    /// string, and a string zenoh would refuse never becomes a `RouterId`.
+    #[test]
+    fn serde_round_trips_and_rejects_on_read() {
+        let id = RouterId::parse("7f3a9c1e").expect("valid");
+        let json = serde_json::to_string(&id).expect("serialize");
+        assert_eq!(json, "\"7f3a9c1e\"");
+        let back: RouterId = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, id);
+        assert!(serde_json::from_str::<RouterId>("\"0abc\"").is_err());
+        assert!(serde_json::from_str::<RouterId>("\"ABC\"").is_err());
     }
 
     /// Two mints must differ, or the whole scheme collapses into the anonymity
