@@ -27,8 +27,11 @@ A user with the admin role on every repository of the set merges it without
 the approvals it lacks, as the rulesets let an admin merge a pull request of
 their own. The App is a bypass actor, for pull requests, of the rulesets that
 require an approval, so the bot enforces the approvals itself: a user
-without that role gets no merge of a set that lacks one. A review that
-requests changes blocks every user.
+without that role gets no merge of a set that lacks one. The bot reads, for
+each pull request that lacks an approval, whether the App bypasses every
+ruleset that requires one. When it does not, GitHub refuses the merge of the
+App, so that pull request blocks the set for every user, before the bot merges
+any pull request of it. A review that requests changes blocks every user.
 
 A hub run is out of date when a job of it ran with another commit of a branch
 of the set than the head of that branch. Every job that runs the hub-ci-peppy
@@ -440,6 +443,17 @@ class BranchRules:
     required_checks: tuple[RequiredCheck, ...]
     # Whether the pull request must be up to date with its base.
     strict: bool
+    # The rulesets whose pull request rule requires an approval, by id.
+    approval_rulesets: tuple[int, ...]
+
+
+def requires_approval(pull_request_rule: Mapping) -> bool:
+    parameters = pull_request_rule["parameters"]
+    return bool(
+        parameters.get("required_approving_review_count")
+        or parameters.get("require_code_owner_review")
+        or parameters.get("required_reviewers")
+    )
 
 
 def parse_branch_rules(rules: Sequence[Mapping]) -> BranchRules:
@@ -447,7 +461,14 @@ def parse_branch_rules(rules: Sequence[Mapping]) -> BranchRules:
     lists them, one entry per rule of each ruleset that applies."""
     checks: list[RequiredCheck] = []
     strict = False
+    approval_rulesets: list[int] = []
     for rule in rules:
+        if (
+            rule["type"] == "pull_request"
+            and requires_approval(rule)
+            and rule["ruleset_id"] not in approval_rulesets
+        ):
+            approval_rulesets.append(rule["ruleset_id"])
         if rule["type"] != "required_status_checks":
             continue
         parameters = rule["parameters"]
@@ -456,7 +477,30 @@ def parse_branch_rules(rules: Sequence[Mapping]) -> BranchRules:
             required = RequiredCheck(check["context"], check.get("integration_id"))
             if required.context != STATUS_CONTEXT and required not in checks:
                 checks.append(required)
-    return BranchRules(tuple(checks), strict)
+    return BranchRules(tuple(checks), strict, tuple(approval_rulesets))
+
+
+# The values of `current_user_can_bypass` that let the App merge a pull request
+# the ruleset blocks.
+BYPASSING_VALUES = frozenset({"always", "pull_requests_only", "exempt"})
+
+
+@dataclass(frozen=True)
+class RulesetBypass:
+    """Whether the App bypasses a ruleset when it merges a pull request."""
+
+    name: str
+    bypassed: bool
+
+
+def parse_ruleset_bypass(ruleset: Mapping) -> RulesetBypass:
+    """A ruleset as `GET /repos/{repo}/rulesets/{id}` gives it to the App,
+    whose bypass `current_user_can_bypass` names. A ruleset that does not name
+    it is not bypassed."""
+    return RulesetBypass(
+        name=ruleset["name"],
+        bypassed=ruleset.get("current_user_can_bypass") in BYPASSING_VALUES,
+    )
 
 
 class CheckState(Enum):
@@ -787,6 +831,10 @@ class PullRequestReport:
     # Behind its base while its rules require it up to date.
     behind: bool
     stale: tuple[StaleJob, ...]
+    # The rulesets that require the approval it lacks and that the App does
+    # not bypass, by name. GitHub refuses the merge of the App until the pull
+    # request gets that approval, so no admin merges it without one.
+    unbypassed_approval_rulesets: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -829,6 +877,17 @@ CHECK_STATE_TEXTS = {
 }
 
 
+def missing_approval_text(label: str, unbypassed_rulesets: Sequence[str]) -> str:
+    if not unbypassed_rulesets:
+        return f"{label} needs an approving review."
+    noun = "ruleset" if len(unbypassed_rulesets) == 1 else "rulesets"
+    names = ", ".join(f"`{name}`" for name in unbypassed_rulesets)
+    return (
+        f"{label} needs an approving review. No admin merges it without one: "
+        f"the merge-set App is not a bypass actor of the {noun} {names}."
+    )
+
+
 def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     pull_request = report.pull_request
     repository = pull_request.repository
@@ -860,7 +919,10 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     if report.review is ReviewDecision.CHANGES_REQUESTED:
         block(f"A reviewer requested changes on {label}.")
     if report.review is ReviewDecision.REVIEW_REQUIRED:
-        block(f"{label} needs an approving review.", waived_for_admins=True)
+        block(
+            missing_approval_text(label, report.unbypassed_approval_rulesets),
+            waived_for_admins=not report.unbypassed_approval_rulesets,
+        )
     for check, state in report.checks:
         if state is not CheckState.PASSED:
             block(
@@ -1421,6 +1483,7 @@ class GitHubGateway:
         self.api = api
         self.bot_login = bot_login
         self.rules: dict[str, BranchRules] = {}
+        self.bypasses: dict[tuple[str, int], RulesetBypass] = {}
         self.permissions: dict[tuple[str, str], str] = {}
 
     # Reading the set.
@@ -1467,6 +1530,18 @@ class GitHubGateway:
                 )
             )
         return self.rules[repository.name]
+
+    def ruleset_bypass(self, repository: Repository, ruleset_id: int) -> RulesetBypass:
+        """Whether the App bypasses a ruleset that applies to the repository,
+        one of its own or one of the organisation."""
+        key = (repository.name, ruleset_id)
+        if key not in self.bypasses:
+            self.bypasses[key] = parse_ruleset_bypass(
+                self.api.request(
+                    "GET", f"/repos/{repository.full_name}/rulesets/{ruleset_id}"
+                )
+            )
+        return self.bypasses[key]
 
     def check_runs(self, repository: Repository, commit: str) -> list[CheckRun]:
         return parse_check_runs(
@@ -1698,10 +1773,11 @@ def read_report(
     runs = gateway.check_runs(repository, pull_request.head_commit)
     statuses = gateway.statuses(repository, pull_request.head_commit)
     mergeable, _ = computed_merge_state(gateway, pull_request, {MERGE_STATE_UNKNOWN})
+    review = gateway.review_decision(pull_request)
     return PullRequestReport(
         pull_request=pull_request,
         mergeable=mergeable,
-        review=gateway.review_decision(pull_request),
+        review=review,
         checks=tuple(
             (check, required_check_state(check, runs, statuses))
             for check in rules.required_checks
@@ -1712,7 +1788,24 @@ def read_report(
             if repository.hub is not None
             else ()
         ),
+        unbypassed_approval_rulesets=(
+            unbypassed_approval_rulesets(gateway, repository, rules)
+            if review is ReviewDecision.REVIEW_REQUIRED
+            else ()
+        ),
     )
+
+
+def unbypassed_approval_rulesets(
+    gateway: GitHubGateway, repository: Repository, rules: BranchRules
+) -> tuple[str, ...]:
+    """The rulesets that require an approval on the integration branch of the
+    repository and that the App does not bypass, by name."""
+    bypasses = [
+        gateway.ruleset_bypass(repository, ruleset_id)
+        for ruleset_id in rules.approval_rulesets
+    ]
+    return tuple(bypass.name for bypass in bypasses if not bypass.bypassed)
 
 
 def read_reports(
