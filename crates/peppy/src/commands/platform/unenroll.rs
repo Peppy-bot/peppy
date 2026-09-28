@@ -11,7 +11,7 @@ use std::sync::Arc;
 use daemon_config::consts::PeppyDirs;
 
 use crate::commands::Command;
-use crate::commands::platform::router::{pending_change_lines, restart_command};
+use crate::commands::platform::router::{how_to_apply, pending_change_lines};
 use crate::commands::platform::{
     FederationPokeAction, PlatformSession, confirm_restart, external_router_note,
     federation_is_managed, poke_federation_and_report,
@@ -89,7 +89,7 @@ impl Command for UnenrollCommand {
 
 /// What the platform did with the removal of `document`'s peer, and what the
 /// person does next. A staged removal lists each change that waits for the
-/// restart, in the platform's words, and gives the command that requests it.
+/// restart, in the platform's words, and gives the commands that apply it.
 pub(crate) fn removal_report(document: &EnrollmentDocument, removal: &PeerRemoval) -> String {
     let peer = format!("{} ({})", document.peer_name, document.peer_id);
     let PeerRemoval::Staged(status) = removal else {
@@ -107,8 +107,8 @@ pub(crate) fn removal_report(document: &EnrollmentDocument, removal: &PeerRemova
     }
     out.push_str(&format!(
         "The router refuses this peer, and frees its slot, from its next restart. The restart is \
-         yours to request:\n    {}\n",
-        restart_command(&document.workspace_id, &document.project_id)
+         yours to request. {}\n",
+        how_to_apply(&status.phase, &document.workspace_id, &document.project_id)
     ));
     out
 }
@@ -155,8 +155,31 @@ mod tests {
             "Removed peer robot-7 (peer-1) from project p-1.\n\
              \x20 pending: peer robot-7 removed (staged 2026-09-28)\n\
              The router refuses this peer, and frees its slot, from its next restart. The \
-             restart is yours to request:\n\
+             restart is yours to request. Restart the router:\n\
              \x20   peppy platform router restart --workspace ws-1 --project p-1\n"
+        );
+    }
+
+    /// On a stopped router the removal takes a start and then a restart.
+    #[test]
+    fn a_removal_on_a_stopped_router_gives_the_two_commands() {
+        let staged = PeerRemoval::Staged(RouterStatus {
+            phase: "stopped".into(),
+            desired_state: "stopped".into(),
+            can_manage_infra: false,
+            address: None,
+            pending_changes: true,
+            pending_change_entries: Vec::new(),
+            peers: Vec::new(),
+        });
+        let report = removal_report(&document(), &staged);
+        assert!(
+            report.ends_with(
+                "A start alone does not apply the changes that wait:\n\
+                 \x20   peppy platform router start --workspace ws-1 --project p-1\n\
+                 \x20   peppy platform router restart --workspace ws-1 --project p-1\n"
+            ),
+            "{report}"
         );
     }
 

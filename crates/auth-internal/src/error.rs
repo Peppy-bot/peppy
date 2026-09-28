@@ -67,6 +67,10 @@ pub struct Problem {
     pub detail: Option<String>,
     /// The delay the platform asked for in `Retry-After`, in seconds.
     pub retry_after_secs: Option<u64>,
+    /// How many slots of the router a restart frees, when the platform says
+    /// so on a [`ProblemKind::PeerLimitReached`] refusal. `None` when the
+    /// platform does not say; the caller then reads the peers to find out.
+    pub pending_removals: Option<u32>,
 }
 
 impl fmt::Display for Problem {
@@ -120,6 +124,7 @@ mod tests {
             title: "Peer limit reached".into(),
             detail: Some("this router admits 5 peers".into()),
             retry_after_secs: None,
+            pending_removals: None,
         };
         assert_eq!(
             problem.to_string(),

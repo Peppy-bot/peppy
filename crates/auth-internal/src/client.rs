@@ -7,7 +7,9 @@
 //!
 //! Response types deserialize tolerantly (unknown fields ignored) because the
 //! CLI is installed on user machines while the backend deploys independently,
-//! so an older CLI routinely meets a newer backend. Status-like fields the
+//! so an older CLI routinely meets a newer backend. The platform adds members
+//! to its answers in each minor version of the contract, so no type here
+//! refuses an unknown member, and no answer is checked against a schema. Status-like fields the
 //! backend enumerates (`RouterPeer::status`, `RouterStatus::phase`) are kept
 //! as strings for the same reason: a value this CLI has not heard of renders
 //! as itself instead of failing the whole listing.
@@ -383,6 +385,8 @@ struct ProblemDocument {
     title: String,
     #[serde(default)]
     detail: Option<String>,
+    #[serde(default)]
+    pending_removals: Option<u32>,
 }
 
 /// The error for a refused request, after the single reactive refresh the
@@ -403,6 +407,7 @@ fn interpret_refusal(resp: &HttpResponse, method: &str, url: &str) -> Error {
             title: document.title,
             detail: document.detail,
             retry_after_secs: resp.retry_after_secs,
+            pending_removals: document.pending_removals,
         });
     }
     match resp.status {
@@ -525,6 +530,68 @@ mod tests {
             interpret_refusal(&response(401, "", None), "GET", "u"),
             Error::NotAuthenticated
         ));
+    }
+
+    /// What a refusal says about the slots a restart frees reaches the caller
+    /// as it was sent: a number, zero, or nothing.
+    #[test]
+    fn a_full_router_refusal_carries_the_slots_a_restart_frees() {
+        let refusal = |body: &str| match interpret_refusal(&response(422, body, None), "POST", "u")
+        {
+            Error::Problem(problem) => problem,
+            other => panic!("expected a problem, got {other:?}"),
+        };
+        let base = r#""type":"https://peppy.bot/problems/peer-limit-reached","title":"Peer limit reached","status":422"#;
+        assert_eq!(refusal(&format!("{{{base}}}")).pending_removals, None);
+        assert_eq!(
+            refusal(&format!(r#"{{{base},"pending_removals":0}}"#)).pending_removals,
+            Some(0)
+        );
+        assert_eq!(
+            refusal(&format!(r#"{{{base},"pending_removals":2}}"#)).pending_removals,
+            Some(2)
+        );
+    }
+
+    /// The platform adds members to its answers in each minor version. Every
+    /// answer type, and the problem document, must parse an answer that
+    /// carries a member this CLI does not know, at each level of the answer.
+    #[test]
+    fn every_answer_type_accepts_a_member_it_does_not_know() {
+        const NEW: &str = r#""member_of_a_later_version":{"a":[1,2]}"#;
+        let peer = format!(
+            r#"{{"id":"p","name":"n","certificate_cn":"n","status":"unknown",
+                "certificate_expires_at":"2027-01-01T00:00:00Z",
+                "created_at":"2026-10-03T00:00:00Z",{NEW}}}"#
+        );
+        let router = format!(
+            r#"{{"phase":"running","desired_state":"running","can_manage_infra":true,
+                "address":{{"host":"h","port":7447,{NEW}}},
+                "pending_changes":true,
+                "pending_change_entries":[{{"kind":"peer","description":"d",
+                    "staged_at":"2026-10-03T00:00:00Z",{NEW}}}],
+                "peers":[{{"id":"p","status":"connected",{NEW}}}],{NEW}}}"#
+        );
+
+        serde_json::from_str::<Principal>(&format!(r#"{{"sub":"s",{NEW}}}"#)).expect("Principal");
+        serde_json::from_str::<Workspace>(&format!(r#"{{"id":"w","name":"n",{NEW}}}"#))
+            .expect("Workspace");
+        serde_json::from_str::<Project>(&format!(
+            r#"{{"id":"p","workspace_id":"w","name":"n",{NEW}}}"#
+        ))
+        .expect("Project");
+        serde_json::from_str::<RouterPeer>(&peer).expect("RouterPeer");
+        serde_json::from_str::<RouterStatus>(&router).expect("RouterStatus");
+        serde_json::from_str::<RouterPeerEnrolled>(&format!(
+            r#"{{"peer":{peer},"certificate":"c","chain":"","trust_anchor":"t",
+                "zenoh_id":"7f3a9c1e","namespace":"550e8400-e29b-41d4-a716-446655440000",
+                "zenoh_config":"{{}}",{NEW}}}"#
+        ))
+        .expect("RouterPeerEnrolled");
+        serde_json::from_str::<ProblemDocument>(&format!(
+            r#"{{"type":"about:blank","title":"t","status":422,{NEW}}}"#
+        ))
+        .expect("ProblemDocument");
     }
 
     #[test]

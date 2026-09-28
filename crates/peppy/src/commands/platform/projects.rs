@@ -33,7 +33,7 @@ impl Command for ProjectsCommand {
             &session.api_url,
             &mut cred,
             self.workspace.as_deref(),
-            context.as_ref(),
+            context.as_ref().map(|c| c.workspace.id.as_str()),
             &mut select::Ask::Never,
         )?;
         let is_current = |project_id: &str| {

@@ -43,7 +43,7 @@ pub(crate) fn resolve_workspace(
     api_url: &str,
     cred: &mut auth::Credential,
     flag: Option<&str>,
-    context: Option<&PlatformContext>,
+    default_workspace_id: Option<&str>,
     ask: &mut Ask,
 ) -> Result<Workspace> {
     let workspaces = client::list_workspaces(http, api_url, cred)?;
@@ -59,7 +59,7 @@ pub(crate) fn resolve_workspace(
             },
         },
         flag,
-        context.map(|context| context.workspace.id.as_str()),
+        default_workspace_id,
         ask,
     )
 }
@@ -73,17 +73,47 @@ pub(crate) fn resolve_project(
     context: Option<&PlatformContext>,
     ask: &mut Ask,
 ) -> Result<Selection> {
-    let workspace = resolve_workspace(http, api_url, cred, workspace_flag, context, ask)?;
+    let workspace = resolve_workspace(
+        http,
+        api_url,
+        cred,
+        workspace_flag,
+        context.map(|context| context.workspace.id.as_str()),
+        ask,
+    )?;
+    // The project of the context is the default only in the workspace of the
+    // context: in a different workspace its id names nothing.
+    let default_project_id = context
+        .filter(|context| context.workspace.id == workspace.id)
+        .map(|context| context.project.id.as_str());
+    let project = resolve_project_in(
+        http,
+        api_url,
+        cred,
+        &workspace,
+        project_flag,
+        default_project_id,
+        ask,
+    )?;
+    Ok(Selection { workspace, project })
+}
+
+/// Picks one project of `workspace`. Archived projects own no router and are
+/// not candidates.
+fn resolve_project_in(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut auth::Credential,
+    workspace: &Workspace,
+    flag: Option<&str>,
+    default_project_id: Option<&str>,
+    ask: &mut Ask,
+) -> Result<Project> {
     let projects: Vec<Project> = client::list_projects(http, api_url, cred, &workspace.id)?
         .into_iter()
         .filter(|project| !project.is_archived())
         .collect();
-    // The project of the context is the default only in the workspace of the
-    // context: in a different workspace its id names nothing.
-    let default_project = context
-        .filter(|context| context.workspace.id == workspace.id)
-        .map(|context| context.project.id.as_str());
-    let project = pick(
+    pick(
         Candidates {
             what: "project",
             title: format!("Projects of {}", workspace.name),
@@ -91,17 +121,20 @@ pub(crate) fn resolve_project(
             id_and_name: |p: &Project| (&p.id, &p.name),
             option: |p: &Project| p.name.clone(),
         },
-        project_flag,
-        default_project,
+        flag,
+        default_project_id,
         ask,
-    )?;
-    Ok(Selection { workspace, project })
+    )
 }
 
 /// Runs the selection and returns the context it makes, for the caller to
 /// save. The flags name the workspace and the project; what no flag names is
-/// the only candidate, or the answer of the person. A stored context is not a
-/// default here: a selection is how the person changes it.
+/// the only candidate, or the answer of the person.
+///
+/// A selection is how the person changes the context, so the project of the
+/// stored context is never a default here. Its workspace is one in a single
+/// case: `--project` alone names a project of the workspace the person works
+/// in.
 pub(crate) fn select_context(
     session: &PlatformSession,
     cred: &mut auth::Credential,
@@ -113,15 +146,29 @@ pub(crate) fn select_context(
         Some(subject) => subject,
         None => client::get_me(&session.http, &session.api_url, cred)?.sub,
     };
-    let selection = resolve_project(
+    let current = session.context().ok().flatten();
+    let default_workspace_id = current
+        .as_ref()
+        .filter(|_| workspace_flag.is_none() && project_flag.is_some())
+        .map(|context| context.workspace.id.as_str());
+    let workspace = resolve_workspace(
         &session.http,
         &session.api_url,
         cred,
         workspace_flag,
+        default_workspace_id,
+        ask,
+    )?;
+    let project = resolve_project_in(
+        &session.http,
+        &session.api_url,
+        cred,
+        &workspace,
         project_flag,
         None,
         ask,
     )?;
+    let selection = Selection { workspace, project };
     Ok(PlatformContext {
         version: CONTEXT_VERSION,
         api_origin: session.api_origin()?,
@@ -561,6 +608,7 @@ mod tests {
             title: "Not Found".into(),
             detail: None,
             retry_after_secs: None,
+            pending_removals: None,
         })
     }
 

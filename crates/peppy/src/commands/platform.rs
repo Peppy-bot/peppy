@@ -646,7 +646,7 @@ pub enum PlatformCommands {
         #[arg(long)]
         json: bool,
     },
-    /// List the peers of a project's cloud router (this machine's project by default)
+    /// List the peers of a project's cloud router (the project of the context by default)
     Peers {
         #[arg(long = "api-url")]
         api_url: Option<String>,
@@ -660,7 +660,7 @@ pub enum PlatformCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Restart or start a project's cloud router (this machine's project by default)
+    /// Restart or start a project's cloud router (the project of the context by default)
     Router {
         #[command(subcommand)]
         command: router::RouterCommands,

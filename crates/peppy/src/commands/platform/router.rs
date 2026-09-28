@@ -18,11 +18,14 @@ use crate::commands::Command;
 use crate::commands::platform::{PlatformSession, ask_to_continue, select};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use auth::AuthError;
 use auth::client::{self, RouterStatus};
+use auth::{AuthError, ProblemKind};
 
 /// The peer status the platform gives a removed peer until the router restarts.
 const PENDING_RESTART: &str = "pending_restart";
+
+/// The phase of a router the person stopped.
+const STOPPED: &str = "stopped";
 
 #[derive(Subcommand)]
 pub enum RouterCommands {
@@ -138,6 +141,11 @@ impl Command for RouterCommand {
         .map_err(|error| select::refusal_on(&target, error))?;
         print!("{}", describe(&target.label, &before));
 
+        // A stopped router has nothing to restart. Say so before the question,
+        // which is about a router that runs.
+        if self.action == RouterAction::Restart && before.phase == STOPPED {
+            return Err(stopped_router(&target));
+        }
         if self.action == RouterAction::Restart
             && !self.yes
             && !ask_to_continue(
@@ -165,6 +173,13 @@ impl Command for RouterCommand {
             self.action.verb(),
             after.phase
         );
+        if self.action == RouterAction::Start && after.pending_changes {
+            println!(
+                "A start does not apply the changes that wait. When the router runs, restart \
+                 it:\n    {}",
+                restart_command(&target.workspace_id, &target.project_id)
+            );
+        }
         Ok(())
     }
 }
@@ -173,9 +188,13 @@ impl Command for RouterCommand {
 /// infrastructure of the project, which is a different permission from the one
 /// an enrollment needs, so it gets its own words. The command read the router
 /// of `target` just before, so a `403` here is about the action and not about
-/// the project.
+/// the project. A restart the platform refuses because the router is stopped
+/// names the two commands that apply the changes.
 fn refusal(error: AuthError, action: RouterAction, target: &select::Target) -> Error {
     match error {
+        AuthError::Problem(problem) if problem.kind == ProblemKind::RouterStopped => {
+            stopped_router(target)
+        }
         AuthError::Problem(problem) if problem.status == 403 => Error::Auth(format!(
             "you cannot {} this router: it needs the permission to manage the infrastructure \
              of the project. Ask an admin of the workspace.",
@@ -183,6 +202,14 @@ fn refusal(error: AuthError, action: RouterAction, target: &select::Target) -> E
         )),
         other => select::refusal_on(target, other),
     }
+}
+
+/// The error for a restart of a router that is stopped.
+fn stopped_router(target: &select::Target) -> Error {
+    Error::Auth(format!(
+        "the router is stopped, so there is nothing to restart. {}",
+        how_to_apply(STOPPED, &target.workspace_id, &target.project_id)
+    ))
 }
 
 /// The router a command found, for the person to check before it acts.
@@ -233,11 +260,31 @@ pub(crate) fn restart_command(workspace_id: &str, project_id: &str) -> String {
     format!("peppy platform router restart --workspace {workspace_id} --project {project_id}")
 }
 
+/// The command that starts the router of a project, spelled with its ids.
+pub(crate) fn start_command(workspace_id: &str, project_id: &str) -> String {
+    format!("peppy platform router start --workspace {workspace_id} --project {project_id}")
+}
+
+/// How the person applies the changes that wait on a router in `phase`: a
+/// restart. A stopped router takes two commands, because the platform refuses
+/// the restart of a stopped router and a start alone applies nothing.
+pub(crate) fn how_to_apply(phase: &str, workspace_id: &str, project_id: &str) -> String {
+    let restart = restart_command(workspace_id, project_id);
+    if phase != STOPPED {
+        return format!("Restart the router:\n    {restart}");
+    }
+    format!(
+        "Start the router, then restart it. A start alone does not apply the changes that \
+         wait:\n    {}\n    {restart}",
+        start_command(workspace_id, project_id)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use auth::Problem;
     use auth::client::{PendingChange, RouterPeerStatus};
-    use auth::{Problem, ProblemKind};
 
     fn status(peers: &[&str], pending: Vec<PendingChange>) -> RouterStatus {
         RouterStatus {
@@ -312,6 +359,7 @@ mod tests {
             title: "Forbidden".into(),
             detail: None,
             retry_after_secs: None,
+            pending_removals: None,
         });
         let target = select::Target {
             workspace_id: "ws-1".into(),
@@ -329,6 +377,49 @@ mod tests {
 
         let other = refusal(AuthError::Http("boom".into()), RouterAction::Start, &target);
         assert_eq!(other.to_string(), "boom");
+    }
+
+    fn context_target() -> select::Target {
+        select::Target {
+            workspace_id: "ws-1".into(),
+            project_id: "p-1".into(),
+            label: "project p-1".into(),
+            source: select::TargetSource::Context,
+        }
+    }
+
+    /// The platform refuses the restart of a stopped router. The error gives
+    /// the start and then the restart, and says that the start alone applies
+    /// nothing.
+    #[test]
+    fn a_restart_of_a_stopped_router_names_the_start_then_the_restart() {
+        let stopped = AuthError::Problem(Problem {
+            kind: ProblemKind::RouterStopped,
+            status: 409,
+            title: "Router stopped".into(),
+            detail: None,
+            retry_after_secs: None,
+            pending_removals: None,
+        });
+        assert_eq!(
+            refusal(stopped, RouterAction::Restart, &context_target()).to_string(),
+            "the router is stopped, so there is nothing to restart. Start the router, then \
+             restart it. A start alone does not apply the changes that wait:\n\
+             \x20   peppy platform router start --workspace ws-1 --project p-1\n\
+             \x20   peppy platform router restart --workspace ws-1 --project p-1"
+        );
+    }
+
+    #[test]
+    fn a_router_that_runs_takes_one_command_to_apply_its_changes() {
+        for phase in ["running", "degraded", "provisioning", "restarting"] {
+            assert_eq!(
+                how_to_apply(phase, "ws-1", "p-1"),
+                "Restart the router:\n    peppy platform router restart --workspace ws-1 --project p-1",
+                "{phase}"
+            );
+        }
+        assert!(how_to_apply(STOPPED, "ws-1", "p-1").contains("router start"));
     }
 
     #[test]

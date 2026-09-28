@@ -744,14 +744,16 @@ fn context_use_switches_the_project_in_the_workspace_of_the_context() {
         &server,
         &dir,
         ContextAction::Use {
-            workspace: Some(WORKSPACE.to_string()),
+            workspace: None,
             project: Some("Field".to_string()),
         },
         Ask::Never,
     )
-    .expect("switch");
+    .expect("the account has two workspaces, and the context names the one to look in");
 
-    assert_eq!(stored_context(&dir).expect("context").project.id, FIELD);
+    let context = stored_context(&dir).expect("context");
+    assert_eq!(context.workspace.id, WORKSPACE);
+    assert_eq!(context.project.id, FIELD);
     assert_eq!(
         enrollment::load(&dirs(&dir))
             .unwrap()
@@ -792,6 +794,66 @@ fn context_show_list_and_clear() {
     context_command(&server, &dir, ContextAction::Clear, Ask::Never).expect("clear");
     assert_eq!(stored_context(&dir), None);
     context_command(&server, &dir, ContextAction::Clear, Ask::Never).expect("clear two times");
+}
+
+/// `--workspace` alone selects the only project of that workspace, and asks
+/// when the workspace has more than one. The project of the context is not a
+/// default of a selection.
+#[test]
+fn context_use_with_a_workspace_alone_selects_its_project() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = authenticated_dir(&server);
+    write_context(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        (PROJECT, "Lab"),
+    );
+    let use_workspace = |workspace: &str, ask: Ask| {
+        context_command(
+            &server,
+            &dir,
+            ContextAction::Use {
+                workspace: Some(workspace.to_string()),
+                project: None,
+            },
+            ask,
+        )
+    };
+
+    use_workspace("Robotics lab", Ask::Never).expect("one project, no question");
+    assert_eq!(stored_context(&dir).expect("context").project.id, ARM);
+
+    let err = use_workspace(WORKSPACE, Ask::Never).expect_err("two projects, nobody to ask");
+    assert!(err.to_string().contains("--project"), "{err}");
+    assert_eq!(stored_context(&dir).expect("context").project.id, ARM);
+
+    use_workspace(WORKSPACE, answers("2\n")).expect("the person selects");
+    assert_eq!(stored_context(&dir).expect("context").project.id, FIELD);
+}
+
+/// With no context, `--project` alone has no workspace to look in when the
+/// account has more than one.
+#[test]
+fn context_use_with_a_project_alone_and_no_context_needs_the_workspace() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = authenticated_dir(&server);
+
+    let err = context_command(
+        &server,
+        &dir,
+        ContextAction::Use {
+            workspace: None,
+            project: Some("Field".to_string()),
+        },
+        Ask::Never,
+    )
+    .expect_err("which workspace?");
+    assert!(err.to_string().contains("--workspace"), "{err}");
+    assert_eq!(stored_context(&dir), None);
 }
 
 /// A context of a different identity is not the context of this session.
@@ -1267,6 +1329,48 @@ fn enroll_surfaces_the_platform_refusal_and_writes_nothing() {
     assert!(enrollment::load(&dirs(&dir)).unwrap().is_none());
 }
 
+/// When the platform says how many slots a restart frees, the CLI takes its
+/// word: it does not read the peers, and it names the restart only when the
+/// number is above zero.
+#[test]
+fn enroll_on_a_full_router_follows_the_slots_the_platform_reports() {
+    for (pending_removals, names_the_restart) in [(2, true), (0, false)] {
+        let server = MockServer::start();
+        mock_workspaces_and_projects(&server);
+        server.mock(move |when, then| {
+            when.method(POST).path(PEERS_PATH);
+            then.status(422)
+                .header("content-type", "application/problem+json")
+                .json_body(json!({
+                    "type": "https://peppy.bot/problems/peer-limit-reached",
+                    "title": "Peer limit reached", "status": 422,
+                    "pending_removals": pending_removals,
+                    "a_member_this_cli_does_not_know": true,
+                }));
+        });
+        let peers = server.mock(|when, then| {
+            when.method(GET).path(PEERS_PATH);
+            then.status(500);
+        });
+        let dir = authenticated_dir(&server);
+
+        let message = enroll_in(&server, &dir, false)
+            .expect_err("refused")
+            .to_string();
+        assert_eq!(
+            message.contains("peppy platform router restart --workspace"),
+            names_the_restart,
+            "{pending_removals}: {message}"
+        );
+        assert_eq!(
+            message.contains("frees no slot"),
+            !names_the_restart,
+            "{pending_removals}: {message}"
+        );
+        assert_eq!(peers.calls(), 0, "the platform gave the answer");
+    }
+}
+
 /// The platform could not sign in time. The CLI gives the delay the platform
 /// asked for and does not send the enrollment again.
 #[test]
@@ -1613,6 +1717,64 @@ fn router_restart_without_the_permission_says_which_permission() {
     assert!(
         err.to_string().contains("manage the infrastructure"),
         "{err}"
+    );
+}
+
+/// A stopped router has nothing to restart. The command says so before it
+/// sends anything, and gives the start and then the restart.
+#[test]
+fn router_restart_of_a_stopped_router_names_the_start_then_the_restart() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path(ROUTER_PATH);
+        then.status(200)
+            .json_body(router_body("stopped", "unknown"));
+    });
+    let restart = mock_router_action(&server, "restart", "restarting");
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-1", ZID);
+
+    let err = router_command(&server, &dir, RouterAction::Restart, None).expect_err("stopped");
+    let message = err.to_string();
+    assert!(message.contains("the router is stopped"), "{message}");
+    let start = message
+        .find("peppy platform router start")
+        .expect("the start command");
+    let again = message
+        .find("peppy platform router restart")
+        .expect("the restart command");
+    assert!(start < again, "the start comes first: {message}");
+    assert!(
+        message.contains("A start alone does not apply"),
+        "{message}"
+    );
+    assert_eq!(restart.calls(), 0);
+}
+
+/// The router can stop between the read and the restart. The refusal of the
+/// platform, matched on its type, gives the same answer.
+#[test]
+fn a_restart_the_platform_refuses_as_stopped_gives_the_same_answer() {
+    let server = MockServer::start();
+    mock_router_and_peers(&server);
+    server.mock(|when, then| {
+        when.method(POST).path(format!("{ROUTER_PATH}/restart"));
+        then.status(409)
+            .header("content-type", "application/problem+json")
+            .json_body(json!({
+                "type": "https://peppy.bot/problems/router-stopped",
+                "title": "Router stopped", "status": 409,
+            }));
+    });
+    let dir = authenticated_dir(&server);
+    write_enrollment(&dir, "peer-1", ZID);
+
+    let err = router_command(&server, &dir, RouterAction::Restart, None).expect_err("stopped");
+    let message = err.to_string();
+    assert!(message.contains("peppy platform router start"), "{message}");
+    assert!(
+        message.contains("peppy platform router restart"),
+        "{message}"
     );
 }
 

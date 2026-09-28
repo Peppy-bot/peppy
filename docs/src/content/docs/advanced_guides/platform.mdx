@@ -206,10 +206,12 @@ command prints where the material is for the operator's router to use.
 When the platform refuses the enrollment, the command prints the platform's
 reason. Two refusals come with a remedy:
 
-- **The router admits no more peers.** The command lists the peers of the
-  router. A removed peer keeps its slot until the router restarts, so when one
-  reads `pending_restart` the command prints the `router restart` command that
-  frees the slot.
+- **The router admits no more peers.** A removed peer keeps its slot until the
+  router restarts. When the platform says how many slots a restart frees, the
+  command prints the `router restart` command for a number above zero, and
+  tells you to remove a peer first for zero. When the platform does not say,
+  the command lists the peers of the router: each one that reads
+  `pending_restart` is a slot that a restart frees.
 - **The platform could not sign the certificate in time.** The command prints
   the delay the platform asks for. Run it again after that delay.
 
@@ -311,6 +313,12 @@ command asks for confirmation on a terminal; `--yes` skips the prompt.
 
 `start` starts a router that was stopped. `peppy platform status` shows the
 phase of the router and names this command when the router is stopped.
+
+A stopped router takes two commands to apply its changes. The platform refuses
+the restart of a stopped router, and a start alone does not apply a removal.
+So `router restart` on a stopped router stops with the two commands to run, in
+order: `router start`, then `router restart`. `unenroll` prints the same two
+commands when the router is stopped.
 
 Both commands need the permission to manage the infrastructure of the project.
 This is a different permission from the one an enrollment needs, so a person

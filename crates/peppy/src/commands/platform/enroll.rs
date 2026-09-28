@@ -165,15 +165,20 @@ fn explain_refusal(
     };
     match problem.kind {
         ProblemKind::PeerLimitReached => {
-            // Best effort: the refusal is the answer, the list only explains it.
-            let peers = client::list_peers(
-                &session.http,
-                &session.api_url,
-                cred,
-                &selection.workspace.id,
-                &selection.project.id,
-            )
-            .ok();
+            // The peers are read only when the platform does not say how many
+            // slots a restart frees. Best effort: the refusal is the answer,
+            // the list only explains it.
+            let peers = match problem.pending_removals {
+                Some(_) => None,
+                None => client::list_peers(
+                    &session.http,
+                    &session.api_url,
+                    cred,
+                    &selection.workspace.id,
+                    &selection.project.id,
+                )
+                .ok(),
+            };
             Error::Auth(full_router_message(
                 problem,
                 peers.as_deref(),
@@ -186,38 +191,49 @@ fn explain_refusal(
     }
 }
 
-/// The message for a router that admits no more peers: the refusal, the peers
-/// that hold the slots, and the remedy. A removed peer keeps its slot until the
-/// router restarts, so when one waits the remedy is the restart.
+/// The words for a router that has no slot a restart can free: a peer has to
+/// go first.
+const REMOVE_A_PEER_FIRST: &str = "Remove a peer (`peppy platform unenroll` on its machine), \
+     then restart the router.";
+
+/// The message for a router that admits no more peers: the refusal and the
+/// remedy. A removed peer keeps its slot until the router restarts, so the
+/// remedy depends on how many slots a restart frees:
+///
+/// * the platform says a number above zero: restart the router;
+/// * the platform says zero: a restart does not help, remove a peer first;
+/// * the platform does not say: `peers` lists the peers, and the ones that
+///   read `pending_restart` are the slots a restart frees.
 fn full_router_message(
     problem: &Problem,
     peers: Option<&[RouterPeer]>,
     workspace_id: &str,
     project_id: &str,
 ) -> String {
-    let mut out = problem.to_string();
-    let Some(peers) = peers else {
-        return out;
-    };
-    out.push_str("\n\n");
-    out.push_str(&peers::render_human(project_id, peers, None));
-    let waiting = peers
-        .iter()
-        .filter(|peer| peer.status == "pending_restart")
-        .count();
-    out.push('\n');
-    if waiting == 0 {
-        out.push_str(
-            "Each slot is in use. Remove a peer (`peppy platform unenroll` on its machine), \
-             then restart the router.",
-        );
-        return out;
+    let restart = restart_command(workspace_id, project_id);
+    match (problem.pending_removals, peers) {
+        (Some(0), _) => {
+            format!("{problem}\n\nA restart of the router frees no slot. {REMOVE_A_PEER_FIRST}")
+        }
+        (Some(freed), _) => {
+            format!("{problem}\n\nA restart of the router frees {freed} slot(s):\n    {restart}")
+        }
+        (None, None) => problem.to_string(),
+        (None, Some(peers)) => {
+            let listing = peers::render_human(project_id, peers, None);
+            let waiting = peers
+                .iter()
+                .filter(|peer| peer.status == "pending_restart")
+                .count();
+            match waiting {
+                0 => format!("{problem}\n\n{listing}\nEach slot is in use. {REMOVE_A_PEER_FIRST}"),
+                _ => format!(
+                    "{problem}\n\n{listing}\n{waiting} removed peer(s) keep a slot until the \
+                     router restarts. To free the slot:\n    {restart}"
+                ),
+            }
+        }
     }
-    out.push_str(&format!(
-        "{waiting} removed peer(s) keep a slot until the router restarts. To free the slot:\n    {}",
-        restart_command(workspace_id, project_id)
-    ));
-    out
 }
 
 /// The message for a certificate the platform could not sign in time, with the
@@ -286,6 +302,7 @@ mod tests {
             title: "Peer limit reached".into(),
             detail: None,
             retry_after_secs,
+            pending_removals: None,
         }
     }
 
@@ -335,6 +352,35 @@ mod tests {
         );
         assert!(message.contains("Each slot is in use"), "{message}");
         assert!(!message.contains("router restart --workspace"), "{message}");
+    }
+
+    /// When the platform says how many slots a restart frees, the CLI takes
+    /// its word and does not read the peers.
+    #[test]
+    fn the_slots_the_platform_reports_decide_the_remedy() {
+        let with = |pending_removals: Option<u32>| Problem {
+            pending_removals,
+            ..problem(ProblemKind::PeerLimitReached, None)
+        };
+        let listed = [peer("peer-2", "bench", "pending_restart")];
+
+        assert_eq!(
+            full_router_message(&with(Some(2)), None, "ws-1", "p-1"),
+            "Peer limit reached\n\nA restart of the router frees 2 slot(s):\n    \
+             peppy platform router restart --workspace ws-1 --project p-1"
+        );
+        let none_freed = full_router_message(&with(Some(0)), Some(&listed), "ws-1", "p-1");
+        assert_eq!(
+            none_freed,
+            "Peer limit reached\n\nA restart of the router frees no slot. Remove a peer \
+             (`peppy platform unenroll` on its machine), then restart the router.",
+            "zero is the platform's answer: the list does not change it"
+        );
+        assert!(
+            full_router_message(&with(None), Some(&listed), "ws-1", "p-1")
+                .contains("1 removed peer(s) keep a slot"),
+            "with no number from the platform, the peers give the answer"
+        );
     }
 
     #[test]

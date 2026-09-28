@@ -75,7 +75,7 @@ enum Commands {
         #[command(subcommand)]
         command: repo::RepoCommands,
     },
-    /// Platform account and project router: sign in, enroll this machine, show its status
+    /// Platform account and project router: sign in, select a project, enroll this machine, show its status
     Platform {
         #[command(subcommand)]
         command: platform::PlatformCommands,
