@@ -1,10 +1,11 @@
 name: Merge set webhook
 
 # Deploys the webhook of the merge-set App (.github/merge-set/webhook.py) to
-# its AWS Lambda function (.github/merge-set/webhook-stack.yml) when its code
-# changes on `dev`. The function runs the relay of merge_set.py, which imports
-# resolve.py of the hub-ci-peppy action, so a change to either one deploys it
-# too.
+# its AWS Lambda function when its code changes on `dev`. The stack
+# aws/peppy-ci-pipelines of Peppy-bot/infraops owns the function and ignores
+# its code, so this workflow alone writes the code. The function runs the relay
+# of merge_set.py, which imports resolve.py of the hub-ci-peppy action, so a
+# change to either one deploys it too.
 on:
   push:
     branches: [dev]
@@ -25,9 +26,11 @@ jobs:
   deploy:
     runs-on: ubuntu-slim
     timeout-minutes: 10
-    # The deploy role of webhook-stack.yml trusts a job of this environment
-    # alone, which only `dev` reaches. Its variable MERGE_SET_WEBHOOK_ROLE_ARN
-    # names that role.
+    # The deploy role of aws/peppy-ci-pipelines trusts a job of this
+    # environment alone, which only `dev` reaches. Its variables, copied from
+    # the outputs of that stack, name the role (MERGE_SET_WEBHOOK_ROLE_ARN)
+    # and the function (MERGE_SET_WEBHOOK_FUNCTION_NAME), which is the one
+    # function the role can deploy.
     environment: merge-set-webhook
     permissions:
       contents: read
@@ -47,24 +50,31 @@ jobs:
           aws-region: us-east-1
 
       - name: Deploy the function
+        env:
+          FUNCTION_NAME: ${{ vars.MERGE_SET_WEBHOOK_FUNCTION_NAME }}
         run: |
           aws lambda update-function-code \
-            --function-name peppy-merge-set-webhook \
+            --function-name "$FUNCTION_NAME" \
             --zip-file fileb://webhook.zip \
             --query CodeSha256 --output text
           aws lambda wait function-updated-v2 \
-            --function-name peppy-merge-set-webhook
+            --function-name "$FUNCTION_NAME"
 
-      # The new code refuses a request without the signature of the webhook
-      # secret: this proves that it loads and checks the signatures.
+      # The deployed code refuses a request without the signature of the
+      # webhook secret with HTTP 401: this proves that it loads, reads the
+      # secret and checks the signatures. The placeholder that the stack
+      # creates the function with answers 503, and so does this code while the
+      # webhook secret is empty.
       - name: Check that the function refuses an unsigned request
+        env:
+          FUNCTION_NAME: ${{ vars.MERGE_SET_WEBHOOK_FUNCTION_NAME }}
         run: |
           url=$(aws lambda get-function-url-config \
-            --function-name peppy-merge-set-webhook \
+            --function-name "$FUNCTION_NAME" \
             --query FunctionUrl --output text)
           status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
             --request POST "$url")
           if [ "$status" != 401 ]; then
-            echo "::error::The function answered HTTP $status to an unsigned request, not 401."
+            echo "::error::The function answered HTTP $status to an unsigned request, not 401. A 503 is the placeholder code or an empty webhook secret: see the runbook of aws/peppy-ci-pipelines in Peppy-bot/infraops."
             exit 1
           fi

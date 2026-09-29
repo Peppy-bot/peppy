@@ -12,12 +12,17 @@ each delivery, and writes the same line to its log.
 The private key of the App is in AWS KMS, which signs the JSON Web Token of
 the App and never gives out the key. With that token, the function makes the
 installation tokens that the relay asks for, each for one scope, and keeps
-each one until EXPIRY_MARGIN_SECONDS before it expires.
+each one until EXPIRY_MARGIN_SECONDS before it expires. The webhook secret is
+in AWS Secrets Manager, which the function reads again when a signature does
+not match, so it takes a new secret without a restart.
 
-webhook-stack.yml holds the AWS resources of the function, and
-import-app-key.sh imports the key into KMS. The Merge set webhook workflow
-(.github/workflows/merge-set-webhook.yml) deploys the archive that the
-`package` subcommand makes.
+The stack aws/peppy-ci-pipelines of Peppy-bot/infraops holds the AWS side of
+the function: the function, its role, the App key, the webhook secret, and the
+role the Merge set webhook workflow (.github/workflows/merge-set-webhook.yml)
+deploys the archive of the `package` subcommand with. It fixes the contract of
+this file: HANDLER, the variables of the function (the *_VARIABLE names) and
+WEBHOOK_SECRET_KEY. A runbook of infraops imports the App key and puts the
+webhook secret.
 
 The decisions are functions of their inputs, tested in test_webhook.py: the
 clock, KMS and GitHub are parameters. Standard library only, and the boto3
@@ -45,15 +50,15 @@ from pathlib import Path
 import merge_set
 import resolve
 
-# The function of webhook-stack.yml, and the entry point of its runtime.
-FUNCTION_NAME = "peppy-merge-set-webhook"
+# The contract with aws/peppy-ci-pipelines of Peppy-bot/infraops, which sets
+# the function up: the entry point of its runtime, the variables it sets on
+# the function, and the one key of the JSON document of the webhook secret.
 HANDLER = "webhook.lambda_handler"
-
-# The environment of the function, which webhook-stack.yml sets.
 APP_CLIENT_ID_VARIABLE = "APP_CLIENT_ID"
 APP_SLUG_VARIABLE = "APP_SLUG"
 APP_KEY_ID_VARIABLE = "APP_KEY_ID"
 WEBHOOK_SECRET_ARN_VARIABLE = "WEBHOOK_SECRET_ARN"
+WEBHOOK_SECRET_KEY = "webhook_secret"
 
 
 class WebhookError(Exception):
@@ -100,10 +105,17 @@ def request_body(request: Mapping) -> bytes:
 def signed_delivery(request: Mapping, secret: bytes) -> Delivery:
     """The delivery of a function URL request, once its signature proves that
     GitHub sent it with the webhook secret. The function URL gives the names
-    of the headers in lower case."""
+    of the headers in lower case. An empty secret checks nothing, since anyone
+    can sign with it, so it refuses every delivery."""
     method = ((request.get("requestContext") or {}).get("http") or {}).get("method")
     if method != "POST":
         raise WebhookError(405, "a webhook delivery is a POST request")
+    if not secret:
+        raise WebhookError(
+            503,
+            "the webhook secret is empty; the runbook of aws/peppy-ci-pipelines in "
+            "Peppy-bot/infraops puts it",
+        )
     headers = request.get("headers") or {}
     body = request_body(request)
     signature = headers.get("x-hub-signature-256", "")
@@ -129,6 +141,67 @@ def installation_id(payload: Mapping) -> int:
     if not isinstance(installation, int):
         raise merge_set.MergeSetError("the event names no installation of the App")
     return installation
+
+
+# The webhook secret -----------------------------------------------------------
+
+# The least time between two reads of the webhook secret that a delivery with
+# another signature starts. A flood of unsigned requests makes at most one
+# read a minute for each instance of the function.
+SECRET_REFRESH_SECONDS = 60
+
+
+def parse_webhook_secret(secret_string: str) -> bytes:
+    """The webhook secret in the JSON document of Secrets Manager,
+    {"webhook_secret": "<secret>"}. It is empty until a human puts it."""
+    try:
+        document = json.loads(secret_string)
+    except json.JSONDecodeError as error:
+        raise merge_set.MergeSetError(
+            f"the webhook secret is not a JSON document: {error}"
+        ) from error
+    value = document.get(WEBHOOK_SECRET_KEY) if isinstance(document, dict) else None
+    if not isinstance(value, str):
+        raise merge_set.MergeSetError(
+            f"the webhook secret is not a JSON object with a string `{WEBHOOK_SECRET_KEY}`"
+        )
+    return value.encode()
+
+
+class WebhookSecret:
+    """The webhook secret, read at the first delivery, and read again when a
+    delivery's signature does not match it or it is empty, at most once every
+    SECRET_REFRESH_SECONDS: the function takes a new secret within a minute of
+    its change in Secrets Manager."""
+
+    def __init__(self, read: Callable[[], str], clock: Callable[[], float]):
+        self.read = read
+        self.clock = clock
+        self.value: bytes | None = None
+        self.read_at: float | None = None
+
+    def load(self) -> bytes:
+        self.value = parse_webhook_secret(self.read())
+        self.read_at = self.clock()
+        return self.value
+
+    def current(self) -> bytes:
+        return self.load() if self.value is None else self.value
+
+    def refreshed(self) -> bool:
+        """Read the secret again, unless the last read is less than
+        SECRET_REFRESH_SECONDS old; whether it read."""
+        if (
+            self.read_at is not None
+            and self.clock() - self.read_at < SECRET_REFRESH_SECONDS
+        ):
+            return False
+        self.load()
+        return True
+
+
+# The statuses of a delivery that a new webhook secret could let through.
+SECRET_REFUSALS = frozenset({401, 503})
 
 
 # The tokens -------------------------------------------------------------------
@@ -269,17 +342,28 @@ class Webhook:
     """The function: it checks each delivery, and hands its event to the
     relay."""
 
-    def __init__(self, secret: bytes, bot_login: str, tokens: AppTokens):
+    def __init__(self, secret: WebhookSecret, bot_login: str, tokens: AppTokens):
         self.secret = secret
         self.bot_login = bot_login
         self.tokens = tokens
 
+    def verified_delivery(self, request: Mapping) -> Delivery:
+        """The delivery of the request, checked with the webhook secret, and
+        with a new read of it if the one the function holds refuses it."""
+        try:
+            return signed_delivery(request, self.secret.current())
+        except WebhookError as error:
+            if error.status not in SECRET_REFUSALS or not self.secret.refreshed():
+                raise
+        return signed_delivery(request, self.secret.current())
+
     def handle(self, request: Mapping) -> dict:
         try:
-            delivery = signed_delivery(request, self.secret)
-        except WebhookError as error:
-            print(f"Refused a request: HTTP {error.status}: {error}")
-            return response(error.status, str(error))
+            delivery = self.verified_delivery(request)
+        except (WebhookError, merge_set.MergeSetError) as error:
+            status = error.status if isinstance(error, WebhookError) else 500
+            print(f"Refused a request: HTTP {status}: {error}")
+            return response(status, str(error))
         label = f"{delivery.delivery_id} {delivery.event_name}"
         if delivery.action:
             label = f"{label}.{delivery.action}"
@@ -309,13 +393,16 @@ class Webhook:
 def webhook_of_environment(
     environment: Mapping[str, str], client: Callable[[str], object]
 ) -> Webhook:
-    """The function as webhook-stack.yml sets it up. `client` makes the AWS
-    client of a service."""
-    secret = client("secretsmanager").get_secret_value(
-        SecretId=required(environment, WEBHOOK_SECRET_ARN_VARIABLE)
-    )["SecretString"]
+    """The function as aws/peppy-ci-pipelines sets it up. `client` makes the
+    AWS client of a service."""
+    secrets = client("secretsmanager")
+    secret_arn = required(environment, WEBHOOK_SECRET_ARN_VARIABLE)
+
+    def read_secret() -> str:
+        return secrets.get_secret_value(SecretId=secret_arn)["SecretString"]
+
     return Webhook(
-        secret=secret.encode(),
+        secret=WebhookSecret(read_secret, time.time),
         bot_login=f"{required(environment, APP_SLUG_VARIABLE)}[bot]",
         tokens=AppTokens(
             client_id=required(environment, APP_CLIENT_ID_VARIABLE),
@@ -329,7 +416,8 @@ def required(environment: Mapping[str, str], name: str) -> str:
     value = environment.get(name, "")
     if not value:
         raise merge_set.MergeSetError(
-            f"{name} is not set; webhook-stack.yml sets it on the function"
+            f"{name} is not set; aws/peppy-ci-pipelines of Peppy-bot/infraops sets "
+            "it on the function"
         )
     return value
 
@@ -337,7 +425,7 @@ def required(environment: Mapping[str, str], name: str) -> str:
 @functools.cache
 def lambda_webhook() -> Webhook:
     """The function, made once for each instance of it, at its first
-    delivery: it reads the webhook secret once, and keeps its tokens."""
+    delivery: it keeps its webhook secret and its tokens."""
     import boto3
 
     return webhook_of_environment(os.environ, boto3.client)

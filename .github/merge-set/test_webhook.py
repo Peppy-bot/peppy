@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Tests for the webhook of the merge-set App.
 
-The clock is a FakeClock that a test moves, KMS is a stand-in that records
-what it signs, and GitHub is a stand-in of GitHubApi.request that answers from
-a table and records each call. Nothing touches the network or AWS. The last
-cases hold the stack, the deploy workflow and the import script to the names
-the function uses.
+The clock is a FakeClock that a test moves, KMS and Secrets Manager are
+stand-ins that record what they are asked, and GitHub is a stand-in of
+GitHubApi.request that answers from a table and records each call. Nothing
+touches the network or AWS. The last cases hold the deploy workflow to the
+names it uses, and the contract with aws/peppy-ci-pipelines of
+Peppy-bot/infraops to the values that stack fixes, restated here on purpose:
+its own test restates this side's.
 """
 
 import base64
@@ -23,7 +25,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import merge_set
-import resolve
 import webhook
 from merge_set import MergeSetError
 from test_merge_set import (
@@ -35,11 +36,16 @@ from test_merge_set import (
 )
 
 MERGE_SET = Path(__file__).resolve().parent
-STACK = MERGE_SET / "webhook-stack.yml"
-IMPORT_SCRIPT = MERGE_SET / "import-app-key.sh"
 DEPLOY_WORKFLOW = "merge-set-webhook.yml"
-# The tag of every AWS resource of the CI of Peppy-bot.
-STACK_TAG = "Stack=peppy-ci-pipelines"
+
+# What aws/peppy-ci-pipelines of Peppy-bot/infraops fixes in its locals.tf,
+# which this code must match (docs/conventions/inherited-from-org.md there).
+INFRAOPS_CONTRACT = {
+    "handler": "webhook.lambda_handler",
+    "runtime": "python3.14",
+    "secret_key": "webhook_secret",
+    "variables": {"APP_CLIENT_ID", "APP_SLUG", "APP_KEY_ID", "WEBHOOK_SECRET_ARN"},
+}
 
 SECRET = b"webhook-secret"
 CLIENT_ID = "Iv23client"
@@ -69,6 +75,24 @@ def function_url_request(
         "body": base64.b64encode(body).decode() if base64_body else body.decode(),
         "isBase64Encoded": base64_body,
     }
+
+
+def secret_document(value):
+    """The SecretString of the webhook secret in Secrets Manager."""
+    return json.dumps({webhook.WEBHOOK_SECRET_KEY: value})
+
+
+class FakeSecretReads:
+    """Secrets Manager as the function sees it: gives each value of
+    `values` in turn, the last one again and again, and counts the reads."""
+
+    def __init__(self, *values):
+        self.values = list(values)
+        self.reads = 0
+
+    def __call__(self):
+        self.reads += 1
+        return secret_document(self.values[min(self.reads, len(self.values)) - 1])
 
 
 def decoded(part):
@@ -294,7 +318,9 @@ class AppTokens(unittest.TestCase):
 class Handling(unittest.TestCase):
     def setUp(self):
         self.webhook = webhook.Webhook(
-            SECRET, BOT, webhook.AppTokens(CLIENT_ID, FakeSigner(), FakeClock())
+            webhook.WebhookSecret(FakeSecretReads(SECRET.decode()), FakeClock()),
+            BOT,
+            webhook.AppTokens(CLIENT_ID, FakeSigner(), FakeClock()),
         )
 
     def handle(self, request, answers=None):
@@ -367,7 +393,90 @@ class Handling(unittest.TestCase):
         self.assertIn("HTTP 401", log)
 
 
-# The environment that webhook-stack.yml gives the function.
+class WebhookSecrets(unittest.TestCase):
+    def setUp(self):
+        self.clock = FakeClock()
+
+    def function(self, reads):
+        return webhook.Webhook(
+            webhook.WebhookSecret(reads, self.clock),
+            BOT,
+            webhook.AppTokens(CLIENT_ID, FakeSigner(), FakeClock()),
+        )
+
+    def status(self, function, request):
+        with patch("sys.stdout", io.StringIO()):
+            return function.handle(request)["statusCode"]
+
+    def test_the_secret_is_the_one_key_of_its_json_document(self):
+        self.assertEqual(webhook.parse_webhook_secret(secret_document("s")), b"s")
+        self.assertEqual(webhook.parse_webhook_secret(secret_document("")), b"")
+        for text in ("s", "[]", "{}", '{"webhook_secret": 1}', '{"other": "s"}'):
+            with self.subTest(text=text), self.assertRaises(MergeSetError):
+                webhook.parse_webhook_secret(text)
+
+    def test_an_empty_secret_refuses_every_delivery_even_one_signed_with_it(self):
+        function = self.function(FakeSecretReads(""))
+        forged = function_url_request("ping", {}, secret=b"")
+        self.assertEqual(self.status(function, forged), 503)
+
+    def test_a_secret_that_is_not_a_json_document_refuses_every_delivery(self):
+        function = self.function(lambda: "not JSON")
+        self.assertEqual(self.status(function, function_url_request("ping", {})), 500)
+
+    def test_the_first_delivery_reads_the_secret_once(self):
+        reads = FakeSecretReads(SECRET.decode())
+        function = self.function(reads)
+        self.assertEqual(reads.reads, 0)
+        unsigned = function_url_request("ping", {}, signature="sha256=0")
+        self.assertEqual(self.status(function, unsigned), 401)
+        self.assertEqual(reads.reads, 1)
+
+    def test_a_new_secret_is_read_when_a_signature_does_not_match(self):
+        reads = FakeSecretReads("old", "new")
+        function = self.function(reads)
+        self.assertEqual(
+            self.status(function, function_url_request("ping", {}, secret=b"old")), 200
+        )
+        self.clock.now += webhook.SECRET_REFRESH_SECONDS
+        self.assertEqual(
+            self.status(function, function_url_request("ping", {}, secret=b"new")), 200
+        )
+        self.assertEqual(reads.reads, 2)
+
+    def test_a_secret_put_after_the_start_is_read(self):
+        reads = FakeSecretReads("", SECRET.decode())
+        function = self.function(reads)
+        signed = function_url_request("ping", {})
+        self.assertEqual(self.status(function, signed), 503)
+        self.clock.now += webhook.SECRET_REFRESH_SECONDS
+        self.assertEqual(self.status(function, signed), 200)
+
+    def test_unsigned_requests_read_the_secret_at_most_once_a_minute(self):
+        reads = FakeSecretReads(SECRET.decode())
+        function = self.function(reads)
+        unsigned = function_url_request("ping", {}, signature="sha256=0")
+        for _ in range(5):
+            self.assertEqual(self.status(function, unsigned), 401)
+        self.assertEqual(reads.reads, 1)
+        self.clock.now += webhook.SECRET_REFRESH_SECONDS - 1
+        self.status(function, unsigned)
+        self.assertEqual(reads.reads, 1)
+        self.clock.now += 1
+        self.status(function, unsigned)
+        self.assertEqual(reads.reads, 2)
+
+    def test_a_request_that_is_no_delivery_reads_the_secret_no_more(self):
+        reads = FakeSecretReads(SECRET.decode())
+        function = self.function(reads)
+        self.assertEqual(self.status(function, function_url_request("ping", {})), 200)
+        self.clock.now += webhook.SECRET_REFRESH_SECONDS
+        get = function_url_request("ping", {}, method="GET")
+        self.assertEqual(self.status(function, get), 405)
+        self.assertEqual(reads.reads, 1)
+
+
+# The environment that aws/peppy-ci-pipelines gives the function.
 STACK_ENVIRONMENT = {
     "APP_CLIENT_ID": CLIENT_ID,
     "APP_SLUG": "peppy-merge-set",
@@ -383,7 +492,7 @@ class Environment(unittest.TestCase):
         class FakeSecretsManager:
             def get_secret_value(self, SecretId):
                 test.secret_id = SecretId
-                return {"SecretString": "the-secret"}
+                return {"SecretString": secret_document("the-secret")}
 
         class FakeKms:
             def sign(self, **arguments):
@@ -394,8 +503,9 @@ class Environment(unittest.TestCase):
 
     def test_the_function_reads_its_secret_and_key_from_the_stack(self):
         function = webhook.webhook_of_environment(STACK_ENVIRONMENT, self.client)
+        self.assertFalse(hasattr(self, "secret_id"))
+        self.assertEqual(function.secret.current(), b"the-secret")
         self.assertEqual(self.secret_id, "arn:aws:secretsmanager:secret")
-        self.assertEqual(function.secret, b"the-secret")
         self.assertEqual(function.bot_login, "peppy-merge-set[bot]")
         self.assertEqual(function.tokens.client_id, CLIENT_ID)
         function.tokens.app_jwt()
@@ -463,45 +573,38 @@ class Package(unittest.TestCase):
             self.assertEqual(path.read_bytes(), webhook.package(webhook.PACKAGE_FILES))
 
 
-def stack_lines():
-    return [line.strip() for line in STACK.read_text().splitlines()]
-
-
 class RepositoryFacts(unittest.TestCase):
-    def test_the_stack_runs_the_handler_of_this_file_with_its_variables(self):
-        lines = stack_lines()
-        for line in (
-            f"FunctionName: {webhook.FUNCTION_NAME}",
-            f"Handler: {webhook.HANDLER}",
-            f"LogGroupName: /aws/lambda/{webhook.FUNCTION_NAME}",
-            f"{webhook.APP_CLIENT_ID_VARIABLE}: !Ref AppClientId",
-            f"{webhook.APP_SLUG_VARIABLE}: !Ref AppSlug",
-            f"{webhook.APP_KEY_ID_VARIABLE}: !GetAtt AppKey.Arn",
-            f"{webhook.WEBHOOK_SECRET_ARN_VARIABLE}: !Ref WebhookSecret",
-        ):
-            with self.subTest(line=line):
-                self.assertIn(line, lines)
+    def test_this_code_keeps_the_contract_of_the_infraops_stack(self):
+        self.assertEqual(webhook.HANDLER, INFRAOPS_CONTRACT["handler"])
+        self.assertEqual(webhook.WEBHOOK_SECRET_KEY, INFRAOPS_CONTRACT["secret_key"])
+        self.assertEqual(
+            {
+                webhook.APP_CLIENT_ID_VARIABLE,
+                webhook.APP_SLUG_VARIABLE,
+                webhook.APP_KEY_ID_VARIABLE,
+                webhook.WEBHOOK_SECRET_ARN_VARIABLE,
+            },
+            INFRAOPS_CONTRACT["variables"],
+        )
+        self.assertEqual(STACK_ENVIRONMENT.keys(), INFRAOPS_CONTRACT["variables"])
 
-    def test_the_stack_names_the_app_of_the_sync(self):
-        lines = stack_lines()
-        slug = lines[lines.index("AppSlug:") + 3]
-        self.assertEqual(slug, f"Default: {BOT.removesuffix('[bot]')}")
+    def test_the_code_runs_on_the_python_of_the_runtime(self):
+        # The runtime of the stack is the newest Python this code may use.
+        runtime = tuple(
+            int(part) for part in INFRAOPS_CONTRACT["runtime"][6:].split(".")
+        )
+        self.assertLessEqual(sys.version_info[:2], runtime)
 
-    def test_the_function_answers_within_the_wait_of_github(self):
-        # GitHub waits 10 seconds for the answer to a delivery; a delivery
-        # that runs longer still ends its work.
-        (timeout,) = [line for line in stack_lines() if line.startswith("Timeout:")]
-        self.assertGreater(int(timeout.split(":")[1]), 10)
-
-    def test_the_deploy_role_trusts_the_environment_of_the_deploy_workflow(self):
+    def test_the_deploy_uses_the_role_and_the_function_of_its_environment(self):
         lines = workflow_lines(DEPLOY_WORKFLOW)
         self.assertIn("environment: merge-set-webhook", lines)
         self.assertIn("id-token: write", lines)
-        self.assertIn(
-            '"token.actions.githubusercontent.com:sub": '
-            f'"repo:{resolve.PEPPY_REPOSITORY}:environment:merge-set-webhook"',
-            stack_lines(),
+        self.assertIn("role-to-assume: ${{ vars.MERGE_SET_WEBHOOK_ROLE_ARN }}", lines)
+        self.assertEqual(
+            lines.count("FUNCTION_NAME: ${{ vars.MERGE_SET_WEBHOOK_FUNCTION_NAME }}"), 2
         )
+        self.assertEqual(lines.count('--function-name "$FUNCTION_NAME" \\'), 2)
+        self.assertEqual(lines.count('--function-name "$FUNCTION_NAME"'), 1)
 
     def test_the_deploy_workflow_deploys_the_package_of_this_file(self):
         lines = workflow_lines(DEPLOY_WORKFLOW)
@@ -509,13 +612,6 @@ class RepositoryFacts(unittest.TestCase):
             "run: python3 .github/merge-set/webhook.py package webhook.zip", lines
         )
         self.assertIn("--zip-file fileb://webhook.zip \\", lines)
-        self.assertEqual(
-            sum(
-                line.startswith(f"--function-name {webhook.FUNCTION_NAME}")
-                for line in lines
-            ),
-            3,
-        )
 
     def test_a_change_to_a_file_of_the_package_deploys_it(self):
         lines = workflow_lines(DEPLOY_WORKFLOW)
@@ -531,23 +627,6 @@ class RepositoryFacts(unittest.TestCase):
         self.assertIn("runs-on: ubuntu-slim", lines)
         (timeout,) = [line for line in lines if line.startswith("timeout-minutes:")]
         self.assertLessEqual(int(timeout.split(":")[1]), 15)
-
-    def test_the_deploy_command_of_the_stack_tags_its_resources(self):
-        self.assertIn(f"#     --tags {STACK_TAG}", STACK.read_text().splitlines())
-
-    def test_the_import_script_imports_into_the_key_of_the_stack(self):
-        lines = [line.strip() for line in IMPORT_SCRIPT.read_text().splitlines()]
-        (stack_name,) = [
-            line.removeprefix("STACK_NAME=")
-            for line in lines
-            if line.startswith("STACK_NAME=")
-        ]
-        self.assertIn(f"--stack-name {stack_name} \\", STACK.read_text())
-        self.assertIn(
-            "--query \"Stacks[0].Outputs[?OutputKey=='AppKeyId'].OutputValue\" \\",
-            lines,
-        )
-        self.assertIn("AppKeyId:", stack_lines())
 
     def test_the_changes_job_runs_these_cases(self):
         text = (WORKFLOWS / "tests.yml").read_text()
