@@ -2,7 +2,7 @@
 //! the Zitadel `issuer`, the Native app `client_id`, the exact `scopes` string to
 //! request (already including `offline_access` and the project-audience scope,
 //! sent to Zitadel **verbatim**, never reassembled), and the address of the
-//! platform's own device page, `device_verification_uri`.
+//! platform's own device page, `device_verification_uri` (API contract 3.3.0).
 
 use serde::Deserialize;
 use url::Url;
@@ -20,13 +20,18 @@ pub struct CliConfig {
     pub client_id: String,
     pub scopes: String,
     /// The platform's own device page, where a person approves a device login.
-    /// `None` when the platform does not publish it (API contract older than
-    /// 3.3.0); the login then falls back to the identity provider's address.
-    pub device_verification_uri: Option<Url>,
+    /// The CLI shows this page and never the identity provider's.
+    pub device_verification_uri: Url,
 }
 
+/// The refusal for a platform that does not publish its own device page.
+const OLDER_PLATFORM: &str = "This platform is older than API contract 3.3.0 and does not \
+     publish its own device page, so `peppy platform login` cannot sign in to it.";
+
 /// The answer as it arrives on the wire. Unknown members are ignored, because
-/// every contract minor may add one.
+/// every contract minor may add one. `device_verification_uri` is optional
+/// here only so that its absence is refused with [`OLDER_PLATFORM`] rather
+/// than a parse error.
 #[derive(Deserialize)]
 struct CliConfigResponse {
     issuer: String,
@@ -52,11 +57,11 @@ pub fn fetch(http: &HttpClient, api_url: &str, policy: TransportPolicy) -> Resul
             // whatever it names. Apply the transport policy here, at the point
             // it enters the process, rather than at each of those steps.
             profile::validate_https_or_local_with(&response.issuer, "OIDC issuer", policy)?;
-            let device_verification_uri = response
+            let raw_address = response
                 .device_verification_uri
-                .as_deref()
-                .map(|raw| parse_device_verification_uri(raw, api_url, policy))
-                .transpose()?;
+                .ok_or_else(|| Error::Auth(OLDER_PLATFORM.to_string()))?;
+            let device_verification_uri =
+                parse_device_verification_uri(&raw_address, api_url, policy)?;
             Ok(CliConfig {
                 issuer: response.issuer,
                 client_id: response.client_id,
@@ -144,20 +149,24 @@ mod tests {
         let config = fetch_strict(answer_with_address("https://app.example.test/device"))
             .expect("an https device page is accepted");
         assert_eq!(
-            config.device_verification_uri.map(String::from).as_deref(),
-            Some("https://app.example.test/device")
+            config.device_verification_uri.as_str(),
+            "https://app.example.test/device"
         );
     }
 
     #[test]
-    fn an_absent_device_verification_address_is_an_older_platform() {
-        let config = fetch_strict(json!({
+    fn refuses_a_platform_that_does_not_publish_its_device_page() {
+        let error = fetch_strict(json!({
             "issuer": "https://auth.example.test",
             "client_id": "client",
             "scopes": "openid offline_access"
         }))
-        .expect("a platform older than 3.3.0 still logs in");
-        assert!(config.device_verification_uri.is_none());
+        .expect_err("a platform older than 3.3.0 cannot be signed in to");
+        assert_eq!(
+            error.to_string(),
+            Error::Auth(OLDER_PLATFORM.into()).to_string()
+        );
+        assert!(error.to_string().contains("older than API contract 3.3.0"));
     }
 
     #[test]
@@ -178,9 +187,8 @@ mod tests {
             "http://localhost:5173/device",
             "http://[::1]:5173/device",
         ] {
-            let config = fetch_strict(answer_with_address(address))
+            fetch_strict(answer_with_address(address))
                 .unwrap_or_else(|e| panic!("{address} is a loopback page: {e}"));
-            assert!(config.device_verification_uri.is_some(), "{address}");
         }
     }
 

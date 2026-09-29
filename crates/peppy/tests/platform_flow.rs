@@ -222,35 +222,38 @@ fn external_login_succeeds_without_a_daemon_control_socket() {
 }
 
 /// A platform older than API contract 3.3.0 does not publish its device page.
-/// The login still completes, on the identity provider's page.
+/// The login is refused before the device flow starts, says why, and stores
+/// nothing.
 #[test]
-fn external_login_against_an_older_platform_uses_the_identity_provider_page() {
+fn login_refuses_an_older_platform_before_the_flow_starts() {
     let server = MockServer::start();
     let device_authorization = mock_login_endpoints_answering(
         &server,
-        "older-platform-token",
+        "unused-token",
         cli_auth_config(&server.base_url(), None),
     );
-    let _me = mock_me(&server);
 
     let dir = tempfile::tempdir().expect("temp dir");
     write_external_zenoh_config(&dir);
 
-    LoginCommand {
+    let err = LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
         yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx())
-    .expect("an older platform still logs in");
+    .expect_err("a platform older than 3.3.0 cannot be signed in to");
 
-    assert_eq!(device_authorization.calls(), 1);
-    let creds = storage::load(&creds_path(&dir)).expect("load credentials");
-    assert_eq!(
-        creds.session.expect("session").access_token.expose_secret(),
-        "older-platform-token"
+    assert!(
+        err.to_string().contains(
+            "This platform is older than API contract 3.3.0 and does not publish its own \
+             device page"
+        ),
+        "{err}"
     );
+    assert_eq!(device_authorization.calls(), 0);
+    assert!(!creds_path(&dir).exists(), "a refused login stores nothing");
 }
 
 /// A device page the CLI cannot print safely stops the login before the device
