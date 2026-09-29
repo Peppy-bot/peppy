@@ -197,6 +197,9 @@ mod tests {
         for address in [
             "https://app.example.test/device?code=ABCD-EFGH",
             "https://app.example.test/device#fragment",
+            // T5: an empty query and an empty fragment are still present.
+            "https://app.example.test/device?",
+            "https://app.example.test/device#",
         ] {
             let error = fetch_strict(answer_with_address(address))
                 .expect_err("the CLI appends the query itself");
@@ -205,6 +208,18 @@ mod tests {
                 "{address}: {error}"
             );
         }
+    }
+
+    /// T4: credentials in the device page are refused, and not repeated.
+    #[test]
+    fn refuses_a_device_verification_address_with_embedded_credentials() {
+        let error = fetch_strict(answer_with_address(
+            "https://alice:hunter2@app.example.test/device",
+        ))
+        .expect_err("a device page never carries credentials");
+        let message = error.to_string();
+        assert!(message.contains("embedded credentials"), "{message}");
+        assert!(!message.contains("hunter2"), "{message}");
     }
 
     #[test]
