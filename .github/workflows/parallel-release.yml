@@ -44,13 +44,14 @@ name: Parallel release
 # outside the run: prepare can push a docs pull request branch, hub-launch
 # starts a launchers-hub run, and publish tags the hubs, creates the release
 # and moves `dev` and `main`. None of those may stop part way and start again.
-# The provision and build stages run on spot. They only build and upload an
-# artifact, so a stage that AWS interrupts can run again: once this run ends,
-# RunsOn re-runs its failed jobs and the jobs that wait on them in a second
-# attempt, the interrupted one on demand, and that attempt reads the release
-# plan and the artifacts the first attempt uploaded. Both stages turn
-# fail-fast off, so an interrupted leg fails alone and the second attempt runs
-# that leg again, not its siblings.
+# The provision and build stages run on spot in attempts 1 and 2 of the run,
+# and on demand from attempt 3 (see .github/runs-on.yml). They only build and
+# upload an artifact, so a stage that AWS interrupts can run again: once
+# attempt 1 or 2 ends, RunsOn re-runs its failed jobs and the jobs that wait
+# on them in the next attempt, the interrupted one on demand, and that attempt
+# reads the release plan and the artifacts the earlier attempts uploaded. Both
+# stages turn fail-fast off, so an interrupted leg fails alone and the next
+# attempt runs that leg again, not its siblings.
 # RunsOn has no macOS, so the macOS stages run on a Blacksmith macOS runner.
 # The install tests run on GitHub-hosted runners (see the install-test
 # action).
@@ -210,10 +211,10 @@ jobs:
             runner: blacksmith-12vcpu-macos-latest
           - name: apptainer-aarch64
             stage: apptainer
-            runner: runs-on=${{ github.run_id }}/runner=release-arm64  # image (via runner): peppy-ubuntu24-aarch64, custom Peppy AMI
+            runner: runs-on=${{ github.run_id }}/runner=release-arm64${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # image (via runner): peppy-ubuntu24-aarch64, custom Peppy AMI
           - name: apptainer-x86_64
             stage: apptainer
-            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops  # custom Peppy AMI
+            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     steps:
@@ -227,8 +228,8 @@ jobs:
       - name: Build the ${{ matrix.name }}
         run: ./scripts/parallel_release.sh ${{ matrix.stage }} --output-dir "$RUNNER_TEMP/provisioned"
 
-      # The second attempt that follows a spot interruption uploads under the
-      # same name, and replaces what the interrupted attempt uploaded.
+      # The attempt that follows a spot interruption uploads under the same
+      # name, and replaces what the interrupted attempt uploaded.
       - uses: actions/upload-artifact@v7
         with:
           name: provision-${{ matrix.name }}
@@ -238,7 +239,7 @@ jobs:
 
   # One archive per runner, all three in parallel, each from the commit the
   # plan pins. A failed build leaves the others running: a spot interruption
-  # fails one leg alone, and the second attempt then builds only that leg.
+  # fails one leg alone, and the next attempt then builds only that leg.
   # publish still waits for all three.
   build:
     needs: [prepare, provision]
@@ -249,9 +250,9 @@ jobs:
           - target: aarch64-apple-darwin
             runner: blacksmith-12vcpu-macos-latest
           - target: aarch64-unknown-linux-gnu
-            runner: runs-on=${{ github.run_id }}/runner=release-arm64  # image (via runner): peppy-ubuntu24-aarch64, custom Peppy AMI
+            runner: runs-on=${{ github.run_id }}/runner=release-arm64${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # image (via runner): peppy-ubuntu24-aarch64, custom Peppy AMI
           - target: x86_64-unknown-linux-gnu
-            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops  # custom Peppy AMI
+            runner: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=150gb:gp3:500mbs:6000iops${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
@@ -280,8 +281,8 @@ jobs:
             --target "${{ matrix.target }}" \
             --provisioned "$RUNNER_TEMP/provisioned"
 
-      # The second attempt that follows a spot interruption uploads under the
-      # same name, and replaces what the interrupted attempt uploaded.
+      # The attempt that follows a spot interruption uploads under the same
+      # name, and replaces what the interrupted attempt uploaded.
       - uses: actions/upload-artifact@v7
         with:
           name: archive-${{ matrix.target }}

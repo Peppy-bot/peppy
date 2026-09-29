@@ -16,6 +16,12 @@
 # request cannot change or test what it defines. The CI jobs therefore shape
 # the org runner with labels, and this file holds only what labels cannot
 # express.
+#
+# Both runners ask for a spot instance. When AWS interrupts one, RunsOn runs
+# the failed jobs of the run again on demand in the next attempt, but only
+# after attempt 1 or 2 of the run, and a re-run by hand is also an attempt. So
+# each RunsOn label of the workflows adds spot=false from attempt 3, and AWS
+# cannot interrupt a job that RunsOn does not run again.
 runners:
   # The org runner, copied verbatim.
   peppy-ci-ubuntu-24.04-x86_64:
