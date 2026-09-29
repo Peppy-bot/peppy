@@ -2,11 +2,12 @@
 //! then the selection of the workspace and the project.
 //!
 //! Fetches the public `/cli/auth-config`, runs OIDC discovery against the
-//! returned issuer, performs the device flow (opening the browser on a TTY),
-//! caches the tokens as the single session, and prints the resolved identity.
-//! It then runs the selection `peppy platform configure` runs, unless a context
-//! of this identity exists. Signing in changes nothing about the daemon:
-//! joining a project's router is `peppy platform enroll`.
+//! returned issuer, performs the device flow (printing the platform's own device
+//! page with the code filled in, and opening it in the browser on a TTY), caches
+//! the tokens as the single session, and prints the resolved identity. It then
+//! runs the selection `peppy platform configure` runs, unless a context of this
+//! identity exists. Signing in changes nothing about the daemon: joining a
+//! project's router is `peppy platform enroll`.
 
 use std::sync::Arc;
 
@@ -18,9 +19,10 @@ use crate::commands::platform::configure::{select_and_save, selected_report};
 use crate::commands::platform::select::Ask;
 use crate::context::AppContext;
 use crate::error::Result;
-use auth::device::{self, TokenSet};
+use auth::device::{self, DeviceAuthorization, TokenSet};
 use auth::discovery::OidcEndpoints;
 use auth::{cli_config, client, discovery, http::HttpClient, profile, resolver, storage};
+use url::Url;
 
 pub struct LoginCommand {
     /// Override the backend base URL (else the build's `resource_servers.api` /
@@ -58,6 +60,7 @@ impl Command for LoginCommand {
             &endpoints,
             &cfg.client_id,
             &cfg.scopes,
+            &cfg.device_verification_uri,
             self.no_browser,
         )?;
 
@@ -140,7 +143,7 @@ fn select_after_sign_in(session: &PlatformSession, cred: &mut auth::Credential, 
 }
 
 /// The interactive shell around the engine's device-flow protocol: print the
-/// verification URL and user code, open the browser on a TTY (best-effort,
+/// page to open and the user code, open the browser on a TTY (best-effort,
 /// suppressed by `no_browser` for headless/SSH use), and show a spinner while
 /// polling the token endpoint for the user's approval.
 fn run_device_flow(
@@ -148,29 +151,19 @@ fn run_device_flow(
     endpoints: &OidcEndpoints,
     client_id: &str,
     scopes: &str,
+    device_page: &Url,
     no_browser: bool,
 ) -> Result<TokenSet> {
     use std::io::IsTerminal;
 
-    let da = device::start(
-        http,
-        endpoints,
-        client_id,
-        scopes,
-        profile::build_transport_policy(),
-    )?;
+    let da = device::start(http, endpoints, client_id, scopes)?;
 
-    let complete = da
-        .verification_uri_complete
-        .clone()
-        .unwrap_or_else(|| da.verification_uri.clone());
-
-    println!("To sign in, open:\n    {}", da.verification_uri);
-    println!("and enter the code: {}", da.user_code);
+    let prompt = sign_in_prompt(device_page, &da);
+    print!("{}", prompt.text);
 
     if !no_browser && std::io::stdout().is_terminal() {
         // Best-effort: a headless box without a browser just keeps the printed URL.
-        if open::that(&complete).is_ok() {
+        if open::that(prompt.link.as_str()).is_ok() {
             println!("(opened your browser…)");
         }
     }
@@ -181,4 +174,59 @@ fn run_device_flow(
         pb.finish_and_clear();
     }
     Ok(result?)
+}
+
+/// What a person is shown and sent to for a started device login: the
+/// platform's own device page, whose link already carries the code, and the
+/// code itself, so the person can compare it with the one the page shows.
+/// Built from the authorization and the page alone, so nothing but the
+/// platform's page can reach the terminal or the browser.
+struct SignInPrompt {
+    text: String,
+    link: Url,
+}
+
+fn sign_in_prompt(device_page: &Url, authorization: &DeviceAuthorization) -> SignInPrompt {
+    let user_code = &authorization.user_code;
+    let link = device::verification_link(device_page, user_code);
+    let text = format!(
+        "To sign in, open:\n    {link}\nand check that the page shows the code: {user_code}\n"
+    );
+    SignInPrompt { text, link }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// T1: an identity provider answer that names its own pages, on another
+    /// host, reaches neither the printed text nor the browser.
+    #[test]
+    fn only_the_platform_page_is_printed_or_opened() {
+        let authorization: DeviceAuthorization = serde_json::from_value(json!({
+            "device_code": "the-device-code",
+            "user_code": "ABCD-EFGH",
+            "verification_uri": "https://issuer.example.test/device",
+            "verification_uri_complete": "https://issuer.example.test/device?user_code=ABCD-EFGH",
+            "expires_in": 300,
+            "interval": 5,
+        }))
+        .expect("a provider answer");
+        let page = Url::parse("https://app.example.test/device").expect("page");
+
+        let prompt = sign_in_prompt(&page, &authorization);
+
+        assert_eq!(
+            prompt.text,
+            "To sign in, open:\n    https://app.example.test/device?user_code=ABCD-EFGH\n\
+             and check that the page shows the code: ABCD-EFGH\n"
+        );
+        assert_eq!(
+            prompt.link.as_str(),
+            "https://app.example.test/device?user_code=ABCD-EFGH"
+        );
+        assert!(!prompt.text.contains("issuer.example.test"));
+        assert_eq!(prompt.link.host_str(), Some("app.example.test"));
+    }
 }

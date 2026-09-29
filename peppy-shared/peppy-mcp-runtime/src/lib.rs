@@ -10,8 +10,9 @@
 //! notifications, tool-input validation against the bundle's derived
 //! schemas, action-backed tools run as MCP tasks (SEP-2663) for clients
 //! that declare the extension and inside the call for clients that do not,
-//! with confirmation, cooperative cancellation, and whole-goal deadlines,
-//! and the mapping from bridge failures to MCP errors.
+//! with confirmation, cooperative cancellation, and whole-goal deadlines
+//! (a progress-bound goal is bounded by its bridge, and its task by a TTL
+//! of one day), and the mapping from bridge failures to MCP errors.
 //!
 //! Entry points:
 //!
@@ -49,4 +50,4 @@ pub use server::{
     ToolHandler,
 };
 pub use state::{AdmitToken, ResourceIngest};
-pub use tasks::{ActionContext, ActionExit, TaskHandler};
+pub use tasks::{ActionContext, ActionExit, CancelledGoal, TaskHandler};

@@ -150,8 +150,8 @@ impl HttpClient {
     }
 }
 
-/// Strips the query string from a URL for error messages, so a `verification_uri_complete`
-/// or any future token-bearing query never lands in a log line.
+/// Strips the query string from a URL for error messages, so a token or a code
+/// carried in a query never lands in a log line.
 fn redact(url: &str) -> &str {
     url.split('?').next().unwrap_or(url)
 }

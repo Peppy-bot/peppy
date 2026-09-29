@@ -5,10 +5,13 @@
 //! caller of the `platform-backend` resource server. Signing in is:
 //!
 //! 1. [`cli_config::fetch`]: `GET {api_url}/cli/auth-config` (public) gives the
-//!    `issuer`, `client_id` and `scopes` (sent to Zitadel verbatim).
+//!    `issuer`, `client_id` and `scopes` (sent to Zitadel verbatim), and the
+//!    platform's own device page, `device_verification_uri`; a platform without
+//!    one is refused.
 //! 2. [`discovery::discover`]: OIDC discovery against the `issuer` to learn the
 //!    `device_authorization`, `token` and `revocation` endpoints.
-//! 3. [`device`]: RFC 8628 device grant: start the flow, poll for the token.
+//! 3. [`device`]: RFC 8628 device grant: start the flow, build the link a
+//!    person approves it on ([`device::verification_link`]), poll for the token.
 //! 4. [`storage`]: cache the tokens (and `issuer`/`client_id`) under
 //!    `~/.peppy/conf/credentials.json5` (`0600`).
 //!

@@ -180,9 +180,28 @@ Each bound must fit the member's type. For example, validation rejects `min: -20
 | Field | Required | What it does |
 | --- | --- | --- |
 | `operation` | yes | `long_running`, the only value; actions are long-running by definition |
-| `deadline_ms` | yes | Whole-goal deadline. The advertised task TTL is this plus a short grace window |
+| `deadline_ms` | one of the two | Whole-goal deadline: the longest time the goal may run. The advertised task TTL is this plus a short grace window |
+| `progress_timeout_ms` | one of the two | The longest time the goal may go without a sign of progress. The goal may run for as long as it makes progress, up to one day as a task. The action must declare a `feedback_topic` |
 | `safety_sensitive` | no | Advertises that the call changes the physical world. Defaults to `false` |
-| `confirmation_required` | no | The task waits in `input_required` and sends no goal until the client confirms through `tasks/update`. A client without the tasks extension cannot call the tool. Defaults to `false` |
+| `confirmation_required` | no | The task waits in `input_required` and sends no goal until the client confirms through `tasks/update`. A client without the tasks extension cannot call the tool. Cannot go with `progress_timeout_ms`. Defaults to `false` |
+
+An action declares exactly one of `deadline_ms` and `progress_timeout_ms`.
+
+`deadline_ms` bounds the whole goal. Feedback does not extend it. When it passes, the call or the task fails with a message that names the deadline, and the provider gets no cancel: the goal keeps running.
+
+`progress_timeout_ms` bounds the silence, not the work. Use it for a goal whose length depends on something the robot does not control, such as assets that download over a slow link. The signs of progress are the admission of the goal, each feedback message, and the end of the feedback stream when the goal settles. Each sign starts a new window, and the request for the result after the end of the stream gets one window. When a window goes by without a sign of progress, the endpoint sends the provider one cancel and continues to follow the goal under the same rule:
+
+- A goal that completes returns its result, as usual.
+- A goal that ends cancelled returns the provider's result as a [cancelled goal](#cancelled-goals), with the message `the action was cancelled: no progress within <N> ms`.
+- A goal that stays silent for one more window fails with `no progress within <N> ms; a cancel was sent and the provider did not answer it`.
+
+The provider's reply to the cancel is read too. A reply that the goal had already ended means the end of its feedback stream did not come through: the endpoint reads the result at once and returns it, or fails with `the goal ended, but its result is no longer readable` when the provider no longer keeps it. A reply that the provider does not know the goal fails with `no progress within <N> ms; a cancel was sent and the provider does not know the goal`. A cancel that fails, for example because no reply came within one window, fails with `no progress within <N> ms; a cancel was sent and failed: <error>`, and the endpoint logs it as a warning, because the goal can still run on the provider. The cancel the endpoint forwards for the client gets the same replies, and the same messages without the `no progress within <N> ms; ` part.
+
+A feedback message that does not decode is logged and not shown to the client. It is still a message the provider sent for the goal, so it counts as a sign of progress.
+
+The bound relies on the provider: it publishes a feedback message each time its progress changes, and none while nothing changes. A message sent on a timer while nothing moves would hide a goal that is stuck. The wait for a confirmation is no progress of the goal, and nothing would bound it, so an action cannot declare `progress_timeout_ms` together with `confirmation_required`.
+
+Under both bounds, the first wait is for the provider to admit the goal, and it is bounded too: by `deadline_ms`, or by one window of `progress_timeout_ms`. When that wait runs out, the call or the task fails and the provider gets no cancel, because the endpoint has no handle on a goal that the provider did not admit. This is a limit of both bounds: a provider that admits the goal after that runs it with nothing following it, until the goal ends or the provider cancels it for a reason of its own.
 
 ## The published schemas
 
@@ -416,19 +435,33 @@ For a client that declares the tasks extension (`io.modelcontextprotocol/tasks` 
 
 1. If `confirmation_required`, the task waits in `input_required` until the client confirms through `tasks/update`. No goal is sent before that.
 2. The server sends the goal. Action feedback updates the task's status message.
-3. `tasks/cancel` forwards a request to the action's cooperative cancellation path. The task ends as `cancelled`.
-4. On success, the task completes with the structured result. A goal that is rejected, abandoned, or expired ends as `failed` with a message saying which event occurred.
+3. `tasks/cancel` forwards a request to the action's cooperative cancellation path. A declined confirmation, or a cancel before the client confirms, ends the task as `cancelled`, and no goal is sent.
+4. On success, the task completes with the structured result. A goal that ends cancelled ends the task as `cancelled`, and the task's status message says why, as a [cancelled goal](#cancelled-goals) describes. A goal that is rejected, abandoned, expired, or past its bound ends as `failed` with a message saying which event occurred.
 
 Task handles outlive connections. A client that reconnects can continue and observe the same task. They do not outlive the process: stopping the stack ends every task the endpoint was running.
 
+A task under `deadline_ms` advertises a TTL of the deadline plus a short grace window. A task under `progress_timeout_ms` advertises a TTL of one day (86400000 ms): the progress window ends a goal that goes silent, and the TTL is the longest a goal that keeps making progress may run as a task. When the TTL passes, the task fails with a generic expiry and the provider gets no cancel. Every task stays readable for one more TTL after it ends.
+
 For a client without the extension, the goal runs inside the call:
 
-1. The server sends the goal and the call stays open until the goal settles or `deadline_ms` passes.
-2. Action feedback is sent as `notifications/progress` under the call's progress token, in order, before the result. While the server waits for the client to take one notification, new feedback waits in the goal's [feedback buffer](/advanced_guides/actions/#receiving-feedback), which keeps only the newest messages. A call without a progress token gets no feedback.
+1. The server sends the goal and the call stays open until the goal settles or its bound fails it. Under `progress_timeout_ms` the endpoint sets no limit on the total time of the call: a goal that keeps making progress runs until it settles or the client closes the call.
+2. Action feedback is sent as `notifications/progress` under the call's progress token, in order, before the result. The first notification also opens the response: the endpoint sends the response headers with it. While the server waits for the client to take one notification, new feedback waits in the goal's [feedback buffer](/advanced_guides/actions/#receiving-feedback), which keeps only the newest messages. A call without a progress token gets no feedback, and nothing arrives on it, not even the response headers, until the goal settles. A client that limits the wait for the headers then limits the whole goal.
 3. Closing the call forwards a request to the action's cooperative cancellation path.
-4. On success, the call returns the structured result. A goal that is rejected, abandoned, expired, cancelled, or past the deadline returns a readable tool error saying which event occurred.
+4. On success, the call returns the structured result. A goal that ends cancelled returns the tool error of a [cancelled goal](#cancelled-goals). A goal that is rejected, abandoned, expired, or past its bound returns a readable tool error saying which event occurred.
 
 A tool with `confirmation_required` cannot run inside a call: the confirmation is an input request only a task can carry. The endpoint refuses it with error `-32021` (Missing Required Client Capability), naming the tool and the extension in the message and the capability in the error data.
+
+### Cancelled goals
+
+A goal ends cancelled when the client cancels it, when the endpoint cancels it because a window of `progress_timeout_ms` went by without a sign of progress, or when the provider cancels it for a reason of its own, for example because a newer goal replaced it. In each case the provider ends the goal with a result. When the provider cancelled the goal on its own, that result is where it says why.
+
+In a call, the endpoint returns the result in a tool error:
+
+- `isError` is `true`, whatever the result says: the goal did not run to its end.
+- The first text says that the goal was cancelled: `the action was cancelled`, or `the action was cancelled: no progress within <N> ms` when the endpoint cancelled it for the silence.
+- `structuredContent` is the provider's result, in the tool's output schema, and the second text is the same result as JSON.
+
+In a task, the task ends `cancelled`, which carries no result. Its status message is the same first text, followed by `: ` and the provider's result as JSON.
 
 ## What validation refuses
 
@@ -439,6 +472,7 @@ Validation reports **every** violation at once, so you can fix the document in o
 - A representation role names a missing, `$optional`, or wrongly typed member.
 - A `restrict` bound does not fit its member's type, names a non-numeric member, or targets a `u64`/`i64`.
 - A `max_result_bytes` is smaller than a payload's static maximum, or a topic with an unbounded payload omits the size policy.
+- An action with `progress_timeout_ms` has no `feedback_topic` in its contract.
 - A contract `sha256` does not match the resolved document's bytes.
 
 Parsing catches document-level errors before these checks. Examples include:
@@ -447,7 +481,8 @@ Parsing catches document-level errors before these checks. Examples include:
 - A public name claimed twice anywhere in the document, or a service or action member selected twice by one target.
 - A target `argument` on a document without `robots`, a target `argument` of `robot`, a `describe` entry naming a target the robot fills any number of times or a service its target does not select as a tool, or an argument name that is not `snake_case`.
 - A blank `title`, `instructions`, or `description` value.
-- A zero deadline or a `max_hz` value that is not positive and finite.
+- An action that declares both or neither of `deadline_ms` and `progress_timeout_ms`, or declares `progress_timeout_ms` together with `confirmation_required`.
+- A zero `deadline_ms` or `progress_timeout_ms`, or a `max_hz` value that is not positive and finite.
 - A `quality` value on a `raw` or `png16` representation.
 - A `depth_range` on a `raw` or `png16` representation, or one whose `near` is 0 or not below `far`.
 - `on_oversize` without `max_result_bytes`.

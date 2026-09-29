@@ -50,22 +50,50 @@ const ROUTER_HOST: &str = "rtr-p.us-east-1.robocloud.dev.peppy.bot";
 const PEERS_PATH: &str = "/api/workspace/4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4/projects/550e8400-e29b-41d4-a716-446655440000/router/peers";
 const ROUTER_PATH: &str = "/api/workspace/4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4/projects/550e8400-e29b-41d4-a716-446655440000/router";
 
-/// Builds the cli/auth-config + OIDC discovery + device-authorization + token mocks
-/// for a server whose issuer is its own base URL, with the device grant
-/// succeeding immediately.
+/// The `/cli/auth-config` answer of a platform whose issuer is `base`, with the
+/// platform's own device page when `device_verification_uri` is set (API
+/// contract 3.3.0 and later) and without it otherwise (an older platform).
+fn cli_auth_config(base: &str, device_verification_uri: Option<&str>) -> serde_json::Value {
+    let mut config = json!({
+        "issuer": base,
+        "client_id": "cli-client-id",
+        "project_id": "proj-id",
+        "scopes": "openid profile email offline_access urn:zitadel:iam:org:project:id:proj-id:aud",
+    });
+    if let Some(address) = device_verification_uri {
+        config["device_verification_uri"] = json!(address);
+    }
+    config
+}
+
+/// Builds the login mocks for a current platform: one that publishes its own
+/// device page, on a path apart from the identity provider's.
 fn mock_login_endpoints(server: &MockServer, access_token: &str) {
+    let base = server.base_url();
+    mock_login_endpoints_answering(
+        server,
+        access_token,
+        cli_auth_config(&base, Some(&format!("{base}/app/device"))),
+    );
+}
+
+/// Builds the cli/auth-config + OIDC discovery + device-authorization + token mocks
+/// for a server whose issuer is its own base URL, with `/cli/auth-config`
+/// answering `config` and the device grant succeeding immediately. Returns the
+/// device-authorization mock, so a test can tell whether the flow started.
+fn mock_login_endpoints_answering<'a>(
+    server: &'a MockServer,
+    access_token: &str,
+    config: serde_json::Value,
+) -> httpmock::Mock<'a> {
     let base = server.base_url();
 
     server.mock(|when, then| {
         when.method(GET).path("/cli/auth-config");
-        then.status(200).json_body(json!({
-            "issuer": base,
-            "client_id": "cli-client-id",
-            "scopes": "openid profile email offline_access urn:zitadel:iam:org:project:id:proj-id:aud",
-        }));
+        then.status(200).json_body(config);
     });
     mock_discovery(server);
-    server.mock(|when, then| {
+    let device_authorization = server.mock(|when, then| {
         when.method(POST).path("/oauth/v2/device_authorization");
         then.status(200).json_body(json!({
             "device_code": "the-device-code",
@@ -86,6 +114,8 @@ fn mock_login_endpoints(server: &MockServer, access_token: &str) {
             "scope": "openid profile email offline_access",
         }));
     });
+
+    device_authorization
 }
 
 fn mock_discovery(server: &MockServer) {
@@ -489,6 +519,64 @@ fn login_with(
         peppy_dirs: Some(dirs(dir)),
     }
     .execute(&ctx())
+}
+
+/// A platform older than API contract 3.3.0 does not publish its device page.
+/// The login is refused before the device flow starts, says why, and stores
+/// nothing.
+#[test]
+fn login_refuses_an_older_platform_before_the_flow_starts() {
+    let server = MockServer::start();
+    let device_authorization = mock_login_endpoints_answering(
+        &server,
+        "unused-token",
+        cli_auth_config(&server.base_url(), None),
+    );
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let err = login_with(&server, &dir, true, Ask::Never)
+        .expect_err("a platform older than 3.3.0 cannot be signed in to");
+
+    assert!(
+        err.to_string().contains(
+            "This platform is older than API contract 3.3.0 and does not publish its own \
+             device page"
+        ),
+        "{err}"
+    );
+    assert_eq!(device_authorization.calls(), 0);
+    assert!(!creds_path(&dir).exists(), "a refused login stores nothing");
+}
+
+/// A device page the CLI cannot print safely stops the login before the device
+/// flow starts, so no code is ever issued for it.
+#[test]
+fn login_refuses_an_untrusted_device_page_before_the_flow_starts() {
+    for (address, reason) in [
+        ("ftp://app.example.test/device", "unsupported URL scheme"),
+        (
+            "https://app.example.test/device?user_code=ABCD-EFGH",
+            "query string or fragment",
+        ),
+    ] {
+        let server = MockServer::start();
+        let device_authorization = mock_login_endpoints_answering(
+            &server,
+            "unused-token",
+            cli_auth_config(&server.base_url(), Some(address)),
+        );
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let err = login_with(&server, &dir, true, Ask::Never)
+            .expect_err("an untrusted device page is refused");
+
+        assert!(err.to_string().contains(reason), "{address}: {err}");
+        assert_eq!(device_authorization.calls(), 0, "{address}");
+        assert!(
+            !creds_path(&dir).exists(),
+            "{address}: a refused login stores nothing"
+        );
+    }
 }
 
 #[test]

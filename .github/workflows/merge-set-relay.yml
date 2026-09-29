@@ -11,8 +11,11 @@ name: Merge set relay
 # issue_comment, workflow_run and delete. The key of the merge-set App is a
 # secret of the `merge-set` environment of each repository, which only the
 # default branch reaches, and which this job reads because the caller hands
-# its secrets on (`secrets: inherit`). The token this job makes can start
-# workflows of peppy and do nothing else.
+# its secrets on (`secrets: inherit`). The first token this job makes can
+# start workflows of peppy and do nothing else. The second one, made for a
+# comment edit alone, can write the pull requests of the repository of the
+# event and do nothing else: with it, the relay answers a ticked box on its
+# pull request.
 on:
   workflow_call:
 
@@ -22,10 +25,16 @@ jobs:
     # branch opened, pushed, reopened, closed, made a draft or ready for
     # review, or moved onto the default branch; a box of a merge-set comment
     # ticked by a user (the edits of the bot start nothing); a CI run of a
-    # pull request that ended; a deleted branch. A pull_request_target event
-    # runs from the base branch of its pull request, and only the default
-    # branch reaches the `merge-set` environment, which is also the one
-    # branch the rulesets require the `merge-set` check on.
+    # pull request that started or ended; a deleted branch. A
+    # pull_request_target event runs from the base branch of its pull
+    # request, and only the default branch reaches the `merge-set`
+    # environment, which is also the one branch the rulesets require the
+    # `merge-set` check on.
+    #
+    # GitHub sends `requested` when a CI run starts, and not when it is
+    # re-run: the start of a re-run reaches the relay as `in_progress`, of a
+    # run attempt after the first. The `in_progress` of a first attempt adds
+    # nothing to its `requested`, so the relay drops it.
     if: >-
       (github.event_name == 'pull_request_target'
         && github.event.pull_request.base.ref == github.event.repository.default_branch
@@ -36,10 +45,14 @@ jobs:
         && github.event.sender.type != 'Bot'
         && startsWith(github.event.comment.body, '<!-- peppy-merge-set -->'))
       || (github.event_name == 'workflow_run'
-        && github.event.workflow_run.event == 'pull_request')
+        && github.event.workflow_run.event == 'pull_request'
+        && (github.event.action != 'in_progress' || github.event.workflow_run.run_attempt > 1))
       || (github.event_name == 'delete' && github.event.ref_type == 'branch')
-    # The smallest runner: the job reads the event and makes one API call.
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a  # custom Peppy AMI
+    # A GitHub-hosted 1-vCPU runner, not a RunsOn one: it starts in a few
+    # seconds, where a RunsOn instance boots in about 40, and a user who
+    # ticks a box waits for this job to answer. The job reads the event and
+    # makes a few API calls.
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     environment:
       name: merge-set
@@ -67,8 +80,20 @@ jobs:
           repositories: peppy
           permission-actions: write
 
-      - name: Start the Merge set workflow of peppy
+      - name: Make the token that answers a ticked box
+        id: comment-token
+        if: github.event_name == 'issue_comment'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.MERGE_SET_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MERGE_SET_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+
+      - name: Start the Merge set workflow of peppy, and answer a ticked box
         env:
           MERGE_SET_TOKEN: ${{ steps.token.outputs.token }}
+          COMMENT_TOKEN: ${{ steps.comment-token.outputs.token }}
           PULL_REQUEST_READ_TOKEN: ${{ github.token }}
         run: python3 .github/merge-set/merge_set.py relay

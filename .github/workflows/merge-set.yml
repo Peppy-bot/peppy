@@ -15,8 +15,9 @@ run-name: Merge set ${{ inputs.branch }}
 #
 # The key of the merge-set App is a secret of the `merge-set` environment,
 # which only runs from `dev` reach, so a branch cannot run a changed copy of
-# this workflow with it. The App bypasses no ruleset: GitHub refuses its
-# merges on the same rules as anyone's.
+# this workflow with it. The App is a bypass actor, for pull requests, of the
+# rulesets that require an approval, and bypasses no other rule: the bot
+# enforces the approvals itself (see merge_set.py).
 on:
   workflow_dispatch:
     inputs:
@@ -45,8 +46,12 @@ concurrency:
 
 jobs:
   sync:
-    # On demand, never spot: a merge must not stop part way.
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
+    # A GitHub-hosted 1-vCPU runner, not a RunsOn one: it starts in a few
+    # seconds, where a RunsOn instance boots in about 40, so a merge or a
+    # re-run that a user asks for starts at once. It is never a spot instance,
+    # so a merge does not stop part way. Its jobs stop after 15 minutes, the
+    # timeout of this job.
+    runs-on: ubuntu-slim
     timeout-minutes: 15
     environment:
       name: merge-set

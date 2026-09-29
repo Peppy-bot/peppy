@@ -3002,6 +3002,7 @@ dependencies = [
  "peppy-mcp-catalog",
  "peppy-mcp-runtime",
  "peppylib-rs",
+ "reqwest",
  "schemars 1.2.2",
  "serde",
  "serde_json",

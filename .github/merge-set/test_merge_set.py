@@ -96,15 +96,23 @@ def tested_set(hubs=None, peppy=None):
     return TestedSet(hubs=hubs or {}, peppy=peppy)
 
 
+def run_url(repository, run_id):
+    return f"https://github.com/Peppy-bot/{repository.name}/actions/runs/{run_id}"
+
+
 def hub_run(repository, run_id=10, completed=True, records=()):
     return HubRun(
         repository=repository,
         id=run_id,
         name=f"Tests #{run_id}",
-        url=f"https://github.com/Peppy-bot/{repository.name}/actions/runs/{run_id}",
+        url=run_url(repository, run_id),
         completed=completed,
         records=tuple(records),
     )
+
+
+def ci_run_of(repository, state=CheckState.PASSED, run_id=10):
+    return merge_set.CiRun(run_url(repository, run_id), state)
 
 
 def report(pr, **changes):
@@ -113,12 +121,17 @@ def report(pr, **changes):
         mergeable=True,
         review=ReviewDecision.APPROVED,
         checks=((TEST_CHECK, CheckState.PASSED),),
+        ci=ci_run_of(pr.repository),
         behind=False,
         stale=(),
         unbypassed_approval_rulesets=(),
     )
     fields.update(changes)
     return merge_set.PullRequestReport(**fields)
+
+
+def reports_by_label(*reports):
+    return {report.pull_request.label: report for report in reports}
 
 
 def blocker_texts(state, reports):
@@ -294,7 +307,10 @@ class Relay(unittest.TestCase):
         with self.assertRaises(MergeSetError):
             merge_set.relay_subject("pull_request_target", {"pull_request": {}})
 
-    def test_the_relay_reads_the_branch_of_a_comment_and_starts_the_sync(self):
+    def relay(self, event_name, payload, **tokens):
+        """The API calls of the relay for an event of nodes-hub, each (token,
+        method, path, body), and what it prints. The relay gets the job token
+        and the tokens it is given by name."""
         calls = []
 
         def request(api, method, path, query=None, body=None):
@@ -307,42 +323,187 @@ class Relay(unittest.TestCase):
                         "repo": {"full_name": "Peppy-bot/nodes-hub"},
                     },
                 }
-            return None
+            if path.endswith("/dispatches"):
+                return {
+                    "workflow_run_id": 99,
+                    "run_url": "https://api.github.com/repos/Peppy-bot/peppy/actions/runs/99",
+                    "html_url": RELAY_RUN_URL,
+                }
+            return {"id": 1}
 
+        output = io.StringIO()
         with tempfile.TemporaryDirectory() as directory:
             event_path = Path(directory) / "event.json"
-            event_path.write_text(json.dumps({"issue": {"number": 7}}))
+            event_path.write_text(json.dumps(payload))
             environment = {
                 "GITHUB_REPOSITORY": "Peppy-bot/nodes-hub",
-                "GITHUB_EVENT_NAME": "issue_comment",
+                "GITHUB_EVENT_NAME": event_name,
                 "GITHUB_EVENT_PATH": str(event_path),
                 "PULL_REQUEST_READ_TOKEN": "job-token",
-                "MERGE_SET_TOKEN": "app-token",
+                **tokens,
             }
             with (
                 patch.object(merge_set.GitHubApi, "request", request),
-                patch("sys.stdout", io.StringIO()),
+                patch("sys.stdout", output),
             ):
                 merge_set.run_relay(environment)
+        return calls, output.getvalue()
+
+    def dispatch(self, token="app-token"):
+        return (
+            token,
+            "POST",
+            "/repos/Peppy-bot/peppy/actions/workflows/merge-set.yml/dispatches",
+            {
+                "ref": "dev",
+                "inputs": {
+                    "repository": "nodes-hub",
+                    "branch": SET_NAME,
+                    "head-repository": "Peppy-bot/nodes-hub",
+                    "pull-request": "7",
+                },
+                "return_run_details": True,
+            },
+        )
+
+    def test_the_relay_reads_the_branch_of_a_comment_and_starts_the_sync(self):
+        # An edit that ticks no box needs no token to answer with.
+        edit = comment_edit(before=dashboard_text(), after=dashboard_text() + "x")
+        calls, log = self.relay("issue_comment", edit, MERGE_SET_TOKEN="app-token")
         self.assertEqual(
             calls,
             [
                 ("job-token", "GET", "/repos/Peppy-bot/nodes-hub/pulls/7", None),
+                self.dispatch(),
+            ],
+        )
+        self.assertIn(RELAY_RUN_URL, log)
+
+    def test_a_ticked_box_is_answered_on_its_pull_request_with_the_run(self):
+        edit = comment_edit(
+            before=dashboard_text(), after=dashboard_text(Action.MERGE), login="bob"
+        )
+        calls, _ = self.relay(
+            "issue_comment",
+            edit,
+            MERGE_SET_TOKEN="app-token",
+            COMMENT_TOKEN="comment-token",
+        )
+        self.assertEqual(
+            calls[1:],
+            [
+                self.dispatch(),
                 (
-                    "app-token",
+                    "comment-token",
                     "POST",
-                    "/repos/Peppy-bot/peppy/actions/workflows/merge-set.yml/dispatches",
+                    "/repos/Peppy-bot/nodes-hub/issues/7/comments",
                     {
-                        "ref": "dev",
-                        "inputs": {
-                            "repository": "nodes-hub",
-                            "branch": SET_NAME,
-                            "head-repository": "Peppy-bot/nodes-hub",
-                            "pull-request": "7",
-                        },
+                        "body": f"@bob, the merge-set bot got your request to merge the "
+                        f"set `{SET_NAME}`. [This run]({RELAY_RUN_URL}) acts on it, and "
+                        "the bot reports the result here.\n"
                     },
                 ),
             ],
+        )
+
+    def test_the_relay_answers_no_other_event(self):
+        payload = {
+            "pull_request": {
+                "number": 7,
+                "head": {"ref": SET_NAME, "repo": {"full_name": "Peppy-bot/nodes-hub"}},
+            }
+        }
+        calls, _ = self.relay(
+            "pull_request_target", payload, MERGE_SET_TOKEN="app-token"
+        )
+        self.assertEqual(calls, [self.dispatch()])
+
+    def test_a_dispatch_that_names_no_run_is_refused(self):
+        self.assertEqual(
+            merge_set.dispatched_run_url({"html_url": RELAY_RUN_URL}), RELAY_RUN_URL
+        )
+        for response in (None, {}, {"html_url": None}):
+            with self.subTest(response=response):
+                with self.assertRaises(MergeSetError) as refused:
+                    merge_set.dispatched_run_url(response)
+                self.assertIn("merge-set.yml names no run", str(refused.exception))
+
+
+RELAY_RUN_URL = "https://github.com/Peppy-bot/peppy/actions/runs/99"
+
+
+def dashboard_text(*ticked):
+    """A merge-set comment whose boxes of `ticked` are ticked."""
+    boxes = [merge_set.box_line(action, action.value) for action in Action]
+    return (
+        f"{merge_set.DASHBOARD_MARKER}\n### Set `{SET_NAME}`\n\n"
+        + "\n".join(
+            box.replace("- [ ]", "- [x]") if action in ticked else box
+            for action, box in zip(Action, boxes)
+        )
+        + "\n"
+    )
+
+
+def comment_edit(before, after, login="alice"):
+    """The payload of an edit of the merge-set comment of pull request 7."""
+    return {
+        "issue": {"number": 7},
+        "comment": {"body": after},
+        "changes": {"body": {"from": before}},
+        "sender": {"login": login},
+    }
+
+
+class TickedBoxesOfAnEdit(unittest.TestCase):
+    def test_a_box_ticked_by_the_edit_is_a_request_of_its_editor(self):
+        edit = comment_edit(dashboard_text(), dashboard_text(Action.RERUN), "bob")
+        self.assertEqual(
+            merge_set.ticked_boxes_of_edit(edit),
+            merge_set.TickedBoxes("bob", (Action.RERUN,)),
+        )
+
+    def test_both_boxes_ticked_by_one_edit_are_both_requests(self):
+        edit = comment_edit(
+            dashboard_text(), dashboard_text(Action.MERGE, Action.RERUN)
+        )
+        self.assertEqual(
+            merge_set.ticked_boxes_of_edit(edit).actions, (Action.MERGE, Action.RERUN)
+        )
+
+    def test_an_edit_that_ticks_no_box_is_no_request(self):
+        for before, after in (
+            # A box ticked before the edit and still ticked.
+            (dashboard_text(Action.MERGE), dashboard_text(Action.MERGE) + "x"),
+            # A box unticked.
+            (dashboard_text(Action.MERGE), dashboard_text()),
+            # Other text changed.
+            (dashboard_text(), dashboard_text() + "x"),
+        ):
+            with self.subTest(before=before, after=after):
+                edit = comment_edit(before, after)
+                self.assertEqual(merge_set.ticked_boxes_of_edit(edit).actions, ())
+
+    def test_an_edit_without_the_text_from_before_changed_no_text(self):
+        edit = comment_edit(dashboard_text(), dashboard_text(Action.MERGE))
+        del edit["changes"]
+        self.assertEqual(merge_set.ticked_boxes_of_edit(edit).actions, ())
+
+    def test_an_edit_without_its_comment_or_editor_is_refused(self):
+        for missing in ("comment", "sender"):
+            edit = comment_edit(dashboard_text(), dashboard_text(Action.MERGE))
+            del edit[missing]
+            with self.subTest(missing=missing), self.assertRaises(MergeSetError):
+                merge_set.ticked_boxes_of_edit(edit)
+
+    def test_the_answer_names_each_request_and_the_run(self):
+        ticked = merge_set.TickedBoxes("bob", (Action.MERGE, Action.RERUN))
+        self.assertEqual(
+            merge_set.render_request_received(ticked, SET_NAME, RELAY_RUN_URL),
+            f"@bob, the merge-set bot got your request to merge the set `{SET_NAME}` "
+            f"and to re-run the out-of-date CI of the set `{SET_NAME}`. "
+            f"[This run]({RELAY_RUN_URL}) acts on it, and the bot reports the result "
+            "here.\n",
         )
 
 
@@ -639,6 +800,103 @@ class RequiredChecks(unittest.TestCase):
         )
         with self.assertRaises(MergeSetError):
             merge_set.parse_review_decision("MAYBE")
+
+
+# The id of the CI workflow in the cases, and of another workflow.
+CI_WORKFLOW_ID = 4
+OTHER_WORKFLOW_ID = 3
+
+
+def run_item(
+    run_id, status="completed", conclusion="success", workflow_id=CI_WORKFLOW_ID
+):
+    """A workflow run as the REST API lists it."""
+    return {
+        "id": run_id,
+        "workflow_id": workflow_id,
+        "html_url": f"u{run_id}",
+        "status": status,
+        "conclusion": conclusion,
+    }
+
+
+class CiRuns(unittest.TestCase):
+    def latest(self, *runs):
+        return merge_set.latest_ci_run(runs, frozenset({CI_WORKFLOW_ID}))
+
+    def test_the_newest_run_of_the_head_decides(self):
+        latest = self.latest(
+            run_item(7, status="in_progress", conclusion=None),
+            run_item(5, conclusion="failure"),
+        )
+        self.assertEqual(latest, merge_set.CiRun("u7", CheckState.RUNNING))
+
+    def test_the_runs_of_other_workflows_do_not_count(self):
+        latest = self.latest(
+            run_item(5, conclusion="failure"),
+            run_item(9, workflow_id=OTHER_WORKFLOW_ID),
+        )
+        self.assertEqual(latest, merge_set.CiRun("u5", CheckState.FAILED))
+
+    def test_a_head_the_ci_has_not_started_on_has_no_ci_run(self):
+        self.assertIsNone(self.latest())
+        self.assertIsNone(self.latest(run_item(9, workflow_id=OTHER_WORKFLOW_ID)))
+
+    def test_the_state_of_a_ci_run(self):
+        cases = [
+            *(
+                (status, None, CheckState.RUNNING)
+                for status in (
+                    "requested",
+                    "queued",
+                    "pending",
+                    "waiting",
+                    "in_progress",
+                )
+            ),
+            *(
+                ("completed", conclusion, CheckState.PASSED)
+                for conclusion in ("success", "neutral", "skipped")
+            ),
+            *(
+                ("completed", conclusion, CheckState.FAILED)
+                for conclusion in (
+                    "failure",
+                    "cancelled",
+                    "timed_out",
+                    "startup_failure",
+                    "action_required",
+                    "stale",
+                )
+            ),
+        ]
+        for status, conclusion, expected in cases:
+            with self.subTest(status=status, conclusion=conclusion):
+                run = run_item(1, status=status, conclusion=conclusion)
+                self.assertIs(self.latest(run).state, expected)
+
+    def test_the_ci_workflows_are_found_by_their_own_name(self):
+        # A branch can add a second workflow of the name, which the
+        # workflow_run trigger names too.
+        workflows = [
+            {"id": OTHER_WORKFLOW_ID, "name": "Merge set events"},
+            {"id": CI_WORKFLOW_ID, "name": merge_set.CI_WORKFLOW},
+            {"id": 5, "name": merge_set.CI_WORKFLOW},
+        ]
+        self.assertEqual(
+            merge_set.ci_workflow_ids(NODES_HUB, workflows),
+            frozenset({CI_WORKFLOW_ID, 5}),
+        )
+
+    def test_a_repository_without_a_ci_workflow_is_refused(self):
+        workflows = [{"id": OTHER_WORKFLOW_ID, "name": "Merge set events"}]
+        with self.assertRaises(MergeSetError) as refusal:
+            merge_set.ci_workflow_ids(NODES_HUB, workflows)
+        self.assertEqual(
+            str(refusal.exception),
+            "nodes-hub has no workflow named Tests: the merge-set bot reads the CI "
+            "of a pull request from it",
+        )
 
 
 class SetRecords(unittest.TestCase):
@@ -940,15 +1198,16 @@ class Blockers(unittest.TestCase):
 
 class Dashboards(unittest.TestCase):
     def test_a_ready_set_lists_every_member_and_offers_the_merge(self):
-        state = set_state(
-            member(PEPPY, pull_request(PEPPY, 512)),
-            member(NODES_HUB, pull_request(NODES_HUB, 88)),
+        peppy, nodes = pull_request(PEPPY, 512), pull_request(NODES_HUB, 88)
+        state = set_state(member(PEPPY, peppy), member(NODES_HUB, nodes))
+        body = merge_set.render_set_dashboard(
+            state, reports_by_label(report(peppy), report(nodes))
         )
-        body = merge_set.render_set_dashboard(state, [], 0)
         self.assertTrue(body.startswith(merge_set.DASHBOARD_MARKER))
+        self.assertIn("| Repository | Pull request | Head | CI | State |", body)
         self.assertIn(
             f"| peppy | [#512](https://github.com/Peppy-bot/peppy/pull/512) "
-            f"| `{commit(PEPPY)[:7]}` | ready |",
+            f"| `{commit(PEPPY)[:7]}` | [passed]({run_url(PEPPY, 10)}) | ready |",
             body,
         )
         self.assertIn("**Ready to merge.**", body)
@@ -959,57 +1218,100 @@ class Dashboards(unittest.TestCase):
         self.assertNotIn("merge-set:rerun", body)
         self.assertEqual(merge_set.ticked_actions(body), [])
 
-    def test_a_blocked_set_names_what_blocks_it_and_offers_the_re_run(self):
+    def test_each_member_shows_the_ci_of_its_head(self):
+        peppy, nodes, contracts = (
+            pull_request(PEPPY, 512),
+            pull_request(NODES_HUB, 88),
+            pull_request(CONTRACTS_HUB, 9),
+        )
         state = set_state(
-            member(PEPPY, pull_request(PEPPY)),
-            member(CONTRACTS_HUB),
-            left_behind=(NODES_HUB,),
+            member(PEPPY, peppy),
+            member(NODES_HUB, nodes),
+            member(CONTRACTS_HUB, contracts),
+            member(LAUNCHERS_HUB),
         )
-        blockers = [
-            merge_set.Blocker(CONTRACTS_HUB, "contracts-hub has no pull request.")
-        ]
-        body = merge_set.render_set_dashboard(state, blockers, 1)
-        self.assertIn("| contracts-hub | no open pull request |", body)
-        self.assertIn("| blocked |", body)
+        running = ci_run_of(NODES_HUB, CheckState.RUNNING, 11)
+        failed = ci_run_of(CONTRACTS_HUB, CheckState.FAILED, 12)
+        body = merge_set.render_set_dashboard(
+            state,
+            reports_by_label(
+                report(peppy, ci=None),
+                report(nodes, ci=running),
+                report(contracts, ci=failed),
+            ),
+        )
+        self.assertIn(f"| `{commit(PEPPY)[:7]}` | not started |", body)
+        self.assertIn(f"| `{commit(NODES_HUB)[:7]}` | [running]({running.url}) |", body)
         self.assertIn(
-            "**What blocks the merge**\n\n- contracts-hub has no pull request.", body
+            f"| `{commit(CONTRACTS_HUB)[:7]}` | [failed]({failed.url}) |", body
         )
-        self.assertIn("nodes-hub still has the branch", body)
+        # The Pull request cell of a member without one says why it has no CI.
+        self.assertIn(
+            f"| launchers-hub | no open pull request | `{commit(LAUNCHERS_HUB)[:7]}` "
+            "|  | blocked |",
+            body,
+        )
+
+    def test_a_blocked_set_names_what_blocks_it_and_offers_the_re_run(self):
+        peppy, nodes = pull_request(PEPPY), pull_request(NODES_HUB)
+        state = set_state(
+            member(PEPPY, peppy),
+            member(NODES_HUB, nodes),
+            member(CONTRACTS_HUB),
+            left_behind=(LAUNCHERS_HUB,),
+        )
+        stale = merge_set.StaleJob(
+            hub_run(NODES_HUB), "check-index", (), record_expired=True
+        )
+        body = merge_set.render_set_dashboard(
+            state, reports_by_label(report(peppy), report(nodes, stale=(stale,)))
+        )
+        self.assertIn(
+            f"| `{commit(NODES_HUB)[:7]}` | [passed]({run_url(NODES_HUB, 10)}) "
+            "| blocked |",
+            body,
+        )
+        self.assertIn("| contracts-hub | no open pull request |", body)
+        self.assertIn(
+            "**What blocks the merge**\n\n"
+            f"- {merge_set.stale_job_text(nodes.label, stale)}\n"
+            "- contracts-hub has a change on the branch",
+            body,
+        )
+        self.assertIn("launchers-hub still has the branch", body)
         self.assertIn(
             "<!-- merge-set:rerun --> Re-run the out-of-date CI of this set (1 run)",
             body,
         )
 
     def test_a_set_that_lacks_approvals_alone_is_ready_for_an_admin(self):
-        state = set_state(
-            member(PEPPY, pull_request(PEPPY, 512)),
-            member(NODES_HUB, pull_request(NODES_HUB, 88)),
+        peppy, nodes = pull_request(PEPPY, 512), pull_request(NODES_HUB, 88)
+        state = set_state(member(PEPPY, peppy), member(NODES_HUB, nodes))
+        body = merge_set.render_set_dashboard(
+            state,
+            reports_by_label(
+                report(peppy),
+                report(nodes, review=ReviewDecision.REVIEW_REQUIRED),
+            ),
         )
-        missing = merge_set.Blocker(
-            NODES_HUB, "nodes-hub#88 needs an approving review.", waived_for_admins=True
-        )
-        body = merge_set.render_set_dashboard(state, [missing], 0)
         self.assertIn("**Ready to merge for an admin.**", body)
         self.assertIn(merge_set.ADMIN_WAIVER, body)
         self.assertIn("- nodes-hub#88 needs an approving review.", body)
-        self.assertIn("| `" + commit(NODES_HUB)[:7] + "` | not approved |", body)
-        self.assertIn("| `" + commit(PEPPY)[:7] + "` | ready |", body)
+        self.assertIn(f"| [passed]({run_url(NODES_HUB, 10)}) | not approved |", body)
+        self.assertIn(f"| [passed]({run_url(PEPPY, 10)}) | ready |", body)
         self.assertNotIn("What blocks the merge", body)
 
     def test_a_blocked_set_names_its_missing_approvals_apart(self):
-        state = set_state(
-            member(PEPPY, pull_request(PEPPY, 512)),
-            member(NODES_HUB, pull_request(NODES_HUB, 88)),
-        )
-        blockers = [
-            merge_set.Blocker(PEPPY, "peppy#512 is a draft: mark it ready for review."),
-            merge_set.Blocker(
-                NODES_HUB,
-                "nodes-hub#88 needs an approving review.",
-                waived_for_admins=True,
+        peppy = pull_request(PEPPY, 512, draft=True)
+        nodes = pull_request(NODES_HUB, 88)
+        state = set_state(member(PEPPY, peppy), member(NODES_HUB, nodes))
+        body = merge_set.render_set_dashboard(
+            state,
+            reports_by_label(
+                report(peppy),
+                report(nodes, review=ReviewDecision.REVIEW_REQUIRED),
             ),
-        ]
-        body = merge_set.render_set_dashboard(state, blockers, 0)
+        )
         self.assertIn(
             "**What blocks the merge**\n\n- peppy#512 is a draft: mark it ready for review.\n\n"
             f"Approvals are missing too. {merge_set.ADMIN_WAIVER}\n\n"
@@ -1115,6 +1417,8 @@ class FakeGitHub:
         # The rulesets the App does not bypass, by repository name and id.
         self.unbypassed = set()
         self.check_runs_of = {}
+        # The CI run of each pull request, by label; None before it starts.
+        self.ci_runs = {}
         self.statuses_of = {}
         self.reviews = {}
         # The answers of merge_state for a pull request, in order; the last
@@ -1125,7 +1429,6 @@ class FakeGitHub:
         self.comments = []
         self.permissions = {}
         self.merge_refusals = {}
-        self.dev_build_ready = True
         # Edits made while the sync runs, by comment id: someone ticks a box
         # after the sync read the comment.
         self.edits_during_the_run = {}
@@ -1145,6 +1448,7 @@ class FakeGitHub:
         self.check_runs_of[(repository.name, pr.head_commit)] = [
             CheckRun(1, "test", 15368, True, "success")
         ]
+        self.ci_runs[pr.label] = ci_run_of(repository)
         return pr
 
     def dashboard_comment(self, pr, body):
@@ -1226,6 +1530,9 @@ class FakeGitHub:
     def statuses(self, repository, sha):
         return list(self.statuses_of.get((repository.name, sha), []))
 
+    def ci_run(self, pr):
+        return self.ci_runs.get(pr.label)
+
     def review_decision(self, pr):
         return self.reviews.get(pr.label, ReviewDecision.APPROVED)
 
@@ -1234,9 +1541,6 @@ class FakeGitHub:
 
     def hub_runs(self, pr):
         return self.runs.get(pr.label, [])
-
-    def peppy_dev_build_ready(self, sha):
-        return self.dev_build_ready
 
     def gate(self, pr):
         return merge_set.current_gate(self.statuses(pr.repository, pr.head_commit), BOT)
@@ -1419,6 +1723,36 @@ class SyncSet(unittest.TestCase):
         del self.github.reviews[self.nodes.label]
         sync(self.github)
         self.assertIn("**Ready to merge.**", self.github.dashboard_body(self.peppy))
+
+    def test_the_dashboard_follows_the_ci_of_each_pull_request(self):
+        self.github.ci_runs[self.peppy.label] = None
+        running = ci_run_of(NODES_HUB, CheckState.RUNNING)
+        self.github.ci_runs[self.nodes.label] = running
+        sync(self.github)
+        body = self.github.dashboard_body(self.nodes)
+        self.assertIn(f"| `{self.peppy.head_commit[:7]}` | not started |", body)
+        self.assertIn(
+            f"| `{self.nodes.head_commit[:7]}` | [running]({running.url}) |", body
+        )
+        # The start of the peppy run and the end of the nodes-hub run each
+        # start a sync, which writes every dashboard of the set again.
+        self.github.ci_runs[self.peppy.label] = ci_run_of(PEPPY, CheckState.RUNNING)
+        self.github.ci_runs[self.nodes.label] = replace(
+            running, state=CheckState.FAILED
+        )
+        sync(self.github, repository=PEPPY)
+        for pr in (self.peppy, self.nodes):
+            with self.subTest(pr=pr.label):
+                body = self.github.dashboard_body(pr)
+                self.assertIn(
+                    f"| `{self.peppy.head_commit[:7]}` "
+                    f"| [running]({run_url(PEPPY, 10)}) |",
+                    body,
+                )
+                self.assertIn(
+                    f"| `{self.nodes.head_commit[:7]}` | [failed]({running.url}) |",
+                    body,
+                )
 
     def test_a_pull_request_behind_its_base_blocks_only_where_the_ruleset_is_strict(
         self,
@@ -1736,14 +2070,6 @@ class SyncRerun(unittest.TestCase):
             f"- [Tests #11]({self.running_run.url}) of nodes-hub", report_text
         )
 
-    def test_the_re_run_waits_for_the_peppy_dev_build(self):
-        self.github.dev_build_ready = False
-        self.tick_rerun()
-        self.assertEqual(self.github.reruns, [])
-        (report_text,) = self.github.reports_on(self.peppy)
-        self.assertIn("the dev build of peppy", report_text)
-        self.assertIn("is not ready", report_text)
-
     def test_nothing_is_re_run_when_nothing_is_out_of_date(self):
         (comment,) = self.github.comments_on(self.peppy)
         self.github.tick(comment, Action.RERUN)
@@ -1906,6 +2232,40 @@ class Gateway(unittest.TestCase):
             api.calls[0][2], {"head_sha": pr.head_commit, "event": "pull_request"}
         )
 
+    def test_the_ci_of_a_pull_request_is_the_newest_run_of_the_ci_workflow(self):
+        workflows_path = "/repos/Peppy-bot/nodes-hub/actions/workflows"
+        runs_path = "/repos/Peppy-bot/nodes-hub/actions/runs"
+        api = FakeApi(
+            {
+                ("GET", workflows_path): {
+                    "workflows": [
+                        {"id": OTHER_WORKFLOW_ID, "name": "Merge set events"},
+                        {"id": CI_WORKFLOW_ID, "name": "Tests"},
+                    ]
+                },
+                ("GET", runs_path): {
+                    "workflow_runs": [
+                        run_item(5, conclusion="failure"),
+                        run_item(7, status="in_progress", conclusion=None),
+                        run_item(9, workflow_id=OTHER_WORKFLOW_ID),
+                    ]
+                },
+            }
+        )
+        gateway = merge_set.GitHubGateway(api, BOT)
+        pr = pull_request(NODES_HUB, 88)
+        self.assertEqual(gateway.ci_run(pr), merge_set.CiRun("u7", CheckState.RUNNING))
+        self.assertIn(
+            ("GET", runs_path, {"head_sha": pr.head_commit, "event": "pull_request"}),
+            [call[:3] for call in api.calls],
+        )
+        # The workflows of a repository are read once for the whole sync.
+        gateway.ci_run(pull_request(NODES_HUB, 89))
+        self.assertEqual(
+            sorted(call[1] for call in api.calls),
+            [runs_path, runs_path, workflows_path],
+        )
+
     def test_a_user_who_is_no_collaborator_has_no_permission(self):
         path = "/repos/Peppy-bot/nodes-hub/collaborators/mallory/permission"
         api = FakeApi({("GET", path): not_found(path)})
@@ -2060,11 +2420,44 @@ class RepositoryFacts(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", lines)
 
     def test_the_key_of_the_app_is_in_the_environment_of_each_job_that_reads_it(self):
-        for workflow in (merge_set.SYNC_WORKFLOW, "merge-set-relay.yml"):
+        # The relay makes two tokens: one that starts the sync, and one that
+        # answers a ticked box.
+        for workflow, tokens in (
+            (merge_set.SYNC_WORKFLOW, 1),
+            ("merge-set-relay.yml", 2),
+        ):
             with self.subTest(workflow=workflow):
                 text = (WORKFLOWS / workflow).read_text()
-                self.assertEqual(text.count("secrets.MERGE_SET_BOT_PRIVATE_KEY"), 1)
+                self.assertEqual(
+                    text.count("secrets.MERGE_SET_BOT_PRIVATE_KEY"), tokens
+                )
                 self.assertIn("    environment:\n      name: merge-set\n", text)
+
+    def test_the_jobs_of_the_bot_start_at_once_and_end_within_the_limit_of_their_runner(
+        self,
+    ):
+        # An ubuntu-slim job stops after 15 minutes.
+        for workflow in (merge_set.SYNC_WORKFLOW, "merge-set-relay.yml"):
+            with self.subTest(workflow=workflow):
+                lines = workflow_lines(workflow)
+                self.assertIn("runs-on: ubuntu-slim", lines)
+                (timeout,) = [
+                    line for line in lines if line.startswith("timeout-minutes:")
+                ]
+                self.assertLessEqual(int(timeout.split(":")[1]), 15)
+
+    def test_the_relay_answers_a_ticked_box_with_a_token_of_the_repository_of_the_event(
+        self,
+    ):
+        lines = workflow_lines("merge-set-relay.yml")
+        for line in (
+            "if: github.event_name == 'issue_comment'",
+            "repositories: ${{ github.event.repository.name }}",
+            "permission-pull-requests: write",
+            "COMMENT_TOKEN: ${{ steps.comment-token.outputs.token }}",
+        ):
+            with self.subTest(line=line):
+                self.assertIn(line, lines)
 
     def test_the_relay_starts_the_sync_from_the_branch_that_holds_the_key(self):
         lines = workflow_lines("merge-set-relay.yml")
@@ -2095,9 +2488,24 @@ class RepositoryFacts(unittest.TestCase):
         # A called workflow reads the secrets of the `merge-set` environment
         # only when its caller hands its secrets on.
         self.assertIn("secrets: inherit", lines)
-        # The workflow_run trigger names the CI workflow of each repository.
-        self.assertIn("workflows: [Tests]", lines)
-        self.assertIn("name: Tests", workflow_lines(resolve.PEPPY_CI_WORKFLOW))
+        # The workflow_run trigger names the CI workflow of each repository,
+        # and hands on the start of each run, of a re-run too, and its end.
+        trigger = lines.index(f"workflows: [{merge_set.CI_WORKFLOW}]")
+        self.assertEqual(
+            lines[trigger + 1], "types: [requested, in_progress, completed]"
+        )
+        self.assertIn(
+            f"name: {merge_set.CI_WORKFLOW}", workflow_lines(resolve.PEPPY_CI_WORKFLOW)
+        )
+
+    def test_the_relay_hands_on_the_in_progress_of_a_re_run_alone(self):
+        # GitHub sends no `requested` for a re-run.
+        text = (WORKFLOWS / "merge-set-relay.yml").read_text()
+        self.assertIn(
+            "&& (github.event.action != 'in_progress' "
+            "|| github.event.workflow_run.run_attempt > 1))",
+            text,
+        )
 
     def test_the_changes_job_runs_these_cases(self):
         text = (WORKFLOWS / "tests.yml").read_text()
