@@ -43,12 +43,13 @@ of the set and installs nothing. Ticking "Re-run" re-runs every finished hub
 run that is out of date, at once: a re-run whose peppy dev build is not
 uploaded yet waits for it in that first job.
 
-The workflow merge-set-events.yml of each repository of a set hands every
-event that can change the set to the relay (the `relay` subcommand, in the
-reusable workflow merge-set-relay.yml), which starts the Merge set workflow of
-peppy (merge-set.yml) for the branch of the event. The start and the end of
-each CI run, a re-run included, are such events, so the dashboard follows the
-state of the CI. When the event is a box that a user ticked, the relay also
+GitHub sends every event of each repository of a set to the webhook of the
+merge-set App (webhook.py, in AWS Lambda), which hands it to the relay
+(`relay`). For an event that can change the set, the relay starts the Merge
+set workflow of peppy (merge-set.yml) for the branch of the event. The start
+and the end of each CI run, a re-run included, are such events, so the
+dashboard follows the state of the CI, and so are the reviews, so it follows
+the approvals. When the event is a box that a user ticked, the relay also
 answers at once on that pull request, with a link to the run it started. The
 Merge set workflow runs `sync`, one run at a time for each set. `sync` holds
 no state of its own: it reads the whole set from GitHub on every run (the
@@ -59,7 +60,7 @@ the set finds the same ticked box.
 
 The decisions are pure functions of their inputs, tested in test_merge_set.py.
 The I/O around them is kept thin, in GitHubGateway. Standard library only: it
-runs on the runner's python3.
+runs on the runner's python3, and in the Python runtime of AWS Lambda.
 """
 
 from __future__ import annotations
@@ -75,7 +76,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -145,14 +146,12 @@ def repository_named(name: str) -> Repository:
     return repository
 
 
-def repository_of_full_name(full_name: str) -> Repository:
-    """The repository GITHUB_REPOSITORY names, `<organisation>/<name>`."""
+def repository_of_full_name(full_name: str) -> Repository | None:
+    """The repository that `<organisation>/<name>` names, if a set spans it."""
     organisation, _, name = full_name.partition("/")
     if organisation.casefold() != resolve.ORGANISATION.casefold():
-        raise MergeSetError(
-            f"`{full_name}` is not a repository of {resolve.ORGANISATION}"
-        )
-    return repository_named(name)
+        return None
+    return REPOSITORIES_BY_NAME.get(name)
 
 
 def repository_list() -> str:
@@ -268,38 +267,127 @@ class RelaySubject:
     head_repository: str | None
 
 
-def relay_subject(event_name: str, payload: Mapping) -> RelaySubject | None:
-    """The subject of an event the relay hands on; None for an event that
-    cannot change a set (the deletion of a tag)."""
+def relay_subject(
+    event_name: str, payload: Mapping, bot_login: str
+) -> RelaySubject | None:
+    """The subject of a webhook event that can change a set; None for every
+    other event. `bot_login` is the login of the merge-set App, which alone
+    writes the dashboards."""
     try:
         match event_name:
-            case "pull_request_target":
-                pull_request = payload["pull_request"]
-                head = pull_request["head"]
-                return RelaySubject(
-                    pull_request=pull_request["number"],
-                    branch=head["ref"],
-                    head_repository=(head.get("repo") or {}).get("full_name"),
-                )
+            case "pull_request":
+                return pull_request_subject(payload)
+            case "pull_request_review":
+                return review_subject(payload)
             case "issue_comment":
-                return RelaySubject(payload["issue"]["number"], None, None)
+                return dashboard_edit_subject(payload, bot_login)
             case "workflow_run":
-                run = payload["workflow_run"]
-                pull_requests = run.get("pull_requests") or []
-                return RelaySubject(
-                    pull_request=pull_requests[0]["number"] if pull_requests else None,
-                    branch=run["head_branch"],
-                    head_repository=(run.get("head_repository") or {}).get("full_name"),
-                )
+                return ci_run_subject(payload)
             case "delete":
-                if payload["ref_type"] != "branch":
-                    return None
-                return RelaySubject(
-                    None, payload["ref"], payload["repository"]["full_name"]
-                )
+                return deleted_branch_subject(payload)
+            case _:
+                return None
     except (KeyError, TypeError, IndexError) as error:
         raise MergeSetError(f"the `{event_name}` event lacks {error}") from error
-    raise MergeSetError(f"the relay hands on no `{event_name}` event")
+
+
+# The actions of a pull request that can change its set: it opens, gets a new
+# head, closes, reopens, becomes a draft or ready for review, or moves onto
+# another base branch (an edit whose `changes` name the base).
+PULL_REQUEST_ACTIONS = frozenset(
+    {
+        "opened",
+        "reopened",
+        "synchronize",
+        "closed",
+        "ready_for_review",
+        "converted_to_draft",
+        "edited",
+    }
+)
+
+# The actions of a review that change the approvals of its pull request.
+REVIEW_ACTIONS = frozenset({"submitted", "dismissed"})
+
+# GitHub sends `requested` when a CI run starts, and not when it is re-run: the
+# start of a re-run comes as `in_progress`, of a run attempt after the first.
+# The `in_progress` of a first attempt adds nothing to its `requested`, so the
+# relay drops it.
+CI_RUN_ACTIONS = frozenset({"requested", "in_progress", "completed"})
+
+
+def is_into_default_branch(payload: Mapping) -> bool:
+    """Whether the pull request of the event is into the default branch of its
+    repository: the one branch that the rulesets require the `merge-set` check
+    on."""
+    return (
+        payload["pull_request"]["base"]["ref"]
+        == payload["repository"]["default_branch"]
+    )
+
+
+def pull_request_subject(payload: Mapping) -> RelaySubject | None:
+    action = payload["action"]
+    if action not in PULL_REQUEST_ACTIONS or not is_into_default_branch(payload):
+        return None
+    if action == "edited" and (payload.get("changes") or {}).get("base") is None:
+        return None
+    return subject_of_pull_request(payload["pull_request"])
+
+
+def subject_of_pull_request(item: Mapping) -> RelaySubject:
+    head = item["head"]
+    return RelaySubject(
+        pull_request=item["number"],
+        branch=head["ref"],
+        head_repository=(head.get("repo") or {}).get("full_name"),
+    )
+
+
+def review_subject(payload: Mapping) -> RelaySubject | None:
+    if payload["action"] not in REVIEW_ACTIONS or not is_into_default_branch(payload):
+        return None
+    return subject_of_pull_request(payload["pull_request"])
+
+
+def dashboard_edit_subject(payload: Mapping, bot_login: str) -> RelaySubject | None:
+    """A user's edit of a dashboard, where the user ticks its boxes. The edits
+    of the bot itself start nothing."""
+    comment = payload["comment"]
+    if (
+        payload["action"] != "edited"
+        or payload["issue"].get("pull_request") is None
+        or comment["user"]["login"] != bot_login
+        or payload["sender"]["type"] == "Bot"
+        or not comment["body"].startswith(DASHBOARD_MARKER)
+    ):
+        return None
+    return RelaySubject(payload["issue"]["number"], None, None)
+
+
+def ci_run_subject(payload: Mapping) -> RelaySubject | None:
+    """The start or the end of a CI run of a pull request."""
+    action = payload["action"]
+    run = payload["workflow_run"]
+    if (
+        payload["workflow"]["name"] != CI_WORKFLOW
+        or run["event"] != "pull_request"
+        or action not in CI_RUN_ACTIONS
+        or (action == "in_progress" and run["run_attempt"] == 1)
+    ):
+        return None
+    pull_requests = run.get("pull_requests") or []
+    return RelaySubject(
+        pull_request=pull_requests[0]["number"] if pull_requests else None,
+        branch=run["head_branch"],
+        head_repository=(run.get("head_repository") or {}).get("full_name"),
+    )
+
+
+def deleted_branch_subject(payload: Mapping) -> RelaySubject | None:
+    if payload["ref_type"] != "branch":
+        return None
+    return RelaySubject(None, payload["ref"], payload["repository"]["full_name"])
 
 
 # The pull requests and the set ------------------------------------------------
@@ -631,8 +719,8 @@ def parse_review_decision(value: str | None) -> ReviewDecision:
 
 # The CI runs -----------------------------------------------------------------
 
-# The name of the one CI workflow of peppy and of each hub, which the
-# workflow_run trigger of merge-set-events.yml names too.
+# The name of the one CI workflow of peppy and of each hub, whose runs the
+# relay hands on.
 CI_WORKFLOW = "Tests"
 
 
@@ -2217,8 +2305,9 @@ def sync(gateway: GitHubGateway, event: Event, context: RunContext) -> None:
 
 # The relay -------------------------------------------------------------------
 
-# The workflow of peppy the relay starts, and the branch it runs from, whose
-# `merge-set` environment alone holds the key of the App.
+# The workflow of peppy that the relay starts, and the branch it runs from:
+# that branch alone reaches the `merge-set` environment, which holds the key of
+# the App for the sync.
 SYNC_WORKFLOW = "merge-set.yml"
 SYNC_WORKFLOW_REF = resolve.PEPPY_DEV_BRANCH
 
@@ -2237,15 +2326,6 @@ def dispatch_inputs(repository: Repository, subject: RelaySubject) -> dict[str, 
         if subject.pull_request is None
         else str(subject.pull_request),
     }
-
-
-def subject_of_pull_request(item: Mapping) -> RelaySubject:
-    head = item["head"]
-    return RelaySubject(
-        pull_request=item["number"],
-        branch=head["ref"],
-        head_repository=(head.get("repo") or {}).get("full_name"),
-    )
 
 
 @dataclass(frozen=True)
@@ -2315,35 +2395,67 @@ def start_sync(api: GitHubApi, inputs: Mapping[str, str]) -> str:
     return dispatched_run_url(response)
 
 
-def run_relay(environment: Mapping[str, str]) -> None:
-    repository = repository_of_full_name(required(environment, "GITHUB_REPOSITORY"))
-    event_name = required(environment, "GITHUB_EVENT_NAME")
-    payload = resolve.read_event_payload(required(environment, "GITHUB_EVENT_PATH"))
-    subject = relay_subject(event_name, payload)
+@dataclass(frozen=True)
+class TokenScope:
+    """The repositories and the permissions of an installation token of the
+    merge-set App."""
+
+    repositories: tuple[str, ...]
+    permissions: tuple[tuple[str, str], ...]
+
+
+# The token that starts the Merge set workflow: it can start the workflows of
+# peppy and do nothing else.
+SYNC_START_SCOPE = TokenScope((PEPPY.name,), (("actions", "write"),))
+
+
+def pull_request_scope(repository: Repository) -> TokenScope:
+    """The token that reads the pull request of a dashboard edit and answers
+    a ticked box on it: it can write the pull requests of the repository of
+    the event and do nothing else."""
+    return TokenScope((repository.name,), (("pull_requests", "write"),))
+
+
+def relay(
+    event_name: str,
+    payload: Mapping,
+    bot_login: str,
+    api_for: Callable[[TokenScope], GitHubApi],
+) -> str:
+    """Start the Merge set workflow of peppy for a webhook event that can
+    change a set, and answer the boxes that the event ticked. `api_for` gives
+    the API of a token of the scope it is given. Returns what the relay did,
+    for the log of the webhook."""
+    subject = relay_subject(event_name, payload, bot_login)
     if subject is None:
-        print(f"The `{event_name}` event cannot change a set.")
-        return
+        return f"The `{event_name}` event cannot change a set."
+    full_name = (payload.get("repository") or {}).get("full_name", "")
+    repository = repository_of_full_name(full_name)
+    if repository is None:
+        return f"No set spans the repository `{full_name}`."
     if subject.branch is None:
-        reader = GitHubApi(required(environment, "PULL_REQUEST_READ_TOKEN"))
         subject = subject_of_pull_request(
-            reader.request(
+            api_for(pull_request_scope(repository)).request(
                 "GET", f"/repos/{repository.full_name}/pulls/{subject.pull_request}"
             )
         )
     inputs = dispatch_inputs(repository, subject)
-    run_url = start_sync(GitHubApi(required(environment, "MERGE_SET_TOKEN")), inputs)
-    print(f"Started {SYNC_WORKFLOW} of peppy for {json.dumps(inputs)}: {run_url}")
+    run_url = start_sync(api_for(SYNC_START_SCOPE), inputs)
+    started = f"Started {SYNC_WORKFLOW} of peppy for {json.dumps(inputs)}: {run_url}"
     if event_name != "issue_comment":
-        return
+        return started
     ticked = ticked_boxes_of_edit(payload)
     if not ticked.actions:
-        return
-    GitHubApi(required(environment, "COMMENT_TOKEN")).request(
+        return started
+    api_for(pull_request_scope(repository)).request(
         "POST",
         f"/repos/{repository.full_name}/issues/{subject.pull_request}/comments",
         body={"body": render_request_received(ticked, subject.branch, run_url)},
     )
-    print(f"Answered the request of @{ticked.requester} on #{subject.pull_request}")
+    return (
+        f"{started}. Answered the request of @{ticked.requester} "
+        f"on #{subject.pull_request}."
+    )
 
 
 # The commands ----------------------------------------------------------------
@@ -2397,9 +2509,6 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
         help="Name every repository of a set in the step's `repositories` output.",
     )
     commands.add_parser(
-        "relay", help="Start the Merge set workflow of peppy for the event of this run."
-    )
-    commands.add_parser(
         "sync",
         help="Read the set of the event, act on its ticked boxes, and publish it.",
     )
@@ -2412,8 +2521,6 @@ def main(argv: Sequence[str]) -> int:
         match arguments.command:
             case "repositories":
                 run_repositories()
-            case "relay":
-                run_relay(os.environ)
             case "sync":
                 run_sync(os.environ)
     except (MergeSetError, resolve.ResolveError) as error:
