@@ -12,9 +12,11 @@ use secrecy::ExposeSecret;
 use serde_json::json;
 
 use auth::client::{self, PeerRemoval};
+use auth::enrollment::{self, EnrollmentBundle, IssuedMaterial, RouterEndpoint};
 use auth::storage::{self, Credentials, ProfileCreds};
 use auth::{AuthError, ProblemKind};
-use auth::{http::HttpClient, resolver};
+use auth::{http::HttpClient, renewal, resolver};
+use daemon_config::consts::PeppyDirs;
 
 const WORKSPACE: &str = "ws-1";
 const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -225,6 +227,7 @@ fn enrolling_a_peer_posts_the_csr_and_parses_the_material() {
             "trust_anchor": "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n",
             "zenoh_id": "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5",
             "namespace": PROJECT,
+            "address": { "host": "rtr-p.example", "port": 7447 },
             "zenoh_config": "{ connect: { endpoints: [\"tls/rtr-p.example:7447\"] } }",
         }));
     });
@@ -246,6 +249,7 @@ fn enrolling_a_peer_posts_the_csr_and_parses_the_material() {
         "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5"
     );
     assert_eq!(enrolled.namespace.as_str(), PROJECT);
+    assert_eq!(enrolled.address.locator(), "tls/rtr-p.example:7447");
     assert!(enrolled.certificate.contains("leaf"));
 }
 
@@ -498,4 +502,218 @@ fn removing_a_peer_is_staged_and_a_missing_peer_is_already_removed() {
         .expect("a 404 is a definite answer"),
         PeerRemoval::AlreadyRemoved
     ));
+}
+
+const RENEW_PATH: &str =
+    "/api/workspace/ws-1/projects/550e8400-e29b-41d4-a716-446655440000/router/peers/peer-1/renew";
+const ZENOH_ID: &str = "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5";
+const ENROLLED_AT: i64 = 1_700_000_000;
+
+/// The platform's answer to the enrollment and to the renewal of `peer-1`.
+fn peer_material(leaf: &str, expires_at: &str) -> serde_json::Value {
+    json!({
+        "peer": { "id": "peer-1", "name": "robot-7", "certificate_cn": "robot-7",
+                  "status": "connected", "certificate_expires_at": expires_at,
+                  "created_at": "2026-10-03T00:00:00Z" },
+        "address": { "host": "rtr-p.example", "port": 7447 },
+        "certificate": leaf,
+        "chain": "chain",
+        "trust_anchor": "ca",
+        "zenoh_id": ZENOH_ID,
+        "namespace": PROJECT,
+        "zenoh_config": "{}",
+    })
+}
+
+/// A machine enrolled at `api_url` as `peer-1`, with a session of
+/// `session_api_url` when one is given.
+fn enrolled_machine(
+    api_url: &str,
+    session: Option<ProfileCreds>,
+) -> (tempfile::TempDir, PeppyDirs) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let dirs = PeppyDirs::new(dir.path());
+    let answer = serde_json::from_value(peer_material("first leaf", "2027-01-01T00:00:00Z"))
+        .expect("the enrollment answer parses");
+    enrollment::save(
+        &dirs,
+        &EnrollmentBundle {
+            peer_key_pem: storage::secret("key".to_string()),
+            issued: IssuedMaterial::for_enrollment(
+                api_url,
+                WORKSPACE,
+                PROJECT,
+                answer,
+                ENROLLED_AT,
+            ),
+        },
+    )
+    .expect("write the enrollment");
+    if let Some(session) = session {
+        storage::save(
+            &storage::credentials_path(&dirs),
+            &Credentials {
+                session: Some(session),
+                ..Default::default()
+            },
+        )
+        .expect("seed the session");
+    }
+    (dir, dirs)
+}
+
+fn leaf_on_disk(dirs: &PeppyDirs) -> String {
+    std::fs::read_to_string(dirs.peer_dir().join(enrollment::PEER_CERTIFICATE_FILE))
+        .expect("the leaf is on disk")
+}
+
+#[test]
+fn a_renewal_posts_no_body_and_writes_the_new_leaf() {
+    let server = MockServer::start();
+    let renew = server.mock(|when, then| {
+        when.method(POST)
+            .path(RENEW_PATH)
+            .header("authorization", "Bearer seeded-access")
+            .body("");
+        then.status(200)
+            .json_body(peer_material("second leaf", "2027-04-01T00:00:00Z"));
+    });
+    let session = seeded_creds(&server, storage::now_unix() + 3600);
+    let (_dir, dirs) = enrolled_machine(&server.base_url(), Some(session));
+    let renewed_at = ENROLLED_AT + 60 * 24 * 60 * 60;
+
+    let document = renewal::renew(&dirs, &HttpClient::new(), renewed_at).expect("renewed");
+
+    assert_eq!(renew.calls(), 1);
+    assert_eq!(document.certificate_issued_at, renewed_at);
+    assert_eq!(document.certificate_expires_at, 1_806_537_600);
+    assert_eq!(document.enrolled_at, ENROLLED_AT);
+    assert_eq!(document.zenoh_id.as_str(), ZENOH_ID);
+    assert_eq!(
+        document.router,
+        RouterEndpoint::parse("rtr-p.example", 7447).unwrap()
+    );
+    assert_eq!(leaf_on_disk(&dirs), "second leaf");
+    let on_disk = enrollment::load(&dirs).unwrap().expect("enrolled");
+    assert_eq!(on_disk.document, document);
+    assert_eq!(std::fs::read_to_string(&on_disk.peer_key).unwrap(), "key");
+}
+
+#[test]
+fn a_renewal_with_an_expired_token_refreshes_the_session_first() {
+    let server = MockServer::start();
+    let token = mock_discovery_and_refresh(&server);
+    let renew = server.mock(|when, then| {
+        when.method(POST)
+            .path(RENEW_PATH)
+            .header("authorization", "Bearer refreshed-access");
+        then.status(200)
+            .json_body(peer_material("second leaf", "2027-04-01T00:00:00Z"));
+    });
+    let (_dir, dirs) = enrolled_machine(&server.base_url(), Some(seeded_creds(&server, 1)));
+
+    renewal::renew(&dirs, &HttpClient::new(), ENROLLED_AT + 100).expect("renewed");
+
+    assert_eq!(token.calls(), 1);
+    assert_eq!(renew.calls(), 1);
+    let session = storage::load(&storage::credentials_path(&dirs))
+        .unwrap()
+        .session
+        .expect("the session stays");
+    assert_eq!(session.refresh_token.expose_secret(), "rotated-refresh");
+}
+
+#[test]
+fn a_renewal_with_no_session_asks_nothing_and_writes_nothing() {
+    let server = MockServer::start();
+    let renew = server.mock(|when, then| {
+        when.method(POST).path(RENEW_PATH);
+        then.status(200)
+            .json_body(peer_material("second leaf", "2027-04-01T00:00:00Z"));
+    });
+    let (_dir, dirs) = enrolled_machine(&server.base_url(), None);
+
+    let err = renewal::renew(&dirs, &HttpClient::new(), ENROLLED_AT + 100).expect_err("no session");
+
+    assert!(matches!(err, AuthError::NotAuthenticated), "{err}");
+    assert_eq!(renew.calls(), 0);
+    assert_eq!(leaf_on_disk(&dirs), "first leaf");
+}
+
+/// A token of one platform is not sent to a different platform.
+#[test]
+fn a_session_of_a_different_platform_does_not_renew() {
+    let enrolled_at = MockServer::start();
+    let signed_in_at = MockServer::start();
+    let renew = enrolled_at.mock(|when, then| {
+        when.method(POST).path(RENEW_PATH);
+        then.status(200)
+            .json_body(peer_material("second leaf", "2027-04-01T00:00:00Z"));
+    });
+    let session = seeded_creds(&signed_in_at, storage::now_unix() + 3600);
+    let (_dir, dirs) = enrolled_machine(&enrolled_at.base_url(), Some(session));
+
+    let err = renewal::renew(&dirs, &HttpClient::new(), ENROLLED_AT + 100)
+        .expect_err("a different platform")
+        .to_string();
+
+    assert!(err.contains(&enrolled_at.base_url()), "{err}");
+    assert!(err.contains(&signed_in_at.base_url()), "{err}");
+    assert!(err.contains("peppy platform login --api-url"), "{err}");
+    assert_eq!(renew.calls(), 0);
+    assert_eq!(leaf_on_disk(&dirs), "first leaf");
+}
+
+#[test]
+fn a_peer_the_platform_cannot_renew_is_a_typed_refusal() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path(RENEW_PATH);
+        then.status(409)
+            .header("content-type", "application/problem+json")
+            .json_body(json!({
+                "type": "https://peppy.bot/problems/peer-not-renewable",
+                "title": "Peer not renewable",
+                "status": 409,
+                "detail": "the peer was removed and waits for a router restart",
+            }));
+    });
+    let session = seeded_creds(&server, storage::now_unix() + 3600);
+    let (_dir, dirs) = enrolled_machine(&server.base_url(), Some(session));
+
+    let err = renewal::renew(&dirs, &HttpClient::new(), ENROLLED_AT + 100).expect_err("refused");
+
+    let AuthError::Problem(problem) = err else {
+        panic!("expected a problem, got {err:?}");
+    };
+    assert_eq!(problem.kind, ProblemKind::PeerNotRenewable);
+    assert_eq!(problem.status, 409);
+    assert_eq!(leaf_on_disk(&dirs), "first leaf");
+}
+
+#[test]
+fn a_renewal_inside_the_minimum_interval_carries_the_delay() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path(RENEW_PATH);
+        then.status(429)
+            .header("content-type", "application/problem+json")
+            .header("retry-after", "1800")
+            .json_body(json!({
+                "type": "https://peppy.bot/problems/rate-limited",
+                "title": "Too many requests",
+                "status": 429,
+            }));
+    });
+    let session = seeded_creds(&server, storage::now_unix() + 3600);
+    let (_dir, dirs) = enrolled_machine(&server.base_url(), Some(session));
+
+    let err = renewal::renew(&dirs, &HttpClient::new(), ENROLLED_AT + 100).expect_err("refused");
+
+    let AuthError::Problem(problem) = err else {
+        panic!("expected a problem, got {err:?}");
+    };
+    assert_eq!(problem.kind, ProblemKind::RateLimited);
+    assert_eq!(problem.retry_after_secs, Some(1800));
+    assert_eq!(leaf_on_disk(&dirs), "first leaf");
 }

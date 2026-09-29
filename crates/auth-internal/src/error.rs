@@ -39,6 +39,12 @@ pub enum ProblemKind {
     RouterStopped,
     /// The certificate signing request is not one the router can use.
     MalformedCsr,
+    /// The platform cannot renew the certificate of this peer: the peer was
+    /// removed, or the request it enrolled with is not usable. The remedy is a
+    /// new enrollment.
+    PeerNotRenewable,
+    /// The platform refuses the request until the delay it names is over.
+    RateLimited,
     /// A type this CLI has no special handling for, as the platform sent it.
     Other(String),
 }
@@ -52,6 +58,8 @@ impl ProblemKind {
             "provisioner-unavailable" => Self::ProvisionerUnavailable,
             "router-stopped" => Self::RouterStopped,
             "malformed-csr" => Self::MalformedCsr,
+            "peer-not-renewable" => Self::PeerNotRenewable,
+            "rate-limited" => Self::RateLimited,
             _ => Self::Other(problem_type.to_string()),
         }
     }
@@ -104,6 +112,14 @@ mod tests {
             (
                 "https://peppy.bot/problems/malformed-csr",
                 ProblemKind::MalformedCsr,
+            ),
+            (
+                "https://peppy.bot/problems/peer-not-renewable",
+                ProblemKind::PeerNotRenewable,
+            ),
+            (
+                "https://peppy.bot/problems/rate-limited",
+                ProblemKind::RateLimited,
             ),
             (
                 "https://peppy.bot/problems/size-not-entitled",

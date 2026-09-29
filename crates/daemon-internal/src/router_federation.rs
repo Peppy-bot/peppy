@@ -16,9 +16,9 @@
 //! handshake to the cloud router, presenting the enrolled certificate
 //! ([`pmi::probe_tls_reachable`]), so an expired leaf, an unknown issuer or an
 //! unreachable router is reported as [`FederationOutcome::Unreachable`] rather
-//! than as a silent reconnect loop. There is no timer and no HTTP: the router
-//! holds its own link open (`reconnect: true`), and the daemon never holds a
-//! bearer token.
+//! than as a silent reconnect loop. There is no timer and no HTTP here: the
+//! router holds its own link open (`reconnect: true`), and the certificate is
+//! kept valid by [`super::certificate_renewal`].
 
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use auth::Enrollment;
@@ -43,7 +43,7 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Reads the enrollment on disk. A boxed closure so tests can inject a
 /// deterministic value in place of the real (file-backed) `enrollment::load`.
-type EnrollmentReader = Arc<dyn Fn() -> auth::Result<Option<Enrollment>> + Send + Sync>;
+pub(crate) type EnrollmentReader = Arc<dyn Fn() -> auth::Result<Option<Enrollment>> + Send + Sync>;
 
 /// The future a [`Prober`] returns: `Ok(())` if the upstream's TLS link
 /// validates, `Err(reason)` (human-readable) otherwise.
@@ -57,7 +57,7 @@ type Prober = Arc<dyn Fn(String, u16, pmi::TlsConfig, Duration) -> ProbeFuture +
 
 /// The current unix time. Injected so the expiry check is testable without
 /// depending on the host clock.
-type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+pub(crate) type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 /// The real prober: a raw TLS handshake against the cloud router (see
 /// [`pmi::probe_tls_reachable`]).
@@ -273,7 +273,9 @@ async fn reconcile(
             "router federation: the peer certificate has expired; the cloud router refuses the link"
         );
         return FederationOutcome::Unreachable(format!(
-            "the peer certificate expired at {expired_at}; run `peppy platform enroll --replace`"
+            "the peer certificate expired at {expired_at} and the daemon did not renew it; \
+             sign in with `peppy platform login` so that the daemon can renew it, or run \
+             `peppy platform enroll --replace`"
         ));
     }
 
@@ -320,6 +322,7 @@ mod tests {
                 zenoh_id: RouterId::parse(zid).unwrap(),
                 namespace: Namespace::parse(PROJECT).unwrap(),
                 router: RouterEndpoint::parse("rtr-p.example", 7447).unwrap(),
+                certificate_issued_at: 1_700_000_000,
                 certificate_expires_at: EXPIRES_AT,
                 enrolled_at: 1_700_000_000,
             },
@@ -534,7 +537,9 @@ mod tests {
         match outcome {
             FederationOutcome::Unreachable(reason) => {
                 assert!(
-                    reason.contains("expired") && reason.contains("peppy platform enroll"),
+                    reason.contains("expired")
+                        && reason.contains("peppy platform login")
+                        && reason.contains("peppy platform enroll --replace"),
                     "{reason}"
                 )
             }

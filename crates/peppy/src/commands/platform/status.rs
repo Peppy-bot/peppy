@@ -1,7 +1,7 @@
-//! `peppy platform status`: this machine's enrollment, whether the daemon
-//! runs under it with a verified link to the cloud router, the context the
-//! commands use, and (when signed in) what the platform reports about the
-//! router and this peer.
+//! `peppy platform status`: this machine's enrollment and the renewal of its
+//! certificate, whether the daemon runs under it with a verified link to the
+//! cloud router, the context the commands use, and (when signed in) what the
+//! platform reports about the router and this peer.
 
 use std::sync::Arc;
 
@@ -16,11 +16,9 @@ use crate::commands::platform::{PlatformSession, date_of, federation_is_managed}
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use auth::client::{self, RouterStatus};
-use auth::enrollment::{self, Enrollment};
+use auth::enrollment::{self, Enrollment, EnrollmentDocument};
 use auth::storage;
 
-/// Certificates expiring within this many days are called out.
-const EXPIRY_WARNING_DAYS: i64 = 14;
 const DAY_SECS: i64 = 24 * 60 * 60;
 
 pub struct StatusCommand {
@@ -43,6 +41,51 @@ enum DaemonReport {
         identity_matches: bool,
         link: PokeOutcome,
     },
+}
+
+/// What the daemon needs to renew the certificate, and does not have. The
+/// daemon renews with the session of this machine, so it needs the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RenewalMeans {
+    session: bool,
+    daemon_running: bool,
+}
+
+impl RenewalMeans {
+    fn of(daemon: &DaemonReport, platform: &Result<Option<PlatformReport>>) -> Self {
+        Self {
+            // The platform view is `Ok(None)` exactly when there is no session
+            // to ask with.
+            session: !matches!(platform, Ok(None)),
+            daemon_running: !matches!(daemon, DaemonReport::NotRunning),
+        }
+    }
+
+    /// One line for each thing that is absent, with the command that adds it.
+    fn absent(self) -> Vec<&'static str> {
+        [
+            (self.session, "needs a session: run `peppy platform login`"),
+            (
+                self.daemon_running,
+                "needs the daemon: start it with `peppy service serve`",
+            ),
+        ]
+        .into_iter()
+        .filter(|(present, _)| !present)
+        .map(|(_, remedy)| remedy)
+        .collect()
+    }
+
+    fn absent_json(self) -> Vec<&'static str> {
+        [
+            (self.session, "no_session"),
+            (self.daemon_running, "daemon_not_running"),
+        ]
+        .into_iter()
+        .filter(|(present, _)| !present)
+        .map(|(_, name)| name)
+        .collect()
+    }
 }
 
 /// The platform's view, when a session allowed asking for it.
@@ -135,23 +178,33 @@ fn platform_report(
     }))
 }
 
-/// The certificate line: when it expires, and a warning when that is near or
-/// past.
-fn certificate_line(expires_at: i64, now: i64) -> String {
+/// The certificate line: when it expires, or that it did.
+fn certificate_line(document: &EnrollmentDocument, now: i64) -> String {
+    let expires_at = document.certificate_expires_at;
+    if document.is_expired(now) {
+        return format!(
+            "EXPIRED on {}; if the renewal does not succeed, run `peppy platform enroll \
+             --replace`",
+            date_of(expires_at)
+        );
+    }
     let days_left = (expires_at - now).div_euclid(DAY_SECS);
-    if now >= expires_at {
-        return format!(
-            "EXPIRED on {}; run `peppy platform enroll --replace`",
-            date_of(expires_at)
-        );
-    }
-    if days_left < EXPIRY_WARNING_DAYS {
-        return format!(
-            "expires on {} (in {days_left} days); run `peppy platform enroll --replace` soon",
-            date_of(expires_at)
-        );
-    }
     format!("expires on {} (in {days_left} days)", date_of(expires_at))
+}
+
+/// The renewal lines: when the daemon renews the certificate, and what it
+/// needs to do so and does not have.
+fn renewal_lines(document: &EnrollmentDocument, now: i64, means: RenewalMeans) -> Vec<String> {
+    let due_on = date_of(document.renewal_due_at());
+    let absent = means.absent();
+    let schedule = match (document.is_renewal_due(now), absent.is_empty()) {
+        (false, _) => format!("automatic, from {due_on}"),
+        (true, true) => format!("due since {due_on}; the daemon tries again each hour"),
+        (true, false) => format!("due since {due_on}"),
+    };
+    std::iter::once(schedule)
+        .chain(absent.into_iter().map(str::to_string))
+        .collect()
 }
 
 fn link_line(link: &PokeOutcome) -> String {
@@ -189,10 +242,16 @@ fn human_document(
             out.push_str(&format!("  peer      : {} ({})\n", d.peer_name, d.peer_id));
             out.push_str(&format!("  router    : {}\n", d.router.locator()));
             out.push_str(&format!("  zenoh id  : {}\n", d.zenoh_id));
-            out.push_str(&format!(
-                "  cert      : {}\n",
-                certificate_line(d.certificate_expires_at, now)
-            ));
+            out.push_str(&format!("  cert      : {}\n", certificate_line(d, now)));
+            let means = RenewalMeans::of(daemon, platform);
+            for (index, line) in renewal_lines(d, now, means).iter().enumerate() {
+                let label = if index == 0 {
+                    "renewal   :"
+                } else {
+                    "           "
+                };
+                out.push_str(&format!("  {label} {line}\n"));
+            }
             out.push_str(&format!("  backend   : {}\n", d.api_url));
             out.push_str(&format!(
                 "  files     : {}\n",
@@ -294,8 +353,12 @@ fn json_document(
             "zenoh_id": d.zenoh_id.as_str(),
             "namespace": d.namespace.as_str(),
             "router": d.router.locator(),
+            "certificate_issued_at": d.certificate_issued_at,
             "certificate_expires_at": d.certificate_expires_at,
             "certificate_expired": d.is_expired(now),
+            "certificate_renewal_due_at": d.renewal_due_at(),
+            "certificate_renewal_due": d.is_renewal_due(now),
+            "certificate_renewal_needs": RenewalMeans::of(daemon, platform).absent_json(),
             "enrolled_at": d.enrolled_at,
             "peer_dir": session.dirs.peer_dir(),
         })
@@ -357,15 +420,87 @@ fn link_json(link: &PokeOutcome) -> serde_json::Value {
 mod tests {
     use super::*;
 
+    const ISSUED_AT: i64 = 1_700_000_000;
+    const EXPIRES_AT: i64 = ISSUED_AT + 90 * DAY_SECS;
+    const DUE_AT: i64 = ISSUED_AT + 60 * DAY_SECS;
+    const ALL_MEANS: RenewalMeans = RenewalMeans {
+        session: true,
+        daemon_running: true,
+    };
+
+    fn document() -> EnrollmentDocument {
+        EnrollmentDocument {
+            version: enrollment::ENROLLMENT_VERSION,
+            api_url: "https://api.example.test".into(),
+            workspace_id: "ws-1".into(),
+            project_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            peer_id: "peer-1".into(),
+            peer_name: "robot-7".into(),
+            zenoh_id: pmi::RouterId::parse("abc123").unwrap(),
+            namespace: config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000")
+                .unwrap(),
+            router: auth::RouterEndpoint::parse("rtr.example", 7447).unwrap(),
+            certificate_issued_at: ISSUED_AT,
+            certificate_expires_at: EXPIRES_AT,
+            enrolled_at: ISSUED_AT,
+        }
+    }
+
     #[test]
-    fn the_certificate_line_warns_near_and_past_expiry() {
-        let expires = 1_800_000_000;
+    fn the_certificate_line_gives_the_expiry_and_says_when_it_is_past() {
+        let document = document();
         assert_eq!(
-            certificate_line(expires, expires - 30 * DAY_SECS),
-            format!("expires on {} (in 30 days)", date_of(expires))
+            certificate_line(&document, EXPIRES_AT - 30 * DAY_SECS),
+            format!("expires on {} (in 30 days)", date_of(EXPIRES_AT))
         );
-        assert!(certificate_line(expires, expires - 3 * DAY_SECS).contains("in 3 days"));
-        assert!(certificate_line(expires, expires - 3 * DAY_SECS).contains("--replace"));
-        assert!(certificate_line(expires, expires).starts_with("EXPIRED"));
+        let expired = certificate_line(&document, EXPIRES_AT);
+        assert!(expired.starts_with("EXPIRED"), "{expired}");
+        assert!(
+            expired.contains("peppy platform enroll --replace"),
+            "{expired}"
+        );
+    }
+
+    #[test]
+    fn the_renewal_lines_give_the_schedule() {
+        let document = document();
+        assert_eq!(
+            renewal_lines(&document, DUE_AT - 1, ALL_MEANS),
+            [format!("automatic, from {}", date_of(DUE_AT))]
+        );
+        assert_eq!(
+            renewal_lines(&document, DUE_AT, ALL_MEANS),
+            [format!(
+                "due since {}; the daemon tries again each hour",
+                date_of(DUE_AT)
+            )]
+        );
+    }
+
+    /// Each thing the daemon needs and does not have is one line with its
+    /// command, before the renewal is due and after.
+    #[test]
+    fn the_renewal_lines_name_what_the_daemon_needs() {
+        let document = document();
+        let no_session = RenewalMeans {
+            session: false,
+            daemon_running: true,
+        };
+        let nothing = RenewalMeans {
+            session: false,
+            daemon_running: false,
+        };
+
+        let lines = renewal_lines(&document, ISSUED_AT, no_session);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].contains("peppy platform login"), "{lines:?}");
+
+        let lines = renewal_lines(&document, DUE_AT, nothing);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines[0], format!("due since {}", date_of(DUE_AT)));
+        assert!(lines[1].contains("peppy platform login"), "{lines:?}");
+        assert!(lines[2].contains("peppy service serve"), "{lines:?}");
+        assert_eq!(nothing.absent_json(), ["no_session", "daemon_not_running"]);
+        assert!(ALL_MEANS.absent_json().is_empty());
     }
 }

@@ -19,7 +19,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use auth::client::RouterPeer;
 use auth::csr::{self, PeerName};
-use auth::enrollment::{self, EnrollmentBundle};
+use auth::enrollment::{self, EnrollmentBundle, IssuedMaterial};
 use auth::{AuthError, Problem, ProblemKind, client, storage};
 
 pub struct EnrollCommand {
@@ -102,25 +102,30 @@ impl Command for EnrollCommand {
                 return Err(explain_refusal(&session, &mut cred, &selection, error));
             }
         };
-        let bundle = EnrollmentBundle::from_platform(
-            &session.api_url,
-            &selection.workspace.id,
-            &selection.project.id,
-            enrolled,
-            identity.private_key_pem,
-            storage::now_unix(),
-        )?;
+        let bundle = EnrollmentBundle {
+            peer_key_pem: identity.private_key_pem,
+            issued: IssuedMaterial::for_enrollment(
+                &session.api_url,
+                &selection.workspace.id,
+                &selection.project.id,
+                enrolled,
+                storage::now_unix(),
+            ),
+        };
         enrollment::save(&session.dirs, &bundle)?;
+        let document = &bundle.issued.document;
         println!(
             "Enrolled {} in project {} ({}) of workspace {}.",
-            bundle.document.peer_name,
+            document.peer_name,
             selection.project.name,
             selection.project.id,
             selection.workspace.name
         );
         println!(
-            "The peer certificate expires on {}; re-run `peppy platform enroll --replace` before then.",
-            date_of(bundle.document.certificate_expires_at)
+            "The peer certificate expires on {}. The daemon renews it from {}, while this \
+             machine has a session.",
+            date_of(document.certificate_expires_at),
+            date_of(document.renewal_due_at())
         );
 
         // The new enrollment is on disk, so the old peer is now surplus on the

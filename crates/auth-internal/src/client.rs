@@ -23,6 +23,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use super::http::{HttpClient, HttpResponse};
 use super::resolver::{Credential, SessionContext, refresh_and_persist};
 use super::storage::{self, ProfileCreds};
+use crate::enrollment::RouterEndpoint;
 use crate::error::{Error, Problem, ProblemKind, Result};
 
 /// The identity the backend reports for the current token (`GET /me`).
@@ -89,13 +90,15 @@ pub struct RouterPeer {
     pub created_at: DateTime<Utc>,
 }
 
-/// The one-time answer to an enrollment: the signed material and the identity
-/// the daemon's router must run under. `zenoh_id` and `namespace` are parsed
-/// here, at the boundary, so a value zenoh would refuse fails the enrollment
-/// before anything is written.
+/// The answer to an enrollment and to each renewal: the signed material and
+/// the identity the daemon's router must run under. `zenoh_id`, `namespace`
+/// and `address` are parsed here, at the boundary, so a value zenoh would
+/// refuse fails the call before anything is written.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouterPeerEnrolled {
     pub peer: RouterPeer,
+    /// Where the project's cloud router answers when it runs.
+    pub address: RouterEndpoint,
     /// The leaf certificate, PEM.
     pub certificate: String,
     /// The issuing chain (peer issuer, then project CA), PEM.
@@ -108,7 +111,7 @@ pub struct RouterPeerEnrolled {
     pub zenoh_config: String,
 }
 
-/// Where a project's cloud router listens.
+/// Where a project's cloud router listens, as the router read shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RouterAddress {
     pub host: String,
@@ -215,6 +218,33 @@ pub fn enroll_peer(
     })?;
     match resp.status {
         201 => resp.json("router peer enrollment"),
+        _ => Err(interpret_refusal(&resp, "POST", &url)),
+    }
+}
+
+/// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/peers/{peer_id}/renew`
+/// with no body. The platform signs again the request the peer enrolled with,
+/// so the answer carries a new leaf for the enrolled key, and the identity of
+/// the peer stays as it is.
+pub fn renew_peer(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut Credential,
+    workspace_id: &str,
+    project_id: &str,
+    peer_id: &str,
+) -> Result<RouterPeerEnrolled> {
+    let url = router_path(
+        api_url,
+        workspace_id,
+        project_id,
+        &["peers", peer_id, "renew"],
+    )?;
+    let resp = authed(http, cred, |http, bearer| {
+        http.post_empty(&url, Some(bearer))
+    })?;
+    match resp.status {
+        200 => resp.json("router peer renewal"),
         _ => Err(interpret_refusal(&resp, "POST", &url)),
     }
 }
@@ -583,7 +613,8 @@ mod tests {
         serde_json::from_str::<RouterPeer>(&peer).expect("RouterPeer");
         serde_json::from_str::<RouterStatus>(&router).expect("RouterStatus");
         serde_json::from_str::<RouterPeerEnrolled>(&format!(
-            r#"{{"peer":{peer},"certificate":"c","chain":"","trust_anchor":"t",
+            r#"{{"peer":{peer},"address":{{"host":"h","port":7447,{NEW}}},
+                "certificate":"c","chain":"","trust_anchor":"t",
                 "zenoh_id":"7f3a9c1e","namespace":"550e8400-e29b-41d4-a716-446655440000",
                 "zenoh_config":"{{}}",{NEW}}}"#
         ))
@@ -604,22 +635,49 @@ mod tests {
             router_path("https://api.example.test", "ws", "p", &["peers", "a/b"]).unwrap(),
             "https://api.example.test/api/workspace/ws/projects/p/router/peers/a%2Fb"
         );
+        assert_eq!(
+            router_path(
+                "https://api.example.test",
+                "ws",
+                "p",
+                &["peers", "peer-1", "renew"]
+            )
+            .unwrap(),
+            "https://api.example.test/api/workspace/ws/projects/p/router/peers/peer-1/renew"
+        );
+    }
+
+    fn enrolled_json(zid: &str, host: &str) -> String {
+        format!(
+            r#"{{"peer":{{"id":"p","name":"n","certificate_cn":"n","status":"unknown",
+                "certificate_expires_at":"2027-01-01T00:00:00Z",
+                "created_at":"2026-10-03T00:00:00Z"}},
+                "address":{{"host":"{host}","port":7447}},
+                "certificate":"c","chain":"","trust_anchor":"t","zenoh_id":"{zid}",
+                "namespace":"550e8400-e29b-41d4-a716-446655440000","zenoh_config":"{{}}",
+                "some_future_field":1}}"#
+        )
     }
 
     #[test]
     fn an_enrollment_response_rejects_an_id_zenoh_would_refuse() {
-        let json = |zid: &str| {
-            format!(
-                r#"{{"peer":{{"id":"p","name":"n","certificate_cn":"n","status":"unknown",
-                    "certificate_expires_at":"2027-01-01T00:00:00Z",
-                    "created_at":"2026-10-03T00:00:00Z"}},
-                    "certificate":"c","chain":"","trust_anchor":"t","zenoh_id":"{zid}",
-                    "namespace":"550e8400-e29b-41d4-a716-446655440000","zenoh_config":"{{}}",
-                    "some_future_field":1}}"#
-            )
-        };
-        let ok: RouterPeerEnrolled = serde_json::from_str(&json("7f3a9c1e")).expect("parses");
+        let ok: RouterPeerEnrolled =
+            serde_json::from_str(&enrolled_json("7f3a9c1e", "rtr.example")).expect("parses");
         assert_eq!(ok.zenoh_id.as_str(), "7f3a9c1e");
-        assert!(serde_json::from_str::<RouterPeerEnrolled>(&json("0abc")).is_err());
+        assert!(
+            serde_json::from_str::<RouterPeerEnrolled>(&enrolled_json("0abc", "rtr.example"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn an_enrollment_response_carries_the_router_address_as_an_endpoint() {
+        let ok: RouterPeerEnrolled =
+            serde_json::from_str(&enrolled_json("7f3a9c1e", "rtr.example")).expect("parses");
+        assert_eq!(ok.address.locator(), "tls/rtr.example:7447");
+        assert!(
+            serde_json::from_str::<RouterPeerEnrolled>(&enrolled_json("7f3a9c1e", "")).is_err(),
+            "an address with no host is refused"
+        );
     }
 }

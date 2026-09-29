@@ -277,6 +277,7 @@ mod tests {
             zenoh_id: pmi::RouterId::parse("7f3a9c1e").unwrap(),
             namespace: config::namespace::Namespace::parse(project_id).unwrap(),
             router: auth::RouterEndpoint::parse("rtr.example", 7447).unwrap(),
+            certificate_issued_at: 1_700_000_000,
             certificate_expires_at: 2_000_000_000,
             enrolled_at: 1_700_000_000,
         }

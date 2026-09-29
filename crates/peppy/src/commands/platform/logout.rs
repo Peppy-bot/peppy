@@ -2,7 +2,8 @@
 //! the issuer and delete the local session and the context. An issuer that is unreachable or
 //! refuses the revocation still results in the local session being cleared.
 //! The machine's enrollment is untouched: the daemon keeps federating with its
-//! certificate, and only API calls need a new sign-in.
+//! certificate. API calls need a new sign-in, and so does the renewal of that
+//! certificate.
 
 use std::sync::Arc;
 
@@ -65,6 +66,11 @@ impl Command for LogoutCommand {
                 "This machine stays enrolled in project {} as {}; run `peppy platform unenroll` \
                  to leave it.",
                 enrollment.document.project_id, enrollment.document.peer_name
+            );
+            println!(
+                "The daemon cannot renew the peer certificate with no session. The certificate \
+                 expires on {}; run `peppy platform login` before then.",
+                super::date_of(enrollment.document.certificate_expires_at)
             );
         }
         Ok(())

@@ -12,8 +12,9 @@ and selects the workspace and the project the commands act on.
 router: the CLI mints a private key and a certificate signing request, the
 platform signs it, and the daemon dials the project's router with that
 certificate from then on. The session is yours; the enrollment is the
-machine's. Logging out does not unenroll, and the daemon never needs a session
-to stay connected.
+machine's. Logging out does not unenroll, and the daemon stays connected with
+no session for as long as its certificate is valid. The daemon needs the
+session for one thing: to renew that certificate.
 
 Peppy is a public OAuth client of the platform's identity provider (Zitadel):
 the CLI obtains a bearer token through the browser and sends it to the backend,
@@ -178,9 +179,9 @@ What happens:
 2. It mints a P-256 key pair and a certificate signing request whose only
    subject is the peer name. The private key never leaves the machine.
 3. It posts the request to the project's `router/peers` endpoint. The platform
-   signs it and answers with the certificate, the project CA, the routing
-   namespace (the project id), and the zenoh identity the daemon's router must
-   run under.
+   signs it and answers with the certificate, the project CA, the address of
+   the project router, the routing namespace (the project id), and the zenoh
+   identity the daemon's router must run under.
 4. It writes the enrollment bundle under `~/.peppy/conf/peer/`:
    `enrollment.json5` (the record), `peer.key` (the private key, owner-only),
    `peer.crt` (the signed certificate alone), `ca.crt` (the project CA),
@@ -226,16 +227,48 @@ machines with the firewall of the host.
 
 ### The certificate
 
-The peer certificate is valid for 90 days. `peppy platform status` shows its
-expiry and warns from 14 days out. To mint a new one, run:
+The peer certificate is valid for 90 days, and the daemon renews it. The
+renewal becomes due after two thirds of the lifetime of the certificate, which
+is day 60 of 90. The daemon then asks the platform for a new certificate for
+the same key and writes it over `peer.crt`. The peer keeps its id, its zenoh
+identity and its slot on the router. The daemon does not restart, and the
+router does not restart.
+
+The running link keeps the certificate it opened with. The cloud router closes
+that link when that certificate expires, and the daemon's router opens it again
+at once with the renewed certificate.
+
+The platform accepts a renewal from a signed-in person only, so the daemon
+uses the session of this machine:
+
+| Condition | Result |
+|-----------|--------|
+| A session is on the machine and the daemon runs | The daemon renews the certificate when the renewal is due. |
+| No session (you ran `logout`, or the refresh token expired) | The renewal fails. The daemon tries again each hour. Run `peppy platform login`. |
+| The session is one of a different backend than the enrollment | The renewal fails, and the daemon log names the backend to sign in to. |
+| The daemon does not run | No renewal. The daemon renews when it starts, also when the certificate expired. |
+| The platform asks for a delay | The daemon tries again after that delay. |
+| The platform cannot renew the peer (the peer was removed) | The daemon stops the renewal and the log names the remedy: `peppy platform enroll --replace`. |
+
+`peppy platform status` shows the expiry of the certificate, the date from
+which the daemon renews it, and what the daemon needs for the renewal and does
+not have:
+
+```
+  cert      : expires on 2027-01-01 (in 80 days)
+  renewal   : automatic, from 2026-12-02
+              needs a session: run `peppy platform login`
+```
+
+To mint a new certificate by hand, run:
 
 ```sh
 peppy platform enroll --replace
 ```
 
-This enrolls anew (a new peer and a new zenoh identity), restarts the daemon
-under it, and removes the previous peer from the platform. The previous peer
-keeps its slot until the router restarts; see
+This enrolls anew (a new key, a new peer and a new zenoh identity), restarts
+the daemon under it, and removes the previous peer from the platform. The
+previous peer keeps its slot until the router restarts; see
 [The project router](#the-project-router).
 
 ### Namespace
@@ -256,10 +289,10 @@ authority.
 peppy platform status
 ```
 
-The report has three parts: the enrollment on disk (project, peer, router,
-certificate expiry, files), the daemon (running, under the enrolled identity,
-and whether a fresh handshake to the cloud router validates), and, when you
-are signed in, the platform's view (the router's phase, the changes that wait
+The report has these parts: the enrollment on disk (project, peer, router,
+certificate expiry and renewal, files), the daemon (running, under the enrolled
+identity, and whether a fresh handshake to the cloud router validates), the
+context, and, when you are signed in, the platform's view (the router's phase, the changes that wait
 for a restart, and this peer's connection status). `peppy platform peers` lists
 every peer of the project as the platform sees them, marking this machine.
 
@@ -391,8 +424,11 @@ the identity provider, so a revoked token stops working at once. It revokes
 only the tokens this machine holds; a session on another device keeps working.
 
 Signing out removes the context with the session. It leaves the enrollment in
-place: the daemon keeps its certificate and its link to the project router,
-and only the CLI's platform calls need a new `peppy platform login`.
+place: the daemon keeps its certificate and its link to the project router.
+The CLI's platform calls need a new `peppy platform login`, and so does the
+renewal of the certificate: with no session the daemon cannot renew it, and
+the link stops when the certificate expires. On an enrolled machine, `logout`
+prints that expiry date.
 
 ## Environment variables
 

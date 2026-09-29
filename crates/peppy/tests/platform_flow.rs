@@ -21,7 +21,9 @@ use secrecy::ExposeSecret;
 use serde_json::json;
 
 use auth::context::{self as platform_context, CONTEXT_VERSION, Named, PlatformContext};
-use auth::enrollment::{self, EnrollmentBundle, EnrollmentDocument, RouterEndpoint};
+use auth::enrollment::{
+    self, EnrollmentBundle, EnrollmentDocument, IssuedMaterial, RouterEndpoint,
+};
 use auth::storage::{self, Credentials, ProfileCreds};
 use daemon::state::DaemonState;
 use peppy::commands::Command;
@@ -153,9 +155,10 @@ fn mock_enroll<'a>(server: &'a MockServer, zid: &str) -> httpmock::Mock<'a> {
             "certificate": "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n",
             "chain": "-----BEGIN CERTIFICATE-----\nissuer\n-----END CERTIFICATE-----\n",
             "trust_anchor": "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n",
+            "address": { "host": ROUTER_HOST, "port": 7447 },
             "zenoh_id": zid,
             "namespace": PROJECT,
-            "zenoh_config": format!("{{ connect: {{ endpoints: [\"tls/{ROUTER_HOST}:7447\"] }} }}"),
+            "zenoh_config": "{ mode: \"router\" }",
         }));
     })
 }
@@ -216,24 +219,27 @@ fn authenticated_dir(server: &MockServer) -> tempfile::TempDir {
 /// have, with placeholder PEM material.
 fn write_enrollment(dir: &tempfile::TempDir, peer_id: &str, zid: &str) {
     let bundle = EnrollmentBundle {
-        document: EnrollmentDocument {
-            version: enrollment::ENROLLMENT_VERSION,
-            api_url: "https://api.example".into(),
-            workspace_id: WORKSPACE.into(),
-            project_id: PROJECT.into(),
-            peer_id: peer_id.into(),
-            peer_name: "robot-7".into(),
-            zenoh_id: pmi::RouterId::parse(zid).unwrap(),
-            namespace: config::namespace::Namespace::parse(PROJECT).unwrap(),
-            router: RouterEndpoint::parse(ROUTER_HOST, 7447).unwrap(),
-            certificate_expires_at: 9_999_999_999,
-            enrolled_at: 1_700_000_000,
-        },
         peer_key_pem: storage::secret("key".into()),
-        peer_certificate_pem: "cert".into(),
-        trust_anchor_pem: "ca".into(),
-        chain_pem: "chain".into(),
-        platform_zenoh_config: "{}".into(),
+        issued: IssuedMaterial {
+            document: EnrollmentDocument {
+                version: enrollment::ENROLLMENT_VERSION,
+                api_url: "https://api.example".into(),
+                workspace_id: WORKSPACE.into(),
+                project_id: PROJECT.into(),
+                peer_id: peer_id.into(),
+                peer_name: "robot-7".into(),
+                zenoh_id: pmi::RouterId::parse(zid).unwrap(),
+                namespace: config::namespace::Namespace::parse(PROJECT).unwrap(),
+                router: RouterEndpoint::parse(ROUTER_HOST, 7447).unwrap(),
+                certificate_issued_at: 1_700_000_000,
+                certificate_expires_at: 9_999_999_999,
+                enrolled_at: 1_700_000_000,
+            },
+            peer_certificate_pem: "cert".into(),
+            trust_anchor_pem: "ca".into(),
+            chain_pem: "chain".into(),
+            platform_zenoh_config: "{}".into(),
+        },
     };
     enrollment::save(&dirs(dir), &bundle).expect("write enrollment");
 }
@@ -1216,6 +1222,12 @@ fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
     assert_eq!(d.namespace.as_str(), PROJECT);
     assert_eq!(d.router.locator(), format!("tls/{ROUTER_HOST}:7447"));
     assert_eq!(d.api_url, server.base_url());
+    assert_eq!(d.certificate_expires_at, 1_798_761_600);
+    assert_eq!(
+        d.certificate_issued_at, d.enrolled_at,
+        "the first leaf is issued at the enrollment"
+    );
+    assert!(d.renewal_due_at() < d.certificate_expires_at);
     let key = std::fs::read_to_string(&enrolled.peer_key).unwrap();
     assert!(
         key.starts_with("-----BEGIN PRIVATE KEY-----"),
@@ -1424,6 +1436,31 @@ fn enroll_rejects_a_zenoh_id_the_router_would_refuse() {
 
     let err = enroll_in(&server, &dir, false).expect_err("a leading zero is refused");
     assert!(err.to_string().contains("router id"), "{err}");
+    assert!(enrollment::load(&dirs(&dir)).unwrap().is_none());
+}
+
+/// The router address is a member of the answer. An answer with no address
+/// names no router to dial, so nothing is written.
+#[test]
+fn enroll_rejects_an_answer_with_no_router_address() {
+    let server = MockServer::start();
+    mock_workspaces_and_projects(&server);
+    server.mock(|when, then| {
+        when.method(POST).path(PEERS_PATH);
+        then.status(201).json_body(json!({
+            "peer": { "id": "peer-1", "name": "robot-7", "certificate_cn": "robot-7",
+                      "status": "unknown", "certificate_expires_at": "2027-01-01T00:00:00Z",
+                      "created_at": "2026-10-03T00:00:00Z" },
+            "certificate": "leaf", "chain": "issuer", "trust_anchor": "ca",
+            "zenoh_id": ZID,
+            "namespace": PROJECT,
+            "zenoh_config": format!("{{ connect: {{ endpoints: [\"tls/{ROUTER_HOST}:7447\"] }} }}"),
+        }));
+    });
+    let dir = authenticated_dir(&server);
+
+    let err = enroll_in(&server, &dir, false).expect_err("no address");
+    assert!(err.to_string().contains("address"), "{err}");
     assert!(enrollment::load(&dirs(&dir)).unwrap().is_none());
 }
 

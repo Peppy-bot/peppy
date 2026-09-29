@@ -21,7 +21,9 @@
 //! [`csr`] mints this machine's key pair and certificate signing request,
 //! [`client::enroll_peer`] exchanges the request for a signed certificate, and
 //! [`enrollment`] persists the result under `~/.peppy/conf/peer/`. The daemon
-//! reads that directory at startup and never holds a bearer token itself.
+//! reads that directory at startup. It keeps the certificate valid with
+//! [`renewal`], which asks the platform for a new leaf with the bearer of the
+//! cached session.
 //!
 //! The workspace and the project the person selected as the default target of
 //! the commands are the [`context`], a third file with its own lifecycle.
@@ -50,6 +52,7 @@ mod fs_perms;
 pub mod http;
 pub mod profile;
 pub mod refresh;
+pub mod renewal;
 pub mod resolver;
 pub mod revoke;
 pub mod storage;
@@ -57,7 +60,9 @@ pub mod storage;
 pub use cli_config::CliConfig;
 pub use client::Principal;
 pub use context::PlatformContext;
-pub use enrollment::{Enrollment, EnrollmentBundle, EnrollmentDocument, RouterEndpoint};
+pub use enrollment::{
+    Enrollment, EnrollmentBundle, EnrollmentDocument, IssuedMaterial, RouterEndpoint,
+};
 pub use error::{Error as AuthError, Problem, ProblemKind, Result};
 pub use resolver::Credential;
 pub use storage::{Credentials, ProfileCreds};

@@ -1,3 +1,4 @@
+use super::certificate_renewal::CertificateRenewal;
 use super::core_node::CoreNodeRunner;
 use super::federation_control::FederationControl;
 use super::messaging_router::{MessagingRouter, teardown_budget_for};
@@ -53,6 +54,11 @@ pub struct ServeCommandBuilder {
     /// `None` for an external router (the operator owns its federation) and
     /// for the non-zenoh engines.
     federation: Option<FederationArming>,
+    /// Whether this generation is enrolled, set by
+    /// [`Self::with_messaging_router`]. An enrolled generation arms the task
+    /// that renews the peer certificate, with a managed router and with an
+    /// operator-run one: the certificate of the peer expires in both.
+    enrolled: bool,
     /// The routing namespace resolved once for this daemon generation from the
     /// enrollment on disk (`local` when not enrolled, else the project id).
     /// Resolved in [`with_messaging_router`](Self::with_messaging_router) and
@@ -98,6 +104,7 @@ impl ServeCommandBuilder {
             peppy_dirs,
             peppy_config: PeppyConfig::default(),
             federation: None,
+            enrolled: false,
             // Default for the mock/other engines that never resolve a namespace;
             // the zenoh path overwrites this in `with_messaging_router`.
             namespace: Namespace::local(),
@@ -154,6 +161,7 @@ impl ServeCommandBuilder {
                     .map(|enrollment| enrollment.document.namespace.clone())
                     .unwrap_or_else(Namespace::local);
                 self.namespace = namespace.clone();
+                self.enrolled = enrollment.is_some();
 
                 let gossip = self.peppy_config.zenoh.gossip();
                 let external_endpoint = self
@@ -174,7 +182,9 @@ impl ServeCommandBuilder {
                                 if enrollment.document.is_expired(auth::storage::now_unix()) {
                                     warn!(
                                         "the platform peer certificate has expired; the cloud \
-                                         router refuses this daemon's link until `peppy platform \
+                                         router refuses this daemon's link until the daemon \
+                                         renews the certificate, which needs a session \
+                                         (`peppy platform login`), or until `peppy platform \
                                          enroll --replace` mints a new one"
                                     );
                                 }
@@ -371,6 +381,15 @@ impl ServeCommandBuilder {
                         socket_path,
                         trigger_tx,
                         restart_tx,
+                        self.teardown_token.clone(),
+                    )));
+        }
+
+        if self.enrolled {
+            self.composite_command =
+                self.composite_command
+                    .add_async_command(Box::new(CertificateRenewal::new(
+                        self.peppy_dirs.clone(),
                         self.teardown_token.clone(),
                     )));
         }
@@ -612,6 +631,10 @@ mod tests {
             .expect("managed mode must arm router federation");
         assert_eq!(arming.identity, FederationIdentity::of(None));
         assert!(!arming.pinned);
+        assert!(
+            !builder.enrolled,
+            "a machine that is not enrolled has no certificate to renew"
+        );
         assert_eq!(builder.namespace, Namespace::local());
         assert!(builder.router_id.is_some(), "a per-boot identity is minted");
         let messenger = builder.messenger_handle().expect("messenger");
@@ -621,17 +644,15 @@ mod tests {
         );
     }
 
-    /// Enrolled: the router boots under the enrollment's id and namespace,
-    /// dialing the project's cloud router, and the federation task is armed
-    /// against that identity.
-    #[test]
-    fn an_enrolled_root_boots_the_router_federated_under_the_enrollment_identity() {
-        use auth::enrollment::{EnrollmentBundle, EnrollmentDocument, RouterEndpoint};
+    const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
+    const ZID: &str = "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5";
 
-        const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
-        const ZID: &str = "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5";
-        let data_root = tempfile::tempdir().expect("temp data root");
-        let dirs = PeppyDirs::new(data_root.path());
+    /// Enrolls the machine under `data_root` in [`PROJECT`] as [`ZID`].
+    fn write_enrollment(data_root: &std::path::Path) {
+        use auth::enrollment::{
+            EnrollmentBundle, EnrollmentDocument, IssuedMaterial, RouterEndpoint,
+        };
+
         let document = EnrollmentDocument {
             version: auth::enrollment::ENROLLMENT_VERSION,
             api_url: "https://api.example".into(),
@@ -642,24 +663,40 @@ mod tests {
             zenoh_id: RouterId::parse(ZID).unwrap(),
             namespace: Namespace::parse(PROJECT).unwrap(),
             router: RouterEndpoint::parse("rtr-p.example", 7447).unwrap(),
+            certificate_issued_at: 1_700_000_000,
             certificate_expires_at: i64::MAX,
             enrolled_at: 1_700_000_000,
         };
         auth::enrollment::save(
-            &dirs,
+            &PeppyDirs::new(data_root),
             &EnrollmentBundle {
-                document: document.clone(),
                 peer_key_pem: auth::storage::secret("key".into()),
-                peer_certificate_pem: "cert".into(),
-                trust_anchor_pem: "ca".into(),
-                chain_pem: "chain".into(),
-                platform_zenoh_config: "{}".into(),
+                issued: IssuedMaterial {
+                    document,
+                    peer_certificate_pem: "cert".into(),
+                    trust_anchor_pem: "ca".into(),
+                    chain_pem: "chain".into(),
+                    platform_zenoh_config: "{}".into(),
+                },
             },
         )
         .expect("write the enrollment");
+    }
+
+    /// Enrolled: the router boots under the enrollment's id and namespace,
+    /// dialing the project's cloud router, the federation task is armed
+    /// against that identity, and the certificate renewal is armed.
+    #[test]
+    fn an_enrolled_root_boots_the_router_federated_under_the_enrollment_identity() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        write_enrollment(data_root.path());
 
         let builder = managed_builder(data_root.path());
 
+        assert!(
+            builder.enrolled,
+            "an enrolled machine renews its certificate"
+        );
         let arming = builder.federation.as_ref().expect("armed");
         assert_eq!(
             arming.identity,
@@ -676,6 +713,36 @@ mod tests {
             .router_links_probe()
             .expect("an enrolled router dials the cloud router");
         assert_eq!(probe.endpoints(), ["tls/rtr-p.example:7447"]);
+    }
+
+    /// An operator-run router: the federation is the operator's, and the peer
+    /// certificate of the enrolled machine is renewed as with a managed router.
+    #[test]
+    fn an_enrolled_root_with_an_external_router_renews_its_certificate() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        write_enrollment(data_root.path());
+        let peppy_config = PeppyConfig {
+            zenoh: daemon_config::peppy_config::ZenohConfig::External(
+                daemon_config::peppy_config::ExternalZenohConfig {
+                    endpoint: "tcp/zenoh-router.regression.test:17555".to_string(),
+                },
+            ),
+            ..PeppyConfig::default()
+        };
+
+        let builder = ServeCommandBuilder::new(
+            "/unused",
+            "regression-git-hash",
+            PeppyDirs::new(data_root.path()),
+        )
+        .expect("create builder")
+        .with_peppy_config(peppy_config)
+        .with_messaging_router("zenoh".to_string())
+        .expect("build external messaging adapter without starting it");
+
+        assert!(builder.federation.is_none());
+        assert!(builder.enrolled);
+        assert_eq!(builder.namespace.as_str(), PROJECT);
     }
 
     /// A present but broken enrollment fails startup rather than booting a

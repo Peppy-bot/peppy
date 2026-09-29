@@ -14,10 +14,12 @@
 //!   inspection only. The daemon renders its own config from the document.
 //!
 //! The daemon reads the directory at startup and on every control-socket poke;
-//! the CLI writes it on `enroll` and removes it on `unenroll`. An absent
-//! `enrollment.json5` means "not enrolled", and a present one is parsed in
-//! full before anything uses it: an unsupported version, an id zenoh would
-//! refuse, or a missing key file fails the load rather than reaching a router.
+//! the CLI writes it on `enroll` and removes it on `unenroll`. A renewal
+//! ([`crate::renewal`]) replaces the certificates and the document, and leaves
+//! the key as it is. An absent `enrollment.json5` means "not enrolled", and a
+//! present one is parsed in full before anything uses it: an unsupported
+//! version, an id zenoh would refuse, or a missing key file fails the load
+//! rather than reaching a router.
 
 use std::path::{Path, PathBuf};
 
@@ -34,7 +36,7 @@ use crate::fs_perms::{restrict_dir, restrict_file};
 /// On-disk schema version of `enrollment.json5`. Bumped on any shape change;
 /// there is no reader for an older version. A file of another version is
 /// rejected by [`load`], and the machine enrolls again.
-pub const ENROLLMENT_VERSION: u32 = 1;
+pub const ENROLLMENT_VERSION: u32 = 2;
 pub const ENROLLMENT_FILE: &str = "enrollment.json5";
 pub const PEER_KEY_FILE: &str = "peer.key";
 pub const PEER_CERTIFICATE_FILE: &str = "peer.crt";
@@ -126,10 +128,13 @@ pub struct EnrollmentDocument {
     /// the daemon and its nodes open.
     pub namespace: Namespace,
     pub router: RouterEndpoint,
-    /// The leaf certificate's expiry, unix seconds. The platform issues no
-    /// renewal; past this the cloud router refuses the link.
+    /// When this machine received the leaf certificate it holds, from the
+    /// enrollment or from the last renewal, unix seconds.
+    pub certificate_issued_at: i64,
+    /// The leaf certificate's expiry, unix seconds. Past this the cloud router
+    /// refuses the link.
     pub certificate_expires_at: i64,
-    /// When this record was written, unix seconds.
+    /// When this machine enrolled, unix seconds.
     pub enrolled_at: i64,
 }
 
@@ -137,6 +142,19 @@ impl EnrollmentDocument {
     /// Whether the certificate is at or past expiry at `now_unix`.
     pub fn is_expired(&self, now_unix: i64) -> bool {
         now_unix >= self.certificate_expires_at
+    }
+
+    /// When the renewal of the certificate becomes due, unix seconds: after
+    /// two thirds of its lifetime. The last third is the time that stays for
+    /// a renewal that does not succeed at the first attempt.
+    pub fn renewal_due_at(&self) -> i64 {
+        let lifetime = (self.certificate_expires_at - self.certificate_issued_at).max(0);
+        self.certificate_issued_at + lifetime / 3 * 2
+    }
+
+    /// Whether the renewal of the certificate is due at `now_unix`.
+    pub fn is_renewal_due(&self, now_unix: i64) -> bool {
+        now_unix >= self.renewal_due_at()
     }
 }
 
@@ -168,10 +186,12 @@ impl Enrollment {
     }
 }
 
-/// Everything `enroll` writes: the document and the PEM material.
-pub struct EnrollmentBundle {
+/// What the platform issues at an enrollment and at each renewal: the document
+/// and the PEM material that goes with it. The private key is not part of it,
+/// because the platform never holds the key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuedMaterial {
     pub document: EnrollmentDocument,
-    pub peer_key_pem: SecretString,
     /// The signed leaf alone, as the daemon presents it.
     pub peer_certificate_pem: String,
     pub trust_anchor_pem: String,
@@ -180,18 +200,15 @@ pub struct EnrollmentBundle {
     pub platform_zenoh_config: String,
 }
 
-impl EnrollmentBundle {
-    /// Builds the bundle from the platform's enrollment response. The router
-    /// endpoint is read from the rendered config's single `connect` entry.
-    pub fn from_platform(
+impl IssuedMaterial {
+    /// The material of a new enrollment, from the platform's answer.
+    pub fn for_enrollment(
         api_url: &str,
         workspace_id: &str,
         project_id: &str,
         enrolled: RouterPeerEnrolled,
-        peer_key_pem: SecretString,
         enrolled_at: i64,
-    ) -> Result<Self> {
-        let router = router_endpoint_from_zenoh_config(&enrolled.zenoh_config)?;
+    ) -> Self {
         let document = EnrollmentDocument {
             version: ENROLLMENT_VERSION,
             api_url: api_url.trim_end_matches('/').to_string(),
@@ -201,50 +218,79 @@ impl EnrollmentBundle {
             peer_name: enrolled.peer.name,
             zenoh_id: enrolled.zenoh_id,
             namespace: enrolled.namespace,
-            router,
+            router: enrolled.address,
+            certificate_issued_at: enrolled_at,
             certificate_expires_at: enrolled.peer.certificate_expires_at.timestamp(),
             enrolled_at,
         };
-        Ok(Self {
+        Self::with_document(
             document,
-            peer_key_pem,
-            peer_certificate_pem: enrolled.certificate,
-            trust_anchor_pem: enrolled.trust_anchor,
-            chain_pem: enrolled.chain,
-            platform_zenoh_config: enrolled.zenoh_config,
-        })
+            enrolled.certificate,
+            enrolled.trust_anchor,
+            enrolled.chain,
+            enrolled.zenoh_config,
+        )
+    }
+
+    /// The material of a renewal of `enrolled`, from the platform's answer. A
+    /// renewal gives a new leaf to the same peer: an answer that names a
+    /// different peer, zenoh id, namespace or router address is refused,
+    /// because the running daemon cannot take any of them without a restart.
+    pub fn for_renewal(
+        enrolled: &EnrollmentDocument,
+        renewed: RouterPeerEnrolled,
+        renewed_at: i64,
+    ) -> Result<Self> {
+        let differences = [
+            ("peer id", renewed.peer.id != enrolled.peer_id),
+            ("zenoh id", renewed.zenoh_id != enrolled.zenoh_id),
+            ("namespace", renewed.namespace != enrolled.namespace),
+            ("router address", renewed.address != enrolled.router),
+        ];
+        if let Some((member, _)) = differences.iter().find(|(_, differs)| *differs) {
+            return Err(Error::Auth(format!(
+                "the platform answered the renewal of peer {} with a different {member}; \
+                 nothing was written; run `peppy platform enroll --replace`",
+                enrolled.peer_id
+            )));
+        }
+        let document = EnrollmentDocument {
+            peer_name: renewed.peer.name,
+            certificate_issued_at: renewed_at,
+            certificate_expires_at: renewed.peer.certificate_expires_at.timestamp(),
+            ..enrolled.clone()
+        };
+        Ok(Self::with_document(
+            document,
+            renewed.certificate,
+            renewed.trust_anchor,
+            renewed.chain,
+            renewed.zenoh_config,
+        ))
+    }
+
+    fn with_document(
+        document: EnrollmentDocument,
+        peer_certificate_pem: String,
+        trust_anchor_pem: String,
+        chain_pem: String,
+        platform_zenoh_config: String,
+    ) -> Self {
+        Self {
+            document,
+            peer_certificate_pem,
+            trust_anchor_pem,
+            chain_pem,
+            platform_zenoh_config,
+        }
     }
 }
 
-/// The cloud router named by the platform's rendered peer config: exactly one
-/// `tls/` entry under `connect.endpoints`.
-pub fn router_endpoint_from_zenoh_config(zenoh_config: &str) -> Result<RouterEndpoint> {
-    let malformed = |reason: String| {
-        Error::Auth(format!(
-            "the platform's peer config names no usable router: {reason}"
-        ))
-    };
-    let config: serde_json::Value = serde_json5::from_str(zenoh_config)
-        .map_err(|e| malformed(format!("it does not parse as JSON5 ({e})")))?;
-    let endpoints = config["connect"]["endpoints"]
-        .as_array()
-        .ok_or_else(|| malformed("it has no `connect.endpoints` list".to_string()))?;
-    let [endpoint] = endpoints.as_slice() else {
-        return Err(malformed(format!(
-            "expected exactly one connect endpoint, found {}",
-            endpoints.len()
-        )));
-    };
-    let locator = endpoint
-        .as_str()
-        .ok_or_else(|| malformed("the connect endpoint is not a string".to_string()))?;
-    let parsed: ZenohEndpoint = locator
-        .parse()
-        .map_err(|e| malformed(format!("{locator:?} is not a locator ({e})")))?;
-    if parsed.protocol() != ZenohNetProtocol::Tls {
-        return Err(malformed(format!("{locator:?} is not a tls/ locator")));
-    }
-    RouterEndpoint::parse(parsed.host(), parsed.port())
+/// Everything `enroll` writes: the private key this machine made, and what the
+/// platform issued for it.
+pub struct EnrollmentBundle {
+    pub peer_key_pem: SecretString,
+    pub issued: IssuedMaterial,
 }
 
 fn document_path(dirs: &PeppyDirs) -> PathBuf {
@@ -314,23 +360,45 @@ pub fn save(dirs: &PeppyDirs, bundle: &EnrollmentBundle) -> Result<()> {
         bundle.peer_key_pem.expose_secret(),
         true,
     )?;
+    publish_issued(&peer_dir, &bundle.issued)
+}
+
+/// Writes the material of a renewal over the material of the enrollment. The
+/// key stays as it is. A renewal has no key of its own, so when the key of the
+/// enrollment is absent the machine is not enrolled, and nothing is written.
+pub fn save_renewal(dirs: &PeppyDirs, renewed: &IssuedMaterial) -> Result<()> {
+    let peer_dir = dirs.peer_dir();
+    let peer_key = peer_dir.join(PEER_KEY_FILE);
+    if !peer_key.is_file() {
+        return Err(Error::Auth(format!(
+            "enrollment material {} is missing, so the renewed certificate was not written; \
+             run `peppy platform enroll` again",
+            peer_key.display()
+        )));
+    }
+    publish_issued(&peer_dir, renewed)
+}
+
+/// Publishes what the platform issued, the document last: a crash before it
+/// lands leaves the document of the material that was there before.
+fn publish_issued(peer_dir: &Path, issued: &IssuedMaterial) -> Result<()> {
     publish(
         &peer_dir.join(PEER_CERTIFICATE_FILE),
-        &bundle.peer_certificate_pem,
+        &issued.peer_certificate_pem,
         false,
     )?;
     publish(
         &peer_dir.join(TRUST_ANCHOR_FILE),
-        &bundle.trust_anchor_pem,
+        &issued.trust_anchor_pem,
         false,
     )?;
-    publish(&peer_dir.join(CHAIN_FILE), &bundle.chain_pem, false)?;
+    publish(&peer_dir.join(CHAIN_FILE), &issued.chain_pem, false)?;
     publish(
         &peer_dir.join(PLATFORM_ZENOH_CONFIG_FILE),
-        &bundle.platform_zenoh_config,
+        &issued.platform_zenoh_config,
         false,
     )?;
-    let document = json5_pretty::to_string_pretty(&bundle.document)
+    let document = json5_pretty::to_string_pretty(&issued.document)
         .map_err(|e| Error::Auth(format!("failed to serialize the enrollment: {e}")))?;
     publish(&peer_dir.join(ENROLLMENT_FILE), &document, true)
 }
@@ -374,12 +442,14 @@ mod tests {
     const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
     const ZID: &str = "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5";
 
-    fn platform_config(endpoints: &str) -> String {
-        format!(
-            r#"{{ mode: "router", id: "{ZID}", connect: {{ endpoints: [{endpoints}],
-                timeout_ms: -1 }}, listen: {{ endpoints: {{ router: ["tcp/127.0.0.1:7448"] }} }},
-                adminspace: {{ enabled: false }} }}"#
-        )
+    const ROUTER_HOST: &str = "rtr-p.us-east-1.robocloud.dev.peppy.bot";
+    const KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n";
+    const ENROLLED_AT: i64 = 1_700_000_000;
+    /// 2027-01-01T00:00:00Z.
+    const FIRST_EXPIRY: i64 = 1_798_761_600;
+
+    fn certificate(label: &str) -> String {
+        format!("-----BEGIN CERTIFICATE-----\n{label}\n-----END CERTIFICATE-----\n")
     }
 
     fn enrolled() -> RouterPeerEnrolled {
@@ -392,31 +462,45 @@ mod tests {
                 certificate_expires_at: "2027-01-01T00:00:00Z".parse().unwrap(),
                 created_at: "2026-10-03T00:00:00Z".parse().unwrap(),
             },
-            certificate: "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n".into(),
-            chain: "-----BEGIN CERTIFICATE-----\nissuer\n-----END CERTIFICATE-----\n\n".into(),
-            trust_anchor: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n".into(),
+            address: RouterEndpoint::parse(ROUTER_HOST, 7447).unwrap(),
+            certificate: certificate("leaf"),
+            chain: certificate("issuer"),
+            trust_anchor: certificate("ca"),
             zenoh_id: RouterId::parse(ZID).unwrap(),
             namespace: Namespace::parse(PROJECT).unwrap(),
-            zenoh_config: platform_config(r#""tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447""#),
+            zenoh_config: "{ mode: \"router\" }".into(),
         }
     }
 
+    /// The answer to a renewal of [`enrolled`]: a new leaf and a later expiry
+    /// for the same peer.
+    fn renewed() -> RouterPeerEnrolled {
+        let mut renewed = enrolled();
+        renewed.peer.certificate_expires_at = "2027-04-01T00:00:00Z".parse().unwrap();
+        renewed.certificate = certificate("renewed leaf");
+        renewed.chain = certificate("renewed issuer");
+        renewed.trust_anchor = certificate("renewed ca");
+        renewed.zenoh_config = "{ mode: \"router\", renewed: true }".into();
+        renewed
+    }
+
     fn bundle() -> EnrollmentBundle {
-        EnrollmentBundle::from_platform(
-            "https://api.example.test/",
-            "ws-1",
-            PROJECT,
-            enrolled(),
-            secret("-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n".into()),
-            1_700_000_000,
-        )
-        .expect("a well-formed response converts")
+        EnrollmentBundle {
+            peer_key_pem: secret(KEY_PEM.into()),
+            issued: IssuedMaterial::for_enrollment(
+                "https://api.example.test/",
+                "ws-1",
+                PROJECT,
+                enrolled(),
+                ENROLLED_AT,
+            ),
+        }
     }
 
     #[test]
-    fn the_bundle_is_built_from_the_platform_response() {
-        let bundle = bundle();
-        let doc = &bundle.document;
+    fn the_enrollment_material_is_built_from_the_platform_response() {
+        let issued = bundle().issued;
+        let doc = &issued.document;
         assert_eq!(doc.version, ENROLLMENT_VERSION);
         assert_eq!(doc.api_url, "https://api.example.test");
         assert_eq!(doc.workspace_id, "ws-1");
@@ -425,35 +509,101 @@ mod tests {
         assert_eq!(doc.peer_name, "robot-7");
         assert_eq!(doc.zenoh_id.as_str(), ZID);
         assert_eq!(doc.namespace.as_str(), PROJECT);
-        assert_eq!(doc.router.host(), "rtr-p.us-east-1.robocloud.dev.peppy.bot");
+        assert_eq!(doc.router.host(), ROUTER_HOST);
         assert_eq!(doc.router.port(), 7447);
         assert_eq!(
             doc.router.locator(),
             "tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447"
         );
-        assert_eq!(doc.certificate_expires_at, 1_798_761_600);
-        assert_eq!(doc.enrolled_at, 1_700_000_000);
+        assert_eq!(doc.certificate_issued_at, ENROLLED_AT);
+        assert_eq!(doc.certificate_expires_at, FIRST_EXPIRY);
+        assert_eq!(doc.enrolled_at, ENROLLED_AT);
         assert_eq!(
-            bundle.peer_certificate_pem,
-            "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n",
+            issued.peer_certificate_pem,
+            certificate("leaf"),
             "the peer presents the leaf alone"
         );
-        assert!(bundle.chain_pem.contains("issuer"));
+        assert!(issued.chain_pem.contains("issuer"));
+    }
+
+    /// A renewal moves the certificate dates and the material, and keeps the
+    /// identity and the enrollment date.
+    #[test]
+    fn the_renewal_material_keeps_the_identity_of_the_enrollment() {
+        let enrolled = bundle().issued.document;
+        let renewed_at = ENROLLED_AT + 60 * 24 * 60 * 60;
+
+        let issued = IssuedMaterial::for_renewal(&enrolled, renewed(), renewed_at)
+            .expect("the same peer renews");
+
+        assert_eq!(
+            issued.document,
+            EnrollmentDocument {
+                certificate_issued_at: renewed_at,
+                certificate_expires_at: "2027-04-01T00:00:00Z"
+                    .parse::<chrono::DateTime<chrono::Utc>>()
+                    .unwrap()
+                    .timestamp(),
+                ..enrolled
+            }
+        );
+        assert_eq!(issued.peer_certificate_pem, certificate("renewed leaf"));
+        assert_eq!(issued.trust_anchor_pem, certificate("renewed ca"));
+        assert_eq!(issued.chain_pem, certificate("renewed issuer"));
     }
 
     #[test]
-    fn the_router_endpoint_must_be_the_single_tls_connect_entry() {
-        for (endpoints, reason) in [
-            ("", "exactly one connect endpoint"),
-            (r#""tls/a:1", "tls/b:2""#, "exactly one connect endpoint"),
-            (r#""tcp/rtr.example:7447""#, "not a tls/ locator"),
-            ("42", "not a string"),
-        ] {
-            let err = router_endpoint_from_zenoh_config(&platform_config(endpoints))
-                .expect_err(endpoints);
-            assert!(err.to_string().contains(reason), "{endpoints}: {err}");
+    fn the_renewal_material_takes_the_name_the_platform_shows() {
+        let enrolled = bundle().issued.document;
+        let mut answer = renewed();
+        answer.peer.name = "robot-7 (arm)".into();
+
+        let issued = IssuedMaterial::for_renewal(&enrolled, answer, ENROLLED_AT).unwrap();
+
+        assert_eq!(issued.document.peer_name, "robot-7 (arm)");
+    }
+
+    /// An answer that names a different identity is refused, and the message
+    /// names the member and the remedy.
+    #[test]
+    fn a_renewal_answer_with_a_different_identity_is_refused() {
+        let enrolled = bundle().issued.document;
+        type Change = fn(&mut RouterPeerEnrolled);
+        let cases: [(&str, Change); 4] = [
+            ("peer id", |answer| answer.peer.id = "peer-2".into()),
+            ("zenoh id", |answer| {
+                answer.zenoh_id = RouterId::parse("7f3a9c1e").unwrap()
+            }),
+            ("namespace", |answer| {
+                answer.namespace = Namespace::parse("11111111-e29b-41d4-a716-446655440000").unwrap()
+            }),
+            ("router address", |answer| {
+                answer.address = RouterEndpoint::parse("rtr-other.example", 7447).unwrap()
+            }),
+        ];
+        for (member, change) in cases {
+            let mut answer = renewed();
+            change(&mut answer);
+            let err = IssuedMaterial::for_renewal(&enrolled, answer, ENROLLED_AT)
+                .expect_err(member)
+                .to_string();
+            assert!(err.contains(&format!("a different {member}")), "{err}");
+            assert!(err.contains("peppy platform enroll --replace"), "{err}");
         }
-        assert!(router_endpoint_from_zenoh_config("not json").is_err());
+    }
+
+    #[test]
+    fn the_renewal_is_due_after_two_thirds_of_the_lifetime() {
+        let mut doc = bundle().issued.document;
+        doc.certificate_issued_at = 1_000;
+        doc.certificate_expires_at = 1_000 + 90;
+        assert_eq!(doc.renewal_due_at(), 1_060);
+        assert!(!doc.is_renewal_due(1_059));
+        assert!(doc.is_renewal_due(1_060));
+
+        // A leaf that expires before its issue date is due at once.
+        doc.certificate_expires_at = 900;
+        assert_eq!(doc.renewal_due_at(), 1_000);
     }
 
     #[test]
@@ -464,23 +614,23 @@ mod tests {
 
         save(&dirs, &bundle).expect("save");
         let loaded = load(&dirs).expect("load").expect("enrolled");
-        assert_eq!(loaded.document, bundle.document);
+        assert_eq!(loaded.document, bundle.issued.document);
         assert_eq!(loaded.peer_key, dirs.peer_dir().join(PEER_KEY_FILE));
         assert_eq!(
             std::fs::read_to_string(&loaded.peer_certificate).unwrap(),
-            bundle.peer_certificate_pem
+            bundle.issued.peer_certificate_pem
         );
         assert_eq!(
             std::fs::read_to_string(&loaded.trust_anchor).unwrap(),
-            bundle.trust_anchor_pem
+            bundle.issued.trust_anchor_pem
         );
         assert_eq!(
             std::fs::read_to_string(dirs.peer_dir().join(CHAIN_FILE)).unwrap(),
-            bundle.chain_pem
+            bundle.issued.chain_pem
         );
         assert_eq!(
             std::fs::read_to_string(dirs.peer_dir().join(PLATFORM_ZENOH_CONFIG_FILE)).unwrap(),
-            bundle.platform_zenoh_config
+            bundle.issued.platform_zenoh_config
         );
         assert_eq!(namespace(&dirs).unwrap().as_str(), PROJECT);
 
@@ -511,6 +661,56 @@ mod tests {
         remove(&dirs).expect("removing twice is fine");
     }
 
+    /// A renewal replaces the certificates and the document. The key file is
+    /// not touched, and it stays owner-only.
+    #[test]
+    fn a_saved_renewal_replaces_the_certificates_and_keeps_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(dir.path());
+        let bundle = bundle();
+        save(&dirs, &bundle).expect("save");
+        let renewed =
+            IssuedMaterial::for_renewal(&bundle.issued.document, renewed(), ENROLLED_AT + 5)
+                .unwrap();
+
+        save_renewal(&dirs, &renewed).expect("save the renewal");
+
+        let loaded = load(&dirs).expect("load").expect("enrolled");
+        assert_eq!(loaded.document, renewed.document);
+        let read = |name: &str| std::fs::read_to_string(dirs.peer_dir().join(name)).unwrap();
+        assert_eq!(read(PEER_KEY_FILE), KEY_PEM);
+        assert_eq!(read(PEER_CERTIFICATE_FILE), certificate("renewed leaf"));
+        assert_eq!(read(TRUST_ANCHOR_FILE), certificate("renewed ca"));
+        assert_eq!(read(CHAIN_FILE), certificate("renewed issuer"));
+        assert_eq!(
+            read(PLATFORM_ZENOH_CONFIG_FILE),
+            renewed.platform_zenoh_config
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&loaded.peer_key), 0o600);
+            assert_eq!(mode(&dirs.peer_dir().join(ENROLLMENT_FILE)), 0o600);
+        }
+    }
+
+    /// A machine that is not enrolled has no key, so a renewal writes nothing
+    /// and does not make the peer directory.
+    #[test]
+    fn a_renewal_writes_nothing_on_a_machine_that_is_not_enrolled() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(dir.path());
+        let renewed =
+            IssuedMaterial::for_renewal(&bundle().issued.document, renewed(), ENROLLED_AT).unwrap();
+
+        let err = save_renewal(&dirs, &renewed).expect_err("not enrolled");
+
+        assert!(err.to_string().contains("peppy platform enroll"), "{err}");
+        assert!(!dirs.peer_dir().exists());
+        assert!(load(&dirs).unwrap().is_none());
+    }
+
     #[test]
     fn an_absent_enrollment_is_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -530,14 +730,11 @@ mod tests {
         let good = std::fs::read_to_string(&document_file).unwrap();
 
         for (label, content) in [
-            ("version", good.replace("version: 1", "version: 2")),
+            ("version", good.replace("version: 2", "version: 1")),
             ("leading-zero zid", good.replace(ZID, "0abc")),
             ("uppercase zid", good.replace(ZID, "ABC")),
             ("namespace", good.replace(PROJECT, "**")),
-            (
-                "host",
-                good.replace("rtr-p.us-east-1.robocloud.dev.peppy.bot", ""),
-            ),
+            ("host", good.replace(ROUTER_HOST, "")),
             ("syntax", "{ not json5".to_string()),
         ] {
             std::fs::write(&document_file, content).unwrap();
@@ -556,7 +753,7 @@ mod tests {
 
     #[test]
     fn expiry_is_a_plain_comparison_against_the_given_clock() {
-        let doc = bundle().document;
+        let doc = bundle().issued.document;
         assert!(!doc.is_expired(doc.certificate_expires_at - 1));
         assert!(doc.is_expired(doc.certificate_expires_at));
     }
