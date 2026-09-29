@@ -191,7 +191,9 @@ pub enum GoalOutcome {
     /// The goal ran to completion; the value is the decoded result body,
     /// an empty object for an action without a result format.
     Completed(Value),
-    Cancelled,
+    /// The goal ended cancelled; the value is the result body the producer
+    /// ended it with, decoded as a completed one is.
+    Cancelled(Value),
     /// The producer dropped the goal before it settled.
     Abandoned,
     /// The producer no longer retains the goal's result.
@@ -226,18 +228,19 @@ impl GoalHandle {
         }
     }
 
-    /// Requests the goal's terminal outcome, waiting at most `deadline`.
+    /// Requests the goal's terminal outcome, waiting at most `deadline`. A
+    /// completed or cancelled result body that does not convert is a
+    /// [`ConsumerError::Conversion`].
     pub async fn result(
         &self,
         messenger: &MessengerHandle,
         deadline: Duration,
     ) -> Result<GoalOutcome, ConsumerError> {
         let reply = ActionMessenger::request_result(messenger, &self.inner, deadline).await?;
+        let body = || decode_optional(self.result.as_ref(), reply.body.as_ref());
         Ok(match reply.status {
-            ResultStatus::Completed => {
-                GoalOutcome::Completed(decode_optional(self.result.as_ref(), reply.body.as_ref())?)
-            }
-            ResultStatus::Cancelled => GoalOutcome::Cancelled,
+            ResultStatus::Completed => GoalOutcome::Completed(body()?),
+            ResultStatus::Cancelled => GoalOutcome::Cancelled(body()?),
             ResultStatus::Abandoned => GoalOutcome::Abandoned,
             ResultStatus::Expired => GoalOutcome::Expired,
         })

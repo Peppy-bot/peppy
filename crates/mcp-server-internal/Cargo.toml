@@ -33,4 +33,11 @@ tracing = "0.1"
 # The provider double and the ephemeral router the bridge tests drive a
 # real goal through.
 peppylib = { workspace = true, features = ["testing"] }
-tokio = { version = "1", features = ["sync"] }
+# The raw HTTP client the loopback tests call the endpoint with, so they read
+# the response headers and the event stream of a call themselves. The tests
+# speak plain HTTP, but `jsonschema` turns on reqwest's TLS without a crypto
+# provider, and a client builds only with one: `rustls` brings the default.
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+# `test-util`: the bridge tests run the bridge on a paused clock that only
+# the test advances.
+tokio = { version = "1", features = ["sync", "test-util"] }

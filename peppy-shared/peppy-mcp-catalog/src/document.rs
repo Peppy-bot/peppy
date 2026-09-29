@@ -9,7 +9,7 @@
 //! [`build_exposure_bundle`]: crate::build_exposure_bundle
 
 use crate::policy::{
-    ActionOperation, FreshnessPolicy, ImageCodec, ImageRepresentation, OversizePolicy,
+    ActionOperation, FreshnessPolicy, GoalBound, ImageCodec, ImageRepresentation, OversizePolicy,
     ServiceOperation, UpdatePolicy,
 };
 use indexmap::IndexMap;
@@ -457,6 +457,9 @@ impl ExposureTarget {
         for service in &self.services {
             service.check_coherence(target_name)?;
         }
+        for action in &self.actions {
+            action.check_coherence(target_name)?;
+        }
         Ok(())
     }
 
@@ -638,22 +641,86 @@ pub struct RestrictBounds {
 /// observable task state, and cancellation forwards to the action's cancel
 /// path.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawActionExposure", into = "RawActionExposure")]
 pub struct ActionExposure {
-    #[serde(deserialize_with = "deserialize_member")]
     pub member: String,
     pub tool: PublicName,
-    #[serde(deserialize_with = "deserialize_prose")]
     pub description: String,
     pub operation: ActionOperation,
-    #[serde(default, skip_serializing_if = "is_false")]
     pub safety_sensitive: bool,
     /// When set, the task pauses in `input_required` until the client
     /// confirms via `tasks/update` before the goal is sent.
-    #[serde(default, skip_serializing_if = "is_false")]
     pub confirmation_required: bool,
-    /// Whole-goal deadline in milliseconds.
-    pub deadline_ms: NonZeroU64,
+    /// What bounds the goal: the document's `deadline_ms` or
+    /// `progress_timeout_ms`.
+    pub bound: GoalBound,
+}
+
+impl ActionExposure {
+    fn check_coherence(&self, target_name: &str) -> Result<(), String> {
+        self.bound.check_confirmation(
+            &format!("target `{target_name}` action `{}`", self.member),
+            self.confirmation_required,
+        )
+    }
+}
+
+/// Wire shape of [`ActionExposure`]: the goal's bound is one of two fields,
+/// which parsing turns into a [`GoalBound`].
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawActionExposure {
+    #[serde(deserialize_with = "deserialize_member")]
+    member: String,
+    tool: PublicName,
+    #[serde(deserialize_with = "deserialize_prose")]
+    description: String,
+    operation: ActionOperation,
+    #[serde(default, skip_serializing_if = "is_false")]
+    safety_sensitive: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    confirmation_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deadline_ms: Option<NonZeroU64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    progress_timeout_ms: Option<NonZeroU64>,
+}
+
+impl TryFrom<RawActionExposure> for ActionExposure {
+    type Error = String;
+
+    fn try_from(raw: RawActionExposure) -> Result<Self, String> {
+        let bound = GoalBound::from_fields(
+            &format!("action `{}`", raw.member),
+            raw.deadline_ms,
+            raw.progress_timeout_ms,
+        )?;
+        Ok(Self {
+            member: raw.member,
+            tool: raw.tool,
+            description: raw.description,
+            operation: raw.operation,
+            safety_sensitive: raw.safety_sensitive,
+            confirmation_required: raw.confirmation_required,
+            bound,
+        })
+    }
+}
+
+impl From<ActionExposure> for RawActionExposure {
+    fn from(exposure: ActionExposure) -> Self {
+        let (deadline_ms, progress_timeout_ms) = exposure.bound.to_fields();
+        Self {
+            member: exposure.member,
+            tool: exposure.tool,
+            description: exposure.description,
+            operation: exposure.operation,
+            safety_sensitive: exposure.safety_sensitive,
+            confirmation_required: exposure.confirmation_required,
+            deadline_ms,
+            progress_timeout_ms,
+        }
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -1085,7 +1152,12 @@ mod tests {
         assert_eq!(record.operation, ActionOperation::LongRunning);
         assert!(record.safety_sensitive);
         assert!(record.confirmation_required);
-        assert_eq!(record.deadline_ms.get(), 900000);
+        assert_eq!(
+            record.bound,
+            GoalBound::WholeGoal {
+                deadline_ms: NonZeroU64::new(900000).expect("nonzero")
+            }
+        );
     }
 
     #[test]
@@ -1287,6 +1359,75 @@ mod tests {
     fn rejects_a_zero_deadline() {
         let doc = minimal(INFO_SERVICE).replace("deadline_ms: 2000", "deadline_ms: 0");
         assert!(parse_err(&doc).contains("nonzero"));
+    }
+
+    /// The walkthrough's recorder action with `bound` in place of its
+    /// whole-goal deadline, and no confirmation gate.
+    fn recorder_bounded_by(bound: &str) -> String {
+        camera_and_recording()
+            .replace("confirmation_required: true,", "")
+            .replace("deadline_ms: 900000,", bound)
+    }
+
+    #[test]
+    fn an_action_is_bounded_by_its_progress_with_progress_timeout_ms() {
+        let exposure = parse(&recorder_bounded_by("progress_timeout_ms: 60000,"))
+            .expect("a progress timeout bounds the goal");
+        assert_eq!(
+            targets_of(&exposure)["recorder"].actions[0].bound,
+            GoalBound::Progress {
+                window_ms: NonZeroU64::new(60000).expect("nonzero")
+            }
+        );
+        let serialized = serde_json::to_value(&exposure).expect("serializes");
+        let action = &serialized["targets"]["recorder"]["actions"][0];
+        assert_eq!(action["progress_timeout_ms"], 60000, "{action}");
+        assert!(action.get("deadline_ms").is_none(), "{action}");
+        let reparsed: McpExposure = serde_json::from_value(serialized).expect("reparses");
+        assert_eq!(reparsed, exposure);
+    }
+
+    #[test]
+    fn an_action_declaring_both_bounds_is_refused() {
+        let err = parse_err(&recorder_bounded_by(
+            "deadline_ms: 900000, progress_timeout_ms: 60000,",
+        ));
+        assert!(
+            err.contains(
+                "action `record_episode` declares both `deadline_ms` and \
+                 `progress_timeout_ms`"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_action_declaring_no_bound_is_refused() {
+        let err = parse_err(&recorder_bounded_by(""));
+        assert!(
+            err.contains(
+                "action `record_episode` declares neither `deadline_ms` nor `progress_timeout_ms`"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_progress_bound_action_cannot_ask_for_confirmation() {
+        let doc =
+            camera_and_recording().replace("deadline_ms: 900000", "progress_timeout_ms: 60000");
+        let err = parse_err(&doc);
+        assert!(
+            err.contains("target `recorder` action `record_episode`: `confirmation_required`")
+                && err.contains("`progress_timeout_ms`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_zero_progress_timeout() {
+        let err = parse_err(&recorder_bounded_by("progress_timeout_ms: 0,"));
+        assert!(err.contains("nonzero"), "{err}");
     }
 
     #[test]

@@ -722,10 +722,10 @@ fn violations_across_targets_are_all_reported() {
     assert!(violations[1].contains("resume_session"), "{violations:?}");
 }
 
-#[test]
-fn an_action_without_optional_endpoints_gets_empty_schemas_and_no_feedback() {
-    let recorder_sha = sha_of(RECORDING_CONTRACT);
-    let exposure = format!(
+/// One-action exposure of the recorder pinned to the `contract` source:
+/// `member` published as a tool whose goal is bounded by the `bound` field.
+fn recorder_exposure(contract: &str, member: &str, bound: &str) -> String {
+    format!(
         r#"{{
         peppy_schema: "mcp_exposure/v1",
         manifest: {{ name: "surface", tag: "v1" }},
@@ -735,18 +735,26 @@ fn an_action_without_optional_endpoints_gets_empty_schemas_and_no_feedback() {
                 contract: {{ name: "episode_recording", tag: "v1", sha256: "{recorder_sha}" }},
                 actions: [
                     {{
-                        member: "finish_session",
-                        tool: "recorder.finish_session",
-                        description: "Finalize the open dataset session.",
+                        member: "{member}",
+                        tool: "recorder.{member}",
+                        description: "Drive the recorder.",
                         operation: "long_running",
-                        deadline_ms: 60000,
+                        {bound},
                     }},
                 ],
             }},
         }},
-    }}"#
+    }}"#,
+        recorder_sha = sha_of(contract),
+    )
+}
+
+#[test]
+fn an_action_without_optional_endpoints_gets_empty_schemas_and_no_feedback() {
+    let bundle = build(
+        &recorder_exposure(RECORDING_CONTRACT, "finish_session", "deadline_ms: 60000"),
+        &[&fixture(RECORDING_CONTRACT)],
     );
-    let bundle = build(&exposure, &[&fixture(RECORDING_CONTRACT)]);
     let task = &bundle.tasks[0];
     assert_eq!(task.input_schema, empty_object_schema());
     assert_eq!(task.feedback_schema, None);
@@ -754,6 +762,69 @@ fn an_action_without_optional_endpoints_gets_empty_schemas_and_no_feedback() {
         task.output_schema["properties"]["success"],
         serde_json::json!({"type": "boolean"})
     );
+}
+
+#[test]
+fn a_progress_bound_action_needs_a_feedback_topic() {
+    let violations = violations_of(
+        &recorder_exposure(
+            RECORDING_CONTRACT,
+            "finish_session",
+            "progress_timeout_ms: 60000",
+        ),
+        &[&fixture(RECORDING_CONTRACT)],
+    );
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(
+        violations[0].contains("target `recorder` action `finish_session`: `progress_timeout_ms`")
+            && violations[0].contains("declares no `feedback_topic`"),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn a_progress_bound_action_without_feedback_has_its_other_violations_reported_too() {
+    // `finish_session` declares no feedback topic, and its result now
+    // carries a reserved field name: two independent violations.
+    let contract = RECORDING_CONTRACT.replace(
+        r#"response_message_format: { success: "bool" },"#,
+        r#"response_message_format: { instance_id: "string" },"#,
+    );
+    let violations = violations_of(
+        &recorder_exposure(&contract, "finish_session", "progress_timeout_ms: 60000"),
+        &[&fixture(&contract)],
+    );
+    assert_eq!(violations.len(), 2, "{violations:?}");
+    assert!(
+        violations[0].contains("declares no `feedback_topic`"),
+        "{violations:?}"
+    );
+    assert!(
+        violations[1].contains("target `recorder` action `finish_session` result")
+            && violations[1].contains("instance_id"),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn a_progress_bound_action_publishes_its_window_in_the_catalog() {
+    let bundle = build(
+        &recorder_exposure(
+            RECORDING_CONTRACT,
+            "record_episode",
+            "progress_timeout_ms: 60000",
+        ),
+        &[&fixture(RECORDING_CONTRACT)],
+    );
+    assert_eq!(
+        bundle.tasks[0].bound,
+        GoalBound::Progress {
+            window_ms: std::num::NonZeroU64::new(60000).expect("nonzero")
+        }
+    );
+    let task = serde_json::to_value(&bundle.tasks[0]).expect("serializes");
+    assert_eq!(task["progress_timeout_ms"], 60000, "{task}");
+    assert!(task.get("deadline_ms").is_none(), "{task}");
 }
 
 #[test]

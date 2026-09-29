@@ -1,8 +1,8 @@
 //! The serializable shape of a versioned exposure bundle.
 
 use crate::policy::{
-    ActionOperation, FreshnessPolicy, ImageRepresentation, OversizePolicy, ServiceOperation,
-    UpdatePolicy,
+    ActionOperation, FreshnessPolicy, GoalBound, ImageRepresentation, OversizePolicy,
+    ServiceOperation, UpdatePolicy,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -396,7 +396,7 @@ pub struct ToolEntry {
 
 /// One exposed action: an MCP tool backed by the MCP Tasks extension.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawTaskEntry", into = "RawTaskEntry")]
 pub struct TaskEntry {
     pub name: String,
     pub description: String,
@@ -404,16 +404,84 @@ pub struct TaskEntry {
     pub member: String,
     pub operation: ActionOperation,
     pub safety_sensitive: bool,
+    /// Never set together with a progress bound: parsing refuses the pair.
     pub confirmation_required: bool,
-    pub deadline_ms: NonZeroU64,
+    /// What bounds the goal, written as `deadline_ms` or
+    /// `progress_timeout_ms`.
+    pub bound: GoalBound,
     /// Derived JSON Schema of the goal request the tool call carries.
     pub input_schema: Value,
     /// Derived JSON Schema of the structured result completing the task.
     pub output_schema: Value,
     /// Derived JSON Schema of feedback messages, for actions that declare a
     /// feedback topic.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feedback_schema: Option<Value>,
+}
+
+/// Wire shape of [`TaskEntry`]: the goal's bound is one of two fields, which
+/// parsing turns into a [`GoalBound`], refusing a confirmation gate in front
+/// of a progress-bound goal.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTaskEntry {
+    name: String,
+    description: String,
+    target: String,
+    member: String,
+    operation: ActionOperation,
+    safety_sensitive: bool,
+    confirmation_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deadline_ms: Option<NonZeroU64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    progress_timeout_ms: Option<NonZeroU64>,
+    input_schema: Value,
+    output_schema: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    feedback_schema: Option<Value>,
+}
+
+impl TryFrom<RawTaskEntry> for TaskEntry {
+    type Error = String;
+
+    fn try_from(raw: RawTaskEntry) -> Result<Self, String> {
+        let owner = format!("task `{}`", raw.name);
+        let bound = GoalBound::from_fields(&owner, raw.deadline_ms, raw.progress_timeout_ms)?;
+        bound.check_confirmation(&owner, raw.confirmation_required)?;
+        Ok(Self {
+            name: raw.name,
+            description: raw.description,
+            target: raw.target,
+            member: raw.member,
+            operation: raw.operation,
+            safety_sensitive: raw.safety_sensitive,
+            confirmation_required: raw.confirmation_required,
+            bound,
+            input_schema: raw.input_schema,
+            output_schema: raw.output_schema,
+            feedback_schema: raw.feedback_schema,
+        })
+    }
+}
+
+impl From<TaskEntry> for RawTaskEntry {
+    fn from(entry: TaskEntry) -> Self {
+        let (deadline_ms, progress_timeout_ms) = entry.bound.to_fields();
+        Self {
+            name: entry.name,
+            description: entry.description,
+            target: entry.target,
+            member: entry.member,
+            operation: entry.operation,
+            safety_sensitive: entry.safety_sensitive,
+            confirmation_required: entry.confirmation_required,
+            deadline_ms,
+            progress_timeout_ms,
+            input_schema: entry.input_schema,
+            output_schema: entry.output_schema,
+            feedback_schema: entry.feedback_schema,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -530,6 +598,88 @@ mod tests {
         let reparsed = ExposureBundle::from_json_str(&bundle.to_json_string())
             .expect("round trips through its wire shape");
         assert_eq!(reparsed, bundle);
+    }
+
+    /// `minimal_bundle_json` with one task, bounded by the `bound` fields.
+    fn bundle_with_task(bound: &str) -> String {
+        minimal_bundle_json(1, 1).replace(
+            r#""tasks": []"#,
+            &format!(
+                r#""tasks": [
+    {{
+      "name": "recorder.record_episode",
+      "description": "Record one episode.",
+      "target": "front_camera",
+      "member": "record_episode",
+      "operation": "long_running",
+      "safety_sensitive": false,
+      "confirmation_required": false,
+      {bound}
+      "input_schema": {{ "type": "object" }},
+      "output_schema": {{ "type": "object" }}
+    }}
+  ]"#
+            ),
+        )
+    }
+
+    #[test]
+    fn a_task_is_bounded_by_exactly_one_of_its_two_bound_fields() {
+        let progress =
+            ExposureBundle::from_json_str(&bundle_with_task(r#""progress_timeout_ms": 60000,"#))
+                .expect("a progress-bound task parses");
+        let serialized = progress.to_json_string();
+        assert!(
+            serialized.contains(r#""progress_timeout_ms": 60000"#)
+                && !serialized.contains("deadline_ms"),
+            "{serialized}"
+        );
+        let reparsed = ExposureBundle::from_json_str(&serialized).expect("round trips");
+        assert_eq!(reparsed, progress);
+        assert_eq!(
+            progress.tasks[0].bound,
+            GoalBound::Progress {
+                window_ms: NonZeroU64::new(60000).expect("nonzero")
+            }
+        );
+
+        let both = ExposureBundle::from_json_str(&bundle_with_task(
+            r#""deadline_ms": 1000, "progress_timeout_ms": 60000,"#,
+        ))
+        .expect_err("two bounds are refused");
+        assert!(
+            both.contains(
+                "task `recorder.record_episode` declares both `deadline_ms` and \
+                 `progress_timeout_ms`"
+            ),
+            "{both}"
+        );
+        let neither = ExposureBundle::from_json_str(&bundle_with_task(""))
+            .expect_err("a task without a bound is refused");
+        assert!(
+            neither.contains(
+                "task `recorder.record_episode` declares neither `deadline_ms` nor \
+                 `progress_timeout_ms`"
+            ),
+            "{neither}"
+        );
+    }
+
+    #[test]
+    fn a_progress_bound_task_cannot_ask_for_confirmation() {
+        let content = bundle_with_task(r#""progress_timeout_ms": 60000,"#).replace(
+            r#""confirmation_required": false,"#,
+            r#""confirmation_required": true,"#,
+        );
+        let error = ExposureBundle::from_json_str(&content)
+            .expect_err("a confirmation gate in front of a progress-bound goal is refused");
+        assert!(
+            error.contains(
+                "task `recorder.record_episode`: `confirmation_required` cannot go with \
+                 `progress_timeout_ms`"
+            ),
+            "{error}"
+        );
     }
 
     #[test]

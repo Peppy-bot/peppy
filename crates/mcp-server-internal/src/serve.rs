@@ -32,6 +32,11 @@ pub enum ServeError {
         member: String,
         source: message_codec::CodecError,
     },
+    #[error(
+        "tool `{tool}` is bounded by its progress, and its action declares no feedback message to \
+         show progress with"
+    )]
+    ProgressWithoutFeedback { tool: String },
     #[error("{0}")]
     Build(#[from] peppy_mcp_runtime::BuildError),
     #[error("cannot bind 127.0.0.1:{port}: {source}")]

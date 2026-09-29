@@ -767,6 +767,16 @@ impl MockActionServerCore {
         })
     }
 
+    /// Keeps the result of each goal accepted from now on routable for
+    /// `grace` after its terminal transition, as
+    /// [`ConcurrentAction::with_result_retention_grace`] does. A zero grace
+    /// makes every later result request of a settled goal read
+    /// [`ResultStatus::Expired`](crate::messaging::ResultStatus::Expired).
+    pub fn with_result_retention_grace(mut self, grace: Duration) -> Self {
+        self.engine = self.engine.with_result_retention_grace(grace);
+        self
+    }
+
     /// Parks until the node under test sends a goal, bounded by `timeout`.
     pub async fn next_goal(&mut self, timeout: Duration) -> Result<MockPendingGoal> {
         match tokio::time::timeout(timeout, self.engine.recv_next_goal()).await {

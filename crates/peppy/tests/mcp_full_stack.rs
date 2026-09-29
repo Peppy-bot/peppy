@@ -1180,6 +1180,17 @@ async fn await_resource_updates(subscription: &mut Subscription, expected: &[&st
     }
 }
 
+/// Asserts that `task` ended as a task does when its `record_clip` goal
+/// ends cancelled: `cancelled`, its status message saying so with the
+/// result the camera provider ends a cancelled clip with.
+fn assert_record_clip_ended_cancelled(task: &rmcp::model::DetailedTask) {
+    assert_eq!(task.status(), TaskStatus::Cancelled, "{:?}", task.payload);
+    assert_eq!(
+        task.task.status_message.as_deref(),
+        Some(r#"the action was cancelled: {"frames_written":1}"#)
+    );
+}
+
 /// Fires `record_clip` as a task and walks the confirmation gate.
 async fn start_confirmed_record_clip(
     client: &mcp_test_support::Client,
@@ -1701,7 +1712,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         task.status().is_terminal()
     })
     .await;
-    assert_eq!(cancelled.status(), TaskStatus::Cancelled);
+    assert_record_clip_ended_cancelled(&cancelled);
 
     let task_id = start_confirmed_record_clip(&tasks, 100000, "reconnection").await;
     poll_task_until(&tasks, WAIT, &task_id, "feedback-driven progress", |task| {
@@ -1718,7 +1729,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         task.status().is_terminal()
     })
     .await;
-    assert_eq!(cancelled.status(), TaskStatus::Cancelled);
+    assert_record_clip_ended_cancelled(&cancelled);
     reconnected.cancel().await.expect("client disconnects");
 
     let recorder = connect_with_tasks(&both).await;
@@ -2338,10 +2349,11 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
         .cancel_task(CancelTaskParams::new(&*task_id))
         .await
         .expect("the cancel is delivered");
-    poll_task_until(&client, WAIT, &task_id, "cancelled", |task| {
-        task.status() == TaskStatus::Cancelled
+    let cancelled = poll_task_until(&client, WAIT, &task_id, "a terminal status", |task| {
+        task.status().is_terminal()
     })
     .await;
+    assert_record_clip_ended_cancelled(&cancelled);
 
     // --- Resources are published per robot, a call reaches the robot it
     // names, and a robot that is not there is refused naming the ones

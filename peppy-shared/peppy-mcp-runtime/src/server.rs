@@ -9,8 +9,8 @@ use crate::fleet::{Fleet, FleetMember, FleetRuntime, FleetSource, MemberAddress,
 use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState};
 use crate::tasks::{ActionContext, ActionExit, ActionSurface, TaskHandler};
 use peppy_mcp_catalog::{
-    BundleIdentity, BundleServer, BundleSurface, ExposureBundle, ROBOT_ARGUMENT, ResourceEntry,
-    ServiceOperation, TaskEntry, ToolEntry,
+    BundleIdentity, BundleServer, BundleSurface, ExposureBundle, GoalBound, ROBOT_ARGUMENT,
+    ResourceEntry, ServiceOperation, TaskEntry, ToolEntry,
 };
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
@@ -50,13 +50,22 @@ const UNAVAILABLE_SINCE_JOIN: &str =
     "unavailable: nothing has been published since the robot joined";
 const CATALOG_TTL_MS: u64 = 3_600_000;
 
-/// Grace period the advertised task TTL carries on top of the exposure's
-/// whole-goal deadline. The runtime fails an overrunning goal itself, with a
-/// message naming the deadline; the manager's TTL sweep fires at
-/// `created + ttl` and aborts the operation with a generic expiry instead, so
-/// the two must not coincide. The task stays observable for a further TTL
-/// window past that, which is what a poller reads the terminal state from.
+/// Grace period the advertised TTL of a task under a whole-goal deadline
+/// carries on top of that deadline. The runtime fails an overrunning goal
+/// itself, with a message naming the deadline; the manager's TTL sweep
+/// fires at `created + ttl` and aborts the operation with a generic expiry
+/// instead, so the two must not coincide. The task stays observable for a
+/// further TTL window past that, which is what a poller reads the terminal
+/// state from.
 const TASK_TTL_GRACE_MS: u64 = 1_000;
+
+/// The TTL of a task whose goal is bounded by its progress: one day, the
+/// longest such a goal may run as a task however steadily it progresses.
+/// The progress window bounds only the silence between two signs of
+/// progress; the MCP specification asks for a maximum all the same, whatever
+/// the progress, and the TTL is also what bounds how long the task manager
+/// keeps the task once it has ended.
+const PROGRESS_TASK_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// Capacity of the resource-updated event channel; a listener lagging this
 /// far behind skips to the newest events, which for latest-snapshot
@@ -661,16 +670,7 @@ impl ExposureServer {
         let call = self.route(&task.entry.target, input)?;
 
         let task = Arc::clone(task);
-        // The advertised TTL is the whole-goal deadline plus a grace window:
-        // the manager's own TTL sweep is a hard stop that aborts the
-        // operation and reports a generic expiry, so it has to land after
-        // the deadline this runtime enforces, never race it.
-        let options = TaskOptions::new().with_ttl_ms(
-            task.entry
-                .deadline_ms
-                .get()
-                .saturating_add(TASK_TTL_GRACE_MS),
-        );
+        let options = TaskOptions::new().with_ttl_ms(task_ttl_ms(task.entry.bound));
         let seed = self.state.manager.spawn(options, move |context| {
             Box::pin(run_task_operation(task, call, context))
         });
@@ -679,10 +679,19 @@ impl ExposureServer {
 
     /// Runs the action inside the `tools/call` that started it, for a
     /// client without the tasks extension: the call answers with the
-    /// goal's result once it settles, feedback is relayed through
-    /// `progress` when the call carries a progress token, `cancel` firing
-    /// (the client closing the call) cancels the goal, and the whole-goal
-    /// deadline bounds the wait.
+    /// goal's result once it settles (a goal that ends cancelled answers
+    /// with the tool error of
+    /// [`CancelledGoal::into_tool_result`](crate::tasks::CancelledGoal::into_tool_result)),
+    /// feedback is relayed through `progress` when the call
+    /// carries a progress token, `cancel` firing (the client closing the
+    /// call) cancels the goal, and the goal's bound limits the wait (see
+    /// [`within_goal_bound`]).
+    ///
+    /// Feedback is also what opens the call's response: the transport sends
+    /// the HTTP status and headers with the handler's first message, so the
+    /// first progress notification reaches the client as soon as the goal
+    /// reports, and a call without a progress token receives nothing, not
+    /// even its headers, before the result.
     ///
     /// A confirmation-gated action is refused: the confirmation is an
     /// in-task input request, so a task is the only surface that can ask
@@ -705,18 +714,61 @@ impl ExposureServer {
         let action_context = ActionContext {
             surface: ActionSurface::Call { feedback, cancel },
         };
-        let deadline = Duration::from_millis(task.entry.deadline_ms.get());
         let operation = task.handler.start(call, action_context);
-        let outcome = tokio::time::timeout(
-            deadline,
+        let outcome = within_goal_bound(
+            task.entry.bound,
             relay_feedback_until_settled(operation, relay, progress),
         )
         .await;
         match outcome {
             Ok(Ok(value)) => Ok(CallToolResult::structured(value)),
-            Ok(Err(exit)) => Ok(tool_error(exit.to_string())),
-            Err(_elapsed) => Ok(tool_error(deadline_exceeded(deadline))),
+            Ok(Err(ActionExit::Cancelled(goal))) => Ok(goal.into_tool_result()),
+            Ok(Err(exit @ ActionExit::Failed(_))) => Ok(tool_error(exit.to_string())),
+            Err(overrun) => Ok(tool_error(overrun)),
         }
+    }
+}
+
+/// The TTL a task advertises and the manager enforces, as a hard abort at
+/// `created + ttl`, fixed when the task is spawned. The manager keeps the
+/// task, terminal state included, for one more TTL after it ends.
+///
+/// Under a whole-goal deadline it is that deadline plus
+/// [`TASK_TTL_GRACE_MS`], so the sweep lands after the deadline this
+/// runtime enforces and never races it.
+///
+/// Under a progress bound it is [`PROGRESS_TASK_TTL_MS`]. The goal's bridge
+/// fails it once it goes a whole window without a sign of progress, long
+/// before that; the TTL ends, with the manager's generic expiry, only a goal
+/// that keeps making progress for a whole day. The one wait before the
+/// goal, the confirmation, is refused together with a progress bound.
+fn task_ttl_ms(bound: GoalBound) -> u64 {
+    match bound {
+        GoalBound::WholeGoal { deadline_ms } => deadline_ms.get().saturating_add(TASK_TTL_GRACE_MS),
+        GoalBound::Progress { .. } => PROGRESS_TASK_TTL_MS,
+    }
+}
+
+/// Runs a goal's operation under the goal's bound. A whole-goal deadline is
+/// enforced here, and the error is the failure message of an overrun. A
+/// progress-bound goal runs to its end: its bridge, the one layer that sees
+/// every sign of progress, bounds the time between two of them, and a
+/// timeout here would cut a goal that still makes progress (and, dropping
+/// the bridge, leave the provider without a cancel). Its total time is
+/// bounded outside: in a task by the TTL (see [`task_ttl_ms`]), in a call by
+/// the client, which decides how long it waits for the call.
+async fn within_goal_bound<T>(
+    bound: GoalBound,
+    operation: impl Future<Output = T>,
+) -> Result<T, String> {
+    match bound {
+        GoalBound::WholeGoal { deadline_ms } => {
+            let deadline = Duration::from_millis(deadline_ms.get());
+            tokio::time::timeout(deadline, operation)
+                .await
+                .map_err(|_elapsed| deadline_exceeded(deadline))
+        }
+        GoalBound::Progress { .. } => Ok(operation.await),
     }
 }
 
@@ -894,22 +946,19 @@ impl ExposureSet {
     }
 }
 
-/// The whole task operation: the optional confirmation gate, the bridge,
-/// and the exposure's whole-goal deadline around both. Enforcing the
-/// deadline here (rather than leaving it to the manager's TTL sweep) makes
-/// it prompt and gives the failure a descriptive message.
+/// The whole task operation: the optional confirmation gate and the
+/// bridge, under the goal's bound (see [`within_goal_bound`]). Enforcing a
+/// whole-goal deadline here (rather than leaving it to the manager's TTL
+/// sweep) makes it prompt and gives the failure a descriptive message.
 async fn run_task_operation(
     task: Arc<TaskState>,
     call: ToolCall,
     context: TaskContext,
 ) -> Result<CallToolResult, TaskExit> {
-    let deadline = Duration::from_millis(task.entry.deadline_ms.get());
-    match tokio::time::timeout(deadline, drive_task(task, call, context)).await {
+    let bound = task.entry.bound;
+    match within_goal_bound(bound, drive_task(task, call, context)).await {
         Ok(result) => result,
-        Err(_elapsed) => Err(TaskExit::Error(McpError::internal_error(
-            deadline_exceeded(deadline),
-            None,
-        ))),
+        Err(overrun) => Err(TaskExit::Error(McpError::internal_error(overrun, None))),
     }
 }
 
@@ -950,7 +999,12 @@ async fn drive_task(
     };
     match task.handler.start(call, action_context).await {
         Ok(value) => Ok(CallToolResult::structured(value)),
-        Err(ActionExit::Cancelled) => Err(TaskExit::Cancelled),
+        // A `cancelled` task carries no result: its status message says
+        // why, with the result the provider ended the goal with.
+        Err(ActionExit::Cancelled(goal)) => {
+            context.set_status_message(goal.status_message());
+            Err(TaskExit::Cancelled)
+        }
         Err(ActionExit::Failed(message)) => {
             Err(TaskExit::Error(McpError::internal_error(message, None)))
         }
@@ -1409,6 +1463,7 @@ impl ServerHandler for ExposureServer {
 mod tests {
     use super::*;
     use crate::clock::test_support::manual_clock;
+    use crate::tasks::CancelledGoal;
     use rmcp::model::ErrorCode;
     use std::sync::atomic::Ordering;
 
@@ -1796,8 +1851,15 @@ mod tests {
         );
     }
 
+    /// The result a provider ends a cancelled `recorder.resume_session`
+    /// goal with.
+    fn cancelled_resume() -> Value {
+        json!({ "resumed": false })
+    }
+
     #[tokio::test]
-    async fn closing_the_call_cancels_the_goal_and_the_cancelled_exit_is_a_tool_error() {
+    async fn closing_the_call_cancels_the_goal_and_the_cancelled_exit_is_a_tool_error_with_the_result()
+     {
         let cancel_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = Arc::clone(&cancel_seen);
         let server = ExposureServer::builder(task_bundle())
@@ -1811,7 +1873,10 @@ mod tests {
                         context.cancel_requested().await;
                         assert!(context.is_cancel_requested());
                         cancel_seen.store(true, Ordering::SeqCst);
-                        Err(ActionExit::Cancelled)
+                        Err(ActionExit::Cancelled(CancelledGoal {
+                            result: cancelled_resume(),
+                            reason: None,
+                        }))
                     }
                 },
             )
@@ -1831,6 +1896,12 @@ mod tests {
         .expect("a cancelled goal is a tool error, not a protocol error");
         assert!(cancel_seen.load(Ordering::SeqCst));
         assert_eq!(tool_error_text(&result), "the action was cancelled");
+        assert_eq!(result.structured_content, Some(cancelled_resume()));
+        assert_eq!(
+            result.content.get(1),
+            Some(&ContentBlock::text(cancelled_resume().to_string())),
+            "the provider's result is also the text after the summary"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1935,7 +2006,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn feedback_reports_as_the_status_message_and_cancel_settles_cancelled() {
+    async fn feedback_reports_as_the_status_message_and_a_cancelled_goal_cancels_the_task_saying_why()
+     {
         let server = ExposureServer::builder(task_bundle())
             .with_tool("front_camera.set_brightness", brightness_handler)
             .with_task("recorder.record_episode", record_handler)
@@ -1944,7 +2016,10 @@ mod tests {
                 |_call: ToolCall, context: crate::tasks::ActionContext| async move {
                     context.report_feedback("resuming at frame 42");
                     context.cancel_requested().await;
-                    Err(ActionExit::Cancelled)
+                    Err(ActionExit::Cancelled(CancelledGoal {
+                        result: cancelled_resume(),
+                        reason: Some("no progress within 2000 ms".to_owned()),
+                    }))
                 },
             )
             .build()
@@ -1961,6 +2036,13 @@ mod tests {
         server.state.manager.cancel_task(&task_id).expect("cancels");
         let task = settled(&server, &task_id).await;
         assert_eq!(task.status(), rmcp::model::TaskStatus::Cancelled);
+        assert_eq!(
+            task.task.status_message,
+            Some(format!(
+                "the action was cancelled: no progress within 2000 ms: {}",
+                cancelled_resume()
+            ))
+        );
     }
 
     #[tokio::test]
@@ -2132,6 +2214,124 @@ mod tests {
                 message.contains("deadline exceeded") && message.contains("2000 ms")
             }),
             "got {error:?}"
+        );
+    }
+
+    /// The progress window of the goals below, the same value as the
+    /// whole-goal deadline of `task_bundle`'s `recorder.resume_session`.
+    const PROGRESS_WINDOW_MS: u64 = 2000;
+
+    /// `task_bundle` with `recorder.resume_session` bounded by its progress
+    /// rather than by a whole-goal deadline.
+    fn progress_bundle() -> ExposureBundle {
+        let mut bundle = task_bundle();
+        let resume = bundle
+            .tasks
+            .iter_mut()
+            .find(|task| task.name == "recorder.resume_session")
+            .expect("the bundle exposes resume_session");
+        resume.bound = GoalBound::Progress {
+            window_ms: std::num::NonZeroU64::new(PROGRESS_WINDOW_MS).expect("nonzero"),
+        };
+        bundle
+    }
+
+    /// A server over `bundle` whose `recorder.resume_session` goal reports
+    /// that it runs, notifies `started`, then holds until `gate` is
+    /// notified, however long the clock has run by then. The runtime sees
+    /// no sign of progress in that time: bounding it is the bridge's part,
+    /// which this handler stands in for.
+    fn server_with_gated_resume(
+        bundle: ExposureBundle,
+        started: Arc<tokio::sync::Notify>,
+        gate: Arc<tokio::sync::Notify>,
+    ) -> ExposureServer {
+        ExposureServer::builder(bundle)
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task("recorder.record_episode", record_handler)
+            .with_task(
+                "recorder.resume_session",
+                move |_call: ToolCall, context: crate::tasks::ActionContext| {
+                    let started = Arc::clone(&started);
+                    let gate = Arc::clone(&gate);
+                    async move {
+                        context.report_feedback("resuming");
+                        started.notify_one();
+                        gate.notified().await;
+                        Ok(json!({ "resumed": true }))
+                    }
+                },
+            )
+            .build()
+            .expect("builds")
+    }
+
+    /// Ten windows of the progress-bound goals: far past any whole-goal
+    /// deadline of the same value.
+    const TEN_WINDOWS: Duration = Duration::from_millis(10 * PROGRESS_WINDOW_MS);
+
+    #[tokio::test(start_paused = true)]
+    async fn a_progress_bound_goal_inside_a_call_is_not_cut_by_a_whole_goal_timeout() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let server =
+            server_with_gated_resume(progress_bundle(), Arc::clone(&started), Arc::clone(&gate));
+        let mut call = std::pin::pin!(run_in_call(
+            &server,
+            "recorder.resume_session",
+            JsonObject::new(),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        tokio::select! {
+            biased;
+            () = started.notified() => {}
+            result = &mut call => panic!("the goal settled before it ran: {result:?}"),
+        }
+
+        tokio::time::advance(TEN_WINDOWS).await;
+        if let std::task::Poll::Ready(result) = futures::poll!(&mut call) {
+            panic!("the runtime cut the goal after ten windows: {result:?}");
+        }
+        gate.notify_one();
+        let result = call.await.expect("the call answers with the goal's result");
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        assert_eq!(result.structured_content, Some(json!({ "resumed": true })));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_progress_bound_task_lives_one_day_and_is_not_cut_by_a_whole_goal_timeout() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let server =
+            server_with_gated_resume(progress_bundle(), Arc::clone(&started), Arc::clone(&gate));
+        let created = start_task(&server, "recorder.resume_session", JsonObject::new())
+            .expect("the task starts");
+        let task_id = created.task.task_id;
+        started.notified().await;
+
+        tokio::time::advance(TEN_WINDOWS).await;
+        // Lets a deadline that fired act before the task is read.
+        tokio::task::yield_now().await;
+        let running = server
+            .state
+            .manager
+            .get_task(&task_id)
+            .expect("task exists");
+        assert!(
+            !running.status().is_terminal(),
+            "the runtime cut the task after ten windows: {:?}",
+            running.payload
+        );
+        gate.notify_one();
+        let task = settled(&server, &task_id).await;
+        let rmcp::model::TaskPayload::Completed { result } = task.payload else {
+            panic!("expected a completed task, got {:?}", task.payload);
+        };
+        assert_eq!(result["structuredContent"], json!({ "resumed": true }));
+        assert_eq!(
+            created.task.ttl_ms,
+            Some(24 * 60 * 60 * 1000),
+            "a progress-bound task runs for at most one day"
         );
     }
 
