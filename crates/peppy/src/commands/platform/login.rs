@@ -12,7 +12,7 @@ use daemon_config::consts::PeppyDirs;
 use crate::commands::Command;
 use crate::context::AppContext;
 use crate::error::Result;
-use auth::device::{self, TokenSet};
+use auth::device::{self, DeviceAuthorization, TokenSet};
 use auth::discovery::OidcEndpoints;
 use auth::{cli_config, client, discovery, http::HttpClient, profile, resolver, storage};
 use url::Url;
@@ -148,20 +148,14 @@ fn run_device_flow(
 ) -> Result<TokenSet> {
     use std::io::IsTerminal;
 
-    let da = device::start(
-        http,
-        endpoints,
-        client_id,
-        scopes,
-        profile::build_transport_policy(),
-    )?;
+    let da = device::start(http, endpoints, client_id, scopes)?;
 
-    let link = device::verification_link(device_page, &da.user_code);
-    print!("{}", sign_in_instructions(&link, &da.user_code));
+    let prompt = sign_in_prompt(device_page, &da);
+    print!("{}", prompt.text);
 
     if !no_browser && std::io::stdout().is_terminal() {
         // Best-effort: a headless box without a browser just keeps the printed URL.
-        if open::that(link.as_str()).is_ok() {
+        if open::that(prompt.link.as_str()).is_ok() {
             println!("(opened your browser…)");
         }
     }
@@ -174,25 +168,57 @@ fn run_device_flow(
     Ok(result?)
 }
 
-/// The text that tells a person where to approve the login: the platform's own
-/// device page, whose link already carries the code, and the code itself,
-/// exactly as the identity provider issued it, so the person can compare it
-/// with the one the page shows.
-fn sign_in_instructions(link: &Url, user_code: &str) -> String {
-    format!("To sign in, open:\n    {link}\nand check that the page shows the code: {user_code}\n")
+/// What a person is shown and sent to for a started device login: the
+/// platform's own device page, whose link already carries the code, and the
+/// code itself, so the person can compare it with the one the page shows.
+/// Built from the authorization and the page alone, so nothing but the
+/// platform's page can reach the terminal or the browser.
+struct SignInPrompt {
+    text: String,
+    link: Url,
+}
+
+fn sign_in_prompt(device_page: &Url, authorization: &DeviceAuthorization) -> SignInPrompt {
+    let user_code = &authorization.user_code;
+    let link = device::verification_link(device_page, user_code);
+    let text = format!(
+        "To sign in, open:\n    {link}\nand check that the page shows the code: {user_code}\n"
+    );
+    SignInPrompt { text, link }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
+    /// T1: an identity provider answer that names its own pages, on another
+    /// host, reaches neither the printed text nor the browser.
     #[test]
-    fn the_platform_page_is_printed_with_the_code() {
-        let link = Url::parse("https://app.example.test/device?user_code=ABCD-EFGH").expect("link");
+    fn only_the_platform_page_is_printed_or_opened() {
+        let authorization: DeviceAuthorization = serde_json::from_value(json!({
+            "device_code": "the-device-code",
+            "user_code": "ABCD-EFGH",
+            "verification_uri": "https://issuer.example.test/device",
+            "verification_uri_complete": "https://issuer.example.test/device?user_code=ABCD-EFGH",
+            "expires_in": 300,
+            "interval": 5,
+        }))
+        .expect("a provider answer");
+        let page = Url::parse("https://app.example.test/device").expect("page");
+
+        let prompt = sign_in_prompt(&page, &authorization);
+
         assert_eq!(
-            sign_in_instructions(&link, "ABCD-EFGH"),
+            prompt.text,
             "To sign in, open:\n    https://app.example.test/device?user_code=ABCD-EFGH\n\
              and check that the page shows the code: ABCD-EFGH\n"
         );
+        assert_eq!(
+            prompt.link.as_str(),
+            "https://app.example.test/device?user_code=ABCD-EFGH"
+        );
+        assert!(!prompt.text.contains("issuer.example.test"));
+        assert_eq!(prompt.link.host_str(), Some("app.example.test"));
     }
 }

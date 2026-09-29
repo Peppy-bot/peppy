@@ -1,9 +1,10 @@
 //! RFC 8628 device-authorization grant, protocol only: [`start`] the flow, then
 //! [`poll`] the token endpoint until the user approves in the browser. The CLI
 //! never sees the user's Google/passkey credentials. Showing/opening the
-//! verification URL and any waiting UX are the caller's job (the `peppy platform
-//! login` command).
+//! platform's device page ([`verification_link`]) and any waiting UX are the
+//! caller's job (the `peppy platform login` command).
 
+use std::fmt;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -11,7 +12,6 @@ use url::Url;
 
 use super::discovery::OidcEndpoints;
 use super::http::HttpClient;
-use super::profile::{self, TransportPolicy};
 use super::storage::now_unix;
 use crate::error::{Error, Result};
 
@@ -30,15 +30,13 @@ pub struct TokenSet {
 
 /// A started device-authorization flow: the `user_code` the caller shows the
 /// user (on the page [`verification_link`] names) and what [`poll`] exchanges
-/// for tokens. The identity provider's verification addresses are validated
-/// on arrival and never shown.
+/// for tokens. The identity provider's `verification_uri` and
+/// `verification_uri_complete` are not read at all: the person is only ever
+/// sent to the platform's own device page.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceAuthorization {
     pub device_code: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    #[serde(default)]
-    pub verification_uri_complete: Option<String>,
+    pub user_code: UserCode,
     /// Flow lifetime in seconds; [`poll`] gives up past it.
     pub expires_in: i64,
     /// Server-suggested poll interval, seconds.
@@ -48,6 +46,63 @@ pub struct DeviceAuthorization {
 
 fn default_interval() -> u64 {
     5
+}
+
+/// A login code in the one shape the platform accepts: four ASCII letters or
+/// digits, an optional dash, four ASCII letters or digits (`ABCD-EFGH`). The
+/// code is printed to the terminal and put in a link, so a code outside this
+/// closed shape is refused where it enters the process, which keeps control
+/// sequences and anything else a terminal would act on off the screen.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct UserCode(String);
+
+impl UserCode {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for UserCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for UserCode {
+    type Error = UserCodeShapeError;
+
+    fn try_from(code: String) -> std::result::Result<Self, Self::Error> {
+        if has_user_code_shape(&code) {
+            Ok(Self(code))
+        } else {
+            Err(UserCodeShapeError)
+        }
+    }
+}
+
+/// The refusal of a code outside the [`UserCode`] shape. It never repeats the
+/// code, which is untrusted and may carry terminal control sequences.
+#[derive(Debug)]
+pub struct UserCodeShapeError;
+
+impl fmt::Display for UserCodeShapeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "the user code is not four letters or digits, an optional dash, and four \
+             letters or digits",
+        )
+    }
+}
+
+fn has_user_code_shape(code: &str) -> bool {
+    let (head, tail) = match code.split_once('-') {
+        Some(halves) => halves,
+        None => (code.get(..4).unwrap_or(""), code.get(4..).unwrap_or("")),
+    };
+    [head, tail]
+        .iter()
+        .all(|half| half.len() == 4 && half.bytes().all(|byte| byte.is_ascii_alphanumeric()))
 }
 
 /// The JSON body of a successful token-endpoint response (device or refresh
@@ -141,14 +196,15 @@ fn classify(error: &str) -> PollOutcome {
 }
 
 /// Starts the device flow against `endpoints`, requesting `scopes` verbatim.
-/// The caller shows the returned code/URL to the user, then exchanges the
-/// authorization for tokens with [`poll`].
+/// The endpoint has already passed the transport policy in discovery. The
+/// answer's `user_code` must have the [`UserCode`] shape or the flow is
+/// refused. The caller shows the code and the platform's device page to the
+/// user, then exchanges the authorization for tokens with [`poll`].
 pub fn start(
     http: &HttpClient,
     endpoints: &OidcEndpoints,
     client_id: &str,
     scopes: &str,
-    policy: TransportPolicy,
 ) -> Result<DeviceAuthorization> {
     let start = http.post_form(
         &endpoints.device_authorization_endpoint,
@@ -162,62 +218,7 @@ pub fn start(
             start.status
         )));
     }
-    let mut authorization: DeviceAuthorization = start.json("device authorization")?;
-    canonicalize_verification_urls(endpoints, &mut authorization, policy)?;
-    Ok(authorization)
-}
-
-/// Validates the verification URLs and writes the canonical parsed forms back,
-/// so the caller prints and browser-opens a value that has passed the transport
-/// policy rather than the raw server string.
-///
-/// Both URLs are server supplied, one of them is opened automatically, and a
-/// user typing a code into whatever page appears is exactly the flow a phishing
-/// URL wants. An HTTPS device endpoint therefore cannot hand back a cleartext
-/// verification URL, not even a loopback one.
-///
-/// An absent `verification_uri_complete` is not an error: it is optional in RFC
-/// 8628, so a `None` stays `None` and the flow proceeds on `verification_uri`
-/// alone. `verification_uri` itself is required and is always validated.
-fn canonicalize_verification_urls(
-    endpoints: &OidcEndpoints,
-    authorization: &mut DeviceAuthorization,
-    policy: TransportPolicy,
-) -> Result<()> {
-    let device_endpoint = profile::validate_https_or_local_with(
-        &endpoints.device_authorization_endpoint,
-        "OIDC device authorization endpoint",
-        policy,
-    )?;
-    let verification = profile::validate_https_or_local_with(
-        &authorization.verification_uri,
-        "device verification URI",
-        policy,
-    )?;
-    if device_endpoint.scheme() == "https" && verification.scheme() != "https" {
-        return Err(Error::Auth(
-            "device verification URI attempts an HTTPS to HTTP downgrade".into(),
-        ));
-    }
-    authorization.verification_uri = verification.to_string();
-    authorization.verification_uri_complete = authorization
-        .verification_uri_complete
-        .as_deref()
-        .map(|complete| {
-            let parsed = profile::validate_https_or_local_with(
-                complete,
-                "complete device verification URI",
-                policy,
-            )?;
-            if device_endpoint.scheme() == "https" && parsed.scheme() != "https" {
-                return Err(Error::Auth(
-                    "complete device verification URI attempts an HTTPS to HTTP downgrade".into(),
-                ));
-            }
-            Ok(parsed.to_string())
-        })
-        .transpose()?;
-    Ok(())
+    start.json("device authorization")
 }
 
 /// The query parameter that carries the login code to a device page. It is the
@@ -229,11 +230,11 @@ pub const USER_CODE_PARAMETER: &str = "user_code";
 /// own device page with the code in the `user_code` query parameter, so the
 /// page opens with the code filled in. The identity provider's
 /// `verification_uri` and `verification_uri_complete` are never used for it.
-pub fn verification_link(device_page: &Url, user_code: &str) -> Url {
+pub fn verification_link(device_page: &Url, user_code: &UserCode) -> Url {
     let mut link = device_page.clone();
     link.query_pairs_mut()
         .clear()
-        .append_pair(USER_CODE_PARAMETER, user_code);
+        .append_pair(USER_CODE_PARAMETER, user_code.as_str());
     link
 }
 
@@ -292,48 +293,87 @@ mod tests {
     fn device_auth(interval: u64, expires_in: i64) -> DeviceAuthorization {
         DeviceAuthorization {
             device_code: "dev-123".into(),
-            user_code: "ABCD-EFGH".into(),
-            verification_uri: "https://issuer.example/device".into(),
-            verification_uri_complete: None,
+            user_code: UserCode::try_from("ABCD-EFGH".to_string()).expect("code"),
             expires_in,
             interval,
         }
     }
 
+    fn endpoints(server: &MockServer) -> OidcEndpoints {
+        OidcEndpoints {
+            device_authorization_endpoint: format!("{}/device", server.base_url()),
+            token_endpoint: format!("{}/token", server.base_url()),
+            revocation_endpoint: None,
+        }
+    }
+
+    fn code(raw: &str) -> UserCode {
+        UserCode::try_from(raw.to_string()).expect("a well-shaped code")
+    }
+
     #[test]
-    fn device_start_rejects_an_insecure_complete_verification_url() {
+    fn user_codes_in_the_closed_shape_are_accepted() {
+        for raw in ["ABCD-EFGH", "ABCDEFGH", "abcd-1234", "0000-ZZZZ"] {
+            assert_eq!(code(raw).as_str(), raw);
+        }
+    }
+
+    #[test]
+    fn user_codes_outside_the_closed_shape_are_refused() {
+        for raw in [
+            "",
+            "ABC-EFGH",
+            "ABCD-EFG",
+            "ABCD--EFGH",
+            "ABCDE-FGH",
+            "ABCD-EFGH-",
+            "ABCDEFGHI",
+            "ABCD EFGH",
+            "ABCD_EFGH",
+            "ÄBCD-EFGH",
+            "ABCD-EFG\u{1b}",
+        ] {
+            assert!(
+                UserCode::try_from(raw.to_string()).is_err(),
+                "{raw:?} must be refused"
+            );
+        }
+    }
+
+    /// T2: a device authorization whose code carries terminal control
+    /// sequences is refused before anything can print it, and the refusal
+    /// does not repeat the code.
+    #[test]
+    fn device_start_refuses_a_user_code_with_control_characters() {
+        let hostile = "\u{1b}[1A\u{1b}[2KAB\u{7}D-EFGH";
         let server = MockServer::start();
-        let authorization = server.mock(|when, then| {
+        server.mock(|when, then| {
             when.method(POST).path("/device");
             then.status(200).json_body(json!({
                 "device_code": "dev-123",
-                "user_code": "ABCD-EFGH",
+                "user_code": hostile,
                 "verification_uri": "https://issuer.example/device",
-                "verification_uri_complete": "http://phishing.example/device?code=ABCD-EFGH",
                 "expires_in": 300,
                 "interval": 5,
             }));
         });
-        let endpoints = OidcEndpoints {
-            device_authorization_endpoint: format!("{}/device", server.base_url()),
-            token_endpoint: format!("{}/token", server.base_url()),
-            revocation_endpoint: None,
-        };
 
-        let error = start(
-            &HttpClient::new(),
-            &endpoints,
-            "client",
-            "openid",
-            TransportPolicy::Strict,
-        )
-        .expect_err("a remote cleartext URL must never reach browser-opening code");
-        assert!(error.to_string().contains("plain http"), "{error}");
-        assert_eq!(authorization.calls(), 1);
+        let error = start(&HttpClient::new(), &endpoints(&server), "client", "openid")
+            .expect_err("a code outside the shape never reaches the terminal");
+        let message = error.to_string();
+        assert!(
+            message.contains("user code is not four letters"),
+            "{message}"
+        );
+        assert!(!message.contains('\u{1b}'), "{message:?}");
+        assert!(!message.contains('\u{7}'), "{message:?}");
     }
 
+    /// The identity provider's verification addresses are not read: an answer
+    /// whose addresses would fail every transport check still starts the flow,
+    /// because nothing in the CLI uses them.
     #[test]
-    fn device_start_rejects_an_insecure_primary_verification_url() {
+    fn device_start_ignores_the_identity_provider_addresses() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST).path("/device");
@@ -341,65 +381,27 @@ mod tests {
                 "device_code": "dev-123",
                 "user_code": "ABCD-EFGH",
                 "verification_uri": "http://phishing.example/device",
+                "verification_uri_complete": "javascript:alert(1)",
                 "expires_in": 300,
                 "interval": 5,
             }));
         });
-        let endpoints = OidcEndpoints {
-            device_authorization_endpoint: format!("{}/device", server.base_url()),
-            token_endpoint: format!("{}/token", server.base_url()),
-            revocation_endpoint: None,
-        };
 
-        let error = start(
-            &HttpClient::new(),
-            &endpoints,
-            "client",
-            "openid",
-            TransportPolicy::Strict,
-        )
-        .expect_err("the primary remote cleartext URL must be rejected too");
-        assert!(error.to_string().contains("plain http"), "{error}");
-    }
-
-    #[test]
-    fn https_device_endpoint_rejects_a_loopback_http_verification_downgrade() {
-        let endpoints = OidcEndpoints {
-            device_authorization_endpoint: "https://issuer.example/device".into(),
-            token_endpoint: "https://issuer.example/token".into(),
-            revocation_endpoint: None,
-        };
-        let mut authorization = device_auth(5, 300);
-        authorization.verification_uri = "http://127.0.0.1/device".into();
-
-        let error =
-            canonicalize_verification_urls(&endpoints, &mut authorization, TransportPolicy::Strict)
-                .expect_err("an https issuer flow cannot downgrade even to loopback http");
-        assert!(error.to_string().contains("downgrade"), "{error}");
+        let authorization = start(&HttpClient::new(), &endpoints(&server), "client", "openid")
+            .expect("the provider's addresses play no part");
+        assert_eq!(authorization.user_code.as_str(), "ABCD-EFGH");
     }
 
     #[test]
     fn the_link_carries_the_code_as_user_code_exactly() {
         let page = Url::parse("https://app.example.test/device").expect("page");
-        let link = verification_link(&page, "ABCD-EFGH");
+        let link = verification_link(&page, &code("ABCD-EFGH"));
         assert_eq!(
             link.as_str(),
             "https://app.example.test/device?user_code=ABCD-EFGH"
         );
         let pairs: Vec<(String, String)> = link.query_pairs().into_owned().collect();
         assert_eq!(pairs, [("user_code".to_string(), "ABCD-EFGH".to_string())]);
-    }
-
-    #[test]
-    fn the_link_escapes_a_hostile_code_into_one_parameter() {
-        let page = Url::parse("https://app.example.test/device").expect("page");
-        let link = verification_link(&page, "AB&code=x#y");
-        let pairs: Vec<(String, String)> = link.query_pairs().into_owned().collect();
-        assert_eq!(
-            pairs,
-            [("user_code".to_string(), "AB&code=x#y".to_string())]
-        );
-        assert_eq!(link.fragment(), None);
     }
 
     #[test]
