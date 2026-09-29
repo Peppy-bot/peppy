@@ -38,6 +38,8 @@ MERGE_SET = Path(__file__).resolve().parent
 STACK = MERGE_SET / "webhook-stack.yml"
 IMPORT_SCRIPT = MERGE_SET / "import-app-key.sh"
 DEPLOY_WORKFLOW = "merge-set-webhook.yml"
+# The tag of every AWS resource of the CI of Peppy-bot.
+STACK_TAG = "Stack=peppy-ci-pipelines"
 
 SECRET = b"webhook-secret"
 CLIENT_ID = "Iv23client"
@@ -529,6 +531,9 @@ class RepositoryFacts(unittest.TestCase):
         self.assertIn("runs-on: ubuntu-slim", lines)
         (timeout,) = [line for line in lines if line.startswith("timeout-minutes:")]
         self.assertLessEqual(int(timeout.split(":")[1]), 15)
+
+    def test_the_deploy_command_of_the_stack_tags_its_resources(self):
+        self.assertIn(f"#     --tags {STACK_TAG}", STACK.read_text().splitlines())
 
     def test_the_import_script_imports_into_the_key_of_the_stack(self):
         lines = [line.strip() for line in IMPORT_SCRIPT.read_text().splitlines()]

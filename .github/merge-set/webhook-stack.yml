@@ -10,7 +10,11 @@ Description: >-
 #   aws cloudformation deploy --region us-east-1 \
 #     --stack-name peppy-merge-set-webhook \
 #     --template-file .github/merge-set/webhook-stack.yml \
-#     --capabilities CAPABILITY_NAMED_IAM
+#     --capabilities CAPABILITY_NAMED_IAM \
+#     --tags Stack=peppy-ci-pipelines
+#
+# CloudFormation copies the tag of the stack onto each of its resources that
+# takes tags.
 #
 # The stack holds no code of the function: the Merge set webhook workflow of
 # peppy (.github/workflows/merge-set-webhook.yml) deploys it from `dev`, with
