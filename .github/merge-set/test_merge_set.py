@@ -189,9 +189,12 @@ class Repositories(unittest.TestCase):
     def test_a_repository_outside_every_set_is_refused(self):
         with self.assertRaises(MergeSetError):
             merge_set.repository_named("landing-page")
-        with self.assertRaises(MergeSetError):
-            merge_set.repository_of_full_name("someone/peppy")
+
+    def test_a_full_name_names_a_repository_of_a_set_or_none(self):
         self.assertIs(merge_set.repository_of_full_name("Peppy-bot/peppy"), PEPPY)
+        self.assertIs(merge_set.repository_of_full_name("peppy-bot/peppy"), PEPPY)
+        self.assertIsNone(merge_set.repository_of_full_name("someone/peppy"))
+        self.assertIsNone(merge_set.repository_of_full_name("Peppy-bot/landing-page"))
 
 
 class Events(unittest.TestCase):
@@ -227,23 +230,41 @@ class Events(unittest.TestCase):
 
 
 class Relay(unittest.TestCase):
-    def test_a_pull_request_event_names_its_branch_and_head_repository(self):
-        payload = {
-            "pull_request": {
-                "number": 12,
-                "head": {"ref": SET_NAME, "repo": {"full_name": "Peppy-bot/nodes-hub"}},
-            }
-        }
-        self.assertEqual(
-            merge_set.relay_subject("pull_request_target", payload),
-            merge_set.RelaySubject(12, SET_NAME, "Peppy-bot/nodes-hub"),
+    # The events of pull request 7 of nodes-hub, from branch SET_NAME into
+    # main, as the webhook of the App gets them.
+
+    def assert_relayed(self, event_name, payload, subject):
+        self.assertEqual(merge_set.relay_subject(event_name, payload, BOT), subject)
+
+    def assert_dropped(self, event_name, payload):
+        self.assertIsNone(merge_set.relay_subject(event_name, payload, BOT))
+
+    def test_a_pull_request_that_changes_names_its_branch_and_head_repository(self):
+        for action in sorted(merge_set.PULL_REQUEST_ACTIONS - {"edited"}):
+            with self.subTest(action=action):
+                self.assert_relayed(
+                    "pull_request", pull_request_event(action), PULL_REQUEST_SUBJECT
+                )
+
+    def test_a_pull_request_moved_onto_the_default_branch_is_relayed(self):
+        moved = pull_request_event("edited", changes={"base": {"ref": {"from": "x"}}})
+        self.assert_relayed("pull_request", moved, PULL_REQUEST_SUBJECT)
+        self.assert_dropped(
+            "pull_request",
+            pull_request_event("edited", changes={"title": {"from": "x"}}),
         )
 
+    def test_a_pull_request_into_another_branch_or_that_does_not_change_is_dropped(
+        self,
+    ):
+        self.assert_dropped("pull_request", pull_request_event("opened", base="other"))
+        for action in ("labeled", "assigned", "review_requested"):
+            with self.subTest(action=action):
+                self.assert_dropped("pull_request", pull_request_event(action))
+
     def test_a_pull_request_from_a_deleted_fork_has_no_head_repository(self):
-        payload = {
-            "pull_request": {"number": 12, "head": {"ref": SET_NAME, "repo": None}}
-        }
-        subject = merge_set.relay_subject("pull_request_target", payload)
+        payload = pull_request_event("opened", head_repository=None)
+        subject = merge_set.relay_subject("pull_request", payload, BOT)
         self.assertIsNone(subject.head_repository)
         inputs = merge_set.dispatch_inputs(NODES_HUB, subject)
         self.assertEqual(inputs["head-repository"], "")
@@ -255,74 +276,107 @@ class Relay(unittest.TestCase):
         )
         self.assertTrue(event.from_fork)
 
-    def test_a_comment_names_its_pull_request_alone(self):
-        subject = merge_set.relay_subject("issue_comment", {"issue": {"number": 7}})
+    def test_a_review_that_changes_the_approvals_is_relayed(self):
+        for action in sorted(merge_set.REVIEW_ACTIONS):
+            with self.subTest(action=action):
+                self.assert_relayed(
+                    "pull_request_review",
+                    pull_request_event(action),
+                    PULL_REQUEST_SUBJECT,
+                )
+        self.assert_dropped("pull_request_review", pull_request_event("edited"))
+        self.assert_dropped(
+            "pull_request_review", pull_request_event("submitted", base="other")
+        )
+
+    def test_a_user_edit_of_a_dashboard_names_its_pull_request_alone(self):
+        subject = merge_set.relay_subject(
+            "issue_comment", comment_edit(dashboard_text(), dashboard_text()), BOT
+        )
         self.assertEqual(subject, merge_set.RelaySubject(7, None, None))
         with self.assertRaises(MergeSetError):
             merge_set.dispatch_inputs(NODES_HUB, subject)
 
-    def test_a_ci_run_names_its_branch_and_its_pull_request(self):
-        payload = {
-            "workflow_run": {
-                "head_branch": SET_NAME,
-                "head_repository": {"full_name": "Peppy-bot/nodes-hub"},
-                "pull_requests": [{"number": 12}],
-            }
-        }
-        self.assertEqual(
-            merge_set.relay_subject("workflow_run", payload),
-            merge_set.RelaySubject(12, SET_NAME, "Peppy-bot/nodes-hub"),
+    def test_every_other_comment_event_is_dropped(self):
+        def edit(**changes):
+            payload = comment_edit(dashboard_text(), dashboard_text(Action.MERGE))
+            for path, value in changes.items():
+                *parents, key = path.split("__")
+                node = payload
+                for parent in parents:
+                    node = node[parent]
+                node[key] = value
+            return payload
+
+        for case, payload in (
+            ("a new comment", edit(action="created")),
+            ("a comment of an issue", edit(issue__pull_request=None)),
+            ("a comment of a user", edit(comment__user__login="alice")),
+            ("a comment of another bot", edit(comment__user__login="other[bot]")),
+            ("an edit of a bot", edit(sender__type="Bot")),
+            ("another comment of the bot", edit(comment__body="Merged.")),
+        ):
+            with self.subTest(case=case):
+                self.assert_dropped("issue_comment", payload)
+
+    def test_the_start_and_the_end_of_a_ci_run_name_its_branch_and_pull_request(
+        self,
+    ):
+        for action in ("requested", "completed"):
+            with self.subTest(action=action):
+                self.assert_relayed(
+                    "workflow_run", ci_run_event(action), PULL_REQUEST_SUBJECT
+                )
+
+    def test_the_start_of_a_re_run_alone_is_relayed_as_in_progress(self):
+        # GitHub sends no `requested` for a re-run.
+        self.assert_dropped("workflow_run", ci_run_event("in_progress", attempt=1))
+        self.assert_relayed(
+            "workflow_run",
+            ci_run_event("in_progress", attempt=2),
+            PULL_REQUEST_SUBJECT,
         )
 
+    def test_a_run_of_another_workflow_or_event_is_dropped(self):
+        self.assert_dropped("workflow_run", ci_run_event("completed", workflow="Lint"))
+        self.assert_dropped("workflow_run", ci_run_event("completed", event="push"))
+
     def test_a_ci_run_of_a_fork_names_no_pull_request(self):
-        payload = {
-            "workflow_run": {
-                "head_branch": SET_NAME,
-                "head_repository": {"full_name": "someone/nodes-hub"},
-                "pull_requests": [],
-            }
-        }
-        subject = merge_set.relay_subject("workflow_run", payload)
+        payload = ci_run_event("completed", head_repository="someone/nodes-hub")
+        payload["workflow_run"]["pull_requests"] = []
+        subject = merge_set.relay_subject("workflow_run", payload, BOT)
         self.assertIsNone(subject.pull_request)
         self.assertEqual(
             merge_set.dispatch_inputs(NODES_HUB, subject)["pull-request"], ""
         )
 
     def test_a_deleted_branch_is_relayed_and_a_deleted_tag_is_not(self):
-        branch = {
-            "ref": SET_NAME,
-            "ref_type": "branch",
-            "repository": {"full_name": "Peppy-bot/peppy"},
-        }
-        self.assertEqual(
-            merge_set.relay_subject("delete", branch),
-            merge_set.RelaySubject(None, SET_NAME, "Peppy-bot/peppy"),
+        branch = webhook_event(ref=SET_NAME, ref_type="branch")
+        self.assert_relayed(
+            "delete",
+            branch,
+            merge_set.RelaySubject(None, SET_NAME, "Peppy-bot/nodes-hub"),
         )
-        tag = {**branch, "ref_type": "tag"}
-        self.assertIsNone(merge_set.relay_subject("delete", tag))
+        self.assert_dropped("delete", {**branch, "ref_type": "tag"})
 
-    def test_an_event_the_relay_does_not_serve_is_refused(self):
-        with self.assertRaises(MergeSetError):
-            merge_set.relay_subject("push", {})
-        with self.assertRaises(MergeSetError):
-            merge_set.relay_subject("pull_request_target", {"pull_request": {}})
+    def test_an_event_the_relay_does_not_serve_is_dropped(self):
+        for event_name in ("push", "installation", "check_run"):
+            with self.subTest(event_name=event_name):
+                self.assert_dropped(event_name, webhook_event(action="created"))
 
-    def relay(self, event_name, payload, **tokens):
-        """The API calls of the relay for an event of nodes-hub, each (token,
-        method, path, body), and what it prints. The relay gets the job token
-        and the tokens it is given by name."""
+    def test_an_event_without_what_the_relay_reads_is_refused(self):
+        with self.assertRaises(MergeSetError):
+            merge_set.relay_subject("pull_request", {"pull_request": {}}, BOT)
+
+    def relay(self, event_name, payload):
+        """What the relay says, and its API calls, each (token, method, path,
+        body). The token of each call names its scope."""
         calls = []
 
         def request(api, method, path, query=None, body=None):
             calls.append((api.token, method, path, body))
             if method == "GET":
-                return {
-                    "number": 7,
-                    "head": {
-                        "ref": SET_NAME,
-                        "repo": {"full_name": "Peppy-bot/nodes-hub"},
-                    },
-                }
+                return pull_request_item()
             if path.endswith("/dispatches"):
                 return {
                     "workflow_run_id": 99,
@@ -331,70 +385,64 @@ class Relay(unittest.TestCase):
                 }
             return {"id": 1}
 
-        output = io.StringIO()
-        with tempfile.TemporaryDirectory() as directory:
-            event_path = Path(directory) / "event.json"
-            event_path.write_text(json.dumps(payload))
-            environment = {
-                "GITHUB_REPOSITORY": "Peppy-bot/nodes-hub",
-                "GITHUB_EVENT_NAME": event_name,
-                "GITHUB_EVENT_PATH": str(event_path),
-                "PULL_REQUEST_READ_TOKEN": "job-token",
-                **tokens,
-            }
-            with (
-                patch.object(merge_set.GitHubApi, "request", request),
-                patch("sys.stdout", output),
-            ):
-                merge_set.run_relay(environment)
-        return calls, output.getvalue()
+        with patch.object(merge_set.GitHubApi, "request", request):
+            text = merge_set.relay(
+                event_name,
+                payload,
+                BOT,
+                lambda scope: merge_set.GitHubApi(token_of_scope(scope)),
+            )
+        return text, calls
 
-    def dispatch(self, token="app-token"):
-        return (
-            token,
-            "POST",
-            "/repos/Peppy-bot/peppy/actions/workflows/merge-set.yml/dispatches",
-            {
-                "ref": "dev",
-                "inputs": {
-                    "repository": "nodes-hub",
-                    "branch": SET_NAME,
-                    "head-repository": "Peppy-bot/nodes-hub",
-                    "pull-request": "7",
-                },
-                "return_run_details": True,
+    DISPATCH = (
+        "peppy:actions=write",
+        "POST",
+        "/repos/Peppy-bot/peppy/actions/workflows/merge-set.yml/dispatches",
+        {
+            "ref": "dev",
+            "inputs": {
+                "repository": "nodes-hub",
+                "branch": SET_NAME,
+                "head-repository": "Peppy-bot/nodes-hub",
+                "pull-request": "7",
             },
-        )
+            "return_run_details": True,
+        },
+    )
 
-    def test_the_relay_reads_the_branch_of_a_comment_and_starts_the_sync(self):
-        # An edit that ticks no box needs no token to answer with.
+    def test_the_relay_starts_the_sync_for_an_event_that_can_change_a_set(self):
+        text, calls = self.relay("pull_request", pull_request_event("synchronize"))
+        self.assertEqual(calls, [self.DISPATCH])
+        self.assertIn(RELAY_RUN_URL, text)
+
+    def test_the_relay_reads_the_branch_of_a_dashboard_edit(self):
         edit = comment_edit(before=dashboard_text(), after=dashboard_text() + "x")
-        calls, log = self.relay("issue_comment", edit, MERGE_SET_TOKEN="app-token")
+        text, calls = self.relay("issue_comment", edit)
         self.assertEqual(
             calls,
             [
-                ("job-token", "GET", "/repos/Peppy-bot/nodes-hub/pulls/7", None),
-                self.dispatch(),
+                (
+                    "nodes-hub:pull_requests=write",
+                    "GET",
+                    "/repos/Peppy-bot/nodes-hub/pulls/7",
+                    None,
+                ),
+                self.DISPATCH,
             ],
         )
-        self.assertIn(RELAY_RUN_URL, log)
+        self.assertNotIn("Answered", text)
 
     def test_a_ticked_box_is_answered_on_its_pull_request_with_the_run(self):
         edit = comment_edit(
             before=dashboard_text(), after=dashboard_text(Action.MERGE), login="bob"
         )
-        calls, _ = self.relay(
-            "issue_comment",
-            edit,
-            MERGE_SET_TOKEN="app-token",
-            COMMENT_TOKEN="comment-token",
-        )
+        text, calls = self.relay("issue_comment", edit)
         self.assertEqual(
             calls[1:],
             [
-                self.dispatch(),
+                self.DISPATCH,
                 (
-                    "comment-token",
+                    "nodes-hub:pull_requests=write",
                     "POST",
                     "/repos/Peppy-bot/nodes-hub/issues/7/comments",
                     {
@@ -405,18 +453,19 @@ class Relay(unittest.TestCase):
                 ),
             ],
         )
+        self.assertTrue(text.endswith("Answered the request of @bob on #7."))
 
-    def test_the_relay_answers_no_other_event(self):
-        payload = {
-            "pull_request": {
-                "number": 7,
-                "head": {"ref": SET_NAME, "repo": {"full_name": "Peppy-bot/nodes-hub"}},
-            }
-        }
-        calls, _ = self.relay(
-            "pull_request_target", payload, MERGE_SET_TOKEN="app-token"
-        )
-        self.assertEqual(calls, [self.dispatch()])
+    def test_the_relay_calls_nothing_for_an_event_that_cannot_change_a_set(self):
+        text, calls = self.relay("pull_request", pull_request_event("labeled"))
+        self.assertEqual(calls, [])
+        self.assertEqual(text, "The `pull_request` event cannot change a set.")
+
+    def test_the_relay_calls_nothing_for_a_repository_no_set_spans(self):
+        payload = pull_request_event("opened")
+        payload["repository"]["full_name"] = "Peppy-bot/landing-page"
+        text, calls = self.relay("pull_request", payload)
+        self.assertEqual(calls, [])
+        self.assertEqual(text, "No set spans the repository `Peppy-bot/landing-page`.")
 
     def test_a_dispatch_that_names_no_run_is_refused(self):
         self.assertEqual(
@@ -430,6 +479,67 @@ class Relay(unittest.TestCase):
 
 
 RELAY_RUN_URL = "https://github.com/Peppy-bot/peppy/actions/runs/99"
+PULL_REQUEST_SUBJECT = merge_set.RelaySubject(7, SET_NAME, "Peppy-bot/nodes-hub")
+
+
+def token_of_scope(scope):
+    """A stand-in token that names its scope."""
+    permissions = ",".join(f"{name}={level}" for name, level in scope.permissions)
+    return f"{','.join(scope.repositories)}:{permissions}"
+
+
+def webhook_event(**fields):
+    """A webhook payload of an event of nodes-hub."""
+    return {
+        "repository": {"full_name": "Peppy-bot/nodes-hub", "default_branch": "main"},
+        "installation": {"id": 5},
+        "sender": {"login": "alice", "type": "User"},
+        **fields,
+    }
+
+
+def pull_request_item(base="main", head_repository="Peppy-bot/nodes-hub"):
+    """Pull request 7 of nodes-hub, from branch SET_NAME."""
+    return {
+        "number": 7,
+        "head": {
+            "ref": SET_NAME,
+            "repo": None if head_repository is None else {"full_name": head_repository},
+        },
+        "base": {"ref": base},
+    }
+
+
+def pull_request_event(
+    action, base="main", head_repository="Peppy-bot/nodes-hub", **fields
+):
+    """A `pull_request` or `pull_request_review` event of pull request 7."""
+    return webhook_event(
+        action=action,
+        pull_request=pull_request_item(base, head_repository),
+        **fields,
+    )
+
+
+def ci_run_event(
+    action,
+    attempt=1,
+    workflow=merge_set.CI_WORKFLOW,
+    event="pull_request",
+    head_repository="Peppy-bot/nodes-hub",
+):
+    """A `workflow_run` event of a CI run of pull request 7."""
+    return webhook_event(
+        action=action,
+        workflow={"name": workflow},
+        workflow_run={
+            "event": event,
+            "run_attempt": attempt,
+            "head_branch": SET_NAME,
+            "head_repository": {"full_name": head_repository},
+            "pull_requests": [{"number": 7}],
+        },
+    )
 
 
 def dashboard_text(*ticked):
@@ -446,13 +556,14 @@ def dashboard_text(*ticked):
 
 
 def comment_edit(before, after, login="alice"):
-    """The payload of an edit of the merge-set comment of pull request 7."""
-    return {
-        "issue": {"number": 7},
-        "comment": {"body": after},
-        "changes": {"body": {"from": before}},
-        "sender": {"login": login},
-    }
+    """A user's edit of the merge-set comment of pull request 7."""
+    return webhook_event(
+        action="edited",
+        issue={"number": 7, "pull_request": {"number": 7}},
+        comment={"body": after, "user": {"login": BOT}},
+        changes={"body": {"from": before}},
+        sender={"login": login, "type": "User"},
+    )
 
 
 class TickedBoxesOfAnEdit(unittest.TestCase):
@@ -2419,92 +2530,21 @@ class RepositoryFacts(unittest.TestCase):
         self.assertIn("group: merge-set-${{ inputs.branch }}", lines)
         self.assertIn("cancel-in-progress: false", lines)
 
-    def test_the_key_of_the_app_is_in_the_environment_of_each_job_that_reads_it(self):
-        # The relay makes two tokens: one that starts the sync, and one that
-        # answers a ticked box.
-        for workflow, tokens in (
-            (merge_set.SYNC_WORKFLOW, 1),
-            ("merge-set-relay.yml", 2),
-        ):
-            with self.subTest(workflow=workflow):
-                text = (WORKFLOWS / workflow).read_text()
-                self.assertEqual(
-                    text.count("secrets.MERGE_SET_BOT_PRIVATE_KEY"), tokens
-                )
-                self.assertIn("    environment:\n      name: merge-set\n", text)
+    def test_the_key_of_the_app_is_in_the_environment_of_the_sync(self):
+        text = (WORKFLOWS / merge_set.SYNC_WORKFLOW).read_text()
+        self.assertEqual(text.count("secrets.MERGE_SET_BOT_PRIVATE_KEY"), 1)
+        self.assertIn("    environment:\n      name: merge-set\n", text)
 
-    def test_the_jobs_of_the_bot_start_at_once_and_end_within_the_limit_of_their_runner(
-        self,
-    ):
+    def test_the_sync_starts_at_once_and_ends_within_the_limit_of_its_runner(self):
         # An ubuntu-slim job stops after 15 minutes.
-        for workflow in (merge_set.SYNC_WORKFLOW, "merge-set-relay.yml"):
-            with self.subTest(workflow=workflow):
-                lines = workflow_lines(workflow)
-                self.assertIn("runs-on: ubuntu-slim", lines)
-                (timeout,) = [
-                    line for line in lines if line.startswith("timeout-minutes:")
-                ]
-                self.assertLessEqual(int(timeout.split(":")[1]), 15)
+        lines = workflow_lines(merge_set.SYNC_WORKFLOW)
+        self.assertIn("runs-on: ubuntu-slim", lines)
+        (timeout,) = [line for line in lines if line.startswith("timeout-minutes:")]
+        self.assertLessEqual(int(timeout.split(":")[1]), 15)
 
-    def test_the_relay_answers_a_ticked_box_with_a_token_of_the_repository_of_the_event(
-        self,
-    ):
-        lines = workflow_lines("merge-set-relay.yml")
-        for line in (
-            "if: github.event_name == 'issue_comment'",
-            "repositories: ${{ github.event.repository.name }}",
-            "permission-pull-requests: write",
-            "COMMENT_TOKEN: ${{ steps.comment-token.outputs.token }}",
-        ):
-            with self.subTest(line=line):
-                self.assertIn(line, lines)
-
-    def test_the_relay_starts_the_sync_from_the_branch_that_holds_the_key(self):
-        lines = workflow_lines("merge-set-relay.yml")
-        for line in (
-            "repository: Peppy-bot/peppy",
-            f"ref: {merge_set.SYNC_WORKFLOW_REF}",
-            "repositories: peppy",
-            "permission-actions: write",
-            "PULL_REQUEST_READ_TOKEN: ${{ github.token }}",
-            "run: python3 .github/merge-set/merge_set.py relay",
-        ):
-            with self.subTest(line=line):
-                self.assertIn(line, lines)
-
-    def test_the_relay_hands_on_the_edits_of_the_dashboard(self):
-        text = (WORKFLOWS / "merge-set-relay.yml").read_text()
-        self.assertIn(
-            f"startsWith(github.event.comment.body, '{merge_set.DASHBOARD_MARKER}')",
-            text,
-        )
-
-    def test_the_events_of_peppy_reach_the_relay(self):
-        lines = workflow_lines("merge-set-events.yml")
-        self.assertIn(
-            f"uses: {resolve.PEPPY_REPOSITORY}/.github/workflows/merge-set-relay.yml@{merge_set.SYNC_WORKFLOW_REF}",
-            lines,
-        )
-        # A called workflow reads the secrets of the `merge-set` environment
-        # only when its caller hands its secrets on.
-        self.assertIn("secrets: inherit", lines)
-        # The workflow_run trigger names the CI workflow of each repository,
-        # and hands on the start of each run, of a re-run too, and its end.
-        trigger = lines.index(f"workflows: [{merge_set.CI_WORKFLOW}]")
-        self.assertEqual(
-            lines[trigger + 1], "types: [requested, in_progress, completed]"
-        )
+    def test_the_relay_hands_on_the_runs_of_the_ci_workflow(self):
         self.assertIn(
             f"name: {merge_set.CI_WORKFLOW}", workflow_lines(resolve.PEPPY_CI_WORKFLOW)
-        )
-
-    def test_the_relay_hands_on_the_in_progress_of_a_re_run_alone(self):
-        # GitHub sends no `requested` for a re-run.
-        text = (WORKFLOWS / "merge-set-relay.yml").read_text()
-        self.assertIn(
-            "&& (github.event.action != 'in_progress' "
-            "|| github.event.workflow_run.run_attempt > 1))",
-            text,
         )
 
     def test_the_changes_job_runs_these_cases(self):
