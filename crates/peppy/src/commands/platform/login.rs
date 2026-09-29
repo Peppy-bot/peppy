@@ -1,8 +1,9 @@
 //! `peppy platform login`: OAuth 2.0 device-authorization login (RFC 8628).
 //!
 //! Fetches the public `/cli/auth-config`, runs OIDC discovery against the returned
-//! issuer, performs the device flow (opening the browser on a TTY), caches the
-//! tokens as the single session, and prints the resolved identity.
+//! issuer, performs the device flow (printing the platform's own device page with
+//! the code filled in, and opening it in the browser on a TTY), caches the tokens
+//! as the single session, and prints the resolved identity.
 
 use std::sync::Arc;
 
@@ -11,9 +12,10 @@ use daemon_config::consts::PeppyDirs;
 use crate::commands::Command;
 use crate::context::AppContext;
 use crate::error::Result;
-use auth::device::{self, TokenSet};
+use auth::device::{self, TokenSet, VerificationPage};
 use auth::discovery::OidcEndpoints;
 use auth::{cli_config, client, discovery, http::HttpClient, profile, resolver, storage};
+use url::Url;
 
 pub struct LoginCommand {
     /// Override the backend base URL (else the build's `resource_servers.api` /
@@ -62,6 +64,7 @@ impl Command for LoginCommand {
             &endpoints,
             &cfg.client_id,
             &cfg.scopes,
+            cfg.device_verification_uri.as_ref(),
             self.no_browser,
         )?;
 
@@ -132,7 +135,7 @@ impl Command for LoginCommand {
 }
 
 /// The interactive shell around the engine's device-flow protocol: print the
-/// verification URL and user code, open the browser on a TTY (best-effort,
+/// page to open and the user code, open the browser on a TTY (best-effort,
 /// suppressed by `no_browser` for headless/SSH use), and show a spinner while
 /// polling the token endpoint for the user's approval.
 fn run_device_flow(
@@ -140,6 +143,7 @@ fn run_device_flow(
     endpoints: &OidcEndpoints,
     client_id: &str,
     scopes: &str,
+    platform_device_page: Option<&Url>,
     no_browser: bool,
 ) -> Result<TokenSet> {
     use std::io::IsTerminal;
@@ -152,17 +156,12 @@ fn run_device_flow(
         profile::build_transport_policy(),
     )?;
 
-    let complete = da
-        .verification_uri_complete
-        .clone()
-        .unwrap_or_else(|| da.verification_uri.clone());
-
-    println!("To sign in, open:\n    {}", da.verification_uri);
-    println!("and enter the code: {}", da.user_code);
+    let page = device::verification_page(platform_device_page, &da);
+    print!("{}", sign_in_instructions(&page, &da.user_code));
 
     if !no_browser && std::io::stdout().is_terminal() {
         // Best-effort: a headless box without a browser just keeps the printed URL.
-        if open::that(&complete).is_ok() {
+        if open::that(browser_link(&page)).is_ok() {
             println!("(opened your browser…)");
         }
     }
@@ -173,4 +172,81 @@ fn run_device_flow(
         pb.finish_and_clear();
     }
     Ok(result?)
+}
+
+/// The text that tells a person where to approve the login. On the platform's
+/// own page the printed address already carries the code, and the code is
+/// printed as well, exactly as the identity provider issued it, so the person
+/// can compare it with the one the page shows. The identity provider's page is
+/// printed only for a platform that does not publish its own, with a warning.
+fn sign_in_instructions(page: &VerificationPage, user_code: &str) -> String {
+    match page {
+        VerificationPage::Platform { link } => format!(
+            "To sign in, open:\n    {link}\nand check that the page shows the code: {user_code}\n"
+        ),
+        VerificationPage::IdentityProvider { address, .. } => format!(
+            "Warning: this is an older platform that does not publish its own device page \
+             (API contract before 3.3.0), so the identity provider's page is used.\n\
+             To sign in, open:\n    {address}\nand enter the code: {user_code}\n"
+        ),
+    }
+}
+
+/// The address the browser is opened on.
+fn browser_link(page: &VerificationPage) -> &str {
+    match page {
+        VerificationPage::Platform { link } => link.as_str(),
+        VerificationPage::IdentityProvider { link, .. } => link,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn platform_page() -> VerificationPage {
+        let link = Url::parse("https://app.example.test/device?user_code=ABCD-EFGH").expect("link");
+        VerificationPage::Platform { link }
+    }
+
+    fn identity_provider_page() -> VerificationPage {
+        VerificationPage::IdentityProvider {
+            address: "https://auth.example.test/device".into(),
+            link: "https://auth.example.test/device?user_code=ABCD-EFGH".into(),
+        }
+    }
+
+    #[test]
+    fn the_platform_page_is_printed_with_the_code_and_no_warning() {
+        let text = sign_in_instructions(&platform_page(), "ABCD-EFGH");
+        assert_eq!(
+            text,
+            "To sign in, open:\n    https://app.example.test/device?user_code=ABCD-EFGH\n\
+             and check that the page shows the code: ABCD-EFGH\n"
+        );
+        assert!(!text.contains("auth.example.test"));
+        assert!(!text.contains("Warning"));
+        assert_eq!(
+            browser_link(&platform_page()),
+            "https://app.example.test/device?user_code=ABCD-EFGH"
+        );
+    }
+
+    #[test]
+    fn an_older_platform_prints_the_identity_provider_page_with_a_warning() {
+        let text = sign_in_instructions(&identity_provider_page(), "ABCD-EFGH");
+        assert!(
+            text.starts_with("Warning: this is an older platform"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n    https://auth.example.test/device\n"),
+            "{text}"
+        );
+        assert!(text.ends_with("and enter the code: ABCD-EFGH\n"), "{text}");
+        assert_eq!(
+            browser_link(&identity_provider_page()),
+            "https://auth.example.test/device?user_code=ABCD-EFGH"
+        );
+    }
 }
