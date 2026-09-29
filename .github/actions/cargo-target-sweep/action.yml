@@ -1,0 +1,18 @@
+name: Cargo target sweep
+description: >-
+  Gives a hub's CI job sweep-cargo-target.py, which keeps the cargo target dirs
+  that the job keeps on its sticky disk down to what their builds still use.
+  Cargo never removes an artifact, so without it such a target dir grows at
+  each change of a dependency, a feature or a profile until the disk is full.
+  The action exports the path of the script as SWEEP_CARGO_TARGET_SCRIPT, and
+  the job runs it with python3 around each build: `sweep` before the build,
+  `record` after it, and `prune` once on the root that holds the target dirs
+  of the repository's projects. The docstring of the script tells what each
+  command keeps and removes.
+
+runs:
+  using: composite
+  steps:
+    - name: Export the path of the sweep script
+      shell: bash
+      run: echo "SWEEP_CARGO_TARGET_SCRIPT=$GITHUB_ACTION_PATH/sweep-cargo-target.py" >> "$GITHUB_ENV"
