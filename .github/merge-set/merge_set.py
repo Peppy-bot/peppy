@@ -37,8 +37,11 @@ A hub run is out of date when a job of it ran with another commit of a branch
 of the set than the head of that branch. Every job that runs the hub-ci-peppy
 action uploads the set it ran with, its set record, named after the check run
 of the job. A job that does not run the action reads no other repository, so
-it has no record and is never out of date. Ticking "Re-run" re-runs every
-finished hub run that is out of date.
+it has no record and is never out of date; nor has the first job of each hub
+run, which runs the action with `wait-only` to wait for the peppy dev build
+of the set and installs nothing. Ticking "Re-run" re-runs every finished hub
+run that is out of date, at once: a re-run whose peppy dev build is not
+uploaded yet waits for it in that first job.
 
 The workflow merge-set-events.yml of each repository of a set hands every
 event that can change the set to the relay (the `relay` subcommand, in the
@@ -813,10 +816,6 @@ def stale_jobs(state: SetState, runs: Sequence[HubRun]) -> list[StaleJob]:
     return stale
 
 
-def latest_run_id(runs: Sequence[Mapping]) -> int | None:
-    return max((run["id"] for run in runs), default=None)
-
-
 # The readiness of the set ---------------------------------------------------
 
 
@@ -1342,17 +1341,6 @@ def render_nothing_to_rerun(requesters: Sequence[str], set_name: str) -> str:
     )
 
 
-def render_rerun_waits_for_peppy(
-    requesters: Sequence[str], peppy_pull_request: PullRequest, head: str
-) -> str:
-    return (
-        f"{mention(requesters)}, the bot did not re-run the CI: the dev build of "
-        f"peppy `{short(head)}` ({peppy_pull_request.label}) is not ready, and a "
-        "hub run started now would fail on it. Tick the box again when the "
-        f"Tests run of {peppy_pull_request.label} has uploaded it.\n"
-    )
-
-
 # The GitHub API --------------------------------------------------------------
 
 
@@ -1613,23 +1601,6 @@ class GitHubGateway:
         return parse_tested_set(
             set_record_of_bundle(self.api.download(artifact.download_url))
         )
-
-    def peppy_dev_build_ready(self, commit: str) -> bool:
-        """Whether the peppy CI run of `commit` uploaded its dev build, which
-        a hub run of a set with a peppy branch installs."""
-        runs = self.api.request(
-            "GET",
-            f"/repos/{resolve.PEPPY_REPOSITORY}/actions/workflows/"
-            f"{resolve.PEPPY_CI_WORKFLOW}/runs",
-            {"head_sha": commit, "per_page": 100},
-        )
-        run_id = latest_run_id(runs["workflow_runs"])
-        if run_id is None:
-            return False
-        artifacts = resolve.run_artifacts(
-            run_id, resolve.DEV_BUILD_ARTIFACT, resolve.GitHubReader(self.api.token)
-        )
-        return resolve.newest_usable(artifacts) is not None
 
     # The gate.
 
@@ -2052,17 +2023,6 @@ def rerun_out_of_date(
     if not runs:
         gateway.create_comment(
             asked_on, render_nothing_to_rerun(requesters, state.name)
-        )
-        return
-    peppy = state.member_of(PEPPY)
-    if (
-        peppy is not None
-        and peppy.pull_request is not None
-        and not gateway.peppy_dev_build_ready(peppy.head)
-    ):
-        gateway.create_comment(
-            asked_on,
-            render_rerun_waits_for_peppy(requesters, peppy.pull_request, peppy.head),
         )
         return
     rerun = [run for run in runs if run.completed]
