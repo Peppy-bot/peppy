@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use serde::Deserialize;
+use url::Url;
 
 use super::discovery::OidcEndpoints;
 use super::http::HttpClient;
@@ -27,8 +28,9 @@ pub struct TokenSet {
     pub scope: String,
 }
 
-/// A started device-authorization flow: what the caller shows the user
-/// (`user_code`, `verification_uri`) and what [`poll`] exchanges for tokens.
+/// A started device-authorization flow: the `user_code` the caller shows the
+/// user, the identity provider's verification addresses that
+/// [`verification_page`] falls back to, and what [`poll`] exchanges for tokens.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceAuthorization {
     pub device_code: String,
@@ -217,6 +219,46 @@ fn canonicalize_verification_urls(
     Ok(())
 }
 
+/// The query parameter that carries the login code to a device page. It is the
+/// name RFC 8628 and the identity provider use, and the one the platform's
+/// device page reads.
+pub const USER_CODE_PARAMETER: &str = "user_code";
+
+/// Where a person approves a started device login.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerificationPage {
+    /// The platform's own device page. `link` is the published address with
+    /// the `user_code` query added, so the page opens with the code filled in.
+    Platform { link: Url },
+    /// The platform does not publish its device page (API contract older than
+    /// 3.3.0), so the identity provider's addresses are the only ones there
+    /// are. `address` is the page to print, `link` the one to open.
+    IdentityProvider { address: String, link: String },
+}
+
+/// Chooses the page a person opens to approve `authorization`. When the
+/// platform publishes its own device page, the identity provider's
+/// `verification_uri` and `verification_uri_complete` are not used at all.
+pub fn verification_page(
+    platform_address: Option<&Url>,
+    authorization: &DeviceAuthorization,
+) -> VerificationPage {
+    let Some(address) = platform_address else {
+        return VerificationPage::IdentityProvider {
+            address: authorization.verification_uri.clone(),
+            link: authorization
+                .verification_uri_complete
+                .clone()
+                .unwrap_or_else(|| authorization.verification_uri.clone()),
+        };
+    };
+    let mut link = address.clone();
+    link.query_pairs_mut()
+        .clear()
+        .append_pair(USER_CODE_PARAMETER, &authorization.user_code);
+    VerificationPage::Platform { link }
+}
+
 /// Polls `token_endpoint` (blocking) until the user approves in the browser,
 /// the flow expires, or the server reports a fatal error.
 pub fn poll(
@@ -356,6 +398,65 @@ mod tests {
             canonicalize_verification_urls(&endpoints, &mut authorization, TransportPolicy::Strict)
                 .expect_err("an https issuer flow cannot downgrade even to loopback http");
         assert!(error.to_string().contains("downgrade"), "{error}");
+    }
+
+    #[test]
+    fn the_platform_page_carries_the_code_as_user_code_exactly() {
+        let address = Url::parse("https://app.example.test/device").expect("address");
+        let mut authorization = device_auth(5, 300);
+        authorization.verification_uri_complete =
+            Some("https://issuer.example/device?user_code=ABCD-EFGH".into());
+
+        let VerificationPage::Platform { link } = verification_page(Some(&address), &authorization)
+        else {
+            panic!("a published platform page is always the one used");
+        };
+        assert_eq!(
+            link.as_str(),
+            "https://app.example.test/device?user_code=ABCD-EFGH"
+        );
+        let pairs: Vec<(String, String)> = link.query_pairs().into_owned().collect();
+        assert_eq!(pairs, [("user_code".to_string(), "ABCD-EFGH".to_string())]);
+    }
+
+    #[test]
+    fn the_platform_page_escapes_a_hostile_code_into_one_parameter() {
+        let address = Url::parse("https://app.example.test/device").expect("address");
+        let mut authorization = device_auth(5, 300);
+        authorization.user_code = "AB&code=x#y".into();
+
+        let VerificationPage::Platform { link } = verification_page(Some(&address), &authorization)
+        else {
+            panic!("a published platform page is always the one used");
+        };
+        let pairs: Vec<(String, String)> = link.query_pairs().into_owned().collect();
+        assert_eq!(
+            pairs,
+            [("user_code".to_string(), "AB&code=x#y".to_string())]
+        );
+        assert_eq!(link.fragment(), None);
+    }
+
+    #[test]
+    fn without_a_platform_page_the_identity_provider_page_is_used() {
+        let mut authorization = device_auth(5, 300);
+        assert_eq!(
+            verification_page(None, &authorization),
+            VerificationPage::IdentityProvider {
+                address: "https://issuer.example/device".into(),
+                link: "https://issuer.example/device".into(),
+            }
+        );
+
+        authorization.verification_uri_complete =
+            Some("https://issuer.example/device?user_code=ABCD-EFGH".into());
+        assert_eq!(
+            verification_page(None, &authorization),
+            VerificationPage::IdentityProvider {
+                address: "https://issuer.example/device".into(),
+                link: "https://issuer.example/device?user_code=ABCD-EFGH".into(),
+            }
+        );
     }
 
     #[test]

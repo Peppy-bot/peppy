@@ -5,10 +5,12 @@
 //! caller of the `platform-backend` resource server. The login flow is:
 //!
 //! 1. [`cli_config::fetch`]: `GET {api_url}/cli/auth-config` (public) → `issuer`,
-//!    `client_id`, `scopes` (sent to Zitadel verbatim).
+//!    `client_id`, `scopes` (sent to Zitadel verbatim), and the platform's own
+//!    device page, `device_verification_uri`, when the platform publishes one.
 //! 2. [`discovery::discover`]: OIDC discovery against the `issuer` to learn the
 //!    `device_authorization` and `token` endpoints.
-//! 3. [`device`]: RFC 8628 device grant: start the flow, poll for the token.
+//! 3. [`device`]: RFC 8628 device grant: start the flow, choose the page a
+//!    person approves it on ([`device::verification_page`]), poll for the token.
 //! 4. [`storage`]: cache the tokens (and `issuer`/`client_id`) under
 //!    `~/.peppy/conf/credentials.json5` (`0600`).
 //!
