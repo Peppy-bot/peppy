@@ -43,8 +43,10 @@ finished hub run that is out of date.
 The workflow merge-set-events.yml of each repository of a set hands every
 event that can change the set to the relay (the `relay` subcommand, in the
 reusable workflow merge-set-relay.yml), which starts the Merge set workflow of
-peppy (merge-set.yml) for the branch of the event. That workflow runs `sync`,
-one run at a time for each set. `sync` holds no state of its own: it reads the
+peppy (merge-set.yml) for the branch of the event. When the event is a box that
+a user ticked, the relay also answers at once on that pull request, with a
+link to the run it started. The Merge set workflow runs `sync`, one run at a
+time for each set. `sync` holds no state of its own: it reads the
 whole set from GitHub on every run (the branches, the pull requests, their
 checks and reviews, the set records of the hub runs, the dashboards and the
 user who last edited each one), so a run that GitHub drops from its queue
@@ -2195,6 +2197,73 @@ def subject_of_pull_request(item: Mapping) -> RelaySubject:
     )
 
 
+@dataclass(frozen=True)
+class TickedBoxes:
+    """The boxes that an edit of a merge-set comment ticked, and the user who
+    made the edit."""
+
+    requester: str
+    actions: tuple[Action, ...]
+
+
+def ticked_boxes_of_edit(payload: Mapping) -> TickedBoxes:
+    """The boxes ticked in the comment after the edit and not before it. An
+    edit that ticked no box (it unticked one, or changed other text) gives
+    none. An edit event without the text from before the edit did not change
+    the text, so it ticked no box."""
+    try:
+        body = payload["comment"]["body"]
+        requester = payload["sender"]["login"]
+        before = ((payload.get("changes") or {}).get("body") or {}).get("from", body)
+    except (KeyError, TypeError) as error:
+        raise MergeSetError(f"the `issue_comment` event lacks {error}") from error
+    ticked_before = ticked_actions(before)
+    return TickedBoxes(
+        requester=requester,
+        actions=tuple(
+            action for action in ticked_actions(body) if action not in ticked_before
+        ),
+    )
+
+
+def request_text(action: Action, set_name: str) -> str:
+    match action:
+        case Action.MERGE:
+            return f"merge the set `{set_name}`"
+        case Action.RERUN:
+            return f"re-run the out-of-date CI of the set `{set_name}`"
+
+
+def render_request_received(ticked: TickedBoxes, set_name: str, run_url: str) -> str:
+    requests = " and to ".join(
+        request_text(action, set_name) for action in ticked.actions
+    )
+    return (
+        f"@{ticked.requester}, the merge-set bot got your request to {requests}. "
+        f"[This run]({run_url}) acts on it, and the bot reports the result here.\n"
+    )
+
+
+def dispatched_run_url(response: object) -> str:
+    """The URL of the run that a dispatch with `return_run_details` started."""
+    url = response.get("html_url") if isinstance(response, Mapping) else None
+    if not isinstance(url, str):
+        raise MergeSetError(
+            f"the dispatch of {SYNC_WORKFLOW} names no run: {json.dumps(response)}"
+        )
+    return url
+
+
+def start_sync(api: GitHubApi, inputs: Mapping[str, str]) -> str:
+    """Start the Merge set workflow of peppy, and return the URL of its run."""
+    response = api.request(
+        "POST",
+        f"/repos/{resolve.PEPPY_REPOSITORY}/actions/workflows/{SYNC_WORKFLOW}/dispatches",
+        body={"ref": SYNC_WORKFLOW_REF, "inputs": inputs, "return_run_details": True},
+    )
+    return dispatched_run_url(response)
+
+
 def run_relay(environment: Mapping[str, str]) -> None:
     repository = repository_of_full_name(required(environment, "GITHUB_REPOSITORY"))
     event_name = required(environment, "GITHUB_EVENT_NAME")
@@ -2211,12 +2280,19 @@ def run_relay(environment: Mapping[str, str]) -> None:
             )
         )
     inputs = dispatch_inputs(repository, subject)
-    GitHubApi(required(environment, "MERGE_SET_TOKEN")).request(
+    run_url = start_sync(GitHubApi(required(environment, "MERGE_SET_TOKEN")), inputs)
+    print(f"Started {SYNC_WORKFLOW} of peppy for {json.dumps(inputs)}: {run_url}")
+    if event_name != "issue_comment":
+        return
+    ticked = ticked_boxes_of_edit(payload)
+    if not ticked.actions:
+        return
+    GitHubApi(required(environment, "COMMENT_TOKEN")).request(
         "POST",
-        f"/repos/{resolve.PEPPY_REPOSITORY}/actions/workflows/{SYNC_WORKFLOW}/dispatches",
-        body={"ref": SYNC_WORKFLOW_REF, "inputs": inputs},
+        f"/repos/{repository.full_name}/issues/{subject.pull_request}/comments",
+        body={"body": render_request_received(ticked, subject.branch, run_url)},
     )
-    print(f"Started {SYNC_WORKFLOW} of peppy for {json.dumps(inputs)}")
+    print(f"Answered the request of @{ticked.requester} on #{subject.pull_request}")
 
 
 # The commands ----------------------------------------------------------------

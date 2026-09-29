@@ -294,7 +294,10 @@ class Relay(unittest.TestCase):
         with self.assertRaises(MergeSetError):
             merge_set.relay_subject("pull_request_target", {"pull_request": {}})
 
-    def test_the_relay_reads_the_branch_of_a_comment_and_starts_the_sync(self):
+    def relay(self, event_name, payload, **tokens):
+        """The API calls of the relay for an event of nodes-hub, each (token,
+        method, path, body), and what it prints. The relay gets the job token
+        and the tokens it is given by name."""
         calls = []
 
         def request(api, method, path, query=None, body=None):
@@ -307,42 +310,187 @@ class Relay(unittest.TestCase):
                         "repo": {"full_name": "Peppy-bot/nodes-hub"},
                     },
                 }
-            return None
+            if path.endswith("/dispatches"):
+                return {
+                    "workflow_run_id": 99,
+                    "run_url": "https://api.github.com/repos/Peppy-bot/peppy/actions/runs/99",
+                    "html_url": RELAY_RUN_URL,
+                }
+            return {"id": 1}
 
+        output = io.StringIO()
         with tempfile.TemporaryDirectory() as directory:
             event_path = Path(directory) / "event.json"
-            event_path.write_text(json.dumps({"issue": {"number": 7}}))
+            event_path.write_text(json.dumps(payload))
             environment = {
                 "GITHUB_REPOSITORY": "Peppy-bot/nodes-hub",
-                "GITHUB_EVENT_NAME": "issue_comment",
+                "GITHUB_EVENT_NAME": event_name,
                 "GITHUB_EVENT_PATH": str(event_path),
                 "PULL_REQUEST_READ_TOKEN": "job-token",
-                "MERGE_SET_TOKEN": "app-token",
+                **tokens,
             }
             with (
                 patch.object(merge_set.GitHubApi, "request", request),
-                patch("sys.stdout", io.StringIO()),
+                patch("sys.stdout", output),
             ):
                 merge_set.run_relay(environment)
+        return calls, output.getvalue()
+
+    def dispatch(self, token="app-token"):
+        return (
+            token,
+            "POST",
+            "/repos/Peppy-bot/peppy/actions/workflows/merge-set.yml/dispatches",
+            {
+                "ref": "dev",
+                "inputs": {
+                    "repository": "nodes-hub",
+                    "branch": SET_NAME,
+                    "head-repository": "Peppy-bot/nodes-hub",
+                    "pull-request": "7",
+                },
+                "return_run_details": True,
+            },
+        )
+
+    def test_the_relay_reads_the_branch_of_a_comment_and_starts_the_sync(self):
+        # An edit that ticks no box needs no token to answer with.
+        edit = comment_edit(before=dashboard_text(), after=dashboard_text() + "x")
+        calls, log = self.relay("issue_comment", edit, MERGE_SET_TOKEN="app-token")
         self.assertEqual(
             calls,
             [
                 ("job-token", "GET", "/repos/Peppy-bot/nodes-hub/pulls/7", None),
+                self.dispatch(),
+            ],
+        )
+        self.assertIn(RELAY_RUN_URL, log)
+
+    def test_a_ticked_box_is_answered_on_its_pull_request_with_the_run(self):
+        edit = comment_edit(
+            before=dashboard_text(), after=dashboard_text(Action.MERGE), login="bob"
+        )
+        calls, _ = self.relay(
+            "issue_comment",
+            edit,
+            MERGE_SET_TOKEN="app-token",
+            COMMENT_TOKEN="comment-token",
+        )
+        self.assertEqual(
+            calls[1:],
+            [
+                self.dispatch(),
                 (
-                    "app-token",
+                    "comment-token",
                     "POST",
-                    "/repos/Peppy-bot/peppy/actions/workflows/merge-set.yml/dispatches",
+                    "/repos/Peppy-bot/nodes-hub/issues/7/comments",
                     {
-                        "ref": "dev",
-                        "inputs": {
-                            "repository": "nodes-hub",
-                            "branch": SET_NAME,
-                            "head-repository": "Peppy-bot/nodes-hub",
-                            "pull-request": "7",
-                        },
+                        "body": f"@bob, the merge-set bot got your request to merge the "
+                        f"set `{SET_NAME}`. [This run]({RELAY_RUN_URL}) acts on it, and "
+                        "the bot reports the result here.\n"
                     },
                 ),
             ],
+        )
+
+    def test_the_relay_answers_no_other_event(self):
+        payload = {
+            "pull_request": {
+                "number": 7,
+                "head": {"ref": SET_NAME, "repo": {"full_name": "Peppy-bot/nodes-hub"}},
+            }
+        }
+        calls, _ = self.relay(
+            "pull_request_target", payload, MERGE_SET_TOKEN="app-token"
+        )
+        self.assertEqual(calls, [self.dispatch()])
+
+    def test_a_dispatch_that_names_no_run_is_refused(self):
+        self.assertEqual(
+            merge_set.dispatched_run_url({"html_url": RELAY_RUN_URL}), RELAY_RUN_URL
+        )
+        for response in (None, {}, {"html_url": None}):
+            with self.subTest(response=response):
+                with self.assertRaises(MergeSetError) as refused:
+                    merge_set.dispatched_run_url(response)
+                self.assertIn("merge-set.yml names no run", str(refused.exception))
+
+
+RELAY_RUN_URL = "https://github.com/Peppy-bot/peppy/actions/runs/99"
+
+
+def dashboard_text(*ticked):
+    """A merge-set comment whose boxes of `ticked` are ticked."""
+    boxes = [merge_set.box_line(action, action.value) for action in Action]
+    return (
+        f"{merge_set.DASHBOARD_MARKER}\n### Set `{SET_NAME}`\n\n"
+        + "\n".join(
+            box.replace("- [ ]", "- [x]") if action in ticked else box
+            for action, box in zip(Action, boxes)
+        )
+        + "\n"
+    )
+
+
+def comment_edit(before, after, login="alice"):
+    """The payload of an edit of the merge-set comment of pull request 7."""
+    return {
+        "issue": {"number": 7},
+        "comment": {"body": after},
+        "changes": {"body": {"from": before}},
+        "sender": {"login": login},
+    }
+
+
+class TickedBoxesOfAnEdit(unittest.TestCase):
+    def test_a_box_ticked_by_the_edit_is_a_request_of_its_editor(self):
+        edit = comment_edit(dashboard_text(), dashboard_text(Action.RERUN), "bob")
+        self.assertEqual(
+            merge_set.ticked_boxes_of_edit(edit),
+            merge_set.TickedBoxes("bob", (Action.RERUN,)),
+        )
+
+    def test_both_boxes_ticked_by_one_edit_are_both_requests(self):
+        edit = comment_edit(
+            dashboard_text(), dashboard_text(Action.MERGE, Action.RERUN)
+        )
+        self.assertEqual(
+            merge_set.ticked_boxes_of_edit(edit).actions, (Action.MERGE, Action.RERUN)
+        )
+
+    def test_an_edit_that_ticks_no_box_is_no_request(self):
+        for before, after in (
+            # A box ticked before the edit and still ticked.
+            (dashboard_text(Action.MERGE), dashboard_text(Action.MERGE) + "x"),
+            # A box unticked.
+            (dashboard_text(Action.MERGE), dashboard_text()),
+            # Other text changed.
+            (dashboard_text(), dashboard_text() + "x"),
+        ):
+            with self.subTest(before=before, after=after):
+                edit = comment_edit(before, after)
+                self.assertEqual(merge_set.ticked_boxes_of_edit(edit).actions, ())
+
+    def test_an_edit_without_the_text_from_before_changed_no_text(self):
+        edit = comment_edit(dashboard_text(), dashboard_text(Action.MERGE))
+        del edit["changes"]
+        self.assertEqual(merge_set.ticked_boxes_of_edit(edit).actions, ())
+
+    def test_an_edit_without_its_comment_or_editor_is_refused(self):
+        for missing in ("comment", "sender"):
+            edit = comment_edit(dashboard_text(), dashboard_text(Action.MERGE))
+            del edit[missing]
+            with self.subTest(missing=missing), self.assertRaises(MergeSetError):
+                merge_set.ticked_boxes_of_edit(edit)
+
+    def test_the_answer_names_each_request_and_the_run(self):
+        ticked = merge_set.TickedBoxes("bob", (Action.MERGE, Action.RERUN))
+        self.assertEqual(
+            merge_set.render_request_received(ticked, SET_NAME, RELAY_RUN_URL),
+            f"@bob, the merge-set bot got your request to merge the set `{SET_NAME}` "
+            f"and to re-run the out-of-date CI of the set `{SET_NAME}`. "
+            f"[This run]({RELAY_RUN_URL}) acts on it, and the bot reports the result "
+            "here.\n",
         )
 
 
@@ -2060,11 +2208,44 @@ class RepositoryFacts(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", lines)
 
     def test_the_key_of_the_app_is_in_the_environment_of_each_job_that_reads_it(self):
-        for workflow in (merge_set.SYNC_WORKFLOW, "merge-set-relay.yml"):
+        # The relay makes two tokens: one that starts the sync, and one that
+        # answers a ticked box.
+        for workflow, tokens in (
+            (merge_set.SYNC_WORKFLOW, 1),
+            ("merge-set-relay.yml", 2),
+        ):
             with self.subTest(workflow=workflow):
                 text = (WORKFLOWS / workflow).read_text()
-                self.assertEqual(text.count("secrets.MERGE_SET_BOT_PRIVATE_KEY"), 1)
+                self.assertEqual(
+                    text.count("secrets.MERGE_SET_BOT_PRIVATE_KEY"), tokens
+                )
                 self.assertIn("    environment:\n      name: merge-set\n", text)
+
+    def test_the_jobs_of_the_bot_start_at_once_and_end_within_the_limit_of_their_runner(
+        self,
+    ):
+        # An ubuntu-slim job stops after 15 minutes.
+        for workflow in (merge_set.SYNC_WORKFLOW, "merge-set-relay.yml"):
+            with self.subTest(workflow=workflow):
+                lines = workflow_lines(workflow)
+                self.assertIn("runs-on: ubuntu-slim", lines)
+                (timeout,) = [
+                    line for line in lines if line.startswith("timeout-minutes:")
+                ]
+                self.assertLessEqual(int(timeout.split(":")[1]), 15)
+
+    def test_the_relay_answers_a_ticked_box_with_a_token_of_the_repository_of_the_event(
+        self,
+    ):
+        lines = workflow_lines("merge-set-relay.yml")
+        for line in (
+            "if: github.event_name == 'issue_comment'",
+            "repositories: ${{ github.event.repository.name }}",
+            "permission-pull-requests: write",
+            "COMMENT_TOKEN: ${{ steps.comment-token.outputs.token }}",
+        ):
+            with self.subTest(line=line):
+                self.assertIn(line, lines)
 
     def test_the_relay_starts_the_sync_from_the_branch_that_holds_the_key(self):
         lines = workflow_lines("merge-set-relay.yml")
