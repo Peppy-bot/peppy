@@ -25,10 +25,16 @@ jobs:
     # branch opened, pushed, reopened, closed, made a draft or ready for
     # review, or moved onto the default branch; a box of a merge-set comment
     # ticked by a user (the edits of the bot start nothing); a CI run of a
-    # pull request that ended; a deleted branch. A pull_request_target event
-    # runs from the base branch of its pull request, and only the default
-    # branch reaches the `merge-set` environment, which is also the one
-    # branch the rulesets require the `merge-set` check on.
+    # pull request that started or ended; a deleted branch. A
+    # pull_request_target event runs from the base branch of its pull
+    # request, and only the default branch reaches the `merge-set`
+    # environment, which is also the one branch the rulesets require the
+    # `merge-set` check on.
+    #
+    # GitHub sends `requested` when a CI run starts, and not when it is
+    # re-run: the start of a re-run reaches the relay as `in_progress`, of a
+    # run attempt after the first. The `in_progress` of a first attempt adds
+    # nothing to its `requested`, so the relay drops it.
     if: >-
       (github.event_name == 'pull_request_target'
         && github.event.pull_request.base.ref == github.event.repository.default_branch
@@ -39,7 +45,8 @@ jobs:
         && github.event.sender.type != 'Bot'
         && startsWith(github.event.comment.body, '<!-- peppy-merge-set -->'))
       || (github.event_name == 'workflow_run'
-        && github.event.workflow_run.event == 'pull_request')
+        && github.event.workflow_run.event == 'pull_request'
+        && (github.event.action != 'in_progress' || github.event.workflow_run.run_attempt > 1))
       || (github.event_name == 'delete' && github.event.ref_type == 'branch')
     # A GitHub-hosted 1-vCPU runner, not a RunsOn one: it starts in a few
     # seconds, where a RunsOn instance boots in about 40, and a user who
