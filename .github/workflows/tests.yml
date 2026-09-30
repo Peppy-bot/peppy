@@ -118,6 +118,17 @@ jobs:
             --start-directory .github/actions/hub-ci-peppy \
             --pattern 'test_*.py' --verbose
 
+      # The hubs' CI keeps the cargo target dirs of its sticky disk small with
+      # the cargo-target-sweep action, whose script deletes from the caches
+      # that every later hub run starts from. Its cases need nothing but
+      # Python, and the hubs run the action from `dev`, where no hub CI has
+      # tried a change before it merges, so they run on every change.
+      - name: Test the hub CI cargo target sweep
+        run: |
+          python3 -m unittest discover \
+            --start-directory .github/actions/cargo-target-sweep \
+            --pattern 'test_*.py' --verbose
+
       # The merge-set bot (merge-set.yml) keeps the pull requests of a set
       # together. Its cases hold the merge-set workflows to the names the bot
       # uses, so they run on every change too.
