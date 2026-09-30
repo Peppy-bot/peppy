@@ -17,6 +17,13 @@
 //! Each setting added this way is logged at info level, so the first start after
 //! a peppy upgrade shows exactly which new settings appeared in the file.
 //!
+//! A setting an older release wrote and this release no longer reads is
+//! removed from the file before the strict parse (see [`migration`]): the
+//! previous file is kept beside it as `peppy_config.json5.bak`, the rest of
+//! the document is kept byte-for-byte, and one warning names what was removed.
+//! Only the settings listed there are removed; every other unknown field still
+//! fails loud.
+//!
 //! A non-empty `PEPPY_CONFIG` environment variable bypasses that on-disk flow.
 //! Its value is tried first as a config file path and then, if the file cannot
 //! be read, as an inline JSON5 document. An override is read-only: peppy never
@@ -31,6 +38,7 @@
 //! rewritten.
 
 mod completion;
+mod migration;
 
 use crate::atomic_write::publish_atomic;
 use crate::consts::PeppyDirs;
@@ -832,6 +840,10 @@ fn load_or_create_with_override(
     }
 
     let content = std::fs::read_to_string(&path)?;
+    let SettingsRemoval { content, warning } = remove_settings_no_longer_used(&path, content)?;
+    if let Some(warning) = warning {
+        tracing::warn!("{warning}");
+    }
     let config: PeppyConfig = serde_json5::from_str(&content).map_err(|e| {
         Error::Parsing(ParsingError::CannotParseConfig(format!(
             "{PEPPY_CONFIG_FILE}: {e}"
@@ -844,6 +856,89 @@ fn load_or_create_with_override(
     // invalid config errors out above with the file left byte-for-byte intact.
     complete_file_with_defaults(&path, &content, &config);
     Ok(config)
+}
+
+/// The document to parse after [`remove_settings_no_longer_used`], and the one
+/// warning the loader logs when a setting was removed.
+struct SettingsRemoval {
+    content: String,
+    warning: Option<String>,
+}
+
+/// Takes the settings in [`migration::REMOVED_SETTINGS`] out of `content`, and
+/// out of the file at `path` once the result is known to load. The content is
+/// returned unchanged, with no warning, when nothing was removed.
+///
+/// The file is rewritten only when the edited document passes the strict
+/// parse and validation, after its previous bytes are kept in a backup beside
+/// it. A setting the scanner cannot locate safely is an error that names it,
+/// with the file untouched. A failed write only changes the warning: this
+/// start uses the edited document in memory and the next start tries the file
+/// again.
+fn remove_settings_no_longer_used(path: &Path, content: String) -> Result<SettingsRemoval> {
+    let removal = match migration::remove_settings(&content) {
+        Ok(Some(removal)) => removal,
+        Ok(None) => {
+            return Ok(SettingsRemoval {
+                content,
+                warning: None,
+            });
+        }
+        Err(error) => {
+            return Err(cannot_parse_config(format!(
+                "{PEPPY_CONFIG_FILE}: `{}` is no longer used and could not be removed \
+                 automatically; delete it from the file and start again",
+                error.path
+            )));
+        }
+    };
+    let config: PeppyConfig = serde_json5::from_str(&removal.content)
+        .map_err(|e| cannot_parse_config(format!("{PEPPY_CONFIG_FILE}: {e}")))?;
+    config.validate()?;
+
+    let removed = removal.removed_paths.join("`, `");
+    let warning = match rewrite_with_backup(path, &content, &removal.content) {
+        Ok(backup) => format!(
+            "{PEPPY_CONFIG_FILE}: removed `{removed}`, which this peppy release no longer \
+             uses; the previous file is kept at {}",
+            backup.display()
+        ),
+        Err(e) => format!(
+            "{PEPPY_CONFIG_FILE}: `{removed}` is no longer used and is ignored for this \
+             start; the file could not be rewritten without it: {e}"
+        ),
+    };
+    Ok(SettingsRemoval {
+        content: removal.content,
+        warning: Some(warning),
+    })
+}
+
+/// Keeps `original` in the first free `<name>.bak`, `<name>.bak.1`, ... beside
+/// `path`, then replaces the file with `edited`. Both writes are atomic and
+/// carry the file's permissions; the backup is written first, so the previous
+/// content is on disk before the file changes. A symlinked config is written
+/// through, as completion does. Returns the backup's path.
+fn rewrite_with_backup(path: &Path, original: &str, edited: &str) -> Result<PathBuf> {
+    let target = std::fs::canonicalize(path)?;
+    let backup = free_backup_path(path);
+    let permissions = std::fs::metadata(&target)?.permissions();
+    publish_atomic(&backup, |tmp| {
+        std::fs::write(tmp, original)?;
+        std::fs::set_permissions(tmp, permissions)
+    })?;
+    write_config_file(&target, edited)?;
+    Ok(backup)
+}
+
+/// The first of `peppy_config.json5.bak`, `peppy_config.json5.bak.1`, ...
+/// beside `path` that does not exist, so an earlier backup is never replaced.
+fn free_backup_path(path: &Path) -> PathBuf {
+    let numbered = (1u32..).map(|n| path.with_file_name(format!("{PEPPY_CONFIG_FILE}.bak.{n}")));
+    std::iter::once(path.with_file_name(format!("{PEPPY_CONFIG_FILE}.bak")))
+        .chain(numbered)
+        .find(|candidate| !candidate.exists())
+        .unwrap_or_else(|| path.with_file_name(format!("{PEPPY_CONFIG_FILE}.bak")))
 }
 
 fn env_override_source(value: Option<OsString>) -> Result<Option<String>> {
@@ -1045,6 +1140,213 @@ mod tests {
             ZenohConfig::Managed(managed) => managed,
             ZenohConfig::External(_) => panic!("expected managed zenoh config"),
         }
+    }
+
+    /// A managed block as a release before the federation block was removed
+    /// wrote it, with a comment of the user's own.
+    const FILE_WITH_FEDERATION: &str = r#"{
+  zenoh: {
+    managed: {
+      // my own note: the robot needs the router topology
+      local_nodes_topology: "router",
+
+      // Per-user zenoh-router federation: how the daemon links its local router to
+      // your private cloud router. Only tuned to bound a slow/unreachable backend
+      // during the federation step.
+      federation: {
+        connect_timeout_secs: 5,
+      },
+    },
+  },
+}
+"#;
+
+    #[test]
+    fn a_file_with_the_federation_block_loads_and_is_rewritten_with_a_backup() {
+        let (_tmp, peppy_dirs, path) = dirs_with_config(FILE_WITH_FEDERATION);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+
+        let config = load_or_create(&peppy_dirs).expect("an old file still loads");
+        assert_eq!(
+            managed(&config).local_nodes_topology,
+            LocalNodesTopology::Router
+        );
+
+        let backup = path.with_file_name("peppy_config.json5.bak");
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            FILE_WITH_FEDERATION
+        );
+
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        let document: serde_json::Value = serde_json5::from_str(&rewritten).unwrap();
+        assert!(
+            document["zenoh"]["managed"].get("federation").is_none(),
+            "{rewritten}"
+        );
+        assert!(!rewritten.contains("connect_timeout_secs"), "{rewritten}");
+        assert!(
+            !rewritten.contains("Per-user zenoh-router federation"),
+            "{rewritten}"
+        );
+        assert!(
+            rewritten.contains("// my own note: the robot needs the router topology"),
+            "{rewritten}"
+        );
+        assert!(
+            rewritten.contains(r#"local_nodes_topology: "router","#),
+            "{rewritten}"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for file in [&path, &backup] {
+                let mode = std::fs::metadata(file).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o640, "{}", file.display());
+            }
+        }
+    }
+
+    #[test]
+    fn a_second_load_after_the_rewrite_is_clean() {
+        let (_tmp, peppy_dirs, path) = dirs_with_config(FILE_WITH_FEDERATION);
+        let first = load_or_create(&peppy_dirs).unwrap();
+        let after_first = std::fs::read_to_string(&path).unwrap();
+
+        let removal = remove_settings_no_longer_used(&path, after_first.clone()).unwrap();
+        assert_eq!(removal.warning, None, "no warning on the second load");
+        assert_eq!(removal.content, after_first);
+
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), first);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), after_first);
+        assert!(!path.with_file_name("peppy_config.json5.bak.1").exists());
+    }
+
+    /// The whole bundled template as releases before the federation block was
+    /// removed wrote it, which is what an upgraded machine carries: the
+    /// migrated file is today's template byte-for-byte, except for the blank
+    /// line that separated the removed block from `subscriber_buffers`.
+    #[test]
+    fn the_template_an_older_release_wrote_migrates_to_todays_template() {
+        const OLD_FEDERATION_SECTION: &str = r#"      // Per-user zenoh-router federation: how the daemon links its local router to
+      // your private cloud router. Only tuned to bound a slow/unreachable backend
+      // during the federation step.
+      federation: {
+        // Seconds the daemon spends resolving your per-user cloud router before
+        // giving up for this attempt (it retries in the background). Bounds the
+        // federation done at startup and on each `peppy platform login`/`logout`;
+        // minimum 1. If the backend is unreachable within this window the daemon
+        // stays standalone rather than blocking.
+        connect_timeout_secs: 30,
+      },
+"#;
+        assert_eq!(
+            DEFAULT_PEPPY_CONFIG_TEMPLATE
+                .matches(SUBSCRIBER_BUFFERS_SECTION_SNIPPET)
+                .count(),
+            1
+        );
+        let old_template = DEFAULT_PEPPY_CONFIG_TEMPLATE.replacen(
+            SUBSCRIBER_BUFFERS_SECTION_SNIPPET,
+            &format!("{SUBSCRIBER_BUFFERS_SECTION_SNIPPET}\n{OLD_FEDERATION_SECTION}"),
+            1,
+        );
+        let (_tmp, peppy_dirs, path) = dirs_with_config(&old_template);
+
+        let config = load_or_create(&peppy_dirs).expect("the old template loads");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            DEFAULT_PEPPY_CONFIG_TEMPLATE.replacen(
+                SUBSCRIBER_BUFFERS_SECTION_SNIPPET,
+                &format!("{SUBSCRIBER_BUFFERS_SECTION_SNIPPET}\n"),
+                1,
+            )
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.with_file_name("peppy_config.json5.bak")).unwrap(),
+            old_template
+        );
+        let fresh: PeppyConfig = serde_json5::from_str(DEFAULT_PEPPY_CONFIG_TEMPLATE).unwrap();
+        assert_eq!(config, fresh);
+    }
+
+    /// The loader logs exactly the warning this step returns: one line naming
+    /// the removed setting, that it is no longer used, and where the previous
+    /// file is kept.
+    #[test]
+    fn removing_the_federation_block_returns_one_warning_naming_it() {
+        let (_tmp, _peppy_dirs, path) = dirs_with_config(FILE_WITH_FEDERATION);
+
+        let removal =
+            remove_settings_no_longer_used(&path, FILE_WITH_FEDERATION.to_string()).unwrap();
+
+        let backup = path.with_file_name("peppy_config.json5.bak");
+        assert_eq!(
+            removal.warning.as_deref(),
+            Some(
+                format!(
+                    "peppy_config.json5: removed `zenoh.managed.federation`, which this peppy \
+                     release no longer uses; the previous file is kept at {}",
+                    backup.display()
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), removal.content);
+    }
+
+    #[test]
+    fn an_existing_backup_is_never_replaced() {
+        let (_tmp, peppy_dirs, path) = dirs_with_config(FILE_WITH_FEDERATION);
+        let earlier = path.with_file_name("peppy_config.json5.bak");
+        std::fs::write(&earlier, "the user's own backup").unwrap();
+
+        load_or_create(&peppy_dirs).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&earlier).unwrap(),
+            "the user's own backup"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.with_file_name("peppy_config.json5.bak.1")).unwrap(),
+            FILE_WITH_FEDERATION
+        );
+    }
+
+    #[test]
+    fn another_unknown_field_beside_the_federation_block_still_fails_loud() {
+        let content = r#"{ zenoh: { managed: {
+            federation: { connect_timeout_secs: 5 },
+            local_nodes_topolgy: "router",
+        } } }"#;
+        let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+
+        let error = error_message(load_or_create(&peppy_dirs).unwrap_err());
+        assert!(
+            error.contains("zenoh.managed: unknown field `local_nodes_topolgy`"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        assert!(!path.with_file_name("peppy_config.json5.bak").exists());
+    }
+
+    #[test]
+    fn a_federation_setting_that_cannot_be_cut_names_the_key_to_delete() {
+        let content = r#"{ zenoh: { managed: { federation: 5 } } }"#;
+        let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+
+        let error = error_message(load_or_create(&peppy_dirs).unwrap_err());
+        assert!(
+            error.contains("`zenoh.managed.federation` is no longer used"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
     }
 
     #[test]
@@ -1576,8 +1878,8 @@ mod tests {
                 "zenoh.managed: unknown field `standard_buffer_sze`",
             ),
             (
-                r#"{ zenoh: { managed: { federation: { connect_timeout_secs: 5 } } } }"#,
-                "zenoh.managed: unknown field `federation`",
+                r#"{ zenoh: { managed: { federation_timeout_secs: 5 } } }"#,
+                "zenoh.managed: unknown field `federation_timeout_secs`",
             ),
         ] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(content);
