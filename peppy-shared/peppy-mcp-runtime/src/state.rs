@@ -5,18 +5,22 @@
 //! A read answers with a message the endpoint receives after the read
 //! arrived: while a reader waits, the gate admits the next message
 //! whatever the interval, the publish stores it and wakes the readers, and
-//! every reader that waited gets that one message. Only a message the
-//! interval admitted sends `ResourceUpdated`, so subscriptions keep their
-//! `max_hz` rate. The wait is bounded by the freshness policy's
-//! `max_age_ms` of wall time; a topic that stays silent that long answers
-//! as a read of the stored snapshot does.
+//! every reader that waited gets that one message. One message at a time
+//! is on its way for the readers: the messages that arrive while it is
+//! decoded are dropped as the interval drops them, so a slow decode never
+//! queues more work than one read costs. A reader that stops waiting, its
+//! call cancelled, counts no more. Only a message the interval admitted
+//! sends `ResourceUpdated`, so subscriptions keep their `max_hz` rate. The
+//! wait is bounded by the freshness policy's `max_age_ms` of wall time; a
+//! topic that stays silent that long answers as a read of the stored
+//! snapshot does.
 
 use crate::clock::Clock;
 use crate::error::PublishError;
 use crate::representation::{SnapshotContent, apply_content_policies};
 use peppy_mcp_catalog::ResourceEntry;
 use serde_json::Value;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::{Notify, broadcast};
@@ -66,8 +70,30 @@ pub(crate) struct ResourceState {
     /// How many readers wait for the next message: while any does, the
     /// gate admits it whatever the interval.
     waiting: AtomicUsize,
+    /// Whether a message admitted for the readers is on its way to the
+    /// store: no second one is admitted for them until it is stored or
+    /// dropped.
+    reader_message_in_flight: AtomicBool,
     /// Wakes the waiting readers once a message is stored.
     arrived: Notify,
+}
+
+/// A reader counted as waiting for as long as it holds this, however its
+/// wait ends: a read whose call is cancelled mid-wait leaves no reader
+/// behind to open the gate for nobody.
+struct WaitingReader<'a>(&'a AtomicUsize);
+
+impl<'a> WaitingReader<'a> {
+    fn register(waiting: &'a AtomicUsize) -> Self {
+        waiting.fetch_add(1, Ordering::SeqCst);
+        Self(waiting)
+    }
+}
+
+impl Drop for WaitingReader<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl ResourceState {
@@ -80,11 +106,14 @@ impl ResourceState {
             gate: Mutex::new(None),
             snapshot: RwLock::new(None),
             waiting: AtomicUsize::new(0),
+            reader_message_in_flight: AtomicBool::new(false),
             arrived: Notify::new(),
         }
     }
 
-    fn admit(&self, now_nanos: u64) -> Option<AdmitToken> {
+    /// What admits a message now, if anything: the interval, or a waiting
+    /// reader with no message already on its way.
+    fn admit(&self, now_nanos: u64) -> Option<Admission> {
         let mut gate = self.gate.lock().expect("gate lock is never poisoned");
         let interval_passed = match *gate {
             Some(last_admit) => now_nanos.saturating_sub(last_admit) >= self.min_interval_nanos,
@@ -92,16 +121,12 @@ impl ResourceState {
         };
         if interval_passed {
             *gate = Some(now_nanos);
-            return Some(AdmitToken {
-                taken_at_nanos: now_nanos,
-                admitted_by: Admission::Interval,
-            });
+            return Some(Admission::Interval);
         }
-        if self.waiting.load(Ordering::SeqCst) > 0 {
-            return Some(AdmitToken {
-                taken_at_nanos: now_nanos,
-                admitted_by: Admission::Reader,
-            });
+        if self.waiting.load(Ordering::SeqCst) > 0
+            && !self.reader_message_in_flight.swap(true, Ordering::SeqCst)
+        {
+            return Some(Admission::Reader);
         }
         None
     }
@@ -129,10 +154,9 @@ impl ResourceState {
         let arrived = self.arrived.notified();
         tokio::pin!(arrived);
         arrived.as_mut().enable();
-        self.waiting.fetch_add(1, Ordering::SeqCst);
-        let waited = tokio::time::timeout(max_wait, arrived).await;
-        self.waiting.fetch_sub(1, Ordering::SeqCst);
-        let _ = waited;
+        let reader = WaitingReader::register(&self.waiting);
+        let _ = tokio::time::timeout(max_wait, arrived).await;
+        drop(reader);
         self.snapshot_for_read(clock.now_nanos())
     }
 
@@ -158,10 +182,34 @@ impl ResourceState {
 
 /// Proof that the update-rate gate admitted a message; only
 /// [`ResourceIngest::admit`] mints one, so a publish cannot bypass the gate.
+/// A token admitted for the readers holds the gate shut for them until it
+/// is dropped: published, or given up on a message that does not decode.
 #[derive(Debug)]
 pub struct AdmitToken {
     taken_at_nanos: u64,
     admitted_by: Admission,
+    /// Held for the readers until the token is dropped.
+    _on_its_way: Option<ReaderMessage>,
+}
+
+/// The message on its way for the readers; dropping it lets the gate admit
+/// the next one for them.
+struct ReaderMessage(Arc<ResourceState>);
+
+impl std::fmt::Debug for ReaderMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ReaderMessage")
+            .field(&self.0.entry.name)
+            .finish()
+    }
+}
+
+impl Drop for ReaderMessage {
+    fn drop(&mut self) {
+        self.0
+            .reader_message_in_flight
+            .store(false, Ordering::SeqCst);
+    }
 }
 
 /// What opened the gate for a message.
@@ -190,7 +238,15 @@ impl ResourceIngest {
     /// body: a `None` means the message is dropped by `max_hz` and no
     /// decode or transcode cost should be paid for it.
     pub fn admit(&self) -> Option<AdmitToken> {
-        self.state.admit(self.clock.now_nanos())
+        let now_nanos = self.clock.now_nanos();
+        let admitted_by = self.state.admit(now_nanos)?;
+        let on_its_way =
+            (admitted_by == Admission::Reader).then(|| ReaderMessage(Arc::clone(&self.state)));
+        Some(AdmitToken {
+            taken_at_nanos: now_nanos,
+            admitted_by,
+            _on_its_way: on_its_way,
+        })
     }
 
     /// Applies the representation and size policies to the admitted
@@ -421,6 +477,66 @@ mod tests {
             assert_eq!(view.content.document, "{\"battery\":2}");
         }
         assert_eq!(ingest.state.waiting.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_message_at_a_time_is_on_its_way_for_the_readers() {
+        let (ingest, nanos) = ingest_with_clock();
+        let token = ingest.admit().expect("gate open");
+        ingest
+            .publish(token, json!({ "battery": 1 }))
+            .expect("publishes");
+        nanos.store(100 * MS, Ordering::SeqCst);
+        let reader = {
+            let state = Arc::clone(&ingest.state);
+            let clock = ingest.clock.clone();
+            tokio::spawn(async move { state.next_snapshot(&clock).await })
+        };
+        tokio::task::yield_now().await;
+        let on_its_way = ingest.admit().expect("the reader opens the gate");
+        assert!(
+            ingest.admit().is_none(),
+            "a second message is dropped while the first is on its way"
+        );
+        // A message given up on (it did not decode) frees the gate for the
+        // next one.
+        drop(on_its_way);
+        let token = ingest
+            .admit()
+            .expect("the gate is open for the readers again");
+        ingest
+            .publish(token, json!({ "battery": 2 }))
+            .expect("publishes");
+        let view = reader.await.expect("reader task").expect("fresh");
+        assert_eq!(view.content.document, "{\"battery\":2}");
+        assert!(
+            ingest.admit().is_none(),
+            "the published message freed the gate, and no reader waits"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_read_cancelled_mid_wait_leaves_no_reader_behind() {
+        let (ingest, nanos) = ingest_with_clock();
+        let token = ingest.admit().expect("gate open");
+        ingest
+            .publish(token, json!({ "battery": 1 }))
+            .expect("publishes");
+        nanos.store(100 * MS, Ordering::SeqCst);
+        let reader = {
+            let state = Arc::clone(&ingest.state);
+            let clock = ingest.clock.clone();
+            tokio::spawn(async move { state.next_snapshot(&clock).await })
+        };
+        tokio::task::yield_now().await;
+        assert_eq!(ingest.state.waiting.load(Ordering::SeqCst), 1);
+        reader.abort();
+        let _ = reader.await;
+        assert_eq!(ingest.state.waiting.load(Ordering::SeqCst), 0);
+        assert!(
+            ingest.admit().is_none(),
+            "with the reader gone the interval gates again"
+        );
     }
 
     #[tokio::test(start_paused = true)]
