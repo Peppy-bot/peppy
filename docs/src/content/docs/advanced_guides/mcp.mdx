@@ -23,8 +23,10 @@ An exposure draws from [contracts](/advanced_guides/contract_implementation/). E
 | --- | --- | --- |
 | [Topic](/advanced_guides/topics/) | **Resource** | Read the latest policy-approved snapshot and subscribe to updates |
 | [Topic](/advanced_guides/topics/) with a [`picture`](#picture-tools) | **Picture tool**, beside the resource | Call it and get the latest frame as an image, with the rest of the message |
-| [Service](/advanced_guides/services/) | **Tool** | Call it and get the answer in the same request |
+| [Service](/advanced_guides/services/) | **Tool** | Call it and get the answer in the same request; under a [`representation`](#service-policies), the answer's frame as an image |
 | [Action](/advanced_guides/actions/) | **Action-backed tool** | Run the goal inside the call, or as an MCP task: get a task handle, watch progress, confirm, cancel, and reconnect |
+
+An exposure that declares a [`call_record`](#the-call-record) also publishes one tool of its own: the last calls of every tool that is not read-only, with the client that made each and how it ended.
 
 The server supports MCP revision `2026-07-28` over Streamable HTTP. It includes the tasks extension (SEP-2663), which a client opts into per request; an action-backed tool runs as a task for a client that declares it and inside the call for one that does not.
 
@@ -197,7 +199,28 @@ The topic must carry `representation.image: "jpeg"`: a `png16` or a `raw` frame 
 | `operation` | yes | `read_only` or `mutating`, advertised to the client. Long-running work is an action, so there is no third value |
 | `deadline_ms` | yes | How long the call waits before it comes back as a tool error |
 | `restrict` | no | Inclusive `min`/`max` bounds narrowing numeric request fields |
-| `max_result_bytes` | no | Cap on the serialized tool result; a larger response is a tool error |
+| `representation` | no | Interpret the response as an image and answer its frame as a picture, apart from the rest of the response (see below) |
+| `max_result_bytes` | no | Cap on the serialized tool result: the serialized document plus, under a representation, the base64 text of the frame. A larger response is a tool error |
+| `on_oversize` | no | What to do when the result exceeds that cap: `downscale` (re-encode the frame small enough to fit; needs a `jpeg` or `png16` representation) or `reject` (a tool error). Needs `max_result_bytes` |
+
+A service `representation` is the [topic `representation`](#topic-policies), on the members of the service's response: `fields.data` names the response member that carries the frame, and the other three its encoding label and dimensions, all of the same types a topic needs. The tool answers as a [picture tool](#picture-tools) does: the frame as an image block in the codec of the representation, and the rest of the response as the text and the structured content. Its published output schema is the schema of that document: the response without the member the frame is taken from. A response whose frame is empty carries no picture and is answered as the document alone, so a service that refuses (`success: false` with a `message`) reaches the client with its words. A frame that does not decode is a tool error.
+
+```json5
+{
+  member: "render_view",
+  tool: "scene.look",
+  description: "Look at the simulated world from a free viewpoint.",
+  operation: "read_only",
+  deadline_ms: 10000,
+  representation: {
+    image: "jpeg",
+    quality: 80,
+    fields: { data: "frame", encoding: "encoding", width: "width", height: "height" },
+  },
+  max_result_bytes: 524288,
+  on_oversize: "downscale",
+}
+```
 
 `restrict` narrows a numeric range without changing the contract's type. Each key names a **top-level member of the request format**. Peppy adds the bounds to the published input schema as `minimum` and `maximum`, so clients can see the allowed range. The endpoint rejects values outside that range before sending anything to the Peppy graph.
 
@@ -231,9 +254,40 @@ The bound relies on the provider: it publishes a feedback message each time its 
 
 Under both bounds, the first wait is for the provider to admit the goal, and it is bounded too: by `deadline_ms`, or by one window of `progress_timeout_ms`. When that wait runs out, the call or the task fails and the provider gets no cancel, because the endpoint has no handle on a goal that the provider did not admit. This is a limit of both bounds: a provider that admits the goal after that runs it with nothing following it, until the goal ends or the provider cancels it for a reason of its own.
 
+### The call record
+
+An exposure can keep a record of the state-changing calls its endpoint takes, and publish it through a tool:
+
+```json5
+// Beside `server` and `targets`.
+call_record: {
+  tool: "robot.recent_calls",  // a public name, in the one namespace of the exposure
+  description: "The last state-changing calls of this endpoint, newest first. Read `outcome` and `success` together: a completed call with `success: false` ran to its end and reports a failure.",
+  keep: 200,  // how many calls the endpoint keeps, 1 to 1000
+},
+```
+
+The endpoint records every call of a tool that is not read-only (a `mutating` service, and every action, whether it runs inside the call or as a task) and keeps the last `keep` of them in memory for the life of the process. The tool takes no argument, is listed read-only, leaves no entry of its own, and answers `{ calls: [...] }`, newest first. Each entry carries:
+
+| Field | What it says |
+| --- | --- |
+| `started_at` | When the call started, RFC 3339 on the wall clock of the host, also on an endpoint whose freshness runs on simulated time |
+| `client` | The `name` and `version` the client declared as its implementation, or `null` when its request named none |
+| `tool` | The tool called |
+| `arguments` | The arguments as sent, when their JSON is 1024 bytes or fewer; `null` otherwise |
+| `arguments_bytes` | The size of the arguments' JSON |
+| `outcome` | `running`, `completed`, `failed`, `cancelled` or `refused` |
+| `success` | The `success` member of the result of a completed call that has one, else `null` |
+| `message` | The result's `message` member of a completed call; for the other outcomes, what ended the call |
+| `duration_ms` | How long the call ran, once it ended |
+
+A task's entry is `running` until the task ends. A call ends `completed` when the provider answered, whatever its answer says; `failed` when the call did not reach an answer (a deadline, a provider error, a goal that ended rejected or abandoned); `cancelled` when the goal ended cancelled, the task was cancelled, or its confirmation was declined; `refused` when the call never reached the provider: its arguments failed the published schema, it named a robot or a member that is not there, it needed the tasks extension the client did not declare, or no provider was bound.
+
+The record holds the calls of MCP clients on that endpoint. A motion that a teleoperation or another node of the stack commanded is not in it. When a client finds the robot in a state it did not command, the record says whether another client of the endpoint did it, and, when no entry accounts for it, that no client did.
+
 ## The published schemas
 
-You do not define request and response shapes in the exposure. Peppy derives them from the contract's [`message_format`](/reference/message_format/) declarations. The catalog records the version of the mapping used to create the schemas. The schema of a resource with a representation is the schema of its document: the message without the member the blob carries. It is also the output schema of the topic's picture tool.
+You do not define request and response shapes in the exposure. Peppy derives them from the contract's [`message_format`](/reference/message_format/) declarations. The catalog records the version of the mapping used to create the schemas. The schema of a resource with a representation is the schema of its document: the message without the member the blob carries. It is also the output schema of the topic's picture tool, and a service with a representation publishes the schema of its document the same way.
 
 Most types map directly to JSON. These are the important mapping rules, including the types that JSON cannot represent directly:
 
@@ -269,7 +323,7 @@ peppy mcp catalog camera_and_recording:v1             # the catalog an endpoint 
     - contract `episode_recording:v1` not in contract cache; run `peppy repo refresh`
 ```
 
-`peppy mcp catalog <name:tag>` prints the catalog the server derives for one exposure: every resource, tool, task, and picture tool with its public name, description, policies, and derived JSON Schemas, plus the identity the endpoint advertises and the contract slots its targets become. It is what a running endpoint answers through discovery and the list methods, so it is the thing to read when you want to see what a client will see. The catalog is derived on demand and is never committed.
+`peppy mcp catalog <name:tag>` prints the catalog the server derives for one exposure: every resource, tool, task, and picture tool with its public name, description, policies, and derived JSON Schemas, the call record when the exposure declares one, plus the identity the endpoint advertises and the contract slots its targets become. It is what a running endpoint answers through discovery and the list methods, so it is the thing to read when you want to see what a client will see. The catalog is derived on demand and is never committed.
 
 ```json
 {
@@ -454,9 +508,13 @@ An exposure deployment is placed like any other: `core_node` on the instance nam
 
 **Discovery.** `server/discover` returns the exposure's `title` and `instructions`, the implementation identity (the exposure's name at its tag), and `2026-07-28` as the only supported revision. Discovery and `tools/list` include private caching hints with a one-hour TTL, and so does `resources/list` on a fixed surface; on a [per-robot surface](#per-robot-surfaces) the resource list follows the robots and carries none. The tools do not change while the server is running. To change them, change the exposure document, refresh the repositories, and launch again.
 
-**Resources.** A read returns the latest snapshot that passed the policies, as typed contents under the resource's URI: the document as `application/json` text and, for a resource with a representation, the blob after it under the MIME type of its codec. `resources/list` gives a resource with a representation the MIME type of its blob, and every other resource `application/json`. The `ttlMs` value of a read says how long the snapshot remains fresh. The resource is unavailable until the first published value arrives. After the stored value is older than `freshness.max_age_ms`, reads report it as stale instead of returning old data as current. If the size policy rejects a new snapshot, the server keeps the previous one until it becomes stale. Each accepted value notifies subscribers.
+**Resources.** A read returns a snapshot that passed the policies, as typed contents under the resource's URI: the document as `application/json` text and, for a resource with a representation, the blob after it under the MIME type of its codec. `resources/list` gives a resource with a representation the MIME type of its blob, and every other resource `application/json`. The `ttlMs` value of a read says how long the snapshot remains fresh. The resource is unavailable until the first published value arrives. After the stored value is older than `freshness.max_age_ms`, reads report it as stale instead of returning old data as current. If the size policy rejects a new snapshot, the server keeps the previous one until it becomes stale.
 
-**Tools.** The endpoint checks input against the published schema, including `restrict` bounds, before sending anything to the Peppy graph. It rejects invalid input and unknown tool names. If a service does not respond within `deadline_ms`, the client receives a readable tool error.
+A read answers with the first message the endpoint receives after the read arrived, whatever `update.max_hz` admits: a client that changes something and reads at once sees a message from after its change, not the snapshot the last gate interval stored. The wait is bounded by `freshness.max_age_ms` of wall time; a topic that stays silent that long answers with the stored snapshot when it is still fresh, and with the stale refusal when it is not. Readers that wait together get the same message, so the cost is at most one decode per message. Subscribers keep their rate: a message admitted for a waiting reader alone sends no `notifications/resources/updated`, and every message the interval admits does.
+
+The guarantee is about when the endpoint received the message, not about when the source captured it. A message carries the source's stamp, on the source's clock (in a simulation, simulated time), and a frame that the source captured before a change and delivered after the read arrived still shows the old state. A client that needs the picture after a change reads the stamp.
+
+**Tools.** The endpoint checks input against the published schema, including `restrict` bounds, before sending anything to the Peppy graph. It rejects invalid input and unknown tool names. If a service does not respond within `deadline_ms`, the client receives a readable tool error. A service with a [`representation`](#service-policies) answers in the shape of a picture tool: the frame as an image block, the rest of the response as the text and the structured content, and the document alone when the response carries no frame.
 
 **Picture tools.** A picture tool is listed read-only (`readOnlyHint: true`, `destructiveHint: false`) and answers inside the call for every client: it is never a task. Its result carries the snapshot a read of its resource serves at that moment:
 
@@ -471,7 +529,7 @@ An exposure deployment is placed like any other: `core_node` on the instance nam
 }
 ```
 
-While the resource has no snapshot, or a stale one, the tool returns a tool error whose text is the message a read of the resource gives for that state.
+While the resource has no snapshot, or a stale one, the tool returns a tool error whose text is the message a read of the resource gives for that state. It waits for the next message as a read does.
 
 **Actions.** An action-backed tool runs its goal on whichever surface the calling client can drive. The client's request capabilities decide, per call.
 
@@ -513,7 +571,7 @@ Validation reports **every** violation at once, so you can fix the document in o
 
 - A selected member does not exist in its contract or exists as a different kind. The error lists the contract's members and points to the correct section when the name exists elsewhere.
 - A message definition cannot be converted to a public schema.
-- A representation role names a missing, `$optional`, or wrongly typed member.
+- A representation role names a missing, `$optional`, or wrongly typed member, of a topic's message or of a service's response.
 - A `restrict` bound does not fit its member's type, names a non-numeric member, or targets a `u64`/`i64`.
 - A `max_result_bytes` is smaller than a payload's static maximum, or a topic with an unbounded payload omits the size policy.
 - An action with `progress_timeout_ms` has no `feedback_topic` in its contract.
@@ -522,15 +580,16 @@ Validation reports **every** violation at once, so you can fix the document in o
 Parsing catches document-level errors before these checks. Examples include:
 
 - An exposure with no targets or a target that selects no members.
-- A public name claimed twice anywhere in the document, the names of picture tools included, or a service or action member selected twice by one target.
+- A public name claimed twice anywhere in the document, the names of picture tools and of the call record's tool included, or a service or action member selected twice by one target.
 - A target `argument` on a document without `robots`, a target `argument` of `robot`, a `describe` entry naming a target the robot fills any number of times or a service its target does not select as a tool, or an argument name that is not `snake_case`.
 - A blank `title`, `instructions`, or `description` value.
 - An action that declares both or neither of `deadline_ms` and `progress_timeout_ms`, or declares `progress_timeout_ms` together with `confirmation_required`.
 - A zero `deadline_ms` or `progress_timeout_ms`, or a `max_hz` value that is not positive and finite.
 - A `quality` value on a `raw` or `png16` representation.
 - A `depth_range` on a `raw` or `png16` representation, or one whose `near` is 0 or not below `far`.
-- `on_oversize` without `max_result_bytes`.
-- `downscale` without a `jpeg` or `png16` representation.
+- `on_oversize` without `max_result_bytes`, on a topic or a service.
+- `downscale` without a `jpeg` or `png16` representation, on a topic or a service.
+- A `call_record` whose `keep` is 0 or above 1000.
 - A `picture` on a topic whose representation is `png16` or `raw`, or that has no representation.
 - A `restrict` entry with neither bound, or with `min` above `max`.
 

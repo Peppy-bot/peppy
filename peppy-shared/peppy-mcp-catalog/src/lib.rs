@@ -35,19 +35,21 @@ pub mod schema;
 pub mod validate;
 
 pub use bundle::{
-    BundleContractPin, BundleIdentity, BundleServer, BundleSurface, DescribeEntry,
+    BundleContractPin, BundleIdentity, BundleServer, BundleSurface, CallRecordEntry, DescribeEntry,
     EXPOSURE_BUNDLE_FORMAT, ExposureBundle, I64_DECIMAL_PATTERN, ListEntry, PictureEntry,
     ResourceEntry, ResourcePolicies, RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION,
     TaskEntry, ToolEntry, U64_DECIMAL_PATTERN, is_canonical_i64_decimal, is_canonical_u64_decimal,
 };
 pub use document::{
-    ActionExposure, ArgumentName, ExposureManifest, ExposureSurface, ExposureTarget, McpExposure,
-    PictureTool, PinnedContractRef, PublicName, ROBOT_ARGUMENT, RestrictBounds, RobotSurface,
-    RobotTarget, ServerIdentity, ServiceExposure, TopicExposure,
+    ActionExposure, ArgumentName, CALL_RECORD_MAX_KEEP, CallRecord, ExposureManifest,
+    ExposureSurface, ExposureTarget, McpExposure, PictureTool, PinnedContractRef, PublicName,
+    ROBOT_ARGUMENT, RestrictBounds, RobotSurface, RobotTarget, ServerIdentity, ServiceExposure,
+    TopicExposure,
 };
 pub use policy::{
-    ActionOperation, DepthRange, FreshnessPolicy, GoalBound, ImageCodec, ImageFieldMap,
-    ImageRepresentation, JpegQuality, MaxHz, OversizePolicy, ServiceOperation, UpdatePolicy,
+    ActionOperation, ContentPolicies, DepthRange, FreshnessPolicy, GoalBound, ImageCodec,
+    ImageFieldMap, ImageRepresentation, JpegQuality, MaxHz, OversizePolicy, ServiceOperation,
+    UpdatePolicy,
 };
 pub use schema::{MaxSerializedSize, max_serialized_json_bytes, message_format_to_json_schema};
 pub use validate::{

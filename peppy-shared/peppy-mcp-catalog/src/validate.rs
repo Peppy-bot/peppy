@@ -9,7 +9,7 @@
 //! repository machinery is the caller's job.
 
 use crate::bundle::{
-    BundleContractPin, BundleIdentity, BundleServer, BundleSurface, DescribeEntry,
+    BundleContractPin, BundleIdentity, BundleServer, BundleSurface, CallRecordEntry, DescribeEntry,
     EXPOSURE_BUNDLE_FORMAT, ExposureBundle, ListEntry, PictureEntry, ResourceEntry,
     ResourcePolicies, RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
 };
@@ -375,6 +375,11 @@ pub fn build_exposure_bundle(
             resources,
             tools,
             tasks,
+            call_record: exposure.call_record.as_ref().map(|record| CallRecordEntry {
+                name: record.tool.as_str().to_string(),
+                description: record.description.clone(),
+                keep: record.keep,
+            }),
             pictures,
         },
         resources: resource_members,
@@ -599,7 +604,9 @@ fn check_topic_size_policy(
 }
 
 /// The tool entry of a service that validates; `None` records why it does
-/// not.
+/// not. Under a representation the entry's output schema is the schema of
+/// the answer's document: the response without the member the blob
+/// carries.
 fn check_service(
     target_name: &str,
     service: &ServiceExposure,
@@ -611,6 +618,15 @@ fn check_service(
     let response_format = declared.response_message_format.as_ref();
     let input_schema = derive_schema(request_format, &format!("{context} request"), violations);
     let output_schema = derive_schema(response_format, &format!("{context} response"), violations);
+
+    if let Some(representation) = &service.representation {
+        check_representation(
+            &format!("{context} response"),
+            &representation.fields,
+            response_format,
+            violations,
+        );
+    }
 
     if let Some(limit) = service.max_result_bytes
         && let Some(response_format) = response_format
@@ -633,6 +649,10 @@ fn check_service(
         &mut input_schema,
         violations,
     );
+    let output_schema = match &service.representation {
+        Some(representation) => without_root_member(output_schema, &representation.fields.data),
+        None => output_schema,
+    };
     Some(ToolEntry {
         name: service.tool.as_str().to_string(),
         description: service.description.clone(),
@@ -640,7 +660,9 @@ fn check_service(
         member: service.member.clone(),
         operation: service.operation,
         deadline_ms: service.deadline_ms,
+        representation: service.representation.clone(),
         max_result_bytes: service.max_result_bytes,
+        on_oversize: service.on_oversize,
         input_schema,
         output_schema,
     })
@@ -773,8 +795,8 @@ fn check_representation(
 ) {
     let Some(format) = format else {
         violations.push(format!(
-            "{context}: the representation names members of the topic's message format, but \
-             the topic declares none"
+            "{context}: the representation names members of the message format, but the \
+             member declares none"
         ));
         return;
     };
@@ -813,8 +835,8 @@ fn check_representation(
     {
         let Some(schema_type) = format.0.get(member) else {
             violations.push(format!(
-                "{context}: representation field `{name}` names `{member}`, but the topic's \
-                 message format has no root member `{member}`"
+                "{context}: representation field `{name}` names `{member}`, but the message \
+                 format has no root member `{member}`"
             ));
             continue;
         };
