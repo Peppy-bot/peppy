@@ -21,7 +21,7 @@ pub use compose::{
     CopyMembership, CopyRecord, JoinRequest, PreparedLauncher, RunningStack,
     SELF_COPY_NAME_REFUSAL, SkipReason, SkippedAdjustment, UnitSelection, check_composition,
 };
-pub use composition::{ComponentAxis, FragmentPart, FragmentSpec, LauncherFragmentParser};
+pub use composition::{ComponentAxis, LauncherFragmentParser, OptionSpec};
 pub use links::{validate_link_plan, validate_link_slots};
 pub use observations::PlannedObservation;
 pub use pairings::{

@@ -2,6 +2,7 @@
 //! applied (with the values they replaced), and which were skipped (and
 //! why). `peppy stack resolve` prints it; a launch holds it for the echo.
 
+use super::super::composition::copy_adjustments_origin;
 use super::super::types::LinkValue;
 use super::copy::CopyRecord;
 use super::select::UnitSelection;
@@ -79,7 +80,7 @@ impl AppliedChange {
 }
 
 /// What one applied adjustment did: the target and field it touched, the
-/// before and after, and the fragment (or base) it came from.
+/// before and after, and the launcher entry it came from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppliedAdjustment {
     pub target: String,
@@ -91,15 +92,14 @@ pub struct AppliedAdjustment {
 #[derive(Debug, Clone)]
 pub enum SkipReason {
     /// The target the selection resolved to does not define this instance:
-    /// the recorder's attach simply does not run when no recorder was
-    /// selected.
+    /// a top-level write to `sim_inst` does not run when the robot is real.
     TargetAbsent,
     /// The `when` guard named an axis whose selected option is not the one
     /// the guard requires.
     GuardNotMet(String),
-    /// The copy axis carried here reaches the adjustment: its guard names
-    /// that axis, or that axis's options alone define its target. The
-    /// adjustment belongs to each copy, whose own report carries it.
+    /// The adjustment runs in each copy of the axis carried here, whose own
+    /// report carries it: its guard names the axis, or its target is one
+    /// that only the axis's options define. One line per such axis.
     RunsInCopies(String),
 }
 
@@ -142,9 +142,11 @@ impl CompositionReport {
         if !echo.is_empty() {
             lines.push(format!("components: {echo}"));
         }
-        for copy in &self.copies {
-            lines.push(format!("copy {}: {}", copy.name, copy.selection.echo()));
-        }
+        lines.extend(
+            self.copies
+                .iter()
+                .map(|copy| format!("copy {}: {}", copy.name, copy.selection.echo())),
+        );
         lines
     }
 
@@ -203,12 +205,22 @@ impl CompositionReport {
         }));
         self.copies.push(copy);
     }
+
+    /// Folds one join's whole report in: its copy and the entries that copy
+    /// already carries, attributed when it was composed.
+    pub(super) fn absorb(&mut self, joined: CompositionReport) {
+        self.copies.extend(joined.copies);
+        self.applied.extend(joined.applied);
+        self.skipped.extend(joined.skipped);
+    }
 }
 
-/// Where one line of a copy's report came from: the fragment alone for the
-/// copy's own instances, the copy as well for a line about a stack instance.
+/// Where one line of a copy's report came from: the origin alone when the
+/// copy runs the instance or the line is the copy's own adjustment, the
+/// copy behind it otherwise, so a line about an instance the copy does not
+/// run says which copy asked for it.
 fn attributed(copy: &CopyRecord, origin: &str, target: &str) -> String {
-    if copy.owns_instance(target) {
+    if copy.owns_instance(target) || origin == copy_adjustments_origin(&copy.name) {
         origin.to_owned()
     } else {
         format!("{origin}, copy `{}`", copy.name)

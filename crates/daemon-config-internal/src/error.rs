@@ -211,9 +211,9 @@ impl std::error::Error for BindingCopyFillsSlotTwice {}
 #[derive(Debug, Clone, Error)]
 #[error(
     "`{instance_id}` fills `{owner_instance_id}.links.{link_id}` from outside any copy, and \
-     every member of `{link_id}` belongs to a copy. Add the instance from a copy's own fragment \
-     with `add_links: {{ {link_id}: [\"<id>\"] }}` on `{owner_instance_id}`, and drop it from \
-     `{owner_instance_id}`'s `links`"
+     every member of `{link_id}` belongs to a copy. Add the instance from the launcher's \
+     `adjustments` under the copy's option, with `add_links: {{ {link_id}: [\"<id>\"] }}` on \
+     `{owner_instance_id}`, and drop it from `{owner_instance_id}`'s `links`"
 )]
 pub struct BindingMemberOutsideCopy {
     pub instance_id: String,
