@@ -15,7 +15,8 @@ mod support;
 
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ErrorCode,
-    ReadResourceRequestParams, ServerNotification, SubscriptionFilter, TaskStatus, object,
+    ReadResourceRequestParams, ResourceContents, ServerNotification, SubscriptionFilter,
+    TaskStatus, object,
 };
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
@@ -41,6 +42,7 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
             tool_names,
             [
                 "front_camera.info",
+                "front_camera.look",
                 "front_camera.set_brightness",
                 "recorder.record_episode",
                 "recorder.replay_episode"
@@ -61,6 +63,15 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
             Some(true)
         );
         assert!(info_tool.output_schema.is_some());
+        let look_tool = tools
+            .tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "front_camera.look")
+            .expect("the picture tool is listed");
+        let look_annotations = look_tool.annotations.as_ref().expect("annotations set");
+        assert_eq!(look_annotations.read_only_hint, Some(true));
+        assert_eq!(look_annotations.destructive_hint, Some(false));
+        assert!(look_tool.output_schema.is_some());
 
         let resources = client
             .list_resources(None)
@@ -73,6 +84,17 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
             .collect();
         resource_uris.sort_unstable();
         assert_eq!(resource_uris, [FRAME_URI, STATUS_URI]);
+        // A resource is listed under the MIME type of its blob, and one
+        // without a representation under its document's.
+        let listed_mime_type = |uri: &str| {
+            resources
+                .resources
+                .iter()
+                .find(|resource| resource.uri == uri)
+                .and_then(|resource| resource.mime_type.as_deref())
+        };
+        assert_eq!(listed_mime_type(FRAME_URI), Some("image/jpeg"));
+        assert_eq!(listed_mime_type(STATUS_URI), Some("application/json"));
         assert_eq!(resources.ttl_ms, Some(3_600_000));
         assert_eq!(resources.cache_scope, Some(CacheScope::Private));
 
@@ -141,24 +163,39 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
             .expect("fresh snapshot serves");
         assert_eq!(read.ttl_ms, Some(2000));
         assert_eq!(read.cache_scope, Some(CacheScope::Private));
-        let contents = read.contents.first().expect("one content item");
-        let text = match contents {
-            rmcp::model::ResourceContents::TextResourceContents {
-                text,
-                mime_type,
-                uri,
-                ..
-            } => {
-                assert_eq!(uri, STATUS_URI);
-                assert_eq!(mime_type.as_deref(), Some("application/json"));
-                text
-            }
-            other => panic!("expected text contents, got {other:?}"),
+        let [document] = read.contents.as_slice() else {
+            panic!(
+                "a resource without a representation serves its document alone, got {:?}",
+                read.contents
+            );
         };
-        assert_eq!(text, "{\"battery\":87}");
+        assert_eq!(
+            json_document(document, STATUS_URI),
+            json!({ "battery": 87 })
+        );
 
-        // An rgb8 frame published through the ingest serves as JPEG, with the
-        // same remaining-freshness hint as any other snapshot.
+        // The picture tool answers inside the call from the same snapshot
+        // store: before the first frame it is a tool error in the words of
+        // the read.
+        let looked = client
+            .call_tool(CallToolRequestParams::new("front_camera.look"))
+            .await
+            .expect("the picture tool answers");
+        assert_eq!(looked.is_error, Some(true));
+        let unavailable = protocol_error(
+            client
+                .read_resource(ReadResourceRequestParams::new(FRAME_URI))
+                .await
+                .expect_err("no frame published yet"),
+        );
+        assert_eq!(
+            looked.content[0].as_text().map(|text| text.text.as_str()),
+            Some(unavailable.message.as_ref())
+        );
+
+        // An rgb8 frame published through the ingest serves as a document
+        // without the frame and the frame as a JPEG blob, with the same
+        // remaining-freshness hint as any other snapshot.
         let frame_ingest = endpoint
             .server
             .ingest("front_camera.latest_frame")
@@ -173,20 +210,61 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
             .expect("frame snapshot serves");
         assert_eq!(read.ttl_ms, Some(2000));
         assert_eq!(read.cache_scope, Some(CacheScope::Private));
-        let rmcp::model::ResourceContents::TextResourceContents { text, .. } =
-            read.contents.first().expect("one content item")
-        else {
-            panic!("expected text contents");
+        let [document, blob] = read.contents.as_slice() else {
+            panic!(
+                "a resource with a representation serves its document, then its blob, got {:?}",
+                read.contents
+            );
         };
-        let snapshot: Value = serde_json::from_str(text).expect("snapshot is JSON");
-        assert_eq!(snapshot["encoding"], "mjpeg");
-        assert_eq!(snapshot["width"], 8);
-        let jpeg = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            snapshot["frame"].as_str().expect("frame is base64"),
-        )
-        .expect("frame decodes");
-        assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "JPEG magic bytes");
+        let snapshot = json_document(document, FRAME_URI);
+        assert_eq!(
+            snapshot,
+            json!({ "encoding": "mjpeg", "width": 8, "height": 8 })
+        );
+        let ResourceContents::BlobResourceContents {
+            blob,
+            mime_type,
+            uri,
+            ..
+        } = blob
+        else {
+            panic!("expected blob contents, got {blob:?}");
+        };
+        assert_eq!(uri, FRAME_URI);
+        assert_eq!(mime_type.as_deref(), Some("image/jpeg"));
+        assert_is_jpeg(blob);
+
+        // The picture tool answers with that snapshot: the frame as an image
+        // block, the document as text and as the structured content.
+        let looked = client
+            .call_tool(CallToolRequestParams::new("front_camera.look"))
+            .await
+            .expect("the picture tool answers");
+        assert_eq!(looked.is_error, Some(false));
+        assert_eq!(looked.structured_content, Some(snapshot.clone()));
+        let [image, text] = looked.content.as_slice() else {
+            panic!("expected an image and a text, got {:?}", looked.content);
+        };
+        let image = image.as_image().expect("the first block is the image");
+        assert_eq!(image.mime_type, "image/jpeg");
+        assert_eq!(&image.data, blob, "the image is the blob a read serves");
+        let text = text.as_text().expect("the second block is the document");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text.text).expect("the text is JSON"),
+            snapshot
+        );
+
+        // It takes no argument on a fixed surface.
+        let error = protocol_error(
+            client
+                .call_tool(
+                    CallToolRequestParams::new("front_camera.look")
+                        .with_arguments(object(json!({ "camera": "front" }))),
+                )
+                .await
+                .expect_err("the picture tool takes no argument"),
+        );
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
 
         // Tool calls round-trip structured output against the derived schemas.
         let called = client
@@ -260,6 +338,61 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
         late_client.cancel().await.expect("client disconnects");
     }
 
+    set.stop().await;
+}
+
+/// The JSON document a read serves first, held to `uri` and to its MIME
+/// type.
+fn json_document(contents: &ResourceContents, uri: &str) -> Value {
+    let ResourceContents::TextResourceContents {
+        text,
+        mime_type,
+        uri: served_uri,
+        ..
+    } = contents
+    else {
+        panic!("expected text contents, got {contents:?}");
+    };
+    assert_eq!(served_uri, uri);
+    assert_eq!(mime_type.as_deref(), Some("application/json"));
+    serde_json::from_str(text).expect("the document is JSON")
+}
+
+fn assert_is_jpeg(base64_text: &str) {
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, base64_text)
+        .expect("the frame is base64");
+    assert_eq!(&bytes[..2], &[0xFF, 0xD8], "JPEG magic bytes");
+}
+
+/// A picture tool reads a snapshot and sends no goal, so it answers inside
+/// the call for every client, one that declares the tasks extension
+/// included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_picture_tool_is_never_a_task() {
+    let set = start_set().await;
+    for endpoint in &set.endpoints {
+        let frame_ingest = endpoint
+            .server
+            .ingest("front_camera.latest_frame")
+            .expect("resource exists");
+        let token = frame_ingest.admit().expect("gate open");
+        frame_ingest
+            .publish(token, sample_rgb8_frame())
+            .expect("frame publishes");
+
+        let client = connect_with_tasks(&endpoint.url).await;
+        let response = client
+            .call_tool_once(CallToolRequestParams::new("front_camera.look"))
+            .await
+            .expect("the picture tool answers");
+        let CallToolResponse::Complete(looked) = response else {
+            panic!("expected the picture inside the call, got {response:?}");
+        };
+        assert_eq!(looked.is_error, Some(false));
+        let image = looked.content[0].as_image().expect("the image block");
+        assert_is_jpeg(&image.data);
+        client.cancel().await.expect("client disconnects");
+    }
     set.stop().await;
 }
 

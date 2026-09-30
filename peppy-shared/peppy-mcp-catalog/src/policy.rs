@@ -131,6 +131,15 @@ impl ImageCodec {
     pub fn downscales(self) -> bool {
         matches!(self, Self::Jpeg | Self::Png16)
     }
+
+    /// The MIME type of the bytes a frame of this codec is published as.
+    pub fn mime_type(self) -> &'static str {
+        match self {
+            Self::Jpeg => "image/jpeg",
+            Self::Png16 => "image/png",
+            Self::Raw => "application/octet-stream",
+        }
+    }
 }
 
 /// JPEG quality between 1 and 100.
@@ -409,6 +418,13 @@ mod tests {
                 "{codec}: unexpected error: {error}"
             );
         }
+    }
+
+    #[test]
+    fn each_codec_publishes_its_frames_under_its_own_mime_type() {
+        assert_eq!(ImageCodec::Jpeg.mime_type(), "image/jpeg");
+        assert_eq!(ImageCodec::Png16.mime_type(), "image/png");
+        assert_eq!(ImageCodec::Raw.mime_type(), "application/octet-stream");
     }
 
     #[test]

@@ -41,6 +41,7 @@ async fn identical_public_names_resolve_to_their_own_endpoint() {
             names,
             [
                 "front_camera.info",
+                "front_camera.look",
                 "front_camera.set_brightness",
                 "recorder.record_episode",
                 "recorder.replay_episode"

@@ -35,7 +35,8 @@
       },
 
       // A topic becomes a resource: the latest policy-approved snapshot,
-      // which clients read and subscribe to.
+      // which clients read and subscribe to. Under a representation a read
+      // serves the message without its frame, and the frame as a blob.
       topics: [
         {
           member: "video_stream",
@@ -64,6 +65,13 @@
           // has no static maximum and the runtime size policy is mandatory.
           max_result_bytes: 524288,
           on_oversize: "downscale",
+          // The same frame through a tool: a model that calls it gets the
+          // picture as an image, beside the rest of the message. It reads
+          // the snapshot the resource serves and takes no argument.
+          picture: {
+            tool: "front_camera.look",
+            description: "Look through the front-facing camera: the latest frame as a picture.",
+          },
         },
       ],
 

@@ -23,7 +23,9 @@
 //! - [`ExposureServer::ingest`] hands out the [`ResourceIngest`] a topic
 //!   pump feeds: [`ResourceIngest::admit`] applies the update-rate gate
 //!   before any decoding work, [`ResourceIngest::publish`] applies the
-//!   representation and size policies and stores the snapshot.
+//!   representation and size policies and stores the snapshot: its
+//!   document, and under a representation its blob, which a read serves as
+//!   typed contents and a picture tool as an image.
 //! - [`ExposureSet::serve`] serves every server of the set on one listener,
 //!   each under its [`ExposureServer::endpoint_path`], until the supplied
 //!   cancellation token fires; every other path answers 404.

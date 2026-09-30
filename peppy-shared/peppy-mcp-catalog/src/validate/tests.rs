@@ -217,12 +217,33 @@ fn the_walkthrough_exposure_builds_its_bundle() {
         .expect("object schema");
     assert_eq!(
         frame_properties.keys().collect::<Vec<_>>(),
-        ["header", "encoding", "width", "height", "frame"],
-        "schema properties keep the format's declaration order"
+        ["header", "encoding", "width", "height"],
+        "the document's schema keeps the format's declaration order and leaves out `frame`, \
+         which the blob carries"
     );
     assert_eq!(
-        frame.schema["properties"]["frame"]["contentEncoding"],
-        "base64"
+        frame.schema["required"],
+        serde_json::json!(["header", "encoding", "width", "height"])
+    );
+
+    assert_eq!(bundle.pictures.len(), 1);
+    let look = &bundle.pictures[0];
+    assert_eq!(look.name, "front_camera.look");
+    assert_eq!(
+        look.description,
+        "Look through the front-facing camera: the latest frame as a picture."
+    );
+    assert_eq!(look.target, "front_camera");
+    assert_eq!(look.member, "video_stream");
+    assert_eq!(look.resource, "front_camera.latest_frame");
+    assert_eq!(
+        look.input_schema,
+        serde_json::json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        "a picture tool of a fixed surface takes no argument"
+    );
+    assert_eq!(
+        look.output_schema, frame.schema,
+        "the tool answers with the document of its resource"
     );
 
     assert_eq!(bundle.tools.len(), 2);
@@ -520,6 +541,62 @@ fn two_resources_read_one_topic_with_different_representations() {
             ("cam.frame_png", "video_stream", Some(ImageCodec::Png16)),
         ]
     );
+}
+
+/// A frame topic of the walkthrough camera under `representation`, the
+/// topic's `representation` entry or nothing.
+fn frame_topic(representation: &str) -> String {
+    camera_exposure(&format!(
+        r#"topics: [
+            {{
+                member: "video_stream",
+                resource: "cam.latest_frame",
+                description: "Latest frame.",
+                freshness: {{ max_age_ms: 2000 }},
+                update: {{ max_hz: 2 }},
+                {representation}
+                max_result_bytes: 524288,
+                on_oversize: "reject",
+            }},
+        ]"#
+    ))
+}
+
+#[test]
+fn the_schema_of_a_resource_leaves_out_the_member_its_blob_carries() {
+    let camera = fixture(CAMERA_CONTRACT);
+    let frame_fields =
+        r#"fields: { data: "frame", encoding: "encoding", width: "width", height: "height" }"#;
+    for codec in ["jpeg", "png16", "raw"] {
+        let bundle = build(
+            &frame_topic(&format!(
+                r#"representation: {{ image: "{codec}", {frame_fields} }},"#
+            )),
+            &[&camera],
+        );
+        let schema = &bundle.resources[0].schema;
+        assert_eq!(
+            schema["properties"]
+                .as_object()
+                .expect("object schema")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["header", "encoding", "width", "height"],
+            "{codec}"
+        );
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["header", "encoding", "width", "height"]),
+            "{codec}"
+        );
+    }
+
+    let whole = build(&frame_topic(""), &[&camera]);
+    assert_eq!(
+        whole.resources[0].schema["properties"]["frame"]["contentEncoding"], "base64",
+        "a resource with no representation serves the whole message as its document"
+    );
+    assert!(whole.pictures.is_empty());
 }
 
 #[test]
@@ -968,6 +1045,57 @@ fn a_per_robot_bundle_adds_the_routing_arguments_and_resolves_its_listing() {
         brightness.input_schema["additionalProperties"],
         serde_json::json!(false)
     );
+
+    let reparsed = ExposureBundle::from_json_str(&bundle.to_json_string()).expect("round trips");
+    assert_eq!(reparsed, bundle);
+}
+
+#[test]
+fn a_picture_tool_of_a_per_robot_surface_takes_the_routing_arguments_alone() {
+    let status = fixture(STATUS_CONTRACT);
+    let camera = fixture(CAMERA_CONTRACT);
+    let frame_topic = r#"argument: "camera",
+        topics: [
+            {
+                member: "video_stream",
+                resource: "camera.latest_frame",
+                description: "The camera's latest frame.",
+                freshness: { max_age_ms: 2000 },
+                update: { max_hz: 2 },
+                representation: {
+                    image: "jpeg",
+                    fields: { data: "frame", encoding: "encoding", width: "width", height: "height" },
+                },
+                max_result_bytes: 524288,
+                on_oversize: "downscale",
+                picture: { tool: "camera.look", description: "Look through the camera." },
+            },
+        ],"#;
+    let bundle = build(
+        &per_robot_exposure(&sha_of(STATUS_CONTRACT), "")
+            .replace(r#"argument: "camera","#, frame_topic),
+        &[&status, &camera],
+    );
+
+    assert_eq!(bundle.pictures.len(), 1);
+    let look = &bundle.pictures[0];
+    assert_eq!(look.name, "camera.look");
+    assert_eq!(look.target, "camera");
+    assert_eq!(look.resource, "camera.latest_frame");
+    assert_eq!(
+        look.input_schema,
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "robot": { "type": "string" },
+                "camera": { "type": "string" },
+            },
+            "required": ["robot", "camera"],
+            "additionalProperties": false,
+        })
+    );
+    assert_eq!(look.output_schema, bundle.resources[1].schema);
+    assert!(look.output_schema["properties"].get("frame").is_none());
 
     let reparsed = ExposureBundle::from_json_str(&bundle.to_json_string()).expect("round trips");
     assert_eq!(reparsed, bundle);

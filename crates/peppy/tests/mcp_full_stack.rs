@@ -410,6 +410,10 @@ fn camera_endpoint_exposure(tag: &str, title: &str, sha256: Option<&str>) -> Str
                         }},
                         max_result_bytes: 524288,
                         on_oversize: "downscale",
+                        picture: {{
+                            tool: "front_camera.look",
+                            description: "Look through the front-facing camera: the latest frame as a picture.",
+                        }},
                     }},
                     {{
                         member: "camera_status",
@@ -499,6 +503,10 @@ fn fleet_cameras_exposure() -> String {
                         }},
                         max_result_bytes: 524288,
                         on_oversize: "downscale",
+                        picture: {{
+                            tool: "front_camera.look",
+                            description: "Look through the front-facing camera: the latest frame as a picture.",
+                        }},
                     }},
                     {{
                         member: "camera_status",
@@ -1229,6 +1237,7 @@ async fn start_confirmed_record_clip(
     task_id
 }
 
+/// The document of a read: its first content, as JSON.
 fn text_snapshot(read: rmcp::model::ReadResourceResult) -> Value {
     let rmcp::model::ResourceContents::TextResourceContents { text, .. } =
         read.contents.first().expect("one content item")
@@ -1236,6 +1245,31 @@ fn text_snapshot(read: rmcp::model::ReadResourceResult) -> Value {
         panic!("expected text contents");
     };
     serde_json::from_str(text).expect("snapshot is JSON")
+}
+
+fn assert_is_jpeg(base64_text: &str) {
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, base64_text)
+        .expect("the frame is base64");
+    assert_eq!(&bytes[..2], &[0xFF, 0xD8], "the served frame is a JPEG");
+}
+
+/// The document a picture tool answered with, once its result is held to
+/// the shape of a picture: a JPEG image block, then the document as text.
+fn looked_document(looked: rmcp::model::CallToolResult) -> Value {
+    assert_eq!(looked.is_error, Some(false), "got {:?}", looked.content);
+    let [image, text] = looked.content.as_slice() else {
+        panic!("expected an image and a text, got {:?}", looked.content);
+    };
+    let image = image.as_image().expect("the first block is the image");
+    assert_eq!(image.mime_type, "image/jpeg");
+    assert_is_jpeg(&image.data);
+    let document = looked.structured_content.expect("a structured document");
+    let text = text.as_text().expect("the second block is the document");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text.text).expect("the text is JSON"),
+        document
+    );
+    document
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1342,9 +1376,23 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         [
             "front_camera.freeze_probe",
             "front_camera.info",
+            "front_camera.look",
             "front_camera.record_clip",
             "front_camera.set_brightness"
         ]
+    );
+    let look_tool = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "front_camera.look")
+        .expect("the picture tool is listed");
+    assert_eq!(
+        look_tool
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint),
+        Some(true),
+        "a picture tool only reads"
     );
     let record_tool = tools
         .tools
@@ -1370,6 +1418,16 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         .collect();
     resource_uris.sort_unstable();
     assert_eq!(resource_uris, [FRAME_URI, STATUS_URI]);
+    let frame_resource = resources
+        .resources
+        .iter()
+        .find(|resource| resource.uri == FRAME_URI)
+        .expect("the frame resource is listed");
+    assert_eq!(
+        frame_resource.mime_type.as_deref(),
+        Some("image/jpeg"),
+        "a resource with a representation is listed under the MIME type of its blob"
+    );
 
     // --- Catalog suite: what `peppy mcp catalog` prints is what the
     // endpoint advertises.
@@ -1388,6 +1446,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         .expect("tools")
         .iter()
         .chain(catalog["tasks"].as_array().expect("tasks"))
+        .chain(catalog["pictures"].as_array().expect("pictures"))
         .map(|entry| entry["name"].as_str().expect("name"))
         .collect();
     catalog_tools.sort_unstable();
@@ -1442,21 +1501,44 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         text_snapshot(read),
         json!({ "battery": 87, "note": "operational", "recording": true })
     );
-    let snapshot = text_snapshot(
-        client
-            .read_resource(ReadResourceRequestParams::new(FRAME_URI))
-            .await
-            .expect("frame snapshot serves"),
+    let read = client
+        .read_resource(ReadResourceRequestParams::new(FRAME_URI))
+        .await
+        .expect("frame snapshot serves");
+    let [_document, blob] = read.contents.as_slice() else {
+        panic!(
+            "a resource with a representation serves its document, then its blob, got {:?}",
+            read.contents
+        );
+    };
+    let rmcp::model::ResourceContents::BlobResourceContents {
+        blob,
+        mime_type,
+        uri,
+        ..
+    } = blob
+    else {
+        panic!("expected blob contents, got {blob:?}");
+    };
+    assert_eq!(uri, FRAME_URI);
+    assert_eq!(mime_type.as_deref(), Some("image/jpeg"));
+    assert_is_jpeg(blob);
+    assert_eq!(
+        text_snapshot(read),
+        json!({ "encoding": "mjpeg", "width": 8, "height": 8 }),
+        "the document leaves out the frame, which the blob carries"
     );
-    assert_eq!(snapshot["encoding"], "mjpeg");
-    assert_eq!(snapshot["width"], 8);
-    assert_eq!(snapshot["height"], 8);
-    let jpeg = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        snapshot["frame"].as_str().expect("frame is base64"),
-    )
-    .expect("frame decodes");
-    assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "the served frame is a JPEG");
+
+    // --- The picture tool: the latest frame as an image a model sees,
+    // beside the document, inside the call.
+    let looked = client
+        .call_tool(CallToolRequestParams::new("front_camera.look"))
+        .await
+        .expect("the picture tool answers");
+    assert_eq!(
+        looked_document(looked),
+        json!({ "encoding": "mjpeg", "width": 8, "height": 8 })
+    );
 
     // --- Tools: structured results through the runtime codec, restrict
     // bounds and unknown names refused before the graph, a deadline miss as
@@ -2281,6 +2363,7 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
         tool_names,
         [
             "front_camera.info",
+            "front_camera.look",
             "front_camera.record_clip",
             "front_camera.set_brightness",
             "robot.list"
@@ -2314,6 +2397,7 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
             "robot": "alpha",
             "tools": [
                 "front_camera.info",
+                "front_camera.look",
                 "front_camera.record_clip",
                 "front_camera.set_brightness",
             ],
@@ -2399,6 +2483,49 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
     assert_eq!(
         text_snapshot(read),
         json!({ "battery": 87, "note": "operational", "recording": true })
+    );
+
+    // --- A picture tool answers for the robot the call names, once that
+    // robot's camera has published a frame, and refuses a robot that is
+    // not there like any other tool.
+    let bravo_frame = robot_uri("bravo", "front_camera.latest_frame");
+    let mut frame_subscription = client
+        .listen(
+            SubscriptionFilter::builder()
+                .resource_subscription(bravo_frame.as_str())
+                .build(),
+        )
+        .await
+        .expect("subscriptions/listen is accepted");
+    await_resource_updates(&mut frame_subscription, &[&bravo_frame]).await;
+    frame_subscription
+        .cancel()
+        .await
+        .expect("subscription cancels");
+    let looked = client
+        .call_tool(
+            CallToolRequestParams::new("front_camera.look")
+                .with_arguments(object(json!({ "robot": "bravo" }))),
+        )
+        .await
+        .expect("the picture tool answers for bravo");
+    assert_eq!(
+        looked_document(looked),
+        json!({ "encoding": "mjpeg", "width": 8, "height": 8 })
+    );
+    let refused = protocol_error(
+        client
+            .call_tool(
+                CallToolRequestParams::new("front_camera.look")
+                    .with_arguments(object(json!({ "robot": "charlie" }))),
+            )
+            .await
+            .expect_err("a robot that is not there is refused"),
+    );
+    assert_eq!(refused.code, ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        refused.message,
+        "`charlie` is not a robot of this stack; the robots are `alpha`, `bravo`"
     );
 
     // --- A removal takes the robot and its resources out.
