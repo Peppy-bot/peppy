@@ -5,8 +5,11 @@
 //! image-carrying snapshots to the declared codec: under `jpeg`, colour
 //! frames as they are and 16-bit depth frames as a greyscale picture; under
 //! `png16`, 16-bit single-channel frames such as a depth map losslessly.
-//! It then enforces `max_result_bytes` on the final serialized content,
-//! downscaling or rejecting oversize snapshots as the exposure declares.
+//! It then splits the snapshot into the content a read serves: the document,
+//! which is the message as JSON, and under a representation the blob, which
+//! is the encoded frame the document then leaves out. It enforces
+//! `max_result_bytes` on that content, downscaling or rejecting oversize
+//! snapshots as the exposure declares.
 
 use crate::error::PublishError;
 use base64::Engine as _;
@@ -24,6 +27,9 @@ use std::io::Cursor;
 /// Quality used when an exposure declares a jpeg representation without an
 /// explicit `quality`.
 pub(crate) const DEFAULT_JPEG_QUALITY: u8 = 80;
+
+/// The MIME type of a snapshot's document.
+pub(crate) const DOCUMENT_MIME_TYPE: &str = "application/json";
 
 /// Downscaling halves dimensions until the snapshot fits; below this edge
 /// length it gives up and rejects instead of serving unrecognizable thumbnails.
@@ -50,43 +56,110 @@ const U16_ENCODINGS: [&str; 3] = ["z16", "mono16", "16UC1"];
 /// A 16-bit image in memory, before it is encoded as PNG.
 type Luma16Image = image::ImageBuffer<Luma<u16>, Vec<u16>>;
 
-/// Applies the representation policy and the size policy to a snapshot,
-/// returning the final serialized content a read serves.
-pub(crate) fn apply_topic_policies(
-    policies: &ResourcePolicies,
-    value: &mut Value,
-) -> Result<String, PublishError> {
-    if let Some(representation) = &policies.representation {
-        match representation.image {
-            ImageCodec::Raw => {}
-            ImageCodec::Jpeg => transcode_jpeg(representation, value)?,
-            ImageCodec::Png16 => transcode_png16(&representation.fields, value)?,
+/// The content of one snapshot, as a read serves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotContent {
+    /// The message as compact JSON, without the member the blob carries.
+    pub(crate) document: String,
+    /// The encoded frame of a snapshot under a representation.
+    pub(crate) blob: Option<Blob>,
+}
+
+/// The frame of a snapshot under a representation, in the representation's
+/// codec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Blob {
+    pub(crate) mime_type: &'static str,
+    /// The frame bytes as base64 text, the form a resource blob and an image
+    /// block carry them in.
+    pub(crate) base64: String,
+}
+
+impl Blob {
+    /// The blob of a snapshot under `representation`, from the base64 text
+    /// of its encoded frame.
+    fn new(representation: &ImageRepresentation, base64: String) -> Self {
+        Self {
+            mime_type: representation.image.mime_type(),
+            base64,
         }
-    }
-    let serialized = serialize(value);
-    let Some(limit) = policies.max_result_bytes else {
-        return Ok(serialized);
-    };
-    let limit = limit.get();
-    if serialized.len() as u64 <= limit {
-        return Ok(serialized);
-    }
-    let downscale = policies.representation.as_ref().and_then(Downscale::of);
-    match (policies.on_oversize, downscale) {
-        (Some(OversizePolicy::Downscale), Some((downscale, fields))) => {
-            downscale_to_fit(&downscale, fields, value, limit, serialized)
-        }
-        _ => Err(PublishError::Oversize {
-            size: serialized.len() as u64,
-            limit,
-        }),
     }
 }
 
-/// Serializes the snapshot to the compact form reads serve and size limits
-/// measure.
-fn serialize(value: &Value) -> String {
-    serde_json::to_string(value).expect("JSON value serializes")
+impl SnapshotContent {
+    fn new(document: &Value, blob: Option<Blob>) -> Self {
+        Self {
+            document: serde_json::to_string(document).expect("JSON value serializes"),
+            blob,
+        }
+    }
+
+    /// The bytes a read carries, which `max_result_bytes` limits: the
+    /// serialized document plus the base64 text of the blob.
+    fn size(&self) -> u64 {
+        let blob = self.blob.as_ref().map_or(0, |blob| blob.base64.len());
+        (self.document.len() + blob) as u64
+    }
+}
+
+/// The MIME type a resource is listed under: its blob's under a
+/// representation, its document's otherwise.
+pub(crate) fn listed_mime_type(policies: &ResourcePolicies) -> &'static str {
+    policies.blob_mime_type().unwrap_or(DOCUMENT_MIME_TYPE)
+}
+
+/// Applies the representation policy and the size policy to a snapshot,
+/// returning the content a read serves.
+pub(crate) fn apply_topic_policies(
+    policies: &ResourcePolicies,
+    mut value: Value,
+) -> Result<SnapshotContent, PublishError> {
+    let content = match &policies.representation {
+        Some(representation) => {
+            match representation.image {
+                ImageCodec::Raw => {}
+                ImageCodec::Jpeg => transcode_jpeg(representation, &mut value)?,
+                ImageCodec::Png16 => transcode_png16(&representation.fields, &mut value)?,
+            }
+            let frame = take_frame(&mut value, &representation.fields)?;
+            SnapshotContent::new(&value, Some(Blob::new(representation, frame)))
+        }
+        None => SnapshotContent::new(&value, None),
+    };
+    let Some(limit) = policies.max_result_bytes else {
+        return Ok(content);
+    };
+    let limit = limit.get();
+    if content.size() <= limit {
+        return Ok(content);
+    }
+    let oversize = PublishError::Oversize {
+        size: content.size(),
+        limit,
+    };
+    if policies.on_oversize != Some(OversizePolicy::Downscale) {
+        return Err(oversize);
+    }
+    let Some(representation) = &policies.representation else {
+        return Err(oversize);
+    };
+    let Some(downscale) = Downscale::of(representation) else {
+        return Err(oversize);
+    };
+    downscale_to_fit(&downscale, representation, value, content, limit)
+}
+
+/// Takes the encoded frame out of the snapshot as the base64 text its data
+/// member carries, which leaves the document.
+fn take_frame(value: &mut Value, fields: &ImageFieldMap) -> Result<String, PublishError> {
+    get_str(value, &fields.data, "data")?;
+    match value
+        .as_object_mut()
+        .and_then(|object| object.shift_remove(&fields.data))
+    {
+        Some(Value::String(frame)) => Ok(frame),
+        _ => unreachable!("the data member was just read as a string"),
+    }
 }
 
 /// The quality a `jpeg` representation encodes at.
@@ -154,17 +227,15 @@ enum Downscale {
 }
 
 impl Downscale {
-    /// The downscale of `representation`, with the fields it reads, for a
-    /// codec that downscales.
-    fn of(representation: &ImageRepresentation) -> Option<(Self, &ImageFieldMap)> {
-        let downscale = match representation.image {
-            ImageCodec::Raw => return None,
-            ImageCodec::Jpeg => Self::Jpeg {
+    /// The downscale of `representation`, for a codec that downscales.
+    fn of(representation: &ImageRepresentation) -> Option<Self> {
+        match representation.image {
+            ImageCodec::Raw => None,
+            ImageCodec::Jpeg => Some(Self::Jpeg {
                 quality: jpeg_quality(representation),
-            },
-            ImageCodec::Png16 => Self::Png16,
-        };
-        Some((downscale, &representation.fields))
+            }),
+            ImageCodec::Png16 => Some(Self::Png16),
+        }
     }
 
     /// The container the snapshot's frame is decoded from.
@@ -196,49 +267,58 @@ impl Downscale {
     }
 }
 
-/// Halves the frame's dimensions until the serialized snapshot fits the
-/// limit, rewriting the data, width, and height fields on each step. A JPEG
-/// picture is resampled and keeps its colour type, so a greyscale depth
-/// picture stays one channel; a 16-bit frame keeps one source sample per
-/// output pixel.
+/// Halves the frame's dimensions until the snapshot's content fits the
+/// limit, rewriting the blob and the document's width and height on each
+/// step. A JPEG picture is resampled and keeps its colour type, so a
+/// greyscale depth picture stays one channel; a 16-bit frame keeps one
+/// source sample per output pixel.
 fn downscale_to_fit(
     downscale: &Downscale,
-    fields: &ImageFieldMap,
-    value: &mut Value,
+    representation: &ImageRepresentation,
+    mut document: Value,
+    mut content: SnapshotContent,
     limit: u64,
-    mut serialized: String,
-) -> Result<String, PublishError> {
-    let mut picture = load_image(&decode_data(value, fields)?, downscale.format())?;
+) -> Result<SnapshotContent, PublishError> {
+    let fields = &representation.fields;
+    let frame = content
+        .blob
+        .as_ref()
+        .expect("a snapshot under a representation holds a blob");
+    let mut picture = load_image(
+        &decode_base64(&frame.base64, &fields.data)?,
+        downscale.format(),
+    )?;
     loop {
         let (width, height) = (picture.width(), picture.height());
         if width / 2 < MIN_DOWNSCALE_EDGE || height / 2 < MIN_DOWNSCALE_EDGE {
             return Err(PublishError::Oversize {
-                size: serialized.len() as u64,
+                size: content.size(),
                 limit,
             });
         }
         picture = picture.resize_exact(width / 2, height / 2, downscale.filter());
-        set_field(
-            value,
-            &fields.data,
-            Value::String(BASE64.encode(downscale.encode(&picture)?)),
-        );
-        set_field(value, &fields.width, Value::from(width / 2));
-        set_field(value, &fields.height, Value::from(height / 2));
-        serialized = serialize(value);
-        if serialized.len() as u64 <= limit {
-            return Ok(serialized);
+        set_field(&mut document, &fields.width, Value::from(width / 2));
+        set_field(&mut document, &fields.height, Value::from(height / 2));
+        let frame = BASE64.encode(downscale.encode(&picture)?);
+        content = SnapshotContent::new(&document, Some(Blob::new(representation, frame)));
+        if content.size() <= limit {
+            return Ok(content);
         }
     }
 }
 
 /// The frame bytes the snapshot's data field carries.
 fn decode_data(value: &Value, fields: &ImageFieldMap) -> Result<Vec<u8>, PublishError> {
+    decode_base64(get_str(value, &fields.data, "data")?, &fields.data)
+}
+
+/// The bytes behind the base64 text of the data member `name`.
+fn decode_base64(text: &str, name: &str) -> Result<Vec<u8>, PublishError> {
     BASE64
-        .decode(get_str(value, &fields.data, "data")?.as_bytes())
+        .decode(text.as_bytes())
         .map_err(|_| PublishError::Field {
             role: "data",
-            name: fields.data.clone(),
+            name: name.to_string(),
             problem: "is not valid base64".to_string(),
         })
 }
@@ -452,17 +532,6 @@ fn set_field(value: &mut Value, name: &str, new_value: Value) {
     }
 }
 
-/// Decodes the JPEG carried in the snapshot's data field, for tests and
-/// diagnostics.
-#[cfg(test)]
-fn decode_snapshot_jpeg(value: &Value, fields: &ImageFieldMap) -> image::DynamicImage {
-    let data = get_str(value, &fields.data, "data").expect("data field present");
-    let bytes = BASE64
-        .decode(data.as_bytes())
-        .expect("data field is base64");
-    image::load_from_memory_with_format(&bytes, ImageFormat::Jpeg).expect("data field is a JPEG")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,13 +539,6 @@ mod tests {
 
     fn policies(raw: Value) -> ResourcePolicies {
         serde_json::from_value(raw).expect("valid policies")
-    }
-
-    fn frame_fields() -> ImageFieldMap {
-        serde_json::from_value(json!({
-            "data": "frame", "encoding": "encoding", "width": "width", "height": "height"
-        }))
-        .expect("valid field map")
     }
 
     fn jpeg_policies(max_result_bytes: Option<u64>, on_oversize: Option<&str>) -> ResourcePolicies {
@@ -574,8 +636,27 @@ mod tests {
         z16_frame(readings, width, height)
     }
 
-    fn decoded_gray(value: &Value) -> GrayImage {
-        match decode_snapshot_jpeg(value, &frame_fields()) {
+    /// The document of a snapshot, parsed.
+    fn document(content: &SnapshotContent) -> Value {
+        serde_json::from_str(&content.document).expect("the document is JSON")
+    }
+
+    /// The frame bytes a snapshot's blob carries, held to its MIME type.
+    fn blob_bytes(content: &SnapshotContent, mime_type: &str) -> Vec<u8> {
+        let blob = content.blob.as_ref().expect("the snapshot holds a blob");
+        assert_eq!(blob.mime_type, mime_type);
+        BASE64
+            .decode(blob.base64.as_bytes())
+            .expect("the blob is base64")
+    }
+
+    fn decoded_jpeg(content: &SnapshotContent) -> DynamicImage {
+        image::load_from_memory_with_format(&blob_bytes(content, "image/jpeg"), ImageFormat::Jpeg)
+            .expect("the blob is a JPEG")
+    }
+
+    fn decoded_gray(content: &SnapshotContent) -> GrayImage {
+        match decoded_jpeg(content) {
             DynamicImage::ImageLuma8(gray) => gray,
             other => panic!("expected a one-channel picture, got {:?}", other.color()),
         }
@@ -614,13 +695,12 @@ mod tests {
         frame
     }
 
-    fn decode_snapshot_png16(value: &Value, fields: &ImageFieldMap) -> Luma16Image {
-        let data = get_str(value, &fields.data, "data").expect("data field present");
-        let bytes = BASE64
-            .decode(data.as_bytes())
-            .expect("data field is base64");
-        match image::load_from_memory_with_format(&bytes, ImageFormat::Png)
-            .expect("data field is a PNG")
+    fn decoded_png16(content: &SnapshotContent) -> Luma16Image {
+        match image::load_from_memory_with_format(
+            &blob_bytes(content, "image/png"),
+            ImageFormat::Png,
+        )
+        .expect("the blob is a PNG")
         {
             DynamicImage::ImageLuma16(samples) => samples,
             other => panic!(
@@ -633,11 +713,15 @@ mod tests {
     #[test]
     fn png16_transcodes_u16_frames_losslessly() {
         for encoding in U16_ENCODINGS {
-            let mut value = depth_frame(encoding, 8, 4);
-            let serialized =
-                apply_topic_policies(&png16_policies(None, None), &mut value).expect("transcodes");
-            assert!(serialized.contains("\"encoding\":\"png\""));
-            let decoded = decode_snapshot_png16(&value, &frame_fields());
+            let content =
+                apply_topic_policies(&png16_policies(None, None), depth_frame(encoding, 8, 4))
+                    .expect("transcodes");
+            assert_eq!(
+                document(&content),
+                json!({ "encoding": "png", "width": 8, "height": 4 }),
+                "{encoding}: the document leaves the frame out"
+            );
+            let decoded = decoded_png16(&content);
             assert_eq!((decoded.width(), decoded.height()), (8, 4));
             for (index, pixel) in decoded.pixels().enumerate() {
                 assert_eq!(
@@ -653,24 +737,30 @@ mod tests {
     fn png16_passes_png_frames_through_and_refuses_color_frames() {
         let sixteen = BASE64
             .encode(encode_png16(&Luma16Image::from_pixel(1, 1, Luma([7u16]))).expect("encodes"));
-        let mut png = json!({ "frame": sixteen, "encoding": "png", "width": 1, "height": 1 });
-        apply_topic_policies(&png16_policies(None, None), &mut png)
+        let png = json!({ "frame": sixteen, "encoding": "png", "width": 1, "height": 1 });
+        let content = apply_topic_policies(&png16_policies(None, None), png)
             .expect("a 16-bit single-channel PNG passes through");
-        assert_eq!(png["frame"], sixteen);
+        assert_eq!(
+            content.blob,
+            Some(Blob {
+                mime_type: "image/png",
+                base64: sixteen
+            })
+        );
 
         let mut eight = Vec::new();
         RgbImage::from_pixel(1, 1, image::Rgb([1, 2, 3]))
             .write_to(&mut std::io::Cursor::new(&mut eight), ImageFormat::Png)
             .expect("encodes");
-        let mut png = json!({
+        let png = json!({
             "frame": BASE64.encode(&eight), "encoding": "png", "width": 1, "height": 1,
         });
-        let error = apply_topic_policies(&png16_policies(None, None), &mut png)
+        let error = apply_topic_policies(&png16_policies(None, None), png)
             .expect_err("an 8-bit color PNG is not a depth frame");
         assert!(matches!(error, PublishError::BadFrame { .. }));
 
-        let mut color = solid_frame("rgb8", [1, 2, 3], 2, 2);
-        let error = apply_topic_policies(&png16_policies(None, None), &mut color)
+        let color = solid_frame("rgb8", [1, 2, 3], 2, 2);
+        let error = apply_topic_policies(&png16_policies(None, None), color)
             .expect_err("a color frame is not a 16-bit frame");
         assert!(
             matches!(error, PublishError::UnsupportedEncoding { encoding } if encoding == "rgb8")
@@ -678,24 +768,25 @@ mod tests {
 
         let mut short = depth_frame("z16", 4, 4);
         short["frame"] = json!(BASE64.encode([0u8; 6]));
-        let error = apply_topic_policies(&png16_policies(None, None), &mut short)
+        let error = apply_topic_policies(&png16_policies(None, None), short)
             .expect_err("a short buffer is a bad frame");
         assert!(matches!(error, PublishError::BadFrame { .. }));
     }
 
     #[test]
     fn png16_downscales_by_keeping_samples() {
-        let mut value = depth_frame("z16", 64, 64);
-        let full = apply_topic_policies(&png16_policies(None, None), &mut value.clone())
-            .expect("transcodes");
-        let limit = (full.len() / 2) as u64;
-        let serialized =
-            apply_topic_policies(&png16_policies(Some(limit), Some("downscale")), &mut value)
-                .expect("downscales to fit");
-        assert!(serialized.len() as u64 <= limit);
-        assert_eq!(value["width"], json!(32));
-        assert_eq!(value["height"], json!(32));
-        let decoded = decode_snapshot_png16(&value, &frame_fields());
+        let value = depth_frame("z16", 64, 64);
+        let full =
+            apply_topic_policies(&png16_policies(None, None), value.clone()).expect("transcodes");
+        let limit = full.size() / 2;
+        let content = apply_topic_policies(&png16_policies(Some(limit), Some("downscale")), value)
+            .expect("downscales to fit");
+        assert!(content.size() <= limit);
+        assert_eq!(
+            document(&content),
+            json!({ "encoding": "png", "width": 32, "height": 32 })
+        );
+        let decoded = decoded_png16(&content);
         let original = |x: u32, y: u32| ((y * 64 + x) * 7919) as u16;
         for (x, y, pixel) in decoded.enumerate_pixels() {
             let block =
@@ -718,33 +809,73 @@ mod tests {
                 "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
             }
         }));
-        let mut value = solid_frame("rgb8", [1, 2, 3], 4, 4);
-        let original = value.clone();
-        apply_topic_policies(&raw_policies, &mut value).expect("raw passes through");
-        assert_eq!(value, original);
+        let value = solid_frame("rgb8", [1, 2, 3], 4, 4);
+        let frame = value["frame"].as_str().expect("base64 text").to_string();
+        let content = apply_topic_policies(&raw_policies, value).expect("raw passes through");
+        assert_eq!(
+            document(&content),
+            json!({ "encoding": "rgb8", "width": 4, "height": 4 })
+        );
+        assert_eq!(
+            content.blob,
+            Some(Blob {
+                mime_type: "application/octet-stream",
+                base64: frame
+            })
+        );
+    }
+
+    #[test]
+    fn a_snapshot_without_a_representation_is_a_document_alone() {
+        let plain = policies(json!({
+            "freshness": { "max_age_ms": 2000 },
+            "update": { "max_hz": 2.0 },
+        }));
+        let value = solid_frame("rgb8", [1, 2, 3], 4, 4);
+        let content = apply_topic_policies(&plain, value.clone()).expect("publishes");
+        assert_eq!(document(&content), value, "the frame stays in the document");
+        assert_eq!(content.blob, None);
+    }
+
+    #[test]
+    fn a_resource_is_listed_under_the_mime_type_of_its_blob_or_of_its_document() {
+        assert_eq!(listed_mime_type(&jpeg_policies(None, None)), "image/jpeg");
+        assert_eq!(listed_mime_type(&png16_policies(None, None)), "image/png");
+        let plain = policies(json!({
+            "freshness": { "max_age_ms": 2000 },
+            "update": { "max_hz": 2.0 },
+        }));
+        assert_eq!(listed_mime_type(&plain), "application/json");
     }
 
     #[test]
     fn frames_already_jpeg_encoded_pass_through_without_transcoding() {
-        let mut value = json!({
-            "frame": BASE64.encode(b"not really a jpeg, and never decoded"),
-            "encoding": "mjpeg",
-            "width": 4,
-            "height": 4,
-        });
-        let original = value.clone();
-        apply_topic_policies(&jpeg_policies(None, None), &mut value).expect("mjpeg passes through");
-        assert_eq!(value, original);
+        let frame = BASE64.encode(b"not really a jpeg, and never decoded");
+        let value = json!({ "frame": frame, "encoding": "mjpeg", "width": 4, "height": 4 });
+        let content =
+            apply_topic_policies(&jpeg_policies(None, None), value).expect("mjpeg passes through");
+        assert_eq!(
+            document(&content),
+            json!({ "encoding": "mjpeg", "width": 4, "height": 4 })
+        );
+        assert_eq!(
+            content.blob,
+            Some(Blob {
+                mime_type: "image/jpeg",
+                base64: frame
+            })
+        );
     }
 
     #[test]
     fn rgb8_frames_transcode_to_jpeg_and_rewrite_the_encoding() {
-        let mut value = solid_frame("rgb8", [200, 30, 30], 8, 8);
-        apply_topic_policies(&jpeg_policies(None, None), &mut value).expect("transcodes");
-        assert_eq!(value["encoding"], "mjpeg");
-        assert_eq!(value["width"], 8);
-        assert_eq!(value["height"], 8);
-        let decoded = decode_snapshot_jpeg(&value, &frame_fields()).to_rgb8();
+        let value = solid_frame("rgb8", [200, 30, 30], 8, 8);
+        let content = apply_topic_policies(&jpeg_policies(None, None), value).expect("transcodes");
+        assert_eq!(
+            document(&content),
+            json!({ "encoding": "mjpeg", "width": 8, "height": 8 })
+        );
+        let decoded = decoded_jpeg(&content).to_rgb8();
         assert_eq!((decoded.width(), decoded.height()), (8, 8));
         let pixel = decoded.get_pixel(4, 4);
         assert!(
@@ -755,9 +886,9 @@ mod tests {
 
     #[test]
     fn bgr8_frames_swap_channels_before_encoding() {
-        let mut value = solid_frame("bgr8", [200, 30, 30], 8, 8);
-        apply_topic_policies(&jpeg_policies(None, None), &mut value).expect("transcodes");
-        let decoded = decode_snapshot_jpeg(&value, &frame_fields()).to_rgb8();
+        let value = solid_frame("bgr8", [200, 30, 30], 8, 8);
+        let content = apply_topic_policies(&jpeg_policies(None, None), value).expect("transcodes");
+        let decoded = decoded_jpeg(&content).to_rgb8();
         let pixel = decoded.get_pixel(4, 4);
         assert!(
             pixel[2] > 150 && pixel[0] < 90 && pixel[1] < 90,
@@ -786,12 +917,14 @@ mod tests {
     #[test]
     fn z16_frames_transcode_to_a_greyscale_jpeg_spanning_the_depth_range() {
         for (reading, expected_shade) in [(100u16, 255u8), (10000, 0), (0, 0), (5050, 128)] {
-            let mut value = solid_depth_frame(reading, 8, 8);
-            apply_topic_policies(&depth_policies(None, None), &mut value).expect("transcodes");
-            assert_eq!(value["encoding"], "mjpeg");
-            assert_eq!(value["width"], 8);
-            assert_eq!(value["height"], 8);
-            let gray = decoded_gray(&value);
+            let value = solid_depth_frame(reading, 8, 8);
+            let content =
+                apply_topic_policies(&depth_policies(None, None), value).expect("transcodes");
+            assert_eq!(
+                document(&content),
+                json!({ "encoding": "mjpeg", "width": 8, "height": 8 })
+            );
+            let gray = decoded_gray(&content);
             assert_eq!((gray.width(), gray.height()), (8, 8));
             let shade = gray.get_pixel(4, 4)[0];
             assert!(
@@ -803,17 +936,17 @@ mod tests {
 
     #[test]
     fn z16_frames_without_a_depth_range_are_refused() {
-        let mut value = solid_depth_frame(500, 4, 4);
-        let error = apply_topic_policies(&jpeg_policies(None, None), &mut value)
+        let value = solid_depth_frame(500, 4, 4);
+        let error = apply_topic_policies(&jpeg_policies(None, None), value)
             .expect_err("no scale to render readings on");
         assert_eq!(error, PublishError::DepthRangeMissing);
     }
 
     #[test]
     fn a_depth_range_leaves_colour_frames_untouched() {
-        let mut value = solid_frame("rgb8", [200, 30, 30], 8, 8);
-        apply_topic_policies(&depth_policies(None, None), &mut value).expect("transcodes");
-        let decoded = decode_snapshot_jpeg(&value, &frame_fields()).to_rgb8();
+        let value = solid_frame("rgb8", [200, 30, 30], 8, 8);
+        let content = apply_topic_policies(&depth_policies(None, None), value).expect("transcodes");
+        let decoded = decoded_jpeg(&content).to_rgb8();
         let pixel = decoded.get_pixel(4, 4);
         assert!(
             pixel[0] > 150 && pixel[1] < 90 && pixel[2] < 90,
@@ -823,13 +956,13 @@ mod tests {
 
     #[test]
     fn z16_frames_with_wrong_byte_counts_are_refused() {
-        let mut value = json!({
+        let value = json!({
             "frame": BASE64.encode([1u8, 2, 3]),
             "encoding": "z16",
             "width": 4,
             "height": 4,
         });
-        let error = apply_topic_policies(&depth_policies(None, None), &mut value)
+        let error = apply_topic_policies(&depth_policies(None, None), value)
             .expect_err("3 bytes are not a 4x4 depth frame");
         assert!(
             matches!(error, PublishError::BadFrame { .. }),
@@ -839,32 +972,29 @@ mod tests {
 
     #[test]
     fn downscale_keeps_a_depth_picture_one_channel() {
-        let mut value = noisy_depth_frame(128, 128);
-        let full_size = {
-            let mut probe = value.clone();
-            apply_topic_policies(&depth_policies(None, None), &mut probe)
-                .expect("transcodes")
-                .len()
-        };
-        let limit = (full_size / 2) as u64;
-        let serialized =
-            apply_topic_policies(&depth_policies(Some(limit), Some("downscale")), &mut value)
-                .expect("downscale fits the frame");
-        assert!(serialized.len() as u64 <= limit);
-        let width = value["width"].as_u64().expect("width is rewritten");
-        let height = value["height"].as_u64().expect("height is rewritten");
+        let value = noisy_depth_frame(128, 128);
+        let full_size = apply_topic_policies(&depth_policies(None, None), value.clone())
+            .expect("transcodes")
+            .size();
+        let limit = full_size / 2;
+        let content = apply_topic_policies(&depth_policies(Some(limit), Some("downscale")), value)
+            .expect("downscale fits the frame");
+        assert!(content.size() <= limit);
+        let document = document(&content);
+        let width = document["width"].as_u64().expect("width is rewritten");
+        let height = document["height"].as_u64().expect("height is rewritten");
         assert!(
             width < 128 && height < 128,
             "dimensions should shrink, got {width}x{height}"
         );
-        let gray = decoded_gray(&value);
+        let gray = decoded_gray(&content);
         assert_eq!((gray.width() as u64, gray.height() as u64), (width, height));
     }
 
     #[test]
     fn unsupported_encodings_are_refused() {
-        let mut value = solid_frame("yuyv", [1, 2, 3], 4, 4);
-        let error = apply_topic_policies(&jpeg_policies(None, None), &mut value)
+        let value = solid_frame("yuyv", [1, 2, 3], 4, 4);
+        let error = apply_topic_policies(&jpeg_policies(None, None), value)
             .expect_err("yuyv is not transcodable");
         assert_eq!(
             error,
@@ -876,13 +1006,13 @@ mod tests {
 
     #[test]
     fn frames_with_wrong_byte_counts_are_refused() {
-        let mut value = json!({
+        let value = json!({
             "frame": BASE64.encode([1u8, 2, 3]),
             "encoding": "rgb8",
             "width": 4,
             "height": 4,
         });
-        let error = apply_topic_policies(&jpeg_policies(None, None), &mut value)
+        let error = apply_topic_policies(&jpeg_policies(None, None), value)
             .expect_err("3 bytes are not a 4x4 frame");
         assert!(
             matches!(error, PublishError::BadFrame { .. }),
@@ -892,13 +1022,13 @@ mod tests {
 
     #[test]
     fn frames_whose_dimensions_overflow_the_buffer_size_are_refused() {
-        let mut value = json!({
+        let value = json!({
             "frame": BASE64.encode([1u8, 2, 3]),
             "encoding": "rgb8",
             "width": u32::MAX,
             "height": u32::MAX,
         });
-        let error = apply_topic_policies(&jpeg_policies(None, None), &mut value)
+        let error = apply_topic_policies(&jpeg_policies(None, None), value)
             .expect_err("the RGB8 buffer those dimensions ask for exceeds usize");
         assert!(
             matches!(error, PublishError::BadFrame { .. }),
@@ -908,8 +1038,8 @@ mod tests {
 
     #[test]
     fn missing_and_mistyped_representation_fields_are_refused() {
-        let mut missing = json!({ "encoding": "rgb8", "width": 4, "height": 4 });
-        let error = apply_topic_policies(&jpeg_policies(None, None), &mut missing)
+        let missing = json!({ "encoding": "rgb8", "width": 4, "height": 4 });
+        let error = apply_topic_policies(&jpeg_policies(None, None), missing)
             .expect_err("data field is absent");
         assert_eq!(
             error,
@@ -920,8 +1050,8 @@ mod tests {
             }
         );
 
-        let mut mistyped = json!({ "frame": 7, "encoding": "rgb8", "width": 4, "height": 4 });
-        let error = apply_topic_policies(&jpeg_policies(None, None), &mut mistyped)
+        let mistyped = json!({ "frame": 7, "encoding": "rgb8", "width": 4, "height": 4 });
+        let error = apply_topic_policies(&jpeg_policies(None, None), mistyped)
             .expect_err("data field is not a string");
         assert_eq!(
             error,
@@ -941,12 +1071,51 @@ mod tests {
             "max_result_bytes": 32,
             "on_oversize": "reject",
         }));
-        let mut value = json!({ "status": "x".repeat(64) });
-        let error = apply_topic_policies(&reject_policies, &mut value)
+        let value = json!({ "status": "x".repeat(64) });
+        let error = apply_topic_policies(&reject_policies, value)
             .expect_err("oversize snapshot should be rejected");
         assert!(
             matches!(error, PublishError::Oversize { limit: 32, .. }),
             "got {error:?}"
+        );
+    }
+
+    #[test]
+    fn the_size_limit_measures_the_document_and_the_blob_together() {
+        let raw_policies = |limit: Option<u64>| {
+            let mut raw = json!({
+                "freshness": { "max_age_ms": 2000 },
+                "update": { "max_hz": 2.0 },
+                "representation": {
+                    "image": "raw",
+                    "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
+                },
+            });
+            if let Some(limit) = limit {
+                raw["max_result_bytes"] = json!(limit);
+                raw["on_oversize"] = json!("reject");
+            }
+            policies(raw)
+        };
+        let value = solid_frame("rgb8", [1, 2, 3], 4, 4);
+        let unlimited =
+            apply_topic_policies(&raw_policies(None), value.clone()).expect("publishes");
+        let blob = unlimited.blob.as_ref().expect("a blob").base64.len() as u64;
+        let size = unlimited.document.len() as u64 + blob;
+        assert_eq!(unlimited.size(), size);
+
+        let fits = apply_topic_policies(&raw_policies(Some(size)), value.clone())
+            .expect("content of exactly the limit fits");
+        assert_eq!(fits, unlimited);
+        let error = apply_topic_policies(&raw_policies(Some(size - 1)), value)
+            .expect_err("the document and the blob together exceed the limit");
+        assert!(blob < size - 1, "the blob alone is under the limit");
+        assert_eq!(
+            error,
+            PublishError::Oversize {
+                size,
+                limit: size - 1
+            }
         );
     }
 
@@ -958,34 +1127,36 @@ mod tests {
             "max_result_bytes": 1024,
             "on_oversize": "reject",
         }));
-        let mut value = json!({ "status": "ok" });
-        let serialized =
-            apply_topic_policies(&reject_policies, &mut value).expect("small snapshot fits");
-        assert_eq!(serialized, "{\"status\":\"ok\"}");
+        let content = apply_topic_policies(&reject_policies, json!({ "status": "ok" }))
+            .expect("small snapshot fits");
+        assert_eq!(
+            content,
+            SnapshotContent {
+                document: "{\"status\":\"ok\"}".to_string(),
+                blob: None
+            }
+        );
     }
 
     #[test]
     fn downscale_halves_dimensions_until_the_snapshot_fits() {
-        let mut value = noisy_frame(128, 128);
-        let full_size = {
-            let mut probe = value.clone();
-            apply_topic_policies(&jpeg_policies(None, None), &mut probe)
-                .expect("transcodes")
-                .len()
-        };
-        let limit = (full_size / 2) as u64;
-        let serialized =
-            apply_topic_policies(&jpeg_policies(Some(limit), Some("downscale")), &mut value)
-                .expect("downscale fits the frame");
-        assert!(serialized.len() as u64 <= limit);
-        let width = value["width"].as_u64().expect("width is rewritten");
-        let height = value["height"].as_u64().expect("height is rewritten");
+        let value = noisy_frame(128, 128);
+        let full_size = apply_topic_policies(&jpeg_policies(None, None), value.clone())
+            .expect("transcodes")
+            .size();
+        let limit = full_size / 2;
+        let content = apply_topic_policies(&jpeg_policies(Some(limit), Some("downscale")), value)
+            .expect("downscale fits the frame");
+        assert!(content.size() <= limit);
+        let document = document(&content);
+        let width = document["width"].as_u64().expect("width is rewritten");
+        let height = document["height"].as_u64().expect("height is rewritten");
         assert!(
             width < 128 && height < 128,
             "dimensions should shrink, got {width}x{height}"
         );
-        assert_eq!(value["encoding"], "mjpeg");
-        let decoded = decode_snapshot_jpeg(&value, &frame_fields());
+        assert_eq!(document["encoding"], "mjpeg");
+        let decoded = decoded_jpeg(&content);
         assert_eq!(
             (decoded.width() as u64, decoded.height() as u64),
             (width, height)
@@ -994,8 +1165,8 @@ mod tests {
 
     #[test]
     fn downscale_gives_up_below_the_minimum_edge_and_rejects() {
-        let mut value = noisy_frame(64, 64);
-        let error = apply_topic_policies(&jpeg_policies(Some(24), Some("downscale")), &mut value)
+        let value = noisy_frame(64, 64);
+        let error = apply_topic_policies(&jpeg_policies(Some(24), Some("downscale")), value)
             .expect_err("24 bytes can never fit a frame");
         assert!(
             matches!(error, PublishError::Oversize { limit: 24, .. }),

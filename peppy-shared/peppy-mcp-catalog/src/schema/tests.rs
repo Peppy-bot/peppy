@@ -369,3 +369,47 @@ fn max_size_reports_unbounded_members() {
         );
     }
 }
+
+#[test]
+fn a_schema_without_a_root_member_drops_it_from_the_properties_and_the_required_list() {
+    let format = parse_format(
+        r#"{ frame: "bytes", width: "u32", note: { $type: "string", $optional: true } }"#,
+    );
+    let schema = message_format_to_json_schema(&format).expect("maps");
+
+    let document = without_root_member(schema.clone(), "frame");
+    assert_eq!(
+        document,
+        json!({
+            "type": "object",
+            "properties": {
+                "width": { "type": "integer", "minimum": 0, "maximum": u32::MAX },
+                "note": { "type": "string" },
+            },
+            "required": ["width"],
+            "additionalProperties": false,
+        })
+    );
+    assert_eq!(
+        serde_json::to_string(&document["properties"]).expect("serializes"),
+        r#"{"width":{"type":"integer","minimum":0,"maximum":4294967295},"note":{"type":"string"}}"#,
+        "the members left keep their order"
+    );
+
+    // An object left with no required member carries no `required` key, as
+    // the mapping writes one.
+    let only_optional = without_root_member(document, "width");
+    assert_eq!(
+        only_optional,
+        json!({
+            "type": "object",
+            "properties": { "note": { "type": "string" } },
+            "additionalProperties": false,
+        })
+    );
+    assert_eq!(
+        without_root_member(schema.clone(), "absent"),
+        schema,
+        "a member the schema does not carry changes nothing"
+    );
+}

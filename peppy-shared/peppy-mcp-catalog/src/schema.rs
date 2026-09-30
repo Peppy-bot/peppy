@@ -65,6 +65,29 @@ fn object_schema(properties: Map<String, Value>, required: Vec<Value>) -> Value 
     Value::Object(schema)
 }
 
+/// `schema`, an object schema this module derived, without its root member
+/// `member`. An object left with no required member carries no `required`
+/// key, as [`object_schema`] writes it.
+pub(crate) fn without_root_member(mut schema: Value, member: &str) -> Value {
+    let Some(object) = schema.as_object_mut() else {
+        return schema;
+    };
+    if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.shift_remove(member);
+    }
+    let no_member_is_required = object
+        .get_mut("required")
+        .and_then(Value::as_array_mut)
+        .is_some_and(|required| {
+            required.retain(|name| name.as_str() != Some(member));
+            required.is_empty()
+        });
+    if no_member_is_required {
+        object.shift_remove("required");
+    }
+    schema
+}
+
 fn schema_type_to_json(schema: &SchemaType) -> Value {
     match schema {
         SchemaType::Type(token) => primitive_json(token),

@@ -226,6 +226,17 @@ const BUNDLE_TEMPLATE: &str = r#"{
         "additionalProperties": false
       }
     }
+  ],
+  "pictures": [
+    {
+      "name": "front_camera.look",
+      "description": "Look through the front-facing camera: the latest frame as a picture.",
+      "target": "front_camera",
+      "member": "video_stream",
+      "resource": "front_camera.latest_frame",
+      "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
+      "output_schema": { "type": "object" }
+    }
   ]
 }"#;
 

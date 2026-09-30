@@ -36,14 +36,14 @@ pub mod validate;
 
 pub use bundle::{
     BundleContractPin, BundleIdentity, BundleServer, BundleSurface, DescribeEntry,
-    EXPOSURE_BUNDLE_FORMAT, ExposureBundle, I64_DECIMAL_PATTERN, ListEntry, ResourceEntry,
-    ResourcePolicies, RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
-    U64_DECIMAL_PATTERN, is_canonical_i64_decimal, is_canonical_u64_decimal,
+    EXPOSURE_BUNDLE_FORMAT, ExposureBundle, I64_DECIMAL_PATTERN, ListEntry, PictureEntry,
+    ResourceEntry, ResourcePolicies, RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION,
+    TaskEntry, ToolEntry, U64_DECIMAL_PATTERN, is_canonical_i64_decimal, is_canonical_u64_decimal,
 };
 pub use document::{
     ActionExposure, ArgumentName, ExposureManifest, ExposureSurface, ExposureTarget, McpExposure,
-    PinnedContractRef, PublicName, ROBOT_ARGUMENT, RestrictBounds, RobotSurface, RobotTarget,
-    ServerIdentity, ServiceExposure, TopicExposure,
+    PictureTool, PinnedContractRef, PublicName, ROBOT_ARGUMENT, RestrictBounds, RobotSurface,
+    RobotTarget, ServerIdentity, ServiceExposure, TopicExposure,
 };
 pub use policy::{
     ActionOperation, DepthRange, FreshnessPolicy, GoalBound, ImageCodec, ImageFieldMap,

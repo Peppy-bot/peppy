@@ -7,6 +7,7 @@
 //! The source is read on every list and call, so a robot is addressable the
 //! moment the stack binds it and gone the moment the stack drops it.
 
+use crate::representation::listed_mime_type;
 use crate::state::ResourceState;
 use indexmap::IndexMap;
 use peppy_mcp_catalog::{
@@ -401,7 +402,7 @@ impl Fleet {
             resources.extend(names.resources.iter().flat_map(|resource| {
                 filled_by
                     .iter()
-                    .map(move |name| published_name(resource, robot, *name))
+                    .map(move |name| published_name(&resource.name, robot, *name))
             }));
         }
         tools.sort_unstable();
@@ -416,32 +417,33 @@ impl Fleet {
     }
 }
 
-/// The name a resource of `entry` is published under for `robot`, and for
-/// its member `name` on a target filled any number of times.
-fn published_name(entry: &ResourceEntry, robot: &str, name: Option<&str>) -> String {
+/// The name the catalog resource `resource` is published under for `robot`,
+/// and for its member `name` on a target filled any number of times.
+pub(crate) fn published_name(resource: &str, robot: &str, name: Option<&str>) -> String {
     match name {
-        Some(name) => format!("{robot}/{name}/{}", entry.name),
-        None => format!("{robot}/{}", entry.name),
+        Some(name) => format!("{robot}/{name}/{resource}"),
+        None => format!("{robot}/{resource}"),
     }
 }
 
 /// The URI of a published resource, from its published name.
-fn published_uri(name: &str) -> String {
+pub(crate) fn published_uri(name: &str) -> String {
     format!("peppy://resource/{name}")
 }
 
 fn published_resource(entry: &ResourceEntry, robot: &str, name: Option<&str>) -> Resource {
-    let published = published_name(entry, robot, name);
+    let published = published_name(&entry.name, robot, name);
     Resource::new(published_uri(&published), published)
         .with_description(entry.description.clone())
-        .with_mime_type("application/json")
+        .with_mime_type(listed_mime_type(&entry.policies))
 }
 
 /// The published resources of one member, each with its runtime state.
 pub(crate) type MemberResources = Vec<(ResourceEntry, Arc<ResourceState>)>;
 
 /// What one target publishes, in catalog order: the tools whose calls it
-/// takes, and the resource entries published for each member filling it.
+/// takes (the service tools, the action tools, then the picture tools), and
+/// the resource entries published for each member filling it.
 #[derive(Debug, Default)]
 pub(crate) struct TargetNames {
     tools: Vec<String>,
@@ -490,7 +492,13 @@ impl FleetRuntime {
             .tools
             .iter()
             .map(|tool| (&tool.target, &tool.name))
-            .chain(bundle.tasks.iter().map(|task| (&task.target, &task.name)));
+            .chain(bundle.tasks.iter().map(|task| (&task.target, &task.name)))
+            .chain(
+                bundle
+                    .pictures
+                    .iter()
+                    .map(|picture| (&picture.target, &picture.name)),
+            );
         for (target, name) in tools {
             by_target
                 .entry(target.clone())
@@ -529,7 +537,7 @@ impl FleetRuntime {
             .get(&member.target)?
             .as_ref()
             .map(|_| member.name.as_str());
-        Some(published_name(entry, robot, name))
+        Some(published_name(&entry.name, robot, name))
     }
 
     /// Registers the resource states of `member`'s target, returning each

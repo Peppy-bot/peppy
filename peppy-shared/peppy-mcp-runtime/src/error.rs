@@ -16,10 +16,17 @@ pub enum BuildError {
     UnknownTaskHandler { name: String },
     /// A task entry has no registered handler, so calls could never route.
     MissingTaskHandler { name: String },
-    /// A tool or task entry's derived input schema does not compile.
+    /// A tool, task or picture entry's input schema does not compile.
     InvalidInputSchema { name: String, error: String },
     /// Two catalog entries collide on a public name or URI.
     DuplicateName { name: String },
+    /// A picture entry names a resource that is not a resource of its target
+    /// under a `jpeg` representation, so it has no picture to answer with.
+    NoPictureResource {
+        name: String,
+        resource: String,
+        target: String,
+    },
     /// A set was composed with no exposure to serve.
     NoExposures,
     /// Two servers in a set serve the same exposure identity, which is one
@@ -62,6 +69,15 @@ impl fmt::Display for BuildError {
             Self::DuplicateName { name } => {
                 write!(f, "catalog name `{name}` appears more than once")
             }
+            Self::NoPictureResource {
+                name,
+                resource,
+                target,
+            } => write!(
+                f,
+                "picture tool `{name}` answers with `{resource}`, which is not a resource of \
+                 target `{target}` with a `jpeg` representation"
+            ),
             Self::NoExposures => write!(f, "an exposure set must serve at least one exposure"),
             Self::DuplicateExposure { name, tag } => {
                 write!(f, "exposure `{name}:{tag}` is listed more than once")

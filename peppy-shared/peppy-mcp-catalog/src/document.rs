@@ -464,11 +464,15 @@ impl ExposureTarget {
     }
 
     /// Every public resource and tool name this target declares, in
-    /// document order.
+    /// document order: each topic's resource and then its picture tool, the
+    /// service tools, the action tools.
     fn public_names(&self) -> impl Iterator<Item = &str> {
         self.topics
             .iter()
-            .map(|t| t.resource.as_str())
+            .flat_map(|t| {
+                std::iter::once(t.resource.as_str())
+                    .chain(t.picture.iter().map(|picture| picture.tool.as_str()))
+            })
             .chain(self.services.iter().map(|s| s.tool.as_str()))
             .chain(self.actions.iter().map(|a| a.tool.as_str()))
     }
@@ -492,7 +496,9 @@ fn check_unique_members<'a>(
 
 /// A topic member exposed as an MCP resource. The server maintains the
 /// latest policy-approved snapshot of the linked Peppy topic; clients read
-/// the resource to obtain it and subscribe to be told when it changes.
+/// the resource to obtain it and subscribe to be told when it changes. A
+/// topic with a `jpeg` representation can also publish its picture through
+/// a tool.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TopicExposure {
@@ -505,13 +511,27 @@ pub struct TopicExposure {
     pub update: UpdatePolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub representation: Option<ImageRepresentation>,
-    /// Cap on the serialized size of the published snapshot content, in
-    /// bytes. Applies to the final serialized form, after representation
-    /// policies run.
+    /// Cap on the size of the published snapshot content, in bytes: the
+    /// serialized document plus, under a representation, the base64 text of
+    /// the blob. Applies after representation policies run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_result_bytes: Option<NonZeroU64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_oversize: Option<OversizePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<PictureTool>,
+}
+
+/// A tool that answers with the picture of a topic's latest snapshot: the
+/// frame as an image a model looks at, beside the rest of the message. It
+/// reads the snapshot its topic's resource serves and sends nothing to the
+/// Peppy graph.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PictureTool {
+    pub tool: PublicName,
+    #[serde(deserialize_with = "deserialize_prose")]
+    pub description: String,
 }
 
 impl TopicExposure {
@@ -548,6 +568,24 @@ impl TopicExposure {
                 "{context}: `on_oversize: \"downscale\"` requires a `jpeg` or `png16` image \
                  representation"
             ));
+        }
+        if self.picture.is_some() {
+            let not_a_picture = match self.representation.as_ref().map(|r| r.image) {
+                Some(ImageCodec::Jpeg) => None,
+                Some(ImageCodec::Png16) => {
+                    Some("a `png16` representation publishes 16-bit samples, which are data")
+                }
+                Some(ImageCodec::Raw) => Some(
+                    "a `raw` representation publishes the frame bytes untouched, which are data",
+                ),
+                None => Some("the topic declares no `representation`, so it publishes no frame"),
+            };
+            if let Some(reason) = not_a_picture {
+                return Err(format!(
+                    "{context}: `picture` requires `representation.image: \"jpeg\"`, the picture \
+                     a model looks at; {reason}"
+                ));
+            }
         }
         Ok(())
     }
@@ -1827,6 +1865,174 @@ mod tests {
                 ("front_camera.latest_frame", Some(ImageCodec::Jpeg)),
             ]
         );
+    }
+
+    /// A one-topic document whose frame topic declares a picture tool.
+    /// `representation` is the topic's `representation` entry, or nothing.
+    fn picture_over(representation: &str) -> String {
+        format!(
+            r#"{{
+            peppy_schema: "mcp_exposure/v1",
+            manifest: {{ name: "surface", tag: "v1" }},
+            server: {{ title: "Surface" }},
+            targets: {{
+                cam: {{
+                    contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
+                    topics: [
+                        {{
+                            member: "video_stream",
+                            resource: "cam.latest_frame",
+                            description: "Latest frame.",
+                            freshness: {{ max_age_ms: 2000 }},
+                            update: {{ max_hz: 2 }},
+                            {representation}
+                            max_result_bytes: 524288,
+                            on_oversize: "reject",
+                            picture: {{
+                                tool: "cam.look",
+                                description: "The latest frame, as a picture.",
+                            }},
+                        }},
+                    ],
+                    services: [{INFO_SERVICE}],
+                }},
+            }},
+        }}"#
+        )
+    }
+
+    const FRAME_FIELDS: &str =
+        r#"fields: { data: "frame", encoding: "encoding", width: "width", height: "height" }"#;
+
+    fn jpeg_picture() -> String {
+        picture_over(&format!(
+            r#"representation: {{ image: "jpeg", {FRAME_FIELDS} }},"#
+        ))
+    }
+
+    #[test]
+    fn a_jpeg_topic_publishes_a_picture_tool() {
+        let exposure = parse(&jpeg_picture()).expect("a jpeg topic takes a picture tool");
+        let picture = targets_of(&exposure)["cam"].topics[0]
+            .picture
+            .as_ref()
+            .expect("the picture tool");
+        assert_eq!(picture.tool.as_str(), "cam.look");
+        assert_eq!(picture.description, "The latest frame, as a picture.");
+
+        let serialized = serde_json::to_string(&exposure).expect("serializes");
+        let reparsed: McpExposure = serde_json::from_str(&serialized).expect("reparses");
+        assert_eq!(reparsed, exposure);
+    }
+
+    #[test]
+    fn a_picture_needs_a_jpeg_representation() {
+        for (representation, reason) in [
+            (
+                format!(r#"representation: {{ image: "png16", {FRAME_FIELDS} }},"#),
+                "a `png16` representation publishes 16-bit samples, which are data",
+            ),
+            (
+                format!(r#"representation: {{ image: "raw", {FRAME_FIELDS} }},"#),
+                "a `raw` representation publishes the frame bytes untouched, which are data",
+            ),
+            (
+                String::new(),
+                "the topic declares no `representation`, so it publishes no frame",
+            ),
+        ] {
+            let err = parse_err(&picture_over(&representation));
+            assert!(
+                err.contains(
+                    "target `cam` topic `video_stream`: `picture` requires \
+                     `representation.image: \"jpeg\"`"
+                ) && err.contains(reason),
+                "{representation}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_picture_tool_shares_the_public_namespace() {
+        // Its own resource, and a service tool of its target.
+        for taken in ["cam.latest_frame", "cam.info"] {
+            let err = parse_err(
+                &jpeg_picture().replace(r#"tool: "cam.look""#, &format!(r#"tool: "{taken}""#)),
+            );
+            assert!(
+                err.contains(&format!("`{taken}` is declared more than once")),
+                "{taken}: {err}"
+            );
+        }
+
+        // An action tool of another target.
+        let err = parse_err(&camera_and_recording().replace(
+            r#"on_oversize: "downscale","#,
+            r#"on_oversize: "downscale",
+               picture: { tool: "recorder.record_episode", description: "The latest frame." },"#,
+        ));
+        assert!(
+            err.contains("`recorder.record_episode` is declared more than once"),
+            "{err}"
+        );
+
+        // The picture tool of another topic entry.
+        let second = format!(
+            r#"topics: [
+                {{
+                    member: "video_stream",
+                    resource: "cam.small_frame",
+                    description: "Latest frame, small.",
+                    freshness: {{ max_age_ms: 2000 }},
+                    update: {{ max_hz: 2 }},
+                    representation: {{ image: "jpeg", {FRAME_FIELDS} }},
+                    max_result_bytes: 65536,
+                    on_oversize: "downscale",
+                    picture: {{ tool: "cam.look", description: "The latest frame, small." }},
+                }},"#
+        );
+        let err = parse_err(&jpeg_picture().replace("topics: [", &second));
+        assert!(
+            err.contains("`cam.look` is declared more than once"),
+            "{err}"
+        );
+
+        // The listing tool of a per-robot surface.
+        let frame_topic = format!(
+            r#"argument: "camera",
+               topics: [
+                {{
+                    member: "video_stream",
+                    resource: "camera.latest_frame",
+                    description: "Latest frame.",
+                    freshness: {{ max_age_ms: 2000 }},
+                    update: {{ max_hz: 2 }},
+                    representation: {{ image: "jpeg", {FRAME_FIELDS} }},
+                    max_result_bytes: 524288,
+                    on_oversize: "downscale",
+                    picture: {{ tool: "robot.list", description: "The latest frame." }},
+                }},
+               ],"#
+        );
+        let err = parse_err(&per_robot(ROBOTS).replace(r#"argument: "camera","#, &frame_topic));
+        assert!(
+            err.contains("`robot.list` is declared more than once"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_picture_follows_the_rules_of_a_tool_name_and_a_description() {
+        let blank = jpeg_picture().replace(
+            r#"description: "The latest frame, as a picture.""#,
+            r#"description: " ""#,
+        );
+        assert!(parse_err(&blank).contains("text cannot be empty"));
+        let bad_name = jpeg_picture().replace(r#"tool: "cam.look""#, r#"tool: "cam look""#);
+        assert!(parse_err(&bad_name).contains("disallowed character"));
+        let unknown =
+            jpeg_picture().replace(r#"tool: "cam.look","#, r#"tool: "cam.look", quality: 50,"#);
+        assert!(parse_err(&unknown).contains("unknown field `quality`"));
     }
 
     #[test]
