@@ -10,17 +10,17 @@
 
 use crate::bundle::{
     BundleContractPin, BundleIdentity, BundleServer, BundleSurface, DescribeEntry,
-    EXPOSURE_BUNDLE_FORMAT, ExposureBundle, ListEntry, ResourceEntry, ResourcePolicies,
-    RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
+    EXPOSURE_BUNDLE_FORMAT, ExposureBundle, ListEntry, PictureEntry, ResourceEntry,
+    ResourcePolicies, RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
 };
 use crate::document::{
-    ArgumentName, ExposureSurface, McpExposure, ROBOT_ARGUMENT, RobotSurface, ServiceExposure,
-    TopicExposure,
+    ArgumentName, ExposureSurface, McpExposure, PictureTool, ROBOT_ARGUMENT, RobotSurface,
+    ServiceExposure, TopicExposure,
 };
 use crate::policy::{GoalBound, ImageFieldMap};
 use crate::schema::{
     MaxSerializedSize, empty_object_schema, integer_bounds, max_serialized_json_bytes,
-    message_format_to_json_schema,
+    message_format_to_json_schema, without_root_member,
 };
 use peppy_config_model::fingerprint::ManifestFingerprint;
 use peppy_config_model::node::{
@@ -123,7 +123,8 @@ impl ValidatedExposure {
 /// members, size limits hold wherever a payload has a finite maximum, and
 /// every author pin matches the resolved contract's bytes. The bundle's
 /// contract pins carry the resolved fingerprints, which is what a pin-less
-/// reference is validated against.
+/// reference is validated against. A topic that declares a `picture` adds
+/// its picture tool to the bundle beside its resource.
 pub fn build_exposure_bundle(
     exposure: &McpExposure,
     contracts: &[ResolvedContract<'_>],
@@ -156,6 +157,7 @@ pub fn build_exposure_bundle(
     let mut tool_members = Vec::new();
     let mut tasks = Vec::new();
     let mut task_members = Vec::new();
+    let mut pictures = Vec::new();
 
     for (target_name, target, argument) in exposure.surface.targets() {
         let reference = &target.contract;
@@ -207,6 +209,9 @@ pub fn build_exposure_bundle(
                 continue;
             };
             if let Some(entry) = check_topic(target_name, topic, declared, &mut violations) {
+                if let Some(picture) = &topic.picture {
+                    pictures.push(picture_entry(picture, &entry, &routing));
+                }
                 resources.push(entry);
                 resource_members.push(BoundMember::new(&slot, declared));
             }
@@ -370,6 +375,7 @@ pub fn build_exposure_bundle(
             resources,
             tools,
             tasks,
+            pictures,
         },
         resources: resource_members,
         tools: tool_members,
@@ -388,9 +394,6 @@ fn add_routing_arguments(
     input_schema: &mut Value,
     violations: &mut Vec<String>,
 ) -> bool {
-    if routing.is_empty() {
-        return true;
-    }
     let mut usable = true;
     for argument in routing {
         if request_format.is_some_and(|format| format.0.contains_key(*argument)) {
@@ -404,8 +407,18 @@ fn add_routing_arguments(
     if !usable {
         return false;
     }
+    insert_routing_arguments(routing, input_schema);
+    true
+}
+
+/// Writes the routing arguments into an input schema, as required string
+/// properties.
+fn insert_routing_arguments(routing: &[&str], input_schema: &mut Value) {
+    if routing.is_empty() {
+        return;
+    }
     let Some(schema) = input_schema.as_object_mut() else {
-        return true;
+        return;
     };
     let properties = schema
         .entry("properties")
@@ -424,7 +437,27 @@ fn add_routing_arguments(
     if let Some(required) = required.as_array_mut() {
         required.extend(routing.iter().map(|argument| Value::from(*argument)));
     }
-    true
+}
+
+/// The picture tool of a topic whose resource validates: it takes the
+/// routing arguments alone and answers with the document of the resource's
+/// snapshot.
+fn picture_entry(
+    picture: &PictureTool,
+    resource: &ResourceEntry,
+    routing: &[&str],
+) -> PictureEntry {
+    let mut input_schema = empty_object_schema();
+    insert_routing_arguments(routing, &mut input_schema);
+    PictureEntry {
+        name: picture.tool.to_string(),
+        description: picture.description.clone(),
+        target: resource.target.clone(),
+        member: resource.member.clone(),
+        resource: resource.name.clone(),
+        input_schema,
+        output_schema: resource.schema.clone(),
+    }
 }
 
 /// The per-robot surface of the bundle: each `describe` entry resolved to
@@ -481,7 +514,8 @@ fn robot_catalog(
 }
 
 /// The resource entry of a topic that validates; `None` records why it
-/// does not.
+/// does not. Under a representation the entry's schema is the schema of the
+/// snapshot's document: the message without the member the blob carries.
 fn check_topic(
     target_name: &str,
     topic: &TopicExposure,
@@ -499,6 +533,10 @@ fn check_topic(
     check_topic_size_policy(&context, topic, format, violations);
 
     let schema = schema?;
+    let schema = match &topic.representation {
+        Some(representation) => without_root_member(schema, &representation.fields.data),
+        None => schema,
+    };
     Some(ResourceEntry {
         name: topic.resource.as_str().to_string(),
         uri: format!("peppy://resource/{}", topic.resource),

@@ -58,6 +58,7 @@ pub struct ExposureBundle {
     pub resources: Vec<ResourceEntry>,
     pub tools: Vec<ToolEntry>,
     pub tasks: Vec<TaskEntry>,
+    pub pictures: Vec<PictureEntry>,
 }
 
 /// What a bundle serves: the contract slots of a fixed surface, or the
@@ -103,6 +104,8 @@ struct RawExposureBundle {
     resources: Vec<ResourceEntry>,
     tools: Vec<ToolEntry>,
     tasks: Vec<TaskEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pictures: Vec<PictureEntry>,
 }
 
 impl TryFrom<RawExposureBundle> for ExposureBundle {
@@ -143,6 +146,7 @@ impl TryFrom<RawExposureBundle> for ExposureBundle {
             resources: raw.resources,
             tools: raw.tools,
             tasks: raw.tasks,
+            pictures: raw.pictures,
         })
     }
 }
@@ -175,6 +179,7 @@ impl From<ExposureBundle> for RawExposureBundle {
             resources: bundle.resources,
             tools: bundle.tools,
             tasks: bundle.tasks,
+            pictures: bundle.pictures,
         }
     }
 }
@@ -345,7 +350,9 @@ pub struct DescribeEntry {
 }
 
 /// One exposed topic: an MCP resource serving the latest policy-approved
-/// snapshot.
+/// snapshot. A snapshot is a document, the topic's message as JSON, and
+/// under a representation also a blob: the frame in the representation's
+/// codec, which the document then leaves out.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceEntry {
@@ -357,7 +364,7 @@ pub struct ResourceEntry {
     /// The contract topic the resource snapshots.
     pub member: String,
     pub policies: ResourcePolicies,
-    /// Derived JSON Schema of the snapshot content.
+    /// Derived JSON Schema of the snapshot's document.
     pub schema: Value,
 }
 
@@ -373,6 +380,16 @@ pub struct ResourcePolicies {
     pub max_result_bytes: Option<NonZeroU64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_oversize: Option<OversizePolicy>,
+}
+
+impl ResourcePolicies {
+    /// The MIME type of the blob a snapshot carries, for a resource with a
+    /// representation.
+    pub fn blob_mime_type(&self) -> Option<&'static str> {
+        self.representation
+            .as_ref()
+            .map(|representation| representation.image.mime_type())
+    }
 }
 
 /// One exposed service: an MCP tool completing within a single request.
@@ -391,6 +408,28 @@ pub struct ToolEntry {
     /// reflected as `minimum`/`maximum`.
     pub input_schema: Value,
     /// Derived JSON Schema of the structured tool output.
+    pub output_schema: Value,
+}
+
+/// One picture tool: an MCP tool answering with the latest snapshot of a
+/// resource with a `jpeg` representation, the blob as an image and the
+/// document beside it. It completes within the call and reaches no
+/// provider.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PictureEntry {
+    pub name: String,
+    pub description: String,
+    pub target: String,
+    /// The contract topic whose snapshot the tool answers with.
+    pub member: String,
+    /// The name of the resource entry whose snapshot the tool answers with.
+    pub resource: String,
+    /// JSON Schema of the tool input: the routing arguments of a per-robot
+    /// surface, and nothing on a fixed one.
+    pub input_schema: Value,
+    /// Derived JSON Schema of the structured tool output, the snapshot's
+    /// document.
     pub output_schema: Value,
 }
 
@@ -680,6 +719,56 @@ mod tests {
             ),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_bundle_carries_its_picture_tools_and_writes_none_as_no_field() {
+        let without = ExposureBundle::from_json_str(&minimal_bundle_json(1, 1)).expect("parses");
+        assert!(without.pictures.is_empty());
+        assert!(
+            !without.to_json_string().contains("\"pictures\""),
+            "a bundle with no picture tool writes no `pictures`"
+        );
+
+        let content = minimal_bundle_json(1, 1).replace(
+            r#""tasks": []"#,
+            r#""tasks": [],
+  "pictures": [
+    {
+      "name": "front_camera.look",
+      "description": "The latest frame, as a picture.",
+      "target": "front_camera",
+      "member": "video_stream",
+      "resource": "front_camera.latest_frame",
+      "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
+      "output_schema": { "type": "object" }
+    }
+  ]"#,
+        );
+        let bundle = ExposureBundle::from_json_str(&content).expect("parses");
+        assert_eq!(bundle.pictures.len(), 1);
+        assert_eq!(bundle.pictures[0].name, "front_camera.look");
+        assert_eq!(bundle.pictures[0].resource, "front_camera.latest_frame");
+        let reparsed = ExposureBundle::from_json_str(&bundle.to_json_string())
+            .expect("round trips through its wire shape");
+        assert_eq!(reparsed, bundle);
+    }
+
+    #[test]
+    fn a_resource_with_a_representation_names_the_mime_type_of_its_blob() {
+        let mut bundle = ExposureBundle::from_json_str(&minimal_bundle_json(1, 1)).expect("parses");
+        let policies = &mut bundle.resources[0].policies;
+        assert_eq!(policies.blob_mime_type(), None);
+        policies.representation = Some(
+            serde_json::from_str(
+                r#"{
+                    "image": "png16",
+                    "fields": { "data": "frame", "encoding": "encoding", "width": "w", "height": "h" }
+                }"#,
+            )
+            .expect("a representation"),
+        );
+        assert_eq!(policies.blob_mime_type(), Some("image/png"));
     }
 
     #[test]

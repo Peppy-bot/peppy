@@ -4,7 +4,7 @@
 
 use crate::clock::Clock;
 use crate::error::PublishError;
-use crate::representation::apply_topic_policies;
+use crate::representation::{SnapshotContent, apply_topic_policies};
 use peppy_mcp_catalog::ResourceEntry;
 use serde_json::Value;
 use std::sync::{Arc, Mutex, RwLock};
@@ -22,9 +22,8 @@ pub(crate) enum CatalogEvent {
 /// The latest policy-approved snapshot of one exposed topic.
 #[derive(Debug, Clone)]
 pub(crate) struct Snapshot {
-    /// The final serialized content a read serves, after representation and
-    /// size policies.
-    pub(crate) serialized: String,
+    /// The content a read serves, after representation and size policies.
+    pub(crate) content: SnapshotContent,
     pub(crate) taken_at_nanos: u64,
 }
 
@@ -40,7 +39,7 @@ pub(crate) enum ReadRefusal {
 /// A snapshot cleared for serving, with the freshness it has left.
 #[derive(Debug, Clone)]
 pub(crate) struct SnapshotView {
-    pub(crate) serialized: String,
+    pub(crate) content: SnapshotContent,
     /// Milliseconds until the freshness policy would report this snapshot
     /// stale; doubles as the read result's `ttlMs` hint.
     pub(crate) remaining_fresh_ms: u64,
@@ -103,7 +102,7 @@ impl ResourceState {
             return Err(ReadRefusal::Stale { age_ms, max_age_ms });
         }
         Ok(SnapshotView {
-            serialized: snapshot.serialized.clone(),
+            content: snapshot.content.clone(),
             remaining_fresh_ms: max_age_ms - age_ms,
         })
     }
@@ -137,10 +136,10 @@ impl ResourceIngest {
     /// message's canonical JSON and, when they pass, makes it the current
     /// snapshot and notifies subscribed clients. On refusal the previous
     /// snapshot stays current and ages toward staleness.
-    pub fn publish(&self, token: AdmitToken, mut value: Value) -> Result<(), PublishError> {
-        let serialized = apply_topic_policies(&self.state.entry.policies, &mut value)?;
+    pub fn publish(&self, token: AdmitToken, value: Value) -> Result<(), PublishError> {
+        let content = apply_topic_policies(&self.state.entry.policies, value)?;
         self.state.store(Snapshot {
-            serialized,
+            content,
             taken_at_nanos: token.taken_at_nanos,
         });
         // Send fails only when nobody listens, which is fine.
@@ -231,7 +230,7 @@ mod tests {
             .state
             .snapshot_for_read(nanos.load(Ordering::SeqCst))
             .expect("1500 ms old is within max_age_ms 2000");
-        assert_eq!(view.serialized, "{\"battery\":87}");
+        assert_eq!(view.content.document, "{\"battery\":87}");
         assert_eq!(view.remaining_fresh_ms, 500);
 
         nanos.store(2_001 * MS, Ordering::SeqCst);
@@ -293,7 +292,7 @@ mod tests {
             .state
             .snapshot_for_read(500 * MS)
             .expect("previous snapshot serves");
-        assert_eq!(view.serialized, "{\"status\":\"ok\"}");
+        assert_eq!(view.content.document, "{\"status\":\"ok\"}");
     }
 
     #[test]

@@ -5,12 +5,16 @@
 
 use crate::clock::Clock;
 use crate::error::{BuildError, ToolCallError};
-use crate::fleet::{Fleet, FleetMember, FleetRuntime, FleetSource, MemberAddress, quoted};
-use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState};
+use crate::fleet::{
+    Fleet, FleetMember, FleetRuntime, FleetSource, MemberAddress, published_name, published_uri,
+    quoted,
+};
+use crate::representation::{DOCUMENT_MIME_TYPE, listed_mime_type};
+use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState, SnapshotView};
 use crate::tasks::{ActionContext, ActionExit, ActionSurface, TaskHandler};
 use peppy_mcp_catalog::{
-    BundleIdentity, BundleServer, BundleSurface, ExposureBundle, GoalBound, ROBOT_ARGUMENT,
-    ResourceEntry, ServiceOperation, TaskEntry, ToolEntry,
+    BundleIdentity, BundleServer, BundleSurface, ExposureBundle, GoalBound, ImageCodec,
+    PictureEntry, ROBOT_ARGUMENT, ResourceEntry, ServiceOperation, TaskEntry, ToolEntry,
 };
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
@@ -40,14 +44,19 @@ use tokio::sync::{broadcast, mpsc};
 /// `extensions` capability map.
 const TASKS_EXTENSION_ID: &str = "io.modelcontextprotocol/tasks";
 
+/// What a resource that has stored no snapshot says of itself.
+const UNAVAILABLE_SINCE_START: &str =
+    "unavailable: nothing has been published since the server started";
+
+/// What a resource of a per-robot surface says of itself until the host
+/// attaches the member that feeds it.
+const UNAVAILABLE_SINCE_JOIN: &str =
+    "unavailable: nothing has been published since the robot joined";
+
 /// `ttlMs` for the catalog-shaped results: discovery, `tools/list`, and
 /// `resources/list`. The catalog is fixed for the life of the server (a
 /// changed exposure restarts the process serving it), so clients may cache
 /// it for as long as they keep the connection.
-const UNAVAILABLE_SINCE_START: &str =
-    "unavailable: nothing has been published since the server started";
-const UNAVAILABLE_SINCE_JOIN: &str =
-    "unavailable: nothing has been published since the robot joined";
 const CATALOG_TTL_MS: u64 = 3_600_000;
 
 /// Grace period the advertised TTL of a task under a whole-goal deadline
@@ -128,13 +137,24 @@ struct TaskState {
     handler: Arc<dyn TaskHandler>,
 }
 
+/// One picture tool. It has no handler: the server answers it from the
+/// snapshot of the resource its entry names.
+struct PictureState {
+    entry: PictureEntry,
+    /// Compiled from the entry's input schema; every call is validated
+    /// before its routing arguments are read.
+    validator: jsonschema::Validator,
+}
+
 struct ServerState {
     server: BundleServer,
     exposure: BundleIdentity,
     addressing: Addressing,
     tools: HashMap<String, Arc<ToolState>>,
     tasks: HashMap<String, Arc<TaskState>>,
-    /// `tools/list` order: the bundle's tools, then its tasks.
+    pictures: HashMap<String, Arc<PictureState>>,
+    /// `tools/list` order: the bundle's tools, its tasks, its picture tools,
+    /// then the listing tool of a per-robot surface.
     tool_list: Vec<Tool>,
     /// Task handles are in-memory and live as long as the serving process
     /// by design; every HTTP session shares this manager, which is what
@@ -175,7 +195,7 @@ impl CatalogResources {
             resources.list.push(
                 Resource::new(entry.uri.clone(), entry.name.clone())
                     .with_description(entry.description.clone())
-                    .with_mime_type("application/json"),
+                    .with_mime_type(listed_mime_type(&entry.policies)),
             );
             resources
                 .uri_by_name
@@ -324,6 +344,41 @@ impl ExposureServerBuilder {
             return Err(BuildError::UnknownTaskHandler { name });
         }
 
+        let mut pictures = HashMap::new();
+        for entry in &bundle.pictures {
+            if !names.insert(entry.name.clone()) {
+                return Err(BuildError::DuplicateName {
+                    name: entry.name.clone(),
+                });
+            }
+            if !bundle
+                .resources
+                .iter()
+                .any(|resource| serves_the_picture_of(resource, entry))
+            {
+                return Err(BuildError::NoPictureResource {
+                    name: entry.name.clone(),
+                    resource: entry.resource.clone(),
+                    target: entry.target.clone(),
+                });
+            }
+            let (tool, validator) = catalog_tool(
+                &entry.name,
+                &entry.description,
+                &entry.input_schema,
+                &entry.output_schema,
+                read_only_annotations(),
+            )?;
+            tool_list.push(tool);
+            pictures.insert(
+                entry.name.clone(),
+                Arc::new(PictureState {
+                    entry: entry.clone(),
+                    validator,
+                }),
+            );
+        }
+
         // A per-robot surface publishes its resources per robot, from the
         // fleet; the catalog's own URIs serve a fixed surface.
         let addressing = match (&bundle.surface, fleet_source) {
@@ -359,6 +414,7 @@ impl ExposureServerBuilder {
                 addressing,
                 tools,
                 tasks,
+                pictures,
                 tool_list,
                 manager: TaskManager::new(),
                 events,
@@ -386,8 +442,22 @@ fn serialized_len(value: &Value) -> u64 {
     sink.0
 }
 
+/// Whether `resource` is the one `picture` answers with: a resource of the
+/// picture's target under a `jpeg` representation, so that every snapshot of
+/// it holds a picture.
+fn serves_the_picture_of(resource: &ResourceEntry, picture: &PictureEntry) -> bool {
+    resource.name == picture.resource
+        && resource.target == picture.target
+        && resource
+            .policies
+            .representation
+            .as_ref()
+            .is_some_and(|representation| representation.image == ImageCodec::Jpeg)
+}
+
 /// Validates one catalog entry's input schema and builds the served `Tool`
-/// listing plus its compiled validator, shared by the tool and task loops.
+/// listing plus its compiled validator, shared by the tool, task and picture
+/// loops.
 fn catalog_tool(
     name: &str,
     description: &str,
@@ -421,11 +491,17 @@ fn catalog_tool(
 
 fn annotations_for(operation: ServiceOperation) -> ToolAnnotations {
     match operation {
-        ServiceOperation::ReadOnly => ToolAnnotations::default()
-            .read_only(true)
-            .destructive(false),
+        ServiceOperation::ReadOnly => read_only_annotations(),
         ServiceOperation::Mutating => ToolAnnotations::default().read_only(false),
     }
+}
+
+/// The annotations of a tool that observes and changes nothing: a read-only
+/// service, a picture tool, the listing tool.
+fn read_only_annotations() -> ToolAnnotations {
+    ToolAnnotations::default()
+        .read_only(true)
+        .destructive(false)
 }
 
 /// An action tool is never read-only; the exposure's `safety_sensitive`
@@ -539,11 +615,11 @@ impl ExposureServer {
     /// per-robot surface's attached member resource. On a per-robot surface
     /// the fleet is read once: a resource it does not list is refused naming
     /// the robots present, and one it lists whose member the host has not
-    /// attached yet reads as unavailable.
-    fn resource_state(&self, uri: &str) -> Result<Arc<ResourceState>, McpError> {
+    /// attached yet has no state.
+    fn resource_state(&self, uri: &str) -> Result<Option<Arc<ResourceState>>, McpError> {
         let fleet = match &self.state.addressing {
             Addressing::Fixed(resources) => {
-                return resources.by_uri.get(uri).cloned().ok_or_else(|| {
+                return resources.by_uri.get(uri).cloned().map(Some).ok_or_else(|| {
                     McpError::resource_not_found(
                         format!("`{uri}` is not a resource of this exposure"),
                         Some(json!({ "uri": uri })),
@@ -571,35 +647,109 @@ impl ExposureServer {
                 Some(json!({ "uri": uri })),
             ));
         }
-        match fleet.state(uri) {
-            Some(state) => Ok(state),
-            None => Err(McpError::internal_error(
-                format!("resource `{uri}` is {UNAVAILABLE_SINCE_JOIN}"),
-                None,
-            )),
-        }
+        Ok(fleet.state(uri))
     }
 
-    fn read_snapshot(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
-        let resource = self.resource_state(uri)?;
-        match resource.snapshot_for_read(self.state.clock.now_nanos()) {
-            Ok(view) => Ok(ReadResourceResult::new(vec![
-                ResourceContents::text(view.serialized, uri).with_mime_type("application/json"),
-            ])
-            .with_ttl_ms(view.remaining_fresh_ms)
-            .with_cache_scope(CacheScope::Private)),
-            Err(ReadRefusal::Unavailable) => Err(McpError::internal_error(
-                format!("resource `{uri}` is {UNAVAILABLE_SINCE_START}"),
-                None,
-            )),
-            Err(ReadRefusal::Stale { age_ms, max_age_ms }) => Err(McpError::internal_error(
-                format!(
+    /// The snapshot the resource at `uri` serves now, to a read and to a
+    /// picture tool alike, or the words that say why it serves none.
+    /// `resource` is `None` for a resource of a per-robot surface whose
+    /// member the host has not attached yet.
+    fn snapshot_now(
+        &self,
+        uri: &str,
+        resource: Option<&ResourceState>,
+    ) -> Result<SnapshotView, String> {
+        let Some(resource) = resource else {
+            return Err(format!("resource `{uri}` is {UNAVAILABLE_SINCE_JOIN}"));
+        };
+        resource
+            .snapshot_for_read(self.state.clock.now_nanos())
+            .map_err(|refusal| match refusal {
+                ReadRefusal::Unavailable => {
+                    format!("resource `{uri}` is {UNAVAILABLE_SINCE_START}")
+                }
+                ReadRefusal::Stale { age_ms, max_age_ms } => format!(
                     "resource `{uri}` is stale: the snapshot is {age_ms} ms old and \
                      `max_age_ms` is {max_age_ms}"
                 ),
-                None,
-            )),
+            })
+    }
+
+    /// Answers a read with the snapshot's typed contents, both under the
+    /// resource's URI: the document, then the blob of a resource with a
+    /// representation.
+    fn read_snapshot(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
+        let resource = self.resource_state(uri)?;
+        let view = self
+            .snapshot_now(uri, resource.as_deref())
+            .map_err(|unavailable| McpError::internal_error(unavailable, None))?;
+        let mut contents = vec![
+            ResourceContents::text(view.content.document, uri).with_mime_type(DOCUMENT_MIME_TYPE),
+        ];
+        if let Some(blob) = view.content.blob {
+            contents.push(ResourceContents::blob(blob.base64, uri).with_mime_type(blob.mime_type));
         }
+        Ok(ReadResourceResult::new(contents)
+            .with_ttl_ms(view.remaining_fresh_ms)
+            .with_cache_scope(CacheScope::Private))
+    }
+
+    /// Answers a picture tool with the snapshot a read of its resource
+    /// serves now: the blob as an image, the document as text and as the
+    /// structured content. Nothing reaches the Peppy graph. A resource that
+    /// serves no snapshot now is a tool error in the words of the read.
+    fn look(
+        &self,
+        picture: &PictureState,
+        arguments: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let input = validated_input(&picture.entry.name, &picture.validator, arguments)?;
+        let (uri, resource) = self.pictured_resource(&picture.entry, input)?;
+        let view = match self.snapshot_now(&uri, resource.as_deref()) {
+            Ok(view) => view,
+            Err(unavailable) => return Ok(tool_error(unavailable)),
+        };
+        let blob = view
+            .content
+            .blob
+            .expect("a resource under a `jpeg` representation holds a blob in every snapshot");
+        let document = serde_json::from_str(&view.content.document)
+            .expect("a snapshot's document is the JSON this runtime serialized");
+        let mut result = CallToolResult::structured(document);
+        result
+            .content
+            .insert(0, ContentBlock::image(blob.base64, blob.mime_type));
+        Ok(result)
+    }
+
+    /// The resource a picture tool answers with, as its URI and its state:
+    /// the catalog's on a fixed surface, and on a per-robot surface the one
+    /// published for the member the call's routing arguments name. A call
+    /// naming no member of the fleet is refused like a call of any other
+    /// tool, and a member the host has not attached yet has no state.
+    fn pictured_resource(
+        &self,
+        picture: &PictureEntry,
+        mut input: Value,
+    ) -> Result<(String, Option<Arc<ResourceState>>), McpError> {
+        let fleet = match &self.state.addressing {
+            Addressing::Fixed(resources) => {
+                let uri = resources
+                    .uri_by_name
+                    .get(&picture.resource)
+                    .expect("the build held every picture to a resource of the bundle");
+                return Ok((uri.clone(), resources.by_uri.get(uri).cloned()));
+            }
+            Addressing::PerRobot(fleet) => fleet,
+        };
+        let (robot, name) = take_routing(fleet, &picture.target, &mut input);
+        fleet
+            .fleet()
+            .route(&robot, &picture.target, name.as_deref())
+            .map_err(|refusal| McpError::invalid_params(refusal.to_string(), None))?;
+        let uri = published_uri(&published_name(&picture.resource, &robot, name.as_deref()));
+        let resource = fleet.state(&uri);
+        Ok((uri, resource))
     }
 
     async fn execute_tool(
@@ -1064,11 +1214,7 @@ fn listing_tool(fleet: &FleetRuntime) -> Tool {
         fleet.catalog.list.description.clone(),
         Arc::new(input),
     )
-    .with_annotations(
-        ToolAnnotations::default()
-            .read_only(true)
-            .destructive(false),
-    )
+    .with_annotations(read_only_annotations())
     .with_raw_output_schema(Arc::new(output))
 }
 
@@ -1084,12 +1230,7 @@ impl ExposureServer {
                 recipient: Recipient::BoundProducer,
             });
         };
-        let argument = fleet.argument_of.get(target).cloned().flatten();
-        let fields = input.as_object_mut().expect("validated input is an object");
-        let robot = take_string(fields, ROBOT_ARGUMENT);
-        let name = argument
-            .as_deref()
-            .map(|argument| take_string(fields, argument));
+        let (robot, name) = take_routing(fleet, target, &mut input);
         let member = fleet
             .fleet()
             .route(&robot, target, name.as_deref())
@@ -1183,6 +1324,19 @@ impl ExposureServer {
             )),
         }
     }
+}
+
+/// Takes the routing arguments of a call on `target` out of its validated
+/// input: the robot's name, and the member's name on a target a robot fills
+/// any number of times.
+fn take_routing(fleet: &FleetRuntime, target: &str, input: &mut Value) -> (String, Option<String>) {
+    let argument = fleet.argument_of.get(target).cloned().flatten();
+    let fields = input.as_object_mut().expect("validated input is an object");
+    let robot = take_string(fields, ROBOT_ARGUMENT);
+    let name = argument
+        .as_deref()
+        .map(|argument| take_string(fields, argument));
+    (robot, name)
 }
 
 /// Takes the string field `name` out of a validated object; the schema
@@ -1378,6 +1532,9 @@ impl ServerHandler for ExposureServer {
             && name == fleet.catalog.list.name
         {
             return self.list_robots(fleet, arguments).await.map(Into::into);
+        }
+        if let Some(picture) = self.state.pictures.get(name) {
+            return self.look(picture, arguments).map(Into::into);
         }
         let Some(task) = self.state.tasks.get(name) else {
             return self.execute_tool(name, arguments).await.map(Into::into);
@@ -2442,16 +2599,70 @@ mod tests {
             }
         }
 
-        /// A server over a fleet the test edits, whose tools answer with the
-        /// member they were routed to.
+        /// A server of `bundle()` over a fleet the test edits, whose tools
+        /// answer with the member they were routed to.
         fn served() -> (ExposureServer, Arc<Mutex<Vec<FleetMember>>>) {
+            served_bundle(bundle())
+        }
+
+        /// `bundle()` with the camera's frame under a `jpeg` representation
+        /// and the picture tool that answers with it.
+        fn picture_bundle() -> ExposureBundle {
+            let mut bundle = bundle();
+            bundle.resources[1].policies.representation = Some(
+                serde_json::from_value(json!({
+                    "image": "jpeg",
+                    "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
+                }))
+                .expect("a representation"),
+            );
+            bundle.pictures.push(
+                serde_json::from_value(json!({
+                    "name": "camera.look",
+                    "description": "Look through the camera.",
+                    "target": "camera",
+                    "member": "video_stream",
+                    "resource": "camera.latest_frame",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": { "robot": { "type": "string" }, "camera": { "type": "string" } },
+                        "required": ["robot", "camera"],
+                        "additionalProperties": false
+                    },
+                    "output_schema": { "type": "object" }
+                }))
+                .expect("valid picture entry"),
+            );
+            bundle
+        }
+
+        /// Attaches `camera` and publishes one frame of it, numbered
+        /// `frame_id`.
+        fn publish_frame_of(server: &ExposureServer, camera: &FleetMember, frame_id: u32) {
+            let handle = server.fleet().expect("a per-robot server");
+            let attached = handle.attach(camera);
+            let (_, ingest) = &attached[0];
+            let mut frame = rgb8_frame();
+            frame["header"]["frame_id"] = json!(frame_id);
+            let token = ingest.admit().expect("gate open");
+            ingest.publish(token, frame).expect("frame publishes");
+        }
+
+        fn look(server: &ExposureServer, arguments: Value) -> Result<CallToolResult, McpError> {
+            server.look(
+                &server.state.pictures["camera.look"],
+                self::arguments(arguments),
+            )
+        }
+
+        fn served_bundle(bundle: ExposureBundle) -> (ExposureServer, Arc<Mutex<Vec<FleetMember>>>) {
             let fleet = Arc::new(Mutex::new(vec![
                 member("status", "alpha", "backbone_inst"),
                 member("camera", "alpha", "wrist_left"),
                 member("status", "bravo", "backbone_inst"),
             ]));
             let source = Arc::clone(&fleet);
-            let server = ExposureServer::builder(bundle())
+            let server = ExposureServer::builder(bundle)
                 .with_fleet(move || source.lock().unwrap().clone())
                 .with_tool("robot.get_identity", |call: ToolCall| async move {
                     let Recipient::Member(member) = call.recipient else {
@@ -2700,6 +2911,156 @@ mod tests {
                 .read_snapshot("peppy://resource/alpha/wrist_left/camera.latest_frame")
                 .expect_err("detached and unlisted");
             assert_eq!(gone.code, ErrorCode::RESOURCE_NOT_FOUND);
+        }
+
+        #[test]
+        fn a_picture_tool_answers_for_the_camera_the_call_names() {
+            let (server, fleet) = served_bundle(picture_bundle());
+            let wrist_left = member("camera", "alpha", "wrist_left");
+            let wrist_right = member("camera", "alpha", "wrist_right");
+            fleet.lock().unwrap().push(wrist_right.clone());
+            publish_frame_of(&server, &wrist_left, 1);
+            publish_frame_of(&server, &wrist_right, 2);
+
+            for (camera, frame_id) in [("wrist_left", 1), ("wrist_right", 2)] {
+                let result = look(&server, json!({ "robot": "alpha", "camera": camera }))
+                    .expect("routes to the camera");
+                assert_eq!(result.is_error, Some(false));
+                assert_eq!(
+                    structured(result.clone()),
+                    json!({
+                        "header": { "frame_id": frame_id },
+                        "encoding": "mjpeg",
+                        "width": 8,
+                        "height": 8,
+                    }),
+                    "{camera}"
+                );
+                let image = result.content[0].as_image().expect("the image comes first");
+                assert_eq!(image.mime_type, "image/jpeg");
+                assert_is_jpeg(&image.data);
+            }
+        }
+
+        #[test]
+        fn a_picture_tool_refuses_a_robot_or_a_camera_the_fleet_does_not_have() {
+            let (server, _) = served_bundle(picture_bundle());
+            let refused = |arguments: Value| {
+                look(&server, arguments).expect_err("refused before any snapshot is read")
+            };
+            let error = refused(json!({ "robot": "charlie", "camera": "wrist_left" }));
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+            assert_eq!(
+                error.message,
+                "`charlie` is not a robot of this stack; the robots are `alpha`, `bravo`"
+            );
+            let error = refused(json!({ "robot": "alpha", "camera": "chest" }));
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+            assert_eq!(
+                error.message,
+                "robot `alpha` has no `camera` named `chest` (`camera`); it has `wrist_left`"
+            );
+            let error = refused(json!({ "robot": "bravo", "camera": "wrist_left" }));
+            assert_eq!(
+                error.message,
+                "robot `bravo` has no `camera`; it fills `status`; the robots with a `camera` are `alpha`"
+            );
+            let error = refused(json!({ "robot": "alpha" }));
+            assert!(
+                error
+                    .message
+                    .contains("invalid arguments for `camera.look`"),
+                "{}",
+                error.message
+            );
+        }
+
+        #[test]
+        fn a_picture_tool_of_a_camera_with_no_snapshot_is_a_tool_error_in_the_words_of_the_read() {
+            let (server, _) = served_bundle(picture_bundle());
+            let uri = "peppy://resource/alpha/wrist_left/camera.latest_frame";
+            let look = || {
+                look(&server, json!({ "robot": "alpha", "camera": "wrist_left" }))
+                    .expect("a snapshot that does not serve is a tool error")
+            };
+            let read_refusal = || {
+                server
+                    .read_snapshot(uri)
+                    .expect_err("the read is refused")
+                    .message
+                    .into_owned()
+            };
+
+            // Listed, and the host has not attached the member yet.
+            let unattached = look();
+            assert_eq!(tool_error_text(&unattached), read_refusal());
+            assert_eq!(
+                tool_error_text(&unattached),
+                "resource `peppy://resource/alpha/wrist_left/camera.latest_frame` is \
+                 unavailable: nothing has been published since the robot joined"
+            );
+
+            // Attached, and no frame has arrived yet.
+            let handle = server.fleet().expect("a per-robot server");
+            handle.attach(&member("camera", "alpha", "wrist_left"));
+            let unpublished = look();
+            assert_eq!(tool_error_text(&unpublished), read_refusal());
+            assert!(
+                tool_error_text(&unpublished).contains("since the server started"),
+                "{}",
+                tool_error_text(&unpublished)
+            );
+        }
+
+        #[tokio::test]
+        async fn the_listing_reports_a_picture_tool_for_the_robots_that_fill_its_target() {
+            let (server, _) = served_bundle(picture_bundle());
+            let names: Vec<&str> = server
+                .state
+                .tool_list
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    "robot.get_identity",
+                    "camera.set_brightness",
+                    "camera.look",
+                    "robot.list"
+                ]
+            );
+            let listed = structured(
+                server
+                    .list_robots(runtime(&server), JsonObject::new())
+                    .await
+                    .expect("lists"),
+            );
+            assert_eq!(
+                listed["robots"][0]["tools"],
+                json!(["camera.look", "camera.set_brightness", "robot.get_identity"]),
+                "alpha fills the camera target"
+            );
+            assert_eq!(
+                listed["robots"][1]["tools"],
+                json!(["robot.get_identity"]),
+                "bravo has no camera"
+            );
+            let resources = runtime(&server)
+                .fleet()
+                .resources(&runtime(&server).entries);
+            let listed_mime_types: Vec<(&str, Option<&str>)> = resources
+                .iter()
+                .map(|resource| (resource.name.as_str(), resource.mime_type.as_deref()))
+                .collect();
+            assert_eq!(
+                listed_mime_types,
+                [
+                    ("alpha/robot.status", Some("application/json")),
+                    ("alpha/wrist_left/camera.latest_frame", Some("image/jpeg")),
+                    ("bravo/robot.status", Some("application/json")),
+                ]
+            );
         }
 
         #[test]
@@ -2986,6 +3347,355 @@ mod tests {
             .read_snapshot("peppy://resource/absent")
             .expect_err("absent resources are refused");
         assert_eq!(error.code, ErrorCode::RESOURCE_NOT_FOUND);
+    }
+
+    const FRAME_URI: &str = "peppy://resource/front_camera.latest_frame";
+
+    /// `test_bundle` plus a frame resource under a `jpeg` representation and
+    /// the picture tool that answers with it.
+    fn picture_bundle() -> ExposureBundle {
+        let mut bundle = test_bundle();
+        bundle.resources.push(
+            serde_json::from_value(json!({
+                "name": "front_camera.latest_frame",
+                "uri": FRAME_URI,
+                "description": "Latest frame from the front-facing camera.",
+                "target": "front_camera",
+                "member": "video_stream",
+                "policies": {
+                    "freshness": { "max_age_ms": 2000 },
+                    "update": { "max_hz": 2.0 },
+                    "representation": {
+                        "image": "jpeg",
+                        "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
+                    },
+                    "max_result_bytes": 524288,
+                    "on_oversize": "downscale"
+                },
+                "schema": { "type": "object" }
+            }))
+            .expect("valid resource entry"),
+        );
+        bundle.pictures.push(
+            serde_json::from_value(json!({
+                "name": "front_camera.look",
+                "description": "Look through the front-facing camera.",
+                "target": "front_camera",
+                "member": "video_stream",
+                "resource": "front_camera.latest_frame",
+                "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
+                "output_schema": { "type": "object" }
+            }))
+            .expect("valid picture entry"),
+        );
+        bundle
+    }
+
+    /// A picture server on a clock the test drives.
+    fn built_picture_server() -> (ExposureServer, Arc<std::sync::atomic::AtomicU64>) {
+        let (clock, nanos) = manual_clock();
+        let server = ExposureServer::builder(picture_bundle())
+            .with_clock(clock)
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .build()
+            .expect("bundle and handlers agree");
+        (server, nanos)
+    }
+
+    /// An 8x8 `rgb8` frame, as the bridge hands a camera message over.
+    fn rgb8_frame() -> Value {
+        use base64::Engine as _;
+        let pixels: Vec<u8> = (0..8u32 * 8 * 3).map(|index| (index % 251) as u8).collect();
+        json!({
+            "header": { "frame_id": 7 },
+            "frame": base64::engine::general_purpose::STANDARD.encode(&pixels),
+            "encoding": "rgb8",
+            "width": 8,
+            "height": 8,
+        })
+    }
+
+    /// The document every snapshot of [`rgb8_frame`] serves.
+    fn frame_document() -> Value {
+        json!({ "header": { "frame_id": 7 }, "encoding": "mjpeg", "width": 8, "height": 8 })
+    }
+
+    fn publish_frame(server: &ExposureServer) {
+        let ingest = server
+            .ingest("front_camera.latest_frame")
+            .expect("resource exists");
+        let token = ingest.admit().expect("gate open");
+        ingest
+            .publish(token, rgb8_frame())
+            .expect("frame publishes");
+    }
+
+    fn assert_is_jpeg(base64_text: &str) {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(base64_text)
+            .expect("the frame is base64");
+        assert_eq!(&bytes[..2], &[0xFF, 0xD8], "JPEG magic bytes");
+    }
+
+    #[test]
+    fn a_resource_with_a_representation_is_listed_under_the_mime_type_of_its_blob() {
+        let (server, _) = built_picture_server();
+        let Addressing::Fixed(resources) = &server.state.addressing else {
+            panic!("expected a fixed server");
+        };
+        let listed: Vec<(&str, Option<&str>)> = resources
+            .list
+            .iter()
+            .map(|resource| (resource.name.as_str(), resource.mime_type.as_deref()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("front_camera.status", Some("application/json")),
+                ("front_camera.latest_frame", Some("image/jpeg")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_read_serves_the_document_then_the_blob_under_the_resources_uri() {
+        let (server, _) = built_picture_server();
+        publish_frame(&server);
+        let read = server.read_snapshot(FRAME_URI).expect("the frame serves");
+        let [document, blob] = read.contents.as_slice() else {
+            panic!("expected two contents, got {:?}", read.contents);
+        };
+        let ResourceContents::TextResourceContents {
+            uri,
+            mime_type,
+            text,
+            ..
+        } = document
+        else {
+            panic!("the document comes first, got {document:?}");
+        };
+        assert_eq!(uri, FRAME_URI);
+        assert_eq!(mime_type.as_deref(), Some("application/json"));
+        assert_eq!(
+            serde_json::from_str::<Value>(text).expect("the document is JSON"),
+            frame_document()
+        );
+        let ResourceContents::BlobResourceContents {
+            uri,
+            mime_type,
+            blob,
+            ..
+        } = blob
+        else {
+            panic!("the blob comes second, got {blob:?}");
+        };
+        assert_eq!(uri, FRAME_URI);
+        assert_eq!(mime_type.as_deref(), Some("image/jpeg"));
+        assert_is_jpeg(blob);
+
+        // A resource with no representation serves its document alone.
+        let status = server
+            .ingest("front_camera.status")
+            .expect("resource exists");
+        let token = status.admit().expect("gate open");
+        status
+            .publish(token, json!({ "battery": 87 }))
+            .expect("publishes");
+        let read = server
+            .read_snapshot("peppy://resource/front_camera.status")
+            .expect("the status serves");
+        assert_eq!(
+            read.contents,
+            [
+                ResourceContents::text("{\"battery\":87}", "peppy://resource/front_camera.status")
+                    .with_mime_type("application/json")
+            ]
+        );
+    }
+
+    #[test]
+    fn picture_tools_join_the_catalog_read_only_after_the_tools_and_the_tasks() {
+        let (server, _) = built_picture_server();
+        let names: Vec<&str> = server
+            .state
+            .tool_list
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect();
+        assert_eq!(names, ["front_camera.set_brightness", "front_camera.look"]);
+        let look = server.get_tool("front_camera.look").expect("listed");
+        assert_eq!(
+            look.description.as_deref(),
+            Some("Look through the front-facing camera.")
+        );
+        assert_eq!(
+            Value::Object((*look.input_schema).clone()),
+            json!({ "type": "object", "properties": {}, "additionalProperties": false })
+        );
+        assert!(look.output_schema.is_some());
+        let annotations = look.annotations.expect("annotations set");
+        assert_eq!(annotations.read_only_hint, Some(true));
+        assert_eq!(annotations.destructive_hint, Some(false));
+    }
+
+    #[test]
+    fn a_picture_tool_answers_with_the_image_the_text_and_the_structured_document() {
+        let (server, _) = built_picture_server();
+        publish_frame(&server);
+        let result = server
+            .look(
+                &server.state.pictures["front_camera.look"],
+                JsonObject::new(),
+            )
+            .expect("the picture tool answers");
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.structured_content, Some(frame_document()));
+        let [image, text] = result.content.as_slice() else {
+            panic!("expected an image and a text, got {:?}", result.content);
+        };
+        let image = image.as_image().expect("the image comes first");
+        assert_eq!(image.mime_type, "image/jpeg");
+        assert_is_jpeg(&image.data);
+        let text = &text.as_text().expect("the document comes second").text;
+        assert_eq!(
+            serde_json::from_str::<Value>(text).expect("the text is JSON"),
+            frame_document()
+        );
+
+        // The image is the blob a read of the resource serves.
+        let read = server.read_snapshot(FRAME_URI).expect("the frame serves");
+        let ResourceContents::BlobResourceContents { blob, .. } = &read.contents[1] else {
+            panic!("the blob comes second");
+        };
+        assert_eq!(&image.data, blob);
+    }
+
+    #[test]
+    fn a_picture_tool_without_a_fresh_snapshot_is_a_tool_error_in_the_words_of_the_read() {
+        let (server, nanos) = built_picture_server();
+        let look = || {
+            server
+                .look(
+                    &server.state.pictures["front_camera.look"],
+                    JsonObject::new(),
+                )
+                .expect("a snapshot that does not serve is a tool error, not a protocol error")
+        };
+        let read_refusal = || {
+            server
+                .read_snapshot(FRAME_URI)
+                .expect_err("the read is refused")
+                .message
+                .into_owned()
+        };
+
+        let unavailable = look();
+        assert_eq!(unavailable.is_error, Some(true));
+        assert_eq!(unavailable.structured_content, None);
+        assert_eq!(tool_error_text(&unavailable), read_refusal());
+        assert_eq!(
+            tool_error_text(&unavailable),
+            "resource `peppy://resource/front_camera.latest_frame` is unavailable: nothing has \
+             been published since the server started"
+        );
+
+        publish_frame(&server);
+        nanos.store(2_500 * 1_000_000, Ordering::SeqCst);
+        let stale = look();
+        assert_eq!(stale.is_error, Some(true));
+        assert_eq!(tool_error_text(&stale), read_refusal());
+        assert_eq!(
+            tool_error_text(&stale),
+            "resource `peppy://resource/front_camera.latest_frame` is stale: the snapshot is \
+             2500 ms old and `max_age_ms` is 2000"
+        );
+    }
+
+    #[test]
+    fn a_picture_tool_of_a_fixed_surface_takes_no_argument() {
+        let (server, _) = built_picture_server();
+        publish_frame(&server);
+        let error = server
+            .look(
+                &server.state.pictures["front_camera.look"],
+                arguments(json!({ "camera": "front" })),
+            )
+            .expect_err("an argument is refused");
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            error
+                .message
+                .contains("invalid arguments for `front_camera.look`"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_picture_needs_a_jpeg_resource_of_its_target_and_a_name_of_its_own() {
+        let no_picture_resource = |edit: fn(&mut ExposureBundle)| {
+            let mut bundle = picture_bundle();
+            edit(&mut bundle);
+            ExposureServer::builder(bundle)
+                .with_tool("front_camera.set_brightness", brightness_handler)
+                .build()
+                .expect_err("the picture has no picture to answer with")
+        };
+
+        let unknown = no_picture_resource(|bundle| {
+            bundle.pictures[0].resource = "front_camera.absent".to_string();
+        });
+        assert_eq!(
+            unknown,
+            BuildError::NoPictureResource {
+                name: "front_camera.look".to_string(),
+                resource: "front_camera.absent".to_string(),
+                target: "front_camera".to_string(),
+            }
+        );
+        assert_eq!(
+            unknown.to_string(),
+            "picture tool `front_camera.look` answers with `front_camera.absent`, which is not a \
+             resource of target `front_camera` with a `jpeg` representation"
+        );
+
+        // A resource with no representation holds no picture.
+        let no_representation = no_picture_resource(|bundle| {
+            bundle.pictures[0].resource = "front_camera.status".to_string();
+        });
+        assert!(matches!(
+            no_representation,
+            BuildError::NoPictureResource { .. }
+        ));
+
+        // Nor does one whose frames are data: 16-bit samples.
+        let png16 = no_picture_resource(|bundle| {
+            bundle.resources[1].policies.representation = Some(
+                serde_json::from_value(json!({
+                    "image": "png16",
+                    "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
+                }))
+                .expect("a representation"),
+            );
+        });
+        assert!(matches!(png16, BuildError::NoPictureResource { .. }));
+
+        // The resource of another target is not the picture's.
+        let other_target = no_picture_resource(|bundle| {
+            bundle.pictures[0].target = "recorder".to_string();
+        });
+        assert!(matches!(other_target, BuildError::NoPictureResource { .. }));
+
+        let duplicate = no_picture_resource(|bundle| {
+            bundle.pictures[0].name = "front_camera.set_brightness".to_string();
+        });
+        assert_eq!(
+            duplicate,
+            BuildError::DuplicateName {
+                name: "front_camera.set_brightness".to_string()
+            }
+        );
     }
 
     #[test]

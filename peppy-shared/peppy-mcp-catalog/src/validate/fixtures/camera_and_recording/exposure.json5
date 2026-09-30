@@ -31,6 +31,10 @@
                     },
                     max_result_bytes: 524288,
                     on_oversize: "downscale",
+                    picture: {
+                        tool: "front_camera.look",
+                        description: "Look through the front-facing camera: the latest frame as a picture.",
+                    },
                 },
             ],
             services: [
