@@ -4,9 +4,9 @@ run-name: Merge set ${{ inputs.branch }}
 # Keeps the pull requests of a set together (see .github/merge-set/merge_set.py):
 # it reads the set of the branch again, acts on the boxes a user ticked in its
 # merge-set comments, and writes the `merge-set` status and the merge-set
-# comment of each open pull request of the set. The relay of each repository
-# of a set (merge-set-relay.yml) starts it for every event that can change the
-# set.
+# comment of each open pull request of the set. The webhook of the merge-set
+# App (.github/merge-set/webhook.py) starts it for every event that can change
+# the set.
 #
 # One run at a time for each set, and no run is cancelled: a run can be in the
 # middle of a merge. GitHub keeps one run of a group waiting and cancels the

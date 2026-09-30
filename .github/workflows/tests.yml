@@ -53,6 +53,10 @@ env:
 # approval policy, which holds every outside contributor's run until a
 # maintainer approves it.
 #
+# From attempt 3 of a run, each RunsOn job runs on demand and not on spot,
+# because RunsOn runs an interrupted job again only after attempt 1 or 2 (see
+# .github/runs-on.yml).
+#
 # The exception is install-script, which runs install.sh on a GitHub-hosted
 # runner. install.sh changes the machine it runs on (apt packages, systemd
 # linger, an AppArmor profile, a user service), and the tests must start from
@@ -67,7 +71,7 @@ jobs:
   # whole selection is empty is skipped, and the action reports the reason in
   # this job's annotations and summary.
   changes:
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
     outputs:
@@ -114,6 +118,17 @@ jobs:
             --start-directory .github/actions/hub-ci-peppy \
             --pattern 'test_*.py' --verbose
 
+      # The hubs' CI keeps the cargo target dirs of its sticky disk small with
+      # the cargo-target-sweep action, whose script deletes from the caches
+      # that every later hub run starts from. Its cases need nothing but
+      # Python, and the hubs run the action from `dev`, where no hub CI has
+      # tried a change before it merges, so they run on every change.
+      - name: Test the hub CI cargo target sweep
+        run: |
+          python3 -m unittest discover \
+            --start-directory .github/actions/cargo-target-sweep \
+            --pattern 'test_*.py' --verbose
+
       # The merge-set bot (merge-set.yml) keeps the pull requests of a set
       # together. Its cases hold the merge-set workflows to the names the bot
       # uses, so they run on every change too.
@@ -134,7 +149,7 @@ jobs:
   workspace-tests:
     needs: changes
     if: needs.changes.outputs.workspace == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=80gb:gp3:500mbs:6000iops/sticky=workspace-tests:80gb  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=80gb:gp3:500mbs:6000iops/sticky=workspace-tests:80gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
@@ -159,7 +174,7 @@ jobs:
   container-e2e:
     needs: changes
     if: needs.changes.outputs.container_e2e == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=container-e2e:30gb  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=container-e2e:30gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
@@ -182,7 +197,7 @@ jobs:
   multi-daemon-e2e:
     needs: changes
     if: needs.changes.outputs.multi_daemon_e2e == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=100gb:gp3:500mbs:6000iops/sticky=multi-daemon-e2e:40gb  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=100gb:gp3:500mbs:6000iops/sticky=multi-daemon-e2e:40gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
@@ -209,7 +224,7 @@ jobs:
   docs-integration:
     needs: changes
     if: needs.changes.outputs.docs_integration == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=60gb:gp3:500mbs:6000iops/sticky=docs-integration:50gb  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=60gb:gp3:500mbs:6000iops/sticky=docs-integration:50gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
@@ -250,7 +265,7 @@ jobs:
   release-scripts:
     needs: changes
     if: needs.changes.outputs.scripts == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
@@ -282,7 +297,7 @@ jobs:
   install-archive:
     needs: changes
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/dev' || needs.changes.outputs.install_script == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=install-archive:50gb  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=install-archive:50gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
     timeout-minutes: 60
@@ -363,7 +378,7 @@ jobs:
   peppy-shared:
     needs: changes
     if: needs.changes.outputs.peppy_shared_packages != '' || needs.changes.outputs.peppy_shared_peppylib_py == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=peppy-shared:40gb  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=peppy-shared:40gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
@@ -450,7 +465,7 @@ jobs:
   cross-check:
     needs: changes
     if: needs.changes.outputs.cross_check == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=cross-check:20gb  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=cross-check:20gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
@@ -521,7 +536,7 @@ jobs:
     # Runs whatever happened above: on the default condition a failed or
     # cancelled suite would leave this check unreported instead of red.
     if: always()
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions: {}
 
     steps:
