@@ -1,4 +1,5 @@
 use super::super::error::{Error, Result};
+use super::spawner::ZenohdSpawner;
 use super::{ZenohEndpoint, ZenohNetProtocol};
 use std::env;
 use std::fs::File;
@@ -20,6 +21,13 @@ enum RouterOwnership {
         zenohd_config_path: PathBuf,
         pinned: bool,
         zenohd_log_path: PathBuf,
+        /// On Linux, forks every zenohd of this router from a thread that lives
+        /// as long as the router, so the kernel ends zenohd when this process
+        /// dies.
+        spawner: ZenohdSpawner,
+        /// The process that built this facade. A fork inherits the facade but
+        /// not the spawner thread, and its zenohd belongs to the owner.
+        owner_pid: u32,
     },
     /// An already-running router that peppy only probes and uses. No binary or
     /// router config belongs to peppy in this mode.
@@ -69,7 +77,10 @@ fn zenohd_log_excerpt(log_path: &Path) -> String {
 /// Environment variable naming an explicit `zenohd` binary to run, taking
 /// precedence over every packaged/built candidate. The escape hatch for
 /// installed-wheel and installed-crate consumers whose build baked a
-/// build-machine `ZENOHD_BINARY_PATH` that does not exist on this host.
+/// build-machine `ZENOHD_BINARY_PATH` that does not exist on this host. On
+/// Linux the kernel ends a managed zenohd with the peppy process only for a
+/// binary without file capabilities: `execve` of a setcap binary clears
+/// `PR_SET_PDEATHSIG`.
 pub const ZENOHD_PATH_VAR: &str = "PEPPY_ZENOHD_PATH";
 
 /// Resolve only release-authorized router artifacts: a binary packaged beside
@@ -165,16 +176,7 @@ fn resolve_zenohd_binary(
 pub struct ZenohdFacade {
     ownership: RouterOwnership,
     adopted: bool,
-    /// When set, the spawned zenohd is SIGKILLed by the kernel if the spawning
-    /// thread dies (`PR_SET_PDEATHSIG`, Linux only). Opted into only by the
-    /// ephemeral-router path — where the spawning runtime lives exactly as long
-    /// as the test that owns the router — so a SIGKILLed test process cannot
-    /// orphan its zenohd. Deliberately never set for daemon-managed routers:
-    /// the pdeathsig contract is per-*thread*, and tying a production router's
-    /// life to whichever runtime thread happened to spawn it would be fragile.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    kill_on_parent_death: bool,
-    pub router_process: Option<Child>,
+    router_process: Option<Child>,
     pub zenoh_endpoint: ZenohEndpoint,
 }
 
@@ -197,15 +199,19 @@ impl ZenohdFacade {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(format!("zenohd_{}.log", zenoh_endpoint.port()));
+        let spawner = ZenohdSpawner::start().map_err(|e| {
+            Error::BackendError(format!("Failed to start the zenohd spawner thread: {e}"))
+        })?;
         Ok(Self {
             ownership: RouterOwnership::Managed {
                 zenohd_path: Self::get_zenohd_binary(),
                 zenohd_config_path,
                 pinned,
                 zenohd_log_path,
+                spawner,
+                owner_pid: std::process::id(),
             },
             adopted: false,
-            kill_on_parent_death: false,
             router_process: None,
             zenoh_endpoint,
         })
@@ -218,18 +224,9 @@ impl ZenohdFacade {
         Self {
             ownership: RouterOwnership::External,
             adopted: false,
-            kill_on_parent_death: false,
             router_process: None,
             zenoh_endpoint,
         }
-    }
-
-    /// Opt this managed router into kernel-enforced reaping: the spawned zenohd
-    /// receives SIGKILL when the spawning thread dies (`PR_SET_PDEATHSIG`;
-    /// no-op off Linux). See the field doc for why only the ephemeral-router
-    /// path sets this.
-    pub(crate) fn set_kill_on_parent_death(&mut self) {
-        self.kill_on_parent_death = true;
     }
 
     fn get_zenohd_binary() -> Option<String> {
@@ -507,6 +504,8 @@ impl ZenohdFacade {
             zenohd_path,
             zenohd_config_path,
             zenohd_log_path,
+            spawner,
+            owner_pid,
             ..
         } = &self.ownership
         else {
@@ -514,6 +513,14 @@ impl ZenohdFacade {
                 "cannot spawn an operator-managed external Zenoh router".to_string(),
             ));
         };
+        let pid = std::process::id();
+        if pid != *owner_pid {
+            return Err(Error::BackendError(format!(
+                "process {pid} is a fork of process {owner_pid}, which owns this Zenoh router; \
+                 start a router of its own with `ZenohAdapter::with_router` or \
+                 `start_router_ephemeral`"
+            )));
+        }
         let zenohd_path = zenohd_path.clone().ok_or_else(|| {
             Error::ZenohdError(format!(
                 "Zenohd binary not found. Checked, in order: the `{ZENOHD_PATH_VAR}` \
@@ -554,25 +561,7 @@ impl ZenohdFacade {
             .arg(&zenohd_config_path)
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(stderr_file));
-        #[cfg(target_os = "linux")]
-        if self.kill_on_parent_death {
-            use std::os::unix::process::CommandExt;
-            // The one crate-wide unsafe opt-out (see lib.rs): `pre_exec` is
-            // unsafe by signature, so no safe equivalent exists.
-            // SAFETY: the pre_exec closure runs in the forked child before
-            // exec; prctl on the child's own process is async-signal-safe and
-            // touches no parent state.
-            #[allow(unsafe_code)]
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
-        let child = command.spawn().map_err(|e| {
+        let child = spawner.spawn(command).map_err(|e| {
             Error::BackendError(format!("Failed to start zenohd `{zenohd_path}`: {e}"))
         })?;
 
@@ -633,12 +622,20 @@ impl ZenohdFacade {
     }
 
     fn take_router_process_for_stop(&mut self) -> Option<Child> {
-        if self.is_external() {
-            tracing::info!("leaving operator-managed external zenoh router running");
-            return None;
+        match &self.ownership {
+            RouterOwnership::External => {
+                tracing::info!("leaving operator-managed external zenoh router running");
+                None
+            }
+            RouterOwnership::Managed { owner_pid, .. } if *owner_pid != std::process::id() => {
+                tracing::warn!(
+                    owner_pid,
+                    "leaving the Zenoh router to the process that owns it; this process is a fork"
+                );
+                None
+            }
+            RouterOwnership::Managed { .. } => self.router_process.take(),
         }
-
-        self.router_process.take()
     }
 
     fn terminate_router_process(mut child: Child) {
@@ -888,6 +885,61 @@ mod tests {
         assert!(facade.stop_router().is_ok());
 
         // Process should remain None
+        assert!(facade.router_process.is_none());
+    }
+
+    /// A fork of the owner inherits the facade, but the router stays the
+    /// owner's: the fork neither spawns through it nor stops it on drop.
+    #[test]
+    fn a_fork_leaves_the_owners_router_alone() {
+        use std::io::Write;
+        use tempfile::Builder;
+
+        let mut config_file = Builder::new()
+            .suffix(".json5")
+            .tempfile()
+            .expect("Failed to create temp file");
+        writeln!(
+            config_file,
+            r#"{{ "listen": {{ "endpoints": {{ "router": ["tcp/127.0.0.1:7447"] }} }} }}"#
+        )
+        .expect("Failed to write config");
+        let mut facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
+        // What a fork of this process reads back from the inherited facade.
+        let RouterOwnership::Managed { owner_pid, .. } = &mut facade.ownership else {
+            panic!("expected a managed router facade");
+        };
+        *owner_pid = std::process::id().wrapping_add(1);
+
+        let refusal = facade
+            .spawn_router_process()
+            .expect_err("a fork cannot spawn the owner's router");
+        assert!(
+            refusal.to_string().contains("is a fork of"),
+            "unexpected refusal: {refusal}"
+        );
+
+        let stand_in = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a stand-in router");
+        facade.router_process = Some(stand_in);
+        facade.stop_router().expect("a fork's stop is a no-op");
+        let still_tracked = facade
+            .router_process
+            .as_mut()
+            .expect("the fork leaves the router tracked");
+        assert!(
+            still_tracked.try_wait().expect("poll the router").is_none(),
+            "the fork leaves the owner's router running"
+        );
+
+        // Back in the owner, the stop ends it.
+        let RouterOwnership::Managed { owner_pid, .. } = &mut facade.ownership else {
+            panic!("expected a managed router facade");
+        };
+        *owner_pid = std::process::id();
+        facade.stop_router().expect("the owner stops its router");
         assert!(facade.router_process.is_none());
     }
 

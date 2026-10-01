@@ -237,6 +237,8 @@ mod endpoint_tests {
 mod facade;
 #[cfg(feature = "router")]
 pub use facade::{ZENOHD_PATH_VAR, ZenohdFacade};
+#[cfg(feature = "router")]
+mod spawner;
 
 #[cfg(feature = "router")]
 mod health;

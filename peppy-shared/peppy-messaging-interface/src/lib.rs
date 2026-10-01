@@ -6,10 +6,10 @@
 // `zenoh` (the default). See the `tokio` note in Cargo.toml.
 
 // `deny` rather than `forbid` so exactly one scoped opt-out can exist: the
-// `pre_exec` + `prctl(PR_SET_PDEATHSIG)` block in `zenohd::facade` that lets the
-// kernel reap an ephemeral router when its SIGKILLed owner can run no Drop.
-// `pre_exec` is unsafe by signature, so there is no safe equivalent; any other
-// unsafe stays denied crate-wide (mirrors peppylib-rs's policy).
+// `pre_exec` + `prctl(PR_SET_PDEATHSIG)` block in `zenohd::spawner` that lets
+// the kernel end a managed router when its owner process dies without running
+// any Drop. `pre_exec` is unsafe by signature; any other unsafe stays denied
+// crate-wide (mirrors peppylib-rs's policy).
 #![deny(unsafe_code)]
 
 mod adapters;

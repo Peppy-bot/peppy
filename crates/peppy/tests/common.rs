@@ -15,6 +15,9 @@ pub const CALLER_INSTANCE_ID: &str = "peppy-test";
 /// How long a `stack list` request may take before a test gives up on it.
 const STACK_LIST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a daemon gets to boot: write its state file, start its router.
+pub const DAEMON_BOOT: Duration = Duration::from_secs(60);
+
 /// SIGKILLs the daemon on drop so a failing/panicking test never leaks it.
 pub struct DaemonGuard(pub Child);
 
@@ -25,18 +28,49 @@ impl Drop for DaemonGuard {
     }
 }
 
-/// Spawn `peppy service serve --messaging-engine mock` in an isolated home,
-/// capturing stdout and stderr so tests can inspect the daemon's output.
-pub fn spawn_daemon(home: &std::path::Path) -> (DaemonGuard, Arc<Mutex<String>>) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_peppy"))
-        .args(["service", "serve", "--messaging-engine", "mock"])
+/// The messaging engine a spawned daemon runs.
+pub enum MessagingEngine {
+    Mock,
+    /// A managed zenohd listening on this port. Only the Linux e2e in
+    /// `daemon_lifecycle_e2e` boots one.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Zenoh {
+        port: u16,
+    },
+}
+
+/// Spawn `peppy service serve` in an isolated home, capturing stdout and
+/// stderr so tests can inspect the daemon's output.
+pub fn spawn_daemon(
+    home: &std::path::Path,
+    engine: MessagingEngine,
+) -> (DaemonGuard, Arc<Mutex<String>>) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_peppy"));
+    command
+        .args(["service", "serve", "--messaging-engine"])
+        .arg(match engine {
+            MessagingEngine::Mock => "mock",
+            MessagingEngine::Zenoh { .. } => "zenoh",
+        })
         // Pin the child's data root to this per-test home explicitly, so it stays
         // isolated even when the CI job exports its own per-run PEPPY_HOME. The
         // state file needs no extra pinning: it lives in the data root.
         .env(config::consts::PEPPY_HOME_ENV, home)
         .env("TMPDIR", home)
+        // A developer's shell may pin a router config, select an external
+        // router, or silence the log lines the tests wait for.
+        .env_remove("ZENOH_CONFIG")
+        .env_remove(config::consts::PEPPY_CONFIG_ENV)
+        .env_remove("RUST_LOG")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let MessagingEngine::Zenoh { port } = engine {
+        command.env(
+            daemon_config::consts::PEPPY_MESSAGING_PORT_VAR_NAME,
+            port.to_string(),
+        );
+    }
+    let mut child = command
         .spawn()
         .expect("failed to spawn peppy service serve");
 
@@ -61,16 +95,53 @@ pub fn spawn_daemon(home: &std::path::Path) -> (DaemonGuard, Arc<Mutex<String>>)
     (DaemonGuard(child), logs)
 }
 
+/// Polls `probe` until it yields a value, or panics after `bound` naming `what`.
+pub fn poll_for<T>(bound: Duration, what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + bound;
+    loop {
+        if let Some(value) = probe() {
+            return value;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out after {bound:?} waiting for {what}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Polls `probe` over the daemon's log snapshot until it yields a value. A
+/// daemon that exits first, or yields nothing within `bound`, fails the test
+/// with its logs.
+pub fn wait_for_daemon<T>(
+    daemon: &mut DaemonGuard,
+    logs: &Arc<Mutex<String>>,
+    bound: Duration,
+    what: &str,
+    mut probe: impl FnMut(&str) -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + bound;
+    loop {
+        let snapshot = logs.lock().unwrap().clone();
+        if let Some(value) = probe(&snapshot) {
+            return value;
+        }
+        if let Some(status) = daemon.0.try_wait().expect("poll the daemon") {
+            panic!("the daemon exited with {status} before {what}. Logs:\n{snapshot}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out after {bound:?} waiting for {what}. Logs:\n{snapshot}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 /// Wait for the child to exit, returning its status, or panic after `timeout`.
 pub fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::ExitStatus {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if let Some(status) = child.try_wait().expect("try_wait") {
-            return status;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    panic!("daemon did not exit within {timeout:?}");
+    poll_for(timeout, "the daemon's exit", || {
+        child.try_wait().expect("try_wait")
+    })
 }
 
 /// The node graph `stack list` reports for `core_node_name`, as the caller
