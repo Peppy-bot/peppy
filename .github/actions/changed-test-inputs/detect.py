@@ -74,9 +74,10 @@ TREE_SUITES = {
     # install.sh is what the runner runs; build_release.sh and
     # build/build_release/cli produce the archive it installs
     # (`build_release.sh --local --tag dev-<commit>`), with its build cache
-    # kept by the cargo-cache action; the install-test action, run_tests.sh,
-    # conftest and the two test modules are what drives it; and the manifests
-    # pin the pixi environment the tests run in.
+    # kept by the cargo-cache action and reported by the sticky-disk-report
+    # action it runs; the install-test action, run_tests.sh, conftest and the
+    # two test modules are what drives it; and the manifests pin the pixi
+    # environment the tests run in.
     "install_script": [
         "scripts/install.sh",
         "scripts/build_release.sh",
@@ -91,6 +92,7 @@ TREE_SUITES = {
         "scripts/pixi.toml",
         "scripts/pixi.lock",
         ".github/actions/cargo-cache/**",
+        ".github/actions/sticky-disk-report/**",
         ".github/actions/install-test/**",
     ],
 }
@@ -135,10 +137,12 @@ CI_INPUTS = [
     ".github/actions/rust-build-env/**",
 ]
 
-# The plumbing the cargo suites build and run through, on top of CI_INPUTS.
-# The two scripts suites never touch it.
+# The plumbing the cargo suites build and run through, on top of CI_INPUTS:
+# the sticky-disk-report action is a step of the cargo-cache action. The two
+# scripts suites never touch it.
 CARGO_CI_INPUTS = [
     ".github/actions/cargo-cache/**",
+    ".github/actions/sticky-disk-report/**",
     ".github/actions/cargo-suite/**",
 ]
 
