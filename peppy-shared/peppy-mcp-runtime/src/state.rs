@@ -146,7 +146,7 @@ impl ResourceState {
     /// refused at once: the stored snapshot must pass the freshness policy
     /// before the wait, and again after it.
     pub(crate) async fn next_snapshot(&self, clock: &Clock) -> Result<SnapshotView, ReadRefusal> {
-        self.snapshot_for_read(clock.now_nanos())?;
+        self.check_fresh(clock.now_nanos())?;
         let max_wait = Duration::from_millis(self.entry.policies.freshness.max_age_ms.get());
         // The interest is registered before the count opens the gate, so a
         // message admitted for this reader cannot be stored before the
@@ -165,7 +165,31 @@ impl ResourceState {
             .snapshot
             .read()
             .expect("snapshot lock is never poisoned");
-        let Some(snapshot) = snapshot.as_ref() else {
+        let (snapshot, remaining_fresh_ms) = self.fresh(snapshot.as_ref(), now_nanos)?;
+        Ok(SnapshotView {
+            content: snapshot.content.clone(),
+            remaining_fresh_ms,
+        })
+    }
+
+    /// Whether the stored snapshot passes the freshness policy at
+    /// `now_nanos`, copying nothing.
+    fn check_fresh(&self, now_nanos: u64) -> Result<(), ReadRefusal> {
+        let snapshot = self
+            .snapshot
+            .read()
+            .expect("snapshot lock is never poisoned");
+        self.fresh(snapshot.as_ref(), now_nanos).map(|_| ())
+    }
+
+    /// The stored snapshot and how long it stays fresh from `now_nanos`, or
+    /// the refusal of a resource with no snapshot or with a stale one.
+    fn fresh<'a>(
+        &self,
+        snapshot: Option<&'a Snapshot>,
+        now_nanos: u64,
+    ) -> Result<(&'a Snapshot, u64), ReadRefusal> {
+        let Some(snapshot) = snapshot else {
             return Err(ReadRefusal::Unavailable);
         };
         let age_ms = now_nanos.saturating_sub(snapshot.taken_at_nanos) / 1_000_000;
@@ -173,10 +197,7 @@ impl ResourceState {
         if age_ms > max_age_ms {
             return Err(ReadRefusal::Stale { age_ms, max_age_ms });
         }
-        Ok(SnapshotView {
-            content: snapshot.content.clone(),
-            remaining_fresh_ms: max_age_ms - age_ms,
-        })
+        Ok((snapshot, max_age_ms - age_ms))
     }
 }
 
@@ -187,9 +208,9 @@ impl ResourceState {
 #[derive(Debug)]
 pub struct AdmitToken {
     taken_at_nanos: u64,
-    admitted_by: Admission,
-    /// Held for the readers until the token is dropped.
-    _on_its_way: Option<ReaderMessage>,
+    /// The message held for the readers until the token is dropped; none
+    /// for a message the interval admitted.
+    for_readers: Option<ReaderMessage>,
 }
 
 /// The message on its way for the readers; dropping it lets the gate admit
@@ -239,13 +260,13 @@ impl ResourceIngest {
     /// decode or transcode cost should be paid for it.
     pub fn admit(&self) -> Option<AdmitToken> {
         let now_nanos = self.clock.now_nanos();
-        let admitted_by = self.state.admit(now_nanos)?;
-        let on_its_way =
-            (admitted_by == Admission::Reader).then(|| ReaderMessage(Arc::clone(&self.state)));
+        let for_readers = match self.state.admit(now_nanos)? {
+            Admission::Interval => None,
+            Admission::Reader => Some(ReaderMessage(Arc::clone(&self.state))),
+        };
         Some(AdmitToken {
             taken_at_nanos: now_nanos,
-            admitted_by,
-            _on_its_way: on_its_way,
+            for_readers,
         })
     }
 
@@ -260,7 +281,7 @@ impl ResourceIngest {
             content,
             taken_at_nanos: token.taken_at_nanos,
         });
-        if token.admitted_by == Admission::Interval {
+        if token.for_readers.is_none() {
             // Send fails only when nobody listens, which is fine.
             let _ = self.events.send(CatalogEvent::ResourceUpdated {
                 uri: self.state.entry.uri.clone(),
@@ -278,9 +299,21 @@ impl ResourceIngest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::test_support::manual_clock;
+    use crate::clock::test_support::{MS, manual_clock};
     use serde_json::json;
     use std::sync::atomic::Ordering;
+
+    /// A read spawned to wait for the next message, registered as waiting
+    /// before this returns.
+    async fn waiting_reader(
+        ingest: &ResourceIngest,
+    ) -> tokio::task::JoinHandle<Result<SnapshotView, ReadRefusal>> {
+        let state = Arc::clone(&ingest.state);
+        let clock = ingest.clock.clone();
+        let reader = tokio::spawn(async move { state.next_snapshot(&clock).await });
+        tokio::task::yield_now().await;
+        reader
+    }
 
     fn status_entry() -> ResourceEntry {
         serde_json::from_value(json!({
@@ -308,8 +341,6 @@ mod tests {
         };
         (ingest, nanos)
     }
-
-    const MS: u64 = 1_000_000;
 
     #[test]
     fn the_gate_admits_at_most_max_hz() {
@@ -428,12 +459,7 @@ mod tests {
         // The read arrives 100 ms after the first message, well inside the
         // 500 ms interval of the 2 Hz gate.
         nanos.store(100 * MS, Ordering::SeqCst);
-        let reader = {
-            let state = Arc::clone(&ingest.state);
-            let clock = ingest.clock.clone();
-            tokio::spawn(async move { state.next_snapshot(&clock).await })
-        };
-        tokio::task::yield_now().await;
+        let reader = waiting_reader(&ingest).await;
         assert!(ingest.admit().is_some(), "a waiting reader opens the gate");
         nanos.store(150 * MS, Ordering::SeqCst);
         let token = ingest.admit().expect("gate open for the reader");
@@ -487,12 +513,7 @@ mod tests {
             .publish(token, json!({ "battery": 1 }))
             .expect("publishes");
         nanos.store(100 * MS, Ordering::SeqCst);
-        let reader = {
-            let state = Arc::clone(&ingest.state);
-            let clock = ingest.clock.clone();
-            tokio::spawn(async move { state.next_snapshot(&clock).await })
-        };
-        tokio::task::yield_now().await;
+        let reader = waiting_reader(&ingest).await;
         let on_its_way = ingest.admit().expect("the reader opens the gate");
         assert!(
             ingest.admit().is_none(),
@@ -523,12 +544,7 @@ mod tests {
             .publish(token, json!({ "battery": 1 }))
             .expect("publishes");
         nanos.store(100 * MS, Ordering::SeqCst);
-        let reader = {
-            let state = Arc::clone(&ingest.state);
-            let clock = ingest.clock.clone();
-            tokio::spawn(async move { state.next_snapshot(&clock).await })
-        };
-        tokio::task::yield_now().await;
+        let reader = waiting_reader(&ingest).await;
         assert_eq!(ingest.state.waiting.load(Ordering::SeqCst), 1);
         reader.abort();
         let _ = reader.await;
@@ -565,13 +581,8 @@ mod tests {
             .publish(token, json!({ "battery": 1 }))
             .expect("publishes");
         nanos.store(1_500 * MS, Ordering::SeqCst);
-        let reader = {
-            let state = Arc::clone(&ingest.state);
-            let clock = ingest.clock.clone();
-            tokio::spawn(async move { state.next_snapshot(&clock).await })
-        };
+        let reader = waiting_reader(&ingest).await;
         // The clock moves past the freshness bound while the reader waits.
-        tokio::task::yield_now().await;
         nanos.store(2_001 * MS, Ordering::SeqCst);
         let refusal = reader
             .await

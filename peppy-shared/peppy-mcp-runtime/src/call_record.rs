@@ -9,13 +9,16 @@
 //! The record keeps time on a wall clock of its own, also on an endpoint
 //! whose clock is simulated time.
 
+use crate::bridge::time_to_rfc3339;
 use crate::clock::Clock;
+use crate::server::read_only_annotations;
 use crate::tasks::ActionExit;
 use rmcp::model::{Implementation, JsonObject, Tool};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, UNIX_EPOCH};
 
 /// The most bytes of a call's arguments an entry keeps as sent; larger
 /// arguments are kept as their size alone.
@@ -156,7 +159,7 @@ impl CallRecord {
                                 "required": ["name", "version"],
                             },
                             "tool": { "type": "string" },
-                            "arguments": { "type": ["object", "null"], "description": "The arguments as sent, when their JSON is 1024 bytes or fewer; else null." },
+                            "arguments": { "type": ["object", "null"], "description": format!("The arguments as sent, when their JSON is {ARGUMENTS_KEPT_BYTES} bytes or fewer; else null.") },
                             "arguments_bytes": { "type": "integer", "description": "The size of the arguments' JSON, bytes." },
                             "outcome": { "type": "string", "enum": ["running", "completed", "failed", "cancelled", "refused"] },
                             "success": { "type": ["boolean", "null"], "description": "The result's `success` member of a completed call that has one: a completed call with success false ran to its end and reports a failure." },
@@ -173,11 +176,7 @@ impl CallRecord {
             unreachable!("the output schema is an object");
         };
         Tool::new(self.name.clone(), self.description.clone(), Arc::new(input))
-            .with_annotations(
-                rmcp::model::ToolAnnotations::default()
-                    .read_only(true)
-                    .destructive(false),
-            )
+            .with_annotations(read_only_annotations())
             .with_raw_output_schema(Arc::new(output))
     }
 
@@ -195,7 +194,7 @@ impl CallRecord {
         let arguments = (arguments_json.len() <= ARGUMENTS_KEPT_BYTES)
             .then(|| Value::Object(arguments.clone()));
         let call = Arc::new(Mutex::new(RecordedCall {
-            started_at: rfc3339(now),
+            started_at: time_to_rfc3339(UNIX_EPOCH + Duration::from_nanos(now)),
             client,
             tool: tool.to_string(),
             arguments,
@@ -303,49 +302,12 @@ impl Drop for Recording {
     }
 }
 
-/// Nanoseconds since the Unix epoch as an RFC 3339 instant in UTC, to the
-/// millisecond.
-fn rfc3339(nanos: u64) -> String {
-    let seconds = nanos / 1_000_000_000;
-    let millis = (nanos % 1_000_000_000) / 1_000_000;
-    let (year, month, day) = civil_from_days(seconds / 86_400);
-    let of_day = seconds % 86_400;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}Z",
-        of_day / 3600,
-        (of_day % 3600) / 60,
-        of_day % 60
-    )
-}
-
-/// The proleptic Gregorian date of a day count since 1970-01-01, by the
-/// civil-from-days algorithm of Howard Hinnant.
-fn civil_from_days(days: u64) -> (u64, u64, u64) {
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let day_of_era = z - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 {
-        month_index + 3
-    } else {
-        month_index - 9
-    };
-    let year = year_of_era + era * 400 + u64::from(month <= 2);
-    (year, month, day)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::test_support::manual_clock;
+    use crate::clock::test_support::{MS, manual_clock};
     use crate::tasks::CancelledGoal;
     use std::sync::atomic::{AtomicU64, Ordering};
-
-    const MS: u64 = 1_000_000;
 
     fn record(keep: u32) -> (CallRecord, Arc<AtomicU64>) {
         let (clock, nanos) = manual_clock();
@@ -373,17 +335,6 @@ mod tests {
     }
 
     #[test]
-    fn instants_are_rfc3339_in_utc() {
-        assert_eq!(rfc3339(0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(
-            rfc3339(1_790_784_000 * 1_000_000_000 + 250 * MS),
-            "2026-09-30T16:00:00.250Z"
-        );
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
-    }
-
-    #[test]
     fn a_call_is_recorded_from_its_start_to_its_end_newest_first() {
         let (record, nanos) = record(10);
         nanos.store(1_000 * MS, Ordering::SeqCst);
@@ -407,7 +358,7 @@ mod tests {
         assert_eq!(calls[0]["client"], Value::Null);
         assert_eq!(calls[0]["success"], Value::Null);
         assert_eq!(calls[0]["duration_ms"], Value::Null);
-        assert_eq!(calls[0]["started_at"], "1970-01-01T00:00:02.000Z");
+        assert_eq!(calls[0]["started_at"], "1970-01-01T00:00:02.000000000Z");
         assert_eq!(calls[1]["tool"], "robot.move_arm");
         assert_eq!(calls[1]["outcome"], "completed");
         assert_eq!(calls[1]["success"], false);

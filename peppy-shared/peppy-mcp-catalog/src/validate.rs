@@ -17,7 +17,7 @@ use crate::document::{
     ArgumentName, ExposureSurface, McpExposure, PictureTool, ROBOT_ARGUMENT, RobotSurface,
     ServiceExposure, TopicExposure,
 };
-use crate::policy::{GoalBound, ImageFieldMap};
+use crate::policy::{GoalBound, ImageFieldMap, ImageRepresentation};
 use crate::schema::{
     MaxSerializedSize, empty_object_schema, integer_bounds, max_serialized_json_bytes,
     message_format_to_json_schema, without_root_member,
@@ -537,11 +537,7 @@ fn check_topic(
 
     check_topic_size_policy(&context, topic, format, violations);
 
-    let schema = schema?;
-    let schema = match &topic.representation {
-        Some(representation) => without_root_member(schema, &representation.fields.data),
-        None => schema,
-    };
+    let schema = document_schema(schema?, topic.representation.as_ref());
     Some(ResourceEntry {
         name: topic.resource.as_str().to_string(),
         uri: format!("peppy://resource/{}", topic.resource),
@@ -564,6 +560,15 @@ fn check_topic(
 /// payload is bounded is read from the message format alone: an image
 /// representation changes the content a client sees, not the format the
 /// bound is computed from.
+/// The schema of what a member's message leaves as the document: the
+/// whole message, less the member a representation shows as the picture.
+fn document_schema(schema: Value, representation: Option<&ImageRepresentation>) -> Value {
+    match representation {
+        Some(representation) => without_root_member(schema, &representation.fields.data),
+        None => schema,
+    }
+}
+
 fn check_topic_size_policy(
     context: &str,
     topic: &TopicExposure,
@@ -649,10 +654,7 @@ fn check_service(
         &mut input_schema,
         violations,
     );
-    let output_schema = match &service.representation {
-        Some(representation) => without_root_member(output_schema, &representation.fields.data),
-        None => output_schema,
-    };
+    let output_schema = document_schema(output_schema, service.representation.as_ref());
     Some(ToolEntry {
         name: service.tool.as_str().to_string(),
         description: service.description.clone(),

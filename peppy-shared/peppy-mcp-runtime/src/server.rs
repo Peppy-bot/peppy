@@ -533,8 +533,8 @@ fn annotations_for(operation: ServiceOperation) -> ToolAnnotations {
 }
 
 /// The annotations of a tool that observes and changes nothing: a read-only
-/// service, a picture tool, the listing tool.
-fn read_only_annotations() -> ToolAnnotations {
+/// service, a picture tool, the listing tool, the record tool.
+pub(crate) fn read_only_annotations() -> ToolAnnotations {
     ToolAnnotations::default()
         .read_only(true)
         .destructive(false)
@@ -784,18 +784,16 @@ impl ExposureServer {
     }
 
     /// The recording of a call of `tool` by `client`: an entry of the call
-    /// record when the bundle keeps one and the tool is one it records,
-    /// nothing otherwise.
+    /// record when the bundle keeps one, nothing otherwise.
     fn record_call(
         &self,
-        recorded: bool,
         client: Option<ClientIdentity>,
         tool: &str,
         arguments: &JsonObject,
     ) -> Recording {
         match &self.state.record {
-            Some(record) if recorded => record.start(client, tool, arguments),
-            _ => Recording::unkept(),
+            Some(record) => record.start(client, tool, arguments),
+            None => Recording::unkept(),
         }
     }
 
@@ -830,12 +828,11 @@ impl ExposureServer {
                 None,
             ));
         };
-        let mut recording = self.record_call(
-            tool.entry.operation == ServiceOperation::Mutating,
-            client,
-            name,
-            &arguments,
-        );
+        // The record keeps the calls that change something.
+        let mut recording = match tool.entry.operation {
+            ServiceOperation::Mutating => self.record_call(client, name, &arguments),
+            ServiceOperation::ReadOnly => Recording::unkept(),
+        };
         let call = self.prepared_call(
             name,
             &tool.validator,
@@ -916,7 +913,7 @@ impl ExposureServer {
         arguments: JsonObject,
         client: Option<ClientIdentity>,
     ) -> Result<CreateTaskResult, McpError> {
-        let mut recording = self.record_call(true, client, &task.entry.name, &arguments);
+        let mut recording = self.record_call(client, &task.entry.name, &arguments);
         let call = self.prepared_call(
             &task.entry.name,
             &task.validator,
@@ -961,7 +958,7 @@ impl ExposureServer {
         cancel: tokio_util::sync::CancellationToken,
         progress: Option<ProgressReporter>,
     ) -> Result<CallToolResult, McpError> {
-        let mut recording = self.record_call(true, client, &task.entry.name, &arguments);
+        let mut recording = self.record_call(client, &task.entry.name, &arguments);
         if task.entry.confirmation_required {
             let refusal = confirmation_needs_the_tasks_extension(&task.entry.name);
             recording.refused(refusal.message.to_string());
@@ -1006,15 +1003,11 @@ impl ExposureServer {
         record: &CallRecord,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
-        if !arguments.is_empty() {
-            return Err(McpError::invalid_params(
-                format!(
-                    "`{}` takes no arguments; it lists the last calls of this endpoint",
-                    record.name()
-                ),
-                None,
-            ));
-        }
+        refuse_arguments(
+            record.name(),
+            "lists the last calls of this endpoint",
+            &arguments,
+        )?;
         Ok(CallToolResult::structured(record.answer()))
     }
 }
@@ -1432,15 +1425,11 @@ impl ExposureServer {
         fleet: &FleetRuntime,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
-        if !arguments.is_empty() {
-            return Err(McpError::invalid_params(
-                format!(
-                    "`{}` takes no arguments; it lists every robot of the stack",
-                    fleet.catalog.list.name
-                ),
-                None,
-            ));
-        }
+        refuse_arguments(
+            &fleet.catalog.list.name,
+            "lists every robot of the stack",
+            &arguments,
+        )?;
         let snapshot = fleet.fleet();
         let entries = snapshot
             .robot_names()
@@ -1528,6 +1517,18 @@ fn take_string(fields: &mut JsonObject, name: &str) -> String {
         Some(Value::String(value)) => value,
         _ => unreachable!("the input schema requires `{name}` as a string"),
     }
+}
+
+/// The refusal of arguments to `tool`, which takes none, `purpose` saying
+/// what the tool does instead.
+fn refuse_arguments(tool: &str, purpose: &str, arguments: &JsonObject) -> Result<(), McpError> {
+    if arguments.is_empty() {
+        return Ok(());
+    }
+    Err(McpError::invalid_params(
+        format!("`{tool}` takes no arguments; it {purpose}"),
+        None,
+    ))
 }
 
 /// A tool result held to the entry's `max_result_bytes`.
@@ -1812,7 +1813,7 @@ impl ServerHandler for ExposureServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::test_support::manual_clock;
+    use crate::clock::test_support::{MS, manual_clock};
     use crate::tasks::CancelledGoal;
     use rmcp::model::ErrorCode;
     use std::sync::atomic::Ordering;
@@ -3959,7 +3960,6 @@ mod tests {
         assert!(info.capabilities.tools.is_some());
     }
 
-    const MS: u64 = 1_000_000;
     const STATUS_URI: &str = "peppy://resource/front_camera.status";
 
     fn publish_status(server: &ExposureServer, battery: u32) {
@@ -4210,16 +4210,21 @@ mod tests {
     /// The builder of a record server, on a wall clock the test drives,
     /// with every handler registered; a test registers its own handler of
     /// a name over the one here.
-    fn record_builder() -> (ExposureServerBuilder, Arc<std::sync::atomic::AtomicU64>) {
-        let (clock, nanos) = manual_clock();
-        let builder = ExposureServer::builder(record_bundle())
-            .with_wall_clock(clock)
+    /// The builder of `bundle` with the handlers of every member of
+    /// `record_bundle`.
+    fn record_builder_of(bundle: ExposureBundle) -> ExposureServerBuilder {
+        ExposureServer::builder(bundle)
             .with_tool("front_camera.set_brightness", brightness_handler)
             .with_tool("front_camera.get_brightness", |_call: ToolCall| async {
                 Ok(json!({ "value": 3 }))
             })
             .with_task("recorder.record_episode", record_handler)
-            .with_task("recorder.resume_session", resume_handler);
+            .with_task("recorder.resume_session", resume_handler)
+    }
+
+    fn record_builder() -> (ExposureServerBuilder, Arc<std::sync::atomic::AtomicU64>) {
+        let (clock, nanos) = manual_clock();
+        let builder = record_builder_of(record_bundle()).with_wall_clock(clock);
         (builder, nanos)
     }
 
@@ -4289,11 +4294,7 @@ mod tests {
         let mut bundle = record_bundle();
         bundle.call_record.as_mut().expect("a record").name =
             "front_camera.set_brightness".to_string();
-        let error = ExposureServer::builder(bundle)
-            .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_tool("front_camera.get_brightness", brightness_handler)
-            .with_task("recorder.record_episode", record_handler)
-            .with_task("recorder.resume_session", resume_handler)
+        let error = record_builder_of(bundle)
             .build()
             .expect_err("the record tool claims a taken name");
         assert_eq!(
@@ -4329,7 +4330,7 @@ mod tests {
         assert_eq!(
             calls[0],
             json!({
-                "started_at": "1970-01-01T00:00:01.000Z",
+                "started_at": "1970-01-01T00:00:01.000000000Z",
                 "client": { "name": "claude-code", "version": "2.1" },
                 "tool": "front_camera.set_brightness",
                 "arguments": { "value": 12 },
@@ -4445,8 +4446,8 @@ mod tests {
         assert_eq!(calls[0]["success"], false);
         assert_eq!(calls[0]["message"], "no session to resume");
         assert_eq!(calls[0]["duration_ms"], 250);
-        assert_eq!(calls[0]["started_at"], "1970-01-01T00:00:06.000Z");
-        assert_eq!(calls[1]["started_at"], "1970-01-01T00:00:05.000Z");
+        assert_eq!(calls[0]["started_at"], "1970-01-01T00:00:06.000000000Z");
+        assert_eq!(calls[1]["started_at"], "1970-01-01T00:00:05.000000000Z");
     }
 
     #[tokio::test(start_paused = true)]
