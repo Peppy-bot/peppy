@@ -59,13 +59,13 @@ use std::path::{Path, PathBuf};
 /// File name of the global daemon config under `~/.peppy/conf`.
 pub const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
 
-/// The backend resource-server URL for this build: the local dev backend in
-/// debug builds, the prod backend in release builds. The single source of truth
+/// The backend resource-server URL for this build: the dev backend in debug
+/// builds, the prod backend in release builds. The single source of truth
 /// for both the seeded `resource_servers` block and the built-in fallback the
 /// `peppy platform` commands resolve when no `--api-url` /
 /// `PEPPY_API_URL` override is given.
 #[cfg(debug_assertions)]
-pub const DEFAULT_API_URL: &str = "http://127.0.0.1:3000";
+pub const DEFAULT_API_URL: &str = "https://api.dev.peppy.bot";
 #[cfg(not(debug_assertions))]
 pub const DEFAULT_API_URL: &str = "https://api.peppy.bot";
 

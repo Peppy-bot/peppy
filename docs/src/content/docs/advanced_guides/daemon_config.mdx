@@ -214,7 +214,7 @@ The `lifecycle` block tunes the two windows Peppy uses to guarantee that no node
 
 This block holds the platform-backend base URL the CLI platform commands talk to. The daemon ignores it; the `peppy platform` commands read it. See [Platform](/advanced_guides/platform/) for the sign-in and enrollment flows.
 
-- **`api`** (default `https://api.peppy.bot` in release builds, `http://127.0.0.1:3000` in debug): the backend the auth commands talk to. There is no dev/prod selection at runtime; the file stores exactly the build's backend.
+- **`api`** (default `https://api.peppy.bot` in release builds, `https://api.dev.peppy.bot` in debug): the backend the auth commands talk to. There is no dev/prod selection at runtime; the file stores exactly the build's backend.
 
 The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then `api` here. An empty block falls back to the build's default backend. In release builds, plain `http` is accepted only for local backends (loopback / `*.localhost`) and any other host must be `https`, validated when the command runs; debug builds accept remote plain `http` with a warning.
 
@@ -229,6 +229,6 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 | `zenoh.external.endpoint` | No default | Required inside `external`; `tcp/<dial-host>:<port>`; no wildcard host | Network endpoint of the operator-run router. Peppy dials it without changing its federation or managing its lifecycle. |
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
-| `resource_servers.api` | `https://api.peppy.bot` (release), `http://127.0.0.1:3000` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
+| `resource_servers.api` | `https://api.peppy.bot` (release), `https://api.dev.peppy.bot` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
 
 Both Zenoh variants at once, a value outside its constraint, an unsupported `zenoh.external.endpoint`, an unknown `zenoh.managed.local_nodes_topology` value, an unknown key inside `zenoh` or either variant, or a syntax error all stop the operation that loaded the configuration with an error pointing at the problem. An out-of-range value names the offending field, and a parse error reports the bad value or its position, so a typo can never silently revert your stack to defaults. Unknown top-level keys remain accepted and preserved.
