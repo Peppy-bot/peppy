@@ -17,10 +17,10 @@ use crate::commands::platform::{
 };
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use auth::client::{PeerStatus, RouterPeer};
+use auth::client::{PeerStatus, PlatformApi, RouterPeer};
 use auth::csr::{self, PeerName};
 use auth::enrollment::{self, EnrollmentBundle, IssuedMaterial};
-use auth::{AuthError, Problem, ProblemKind, client, storage};
+use auth::{AuthError, Problem, ProblemKind, storage};
 
 pub struct EnrollCommand {
     pub api_url: Option<String>,
@@ -64,12 +64,10 @@ impl Command for EnrollCommand {
                 .map(|s| s.core_node_name.as_str()),
             session.config.core_node_name.as_deref(),
         )?;
-        let mut cred = session.credential()?;
+        let mut api = session.api()?;
         let context = session.context()?;
         let selection = select::resolve_project(
-            &session.http,
-            &session.api_url,
-            &mut cred,
+            &mut api,
             self.workspace.as_deref(),
             self.project.as_deref(),
             context.as_ref(),
@@ -91,18 +89,13 @@ impl Command for EnrollCommand {
         }
 
         let identity = csr::generate_peer_identity(&name)?;
-        let enrolled = match client::enroll_peer(
-            &session.http,
-            &session.api_url,
-            &mut cred,
+        let enrolled = match api.enroll_peer(
             &selection.workspace.id,
             &selection.project.id,
             &identity.csr_pem,
         ) {
             Ok(enrolled) => enrolled,
-            Err(error) => {
-                return Err(explain_refusal(&session, &mut cred, &selection, error));
-            }
+            Err(error) => return Err(explain_refusal(&mut api, &selection, error)),
         };
         let bundle = EnrollmentBundle {
             peer_key_pem: identity.private_key_pem,
@@ -134,10 +127,7 @@ impl Command for EnrollCommand {
         // platform. Best effort: a failure here leaves a stale peer to remove
         // from the web app, never a machine without an enrollment.
         if let Some(old) = existing {
-            match client::remove_peer(
-                &session.http,
-                &session.api_url,
-                &mut cred,
+            match api.remove_peer(
                 &old.document.workspace_id,
                 &old.document.project_id,
                 &old.document.peer_id,
@@ -162,8 +152,7 @@ impl Command for EnrollCommand {
 /// with a remedy in the CLI are matched on the kind of the problem; every
 /// other refusal prints as the platform sent it.
 fn explain_refusal(
-    session: &PlatformSession,
-    cred: &mut auth::Credential,
+    api: &mut PlatformApi,
     selection: &select::Selection,
     error: AuthError,
 ) -> Error {
@@ -177,14 +166,9 @@ fn explain_refusal(
             // the list only explains it.
             let peers = match problem.pending_removals {
                 Some(_) => None,
-                None => client::list_peers(
-                    &session.http,
-                    &session.api_url,
-                    cred,
-                    &selection.workspace.id,
-                    &selection.project.id,
-                )
-                .ok(),
+                None => api
+                    .list_peers(&selection.workspace.id, &selection.project.id)
+                    .ok(),
             };
             Error::Auth(full_router_message(
                 problem,

@@ -40,7 +40,7 @@ use core_node_api::{NodeStage, SerializedNodeGraph};
 use daemon_config::consts::PeppyDirs;
 use peppylib::core_node::transport::poll;
 
-use auth::{FederationIdentity, http::HttpClient, profile, storage};
+use auth::{FederationIdentity, PlatformApi, http::HttpClient, profile, storage};
 
 use super::Command;
 use crate::commands::CALLER_INSTANCE_ID;
@@ -162,10 +162,11 @@ impl PlatformSession {
         })
     }
 
-    /// The cached session as a ready credential, or the not-authenticated error
-    /// naming `peppy platform login`.
-    pub(crate) fn credential(&self) -> Result<auth::Credential> {
-        Ok(auth::resolver::resolve(&self.creds_path, &self.http)?)
+    /// The platform API with the bearer of the cached session, or the
+    /// not-authenticated error naming `peppy platform login`.
+    pub(crate) fn api(&self) -> Result<PlatformApi> {
+        let credential = auth::resolver::resolve(&self.creds_path, &self.http)?;
+        Ok(PlatformApi::new(&self.http, &self.api_url, credential))
     }
 
     /// This machine's enrollment, `None` when it is not enrolled. A present
@@ -212,16 +213,14 @@ impl PlatformSession {
     /// Returns the enrollment with it, for the command to mark this machine.
     pub(crate) fn resolve_target(
         &self,
-        cred: &mut auth::Credential,
+        api: &mut PlatformApi,
         workspace_flag: Option<&str>,
         project_flag: Option<&str>,
     ) -> Result<(select::Target, Option<auth::Enrollment>)> {
         let enrollment = self.enrollment()?;
         let context = self.context()?;
         let target = select::resolve_target(
-            &self.http,
-            &self.api_url,
-            cred,
+            api,
             workspace_flag,
             project_flag,
             context.as_ref(),

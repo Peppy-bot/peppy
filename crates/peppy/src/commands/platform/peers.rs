@@ -12,7 +12,7 @@ use crate::commands::platform::{PlatformSession, date, select};
 use crate::commands::table::render_columns;
 use crate::context::AppContext;
 use crate::error::Result;
-use auth::client::{self, PeerStatus, RouterPeer};
+use auth::client::{PeerStatus, RouterPeer};
 
 pub struct PeersCommand {
     pub api_url: Option<String>,
@@ -26,20 +26,12 @@ pub struct PeersCommand {
 impl Command for PeersCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
-        let mut cred = session.credential()?;
-        let (target, enrollment) = session.resolve_target(
-            &mut cred,
-            self.workspace.as_deref(),
-            self.project.as_deref(),
-        )?;
-        let peers = client::list_peers(
-            &session.http,
-            &session.api_url,
-            &mut cred,
-            &target.workspace_id,
-            &target.project_id,
-        )
-        .map_err(|error| select::refusal_on(&target, error))?;
+        let mut api = session.api()?;
+        let (target, enrollment) =
+            session.resolve_target(&mut api, self.workspace.as_deref(), self.project.as_deref())?;
+        let peers = api
+            .list_peers(&target.workspace_id, &target.project_id)
+            .map_err(|error| select::refusal_on(&target, error))?;
         let select::Target {
             workspace_id,
             project_id,

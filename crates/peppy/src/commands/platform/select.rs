@@ -11,10 +11,9 @@
 
 use std::io::{BufRead, IsTerminal};
 
-use auth::client::{self, Project, Workspace};
+use auth::client::{PlatformApi, Project, Workspace};
 use auth::context::{CONTEXT_VERSION, Named, PlatformContext, project_label};
 use auth::enrollment::EnrollmentDocument;
-use auth::http::HttpClient;
 use auth::{AuthError, storage};
 
 use crate::commands::confirm::choose_prompt;
@@ -39,14 +38,12 @@ pub enum Ask {
 }
 
 pub(crate) fn resolve_workspace(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut auth::Credential,
+    api: &mut PlatformApi,
     flag: Option<&str>,
     default_workspace_id: Option<&str>,
     ask: &mut Ask,
 ) -> Result<Workspace> {
-    let workspaces = client::list_workspaces(http, api_url, cred)?;
+    let workspaces = api.list_workspaces()?;
     pick(
         Candidates {
             what: "workspace",
@@ -65,18 +62,14 @@ pub(crate) fn resolve_workspace(
 }
 
 pub(crate) fn resolve_project(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut auth::Credential,
+    api: &mut PlatformApi,
     workspace_flag: Option<&str>,
     project_flag: Option<&str>,
     context: Option<&PlatformContext>,
     ask: &mut Ask,
 ) -> Result<Selection> {
     let workspace = resolve_workspace(
-        http,
-        api_url,
-        cred,
+        api,
         workspace_flag,
         context.map(|context| context.workspace.id.as_str()),
         ask,
@@ -86,29 +79,19 @@ pub(crate) fn resolve_project(
     let default_project_id = context
         .filter(|context| context.workspace.id == workspace.id)
         .map(|context| context.project.id.as_str());
-    let project = resolve_project_in(
-        http,
-        api_url,
-        cred,
-        &workspace,
-        project_flag,
-        default_project_id,
-        ask,
-    )?;
+    let project = resolve_project_in(api, &workspace, project_flag, default_project_id, ask)?;
     Ok(Selection { workspace, project })
 }
 
 /// Picks one project of `workspace`.
 fn resolve_project_in(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut auth::Credential,
+    api: &mut PlatformApi,
     workspace: &Workspace,
     flag: Option<&str>,
     default_project_id: Option<&str>,
     ask: &mut Ask,
 ) -> Result<Project> {
-    let projects = active_projects(http, api_url, cred, &workspace.id)?;
+    let projects = active_projects(api, &workspace.id)?;
     pick(
         Candidates {
             what: "project",
@@ -133,37 +116,22 @@ fn resolve_project_in(
 /// in.
 pub(crate) fn select_context(
     session: &PlatformSession,
-    cred: &mut auth::Credential,
+    api: &mut PlatformApi,
     workspace_flag: Option<&str>,
     project_flag: Option<&str>,
     ask: &mut Ask,
 ) -> Result<PlatformContext> {
     let subject = match session.subject() {
         Some(subject) => subject,
-        None => client::get_me(&session.http, &session.api_url, cred)?.sub,
+        None => api.get_me()?.sub,
     };
     let current = session.context().ok().flatten();
     let default_workspace_id = current
         .as_ref()
         .filter(|_| workspace_flag.is_none() && project_flag.is_some())
         .map(|context| context.workspace.id.as_str());
-    let workspace = resolve_workspace(
-        &session.http,
-        &session.api_url,
-        cred,
-        workspace_flag,
-        default_workspace_id,
-        ask,
-    )?;
-    let project = resolve_project_in(
-        &session.http,
-        &session.api_url,
-        cred,
-        &workspace,
-        project_flag,
-        None,
-        ask,
-    )?;
+    let workspace = resolve_workspace(api, workspace_flag, default_workspace_id, ask)?;
+    let project = resolve_project_in(api, &workspace, project_flag, None, ask)?;
     let selection = Selection { workspace, project };
     Ok(PlatformContext {
         version: CONTEXT_VERSION,
@@ -235,9 +203,7 @@ fn decide_target<'a>(
 /// stops and lists the projects: it never selects a project for the person,
 /// because the commands that use this act on every peer of a router.
 pub(crate) fn resolve_target(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut auth::Credential,
+    api: &mut PlatformApi,
     workspace_flag: Option<&str>,
     project_flag: Option<&str>,
     context: Option<&PlatformContext>,
@@ -245,15 +211,8 @@ pub(crate) fn resolve_target(
 ) -> Result<Target> {
     match decide_target(workspace_flag, project_flag, context, enrollment) {
         TargetDecision::Flags => {
-            let selection = resolve_project(
-                http,
-                api_url,
-                cred,
-                workspace_flag,
-                project_flag,
-                context,
-                &mut Ask::Never,
-            )?;
+            let selection =
+                resolve_project(api, workspace_flag, project_flag, context, &mut Ask::Never)?;
             Ok(Target {
                 label: project_label(
                     &selection.project.name,
@@ -283,7 +242,7 @@ pub(crate) fn resolve_target(
         TargetDecision::Unnamed => {
             // The list only helps the person to name a project. When it cannot
             // be read, the error still says what to do.
-            let listing = project_listing(http, api_url, cred)
+            let listing = project_listing(api)
                 .unwrap_or_else(|error| format!("  (the list could not be read: {error})"));
             Err(Error::ExecutionFailed(format!(
                 "no project is selected: run `peppy platform configure` to select one, or pass \
@@ -313,13 +272,9 @@ pub(crate) fn refusal_on(target: &Target, error: AuthError) -> Error {
 
 /// The projects of `workspace_id` that are not archived. An archived project
 /// owns no router, so no command acts on it.
-fn active_projects(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut auth::Credential,
-    workspace_id: &str,
-) -> Result<Vec<Project>> {
-    Ok(client::list_projects(http, api_url, cred, workspace_id)?
+fn active_projects(api: &mut PlatformApi, workspace_id: &str) -> Result<Vec<Project>> {
+    Ok(api
+        .list_projects(workspace_id)?
         .into_iter()
         .filter(|project| !project.is_archived())
         .collect())
@@ -327,15 +282,11 @@ fn active_projects(
 
 /// Every workspace of the account with its projects that are not archived,
 /// in the order the platform lists them.
-pub(crate) fn active_project_tree(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut auth::Credential,
-) -> Result<Vec<(Workspace, Vec<Project>)>> {
-    client::list_workspaces(http, api_url, cred)?
+pub(crate) fn active_project_tree(api: &mut PlatformApi) -> Result<Vec<(Workspace, Vec<Project>)>> {
+    api.list_workspaces()?
         .into_iter()
         .map(|workspace| {
-            let projects = active_projects(http, api_url, cred, &workspace.id)?;
+            let projects = active_projects(api, &workspace.id)?;
             Ok((workspace, projects))
         })
         .collect()
@@ -343,12 +294,8 @@ pub(crate) fn active_project_tree(
 
 /// Every project of every workspace of the account that is not archived, one
 /// per line, for an error that asks the person to name one.
-fn project_listing(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut auth::Credential,
-) -> Result<String> {
-    let lines: Vec<String> = active_project_tree(http, api_url, cred)?
+fn project_listing(api: &mut PlatformApi) -> Result<String> {
+    let lines: Vec<String> = active_project_tree(api)?
         .iter()
         .flat_map(|(workspace, projects)| {
             projects.iter().map(move |project| {

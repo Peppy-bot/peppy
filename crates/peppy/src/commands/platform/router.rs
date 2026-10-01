@@ -18,7 +18,7 @@ use crate::commands::Command;
 use crate::commands::platform::{PlatformSession, ask_to_continue, date, select};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use auth::client::{self, PeerStatus, RouterPhase, RouterStatus};
+use auth::client::{PeerStatus, PlatformApi, RouterPhase, RouterStatus};
 use auth::{AuthError, ProblemKind};
 
 #[derive(Subcommand)]
@@ -104,21 +104,13 @@ impl From<RouterCommands> for RouterCommand {
 impl Command for RouterCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
-        let mut cred = session.credential()?;
-        let (target, _) = session.resolve_target(
-            &mut cred,
-            self.workspace.as_deref(),
-            self.project.as_deref(),
-        )?;
+        let mut api = session.api()?;
+        let (target, _) =
+            session.resolve_target(&mut api, self.workspace.as_deref(), self.project.as_deref())?;
 
-        let before = client::router_status(
-            &session.http,
-            &session.api_url,
-            &mut cred,
-            &target.workspace_id,
-            &target.project_id,
-        )
-        .map_err(|error| select::refusal_on(&target, error))?;
+        let before = api
+            .router_status(&target.workspace_id, &target.project_id)
+            .map_err(|error| select::refusal_on(&target, error))?;
         print!("{}", describe(&target.label, &before));
 
         // A stopped router has nothing to restart. Say so before the question,
@@ -137,17 +129,11 @@ impl Command for RouterCommand {
         }
 
         let request = match self.action {
-            RouterAction::Restart => client::restart_router,
-            RouterAction::Start => client::start_router,
+            RouterAction::Restart => PlatformApi::restart_router,
+            RouterAction::Start => PlatformApi::start_router,
         };
-        let after = request(
-            &session.http,
-            &session.api_url,
-            &mut cred,
-            &target.workspace_id,
-            &target.project_id,
-        )
-        .map_err(|error| refusal(error, self.action, &target))?;
+        let after = request(&mut api, &target.workspace_id, &target.project_id)
+            .map_err(|error| refusal(error, self.action, &target))?;
         println!(
             "The platform accepted the {}. The router is {}.",
             self.action.verb(),

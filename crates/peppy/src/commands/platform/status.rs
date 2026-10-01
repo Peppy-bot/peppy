@@ -15,7 +15,7 @@ use crate::commands::platform::router::pending_change_lines;
 use crate::commands::platform::{PlatformSession, date_of, federation_is_managed};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use auth::client::{self, PeerStatus, RouterPhase, RouterStatus};
+use auth::client::{PeerStatus, RouterPhase, RouterStatus};
 use auth::enrollment::{Enrollment, EnrollmentDocument};
 use auth::{FederationIdentity, storage};
 
@@ -147,19 +147,13 @@ fn platform_report(
     session: &PlatformSession,
     enrollment: &Enrollment,
 ) -> Result<Option<PlatformReport>> {
-    let mut cred = match session.credential() {
-        Ok(cred) => cred,
+    let mut api = match session.api() {
+        Ok(api) => api,
         Err(Error::AuthEngine(auth::AuthError::NotAuthenticated)) => return Ok(None),
         Err(e) => return Err(e),
     };
     let document = &enrollment.document;
-    let router = client::router_status(
-        &session.http,
-        &session.api_url,
-        &mut cred,
-        &document.workspace_id,
-        &document.project_id,
-    )?;
+    let router = api.router_status(&document.workspace_id, &document.project_id)?;
     // The router read lists every enrolled peer with its status, so this
     // peer's status is in it, when the platform still lists the peer.
     let peer_status = router

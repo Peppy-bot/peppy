@@ -101,10 +101,10 @@ impl Command for ContextCommand {
             ContextAction::Show { json } => show(&session, json),
             ContextAction::List { json } => list(&session, json),
             ContextAction::Use { workspace, project } => {
-                let mut cred = session.credential()?;
+                let mut api = session.api()?;
                 let context = select_and_save(
                     &session,
-                    &mut cred,
+                    &mut api,
                     workspace.as_deref(),
                     project.as_deref(),
                     &mut self.ask,
@@ -136,9 +136,9 @@ fn show(session: &PlatformSession, json: bool) -> Result<()> {
 }
 
 fn list(session: &PlatformSession, json: bool) -> Result<()> {
-    let mut cred = session.credential()?;
+    let mut api = session.api()?;
     let context = session.context()?;
-    let tree = select::active_project_tree(&session.http, &session.api_url, &mut cred)?;
+    let tree = select::active_project_tree(&mut api)?;
     if json {
         println!("{}", tree_json(&tree, context.as_ref()));
         return Ok(());

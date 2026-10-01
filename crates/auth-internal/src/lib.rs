@@ -17,12 +17,13 @@
 //!
 //! Later commands resolve a bearer via [`resolver`] (the cached session,
 //! refreshed proactively when it is about to expire) and call the backend
-//! through [`client`], which refreshes once on a `401`. Signing out revokes
-//! both tokens at the issuer ([`revoke`]).
+//! through [`client::PlatformApi`], which refreshes once on a `401`. Signing
+//! out revokes both tokens at the issuer ([`revoke`]).
 //!
 //! Joining a project's cloud router is a separate step from signing in:
 //! [`csr`] mints this machine's key pair and certificate signing request,
-//! [`client::enroll_peer`] exchanges the request for a signed certificate, and
+//! [`client::PlatformApi::enroll_peer`] exchanges the request for a signed
+//! certificate, and
 //! [`enrollment`] persists the result under `~/.peppy/conf/peer/`. The daemon
 //! reads that directory at startup. It keeps the certificate valid with
 //! [`renewal`], which asks the platform for a new leaf with the bearer of the
@@ -64,7 +65,7 @@ pub mod storage;
 pub mod test_support;
 
 pub use cli_config::CliConfig;
-pub use client::Principal;
+pub use client::{PlatformApi, Principal};
 pub use context::PlatformContext;
 pub use enrollment::{
     Enrollment, EnrollmentBundle, EnrollmentDocument, FederationIdentity, IssuedMaterial,

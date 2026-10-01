@@ -14,7 +14,7 @@ use crate::commands::platform::context::enrollment_note;
 use crate::commands::platform::select::{self, Ask};
 use crate::context::AppContext;
 use crate::error::Result;
-use auth::PlatformContext;
+use auth::{PlatformApi, PlatformContext};
 
 pub struct ConfigureCommand {
     pub api_url: Option<String>,
@@ -30,10 +30,10 @@ pub struct ConfigureCommand {
 impl Command for ConfigureCommand {
     fn execute(mut self, _ctx: &Arc<AppContext>) -> Result<()> {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
-        let mut cred = session.credential()?;
+        let mut api = session.api()?;
         let context = select_and_save(
             &session,
-            &mut cred,
+            &mut api,
             self.workspace.as_deref(),
             self.project.as_deref(),
             &mut self.ask,
@@ -47,12 +47,12 @@ impl Command for ConfigureCommand {
 /// `login`, `configure` and `context use` share.
 pub(crate) fn select_and_save(
     session: &PlatformSession,
-    cred: &mut auth::Credential,
+    api: &mut PlatformApi,
     workspace_flag: Option<&str>,
     project_flag: Option<&str>,
     ask: &mut Ask,
 ) -> Result<PlatformContext> {
-    let context = select::select_context(session, cred, workspace_flag, project_flag, ask)?;
+    let context = select::select_context(session, api, workspace_flag, project_flag, ask)?;
     auth::context::save(&session.dirs, &context)?;
     Ok(context)
 }

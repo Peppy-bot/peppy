@@ -11,7 +11,7 @@ use httpmock::prelude::*;
 use secrecy::ExposeSecret;
 use serde_json::json;
 
-use auth::client::{self, PeerRemoval, PeerStatus, RouterPhase};
+use auth::client::{PeerRemoval, PeerStatus, PlatformApi, RouterPhase};
 use auth::enrollment::{self, EnrollmentBundle, IssuedMaterial, RouterEndpoint};
 use auth::storage::{self, Credentials, ProfileCreds};
 use auth::{AuthError, ProblemKind};
@@ -59,8 +59,9 @@ fn seeded_creds(server: &MockServer, expires_at: i64) -> ProfileCreds {
     }
 }
 
-/// Seeds a valid session under a tempdir and resolves it into a credential.
-fn seeded_credential(server: &MockServer) -> (tempfile::TempDir, auth::Credential) {
+/// Seeds a valid session under a tempdir, resolves it into a credential, and
+/// returns the API of `server` with it.
+fn seeded_api(server: &MockServer) -> (tempfile::TempDir, PlatformApi) {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir);
     storage::save(
@@ -72,7 +73,10 @@ fn seeded_credential(server: &MockServer) -> (tempfile::TempDir, auth::Credentia
     )
     .expect("seed creds");
     let cred = resolver::resolve(&path, &HttpClient::new()).expect("a valid session resolves");
-    (dir, cred)
+    (
+        dir,
+        PlatformApi::new(&HttpClient::new(), &server.base_url(), cred),
+    )
 }
 
 fn mock_discovery_and_refresh(server: &MockServer) -> httpmock::Mock<'_> {
@@ -141,10 +145,9 @@ fn resolver_refreshes_an_expired_session_token() {
 fn get_me_parses_principal_with_unknown_fields() {
     let server = MockServer::start();
     let _me = mock_me(&server);
-    let (_dir, mut cred) = seeded_credential(&server);
+    let (_dir, mut api) = seeded_api(&server);
 
-    let principal =
-        client::get_me(&HttpClient::new(), &server.base_url(), &mut cred).expect("get_me");
+    let principal = api.get_me().expect("get_me");
     assert_eq!(principal.sub, "user-123");
     assert_eq!(principal.kind.as_deref(), Some("human"));
     assert_eq!(principal.region.as_deref(), Some("us-east-1"));
@@ -172,16 +175,14 @@ fn a_401_refreshes_once_and_retries() {
               "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z" }
         ]));
     });
-    let (dir, mut cred) = seeded_credential(&server);
+    let (dir, mut api) = seeded_api(&server);
 
-    let workspaces = client::list_workspaces(&HttpClient::new(), &server.base_url(), &mut cred)
-        .expect("the retry succeeds");
+    let workspaces = api.list_workspaces().expect("the retry succeeds");
     assert_eq!(stale.calls(), 1);
     assert_eq!(fresh.calls(), 1);
     assert_eq!(workspaces.len(), 1);
     assert_eq!(workspaces[0].id, WORKSPACE);
     assert_eq!(workspaces[0].name, "Alice's workspace");
-    assert_eq!(cred.token.expose_secret(), "refreshed-access");
     let persisted = storage::load(&creds_path(&dir)).unwrap().session.unwrap();
     assert_eq!(persisted.refresh_token.expose_secret(), "rotated-refresh");
 }
@@ -200,11 +201,9 @@ fn projects_list_marks_archived_ones() {
               "updated_at": "2026-10-01T00:00:00Z", "archived_at": "2026-10-02T00:00:00Z" }
         ]));
     });
-    let (_dir, mut cred) = seeded_credential(&server);
+    let (_dir, mut api) = seeded_api(&server);
 
-    let projects =
-        client::list_projects(&HttpClient::new(), &server.base_url(), &mut cred, WORKSPACE)
-            .expect("list");
+    let projects = api.list_projects(WORKSPACE).expect("list");
     assert_eq!(projects.len(), 2);
     assert!(!projects[0].is_archived());
     assert!(projects[1].is_archived());
@@ -231,17 +230,15 @@ fn enrolling_a_peer_posts_the_csr_and_parses_the_material() {
             "zenoh_config": "{ connect: { endpoints: [\"tls/rtr-p.example:7447\"] } }",
         }));
     });
-    let (_dir, mut cred) = seeded_credential(&server);
+    let (_dir, mut api) = seeded_api(&server);
 
-    let enrolled = client::enroll_peer(
-        &HttpClient::new(),
-        &server.base_url(),
-        &mut cred,
-        WORKSPACE,
-        PROJECT,
-        "-----BEGIN CERTIFICATE REQUEST-----\nx\n-----END CERTIFICATE REQUEST-----\n",
-    )
-    .expect("enroll");
+    let enrolled = api
+        .enroll_peer(
+            WORKSPACE,
+            PROJECT,
+            "-----BEGIN CERTIFICATE REQUEST-----\nx\n-----END CERTIFICATE REQUEST-----\n",
+        )
+        .expect("enroll");
     assert_eq!(enroll.calls(), 1);
     assert_eq!(enrolled.peer.id, "peer-1");
     assert_eq!(
@@ -269,17 +266,11 @@ fn a_refused_enrollment_carries_the_platform_problem_detail() {
                 "detail": "this router admits 5 peers; remove one first",
             }));
     });
-    let (_dir, mut cred) = seeded_credential(&server);
+    let (_dir, mut api) = seeded_api(&server);
 
-    let err = client::enroll_peer(
-        &HttpClient::new(),
-        &server.base_url(),
-        &mut cred,
-        WORKSPACE,
-        PROJECT,
-        "csr",
-    )
-    .expect_err("422 is a refusal");
+    let err = api
+        .enroll_peer(WORKSPACE, PROJECT, "csr")
+        .expect_err("422 is a refusal");
     let AuthError::Problem(problem) = &err else {
         panic!("expected a problem, got {err:?}");
     };
@@ -306,17 +297,11 @@ fn a_refusal_carries_the_retry_after_delay() {
                 "status": 503,
             }));
     });
-    let (_dir, mut cred) = seeded_credential(&server);
+    let (_dir, mut api) = seeded_api(&server);
 
-    let err = client::enroll_peer(
-        &HttpClient::new(),
-        &server.base_url(),
-        &mut cred,
-        WORKSPACE,
-        PROJECT,
-        "csr",
-    )
-    .expect_err("503 is a refusal");
+    let err = api
+        .enroll_peer(WORKSPACE, PROJECT, "csr")
+        .expect_err("503 is a refusal");
     let AuthError::Problem(problem) = err else {
         panic!("expected a problem, got {err:?}");
     };
@@ -353,12 +338,9 @@ fn restarting_and_starting_the_router_post_with_no_body() {
         then.status(202)
             .json_body(router_status_body("provisioning"));
     });
-    let (_dir, mut cred) = seeded_credential(&server);
-    let http = HttpClient::new();
+    let (_dir, mut api) = seeded_api(&server);
 
-    let restarted =
-        client::restart_router(&http, &server.base_url(), &mut cred, WORKSPACE, PROJECT)
-            .expect("restart");
+    let restarted = api.restart_router(WORKSPACE, PROJECT).expect("restart");
     assert_eq!(restart.calls(), 1);
     assert_eq!(restarted.phase, RouterPhase::Restarting);
     assert_eq!(restarted.pending_change_entries.len(), 1);
@@ -367,8 +349,7 @@ fn restarting_and_starting_the_router_post_with_no_body() {
         "peer robot-7 removed"
     );
 
-    let started = client::start_router(&http, &server.base_url(), &mut cred, WORKSPACE, PROJECT)
-        .expect("start");
+    let started = api.start_router(WORKSPACE, PROJECT).expect("start");
     assert_eq!(start.calls(), 1);
     assert_eq!(started.phase, RouterPhase::Provisioning);
 }
@@ -386,16 +367,11 @@ fn a_restart_without_the_permission_is_a_403_problem() {
             .header("content-type", "application/problem+json")
             .json_body(json!({ "type": "about:blank", "title": "Forbidden", "status": 403 }));
     });
-    let (_dir, mut cred) = seeded_credential(&server);
+    let (_dir, mut api) = seeded_api(&server);
 
-    let err = client::restart_router(
-        &HttpClient::new(),
-        &server.base_url(),
-        &mut cred,
-        WORKSPACE,
-        PROJECT,
-    )
-    .expect_err("403 is a refusal");
+    let err = api
+        .restart_router(WORKSPACE, PROJECT)
+        .expect_err("403 is a refusal");
     let AuthError::Problem(problem) = err else {
         panic!("expected a problem, got {err:?}");
     };
@@ -429,11 +405,9 @@ fn peers_and_router_status_parse_the_contract() {
                          "last_seen_at": "2026-10-03T01:00:00Z" } ]
         }));
     });
-    let (_dir, mut cred) = seeded_credential(&server);
-    let http = HttpClient::new();
+    let (_dir, mut api) = seeded_api(&server);
 
-    let peers = client::list_peers(&http, &server.base_url(), &mut cred, WORKSPACE, PROJECT)
-        .expect("peers");
+    let peers = api.list_peers(WORKSPACE, PROJECT).expect("peers");
     assert_eq!(peers.len(), 2);
     assert_eq!(peers[0].status, PeerStatus::Connected);
     assert_eq!(
@@ -441,8 +415,7 @@ fn peers_and_router_status_parse_the_contract() {
         PeerStatus::Other("a_status_this_cli_has_not_heard_of".into())
     );
 
-    let router = client::router_status(&http, &server.base_url(), &mut cred, WORKSPACE, PROJECT)
-        .expect("router");
+    let router = api.router_status(WORKSPACE, PROJECT).expect("router");
     assert_eq!(router.phase, RouterPhase::Running);
     assert_eq!(
         router.address,
@@ -472,32 +445,18 @@ fn removing_a_peer_is_staged_and_a_missing_peer_is_already_removed() {
             .header("content-type", "application/problem+json")
             .json_body(json!({ "type": "about:blank", "title": "Not Found", "status": 404 }));
     });
-    let (_dir, mut cred) = seeded_credential(&server);
-    let http = HttpClient::new();
+    let (_dir, mut api) = seeded_api(&server);
 
-    match client::remove_peer(
-        &http,
-        &server.base_url(),
-        &mut cred,
-        WORKSPACE,
-        PROJECT,
-        "peer-1",
-    )
-    .expect("remove")
+    match api
+        .remove_peer(WORKSPACE, PROJECT, "peer-1")
+        .expect("remove")
     {
         PeerRemoval::Staged(status) => assert!(status.pending_changes),
         PeerRemoval::AlreadyRemoved => panic!("a 202 is a staged removal"),
     }
     assert!(matches!(
-        client::remove_peer(
-            &http,
-            &server.base_url(),
-            &mut cred,
-            WORKSPACE,
-            PROJECT,
-            "peer-gone"
-        )
-        .expect("a 404 is a definite answer"),
+        api.remove_peer(WORKSPACE, PROJECT, "peer-gone")
+            .expect("a 404 is a definite answer"),
         PeerRemoval::AlreadyRemoved
     ));
 }

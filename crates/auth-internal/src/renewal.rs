@@ -14,7 +14,7 @@
 
 use daemon_config::consts::PeppyDirs;
 
-use crate::client::{self, RouterPeerEnrolled};
+use crate::client::{PlatformApi, RouterPeerEnrolled};
 use crate::enrollment::{self, Enrollment, EnrollmentDocument, IssuedMaterial};
 use crate::error::{Error, Result};
 use crate::http::HttpClient;
@@ -30,11 +30,8 @@ use crate::{profile, storage};
 /// platform answered.
 pub fn renew(dirs: &PeppyDirs, http: &HttpClient, now_unix: i64) -> Result<EnrollmentDocument> {
     renew_with(dirs, now_unix, |document| {
-        let mut credential = credential_for(dirs, http, document)?;
-        client::renew_peer(
-            http,
-            &document.api_url,
-            &mut credential,
+        let credential = credential_for(dirs, http, document)?;
+        PlatformApi::new(http, &document.api_url, credential).renew_peer(
             &document.workspace_id,
             &document.project_id,
             &document.peer_id,

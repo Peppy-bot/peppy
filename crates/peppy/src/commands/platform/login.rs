@@ -21,7 +21,9 @@ use crate::context::AppContext;
 use crate::error::Result;
 use auth::device::{self, DeviceAuthorization, TokenSet};
 use auth::discovery::OidcEndpoints;
-use auth::{cli_config, client, discovery, http::HttpClient, profile, resolver, storage};
+use auth::{
+    PlatformApi, cli_config, client, discovery, http::HttpClient, profile, resolver, storage,
+};
 use url::Url;
 
 pub struct LoginCommand {
@@ -80,8 +82,9 @@ impl Command for LoginCommand {
         // Fetch identity using the in-memory credential (the token was minted
         // seconds ago, so there's no need to reload from disk or proactively
         // refresh via the resolver).
-        let mut cred = resolver::session_credential(creds_path, &pc);
-        match client::get_me(http, api_url, &mut cred) {
+        let mut api =
+            PlatformApi::new(http, api_url, resolver::session_credential(creds_path, &pc));
+        match api.get_me() {
             Ok(principal) => {
                 // Cache display identity against the stored session.
                 if let Some(session) = creds.session.as_mut() {
@@ -105,7 +108,7 @@ impl Command for LoginCommand {
         }
 
         if !self.no_configure {
-            select_after_sign_in(&session, &mut cred, &mut self.ask);
+            select_after_sign_in(&session, &mut api, &mut self.ask);
         }
 
         let enrolled = auth::enrollment::load(&session.dirs).is_ok_and(|e| e.is_some());
@@ -125,14 +128,14 @@ impl Command for LoginCommand {
 /// The sign-in is good whatever happens here, so a selection that cannot
 /// complete prints its reason and the command that runs it again, and does
 /// not fail the login.
-fn select_after_sign_in(session: &PlatformSession, cred: &mut auth::Credential, ask: &mut Ask) {
+fn select_after_sign_in(session: &PlatformSession, api: &mut PlatformApi, ask: &mut Ask) {
     if let Ok(Some(context)) = session.context() {
         print!("{}", selected_report(session, &context));
         return;
     }
     let selected = auth::context::remove(&session.dirs)
         .map_err(crate::error::Error::from)
-        .and_then(|()| select_and_save(session, cred, None, None, ask));
+        .and_then(|()| select_and_save(session, api, None, None, ask));
     match selected {
         Ok(context) => print!("{}", selected_report(session, &context)),
         Err(e) => println!(

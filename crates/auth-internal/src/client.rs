@@ -261,173 +261,167 @@ pub enum PeerRemoval {
     AlreadyRemoved,
 }
 
-/// `GET {api_url}/me`, refreshing once on a 401.
-pub fn get_me(http: &HttpClient, api_url: &str, cred: &mut Credential) -> Result<Principal> {
-    authed_get_json(http, &api_path(api_url, &["me"])?, cred)
+/// The platform API as the signed-in person calls it: the HTTP client, the
+/// base URL of the backend, and the bearer of the session. On a `401` the
+/// request is retried once after the bearer is refreshed (and persisted) in
+/// place.
+pub struct PlatformApi {
+    http: HttpClient,
+    api_url: String,
+    cred: Credential,
 }
 
-/// `GET {api_url}/api/workspaces`.
-pub fn list_workspaces(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut Credential,
-) -> Result<Vec<Workspace>> {
-    authed_get_json(http, &api_path(api_url, &["api", "workspaces"])?, cred)
-}
-
-/// `GET {api_url}/api/workspace/{workspace_id}/projects`.
-pub fn list_projects(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut Credential,
-    workspace_id: &str,
-) -> Result<Vec<Project>> {
-    authed_get_json(
-        http,
-        &api_path(api_url, &["api", "workspace", workspace_id, "projects"])?,
-        cred,
-    )
-}
-
-/// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/peers` with the PEM
-/// signing request. The platform answers `201` with the signed material.
-pub fn enroll_peer(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut Credential,
-    workspace_id: &str,
-    project_id: &str,
-    csr_pem: &str,
-) -> Result<RouterPeerEnrolled> {
-    let url = router_path(api_url, workspace_id, project_id, &["peers"])?;
-    let body = serde_json::json!({ "csr": csr_pem }).to_string();
-    let resp = authed(http, cred, |http, bearer| {
-        http.post_json(&url, &body, Some(bearer))
-    })?;
-    match resp.status {
-        201 => resp.json("router peer enrollment"),
-        _ => Err(interpret_refusal(&resp, "POST", &url)),
+impl PlatformApi {
+    pub fn new(http: &HttpClient, api_url: &str, cred: Credential) -> Self {
+        Self {
+            http: http.clone(),
+            api_url: api_url.to_string(),
+            cred,
+        }
     }
-}
 
-/// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/peers/{peer_id}/renew`
-/// with no body. The platform signs again the request the peer enrolled with,
-/// so the answer carries a new leaf for the enrolled key, and the identity of
-/// the peer stays as it is.
-pub fn renew_peer(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut Credential,
-    workspace_id: &str,
-    project_id: &str,
-    peer_id: &str,
-) -> Result<RouterPeerEnrolled> {
-    let url = router_path(
-        api_url,
-        workspace_id,
-        project_id,
-        &["peers", peer_id, "renew"],
-    )?;
-    let resp = authed(http, cred, |http, bearer| {
-        http.post_empty(&url, Some(bearer))
-    })?;
-    match resp.status {
-        200 => resp.json("router peer renewal"),
-        _ => Err(interpret_refusal(&resp, "POST", &url)),
+    /// `GET {api_url}/me`.
+    pub fn get_me(&mut self) -> Result<Principal> {
+        self.get_json(&["me"])
     }
-}
 
-/// `GET {api_url}/api/workspace/{ws}/projects/{p}/router/peers`.
-pub fn list_peers(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut Credential,
-    workspace_id: &str,
-    project_id: &str,
-) -> Result<Vec<RouterPeer>> {
-    authed_get_json(
-        http,
-        &router_path(api_url, workspace_id, project_id, &["peers"])?,
-        cred,
-    )
-}
-
-/// `DELETE {api_url}/api/workspace/{ws}/projects/{p}/router/peers/{peer_id}`.
-/// A `404` is a definite answer (the peer is already gone), not an error.
-pub fn remove_peer(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut Credential,
-    workspace_id: &str,
-    project_id: &str,
-    peer_id: &str,
-) -> Result<PeerRemoval> {
-    let url = router_path(api_url, workspace_id, project_id, &["peers", peer_id])?;
-    let resp = authed(http, cred, |http, bearer| http.delete(&url, Some(bearer)))?;
-    match resp.status {
-        200 | 202 => Ok(PeerRemoval::Staged(resp.json("router peer removal")?)),
-        404 => Ok(PeerRemoval::AlreadyRemoved),
-        _ => Err(interpret_refusal(&resp, "DELETE", &url)),
+    /// `GET {api_url}/api/workspaces`.
+    pub fn list_workspaces(&mut self) -> Result<Vec<Workspace>> {
+        self.get_json(&["api", "workspaces"])
     }
-}
 
-/// `GET {api_url}/api/workspace/{ws}/projects/{p}/router`.
-pub fn router_status(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut Credential,
-    workspace_id: &str,
-    project_id: &str,
-) -> Result<RouterStatus> {
-    authed_get_json(
-        http,
-        &router_path(api_url, workspace_id, project_id, &[])?,
-        cred,
-    )
-}
+    /// `GET {api_url}/api/workspace/{workspace_id}/projects`.
+    pub fn list_projects(&mut self, workspace_id: &str) -> Result<Vec<Project>> {
+        self.get_json(&["api", "workspace", workspace_id, "projects"])
+    }
 
-/// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/restart`. The
-/// platform answers `202` with the router, now restarting. A restart applies
-/// every pending change and drops each peer link for a moment.
-pub fn restart_router(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut Credential,
-    workspace_id: &str,
-    project_id: &str,
-) -> Result<RouterStatus> {
-    router_action(http, api_url, cred, workspace_id, project_id, "restart")
-}
+    /// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/peers` with the
+    /// PEM signing request. The platform answers `201` with the signed
+    /// material.
+    pub fn enroll_peer(
+        &mut self,
+        workspace_id: &str,
+        project_id: &str,
+        csr_pem: &str,
+    ) -> Result<RouterPeerEnrolled> {
+        let url = router_path(&self.api_url, workspace_id, project_id, &["peers"])?;
+        let body = serde_json::json!({ "csr": csr_pem }).to_string();
+        let resp = self.authed(|http, bearer| http.post_json(&url, &body, Some(bearer)))?;
+        match resp.status {
+            201 => resp.json("router peer enrollment"),
+            _ => Err(interpret_refusal(&resp, "POST", &url)),
+        }
+    }
 
-/// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/start`. The platform
-/// answers `202` with the router and the phase it moves to.
-pub fn start_router(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut Credential,
-    workspace_id: &str,
-    project_id: &str,
-) -> Result<RouterStatus> {
-    router_action(http, api_url, cred, workspace_id, project_id, "start")
-}
+    /// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/peers/{peer_id}/renew`
+    /// with no body. The platform signs again the request the peer enrolled
+    /// with, so the answer carries a new leaf for the enrolled key, and the
+    /// identity of the peer stays as it is.
+    pub fn renew_peer(
+        &mut self,
+        workspace_id: &str,
+        project_id: &str,
+        peer_id: &str,
+    ) -> Result<RouterPeerEnrolled> {
+        let url = router_path(
+            &self.api_url,
+            workspace_id,
+            project_id,
+            &["peers", peer_id, "renew"],
+        )?;
+        let resp = self.authed(|http, bearer| http.post_empty(&url, Some(bearer)))?;
+        match resp.status {
+            200 => resp.json("router peer renewal"),
+            _ => Err(interpret_refusal(&resp, "POST", &url)),
+        }
+    }
 
-/// A bodyless `POST` on the router that the platform accepts with `202` and
-/// the router's status.
-fn router_action(
-    http: &HttpClient,
-    api_url: &str,
-    cred: &mut Credential,
-    workspace_id: &str,
-    project_id: &str,
-    action: &str,
-) -> Result<RouterStatus> {
-    let url = router_path(api_url, workspace_id, project_id, &[action])?;
-    let resp = authed(http, cred, |http, bearer| {
-        http.post_empty(&url, Some(bearer))
-    })?;
-    match resp.status {
-        200 | 202 => resp.json("router status"),
-        _ => Err(interpret_refusal(&resp, "POST", &url)),
+    /// `GET {api_url}/api/workspace/{ws}/projects/{p}/router/peers`.
+    pub fn list_peers(&mut self, workspace_id: &str, project_id: &str) -> Result<Vec<RouterPeer>> {
+        let url = router_path(&self.api_url, workspace_id, project_id, &["peers"])?;
+        self.get_json_at(&url)
+    }
+
+    /// `DELETE {api_url}/api/workspace/{ws}/projects/{p}/router/peers/{peer_id}`.
+    /// A `404` is a definite answer (the peer is already gone), not an error.
+    pub fn remove_peer(
+        &mut self,
+        workspace_id: &str,
+        project_id: &str,
+        peer_id: &str,
+    ) -> Result<PeerRemoval> {
+        let url = router_path(&self.api_url, workspace_id, project_id, &["peers", peer_id])?;
+        let resp = self.authed(|http, bearer| http.delete(&url, Some(bearer)))?;
+        match resp.status {
+            200 | 202 => Ok(PeerRemoval::Staged(resp.json("router peer removal")?)),
+            404 => Ok(PeerRemoval::AlreadyRemoved),
+            _ => Err(interpret_refusal(&resp, "DELETE", &url)),
+        }
+    }
+
+    /// `GET {api_url}/api/workspace/{ws}/projects/{p}/router`.
+    pub fn router_status(&mut self, workspace_id: &str, project_id: &str) -> Result<RouterStatus> {
+        let url = router_path(&self.api_url, workspace_id, project_id, &[])?;
+        self.get_json_at(&url)
+    }
+
+    /// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/restart`. The
+    /// platform answers `202` with the router, now restarting. A restart
+    /// applies every pending change and drops each peer link for a moment.
+    pub fn restart_router(&mut self, workspace_id: &str, project_id: &str) -> Result<RouterStatus> {
+        self.router_action(workspace_id, project_id, "restart")
+    }
+
+    /// `POST {api_url}/api/workspace/{ws}/projects/{p}/router/start`. The
+    /// platform answers `202` with the router and the phase it moves to.
+    pub fn start_router(&mut self, workspace_id: &str, project_id: &str) -> Result<RouterStatus> {
+        self.router_action(workspace_id, project_id, "start")
+    }
+
+    /// A bodyless `POST` on the router that the platform accepts with `202`
+    /// and the router's status.
+    fn router_action(
+        &mut self,
+        workspace_id: &str,
+        project_id: &str,
+        action: &str,
+    ) -> Result<RouterStatus> {
+        let url = router_path(&self.api_url, workspace_id, project_id, &[action])?;
+        let resp = self.authed(|http, bearer| http.post_empty(&url, Some(bearer)))?;
+        match resp.status {
+            200 | 202 => resp.json("router status"),
+            _ => Err(interpret_refusal(&resp, "POST", &url)),
+        }
+    }
+
+    /// An authenticated `GET` of `segments` under the API whose `200` body
+    /// deserializes to `T`.
+    fn get_json<T: DeserializeOwned>(&mut self, segments: &[&str]) -> Result<T> {
+        let url = api_path(&self.api_url, segments)?;
+        self.get_json_at(&url)
+    }
+
+    /// An authenticated `GET url` whose `200` body deserializes to `T`.
+    fn get_json_at<T: DeserializeOwned>(&mut self, url: &str) -> Result<T> {
+        let resp = self.authed(|http, bearer| http.get(url, Some(bearer)))?;
+        match resp.status {
+            200 => resp.json(url),
+            _ => Err(interpret_refusal(&resp, "GET", url)),
+        }
+    }
+
+    /// Runs `request` with the current bearer and, on a `401`, refreshes (and
+    /// persists) the session token and retries exactly once.
+    fn authed(
+        &mut self,
+        request: impl Fn(&HttpClient, &str) -> Result<HttpResponse>,
+    ) -> Result<HttpResponse> {
+        let resp = request(&self.http, self.cred.token.expose_secret())?;
+        if resp.status != 401 {
+            return Ok(resp);
+        }
+        refresh_in_place(&self.http, &mut self.cred)?;
+        request(&self.http, self.cred.token.expose_secret())
     }
 }
 
@@ -464,34 +458,6 @@ fn api_path(api_url: &str, segments: &[&str]) -> Result<String> {
         .pop_if_empty()
         .extend(segments);
     Ok(url.to_string())
-}
-
-/// Runs `request` with the current bearer and, on a `401`, refreshes (and
-/// persists) the session token and retries exactly once.
-fn authed(
-    http: &HttpClient,
-    cred: &mut Credential,
-    request: impl Fn(&HttpClient, &str) -> Result<HttpResponse>,
-) -> Result<HttpResponse> {
-    let resp = request(http, cred.token.expose_secret())?;
-    if resp.status != 401 {
-        return Ok(resp);
-    }
-    refresh_in_place(http, cred)?;
-    request(http, cred.token.expose_secret())
-}
-
-/// An authenticated `GET url` whose `200` body deserializes to `T`.
-fn authed_get_json<T: DeserializeOwned>(
-    http: &HttpClient,
-    url: &str,
-    cred: &mut Credential,
-) -> Result<T> {
-    let resp = authed(http, cred, |http, bearer| http.get(url, Some(bearer)))?;
-    match resp.status {
-        200 => resp.json(url),
-        _ => Err(interpret_refusal(&resp, "GET", url)),
-    }
 }
 
 /// The members of an RFC 9457 problem document the CLI reads.

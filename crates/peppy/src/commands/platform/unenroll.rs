@@ -18,7 +18,7 @@ use crate::commands::platform::{
 };
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use auth::client::{self, PeerRemoval};
+use auth::client::PeerRemoval;
 use auth::enrollment::{self, EnrollmentDocument};
 
 pub struct UnenrollCommand {
@@ -55,7 +55,7 @@ impl Command for UnenrollCommand {
         }
 
         if !self.local_only {
-            let mut cred = session.credential().map_err(|e| {
+            let mut api = session.api().map_err(|e| {
                 match e {
                 Error::AuthEngine(auth::AuthError::NotAuthenticated) => Error::Auth(
                     "not signed in; run `peppy platform login` to remove the peer on the platform, \
@@ -65,10 +65,7 @@ impl Command for UnenrollCommand {
                 other => other,
             }
             })?;
-            let removal = client::remove_peer(
-                &session.http,
-                &session.api_url,
-                &mut cred,
+            let removal = api.remove_peer(
                 &document.workspace_id,
                 &document.project_id,
                 &document.peer_id,

@@ -48,6 +48,8 @@ const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 ///
 /// `http_status_as_error(false)` makes 4xx/5xx return `Ok` so callers can inspect
 /// the body; a global timeout keeps a hung backend from blocking the CLI forever.
+/// A clone shares the agent.
+#[derive(Clone)]
 pub struct HttpClient {
     agent: ureq::Agent,
 }

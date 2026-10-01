@@ -10,7 +10,6 @@ use crate::commands::platform::PlatformSession;
 use crate::commands::table::render_columns;
 use crate::context::AppContext;
 use crate::error::Result;
-use auth::client;
 
 pub struct WorkspacesCommand {
     pub api_url: Option<String>,
@@ -22,8 +21,7 @@ pub struct WorkspacesCommand {
 impl Command for WorkspacesCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
-        let mut cred = session.credential()?;
-        let workspaces = client::list_workspaces(&session.http, &session.api_url, &mut cred)?;
+        let workspaces = session.api()?.list_workspaces()?;
         let context = session.context()?;
         let is_current = |workspace_id: &str| {
             context

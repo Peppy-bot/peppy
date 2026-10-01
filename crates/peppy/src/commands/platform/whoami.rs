@@ -11,7 +11,7 @@ use crate::commands::platform::PlatformSession;
 use crate::context::AppContext;
 use crate::error::Result;
 use auth::client::Principal;
-use auth::{client, profile, storage};
+use auth::{profile, storage};
 
 pub struct WhoamiCommand {
     pub api_url: Option<String>,
@@ -27,9 +27,9 @@ impl Command for WhoamiCommand {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
         let env_name = profile::build_env_name();
 
-        match session.credential() {
-            Ok(mut cred) => {
-                let principal = client::get_me(&session.http, &session.api_url, &mut cred)?;
+        match session.api() {
+            Ok(mut api) => {
+                let principal = api.get_me()?;
                 // Read after the resolution of the credential, which refreshes
                 // and persists a token that is about to expire.
                 let expires_at = session.cached_session().map(|pc| pc.expires_at);
