@@ -371,14 +371,11 @@ fn every_value_preserved(original: &Value, completed: &Value) -> bool {
 /// Where an object literal opens and closes in the source text, plus what the
 /// last significant (non-whitespace, non-comment) character inside it is, which
 /// decides whether appending an entry needs a separating comma first.
-pub(super) struct BlockSpan {
-    /// Byte offset of the key token (its opening quote when quoted) of the
-    /// entry this object is the value of. `None` for the root object.
-    pub(super) key_start: Option<usize>,
+struct BlockSpan {
     /// Byte offset just past the opening `{`.
     open_end: usize,
     /// Byte offset of the closing `}`.
-    pub(super) close: usize,
+    close: usize,
     /// Byte offset just past the last significant character before the closing
     /// brace. Equal to `open_end` when the object is empty.
     last_significant_end: usize,
@@ -403,13 +400,13 @@ impl BlockSpan {
 /// object literal reachable from it through a chain of object keys, keyed by
 /// that chain (last occurrence winning to match serde's duplicate-key
 /// behavior). Objects inside arrays have no key chain and are not recorded.
-pub(super) struct DocumentLayout {
+struct DocumentLayout {
     root: BlockSpan,
     blocks: HashMap<Vec<String>, BlockSpan>,
 }
 
 impl DocumentLayout {
-    pub(super) fn block_at(&self, path: &[String]) -> Option<&BlockSpan> {
+    fn block_at(&self, path: &[String]) -> Option<&BlockSpan> {
         if path.is_empty() {
             return Some(&self.root);
         }
@@ -432,21 +429,18 @@ struct OpenDelimiter {
     is_object: bool,
     open_end: usize,
     key: Option<String>,
-    /// Byte offset where `key` starts in the source.
-    key_start: Option<usize>,
     /// The most recent completed identifier or string token directly inside
-    /// this block, with its start offset; a following `:` turns it into
-    /// `pending_key`.
-    last_token: Option<(String, usize)>,
+    /// this block; a following `:` turns it into `pending_key`.
+    last_token: Option<String>,
     /// Set between `key:` and its value, for object blocks only.
-    pending_key: Option<(String, usize)>,
+    pending_key: Option<String>,
 }
 
 /// Single-pass scan of JSON5 text for the structure [`complete_config_content`]
 /// needs. Tracks just enough of the grammar to never misread a brace: string
 /// literals (with escapes), line and block comments, and `{`/`[` nesting.
 /// Returns `None` on structurally broken input.
-pub(super) fn scan_layout(content: &str) -> Option<DocumentLayout> {
+fn scan_layout(content: &str) -> Option<DocumentLayout> {
     let mut state = ScanState::Code;
     let mut stack: Vec<OpenDelimiter> = Vec::new();
     let mut root: Option<BlockSpan> = None;
@@ -477,8 +471,7 @@ pub(super) fn scan_layout(content: &str) -> Option<DocumentLayout> {
                     if let Some(frame) = stack.last_mut()
                         && frame.is_object
                     {
-                        frame.last_token =
-                            Some((content[string_start + 1..i].to_string(), string_start));
+                        frame.last_token = Some(content[string_start + 1..i].to_string());
                     }
                     last_significant = Some((i + c.len_utf8(), quote));
                     state = ScanState::Code;
@@ -512,7 +505,7 @@ pub(super) fn scan_layout(content: &str) -> Option<DocumentLayout> {
                     && let Some(frame) = stack.last_mut()
                     && frame.is_object
                 {
-                    frame.last_token = Some((content[start..i].to_string(), start));
+                    frame.last_token = Some(content[start..i].to_string());
                 }
 
                 if c == '/' && matches!(chars.peek(), Some((_, '/'))) {
@@ -539,19 +532,14 @@ pub(super) fn scan_layout(content: &str) -> Option<DocumentLayout> {
 
                 match c {
                     '{' => {
-                        let pending = stack
+                        let key = stack
                             .last_mut()
                             .filter(|parent| parent.is_object)
                             .and_then(|parent| parent.pending_key.take());
-                        let (key, key_start) = match pending {
-                            Some((key, start)) => (Some(key), Some(start)),
-                            None => (None, None),
-                        };
                         stack.push(OpenDelimiter {
                             is_object: true,
                             open_end: i + 1,
                             key,
-                            key_start,
                             last_token: None,
                             pending_key: None,
                         });
@@ -564,7 +552,6 @@ pub(super) fn scan_layout(content: &str) -> Option<DocumentLayout> {
                             is_object: false,
                             open_end: i + 1,
                             key: None,
-                            key_start: None,
                             last_token: None,
                             pending_key: None,
                         });
@@ -578,7 +565,6 @@ pub(super) fn scan_layout(content: &str) -> Option<DocumentLayout> {
                         // is exactly the "last entry" info the span needs.
                         let (last_significant_end, last_significant_char) = last_significant?;
                         let span = BlockSpan {
-                            key_start: frame.key_start,
                             open_end: frame.open_end,
                             close: i,
                             last_significant_end,
