@@ -28,7 +28,6 @@ runners:
     cpu: 16
     ram: 32
     volume: 100gb:gp3
-    sticky: build-cache:40gb
     family: ["c5", "m6i", "c6i", "m4", "m5", "c7i", "m7i"]
     image: peppy-ubuntu24            # custom Peppy AMI (org config)
     spot: price-capacity-optimized
