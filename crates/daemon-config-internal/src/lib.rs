@@ -63,18 +63,17 @@ pub mod consts {
     pub use crate::internal::consts::{
         AppEnv, CREDENTIALS_FILE, DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_PYTHON_BASE_IMAGE,
         DEFAULT_RUST_BASE_IMAGE, PEPPY_GIT_TAG, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
-        PEPPY_VERSION, PEPPYLIB_OUTPUT_PATH, PeppyDirs, REPOSITORY_INDEX_FILE, non_empty_env_path,
-        peppy_build, peppy_root_dir, set_app_env,
+        PEPPY_VERSION, PEPPYLIB_OUTPUT_PATH, PLATFORM_SELECTION_FILE, PeppyDirs,
+        REPOSITORY_INDEX_FILE, non_empty_env_path, peppy_build, peppy_root_dir, set_app_env,
     };
 }
 
 // -- peppy_config --
 pub mod peppy_config {
     pub use crate::internal::peppy_config::{
-        DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
-        ExternalZenohConfig, FederationConfig, LifecycleConfig, LocalNodesTopology,
-        ManagedZenohConfig, ParsedEndpointBuf, PeppyConfig, ResourceServers, ZenohConfig,
-        load_or_create,
+        DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, ExternalZenohConfig, LifecycleConfig,
+        LocalNodesTopology, ManagedZenohConfig, ParsedEndpointBuf, PeppyConfig, ResourceServers,
+        ZenohConfig, load_or_create,
     };
 }
 

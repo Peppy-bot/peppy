@@ -1,8 +1,7 @@
-//! `peppy platform whoami` (alias `status`): resolve the cached credential, call
-//! `GET /me`, and print the identity, backend, and token validity. `--json`
-//! emits a machine-readable object (never including raw tokens).
+//! `peppy platform whoami`: resolve the cached session, call `GET /me`, and
+//! print the identity, backend, and token validity. `--json` emits a
+//! machine-readable object (never including raw tokens).
 
-use std::path::Path;
 use std::sync::Arc;
 
 use daemon_config::consts::PeppyDirs;
@@ -12,7 +11,7 @@ use crate::commands::platform::PlatformSession;
 use crate::context::AppContext;
 use crate::error::Result;
 use auth::client::Principal;
-use auth::{client, profile, resolver, storage};
+use auth::{profile, storage};
 
 pub struct WhoamiCommand {
     pub api_url: Option<String>,
@@ -25,67 +24,46 @@ pub struct WhoamiCommand {
 
 impl Command for WhoamiCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
-        let PlatformSession {
-            api_url,
-            creds_path,
-            http,
-            ..
-        } = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
-        let pat = resolver::pat_from_env();
+        let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
+        let env_name = profile::build_env_name();
 
-        match resolver::resolve(&creds_path, &http, pat) {
-            Ok(mut cred) => {
-                let principal = client::get_me(&http, &api_url, &mut cred)?;
-                let expires_at = session_expiry(&creds_path);
-                let env_name = profile::build_env_name();
+        match session.api() {
+            Ok(mut api) => {
+                let principal = api.get_me()?;
+                // Read after the resolution of the credential, which refreshes
+                // and persists a token that is about to expire.
+                let expires_at = session.cached_session().map(|pc| pc.expires_at);
                 if self.json {
-                    print_json(env_name, &api_url, &principal, expires_at);
+                    print_json(env_name, &session.api_url, &principal, expires_at);
                 } else {
-                    print_human(env_name, &api_url, &principal, expires_at);
+                    print_human(env_name, &session.api_url, &principal, expires_at);
                 }
                 Ok(())
             }
-            Err(auth::AuthError::NotAuthenticated) => {
+            Err(crate::error::Error::AuthEngine(auth::AuthError::NotAuthenticated)) => {
                 if self.json {
                     let doc = serde_json::json!({
                         "authenticated": false,
-                        "profile": profile::build_env_name(),
-                        "api_url": api_url,
+                        "profile": env_name,
+                        "api_url": session.api_url,
                     });
                     println!("{doc}");
                 } else {
-                    println!(
-                        "Not authenticated ({}). Run `peppy platform login`.",
-                        profile::build_env_name()
-                    );
+                    println!("Not authenticated ({env_name}). Run `peppy platform login`.");
                 }
                 Ok(())
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 }
 
-/// Reads the cached session's access-token expiry (unix seconds), if any. A PAT
-/// has no stored expiry, so this returns `None`.
-fn session_expiry(creds_path: &Path) -> Option<i64> {
-    storage::load(creds_path)
-        .ok()?
-        .session
-        .map(|pc| pc.expires_at)
-}
-
 fn token_is_valid(expires_at: Option<i64>) -> bool {
-    // No stored expiry (PAT) but `/me` succeeded → treat as valid.
-    // This is a display heuristic for `whoami` output; the authoritative
-    // expiry check (with a 30s skew) lives in `ProfileCreds::is_expired` and
-    // is used by the resolver to decide when to refresh. A token may read as
-    // "valid" here for up to 30s after the resolver would already consider it
-    // expired.
-    match expires_at {
-        None => true,
-        Some(exp) => storage::now_unix() < exp,
-    }
+    // A display heuristic for `whoami` output; the authoritative expiry check
+    // (with a 30s skew) lives in `ProfileCreds::is_expired` and is used by the
+    // resolver to decide when to refresh. A token may read as "valid" here for
+    // up to 30s after the resolver would already consider it expired.
+    expires_at.is_none_or(|exp| storage::now_unix() < exp)
 }
 
 fn print_human(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<i64>) {
@@ -94,11 +72,11 @@ fn print_human(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<
     if let Some(kind) = &p.kind {
         println!("  type    : {kind}");
     }
-    if let Some(role) = &p.role {
-        println!("  role    : {role}");
-    }
     if let Some(email) = &p.email {
         println!("  email   : {email}");
+    }
+    if let Some(region) = &p.region {
+        println!("  region  : {region}");
     }
     println!("  backend : {api_url}");
     let token = if token_is_valid(expires_at) {
@@ -115,12 +93,11 @@ fn print_json(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<i
         "profile": env_name,
         "api_url": api_url,
         "principal": {
-            "id": p.id,
             "sub": p.sub,
             "kind": p.kind,
             "username": p.username,
             "email": p.email,
-            "role": p.role,
+            "region": p.region,
         },
         "token": {
             "valid": token_is_valid(expires_at),
@@ -135,8 +112,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_validity_handles_pat_and_expiry() {
-        assert!(token_is_valid(None), "PAT (no expiry) reads as valid");
+    fn token_validity_follows_the_expiry() {
+        assert!(token_is_valid(None));
         assert!(token_is_valid(Some(storage::now_unix() + 60)));
         assert!(!token_is_valid(Some(storage::now_unix() - 60)));
     }

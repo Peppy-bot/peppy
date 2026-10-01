@@ -69,7 +69,12 @@ build-helpers = { workspace = true }
 default = []
 # Gate test-only helpers (including config's fingerprint helpers) behind this
 # feature so a release build doesn't carry them.
-test-support = ["dep:tempfile", "config/fingerprint_test_helpers", "core-node/test-support"]
+test-support = [
+    "dep:tempfile",
+    "config/fingerprint_test_helpers",
+    "core-node/test-support",
+    "auth/test-support",
+]
 # Docker black-box coverage for two daemons sharing one real zenohd. Opting in
 # also builds pmi's bundled router support used by the test host.
 multi_daemon_e2e = ["pmi/build_zenoh", "dep:testcontainers", "core-node/debug-embed"]

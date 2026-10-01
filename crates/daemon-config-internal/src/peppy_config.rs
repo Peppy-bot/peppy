@@ -51,13 +51,13 @@ use std::path::{Path, PathBuf};
 /// File name of the global daemon config under `~/.peppy/conf`.
 pub const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
 
-/// The backend resource-server URL for this build: the local dev backend in
-/// debug builds, the prod backend in release builds. The single source of truth
+/// The backend resource-server URL for this build: the dev backend in debug
+/// builds, the prod backend in release builds. The single source of truth
 /// for both the seeded `resource_servers` block and the built-in fallback the
-/// `peppy platform login` / `whoami` / `logout` commands resolve when no `--api-url` /
+/// `peppy platform` commands resolve when no `--api-url` /
 /// `PEPPY_API_URL` override is given.
 #[cfg(debug_assertions)]
-pub const DEFAULT_API_URL: &str = "http://127.0.0.1:3000";
+pub const DEFAULT_API_URL: &str = "https://api.dev.peppy.bot";
 #[cfg(not(debug_assertions))]
 pub const DEFAULT_API_URL: &str = "https://api.peppy.bot";
 
@@ -80,19 +80,6 @@ const _: () = assert!(MIN_DAEMON_GRACE_SECS >= 3 * DAEMON_HEARTBEAT_INTERVAL_SEC
 /// force-kill (a 0 would cancel the in-flight send and amount to an immediate
 /// SIGKILL).
 pub const MIN_SHUTDOWN_GRACE_SECS: u64 = 1;
-
-/// Default bound, in seconds, on resolving the caller's per-user cloud router
-/// when the daemon federates its local router to it: at startup (where it gates
-/// `serve` reporting ready) and again whenever `auth login`/`logout` pokes the
-/// daemon. A slow or unreachable backend must not stall federation past this, so
-/// the daemon falls back to standalone and retries in the background. 30 mirrors
-/// the historical hardcoded HTTP-client timeout, so behavior is unchanged until
-/// edited.
-pub const DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS: u64 = 30;
-/// Minimum accepted federation connect timeout, in seconds. At least 1 so a
-/// hand-edited 0 cannot collapse the bound to "give up immediately" (a 0 would
-/// also mean "no timeout" to the HTTP client, the opposite of the intent).
-pub const MIN_FEDERATION_CONNECT_TIMEOUT_SECS: u64 = 1;
 
 // The bundled default config, written verbatim on first create so its comments
 // survive. Kept inline (not `include_str!` from an asset file) so the template
@@ -217,37 +204,13 @@ const API_FIELD_SNIPPET: &str = const_format::concatcp!("    api: \"", DEFAULT_A
 /// CLI auth commands read this URL; the daemon ignores it but seeds and
 /// completes the block like every other knob.
 const RESOURCE_SERVERS_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"  // Backend resource-server URL the `peppy platform login` / `whoami` / `logout`
-  // commands talk to. Baked in at compile time (the dev backend in debug
-  // builds, prod in release); --api-url / PEPPY_API_URL override it at runtime.
+    r#"  // Backend resource-server URL the `peppy platform` commands talk to. Baked in
+  // at compile time (the dev backend in debug builds, prod in release);
+  // --api-url / PEPPY_API_URL override it at runtime.
   resource_servers: {
 "#,
     API_FIELD_SNIPPET,
     "  },\n"
-);
-
-/// The `zenoh.managed.federation.connect_timeout_secs` entry with its comment,
-/// indented for the `federation` block.
-const FEDERATION_TIMEOUT_FIELD_SNIPPET: &str = const_format::concatcp!(
-    r#"        // Seconds the daemon spends resolving your per-user cloud router before
-        // giving up for this attempt (it retries in the background). Bounds the
-        // federation done at startup and on each `peppy platform login`/`logout`;
-        // minimum 1. If the backend is unreachable within this window the daemon
-        // stays standalone rather than blocking.
-        connect_timeout_secs: "#,
-    DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
-    ",\n"
-);
-
-/// The whole `zenoh.managed.federation` block with its explanatory comment.
-const FEDERATION_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"      // Per-user zenoh-router federation: how the daemon links its local router to
-      // your private cloud router. Only tuned to bound a slow/unreachable backend
-      // during the federation step.
-      federation: {
-"#,
-    FEDERATION_TIMEOUT_FIELD_SNIPPET,
-    "      },\n"
 );
 
 /// The whole `zenoh.managed` block. Every child setting is meaningful only
@@ -260,8 +223,6 @@ const MANAGED_SECTION_SNIPPET: &str = const_format::concatcp!(
     LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET,
     "\n",
     SUBSCRIBER_BUFFERS_SECTION_SNIPPET,
-    "\n",
-    FEDERATION_SECTION_SNIPPET,
     "    },\n"
 );
 
@@ -373,28 +334,6 @@ impl Default for ResourceServers {
     fn default() -> Self {
         Self {
             api: DEFAULT_API_URL.to_string(),
-        }
-    }
-}
-
-/// Per-user zenoh-router federation knobs. `connect_timeout_secs` bounds the
-/// backend round-trip the daemon makes to resolve the caller's cloud router so a
-/// slow or unreachable backend never stalls the federation step past it (read at
-/// startup, where it gates `serve` reporting ready, and on every login/logout
-/// poke).
-///
-/// `#[serde(default)]` fills any field a partial `federation` block omits from
-/// [`FederationConfig::default`], matching the `LifecycleConfig` pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct FederationConfig {
-    pub connect_timeout_secs: u64,
-}
-
-impl Default for FederationConfig {
-    fn default() -> Self {
-        Self {
-            connect_timeout_secs: DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
         }
     }
 }
@@ -590,7 +529,6 @@ pub struct ManagedZenohConfig {
     pub local_nodes_topology: LocalNodesTopology,
     #[serde(deserialize_with = "deserialize_subscriber_buffers")]
     pub subscriber_buffers: SubscriberBufferConfig,
-    pub federation: FederationConfig,
 }
 
 /// The operator-run router peppy dials without managing its process,
@@ -712,15 +650,6 @@ impl ZenohConfig {
         }
     }
 
-    /// Federation settings when peppy owns the router. External federation is
-    /// wholly operator-managed, so no federation task is armed.
-    pub fn federation(&self) -> Option<&FederationConfig> {
-        match self {
-            Self::Managed(config) => Some(&config.federation),
-            Self::External(_) => None,
-        }
-    }
-
     fn validate(&self) -> Result<()> {
         match self {
             Self::Managed(config) => {
@@ -740,11 +669,6 @@ impl ZenohConfig {
                             "invalid zenoh.managed.subscriber_buffers.{field}: must be > 0"
                         )));
                     }
-                }
-                if config.federation.connect_timeout_secs < MIN_FEDERATION_CONNECT_TIMEOUT_SECS {
-                    return Err(cannot_parse_config(format!(
-                        "invalid zenoh.managed.federation.connect_timeout_secs: must be >= {MIN_FEDERATION_CONNECT_TIMEOUT_SECS}"
-                    )));
                 }
                 Ok(())
             }
@@ -1123,6 +1047,24 @@ mod tests {
         }
     }
 
+    /// A setting the document does not have fails the load and names the
+    /// field, and the file stays as it is.
+    #[test]
+    fn an_unknown_managed_setting_fails_loud_and_leaves_the_file() {
+        let content = r#"{ zenoh: { managed: {
+            federation: { connect_timeout_secs: 5 },
+            local_nodes_topology: "router",
+        } } }"#;
+        let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+
+        let error = error_message(load_or_create(&peppy_dirs).unwrap_err());
+        assert!(
+            error.contains("zenoh.managed: unknown field `federation`"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+    }
+
     #[test]
     fn env_override_source_unset_and_empty_are_none() {
         assert_eq!(env_override_source(None).unwrap(), None);
@@ -1414,10 +1356,6 @@ mod tests {
         );
         assert_eq!(cfg.resource_servers.api, DEFAULT_API_URL);
         assert_eq!(
-            cfg.zenoh.federation().unwrap().connect_timeout_secs,
-            DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS
-        );
-        assert_eq!(
             cfg.zenoh,
             ZenohConfig::Managed(ManagedZenohConfig::default())
         );
@@ -1436,35 +1374,6 @@ mod tests {
             SubscriberBufferConfig::default()
         );
         assert_eq!(zenoh.external_endpoint(), Some("tcp/router.internal:7448"));
-        assert_eq!(zenoh.federation(), None);
-    }
-
-    #[test]
-    fn federation_section_defaults_and_completes() {
-        // A managed block with no `federation` block parses with the default
-        // and is completed in place with the section.
-        let (_tmp, peppy_dirs, path) =
-            dirs_with_config(r#"{ zenoh: { managed: { local_nodes_topology: "router" } } }"#);
-        let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(
-            cfg.zenoh.federation().unwrap().connect_timeout_secs,
-            DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS
-        );
-        let completed = std::fs::read_to_string(&path).unwrap();
-        assert!(completed.contains("federation: {"));
-        assert!(completed.contains(&format!(
-            "connect_timeout_secs: {DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS},"
-        )));
-        // Idempotent: a second load parses to the same config and stops rewriting.
-        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
-
-        // An explicit value is honored.
-        let (_tmp, peppy_dirs, _) = dirs_with_config(
-            r#"{ zenoh: { managed: { federation: { connect_timeout_secs: 5 } } } }"#,
-        );
-        let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg.zenoh.federation().unwrap().connect_timeout_secs, 5);
     }
 
     #[test]
@@ -1685,8 +1594,8 @@ mod tests {
                 "zenoh.managed: unknown field `standard_buffer_sze`",
             ),
             (
-                r#"{ zenoh: { managed: { federation: { connect_timeout_sec: 5 } } } }"#,
-                "zenoh.managed: unknown field `connect_timeout_sec`",
+                r#"{ zenoh: { managed: { federation_timeout_secs: 5 } } }"#,
+                "zenoh.managed: unknown field `federation_timeout_secs`",
             ),
         ] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(content);
@@ -1780,19 +1689,6 @@ mod tests {
             "expected a core-node-name validation error, got: {err:?}"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
-    }
-
-    #[test]
-    fn zero_federation_timeout_fails_loud() {
-        let (_tmp, peppy_dirs, _) = dirs_with_config(
-            r#"{ zenoh: { managed: { federation: { connect_timeout_secs: 0 } } } }"#,
-        );
-
-        let err = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("connect_timeout_secs")),
-            "expected a federation-timeout validation error, got: {err:?}"
-        );
     }
 
     #[test]
@@ -2007,9 +1903,6 @@ mod tests {
                 subscriber_buffers: SubscriberBufferConfig {
                     standard_buffer_size: 64,
                     high_throughput_buffer_size: 4096,
-                },
-                federation: FederationConfig {
-                    connect_timeout_secs: 45,
                 },
             }),
             lifecycle: LifecycleConfig {

@@ -5,6 +5,10 @@ pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppylib";
 /// (i.e. `conf_dir().join(CREDENTIALS_FILE)`). Written `0600` by the `peppy
 /// login` flow; never committed and never world-readable.
 pub const CREDENTIALS_FILE: &str = "credentials.json5";
+/// Filename of the platform selection, stored under `~/.peppy/conf` beside the
+/// credentials: the workspace and the project the person selected as the
+/// default target of the `peppy platform` commands.
+pub const PLATFORM_SELECTION_FILE: &str = "platform_selection.json5";
 
 /// Filename of a repository's index, at the root of the tree peppy is
 /// configured to scan. A repository states there what it publishes and where
@@ -190,13 +194,12 @@ impl PeppyDirs {
         self.root.join("stack_log.log")
     }
 
-    /// Path to the daemon's persisted zenoh router identity.
-    ///
-    /// Sits at the data root beside `daemon_state.json5`, which it resembles:
-    /// daemon-owned state, not user-editable configuration, so it deliberately
-    /// does not live under [`Self::conf_dir`].
-    pub fn router_identity_path(&self) -> PathBuf {
-        self.root.join("router_identity.json5")
+    /// Directory holding this machine's platform enrollment: the router peer
+    /// record, its private key and certificate, and the project's trust anchor.
+    /// Under [`Self::conf_dir`] beside the credentials file, since `peppy
+    /// platform enroll` and `unenroll` own it the way `login` owns the session.
+    pub fn peer_dir(&self) -> PathBuf {
+        self.conf_dir().join("peer")
     }
 
     /// Shared Rust crate cache directory for a given cache key.

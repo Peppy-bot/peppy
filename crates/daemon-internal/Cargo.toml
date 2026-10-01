@@ -10,6 +10,7 @@ config = { workspace = true }
 core-node = { workspace = true }
 daemon-config = { workspace = true }
 json5-pretty = { workspace = true }
+chrono = "0.4"
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
 # Safe wrappers over the libc syscalls the daemon needs (the between-generations
 # waitpid(WNOHANG) reaping and the kill(pid, 0) DaemonState liveness probe), so
@@ -25,3 +26,6 @@ tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3.8"
+# Self-reference so this crate's tests see auth's fixtures without making
+# `test-support` a feature of the shipped daemon.
+auth = { workspace = true, features = ["test-support"] }

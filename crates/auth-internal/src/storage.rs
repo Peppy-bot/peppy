@@ -9,38 +9,34 @@
 //! The data model holds a single session (`Credentials::session` is one
 //! `Option`), so logging in against a different backend overwrites it rather
 //! than adding a second entry. `issuer`/`client_id` are cached alongside the
-//! tokens so a refresh does not need to re-hit `/cli/auth-config`.
+//! tokens so a refresh does not need to re-hit `/cli/auth-config`. The file
+//! carries nothing about this machine's router enrollment: that is
+//! [`crate::enrollment`]'s own directory, with its own lifecycle.
 
 use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::error::{Error, Result};
+use crate::document::{self, Versioned};
+use crate::error::Result;
+use crate::fs_perms::restrict_dir;
 
-/// On-disk schema version of `credentials.json5`. Bumped on any shape change;
-/// there is intentionally **no reader for an older version**. A clean break: a
-/// pre-Phase-F file has no `version`, deserializes to `0`, and is rejected by
-/// [`load`], so dev users simply re-run `peppy platform login` (acceptable pre-GA).
-pub const CREDENTIALS_VERSION: u32 = 1;
+/// On-disk schema version of `credentials.json5`. There is one reader, for
+/// this version. A file of any other version (including an unversioned one,
+/// which reads as `0`) is rejected by [`load`], and the user signs in again.
+pub const CREDENTIALS_VERSION: u32 = 2;
 
-/// Whole `credentials.json5` document: the schema version, a single cached OAuth
-/// session, and the cached shared-router connection, or empty (just the
-/// current version) when not logged in.
+/// Whole `credentials.json5` document: the schema version and a single cached
+/// OAuth session, or empty (just the current version) when not logged in.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Credentials {
     /// Schema version (see [`CREDENTIALS_VERSION`]). Defaults to `0` when absent
-    /// so an old/unversioned file is detected and rejected rather than
-    /// half-interpreted.
+    /// so an unversioned file is rejected rather than half-interpreted.
     #[serde(default)]
     pub version: u32,
     #[serde(default)]
     pub session: Option<ProfileCreds>,
-    /// Cached per-user zenoh-router connection (from
-    /// `POST /me/cli/federation`), or `None` until first fetched. Bound to `session`: cleared on login/logout so
-    /// it can never outlive its identity.
-    #[serde(default)]
-    pub router: Option<RouterSession>,
 }
 
 impl Default for Credentials {
@@ -50,44 +46,17 @@ impl Default for Credentials {
         Self {
             version: CREDENTIALS_VERSION,
             session: None,
-            router: None,
         }
     }
 }
 
-/// Cached per-user zenoh-router connection. Pulled from the backend after login
-/// and reused until [`is_stale`](Self::is_stale). `Clone` is derivable (no
-/// secrets; the capability lives in the endpoint and the link is end-to-end
-/// TLS), unlike [`ProfileCreds`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RouterSession {
-    /// The `<scheme>/<host>:<port>` locator the CLI dials.
-    pub endpoint: String,
-    /// Transport scheme echoed from the server (`"tls"` today); recorded so a
-    /// future transport change is visible on disk.
-    pub protocol: String,
-    /// Absolute unix time after which the CLI re-resolves (and reconnects) on the
-    /// next poke instead of reusing this cached config. A cache-freshness deadline
-    /// only; derived at pull time from the server's `reconnect_after_secs`.
-    pub repull_after: i64,
-    /// The namespace this config was pulled for (the backend's `workspace_id`,
-    /// already validated at the HTTP boundary). It is cached alongside the
-    /// endpoint and fails loudly if an invalid value is read from disk.
-    pub namespace: config::namespace::Namespace,
-    /// The OAuth subject the config was pulled for, tagging the cache to one
-    /// identity. On reuse the daemon re-pulls when this no longer matches the
-    /// active session, so a cache that survives an identity change can never be
-    /// reused under the wrong workspace. Empty for a PAT pull (no session). Required
-    /// for the same clean-break reason as `namespace`.
-    pub subject: String,
-}
+impl Versioned for Credentials {
+    const VERSION: u32 = CREDENTIALS_VERSION;
+    const WHAT: &'static str = "credentials";
+    const REMEDY: &'static str = "peppy platform login";
 
-impl RouterSession {
-    /// Whether the cached config is at/near its re-pull deadline, allowing `skew`
-    /// seconds of slack so a slow re-resolve + handshake completes before the cache
-    /// is treated as stale (mirrors [`ProfileCreds::is_expired`]).
-    pub fn is_stale(&self, now_unix: i64, skew_secs: i64) -> bool {
-        now_unix + skew_secs >= self.repull_after
+    fn version(&self) -> u32 {
+        self.version
     }
 }
 
@@ -124,8 +93,8 @@ impl ProfileCreds {
     }
 
     /// Builds a [`ProfileCreds`] from the non-token identity fields plus a
-    /// [`TokenSet`], centralizing the token-field mapping so `creds_from_login`
-    /// and `apply_tokens` cannot drift.
+    /// [`TokenSet`](super::device::TokenSet), centralizing the token-field
+    /// mapping so `creds_from_login` and `apply_tokens` cannot drift.
     pub fn with_tokens(
         api_url: String,
         issuer: String,
@@ -181,79 +150,29 @@ fn wrap<'de, D: Deserializer<'de>>(de: D) -> std::result::Result<SecretString, D
 
 /// Credentials path under a given peppy root: `<root>/conf/credentials.json5`.
 /// Pairs with `peppy_config.json5` in the same `conf/` dir so a caller derives
-/// both auth files from one [`PeppyDirs`]. Every caller threads the `PeppyDirs`
-/// it resolved at its own process boundary; there is deliberately no
-/// default-root variant, so no auth read can silently reach the machine-global
-/// peppy home.
+/// both files from one [`PeppyDirs`](daemon_config::consts::PeppyDirs). Every
+/// caller threads the `PeppyDirs` it resolved at its own process boundary;
+/// there is deliberately no default-root variant, so no auth read can silently
+/// reach the machine-global peppy home.
 pub fn credentials_path(dirs: &daemon_config::consts::PeppyDirs) -> PathBuf {
     dirs.conf_dir()
         .join(daemon_config::consts::CREDENTIALS_FILE)
 }
 
 /// Loads the credentials document, returning an empty one when the file does
-/// not exist yet (first login).
+/// not exist yet (first login). A file of another version is rejected.
 pub fn load(path: &Path) -> Result<Credentials> {
-    match std::fs::read_to_string(path) {
-        Ok(content) => {
-            let creds: Credentials = serde_json5::from_str(&content)
-                .map_err(|e| Error::Auth(format!("failed to parse {}: {e}", path.display())))?;
-            // No back-compat reader: any other version (including the
-            // unversioned old format, which reads as 0) is rejected outright so
-            // a stale-shaped file is never half-interpreted.
-            if creds.version != CREDENTIALS_VERSION {
-                return Err(Error::Auth(format!(
-                    "credentials file {} is an unsupported format (v{}, expected v{}); \
-                     run `peppy platform login` again",
-                    path.display(),
-                    creds.version,
-                    CREDENTIALS_VERSION
-                )));
-            }
-            Ok(creds)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Credentials::default()),
-        Err(e) => Err(Error::Io(e)),
-    }
+    Ok(document::load(path)?.unwrap_or_default())
 }
 
 /// Atomically writes the credentials document, setting `conf/` to `0700` and the
 /// file to `0600` so the secrets are owner-only.
 pub fn save(path: &Path, creds: &Credentials) -> Result<()> {
-    let content = json5_pretty::to_string_pretty(creds)
-        .map_err(|e| Error::Auth(format!("failed to serialize credentials: {e}")))?;
-
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         restrict_dir(parent)?;
     }
-
-    daemon_config::atomic_write::publish_atomic(path, |tmp| {
-        std::fs::write(tmp, &content)?;
-        restrict_file(tmp)
-    })?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn restrict_file(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(unix)]
-fn restrict_dir(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn restrict_file(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restrict_dir(_path: &Path) -> std::io::Result<()> {
-    Ok(())
+    document::save(path, creds, true)
 }
 
 /// Current time as unix seconds (0 if the clock predates the epoch).
@@ -306,95 +225,28 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_a_cached_router_session() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("conf").join("credentials.json5");
-        let creds = Credentials {
-            session: Some(sample()),
-            router: Some(RouterSession {
-                endpoint: "tls/cap.zenoh.localhost:7443".into(),
-                protocol: "tls".into(),
-                repull_after: 1_700_000_000,
-                namespace: config::namespace::Namespace::parse(
-                    "550e8400-e29b-41d4-a716-446655440000",
-                )
-                .unwrap(),
-                subject: "auth0|alice".into(),
-            }),
-            ..Default::default()
-        };
-
-        save(&path, &creds).expect("save");
-        let loaded = load(&path).expect("load");
-        let rs = loaded.router.as_ref().expect("router session");
-        assert_eq!(rs.endpoint, "tls/cap.zenoh.localhost:7443");
-        assert_eq!(rs.protocol, "tls");
-        assert_eq!(rs.repull_after, 1_700_000_000);
-        assert_eq!(
-            rs.namespace.as_str(),
-            "550e8400-e29b-41d4-a716-446655440000"
-        );
-        assert_eq!(rs.subject, "auth0|alice");
-    }
-
-    /// A credentials file written while `RouterSession` still carried a
-    /// `core_node_name` tag keeps parsing: the key is ignored and dropped on the
-    /// next save. No migration, no version bump.
-    ///
-    /// Worth pinning rather than assuming, because it rests entirely on this
-    /// document not being `deny_unknown_fields`: adding that would log out every
-    /// machine on disk without any code here changing.
-    #[test]
-    fn a_router_session_carrying_the_removed_name_tag_still_parses() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("conf").join("credentials.json5");
-        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-        std::fs::write(
-            &path,
-            format!(
-                r#"{{ version: {CREDENTIALS_VERSION}, router: {{
-                    endpoint: "tls/cap:7443", protocol: "tls", repull_after: 1,
-                    namespace: "550e8400-e29b-41d4-a716-446655440000",
-                    subject: "auth0|alice", core_node_name: "cn-old" }} }}"#
-            ),
-        )
-        .expect("write a file carrying the removed tag");
-
-        let loaded = load(&path).expect("the removed tag must not fail the load");
-        assert_eq!(
-            loaded.router.as_ref().expect("router session").subject,
-            "auth0|alice"
-        );
-
-        save(&path, &loaded).expect("save");
-        assert!(
-            !std::fs::read_to_string(&path)
-                .expect("read back")
-                .contains("core_node_name"),
-            "the stale key is dropped on the next save rather than carried forever"
-        );
-    }
-
-    #[test]
     fn default_document_carries_the_current_version() {
         assert_eq!(Credentials::default().version, CREDENTIALS_VERSION);
     }
 
+    /// A file of another version is rejected as a whole, naming the command
+    /// that replaces it, rather than having its session half-read.
     #[test]
-    fn rejects_an_unversioned_old_format_file() {
+    fn rejects_a_file_of_another_version() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("conf").join("credentials.json5");
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-        // A pre-Phase-F document: no `version` field (reads as 0).
         std::fs::write(
             &path,
-            r#"{ session: { api_url: "http://x", issuer: "http://y", client_id: "c",
+            r#"{ version: 1, session: { api_url: "http://x", issuer: "http://y", client_id: "c",
                 access_token: "a", refresh_token: "r", expires_at: 1, token_type: "Bearer",
-                scope: "openid" } }"#,
+                scope: "openid" },
+                router: { endpoint: "tls/cap:7443", protocol: "tls", repull_after: 1,
+                namespace: "550e8400-e29b-41d4-a716-446655440000", subject: "auth0|alice" } }"#,
         )
-        .expect("write old file");
+        .expect("write the file");
 
-        let err = load(&path).expect_err("old format must be rejected");
+        let err = load(&path).expect_err("another version must be rejected");
         let msg = err.to_string();
         assert!(
             msg.contains("unsupported format") && msg.contains("peppy platform login"),
@@ -403,18 +255,13 @@ mod tests {
     }
 
     #[test]
-    fn router_session_staleness_accounts_for_skew() {
-        let rs = RouterSession {
-            endpoint: "tls/cap:7443".into(),
-            protocol: "tls".into(),
-            repull_after: 1_000,
-            namespace: config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000")
-                .unwrap(),
-            subject: "auth0|alice".into(),
-        };
-        assert!(!rs.is_stale(900, 30));
-        assert!(rs.is_stale(980, 30)); // 980 + 30 >= 1000
-        assert!(rs.is_stale(1_000, 0));
+    fn rejects_an_unversioned_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("conf").join("credentials.json5");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(&path, r#"{ session: null }"#).expect("write the file");
+
+        assert!(load(&path).is_err());
     }
 
     #[cfg(unix)]

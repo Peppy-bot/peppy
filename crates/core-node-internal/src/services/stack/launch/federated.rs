@@ -134,7 +134,7 @@ pub(in crate::services::stack) async fn live_core_nodes(
 ///
 /// Liveness is read from zenoh presence, not from the platform HTTP roster: a
 /// launch depends on being able to TALK to a machine right now, which the
-/// roster does not attest. `peppy platform list` stays the human-facing view.
+/// roster does not attest. `peppy platform peers` stays the human-facing view.
 fn reject_unreachable_core_nodes(
     wanted: &BTreeSet<String>,
     live: &BTreeSet<String>,
@@ -145,8 +145,8 @@ fn reject_unreachable_core_nodes(
     }
     Err(format!(
         "these core nodes are not live on the federation: {}. Live right now: {}. \
-         Check `peppy platform list`, and that each machine's daemon is running and \
-         logged into this workspace.",
+         Check `peppy platform peers`, and that each machine's daemon is running and \
+         enrolled in this project.",
         format_quoted_list(&missing),
         if live.is_empty() {
             "nothing".to_owned()

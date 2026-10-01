@@ -24,7 +24,7 @@ mod zenoh_config;
 #[cfg(feature = "zenoh")]
 mod zenohd;
 
-/// The validated workspace namespace applied to an application session.
+/// The validated project namespace applied to an application session.
 /// Defined in `config::namespace`; re-exported here so
 /// callers that drive pmi's session constructors (e.g. peppylib) can name it
 /// through pmi alone.
@@ -85,4 +85,4 @@ pub use zenohd::{ZenohEndpoint, ZenohNetProtocol};
 // base `zenoh` feature (no zenohd binary needed) so a client/orchestrator that
 // only renders configs and opens TLS sessions can use them.
 #[cfg(feature = "zenoh")]
-pub use zenoh_config::{TlsConfig, probe_tls_reachable, render_router_config};
+pub use zenoh_config::{ConnectIdentity, TlsConfig, probe_tls_reachable, render_router_config};

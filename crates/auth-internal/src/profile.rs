@@ -103,22 +103,27 @@ pub fn validate_https_or_local(raw: &str, what: &str) -> Result<Url> {
 /// Pure core of [`validate_https_or_local`] with the transport policy made
 /// explicit. The policy only widens the plain-http arm for non-local hosts;
 /// every other check stays strict regardless of policy.
+///
+/// Most of the values checked here are server supplied, so a refusal never
+/// repeats the value: at most it names the scheme and host, never the
+/// userinfo, path, query or fragment, where a credential or a one-time code
+/// can sit.
 pub fn validate_https_or_local_with(raw: &str, what: &str, policy: TransportPolicy) -> Result<Url> {
     if raw.is_empty() || raw.trim() != raw {
         return Err(Error::Auth(format!(
             "invalid {what}: it must be non-empty and carry no surrounding whitespace"
         )));
     }
-    let parsed =
-        Url::parse(raw).map_err(|e| Error::Auth(format!("invalid {what} `{raw}`: {e}")))?;
+    let parsed = Url::parse(raw).map_err(|e| Error::Auth(format!("invalid {what}: {e}")))?;
     if parsed.cannot_be_a_base() || parsed.host().is_none() {
         return Err(Error::Auth(format!(
-            "invalid {what} `{raw}`: an absolute URL with a host is required"
+            "invalid {what}: an absolute URL with a host is required"
         )));
     }
+    let origin = parsed.origin().ascii_serialization();
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(Error::Auth(format!(
-            "invalid {what} `{raw}`: embedded credentials are not allowed"
+            "invalid {what} at {origin}: embedded credentials are not allowed"
         )));
     }
     match parsed.scheme() {
@@ -129,23 +134,23 @@ pub fn validate_https_or_local_with(raw: &str, what: &str, policy: TransportPoli
             Ok(parsed)
         }
         "http" => Err(Error::Auth(format!(
-            "refusing plain http for non-local {what} `{raw}` (use https; plain http to a \
-             non-local host is allowed only in debug builds)"
+            "refusing plain http for non-local {what} at {origin} (use https; plain http \
+             to a non-local host is allowed only in debug builds)"
         ))),
         other => Err(Error::Auth(format!(
-            "unsupported URL scheme `{other}` in `{raw}`"
+            "unsupported URL scheme `{other}` for {what}"
         ))),
     }
 }
 
 /// One warning per process, at the moment an insecure URL is actually
-/// admitted. The URL is safe to print: credential-bearing URLs were already
-/// rejected before the scheme match.
+/// admitted. Only the scheme and host are printed, as in every refusal.
 fn warn_insecure_transport_once(what: &str, url: &Url) {
     static WARNED: Once = Once::new();
+    let origin = url.origin().ascii_serialization();
     WARNED.call_once(|| {
         println!(
-            "Warning: allowing plain http for {what} {url} (debug build; a release build \
+            "Warning: allowing plain http for {what} {origin} (debug build; a release build \
              requires https)"
         );
     });
@@ -446,6 +451,25 @@ mod tests {
             err.to_string().contains("surrounding whitespace"),
             "got: {err}"
         );
+    }
+
+    /// A refusal names the scheme and host at most, never the credentials,
+    /// path, or query of a server-supplied value.
+    #[test]
+    fn refusals_never_repeat_credentials_paths_or_queries() {
+        for raw in [
+            "https://alice:hunter2@host.test/device?user_code=ABCD-EFGH",
+            "http://host.test/device?user_code=ABCD-EFGH",
+            "ftp://host.test/device?user_code=ABCD-EFGH",
+            "not a url ABCD-EFGH",
+        ] {
+            let message = validate_https_or_local_with(raw, "subject", TransportPolicy::Strict)
+                .expect_err("refused")
+                .to_string();
+            for secret in ["hunter2", "alice", "ABCD-EFGH", "/device"] {
+                assert!(!message.contains(secret), "{raw}: {message}");
+            }
+        }
     }
 
     #[test]

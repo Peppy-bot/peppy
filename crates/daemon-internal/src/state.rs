@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use auth::FederationIdentity;
 use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
 use std::fs::{self};
@@ -31,19 +32,18 @@ pub struct DaemonState {
     /// command (`peppy node stop`) can size its request timeout to exceed the
     /// daemon's grace + reap window.
     pub shutdown_grace_secs: u64,
-    /// The workspace namespace this daemon generation resolved at startup
-    /// (`local` when logged out, else the workspace id). A CLI control session
-    /// reads it so it opens under exactly the daemon's namespace. The field is
-    /// required and typed: missing or invalid persisted state fails at read.
+    /// The routing namespace this daemon generation resolved at startup from
+    /// its enrollment (`local` when not enrolled, else the project id). A CLI
+    /// control session reads it so it opens under exactly the daemon's
+    /// namespace. The field is required and typed: missing or invalid
+    /// persisted state fails at read.
     pub namespace: config::namespace::Namespace,
-    /// `Some(secs)` when this daemon generation armed managed-router federation
-    /// (a control socket exists and login/logout pokes apply within this bound,
-    /// the daemon's `zenoh.managed.federation.connect_timeout_secs` at startup);
-    /// `None` when it runs an operator-run external router (or no router), so
-    /// there is no federation control socket to poke and no restart to warn
-    /// about. `peppy platform login`/`logout` read this so they follow the RUNNING
-    /// daemon's mode, not a config edited on disk after it started.
-    pub federation_connect_timeout_secs: Option<u64>,
+    /// The transport identity the managed router runs under: the enrollment's
+    /// zenoh id when enrolled, a per-boot id otherwise. `None` for an
+    /// operator-run external router (whose identity is the operator's) and for
+    /// the mock engine. `peppy platform enroll` reads it, with `namespace`, to
+    /// tell the rebuilt generation from the one it poked.
+    pub router_id: Option<pmi::RouterId>,
 }
 
 impl DaemonState {
@@ -54,7 +54,7 @@ impl DaemonState {
         git_hash: impl Into<String>,
         shutdown_grace_secs: u64,
         namespace: config::namespace::Namespace,
-        federation_connect_timeout_secs: Option<u64>,
+        router_id: Option<pmi::RouterId>,
     ) -> Self {
         Self {
             core_node_name: core_node_name.into(),
@@ -64,8 +64,24 @@ impl DaemonState {
             git_hash: git_hash.into(),
             shutdown_grace_secs,
             namespace,
-            federation_connect_timeout_secs,
+            router_id,
         }
+    }
+
+    /// Whether this generation binds the federation control socket: it runs a
+    /// managed zenoh router, the one kind that records a `router_id`. An
+    /// operator-run external router and the mock engine have no socket, so
+    /// there is nothing to poke and no restart to warn about. `peppy platform
+    /// enroll`/`unenroll` read this so they follow the RUNNING daemon's mode,
+    /// not a config edited on disk after it started.
+    pub fn has_federation_control(&self) -> bool {
+        self.router_id.is_some()
+    }
+
+    /// Whether this generation runs under `identity`: the namespace of the
+    /// identity and, when it pins a router id, that id too.
+    pub fn runs_under(&self, identity: &FederationIdentity) -> bool {
+        identity.is_run_by(&self.namespace, self.router_id.as_ref())
     }
 
     /// Returns the path where the daemon state file is stored: the data
@@ -153,7 +169,7 @@ mod tests {
             git_hash: "test".to_string(),
             shutdown_grace_secs: 5,
             namespace: config::namespace::Namespace::local(),
-            federation_connect_timeout_secs: Some(30),
+            router_id: Some(pmi::RouterId::parse("7f3a9c1e").unwrap()),
         };
         DaemonState::write_to(&path, &original).expect("write");
 
@@ -165,7 +181,54 @@ mod tests {
         assert_eq!(read.git_hash, "test");
         assert_eq!(read.shutdown_grace_secs, 5);
         assert_eq!(read.namespace, config::namespace::Namespace::local());
-        assert_eq!(read.federation_connect_timeout_secs, Some(30));
+        assert_eq!(
+            read.router_id,
+            Some(pmi::RouterId::parse("7f3a9c1e").unwrap())
+        );
+        assert!(read.has_federation_control());
+    }
+
+    fn state(namespace: &str, router_id: Option<&str>) -> DaemonState {
+        DaemonState::new(
+            "cn-test",
+            "127.0.0.1",
+            7447,
+            "test",
+            5,
+            config::namespace::Namespace::parse(namespace).unwrap(),
+            router_id.map(|id| pmi::RouterId::parse(id).unwrap()),
+        )
+    }
+
+    /// Only a managed router records a router id, and only it binds the
+    /// control socket.
+    #[test]
+    fn a_managed_router_is_the_one_with_a_control_socket() {
+        assert!(state("local", Some("7f3a")).has_federation_control());
+        assert!(!state("local", None).has_federation_control());
+    }
+
+    /// The identity the restart wait and `status` look for: the namespace
+    /// and, when enrolled, the pinned router id; an unenrolled generation's
+    /// per-boot id is not compared.
+    #[test]
+    fn a_generation_runs_under_the_identity_that_names_its_namespace_and_id() {
+        const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
+        let enrolled = FederationIdentity {
+            namespace: config::namespace::Namespace::parse(PROJECT).unwrap(),
+            router_id: Some(pmi::RouterId::parse("2f6c1d8e").unwrap()),
+        };
+        assert!(state(PROJECT, Some("2f6c1d8e")).runs_under(&enrolled));
+        assert!(
+            !state(PROJECT, Some("7f3a")).runs_under(&enrolled),
+            "the old generation under the same project but a different id is not back yet"
+        );
+        assert!(!state("local", Some("2f6c1d8e")).runs_under(&enrolled));
+
+        let local = FederationIdentity::of(None);
+        assert!(state("local", Some("abc123")).runs_under(&local));
+        assert!(state("local", None).runs_under(&local));
+        assert!(!state(PROJECT, None).runs_under(&local));
     }
 
     #[test]
@@ -182,7 +245,7 @@ mod tests {
                 "git_hash": "old",
                 "shutdown_grace_secs": 5,
                 "namespace": "local",
-                "federation_connect_timeout_secs": null,
+                "router_id": null,
                 "written_at_ms": 1234
             }"#,
         )
@@ -209,7 +272,31 @@ mod tests {
                 "git_hash": "test",
                 "shutdown_grace_secs": 5,
                 "namespace": "**",
-                "federation_connect_timeout_secs": null
+                "router_id": null
+            }"#,
+        )
+        .expect("write invalid state");
+
+        assert!(DaemonState::read_from(&path).is_err());
+    }
+
+    /// A router id zenoh would refuse (a leading zero) fails the read the same
+    /// way an invalid namespace does, rather than reaching a CLI comparison.
+    #[test]
+    fn an_invalid_router_id_fails_the_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("daemon_state.json5");
+        std::fs::write(
+            &path,
+            r#"{
+                "core_node_name": "bad",
+                "daemon_pid": null,
+                "messaging_host": "127.0.0.1",
+                "messaging_port": 7448,
+                "git_hash": "test",
+                "shutdown_grace_secs": 5,
+                "namespace": "local",
+                "router_id": "0abc"
             }"#,
         )
         .expect("write invalid state");

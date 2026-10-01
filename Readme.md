@@ -57,7 +57,7 @@ Non-goals:
 | `peppy stack` | Launch or build a stack from a launcher, list what is running, benchmark interface latency |
 | `peppy repo` | Manage the repositories nodes and launchers are resolved from |
 | `peppy container` | Check and repair the Apptainer container prerequisites |
-| `peppy platform` | Log in, log out, and show the current platform identity |
+| `peppy platform` | Sign in to the platform, enroll this machine in a project's cloud router, and show its status |
 | `peppy service` | Install, serve, stop, uninstall, and reset the background service |
 | `peppy info` | Print the CLI version, container setup, and daemon info |
 | `peppy --version` | Print the CLI version alone, without contacting the daemon |

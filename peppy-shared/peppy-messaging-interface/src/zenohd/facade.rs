@@ -1,6 +1,5 @@
 use super::super::error::{Error, Result};
 use super::{ZenohEndpoint, ZenohNetProtocol};
-use crate::router_id::RouterId;
 use std::env;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -21,17 +20,6 @@ enum RouterOwnership {
         zenohd_config_path: PathBuf,
         pinned: bool,
         zenohd_log_path: PathBuf,
-        /// The transport identity this router's config pins. Held here rather
-        /// than re-read from the config file so a re-render
-        /// ([`crate::ZenohAdapter::refederate`]) reuses the identity the router
-        /// was built with: a federation change must not look, to anything
-        /// watching the router's sessions, like a different machine arriving.
-        ///
-        /// Living in the `Managed` variant makes that structural. An external
-        /// router's config is the operator's and carries whatever `id` they
-        /// chose, so there is no id for peppy to hold, and no code path that
-        /// has to remember not to look for one.
-        router_id: RouterId,
     },
     /// An already-running router that peppy only probes and uses. No binary or
     /// router config belongs to peppy in this mode.
@@ -193,17 +181,14 @@ pub struct ZenohdFacade {
 impl ZenohdFacade {
     /// Creates a facade for a peppy-managed zenohd process. The router endpoint
     /// is extracted from the exact config that will be passed to zenohd.
-    ///
-    /// `router_id` is the identity that config pins (or, on the operator-pinned
-    /// `ZENOH_CONFIG` path, the identity peppy *would* have pinned; nothing
-    /// re-renders that config, so it is never used there).
-    pub fn managed(zenohd_config_path: impl AsRef<Path>, router_id: RouterId) -> Result<Self> {
+    pub fn managed(zenohd_config_path: impl AsRef<Path>) -> Result<Self> {
         let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&zenohd_config_path)?;
         let zenohd_config_path = zenohd_config_path.as_ref().to_path_buf();
         // The router is operator-pinned when it runs the `ZENOH_CONFIG` file
-        // verbatim (`router_config_path` returns that path unchanged). Capture it
-        // once, here, when the router is built — refederate consults this instead
-        // of re-reading the process-global env on every call.
+        // verbatim (`router_config_path` returns that path unchanged). Captured
+        // once, here, when the router is built, so `is_pinned` answers from the
+        // config the router actually runs rather than from the process-global
+        // env as it happens to read later.
         let pinned =
             crate::zenohd::config_override().as_deref() == Some(zenohd_config_path.as_path());
         // Keep the log next to the generated config (same directory), one file
@@ -218,7 +203,6 @@ impl ZenohdFacade {
                 zenohd_config_path,
                 pinned,
                 zenohd_log_path,
-                router_id,
             },
             adopted: false,
             kill_on_parent_death: false,
@@ -347,16 +331,6 @@ impl ZenohdFacade {
             RouterOwnership::Managed {
                 zenohd_log_path, ..
             } => Some(zenohd_log_path),
-            RouterOwnership::External => None,
-        }
-    }
-
-    /// The transport identity a managed router's config pins, so a re-render
-    /// keeps it. `None` for an external router, whose config peppy neither
-    /// wrote nor rewrites.
-    pub(crate) fn managed_router_id(&self) -> Option<&RouterId> {
-        match &self.ownership {
-            RouterOwnership::Managed { router_id, .. } => Some(router_id),
             RouterOwnership::External => None,
         }
     }
@@ -859,7 +833,7 @@ mod tests {
         )
         .expect("Failed to write config");
 
-        let facade = ZenohdFacade::managed(config_file.path(), RouterId::generate());
+        let facade = ZenohdFacade::managed(config_file.path());
         assert!(facade.is_ok(), "Error creating facade: {:?}", facade.err());
 
         let facade = facade.unwrap();
@@ -904,8 +878,8 @@ mod tests {
         )
         .expect("Failed to write config");
 
-        let mut facade = ZenohdFacade::managed(config_file.path(), RouterId::generate())
-            .expect("Failed to create facade");
+        let mut facade =
+            ZenohdFacade::managed(config_file.path()).expect("Failed to create facade");
 
         // First stop should succeed (no process to stop)
         assert!(facade.stop_router().is_ok());
@@ -1008,8 +982,7 @@ mod tests {
         )
         .expect("write config");
 
-        let mut facade =
-            ZenohdFacade::managed(config_file.path(), RouterId::generate()).expect("create facade");
+        let mut facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
         let child = Command::new("sleep")
             .arg("30")
             .spawn()

@@ -1,13 +1,12 @@
 //! Credential resolution for authenticated commands.
 //!
-//! Precedence (the interactive device-login step is owned by the `login`
-//! command, not the resolver (`whoami`/`logout` never auto-open a browser):
+//! The interactive device-login step is owned by the `login` command, not the
+//! resolver (`whoami`/`enroll` never auto-open a browser). Resolution is:
 //!
-//! 1. `PEPPY_API_KEY` PAT → bearer, no refresh (CI / automation).
-//! 2. cached session token, valid → use it.
-//! 3. cached session token expired but refreshable → refresh, persist rotation,
+//! 1. cached session token, valid → use it.
+//! 2. cached session token expired but refreshable → refresh, persist rotation,
 //!    use it.
-//! 4. otherwise → [`Error::NotAuthenticated`].
+//! 3. otherwise → [`Error::NotAuthenticated`].
 
 use std::path::{Path, PathBuf};
 
@@ -24,21 +23,7 @@ const EXPIRY_SKEW_SECS: i64 = 30;
 /// A ready bearer plus the context needed to refresh it on a reactive `401`.
 pub struct Credential {
     pub token: SecretString,
-    pub kind: CredentialKind,
-}
-
-impl Credential {
-    pub fn is_refreshable(&self) -> bool {
-        matches!(self.kind, CredentialKind::Session(_))
-    }
-}
-
-/// Whether the bearer can be refreshed.
-pub enum CredentialKind {
-    /// A `PEPPY_API_KEY` PAT (long-lived, not refreshable).
-    Pat,
-    /// A cached session token, refreshable via the carried OIDC context.
-    Session(SessionContext),
+    pub session: SessionContext,
 }
 
 /// Everything needed to refresh a session token and persist the rotation.
@@ -49,17 +34,8 @@ pub struct SessionContext {
     pub creds_path: PathBuf,
 }
 
-/// Resolves a usable credential from the single cached session. `pat` is the
-/// injected `PEPPY_API_KEY` value (production passes the env var; tests pass it
-/// explicitly to avoid env races).
-pub fn resolve(creds_path: &Path, http: &HttpClient, pat: Option<String>) -> Result<Credential> {
-    if let Some(pat) = pat.filter(|v| !v.is_empty()) {
-        return Ok(Credential {
-            token: storage::secret(pat),
-            kind: CredentialKind::Pat,
-        });
-    }
-
+/// Resolves a usable credential from the single cached session.
+pub fn resolve(creds_path: &Path, http: &HttpClient) -> Result<Credential> {
     let creds = storage::load(creds_path)?;
     let pc = creds.session.clone().ok_or(Error::NotAuthenticated)?;
 
@@ -76,28 +52,18 @@ pub fn resolve(creds_path: &Path, http: &HttpClient, pat: Option<String>) -> Res
     Ok(session_credential(creds_path, &updated))
 }
 
-/// The `PEPPY_API_KEY` PAT from the environment, if set to a non-empty value:
-/// the single source of the "PAT from env" convention shared by the commands that
-/// resolve a credential outside [`resolve`]'s injected-`pat` path (e.g. `whoami`,
-/// router federation). Centralizes the env-var name and the empty-string guard.
-pub fn pat_from_env() -> Option<String> {
-    std::env::var("PEPPY_API_KEY")
-        .ok()
-        .filter(|v| !v.is_empty())
-}
-
 /// Builds a refreshable session [`Credential`] from the cached `pc`. Public
 /// for the one caller outside the resolver: `peppy platform login`, which builds
 /// the credential from tokens it minted seconds ago instead of re-resolving.
 pub fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
     Credential {
         token: storage::secret(pc.access_token.expose_secret().to_string()),
-        kind: CredentialKind::Session(SessionContext {
+        session: SessionContext {
             issuer: pc.issuer.clone(),
             client_id: pc.client_id.clone(),
             refresh_token: storage::secret(pc.refresh_token.expose_secret().to_string()),
             creds_path: creds_path.to_path_buf(),
-        }),
+        },
     }
 }
 

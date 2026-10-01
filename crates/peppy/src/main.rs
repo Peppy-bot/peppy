@@ -25,7 +25,7 @@ struct Cli {
     /// Core-node name of the daemon to target (see `peppy info`). Defaults
     /// to the local daemon. The local daemon must be running either way (its
     /// router and federation carry the traffic), and a remote daemon must
-    /// use the same workspace namespace.
+    /// use the same project namespace.
     #[arg(long = "core-node", global = true, value_name = "NAME", value_parser = parse_core_node_target)]
     core_node: Option<String>,
 }
@@ -75,8 +75,11 @@ enum Commands {
         #[command(subcommand)]
         command: repo::RepoCommands,
     },
-    /// Platform account: log in, log out, show the current identity, and list the workspace's core nodes
+    /// Platform account and project router: sign in, select a project, enroll this machine, show its status
     Platform {
+        /// Override the backend base URL (else the build default / PEPPY_API_URL).
+        #[arg(long = "api-url", global = true)]
+        api_url: Option<String>,
         #[command(subcommand)]
         command: platform::PlatformCommands,
     },
@@ -131,7 +134,9 @@ fn main() {
             container::ContainerCommand { command }.execute(&app_ctx)
         }
         Commands::Repo { command } => repo::RepoCommand { command }.execute(&app_ctx),
-        Commands::Platform { command } => platform::PlatformCommand { command }.execute(&app_ctx),
+        Commands::Platform { api_url, command } => {
+            platform::PlatformCommand { api_url, command }.execute(&app_ctx)
+        }
         Commands::Mcp { command } => mcp::McpCommand { command }.execute(&app_ctx),
         Commands::Info {} => info::InfoCommand.execute(&app_ctx),
     };
@@ -510,18 +515,89 @@ mod tests {
         }
     }
 
-    /// The group is spelled `platform`, and only `platform`. The negative half
-    /// is the point: `auth` is gone outright, with no alias, hidden command, or
-    /// compatibility parser to fall back on, so it must fail to parse.
+    /// Every spelling of the group parses, and a subcommand or a flag the
+    /// group does not have is refused, with no alias to fall back on.
     #[test]
     fn platform_subcommands_parse() {
         for args in [
-            vec!["peppy", "platform", "login", "--no-browser", "--yes"],
+            vec!["peppy", "platform", "login", "--no-browser"],
+            vec!["peppy", "platform", "login", "--no-enroll"],
+            vec!["peppy", "platform", "login", "-y"],
+            vec![
+                "peppy",
+                "platform",
+                "login",
+                "--workspace",
+                "w",
+                "--project",
+                "p",
+            ],
+            vec!["peppy", "platform", "workspace", "show", "--json"],
+            vec!["peppy", "platform", "workspace", "list", "--json"],
+            vec!["peppy", "platform", "workspace", "use"],
+            vec!["peppy", "platform", "workspace", "use", "Robotics lab"],
+            vec!["peppy", "platform", "workspace", "clear"],
+            vec!["peppy", "platform", "project", "show"],
+            vec!["peppy", "platform", "project", "list", "--workspace", "Lab"],
+            vec!["peppy", "platform", "project", "use"],
+            vec!["peppy", "platform", "project", "use", "Field"],
+            vec![
+                "peppy",
+                "platform",
+                "project",
+                "use",
+                "Field",
+                "--workspace",
+                "w",
+            ],
+            vec!["peppy", "platform", "project", "clear"],
             vec!["peppy", "platform", "login", "--api-url", "http://x:3000"],
-            vec!["peppy", "platform", "logout", "-y"],
+            vec!["peppy", "platform", "logout"],
             vec!["peppy", "platform", "logout", "--api-url", "http://x:3000"],
+            vec!["peppy", "platform", "--api-url", "http://x:3000", "whoami"],
+            vec![
+                "peppy",
+                "platform",
+                "router",
+                "start",
+                "--api-url",
+                "http://x:3000",
+            ],
             vec!["peppy", "platform", "whoami", "--json"],
-            vec!["peppy", "platform", "whoami", "--api-url", "http://x:3000"],
+            vec![
+                "peppy",
+                "platform",
+                "enroll",
+                "--workspace",
+                "w",
+                "--project",
+                "p1",
+                "--replace",
+                "-y",
+            ],
+            vec!["peppy", "platform", "unenroll", "--local-only", "--yes"],
+            vec!["peppy", "platform", "status", "--json"],
+            vec!["peppy", "platform", "router", "restart", "-y"],
+            vec![
+                "peppy",
+                "platform",
+                "router",
+                "restart",
+                "--workspace",
+                "w",
+                "--project",
+                "p",
+            ],
+            vec!["peppy", "platform", "router", "start", "--project", "p"],
+            vec![
+                "peppy",
+                "platform",
+                "peers",
+                "--workspace",
+                "w",
+                "--project",
+                "p",
+            ],
         ] {
             assert!(
                 Cli::try_parse_from(args.clone()).is_ok(),
@@ -529,19 +605,79 @@ mod tests {
             );
         }
 
-        assert!(Cli::try_parse_from(["peppy", "auth", "whoami"]).is_err());
-        assert!(Cli::try_parse_from(["peppy", "auth", "login"]).is_err());
-        assert!(Cli::try_parse_from(["peppy", "auth", "logout"]).is_err());
+        for args in [
+            vec!["peppy", "auth", "whoami"],
+            vec!["peppy", "platform", "login", "--no-configure"],
+            vec!["peppy", "platform", "login", "--no-enroll", "--yes"],
+            vec![
+                "peppy",
+                "platform",
+                "login",
+                "--no-enroll",
+                "--project",
+                "p",
+            ],
+            vec![
+                "peppy",
+                "platform",
+                "login",
+                "--no-enroll",
+                "--workspace",
+                "w",
+            ],
+            vec!["peppy", "platform", "not-a-subcommand"],
+            vec!["peppy", "platform", "router"],
+            vec!["peppy", "platform", "workspace"],
+            vec!["peppy", "platform", "project", "switch"],
+            vec!["peppy", "platform", "workspace", "use", "a", "b"],
+            vec!["peppy", "platform", "enroll", "--name", "robot-7"],
+            vec!["peppy", "platform", "context", "show"],
+            vec!["peppy", "platform", "configure"],
+            vec!["peppy", "platform", "workspaces"],
+            vec!["peppy", "platform", "projects"],
+            vec!["peppy", "platform", "router", "stop"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_err(),
+                "{args:?} should be refused"
+            );
+        }
     }
 
+    /// `--api-url` is one flag of the group, read from before and from after
+    /// the subcommand, down to a nested one.
     #[test]
-    fn platform_status_is_an_alias_for_whoami() {
-        let cli = Cli::try_parse_from(["peppy", "platform", "status"])
-            .expect("the status alias should parse");
+    fn the_api_url_of_the_group_is_read_from_either_side_of_the_subcommand() {
+        for args in [
+            vec!["peppy", "platform", "--api-url", "http://x:3000", "status"],
+            vec!["peppy", "platform", "status", "--api-url", "http://x:3000"],
+            vec![
+                "peppy",
+                "platform",
+                "project",
+                "list",
+                "--api-url",
+                "http://x:3000",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(args.clone()).expect("parses");
+            let Commands::Platform { api_url, .. } = cli.command else {
+                panic!("{args:?} is a platform command");
+            };
+            assert_eq!(api_url.as_deref(), Some("http://x:3000"), "{args:?}");
+        }
+    }
+
+    /// `status` is its own command (the enrollment and the router link), not a
+    /// spelling of `whoami` (the signed-in identity).
+    #[test]
+    fn platform_status_is_not_whoami() {
+        let cli = Cli::try_parse_from(["peppy", "platform", "status"]).expect("status parses");
         assert!(matches!(
             cli.command,
             Commands::Platform {
-                command: platform::PlatformCommands::Whoami { .. }
+                command: platform::PlatformCommands::Status { .. },
+                ..
             }
         ));
     }

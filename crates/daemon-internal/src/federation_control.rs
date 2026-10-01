@@ -1,18 +1,19 @@
-//! Daemon control socket that turns a `peppy platform login`/`logout` poke into an
-//! *immediate* router (de)federation.
+//! Daemon control socket that turns a `peppy platform enroll`/`unenroll` poke
+//! into an immediate reconcile of the router's federation.
 //!
 //! A [`ServeAsyncCommand`] that binds the per-user Unix-domain socket
 //! ([`crate::control::federation_control_socket_path`]) and, for each
 //! connection, forwards a [`REFEDERATE_VERB`](crate::control::REFEDERATE_VERB)
-//! request to the [`RouterFederation`](super::router_federation) loop as a
-//! [`RefederateRequest`]. It waits for that poll to apply and writes the
-//! resulting [`ControlResponse`] back, so the CLI learns federation is in place
-//! *after* the local zenohd bounce, which is exactly why the channel is a UDS,
-//! independent of the router being restarted.
+//! request to the [`RouterFederation`](super::router_federation) task as a
+//! [`RefederateRequest`]. It waits for the reconcile and writes the resulting
+//! [`ControlResponse`] back. When the enrollment changed this generation's
+//! identity, the handler flushes the `Restarting` ack and only then raises the
+//! in-process restart, so the CLI always reads the ack before the daemon tears
+//! down, which is why the channel is a UDS independent of the router.
 //!
 //! Binding is best-effort: a bind failure is logged and the task idles until
-//! shutdown rather than taking the daemon down; the periodic federation poll
-//! still (de)federates, only the *immediate* poke is unavailable.
+//! shutdown rather than taking the daemon down; the router still boots from
+//! the enrollment on the next start, only the immediate poke is unavailable.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -31,20 +32,13 @@ use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 /// cannot hold a handler task open.
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Extra time the daemon waits for the federation loop to apply, on top of the
-/// configured connect timeout (which bounds the resolve). It must cover the
-/// post-resolve work of a *verifying* login poke: the zenohd bounce, the TLS
-/// reachability probe ([`super::router_federation::PROBE_TIMEOUT`]), and the
-/// core-node registration ([`super::router_federation::REGISTER_TIMEOUT`]), which
-/// runs after the probe on that same critical path. Kept smaller than the
-/// client's read slack ([`crate::control::POKE_READ_SLACK`]) so the daemon always
-/// replies a definite outcome before the client gives up (the `ack_budget_*` test
-/// guards both relationships).
-///
-/// The cost of covering the registration is that a poke which is going to fail
-/// takes up to `REGISTER_TIMEOUT` longer to say so. The budget exists to
-/// guarantee a definite answer, not a fast one.
-const APPLY_ACK_SLACK: Duration = Duration::from_secs(13);
+/// How long the daemon waits for the federation task to answer a poke. It
+/// covers the enrollment read and the TLS probe
+/// ([`super::router_federation::PROBE_TIMEOUT`]) with headroom, and is kept
+/// smaller than the client's read timeout ([`crate::control::POKE_READ_TIMEOUT`])
+/// so the daemon always replies a definite outcome before the client gives up
+/// (the `ack_budget_*` test guards both relationships).
+const ACK_BUDGET: Duration = Duration::from_secs(8);
 
 impl From<FederationOutcome> for ControlResponse {
     fn from(outcome: FederationOutcome) -> Self {
@@ -53,7 +47,6 @@ impl From<FederationOutcome> for ControlResponse {
             FederationOutcome::Pinned => ControlResponse::Pinned,
             FederationOutcome::Failed(message) => ControlResponse::Error { message },
             FederationOutcome::Unreachable(message) => ControlResponse::Unreachable { message },
-            FederationOutcome::NotRegistered(message) => ControlResponse::NotRegistered { message },
             FederationOutcome::Restart => ControlResponse::Restarting,
         }
     }
@@ -63,9 +56,6 @@ impl From<FederationOutcome> for ControlResponse {
 pub(crate) struct FederationControl {
     socket_path: PathBuf,
     trigger_tx: TriggerSender,
-    /// Bound on how long to wait for a poked poll to apply before replying with a
-    /// timeout (so a wedged apply can't hold a connection open forever).
-    connect_timeout: Duration,
     /// In-process restart signal. The control handler raises it *after* it has
     /// flushed a `Restarting` ack (a real happens-before edge), so the CLI always
     /// reads the ack before teardown can affect the connection.
@@ -79,14 +69,12 @@ impl FederationControl {
     pub(crate) fn new(
         socket_path: PathBuf,
         trigger_tx: TriggerSender,
-        connect_timeout: Duration,
         restart_tx: watch::Sender<bool>,
         teardown_token: CancellationToken,
     ) -> Self {
         Self {
             socket_path,
             trigger_tx,
-            connect_timeout,
             restart_tx,
             teardown_token,
         }
@@ -98,7 +86,6 @@ impl ServeAsyncCommand for FederationControl {
         let FederationControl {
             socket_path,
             trigger_tx,
-            connect_timeout,
             restart_tx,
             teardown_token,
         } = *self;
@@ -107,7 +94,7 @@ impl ServeAsyncCommand for FederationControl {
             // restart via the shared token) so the daemon can exit promptly (the
             // loop is otherwise infinite).
             tokio::select! {
-                _ = serve_control(&socket_path, trigger_tx, connect_timeout, restart_tx) => {}
+                _ = serve_control(&socket_path, trigger_tx, restart_tx) => {}
                 _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
             }
             // Best-effort cleanup so a stale socket does not linger (the next start
@@ -116,7 +103,7 @@ impl ServeAsyncCommand for FederationControl {
             Ok(())
         });
         // No readiness gate: binding the control socket is not a startup
-        // dependency. The startup federation gate lives in `RouterFederation`.
+        // dependency.
         ServeAsyncHandle::new(future, None)
     }
 }
@@ -126,7 +113,6 @@ impl ServeAsyncCommand for FederationControl {
 async fn serve_control(
     socket_path: &Path,
     trigger_tx: TriggerSender,
-    connect_timeout: Duration,
     restart_tx: watch::Sender<bool>,
 ) {
     let listener = match bind_listener(socket_path) {
@@ -135,8 +121,9 @@ async fn serve_control(
             warn!(
                 error = %e,
                 path = %socket_path.display(),
-                "federation control: could not bind control socket; login/logout pokes \
-                 will not be applied immediately (federation still updates on its own poll)"
+                "federation control: could not bind control socket; enroll/unenroll pokes \
+                 will not be answered (the router still boots from the enrollment on the \
+                 next start)"
             );
             // Hold `trigger_tx`/`restart_tx` alive (so the federation loop's
             // channel and the restart watch stay open) and wait for the shutdown
@@ -149,9 +136,9 @@ async fn serve_control(
     };
     info!(
         path = %socket_path.display(),
-        "federation control: listening for login/logout federation pokes"
+        "federation control: listening for enroll/unenroll federation pokes"
     );
-    accept_loop(listener, trigger_tx, connect_timeout, restart_tx).await;
+    accept_loop(listener, trigger_tx, restart_tx).await;
 }
 
 /// Accepts poke connections on an already-bound listener until cancelled.
@@ -162,7 +149,6 @@ async fn serve_control(
 async fn accept_loop(
     listener: UnixListener,
     trigger_tx: TriggerSender,
-    connect_timeout: Duration,
     restart_tx: watch::Sender<bool>,
 ) {
     // Back off on a failed `accept()` so a *persistent* error (e.g. the process
@@ -180,9 +166,7 @@ async fn accept_loop(
                 let trigger_tx = trigger_tx.clone();
                 let restart_tx = restart_tx.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        handle_conn(stream, trigger_tx, connect_timeout, restart_tx).await
-                    {
+                    if let Err(e) = handle_conn(stream, trigger_tx, restart_tx).await {
                         warn!(error = %e, "federation control: error handling a poke");
                     }
                 });
@@ -217,11 +201,10 @@ fn bind_listener(socket_path: &Path) -> std::io::Result<UnixListener> {
 }
 
 /// Services one poke connection: read the request, forward a [`RefederateRequest`]
-/// to the federation loop, await the outcome (bounded), and reply.
+/// to the federation task, await the outcome (bounded), and reply.
 async fn handle_conn(
     stream: UnixStream,
     trigger_tx: TriggerSender,
-    connect_timeout: Duration,
     restart_tx: watch::Sender<bool>,
 ) -> std::io::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
@@ -239,8 +222,8 @@ async fn handle_conn(
         return write_response(&mut write_half, ControlResponse::error("unknown command")).await;
     }
 
-    // Forward the poke and await the applied outcome. Bound the wait so a wedged
-    // apply replies with a timeout rather than holding the connection open.
+    // Forward the poke and await the outcome. Bound the wait so a wedged
+    // reconcile replies with a timeout rather than holding the connection open.
     let (ack_tx, ack_rx) = oneshot::channel();
     if trigger_tx
         .send(RefederateRequest { ack: ack_tx })
@@ -253,13 +236,13 @@ async fn handle_conn(
         )
         .await;
     }
-    let response = match tokio::time::timeout(connect_timeout + APPLY_ACK_SLACK, ack_rx).await {
+    let response = match tokio::time::timeout(ACK_BUDGET, ack_rx).await {
         Ok(Ok(outcome)) => ControlResponse::from(outcome),
         Ok(Err(_)) => ControlResponse::error("federation task dropped the request"),
-        Err(_elapsed) => ControlResponse::error("timed out applying federation"),
+        Err(_elapsed) => ControlResponse::error("timed out verifying federation"),
     };
 
-    // The namespace changed: write+flush the `Restarting` ack FIRST, and only
+    // The identity changed: write+flush the `Restarting` ack FIRST, and only
     // after the flush returns `Ok` (the bytes are in the kernel socket buffer)
     // raise the in-process restart signal. This is a real happens-before edge:
     // the CLI always reads the ack before teardown can affect the connection, and
@@ -290,26 +273,19 @@ mod tests {
     use crate::control::{FEDERATION_CONTROL_SOCK, PokeOutcome, poke_refederate};
     use tokio::sync::mpsc;
 
-    /// The daemon ack budget must cover the verifying poke's post-resolve work
-    /// (the TLS probe, the registration, and the zenohd bounce), and the client
-    /// must always outlast the daemon so it receives a definite reply rather than
-    /// a client-side timeout. Guards the constants from drifting back into the
-    /// pre-probe (or pre-registration) sizing, either of which turns a working
-    /// login into a hard `TimedOut` error.
+    /// The daemon ack budget must cover the poke's TLS probe, and the client
+    /// must always outlast the daemon so it receives a definite reply rather
+    /// than a client-side timeout.
     #[test]
     fn ack_budget_covers_the_verify_probe_and_client_outlasts_daemon() {
-        use crate::control::POKE_READ_SLACK;
-        use crate::router_federation::{PROBE_TIMEOUT, REGISTER_TIMEOUT};
-        /// Headroom for the zenohd bounce that runs alongside the two network
-        /// steps, preserved exactly as it was sized before the registration.
-        const BOUNCE_HEADROOM: Duration = Duration::from_secs(3);
+        use crate::control::POKE_READ_TIMEOUT;
+        use crate::router_federation::PROBE_TIMEOUT;
         assert!(
-            PROBE_TIMEOUT + REGISTER_TIMEOUT + BOUNCE_HEADROOM <= APPLY_ACK_SLACK,
-            "the daemon ack slack must cover the verify probe AND the registration, \
-             plus the bounce"
+            PROBE_TIMEOUT < ACK_BUDGET,
+            "the daemon ack budget must cover the verify probe with headroom"
         );
         assert!(
-            APPLY_ACK_SLACK < POKE_READ_SLACK,
+            ACK_BUDGET < POKE_READ_TIMEOUT,
             "the client must outlast the daemon so it gets a definite reply"
         );
     }
@@ -326,22 +302,6 @@ mod tests {
                 assert_eq!(message, "received fatal alert: UnknownCA")
             }
             other => panic!("expected Unreachable, got {other:?}"),
-        }
-    }
-
-    /// A registration failure crosses the wire as its own status too, never as
-    /// `error`. Collapsing it would report "the daemon could not apply
-    /// federation" for a daemon whose federation is in effect.
-    #[test]
-    fn not_registered_outcome_maps_to_its_own_response() {
-        let resp = ControlResponse::from(FederationOutcome::NotRegistered(
-            "backend temporarily unavailable".to_string(),
-        ));
-        match resp {
-            ControlResponse::NotRegistered { message } => {
-                assert_eq!(message, "backend temporarily unavailable")
-            }
-            other => panic!("expected NotRegistered, got {other:?}"),
         }
     }
 
@@ -372,12 +332,7 @@ mod tests {
         // poll window.)
         let listener = bind_listener(&socket).expect("bind control socket");
         let (restart_tx, _restart_rx) = watch::channel(false);
-        let control = tokio::spawn(accept_loop(
-            listener,
-            trigger_tx,
-            Duration::from_secs(5),
-            restart_tx,
-        ));
+        let control = tokio::spawn(accept_loop(listener, trigger_tx, restart_tx));
 
         // Drive the blocking client off the async workers.
         let socket_for_client = socket.clone();
@@ -406,12 +361,7 @@ mod tests {
         // Bind-before-client, as in `poke_crosses_the_socket_and_acks`.
         let listener = bind_listener(&socket).expect("bind control socket");
         let (restart_tx, _restart_rx) = watch::channel(false);
-        let control = tokio::spawn(accept_loop(
-            listener,
-            trigger_tx,
-            Duration::from_secs(5),
-            restart_tx,
-        ));
+        let control = tokio::spawn(accept_loop(listener, trigger_tx, restart_tx));
 
         let socket_for_client = socket.clone();
         let reply = tokio::task::spawn_blocking(move || {

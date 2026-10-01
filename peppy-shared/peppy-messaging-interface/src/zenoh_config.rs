@@ -23,12 +23,12 @@ use serde_json::json;
 use std::path::PathBuf;
 
 /// TLS material for a `tls/` (or `quic/`) session, rendered into the zenoh
-/// `transport.link.tls` block. One type serves both roles: a router/listener
+/// `transport.link.tls` block. One type serves every role: a router/listener
 /// sets `listen_certificate`/`listen_private_key` (its server identity); a
 /// client sets `root_ca_certificate` (to verify that server) and
-/// `verify_name_on_connect`. Links are one-way TLS throughout: the server
-/// proves its identity, the client proves nothing at the transport, and no
-/// client certificate is ever presented. The keys map 1:1 to zenoh 1.10's
+/// `verify_name_on_connect`; a client that must prove its own identity adds a
+/// [`ConnectIdentity`], and a listener that demands one sets
+/// `require_client_certificate`. The keys map 1:1 to zenoh 1.10's
 /// `transport.link.tls.*` (verified against its `DEFAULT_CONFIG.json5`); unset
 /// path fields are omitted so a non-TLS config renders byte-identical to before.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,9 +40,26 @@ pub struct TlsConfig {
     pub listen_certificate: Option<PathBuf>,
     /// Listener (router/server) private key.
     pub listen_private_key: Option<PathBuf>,
+    /// The client certificate and key presented on a `tls/` connect. Rendering
+    /// it turns `enable_mtls` on, which is what makes zenoh 1.10 send the
+    /// certificate at all.
+    pub connect_identity: Option<ConnectIdentity>,
+    /// A `tls/` listener requires and verifies client certificates against
+    /// `root_ca_certificate`. Rendering it turns `enable_mtls` on.
+    pub require_client_certificate: bool,
     /// Verify the server cert's name matches the dialed host (client side).
     /// zenoh defaults this to `true`; keep it on unless a test needs otherwise.
     pub verify_name_on_connect: bool,
+}
+
+/// The identity a `tls/` client presents to a listener that requires mutual
+/// TLS: a leaf certificate (followed by any intermediates, since zenoh sends the
+/// whole PEM bundle) and its private key. Both or neither, so a rendered config
+/// can never name a certificate without the key that proves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectIdentity {
+    pub certificate: PathBuf,
+    pub private_key: PathBuf,
 }
 
 impl Default for TlsConfig {
@@ -51,6 +68,8 @@ impl Default for TlsConfig {
             root_ca_certificate: None,
             listen_certificate: None,
             listen_private_key: None,
+            connect_identity: None,
+            require_client_certificate: false,
             verify_name_on_connect: true,
         }
     }
@@ -58,10 +77,13 @@ impl Default for TlsConfig {
 
 /// Verify that a TLS endpoint at `host:port` is reachable AND that its
 /// certificate actually validates against the trust configured in `tls`,
-/// completing a real TLS handshake within `timeout` *total* — the TCP connect
+/// completing a real TLS handshake within `timeout` *total*: the TCP connect
 /// and the TLS handshake share one deadline, so the whole call is bounded by
 /// `timeout` (not `timeout` per phase). The caller relies on this single bound
-/// to keep the probe inside its federation ack budget.
+/// to keep the probe inside its federation ack budget. When `tls` carries a
+/// [`ConnectIdentity`] the handshake presents it, so a listener that requires
+/// client certificates (mutual TLS) accepts the probe exactly as it accepts the
+/// router, and rejects it for the same reasons (expired leaf, unknown issuer).
 ///
 /// ## Why a raw handshake and not `zenoh::open`
 ///
@@ -96,22 +118,10 @@ pub async fn probe_tls_reachable(
     let mut roots = RootCertStore::empty();
     match &tls.root_ca_certificate {
         Some(path) => {
-            let bytes = std::fs::read(path)
-                .map_err(|e| format!("read root CA `{}` failed: {e}", path.display()))?;
-            let mut added = 0usize;
-            for cert in rustls_pemfile::certs(&mut &bytes[..]) {
-                let cert =
-                    cert.map_err(|e| format!("parse root CA `{}` failed: {e}", path.display()))?;
+            for cert in read_pem_certificates(path, "root CA")? {
                 roots
                     .add(cert)
                     .map_err(|e| format!("add root CA `{}` failed: {e}", path.display()))?;
-                added += 1;
-            }
-            if added == 0 {
-                return Err(format!(
-                    "root CA `{}` contained no certificates",
-                    path.display()
-                ));
             }
         }
         None => {
@@ -137,13 +147,21 @@ pub async fn probe_tls_reachable(
     // cannot auto-determine a single default provider and a bare
     // `ClientConfig::builder()` would panic. tokio-rustls's default features
     // guarantee `ring` is available, so we name it directly.
-    let config = ClientConfig::builder_with_provider(Arc::new(
+    let builder = ClientConfig::builder_with_provider(Arc::new(
         tokio_rustls::rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .map_err(|e| format!("TLS provider setup failed: {e}"))?
-    .with_root_certificates(roots)
-    .with_no_client_auth();
+    .with_root_certificates(roots);
+    let config = match &tls.connect_identity {
+        Some(identity) => {
+            let (certs, key) = load_connect_identity(identity)?;
+            builder
+                .with_client_auth_cert(certs, key)
+                .map_err(|e| format!("client identity rejected: {e}"))?
+        }
+        None => builder.with_no_client_auth(),
+    };
 
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|e| format!("invalid server name `{host}`: {e}"))?;
@@ -179,6 +197,53 @@ pub async fn probe_tls_reachable(
     }
 }
 
+/// Every certificate of the PEM bundle at `path`, in the order written. An
+/// error names the bundle as `label` does; an empty bundle is an error.
+fn read_pem_certificates(
+    path: &std::path::Path,
+    label: &str,
+) -> Result<Vec<tokio_rustls::rustls::pki_types::CertificateDer<'static>>, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("read {label} `{}` failed: {e}", path.display()))?;
+    let certs = rustls_pemfile::certs(&mut &bytes[..])
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| format!("parse {label} `{}` failed: {e}", path.display()))?;
+    if certs.is_empty() {
+        return Err(format!(
+            "{label} `{}` contained no certificates",
+            path.display()
+        ));
+    }
+    Ok(certs)
+}
+
+/// Reads a [`ConnectIdentity`]'s PEM files into the rustls types a client
+/// handshake presents: every certificate in the bundle (leaf first, as written)
+/// and the single private key.
+fn load_connect_identity(
+    identity: &ConnectIdentity,
+) -> Result<
+    (
+        Vec<tokio_rustls::rustls::pki_types::CertificateDer<'static>>,
+        tokio_rustls::rustls::pki_types::PrivateKeyDer<'static>,
+    ),
+    String,
+> {
+    let certs = read_pem_certificates(&identity.certificate, "client certificate")?;
+    let key_path = &identity.private_key;
+    let key_bytes = std::fs::read(key_path)
+        .map_err(|e| format!("read client key `{}` failed: {e}", key_path.display()))?;
+    let key = rustls_pemfile::private_key(&mut &key_bytes[..])
+        .map_err(|e| format!("parse client key `{}` failed: {e}", key_path.display()))?
+        .ok_or_else(|| {
+            format!(
+                "client key `{}` contained no private key",
+                key_path.display()
+            )
+        })?;
+    Ok((certs, key))
+}
+
 impl TlsConfig {
     /// Server (router/listener) identity: a leaf certificate chain + its key.
     pub fn server(certificate: PathBuf, private_key: PathBuf) -> Self {
@@ -194,6 +259,32 @@ impl TlsConfig {
     pub fn client(root_ca_certificate: PathBuf) -> Self {
         Self {
             root_ca_certificate: Some(root_ca_certificate),
+            ..Self::default()
+        }
+    }
+
+    /// Mutual-TLS client: trusts the router through `root_ca_certificate` and
+    /// proves its own identity with `identity`. Name verification stays on.
+    pub fn mtls_client(root_ca_certificate: PathBuf, identity: ConnectIdentity) -> Self {
+        Self {
+            root_ca_certificate: Some(root_ca_certificate),
+            connect_identity: Some(identity),
+            ..Self::default()
+        }
+    }
+
+    /// Mutual-TLS listener: serves `certificate`/`private_key` and admits only
+    /// clients whose certificate chains to `root_ca_certificate`.
+    pub fn mtls_server(
+        certificate: PathBuf,
+        private_key: PathBuf,
+        root_ca_certificate: PathBuf,
+    ) -> Self {
+        Self {
+            root_ca_certificate: Some(root_ca_certificate),
+            listen_certificate: Some(certificate),
+            listen_private_key: Some(private_key),
+            require_client_certificate: true,
             ..Self::default()
         }
     }
@@ -333,10 +424,14 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
     // Path fields are omitted when unset (zenoh treats a missing key as `null`);
     // `verify_name_on_connect` always renders, having no "absent" meaning.
     //
-    // Nothing emits `enable_mtls` or the `connect_certificate`/`connect_private_key`
-    // pair: mTLS is not a mode this codebase has, so there is no field behind those
-    // keys and no literal standing in for one. zenoh leaves mTLS off when the key is
-    // absent, which is the behaviour we want.
+    // `enable_mtls` is one zenoh key serving two roles: on the connect side it is
+    // what makes zenoh present `connect_certificate` at all, and on the listen
+    // side it makes the listener demand and verify a client certificate. It is
+    // rendered only when a role asks for it and never as a literal `false`, so a
+    // one-way TLS config carries no mTLS key. A router that both connects with an
+    // identity and listens on `tls/` therefore also requires certificates from
+    // its own clients; the daemon's local listener is plaintext, so that case
+    // does not arise there.
     if let Some(tls) = &spec.tls {
         let mut tls_json = json!({
             "verify_name_on_connect": tls.verify_name_on_connect,
@@ -349,6 +444,13 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
         put_path("root_ca_certificate", &tls.root_ca_certificate);
         put_path("listen_certificate", &tls.listen_certificate);
         put_path("listen_private_key", &tls.listen_private_key);
+        if let Some(identity) = &tls.connect_identity {
+            put_path("connect_certificate", &Some(identity.certificate.clone()));
+            put_path("connect_private_key", &Some(identity.private_key.clone()));
+        }
+        if tls.connect_identity.is_some() || tls.require_client_certificate {
+            tls_json["enable_mtls"] = json!(true);
+        }
         config["transport"] = json!({ "link": { "tls": tls_json } });
     }
 
@@ -409,7 +511,7 @@ pub(crate) fn render_probe_config(
 /// by the in-process spawn path ([`crate::zenohd::router_config_path`]) and the
 /// out-of-process render path ([`render_router_config`]) so both produce an
 /// identical router config. `gossip` seeds the peer mesh (the daemon wants it on;
-/// an isolated per-user router wants it off so routers cannot mesh).
+/// a platform's project router wants it off so routers cannot mesh).
 ///
 /// `connect_endpoints` makes this router *federate* to other zenohd routers it
 /// dials (`<proto>/<host>:<port>` each) — distinct from gossip, which is peer
@@ -417,9 +519,10 @@ pub(crate) fn render_probe_config(
 /// list (e.g. the daemon's local router dialing a remote `tls/` router) turns the
 /// retry/keep-alive on (`reconnect`) so an unreachable or restarted upstream is
 /// recovered transparently and never stops the local router serving its own
-/// nodes. The connect-side trust for that link rides in `tls` (a
-/// [`TlsConfig::client`], which only names the CA to validate the upstream
-/// against); it is ignored on a plaintext listen endpoint.
+/// nodes. The connect-side trust and identity for that link ride in `tls` (a
+/// [`TlsConfig::client`] names the CA to validate the upstream against, a
+/// [`TlsConfig::mtls_client`] adds the certificate this router presents); they
+/// are ignored on a plaintext listen endpoint.
 ///
 /// `id` pins the router's transport identity, and is required rather than
 /// optional on purpose: an `Option` would leave two behaviours to reason about
@@ -745,8 +848,8 @@ mod tests {
         assert_eq!(tls["listen_private_key"], "/certs/leaf.key");
         assert_eq!(tls["verify_name_on_connect"], true);
         // Server identity only. Asserting the exact key set (rather than a list of
-        // absences) is what makes this a guard: any key we did not mean to emit,
-        // `enable_mtls` and the connect-side pair included, fails here.
+        // absences) is what makes this a guard: a one-way listener must not carry
+        // `enable_mtls` or the connect-side pair.
         assert_eq!(
             tls_keys(tls),
             [
@@ -778,6 +881,128 @@ mod tests {
             tls_keys(tls),
             ["root_ca_certificate", "verify_name_on_connect"]
         );
+    }
+
+    #[test]
+    fn mtls_client_config_emits_connect_identity_and_enables_mtls() {
+        let cfg = build_zenoh_config(&ZenohConfigSpec {
+            mode: SessionMode::Client,
+            connect_endpoints: vec!["tls/router.example:7447".to_string()],
+            listen_endpoints: Vec::new(),
+            reconnect: false,
+            gossip: false,
+            tls: Some(TlsConfig::mtls_client(
+                PathBuf::from("/peer/ca.crt"),
+                ConnectIdentity {
+                    certificate: PathBuf::from("/peer/peer.crt"),
+                    private_key: PathBuf::from("/peer/peer.key"),
+                },
+            )),
+            namespace: None,
+            id: None,
+        });
+        let tls = &cfg["transport"]["link"]["tls"];
+        assert_eq!(tls["root_ca_certificate"], "/peer/ca.crt");
+        assert_eq!(tls["connect_certificate"], "/peer/peer.crt");
+        assert_eq!(tls["connect_private_key"], "/peer/peer.key");
+        assert_eq!(tls["enable_mtls"], true);
+        assert_eq!(tls["verify_name_on_connect"], true);
+        assert_eq!(
+            tls_keys(tls),
+            [
+                "connect_certificate",
+                "connect_private_key",
+                "enable_mtls",
+                "root_ca_certificate",
+                "verify_name_on_connect"
+            ]
+        );
+    }
+
+    #[test]
+    fn mtls_listener_config_requires_client_certificates() {
+        let cfg = build_zenoh_config(&router_spec(
+            ZenohNetProtocol::Tls,
+            "0.0.0.0",
+            7447,
+            false,
+            Vec::new(),
+            Some(TlsConfig::mtls_server(
+                PathBuf::from("/certs/leaf.pem"),
+                PathBuf::from("/certs/leaf.key"),
+                PathBuf::from("/certs/ca.pem"),
+            )),
+            &test_router_id(),
+        ));
+        let tls = &cfg["transport"]["link"]["tls"];
+        assert_eq!(tls["enable_mtls"], true);
+        assert_eq!(tls["root_ca_certificate"], "/certs/ca.pem");
+        assert_eq!(
+            tls_keys(tls),
+            [
+                "enable_mtls",
+                "listen_certificate",
+                "listen_private_key",
+                "root_ca_certificate",
+                "verify_name_on_connect"
+            ]
+        );
+    }
+
+    /// The daemon's router as it runs when the machine is enrolled in a platform
+    /// project, checked field by field against the peer config the platform
+    /// renders for such a machine. Two divergences are deliberate and asserted:
+    /// the daemon listens on the host it is configured with (not loopback only)
+    /// so LAN nodes reach it, and it keeps gossip on so its own peers discover
+    /// each other. `adminspace` is never rendered: zenohd turns it on regardless
+    /// when it loads a config file.
+    #[test]
+    fn enrolled_daemon_router_config_matches_the_platform_peer_shape() {
+        let id = RouterId::parse("2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5").expect("a platform-shaped id");
+        let rendered = render_router_config(
+            ZenohNetProtocol::Tcp,
+            "0.0.0.0",
+            7448,
+            true,
+            vec!["tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447".to_string()],
+            Some(TlsConfig::mtls_client(
+                PathBuf::from("/peer/ca.crt"),
+                ConnectIdentity {
+                    certificate: PathBuf::from("/peer/peer.crt"),
+                    private_key: PathBuf::from("/peer/peer.key"),
+                },
+            )),
+            &id,
+        );
+        let cfg: serde_json::Value = serde_json::from_str(&rendered).expect("JSON");
+
+        assert_eq!(cfg["mode"], "router");
+        assert_eq!(cfg["id"], id.as_str());
+        assert_eq!(
+            cfg["connect"]["endpoints"],
+            serde_json::json!(["tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447"])
+        );
+        assert_eq!(cfg["connect"]["timeout_ms"], -1);
+        assert_eq!(cfg["connect"]["exit_on_failure"], false);
+        assert_eq!(cfg["connect"]["retry"]["period_init_ms"], 1000);
+        assert_eq!(cfg["connect"]["retry"]["period_max_ms"], 4000);
+        assert_eq!(cfg["connect"]["retry"]["period_increase_factor"], 2.0);
+        assert_eq!(cfg["scouting"]["multicast"]["enabled"], false);
+        assert_eq!(cfg["timestamping"]["enabled"]["router"], true);
+        assert_eq!(cfg["timestamping"]["drop_future_timestamp"], false);
+        let tls = &cfg["transport"]["link"]["tls"];
+        assert_eq!(tls["root_ca_certificate"], "/peer/ca.crt");
+        assert_eq!(tls["connect_certificate"], "/peer/peer.crt");
+        assert_eq!(tls["connect_private_key"], "/peer/peer.key");
+        assert_eq!(tls["enable_mtls"], true);
+        assert_eq!(tls["verify_name_on_connect"], true);
+        // Deliberate divergences from the platform's rendered peer config.
+        assert_eq!(cfg["listen"]["endpoints"]["router"][0], "tcp/0.0.0.0:7448");
+        assert_eq!(cfg["scouting"]["gossip"]["enabled"], true);
+        assert!(cfg.get("adminspace").is_none());
+        assert!(cfg.get("namespace").is_none());
+
+        zenoh::config::Config::from_json5(&rendered).expect("zenoh accepts the enrolled shape");
     }
 
     /// The keys of a rendered `transport.link.tls` block, sorted, so a test can
@@ -816,10 +1041,9 @@ mod tests {
 
     #[test]
     fn federated_router_config_emits_connect_block_and_connect_tls() {
-        // The daemon's local router: a plaintext `tcp/` listener for its own
-        // nodes, PLUS a `tls/` connect endpoint federating it to a remote router,
-        // trusting that router via a client CA. This is the peppy-side shape of
-        // the per-user-router design.
+        // A local router: a plaintext `tcp/` listener for its own nodes, PLUS a
+        // `tls/` connect endpoint federating it to a remote router, trusting
+        // that router via a CA and presenting no identity of its own.
         let s = render_router_config(
             ZenohNetProtocol::Tcp,
             "0.0.0.0",

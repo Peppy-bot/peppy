@@ -454,7 +454,7 @@ impl CoreNodePresence {
 pub enum PresenceScope<'a> {
     /// The namespace the querying session itself was opened under.
     Session,
-    /// One named workspace namespace, observed from a namespace-free session.
+    /// One named project namespace, observed from a namespace-free session.
     Namespace(&'a Namespace),
 }
 
@@ -1089,26 +1089,14 @@ impl Messenger {
         }
     }
 
-    /// Re-renders the owned router's zenohd config in place with new federation
-    /// `connect_endpoints` (+ connect-side `tls`). Returns whether the config was
-    /// actually rewritten: `Ok(true)` ⇒ the change takes effect on the next
-    /// [`stop_router`](MessengerBackend::stop_router) /
-    /// [`start_router`](MessengerBackend::start_router) cycle (callers re-render
-    /// then restart); `Ok(false)` ⇒ a `ZENOH_CONFIG` override or external router is
-    /// in effect (or this is the mock backend), so nothing was rendered and there
-    /// is nothing to restart for. Lets the daemon (de)federate its local router to
-    /// the user's per-user cloud router live (login/logout) without a full process
-    /// restart. See [`crate::ZenohAdapter::refederate`].
+    /// Whether the owned router runs under an operator-pinned `ZENOH_CONFIG`
+    /// file. Mock backends and external routers are never pinned. See
+    /// [`crate::ZenohAdapter::router_config_is_pinned`].
     #[cfg(feature = "router")]
-    pub fn refederate(
-        &mut self,
-        connect_endpoints: Vec<String>,
-        tls: Option<crate::zenoh_config::TlsConfig>,
-    ) -> Result<bool> {
-        match &mut self.adapter {
-            MessengerAdapter::Zenoh(adapter) => adapter.refederate(connect_endpoints, tls),
-            // No owned router to re-render, so there is nothing to restart for.
-            MessengerAdapter::Mock(_) => Ok(false),
+    pub fn router_config_is_pinned(&self) -> bool {
+        match &self.adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.router_config_is_pinned(),
+            MessengerAdapter::Mock(_) => false,
         }
     }
 

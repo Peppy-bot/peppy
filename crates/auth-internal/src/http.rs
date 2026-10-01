@@ -15,10 +15,12 @@ use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::error::{Error, Result};
 
-/// A fully-read HTTP response: status code and body text.
+/// A fully-read HTTP response: status code, body text, and the delay of a
+/// `Retry-After` header when the server sent one in seconds.
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+    pub retry_after_secs: Option<u64>,
 }
 
 impl HttpResponse {
@@ -46,6 +48,8 @@ const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 ///
 /// `http_status_as_error(false)` makes 4xx/5xx return `Ok` so callers can inspect
 /// the body; a global timeout keeps a hung backend from blocking the CLI forever.
+/// A clone shares the agent.
+#[derive(Clone)]
 pub struct HttpClient {
     agent: ureq::Agent,
 }
@@ -58,14 +62,7 @@ impl Default for HttpClient {
 
 impl HttpClient {
     pub fn new() -> Self {
-        Self::with_timeout(DEFAULT_HTTP_TIMEOUT)
-    }
-
-    /// Like [`new`](Self::new) but with an explicit global timeout. The router
-    /// federation path uses this to honor the configurable
-    /// `federation.connect_timeout_secs` instead of the default; every other
-    /// caller stays on [`new`](Self::new).
-    pub fn with_timeout(timeout: Duration) -> Self {
+        let timeout = DEFAULT_HTTP_TIMEOUT;
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             // Use the host platform's trust policy rather than ureq's static
@@ -138,7 +135,7 @@ impl HttpClient {
         finish("POST", url, resp)
     }
 
-    /// `POST url` with no body (used for `/logout`).
+    /// `POST url` with no body, optionally with a bearer token.
     pub fn post_empty(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
         let resp = with_bearer(self.agent.post(url), bearer)
             .send_empty()
@@ -146,7 +143,7 @@ impl HttpClient {
         finish("POST", url, resp)
     }
 
-    /// `DELETE url` (used for `/me/core-nodes/{core_node_name}`).
+    /// `DELETE url`, optionally with a bearer token.
     pub fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
         let resp = with_bearer(self.agent.delete(url), bearer)
             .call()
@@ -155,8 +152,8 @@ impl HttpClient {
     }
 }
 
-/// Strips the query string from a URL for error messages, so a `verification_uri_complete`
-/// or any future token-bearing query never lands in a log line.
+/// Strips the query string from a URL for error messages, so a token or a code
+/// carried in a query never lands in a log line.
 fn redact(url: &str) -> &str {
     url.split('?').next().unwrap_or(url)
 }
@@ -172,6 +169,13 @@ fn with_bearer<B>(req: ureq::RequestBuilder<B>, bearer: Option<&str>) -> ureq::R
 
 fn finish(method: &str, url: &str, resp: ureq::http::Response<ureq::Body>) -> Result<HttpResponse> {
     let status = resp.status().as_u16();
+    // Only the delta-seconds form is read. A date form gives no delay, and the
+    // caller then prints the refusal without one.
+    let retry_after_secs = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok());
     let mut resp = resp;
     let body = resp
         .body_mut()
@@ -179,7 +183,11 @@ fn finish(method: &str, url: &str, resp: ureq::http::Response<ureq::Body>) -> Re
         .limit(MAX_RESPONSE_BYTES)
         .read_to_string()
         .map_err(|e| Error::Http(format!("{method} {} failed reading body: {e}", redact(url))))?;
-    Ok(HttpResponse { status, body })
+    Ok(HttpResponse {
+        status,
+        body,
+        retry_after_secs,
+    })
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ mod confirm;
 pub mod container;
 pub mod info;
 pub mod mcp;
+mod menu;
 pub mod node;
 pub mod platform;
 pub mod repo;
