@@ -466,7 +466,7 @@ A launch of a launcher with components echoes the full resolution before anythin
 
 ```
 components: simulation=waldo (from file)  robot_control=(off)  scene_commander=(off)
-copy alpha: robot=openarm_sim  robot_initializer=v2 (from file)  robot_commander=web_commander (from file)  recorder=(off)  camera_rig=none (from file)  brain=(off)
+copy alpha: robot=openarm_sim  hardware_version=v2 (from file)  robot_commander=web_commander (from file)  recorder=(off)  camera_rig=none (from file)  brain=(off)
 ```
 
 Passing `--with` to a launcher that declares no `components` is refused.
@@ -626,14 +626,14 @@ An option's fragment can declare `components` of its own: the axes that belong t
   peppy_schema: "launcher_fragment/v1",
   deployments: [
     { source: { name: "openarm_backbone", tag: "v1" }, instances: [{ instance_id: "backbone_inst" }] },
-    { robot_initializer: "v2" },
+    { hardware_version: "v2" },
     { robot_commander: "web_commander" },
     { camera_rig: "none" },
   ],
   components: [
     // The hardware version the simulation stands: each option deploys the
     // initializer that names its model, inline.
-    { name: "robot_initializer", provides: ["init_inst"],
+    { name: "hardware_version", provides: ["init_inst"],
       options: {
         v1: { deployments: [{ source: { name: "robot_initializer", tag: "v1" },
                               instances: [{ instance_id: "init_inst", framework: { clock: "simulation" },
@@ -695,7 +695,7 @@ A copy entry has four fields: `instance_id`, the copy's name; `with`, the select
 ```json5
 { robot: "openarm_sim", with: { robot_commander: "xr_commander" }, instances: [
     { instance_id: "alpha" },
-    { instance_id: "bravo", with: { robot_initializer: "v1" }, arguments: { commander_inst: { https_port: 4444 } } },
+    { instance_id: "bravo", with: { hardware_version: "v1" }, arguments: { commander_inst: { https_port: 4444 } } },
 ] },
 ```
 
@@ -743,7 +743,7 @@ peppy stack join openarm:alpha --place jetson-1
 peppy stack join openarm:bravo --with v1,xr_commander --place jetson-2
 
 # The same two robots, a v2 and a v1, named at launch.
-peppy stack launch physical --join openarm:alpha --join openarm:bravo --with bravo.robot_initializer=v1,bravo.xr_commander --place alpha@jetson-1 --place bravo@jetson-2
+peppy stack launch physical --join openarm:alpha --join openarm:bravo --with bravo.hardware_version=v1,bravo.xr_commander --place alpha@jetson-1 --place bravo@jetson-2
 ```
 
 `stack join OPTION:NAME` names the option to copy and the copy's name, the one spelling `--join` takes too. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` at launch and `--place jetson-1` at join run the whole copy there, and a copy with no placement runs on the coordinator.
@@ -809,7 +809,7 @@ One simulation per stack, and each simulated robot joins it as a copy that bring
 
 ```sh
 peppy stack resolve openarm_simulation --with mujoco
-peppy stack resolve physical --join openarm:alpha --join openarm:bravo --with bravo.robot_initializer=v1,bravo.xr_commander
+peppy stack resolve physical --join openarm:alpha --join openarm:bravo --with bravo.hardware_version=v1,bravo.xr_commander
 ```
 
 Join and remove run on the coordinator (`--core-node NAME` reaches it from another machine), serialize with launches and with each other, and reserve only the machines they touch: an unrelated host that is offline blocks neither. A reset cancels the operation in flight, waits for its cleanup, and empties the stack. A restarted coordinator has no launcher to compose against; launch again before joining.
