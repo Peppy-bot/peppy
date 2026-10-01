@@ -49,6 +49,9 @@ pub(crate) mod test_support {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    /// A millisecond in the nanoseconds a clock counts.
+    pub(crate) const MS: u64 = 1_000_000;
+
     /// A clock the test advances by hand.
     pub(crate) fn manual_clock() -> (Clock, Arc<AtomicU64>) {
         let nanos = Arc::new(AtomicU64::new(0));

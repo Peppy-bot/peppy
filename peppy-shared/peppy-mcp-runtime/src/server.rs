@@ -3,13 +3,16 @@
 //! [`ExposureSet`] serving several of them side by side over Streamable
 //! HTTP under MCP `2026-07-28`.
 
+use crate::call_record::{CallRecord, ClientIdentity, Completion, Recording};
 use crate::clock::Clock;
-use crate::error::{BuildError, ToolCallError};
+use crate::error::{BuildError, PublishError, ToolCallError};
 use crate::fleet::{
     Fleet, FleetMember, FleetRuntime, FleetSource, MemberAddress, published_name, published_uri,
     quoted,
 };
-use crate::representation::{DOCUMENT_MIME_TYPE, listed_mime_type};
+use crate::representation::{
+    DOCUMENT_MIME_TYPE, SnapshotContent, apply_response_policies, listed_mime_type,
+};
 use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState, SnapshotView};
 use crate::tasks::{ActionContext, ActionExit, ActionSurface, TaskHandler};
 use peppy_mcp_catalog::{
@@ -153,8 +156,11 @@ struct ServerState {
     tools: HashMap<String, Arc<ToolState>>,
     tasks: HashMap<String, Arc<TaskState>>,
     pictures: HashMap<String, Arc<PictureState>>,
+    /// The record of the state-changing calls, on a bundle that declares
+    /// one.
+    record: Option<CallRecord>,
     /// `tools/list` order: the bundle's tools, its tasks, its picture tools,
-    /// then the listing tool of a per-robot surface.
+    /// its record tool, then the listing tool of a per-robot surface.
     tool_list: Vec<Tool>,
     /// Task handles are in-memory and live as long as the serving process
     /// by design; every HTTP session shares this manager, which is what
@@ -223,6 +229,7 @@ impl CatalogResources {
 pub struct ExposureServerBuilder {
     bundle: ExposureBundle,
     clock: Clock,
+    wall_clock: Clock,
     handlers: HashMap<String, Arc<dyn ToolHandler>>,
     task_handlers: HashMap<String, Arc<dyn TaskHandler>>,
     fleet_source: Option<Arc<dyn FleetSource>>,
@@ -244,6 +251,14 @@ impl ExposureServerBuilder {
         self
     }
 
+    /// Injects the wall clock the call record stamps its entries on, as
+    /// nanoseconds since the Unix epoch. Defaults to the host wall clock;
+    /// tests pass a counter.
+    pub fn with_wall_clock(mut self, clock: Clock) -> Self {
+        self.wall_clock = clock;
+        self
+    }
+
     /// Registers the bridge behind one tool entry of the bundle.
     pub fn with_tool(mut self, name: impl Into<String>, handler: impl ToolHandler) -> Self {
         self.handlers.insert(name.into(), Arc::new(handler));
@@ -262,6 +277,7 @@ impl ExposureServerBuilder {
         let Self {
             bundle,
             clock,
+            wall_clock,
             mut handlers,
             mut task_handlers,
             fleet_source,
@@ -379,6 +395,25 @@ impl ExposureServerBuilder {
             );
         }
 
+        let record = match &bundle.call_record {
+            Some(entry) => {
+                if !names.insert(entry.name.clone()) {
+                    return Err(BuildError::DuplicateName {
+                        name: entry.name.clone(),
+                    });
+                }
+                let record = CallRecord::new(
+                    entry.name.clone(),
+                    entry.description.clone(),
+                    entry.keep,
+                    wall_clock,
+                );
+                tool_list.push(record.tool());
+                Some(record)
+            }
+            None => None,
+        };
+
         // A per-robot surface publishes its resources per robot, from the
         // fleet; the catalog's own URIs serve a fixed surface.
         let addressing = match (&bundle.surface, fleet_source) {
@@ -415,6 +450,7 @@ impl ExposureServerBuilder {
                 tools,
                 tasks,
                 pictures,
+                record,
                 tool_list,
                 manager: TaskManager::new(),
                 events,
@@ -497,8 +533,8 @@ fn annotations_for(operation: ServiceOperation) -> ToolAnnotations {
 }
 
 /// The annotations of a tool that observes and changes nothing: a read-only
-/// service, a picture tool, the listing tool.
-fn read_only_annotations() -> ToolAnnotations {
+/// service, a picture tool, the listing tool, the record tool.
+pub(crate) fn read_only_annotations() -> ToolAnnotations {
     ToolAnnotations::default()
         .read_only(true)
         .destructive(false)
@@ -538,6 +574,7 @@ impl ExposureServer {
         ExposureServerBuilder {
             bundle,
             clock: Clock::wall(),
+            wall_clock: Clock::wall(),
             handlers: HashMap::new(),
             task_handlers: HashMap::new(),
             fleet_source: None,
@@ -650,11 +687,14 @@ impl ExposureServer {
         Ok(fleet.state(uri))
     }
 
-    /// The snapshot the resource at `uri` serves now, to a read and to a
-    /// picture tool alike, or the words that say why it serves none.
-    /// `resource` is `None` for a resource of a per-robot surface whose
-    /// member the host has not attached yet.
-    fn snapshot_now(
+    /// The snapshot the resource at `uri` serves to a read that arrives
+    /// now, and to a picture tool alike: the first message received after
+    /// this call, or the stored snapshot once the freshness bound has
+    /// passed in silence (see
+    /// [`ResourceState::next_snapshot`]); or the words that say why it
+    /// serves none. `resource` is `None` for a resource of a per-robot
+    /// surface whose member the host has not attached yet.
+    async fn snapshot_now(
         &self,
         uri: &str,
         resource: Option<&ResourceState>,
@@ -663,7 +703,8 @@ impl ExposureServer {
             return Err(format!("resource `{uri}` is {UNAVAILABLE_SINCE_JOIN}"));
         };
         resource
-            .snapshot_for_read(self.state.clock.now_nanos())
+            .next_snapshot(&self.state.clock)
+            .await
             .map_err(|refusal| match refusal {
                 ReadRefusal::Unavailable => {
                     format!("resource `{uri}` is {UNAVAILABLE_SINCE_START}")
@@ -678,10 +719,11 @@ impl ExposureServer {
     /// Answers a read with the snapshot's typed contents, both under the
     /// resource's URI: the document, then the blob of a resource with a
     /// representation.
-    fn read_snapshot(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
+    async fn read_snapshot(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
         let resource = self.resource_state(uri)?;
         let view = self
             .snapshot_now(uri, resource.as_deref())
+            .await
             .map_err(|unavailable| McpError::internal_error(unavailable, None))?;
         let mut contents = vec![
             ResourceContents::text(view.content.document, uri).with_mime_type(DOCUMENT_MIME_TYPE),
@@ -698,28 +740,17 @@ impl ExposureServer {
     /// serves now: the blob as an image, the document as text and as the
     /// structured content. Nothing reaches the Peppy graph. A resource that
     /// serves no snapshot now is a tool error in the words of the read.
-    fn look(
+    async fn look(
         &self,
         picture: &PictureState,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
         let input = validated_input(&picture.entry.name, &picture.validator, arguments)?;
         let (uri, resource) = self.pictured_resource(&picture.entry, input)?;
-        let view = match self.snapshot_now(&uri, resource.as_deref()) {
-            Ok(view) => view,
-            Err(unavailable) => return Ok(tool_error(unavailable)),
-        };
-        let blob = view
-            .content
-            .blob
-            .expect("a resource under a `jpeg` representation holds a blob in every snapshot");
-        let document = serde_json::from_str(&view.content.document)
-            .expect("a snapshot's document is the JSON this runtime serialized");
-        let mut result = CallToolResult::structured(document);
-        result
-            .content
-            .insert(0, ContentBlock::image(blob.base64, blob.mime_type));
-        Ok(result)
+        match self.snapshot_now(&uri, resource.as_deref()).await {
+            Ok(view) => Ok(picture_result(view.content)),
+            Err(unavailable) => Ok(tool_error(unavailable)),
+        }
     }
 
     /// The resource a picture tool answers with, as its URI and its state:
@@ -752,10 +783,44 @@ impl ExposureServer {
         Ok((uri, resource))
     }
 
+    /// The recording of a call of `tool` by `client`: an entry of the call
+    /// record when the bundle keeps one, nothing otherwise.
+    fn record_call(
+        &self,
+        client: Option<ClientIdentity>,
+        tool: &str,
+        arguments: &JsonObject,
+    ) -> Recording {
+        match &self.state.record {
+            Some(record) => record.start(client, tool, arguments),
+            None => Recording::unkept(),
+        }
+    }
+
+    /// The call a bridge runs for `arguments`: validated against the
+    /// entry's schema and routed to its provider. A refusal ends the
+    /// recording as refused.
+    fn prepared_call(
+        &self,
+        name: &str,
+        validator: &jsonschema::Validator,
+        target: &str,
+        arguments: JsonObject,
+        recording: &mut Recording,
+    ) -> Result<ToolCall, McpError> {
+        let call =
+            validated_input(name, validator, arguments).and_then(|input| self.route(target, input));
+        if let Err(refusal) = &call {
+            recording.refused(refusal.message.to_string());
+        }
+        call
+    }
+
     async fn execute_tool(
         &self,
         name: &str,
         arguments: JsonObject,
+        client: Option<ClientIdentity>,
     ) -> Result<CallToolResult, McpError> {
         let Some(tool) = self.state.tools.get(name) else {
             return Err(McpError::invalid_params(
@@ -763,24 +828,52 @@ impl ExposureServer {
                 None,
             ));
         };
-        let input = validated_input(name, &tool.validator, arguments)?;
-        let call = self.route(&tool.entry.target, input)?;
+        // The record keeps the calls that change something.
+        let mut recording = match tool.entry.operation {
+            ServiceOperation::Mutating => self.record_call(client, name, &arguments),
+            ServiceOperation::ReadOnly => Recording::unkept(),
+        };
+        let call = self.prepared_call(
+            name,
+            &tool.validator,
+            &tool.entry.target,
+            arguments,
+            &mut recording,
+        )?;
 
         let deadline = Duration::from_millis(tool.entry.deadline_ms.get());
-        let result = match tokio::time::timeout(deadline, tool.handler.call(call)).await {
+        let value = match tokio::time::timeout(deadline, tool.handler.call(call)).await {
             Err(_elapsed) => {
-                return Ok(tool_error(format!(
+                let overrun = format!(
                     "deadline exceeded: the provider did not answer within {} ms",
                     tool.entry.deadline_ms
-                )));
+                );
+                recording.failed(overrun.clone());
+                return Ok(tool_error(overrun));
             }
-            Ok(Err(error)) => return Ok(tool_error(error.to_string())),
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                match error {
+                    ToolCallError::Unavailable(_) => recording.refused(message.clone()),
+                    ToolCallError::Deadline(_) | ToolCallError::Failed(_) => {
+                        recording.failed(message.clone());
+                    }
+                }
+                return Ok(tool_error(message));
+            }
             Ok(Ok(value)) => value,
         };
 
-        match within_result_limit(&tool.entry, result) {
-            Ok(result) => Ok(CallToolResult::structured(result)),
-            Err(refusal) => Ok(tool_error(refusal)),
+        let completion = Completion::of(&value);
+        match tool_answer(&tool.entry, value) {
+            Ok(result) => {
+                recording.completed(completion);
+                Ok(result)
+            }
+            Err(refusal) => {
+                recording.failed(refusal.clone());
+                Ok(tool_error(refusal))
+            }
         }
     }
 
@@ -791,19 +884,22 @@ impl ExposureServer {
         &self,
         task: &Arc<TaskState>,
         arguments: JsonObject,
+        client: Option<ClientIdentity>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let client_declared_tasks = context
             .client_capabilities()
             .is_some_and(|capabilities| capabilities.supports_tasks());
         if client_declared_tasks {
-            return self.start_task(task, arguments).map(CallToolResponse::Task);
+            return self
+                .start_task(task, arguments, client)
+                .map(CallToolResponse::Task);
         }
         let progress = context
             .meta
             .get_progress_token()
             .map(|token| ProgressReporter::new(context.peer, token));
-        self.run_action_in_call(task, arguments, context.ct, progress)
+        self.run_action_in_call(task, arguments, client, context.ct, progress)
             .await
             .map(CallToolResponse::Complete)
     }
@@ -815,14 +911,21 @@ impl ExposureServer {
         &self,
         task: &Arc<TaskState>,
         arguments: JsonObject,
+        client: Option<ClientIdentity>,
     ) -> Result<CreateTaskResult, McpError> {
-        let input = validated_input(&task.entry.name, &task.validator, arguments)?;
-        let call = self.route(&task.entry.target, input)?;
+        let mut recording = self.record_call(client, &task.entry.name, &arguments);
+        let call = self.prepared_call(
+            &task.entry.name,
+            &task.validator,
+            &task.entry.target,
+            arguments,
+            &mut recording,
+        )?;
 
         let task = Arc::clone(task);
         let options = TaskOptions::new().with_ttl_ms(task_ttl_ms(task.entry.bound));
         let seed = self.state.manager.spawn(options, move |context| {
-            Box::pin(run_task_operation(task, call, context))
+            Box::pin(run_task_operation(task, call, context, recording))
         });
         Ok(CreateTaskResult::new(seed))
     }
@@ -851,14 +954,23 @@ impl ExposureServer {
         &self,
         task: &Arc<TaskState>,
         arguments: JsonObject,
+        client: Option<ClientIdentity>,
         cancel: tokio_util::sync::CancellationToken,
         progress: Option<ProgressReporter>,
     ) -> Result<CallToolResult, McpError> {
+        let mut recording = self.record_call(client, &task.entry.name, &arguments);
         if task.entry.confirmation_required {
-            return Err(confirmation_needs_the_tasks_extension(&task.entry.name));
+            let refusal = confirmation_needs_the_tasks_extension(&task.entry.name);
+            recording.refused(refusal.message.to_string());
+            return Err(refusal);
         }
-        let input = validated_input(&task.entry.name, &task.validator, arguments)?;
-        let call = self.route(&task.entry.target, input)?;
+        let call = self.prepared_call(
+            &task.entry.name,
+            &task.validator,
+            &task.entry.target,
+            arguments,
+            &mut recording,
+        )?;
 
         let (feedback, relay) = mpsc::unbounded_channel();
         let action_context = ActionContext {
@@ -870,13 +982,65 @@ impl ExposureServer {
             relay_feedback_until_settled(operation, relay, progress),
         )
         .await;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(overrun) => {
+                recording.failed(overrun.clone());
+                return Ok(tool_error(overrun));
+            }
+        };
+        recording.ended_by(&outcome);
         match outcome {
-            Ok(Ok(value)) => Ok(CallToolResult::structured(value)),
-            Ok(Err(ActionExit::Cancelled(goal))) => Ok(goal.into_tool_result()),
-            Ok(Err(exit @ ActionExit::Failed(_))) => Ok(tool_error(exit.to_string())),
-            Err(overrun) => Ok(tool_error(overrun)),
+            Ok(value) => Ok(CallToolResult::structured(value)),
+            Err(ActionExit::Cancelled(goal)) => Ok(goal.into_tool_result()),
+            Err(exit @ ActionExit::Failed(_)) => Ok(tool_error(exit.to_string())),
         }
     }
+
+    /// Answers the record tool: every kept call, newest first.
+    fn recent_calls(
+        &self,
+        record: &CallRecord,
+        arguments: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        refuse_arguments(
+            record.name(),
+            "lists the last calls of this endpoint",
+            &arguments,
+        )?;
+        Ok(CallToolResult::structured(record.answer()))
+    }
+}
+
+/// The result of a tool that answers with a picture: the blob as an image
+/// block, the document as the text and as the structured content. Content
+/// without a blob is the document alone.
+fn picture_result(content: SnapshotContent) -> CallToolResult {
+    let document = serde_json::from_str(&content.document)
+        .expect("a snapshot's document is the JSON this runtime serialized");
+    let mut result = CallToolResult::structured(document);
+    if let Some(blob) = content.blob {
+        result
+            .content
+            .insert(0, ContentBlock::image(blob.base64, blob.mime_type));
+    }
+    result
+}
+
+/// The result a service tool answers with `value`, the provider's
+/// response: under a representation, the response's frame as an image and
+/// the rest as the document, through the entry's content policies; else the
+/// response as the structured content, held to `max_result_bytes`.
+fn tool_answer(entry: &ToolEntry, value: Value) -> Result<CallToolResult, String> {
+    if entry.representation.is_none() {
+        return within_result_limit(entry, value).map(CallToolResult::structured);
+    }
+    apply_response_policies(entry.content(), value)
+        .map(picture_result)
+        .map_err(|error| match error {
+            PublishError::Oversize { size, limit } => oversize_result(size, limit),
+            other => other.to_string(),
+        })
 }
 
 /// The TTL a task advertises and the manager enforces, as a hard abort at
@@ -1104,21 +1268,29 @@ async fn run_task_operation(
     task: Arc<TaskState>,
     call: ToolCall,
     context: TaskContext,
+    mut recording: Recording,
 ) -> Result<CallToolResult, TaskExit> {
     let bound = task.entry.bound;
-    match within_goal_bound(bound, drive_task(task, call, context)).await {
+    match within_goal_bound(bound, drive_task(task, call, context, &mut recording)).await {
         Ok(result) => result,
-        Err(overrun) => Err(TaskExit::Error(McpError::internal_error(overrun, None))),
+        Err(overrun) => {
+            recording.failed(overrun.clone());
+            Err(TaskExit::Error(McpError::internal_error(overrun, None)))
+        }
     }
 }
 
 /// Identifier of the confirmation entry in the task's `inputRequests`.
 const CONFIRMATION_INPUT_KEY: &str = "confirmation";
 
+/// What the record says of a task whose confirmation was not accepted.
+const CONFIRMATION_DECLINED: &str = "the confirmation was declined: the goal never ran";
+
 async fn drive_task(
     task: Arc<TaskState>,
     call: ToolCall,
     context: TaskContext,
+    recording: &mut Recording,
 ) -> Result<CallToolResult, TaskExit> {
     if task.entry.confirmation_required {
         // The task parks in `input_required` with this elicitation until
@@ -1140,6 +1312,7 @@ async fn drive_task(
         let confirmed = serde_json::from_value::<ElicitResult>(response)
             .is_ok_and(|result| result.action == ElicitationAction::Accept);
         if !confirmed {
+            recording.cancelled(CONFIRMATION_DECLINED.to_string());
             return Err(TaskExit::Cancelled);
         }
     }
@@ -1147,7 +1320,9 @@ async fn drive_task(
     let action_context = ActionContext {
         surface: ActionSurface::Task(context.clone()),
     };
-    match task.handler.start(call, action_context).await {
+    let outcome = task.handler.start(call, action_context).await;
+    recording.ended_by(&outcome);
+    match outcome {
         Ok(value) => Ok(CallToolResult::structured(value)),
         // A `cancelled` task carries no result: its status message says
         // why, with the result the provider ended the goal with.
@@ -1250,15 +1425,11 @@ impl ExposureServer {
         fleet: &FleetRuntime,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
-        if !arguments.is_empty() {
-            return Err(McpError::invalid_params(
-                format!(
-                    "`{}` takes no arguments; it lists every robot of the stack",
-                    fleet.catalog.list.name
-                ),
-                None,
-            ));
-        }
+        refuse_arguments(
+            &fleet.catalog.list.name,
+            "lists every robot of the stack",
+            &arguments,
+        )?;
         let snapshot = fleet.fleet();
         let entries = snapshot
             .robot_names()
@@ -1348,18 +1519,32 @@ fn take_string(fields: &mut JsonObject, name: &str) -> String {
     }
 }
 
+/// The refusal of arguments to `tool`, which takes none, `purpose` saying
+/// what the tool does instead.
+fn refuse_arguments(tool: &str, purpose: &str, arguments: &JsonObject) -> Result<(), McpError> {
+    if arguments.is_empty() {
+        return Ok(());
+    }
+    Err(McpError::invalid_params(
+        format!("`{tool}` takes no arguments; it {purpose}"),
+        None,
+    ))
+}
+
 /// A tool result held to the entry's `max_result_bytes`.
 fn within_result_limit(entry: &ToolEntry, result: Value) -> Result<Value, String> {
     if let Some(limit) = entry.max_result_bytes {
         let size = serialized_len(&result);
         if size > limit.get() {
-            return Err(format!(
-                "result of {size} bytes exceeds the {} byte limit",
-                limit.get()
-            ));
+            return Err(oversize_result(size, limit.get()));
         }
     }
     Ok(result)
+}
+
+/// The refusal of a tool result larger than its entry allows.
+fn oversize_result(size: u64, limit: u64) -> String {
+    format!("result of {size} bytes exceeds the {limit} byte limit")
 }
 
 /// How the host keeps a per-robot server's resources in step with the
@@ -1498,7 +1683,7 @@ impl ServerHandler for ExposureServer {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        self.read_snapshot(&request.uri).map(Into::into)
+        self.read_snapshot(&request.uri).await.map(Into::into)
     }
 
     async fn list_tools(
@@ -1533,13 +1718,22 @@ impl ServerHandler for ExposureServer {
         {
             return self.list_robots(fleet, arguments).await.map(Into::into);
         }
-        if let Some(picture) = self.state.pictures.get(name) {
-            return self.look(picture, arguments).map(Into::into);
+        if let Some(record) = &self.state.record
+            && name == record.name()
+        {
+            return self.recent_calls(record, arguments).map(Into::into);
         }
+        if let Some(picture) = self.state.pictures.get(name) {
+            return self.look(picture, arguments).await.map(Into::into);
+        }
+        let client = ClientIdentity::of(context.client_info());
         let Some(task) = self.state.tasks.get(name) else {
-            return self.execute_tool(name, arguments).await.map(Into::into);
+            return self
+                .execute_tool(name, arguments, client)
+                .await
+                .map(Into::into);
         };
-        self.run_action(task, arguments, context).await
+        self.run_action(task, arguments, client, context).await
     }
 
     async fn get_task(
@@ -1619,7 +1813,7 @@ impl ServerHandler for ExposureServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::test_support::manual_clock;
+    use crate::clock::test_support::{MS, manual_clock};
     use crate::tasks::CancelledGoal;
     use rmcp::model::ErrorCode;
     use std::sync::atomic::Ordering;
@@ -1818,7 +2012,7 @@ mod tests {
         name: &str,
         arguments: JsonObject,
     ) -> Result<CreateTaskResult, McpError> {
-        server.start_task(&task_named(server, name), arguments)
+        server.start_task(&task_named(server, name), arguments, None)
     }
 
     /// Runs the action in a call that carries no progress token, on a
@@ -1830,7 +2024,7 @@ mod tests {
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<CallToolResult, McpError> {
         server
-            .run_action_in_call(&task_named(server, name), arguments, cancel, None)
+            .run_action_in_call(&task_named(server, name), arguments, None, cancel, None)
             .await
     }
 
@@ -2648,11 +2842,16 @@ mod tests {
             ingest.publish(token, frame).expect("frame publishes");
         }
 
-        fn look(server: &ExposureServer, arguments: Value) -> Result<CallToolResult, McpError> {
-            server.look(
-                &server.state.pictures["camera.look"],
-                self::arguments(arguments),
-            )
+        async fn look(
+            server: &ExposureServer,
+            arguments: Value,
+        ) -> Result<CallToolResult, McpError> {
+            server
+                .look(
+                    &server.state.pictures["camera.look"],
+                    self::arguments(arguments),
+                )
+                .await
         }
 
         fn served_bundle(bundle: ExposureBundle) -> (ExposureServer, Arc<Mutex<Vec<FleetMember>>>) {
@@ -2717,6 +2916,7 @@ mod tests {
                 .execute_tool(
                     "camera.set_brightness",
                     arguments(json!({ "robot": "alpha", "camera": "wrist_left", "value": 3 })),
+                    None,
                 )
                 .await
                 .expect("routes");
@@ -2725,7 +2925,11 @@ mod tests {
                 json!({ "camera": "alpha_wrist_left", "input": { "value": 3 } })
             );
             let result = server
-                .execute_tool("robot.get_identity", arguments(json!({ "robot": "bravo" })))
+                .execute_tool(
+                    "robot.get_identity",
+                    arguments(json!({ "robot": "bravo" })),
+                    None,
+                )
                 .await
                 .expect("routes");
             assert_eq!(
@@ -2739,7 +2943,7 @@ mod tests {
             let (server, fleet) = served();
             let refused = |arguments: Value| async {
                 server
-                    .execute_tool("camera.set_brightness", self::arguments(arguments))
+                    .execute_tool("camera.set_brightness", self::arguments(arguments), None)
                     .await
                     .expect_err("refused")
             };
@@ -2843,7 +3047,7 @@ mod tests {
             assert!(error.message.contains("`robot.list` takes no arguments"));
         }
 
-        #[tokio::test]
+        #[tokio::test(start_paused = true)]
         async fn resources_follow_the_fleet_and_a_change_is_announced() {
             let (server, members) = served();
             let handle = server.fleet().expect("a per-robot server");
@@ -2864,6 +3068,7 @@ mod tests {
             );
             let unavailable = server
                 .read_snapshot("peppy://resource/alpha/robot.status")
+                .await
                 .expect_err("listed, not attached");
             assert!(
                 unavailable.message.contains("unavailable"),
@@ -2872,6 +3077,7 @@ mod tests {
             );
             let unknown = server
                 .read_snapshot("peppy://resource/charlie/robot.status")
+                .await
                 .expect_err("not listed");
             assert_eq!(unknown.code, ErrorCode::RESOURCE_NOT_FOUND);
             assert!(
@@ -2890,6 +3096,7 @@ mod tests {
                 .expect("publishes");
             let read = server
                 .read_snapshot("peppy://resource/alpha/wrist_left/camera.latest_frame")
+                .await
                 .expect("attached and published");
             assert_eq!(read.contents.len(), 1);
             assert!(matches!(
@@ -2909,12 +3116,13 @@ mod tests {
             ));
             let gone = server
                 .read_snapshot("peppy://resource/alpha/wrist_left/camera.latest_frame")
+                .await
                 .expect_err("detached and unlisted");
             assert_eq!(gone.code, ErrorCode::RESOURCE_NOT_FOUND);
         }
 
-        #[test]
-        fn a_picture_tool_answers_for_the_camera_the_call_names() {
+        #[tokio::test(start_paused = true)]
+        async fn a_picture_tool_answers_for_the_camera_the_call_names() {
             let (server, fleet) = served_bundle(picture_bundle());
             let wrist_left = member("camera", "alpha", "wrist_left");
             let wrist_right = member("camera", "alpha", "wrist_right");
@@ -2924,6 +3132,7 @@ mod tests {
 
             for (camera, frame_id) in [("wrist_left", 1), ("wrist_right", 2)] {
                 let result = look(&server, json!({ "robot": "alpha", "camera": camera }))
+                    .await
                     .expect("routes to the camera");
                 assert_eq!(result.is_error, Some(false));
                 assert_eq!(
@@ -2942,30 +3151,32 @@ mod tests {
             }
         }
 
-        #[test]
-        fn a_picture_tool_refuses_a_robot_or_a_camera_the_fleet_does_not_have() {
+        #[tokio::test]
+        async fn a_picture_tool_refuses_a_robot_or_a_camera_the_fleet_does_not_have() {
             let (server, _) = served_bundle(picture_bundle());
-            let refused = |arguments: Value| {
-                look(&server, arguments).expect_err("refused before any snapshot is read")
+            let refused = async |arguments: Value| {
+                look(&server, arguments)
+                    .await
+                    .expect_err("refused before any snapshot is read")
             };
-            let error = refused(json!({ "robot": "charlie", "camera": "wrist_left" }));
+            let error = refused(json!({ "robot": "charlie", "camera": "wrist_left" })).await;
             assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
             assert_eq!(
                 error.message,
                 "`charlie` is not a robot of this stack; the robots are `alpha`, `bravo`"
             );
-            let error = refused(json!({ "robot": "alpha", "camera": "chest" }));
+            let error = refused(json!({ "robot": "alpha", "camera": "chest" })).await;
             assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
             assert_eq!(
                 error.message,
                 "robot `alpha` has no `camera` named `chest` (`camera`); it has `wrist_left`"
             );
-            let error = refused(json!({ "robot": "bravo", "camera": "wrist_left" }));
+            let error = refused(json!({ "robot": "bravo", "camera": "wrist_left" })).await;
             assert_eq!(
                 error.message,
                 "robot `bravo` has no `camera`; it fills `status`; the robots with a `camera` are `alpha`"
             );
-            let error = refused(json!({ "robot": "alpha" }));
+            let error = refused(json!({ "robot": "alpha" })).await;
             assert!(
                 error
                     .message
@@ -2975,25 +3186,28 @@ mod tests {
             );
         }
 
-        #[test]
-        fn a_picture_tool_of_a_camera_with_no_snapshot_is_a_tool_error_in_the_words_of_the_read() {
+        #[tokio::test]
+        async fn a_picture_tool_of_a_camera_with_no_snapshot_is_a_tool_error_in_the_words_of_the_read()
+         {
             let (server, _) = served_bundle(picture_bundle());
             let uri = "peppy://resource/alpha/wrist_left/camera.latest_frame";
-            let look = || {
+            let look = async || {
                 look(&server, json!({ "robot": "alpha", "camera": "wrist_left" }))
+                    .await
                     .expect("a snapshot that does not serve is a tool error")
             };
-            let read_refusal = || {
+            let read_refusal = async || {
                 server
                     .read_snapshot(uri)
+                    .await
                     .expect_err("the read is refused")
                     .message
                     .into_owned()
             };
 
             // Listed, and the host has not attached the member yet.
-            let unattached = look();
-            assert_eq!(tool_error_text(&unattached), read_refusal());
+            let unattached = look().await;
+            assert_eq!(tool_error_text(&unattached), read_refusal().await);
             assert_eq!(
                 tool_error_text(&unattached),
                 "resource `peppy://resource/alpha/wrist_left/camera.latest_frame` is \
@@ -3003,8 +3217,8 @@ mod tests {
             // Attached, and no frame has arrived yet.
             let handle = server.fleet().expect("a per-robot server");
             handle.attach(&member("camera", "alpha", "wrist_left"));
-            let unpublished = look();
-            assert_eq!(tool_error_text(&unpublished), read_refusal());
+            let unpublished = look().await;
+            assert_eq!(tool_error_text(&unpublished), read_refusal().await);
             assert!(
                 tool_error_text(&unpublished).contains("since the server started"),
                 "{}",
@@ -3187,7 +3401,7 @@ mod tests {
     #[tokio::test]
     async fn calling_an_unknown_tool_is_a_protocol_error() {
         let error = built_server()
-            .execute_tool("front_camera.set_gain", JsonObject::new())
+            .execute_tool("front_camera.set_gain", JsonObject::new(), None)
             .await
             .expect_err("set_gain is not exposed");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
@@ -3204,7 +3418,7 @@ mod tests {
             (json!({ "value": 1, "extra": true }), "extra"),
         ] {
             let error = server
-                .execute_tool("front_camera.set_brightness", arguments(raw.clone()))
+                .execute_tool("front_camera.set_brightness", arguments(raw.clone()), None)
                 .await
                 .expect_err("invalid arguments are rejected");
             assert_eq!(error.code, ErrorCode::INVALID_PARAMS, "for {raw}");
@@ -3222,6 +3436,7 @@ mod tests {
             .execute_tool(
                 "front_camera.set_brightness",
                 arguments(json!({ "value": 12 })),
+                None,
             )
             .await
             .expect("valid call");
@@ -3241,6 +3456,7 @@ mod tests {
             .execute_tool(
                 "front_camera.set_brightness",
                 arguments(json!({ "value": 1 })),
+                None,
             )
             .await
             .expect("tool errors are results, not protocol errors");
@@ -3264,6 +3480,7 @@ mod tests {
             .execute_tool(
                 "front_camera.set_brightness",
                 arguments(json!({ "value": 1 })),
+                None,
             )
             .await
             .expect("oversize is a tool error");
@@ -3288,6 +3505,7 @@ mod tests {
             .execute_tool(
                 "front_camera.set_brightness",
                 arguments(json!({ "value": 1 })),
+                None,
             )
             .await
             .expect("deadline is a tool error");
@@ -3299,8 +3517,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reads_walk_unavailable_fresh_and_stale_with_freshness_as_ttl() {
+    #[tokio::test(start_paused = true)]
+    async fn reads_walk_unavailable_fresh_and_stale_with_freshness_as_ttl() {
         let (clock, nanos) = manual_clock();
         let server = ExposureServer::builder(test_bundle())
             .with_clock(clock)
@@ -3313,6 +3531,7 @@ mod tests {
         // server-side snapshot conditions, not client mistakes.
         let error = server
             .read_snapshot(uri)
+            .await
             .expect_err("nothing published yet");
         assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
         assert!(error.message.contains("unavailable"));
@@ -3325,13 +3544,21 @@ mod tests {
             .publish(token, json!({ "battery": 87 }))
             .expect("publishes");
 
+        // The topic stays silent: the read answers the stored snapshot once
+        // the freshness bound has passed (in paused time, at once).
         nanos.store(500 * 1_000_000, Ordering::SeqCst);
-        let read = server.read_snapshot(uri).expect("fresh snapshot serves");
+        let read = server
+            .read_snapshot(uri)
+            .await
+            .expect("fresh snapshot serves");
         assert_eq!(read.ttl_ms, Some(1500), "ttl is the remaining freshness");
         assert_eq!(read.cache_scope, Some(CacheScope::Private));
 
         nanos.store(2_500 * 1_000_000, Ordering::SeqCst);
-        let error = server.read_snapshot(uri).expect_err("2500 ms old is stale");
+        let error = server
+            .read_snapshot(uri)
+            .await
+            .expect_err("2500 ms old is stale");
         assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
         assert!(error.message.contains("stale"), "got {}", error.message);
         assert!(
@@ -3341,10 +3568,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reading_an_unknown_uri_is_resource_not_found() {
+    #[tokio::test]
+    async fn reading_an_unknown_uri_is_resource_not_found() {
         let error = built_server()
             .read_snapshot("peppy://resource/absent")
+            .await
             .expect_err("absent resources are refused");
         assert_eq!(error.code, ErrorCode::RESOURCE_NOT_FOUND);
     }
@@ -3458,11 +3686,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_read_serves_the_document_then_the_blob_under_the_resources_uri() {
+    #[tokio::test(start_paused = true)]
+    async fn a_read_serves_the_document_then_the_blob_under_the_resources_uri() {
         let (server, _) = built_picture_server();
         publish_frame(&server);
-        let read = server.read_snapshot(FRAME_URI).expect("the frame serves");
+        let read = server
+            .read_snapshot(FRAME_URI)
+            .await
+            .expect("the frame serves");
         let [document, blob] = read.contents.as_slice() else {
             panic!("expected two contents, got {:?}", read.contents);
         };
@@ -3504,6 +3735,7 @@ mod tests {
             .expect("publishes");
         let read = server
             .read_snapshot("peppy://resource/front_camera.status")
+            .await
             .expect("the status serves");
         assert_eq!(
             read.contents,
@@ -3539,8 +3771,8 @@ mod tests {
         assert_eq!(annotations.destructive_hint, Some(false));
     }
 
-    #[test]
-    fn a_picture_tool_answers_with_the_image_the_text_and_the_structured_document() {
+    #[tokio::test(start_paused = true)]
+    async fn a_picture_tool_answers_with_the_image_the_text_and_the_structured_document() {
         let (server, _) = built_picture_server();
         publish_frame(&server);
         let result = server
@@ -3548,6 +3780,7 @@ mod tests {
                 &server.state.pictures["front_camera.look"],
                 JsonObject::new(),
             )
+            .await
             .expect("the picture tool answers");
         assert_eq!(result.is_error, Some(false));
         assert_eq!(result.structured_content, Some(frame_document()));
@@ -3564,36 +3797,41 @@ mod tests {
         );
 
         // The image is the blob a read of the resource serves.
-        let read = server.read_snapshot(FRAME_URI).expect("the frame serves");
+        let read = server
+            .read_snapshot(FRAME_URI)
+            .await
+            .expect("the frame serves");
         let ResourceContents::BlobResourceContents { blob, .. } = &read.contents[1] else {
             panic!("the blob comes second");
         };
         assert_eq!(&image.data, blob);
     }
 
-    #[test]
-    fn a_picture_tool_without_a_fresh_snapshot_is_a_tool_error_in_the_words_of_the_read() {
+    #[tokio::test]
+    async fn a_picture_tool_without_a_fresh_snapshot_is_a_tool_error_in_the_words_of_the_read() {
         let (server, nanos) = built_picture_server();
-        let look = || {
+        let look = async || {
             server
                 .look(
                     &server.state.pictures["front_camera.look"],
                     JsonObject::new(),
                 )
+                .await
                 .expect("a snapshot that does not serve is a tool error, not a protocol error")
         };
-        let read_refusal = || {
+        let read_refusal = async || {
             server
                 .read_snapshot(FRAME_URI)
+                .await
                 .expect_err("the read is refused")
                 .message
                 .into_owned()
         };
 
-        let unavailable = look();
+        let unavailable = look().await;
         assert_eq!(unavailable.is_error, Some(true));
         assert_eq!(unavailable.structured_content, None);
-        assert_eq!(tool_error_text(&unavailable), read_refusal());
+        assert_eq!(tool_error_text(&unavailable), read_refusal().await);
         assert_eq!(
             tool_error_text(&unavailable),
             "resource `peppy://resource/front_camera.latest_frame` is unavailable: nothing has \
@@ -3602,9 +3840,9 @@ mod tests {
 
         publish_frame(&server);
         nanos.store(2_500 * 1_000_000, Ordering::SeqCst);
-        let stale = look();
+        let stale = look().await;
         assert_eq!(stale.is_error, Some(true));
-        assert_eq!(tool_error_text(&stale), read_refusal());
+        assert_eq!(tool_error_text(&stale), read_refusal().await);
         assert_eq!(
             tool_error_text(&stale),
             "resource `peppy://resource/front_camera.latest_frame` is stale: the snapshot is \
@@ -3612,8 +3850,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_picture_tool_of_a_fixed_surface_takes_no_argument() {
+    #[tokio::test]
+    async fn a_picture_tool_of_a_fixed_surface_takes_no_argument() {
         let (server, _) = built_picture_server();
         publish_frame(&server);
         let error = server
@@ -3621,6 +3859,7 @@ mod tests {
                 &server.state.pictures["front_camera.look"],
                 arguments(json!({ "camera": "front" })),
             )
+            .await
             .expect_err("an argument is refused");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         assert!(
@@ -3719,5 +3958,653 @@ mod tests {
         assert_eq!(resources.subscribe, Some(true));
         assert_eq!(resources.list_changed, Some(true));
         assert!(info.capabilities.tools.is_some());
+    }
+
+    const STATUS_URI: &str = "peppy://resource/front_camera.status";
+
+    fn publish_status(server: &ExposureServer, battery: u32) {
+        let ingest = server
+            .ingest("front_camera.status")
+            .expect("resource exists");
+        let token = ingest.admit().expect("the gate admits the message");
+        ingest
+            .publish(token, json!({ "battery": battery }))
+            .expect("publishes");
+    }
+
+    /// Runs `read` on a task of its own and yields to it once, so it stands
+    /// registered as a waiting reader when the caller publishes next.
+    async fn read_in_a_task<T: Send + 'static>(
+        read: impl Future<Output = T> + Send + 'static,
+    ) -> tokio::task::JoinHandle<T> {
+        let task = tokio::spawn(read);
+        tokio::task::yield_now().await;
+        task
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_read_answers_with_the_message_that_arrives_after_it() {
+        let (server, nanos) = built_picture_server();
+        let mut events = server.state.events.subscribe();
+        publish_status(&server, 87);
+        assert!(matches!(
+            events.try_recv(),
+            Ok(CatalogEvent::ResourceUpdated { .. })
+        ));
+
+        // 100 ms into the 500 ms gate interval, a read arrives, then a
+        // message: the message is admitted for the reader, answers it, and
+        // is announced to no subscriber.
+        nanos.store(100 * MS, Ordering::SeqCst);
+        let reader = server.clone();
+        let read = read_in_a_task(async move { reader.read_snapshot(STATUS_URI).await }).await;
+        publish_status(&server, 88);
+        let read = read
+            .await
+            .expect("the read task ends")
+            .expect("the read answers");
+        assert_eq!(
+            read.contents,
+            [ResourceContents::text("{\"battery\":88}", STATUS_URI)
+                .with_mime_type("application/json")]
+        );
+        assert_eq!(read.ttl_ms, Some(2000));
+        assert!(
+            events.try_recv().is_err(),
+            "a message admitted for a reader is announced to no subscriber"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_picture_tool_answers_with_the_frame_that_arrives_after_it() {
+        let (server, nanos) = built_picture_server();
+        publish_frame(&server);
+        nanos.store(100 * MS, Ordering::SeqCst);
+        let looker = server.clone();
+        let looked = read_in_a_task(async move {
+            looker
+                .look(
+                    &looker.state.pictures["front_camera.look"],
+                    JsonObject::new(),
+                )
+                .await
+        })
+        .await;
+        let ingest = server
+            .ingest("front_camera.latest_frame")
+            .expect("resource exists");
+        let mut frame = rgb8_frame();
+        frame["header"]["frame_id"] = json!(8);
+        let token = ingest.admit().expect("a waiting reader opens the gate");
+        ingest.publish(token, frame).expect("frame publishes");
+        let looked = looked
+            .await
+            .expect("the look task ends")
+            .expect("the picture tool answers");
+        assert_eq!(looked.is_error, Some(false));
+        assert_eq!(
+            looked.structured_content,
+            Some(
+                json!({ "header": { "frame_id": 8 }, "encoding": "mjpeg", "width": 8, "height": 8 })
+            )
+        );
+    }
+
+    /// `test_bundle` plus a service that answers with a picture, under the
+    /// same representation the picture resources take.
+    fn snap_bundle() -> ExposureBundle {
+        let mut bundle = test_bundle();
+        bundle.tools.push(
+            serde_json::from_value(json!({
+                "name": "front_camera.snap",
+                "description": "Take one picture.",
+                "target": "front_camera",
+                "member": "snap",
+                "operation": "read_only",
+                "deadline_ms": 2000,
+                "representation": {
+                    "image": "jpeg",
+                    "quality": 80,
+                    "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
+                },
+                "max_result_bytes": 4096,
+                "on_oversize": "downscale",
+                "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
+                "output_schema": { "type": "object" }
+            }))
+            .expect("valid tool entry"),
+        );
+        bundle
+    }
+
+    /// A server whose `front_camera.snap` answers `response`.
+    fn snap_server(response: Value) -> ExposureServer {
+        ExposureServer::builder(snap_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_tool("front_camera.snap", move |_call: ToolCall| {
+                let response = response.clone();
+                async move { Ok(response) }
+            })
+            .build()
+            .expect("bundle and handlers agree")
+    }
+
+    async fn snap(server: &ExposureServer) -> CallToolResult {
+        server
+            .execute_tool("front_camera.snap", JsonObject::new(), None)
+            .await
+            .expect("the service answers")
+    }
+
+    #[tokio::test]
+    async fn a_service_with_a_representation_answers_with_the_image_and_the_document() {
+        let mut response = rgb8_frame();
+        response["success"] = json!(true);
+        response["message"] = json!("");
+        let result = snap(&snap_server(response)).await;
+        assert_eq!(result.is_error, Some(false));
+        let mut document = frame_document();
+        document["success"] = json!(true);
+        document["message"] = json!("");
+        assert_eq!(result.structured_content, Some(document.clone()));
+        let [image, text] = result.content.as_slice() else {
+            panic!("expected an image and a text, got {:?}", result.content);
+        };
+        let image = image.as_image().expect("the image comes first");
+        assert_eq!(image.mime_type, "image/jpeg");
+        assert_is_jpeg(&image.data);
+        let text = &text.as_text().expect("the document comes second").text;
+        assert_eq!(
+            serde_json::from_str::<Value>(text).expect("the text is JSON"),
+            document
+        );
+    }
+
+    #[tokio::test]
+    async fn a_service_response_without_a_frame_is_the_document_alone() {
+        let refusal = json!({
+            "success": false,
+            "message": "the simulation runs without rendering",
+            "encoding": "",
+            "width": 0,
+            "height": 0,
+            "frame": "",
+        });
+        let result = snap(&snap_server(refusal)).await;
+        assert_eq!(result.is_error, Some(false));
+        let document = json!({
+            "success": false,
+            "message": "the simulation runs without rendering",
+            "encoding": "",
+            "width": 0,
+            "height": 0,
+        });
+        assert_eq!(result.structured_content, Some(document.clone()));
+        let [text] = result.content.as_slice() else {
+            panic!("expected the document alone, got {:?}", result.content);
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(&text.as_text().expect("a text").text).expect("JSON"),
+            document
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversize_service_picture_is_downscaled_and_a_bad_frame_is_a_tool_error() {
+        use base64::Engine as _;
+        let bytes: Vec<u8> = (0..64usize * 64 * 3)
+            .map(|index| ((index * 97 + index / 3 * 31) % 256) as u8)
+            .collect();
+        let noisy = json!({
+            "frame": base64::engine::general_purpose::STANDARD.encode(&bytes),
+            "encoding": "rgb8",
+            "width": 64,
+            "height": 64,
+        });
+        let result = snap(&snap_server(noisy)).await;
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let document = result.structured_content.expect("the document");
+        let width = document["width"].as_u64().expect("width is rewritten");
+        assert!(
+            width < 64,
+            "the picture shrinks to fit 4096 bytes, got {width}"
+        );
+        let image = result.content[0].as_image().expect("the image comes first");
+        assert!(image.data.len() as u64 <= 4096);
+
+        let bad = json!({ "frame": "not base64!", "encoding": "rgb8", "width": 8, "height": 8 });
+        let result = snap(&snap_server(bad)).await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(
+            tool_error_text(&result).contains("representation field `frame`"),
+            "{}",
+            tool_error_text(&result)
+        );
+    }
+
+    /// `task_bundle` with a read-only tool beside the mutating one, and a
+    /// record of two calls.
+    fn record_bundle() -> ExposureBundle {
+        let mut bundle = task_bundle();
+        bundle.tools.push(
+            serde_json::from_value(json!({
+                "name": "front_camera.get_brightness",
+                "description": "Report the camera brightness.",
+                "target": "front_camera",
+                "member": "get_brightness",
+                "operation": "read_only",
+                "deadline_ms": 2000,
+                "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
+                "output_schema": { "type": "object" }
+            }))
+            .expect("valid tool entry"),
+        );
+        bundle.call_record = Some(peppy_mcp_catalog::CallRecordEntry {
+            name: "camera.recent_calls".to_string(),
+            description: "The last state-changing calls of this endpoint.".to_string(),
+            keep: 2,
+        });
+        bundle
+    }
+
+    /// The builder of a record server, on a wall clock the test drives,
+    /// with every handler registered; a test registers its own handler of
+    /// a name over the one here.
+    /// The builder of `bundle` with the handlers of every member of
+    /// `record_bundle`.
+    fn record_builder_of(bundle: ExposureBundle) -> ExposureServerBuilder {
+        ExposureServer::builder(bundle)
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_tool("front_camera.get_brightness", |_call: ToolCall| async {
+                Ok(json!({ "value": 3 }))
+            })
+            .with_task("recorder.record_episode", record_handler)
+            .with_task("recorder.resume_session", resume_handler)
+    }
+
+    fn record_builder() -> (ExposureServerBuilder, Arc<std::sync::atomic::AtomicU64>) {
+        let (clock, nanos) = manual_clock();
+        let builder = record_builder_of(record_bundle()).with_wall_clock(clock);
+        (builder, nanos)
+    }
+
+    fn built_record_server() -> (ExposureServer, Arc<std::sync::atomic::AtomicU64>) {
+        let (builder, nanos) = record_builder();
+        (builder.build().expect("builds"), nanos)
+    }
+
+    fn recorded_calls(server: &ExposureServer) -> Vec<Value> {
+        let record = server
+            .state
+            .record
+            .as_ref()
+            .expect("the bundle keeps a record");
+        let answer = server
+            .recent_calls(record, JsonObject::new())
+            .expect("the record answers");
+        answer.structured_content.expect("structured")["calls"]
+            .as_array()
+            .cloned()
+            .expect("the calls")
+    }
+
+    fn a_client() -> Option<ClientIdentity> {
+        Some(ClientIdentity {
+            name: "claude-code".to_string(),
+            version: "2.1".to_string(),
+        })
+    }
+
+    #[test]
+    fn the_record_tool_is_listed_last_read_only_and_a_taken_name_is_refused() {
+        let (server, _) = built_record_server();
+        let names: Vec<&str> = server
+            .state
+            .tool_list
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "front_camera.set_brightness",
+                "front_camera.get_brightness",
+                "recorder.record_episode",
+                "recorder.resume_session",
+                "camera.recent_calls",
+            ]
+        );
+        let tool = server.get_tool("camera.recent_calls").expect("listed");
+        assert_eq!(
+            tool.description.as_deref(),
+            Some("The last state-changing calls of this endpoint.")
+        );
+        let annotations = tool.annotations.expect("annotations set");
+        assert_eq!(annotations.read_only_hint, Some(true));
+        assert_eq!(annotations.destructive_hint, Some(false));
+        assert!(tool.output_schema.is_some());
+
+        let record = server.state.record.as_ref().expect("a record");
+        let error = server
+            .recent_calls(record, arguments(json!({ "count": 1 })))
+            .expect_err("takes no argument");
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        assert!(recorded_calls(&server).is_empty());
+
+        let mut bundle = record_bundle();
+        bundle.call_record.as_mut().expect("a record").name =
+            "front_camera.set_brightness".to_string();
+        let error = record_builder_of(bundle)
+            .build()
+            .expect_err("the record tool claims a taken name");
+        assert_eq!(
+            error,
+            BuildError::DuplicateName {
+                name: "front_camera.set_brightness".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_service_call_leaves_one_entry_and_a_read_only_call_none() {
+        let (server, nanos) = built_record_server();
+        nanos.store(1_000 * MS, Ordering::SeqCst);
+        server
+            .execute_tool(
+                "front_camera.set_brightness",
+                arguments(json!({ "value": 12 })),
+                a_client(),
+            )
+            .await
+            .expect("answers");
+        server
+            .execute_tool("front_camera.get_brightness", JsonObject::new(), a_client())
+            .await
+            .expect("answers");
+        let calls = recorded_calls(&server);
+        assert_eq!(
+            calls.len(),
+            1,
+            "the read-only call left no entry: {calls:?}"
+        );
+        assert_eq!(
+            calls[0],
+            json!({
+                "started_at": "1970-01-01T00:00:01.000000000Z",
+                "client": { "name": "claude-code", "version": "2.1" },
+                "tool": "front_camera.set_brightness",
+                "arguments": { "value": 12 },
+                "arguments_bytes": 12,
+                "outcome": "completed",
+                "success": null,
+                "message": "",
+                "duration_ms": 0,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_call_is_recorded_as_refused_with_a_null_client() {
+        let (server, _) = built_record_server();
+        server
+            .execute_tool(
+                "front_camera.set_brightness",
+                arguments(json!({ "value": 65 })),
+                None,
+            )
+            .await
+            .expect_err("65 is out of bounds");
+        // A name that is no tool is no call of a tool.
+        server
+            .execute_tool("front_camera.set_gain", JsonObject::new(), None)
+            .await
+            .expect_err("not a tool");
+        let calls = recorded_calls(&server);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0]["outcome"], "refused");
+        assert_eq!(calls[0]["client"], Value::Null);
+        assert_eq!(calls[0]["arguments"], json!({ "value": 65 }));
+        assert!(
+            calls[0]["message"]
+                .as_str()
+                .expect("a message")
+                .contains("invalid arguments for `front_camera.set_brightness`"),
+            "{}",
+            calls[0]["message"]
+        );
+
+        // A provider that cannot be reached is a refusal too.
+        let (builder, _) = record_builder();
+        let server = builder
+            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+                Err(ToolCallError::Unavailable("no producer bound".to_string()))
+            })
+            .build()
+            .expect("builds");
+        server
+            .execute_tool(
+                "front_camera.set_brightness",
+                arguments(json!({ "value": 1 })),
+                None,
+            )
+            .await
+            .expect("a tool error");
+        let calls = recorded_calls(&server);
+        assert_eq!(calls[0]["outcome"], "refused");
+        assert_eq!(
+            calls[0]["message"],
+            "provider unavailable: no producer bound"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_action_inside_a_call_and_a_task_each_leave_one_entry() {
+        let (builder, nanos) = record_builder();
+        let server = builder
+            .with_task(
+                "recorder.resume_session",
+                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
+                    Ok(json!({ "success": false, "message": "no session to resume" }))
+                },
+            )
+            .build()
+            .expect("builds");
+        nanos.store(5_000 * MS, Ordering::SeqCst);
+        server
+            .run_action_in_call(
+                &task_named(&server, "recorder.resume_session"),
+                JsonObject::new(),
+                a_client(),
+                tokio_util::sync::CancellationToken::new(),
+                None,
+            )
+            .await
+            .expect("the call answers");
+        let calls = recorded_calls(&server);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["tool"], "recorder.resume_session");
+        assert_eq!(calls[0]["outcome"], "completed");
+        assert_eq!(calls[0]["success"], false);
+        assert_eq!(calls[0]["message"], "no session to resume");
+
+        nanos.store(6_000 * MS, Ordering::SeqCst);
+        let created = server
+            .start_task(
+                &task_named(&server, "recorder.resume_session"),
+                JsonObject::new(),
+                a_client(),
+            )
+            .expect("the task starts");
+        let calls = recorded_calls(&server);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["outcome"], "running");
+        assert_eq!(calls[0]["duration_ms"], Value::Null);
+        nanos.store(6_250 * MS, Ordering::SeqCst);
+        settled(&server, &created.task.task_id).await;
+        let calls = recorded_calls(&server);
+        assert_eq!(calls[0]["outcome"], "completed");
+        assert_eq!(calls[0]["success"], false);
+        assert_eq!(calls[0]["message"], "no session to resume");
+        assert_eq!(calls[0]["duration_ms"], 250);
+        assert_eq!(calls[0]["started_at"], "1970-01-01T00:00:06.000000000Z");
+        assert_eq!(calls[1]["started_at"], "1970-01-01T00:00:05.000000000Z");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_a_failed_and_an_overrun_goal_are_recorded_as_such() {
+        let (builder, _) = record_builder();
+        let server = builder
+            .with_task(
+                "recorder.resume_session",
+                |_call: ToolCall, context: crate::tasks::ActionContext| async move {
+                    context.cancel_requested().await;
+                    Err(ActionExit::Cancelled(CancelledGoal {
+                        result: cancelled_resume(),
+                        reason: None,
+                    }))
+                },
+            )
+            .build()
+            .expect("builds");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        server
+            .run_action_in_call(
+                &task_named(&server, "recorder.resume_session"),
+                JsonObject::new(),
+                None,
+                cancel,
+                None,
+            )
+            .await
+            .expect("a cancelled goal is a tool error");
+        let calls = recorded_calls(&server);
+        assert_eq!(calls[0]["outcome"], "cancelled");
+        assert_eq!(
+            calls[0]["message"],
+            format!("the action was cancelled: {}", cancelled_resume())
+        );
+
+        let (builder, _) = record_builder();
+        let server = builder
+            .with_task(
+                "recorder.resume_session",
+                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
+                    Err::<Value, _>(ActionExit::Failed(
+                        "the provider abandoned the goal".to_string(),
+                    ))
+                },
+            )
+            .build()
+            .expect("builds");
+        let created = server
+            .start_task(
+                &task_named(&server, "recorder.resume_session"),
+                JsonObject::new(),
+                None,
+            )
+            .expect("the task starts");
+        settled(&server, &created.task.task_id).await;
+        let calls = recorded_calls(&server);
+        assert_eq!(calls[0]["outcome"], "failed");
+        assert_eq!(
+            calls[0]["message"],
+            "the action failed: the provider abandoned the goal"
+        );
+
+        let (builder, _) = record_builder();
+        let server = builder
+            .with_task(
+                "recorder.resume_session",
+                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
+                    std::future::pending::<Result<Value, ActionExit>>().await
+                },
+            )
+            .build()
+            .expect("builds");
+        server
+            .run_action_in_call(
+                &task_named(&server, "recorder.resume_session"),
+                JsonObject::new(),
+                None,
+                tokio_util::sync::CancellationToken::new(),
+                None,
+            )
+            .await
+            .expect("an overrun is a tool error");
+        let calls = recorded_calls(&server);
+        assert_eq!(calls[0]["outcome"], "failed");
+        assert_eq!(
+            calls[0]["message"],
+            "deadline exceeded: the goal did not reach a terminal state within 2000 ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declined_confirmation_is_recorded_as_cancelled_and_the_record_keeps_the_last_two() {
+        let (server, _) = built_record_server();
+        // Without the tasks extension, the confirmation-gated action is
+        // refused, and the refusal is recorded.
+        server
+            .run_action_in_call(
+                &task_named(&server, "recorder.record_episode"),
+                arguments(json!({ "episode_name": "demo" })),
+                None,
+                tokio_util::sync::CancellationToken::new(),
+                None,
+            )
+            .await
+            .expect_err("the confirmation needs a task");
+        let calls = recorded_calls(&server);
+        assert_eq!(calls[0]["outcome"], "refused");
+        assert!(
+            calls[0]["message"]
+                .as_str()
+                .expect("a message")
+                .contains(TASKS_EXTENSION_ID)
+        );
+
+        let created = server
+            .start_task(
+                &task_named(&server, "recorder.record_episode"),
+                arguments(json!({ "episode_name": "demo" })),
+                None,
+            )
+            .expect("the task starts");
+        let task_id = created.task.task_id;
+        task_matching(&server, &task_id, "input_required", |task| {
+            task.status() == rmcp::model::TaskStatus::InputRequired
+        })
+        .await;
+        server
+            .state
+            .manager
+            .update_task(
+                &task_id,
+                [(
+                    CONFIRMATION_INPUT_KEY.to_string(),
+                    json!({ "action": "decline" }),
+                )],
+            )
+            .expect("the response is delivered");
+        settled(&server, &task_id).await;
+        let calls = recorded_calls(&server);
+        assert_eq!(calls[0]["outcome"], "cancelled");
+        assert_eq!(calls[0]["message"], CONFIRMATION_DECLINED);
+
+        // A third call: the record keeps two, so the refusal is gone.
+        server
+            .execute_tool(
+                "front_camera.set_brightness",
+                arguments(json!({ "value": 1 })),
+                None,
+            )
+            .await
+            .expect("answers");
+        let calls = recorded_calls(&server);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["tool"], "front_camera.set_brightness");
+        assert_eq!(calls[1]["tool"], "recorder.record_episode");
+        assert_eq!(calls[1]["outcome"], "cancelled");
     }
 }

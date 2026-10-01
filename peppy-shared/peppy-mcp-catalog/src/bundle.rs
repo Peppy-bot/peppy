@@ -1,8 +1,8 @@
 //! The serializable shape of a versioned exposure bundle.
 
 use crate::policy::{
-    ActionOperation, FreshnessPolicy, GoalBound, ImageRepresentation, OversizePolicy,
-    ServiceOperation, UpdatePolicy,
+    ActionOperation, ContentPolicies, FreshnessPolicy, GoalBound, ImageRepresentation,
+    OversizePolicy, ServiceOperation, UpdatePolicy,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -59,6 +59,20 @@ pub struct ExposureBundle {
     pub tools: Vec<ToolEntry>,
     pub tasks: Vec<TaskEntry>,
     pub pictures: Vec<PictureEntry>,
+    /// The record of the state-changing calls the endpoint takes, when the
+    /// exposure declares one.
+    pub call_record: Option<CallRecordEntry>,
+}
+
+/// The tool that answers the last calls of every tool of the bundle that is
+/// not read-only, newest first. It reaches no provider.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallRecordEntry {
+    pub name: String,
+    pub description: String,
+    /// How many calls the endpoint keeps.
+    pub keep: u32,
 }
 
 /// What a bundle serves: the contract slots of a fixed surface, or the
@@ -106,6 +120,8 @@ struct RawExposureBundle {
     tasks: Vec<TaskEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pictures: Vec<PictureEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call_record: Option<CallRecordEntry>,
 }
 
 impl TryFrom<RawExposureBundle> for ExposureBundle {
@@ -147,6 +163,7 @@ impl TryFrom<RawExposureBundle> for ExposureBundle {
             tools: raw.tools,
             tasks: raw.tasks,
             pictures: raw.pictures,
+            call_record: raw.call_record,
         })
     }
 }
@@ -180,6 +197,7 @@ impl From<ExposureBundle> for RawExposureBundle {
             tools: bundle.tools,
             tasks: bundle.tasks,
             pictures: bundle.pictures,
+            call_record: bundle.call_record,
         }
     }
 }
@@ -390,9 +408,21 @@ impl ResourcePolicies {
             .as_ref()
             .map(|representation| representation.image.mime_type())
     }
+
+    /// The policies that shape the snapshot a read serves.
+    pub fn content(&self) -> ContentPolicies<'_> {
+        ContentPolicies {
+            representation: self.representation.as_ref(),
+            max_result_bytes: self.max_result_bytes,
+            on_oversize: self.on_oversize,
+        }
+    }
 }
 
 /// One exposed service: an MCP tool completing within a single request.
+/// Under a representation the tool answers with a picture: the frame of the
+/// response as an image block, the rest of the response as the document,
+/// which the output schema describes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolEntry {
@@ -403,12 +433,27 @@ pub struct ToolEntry {
     pub operation: ServiceOperation,
     pub deadline_ms: NonZeroU64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation: Option<ImageRepresentation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_result_bytes: Option<NonZeroU64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_oversize: Option<OversizePolicy>,
     /// Derived JSON Schema of the tool input, with any `restrict` bounds
     /// reflected as `minimum`/`maximum`.
     pub input_schema: Value,
     /// Derived JSON Schema of the structured tool output.
     pub output_schema: Value,
+}
+
+impl ToolEntry {
+    /// The policies that shape the answer a call receives.
+    pub fn content(&self) -> ContentPolicies<'_> {
+        ContentPolicies {
+            representation: self.representation.as_ref(),
+            max_result_bytes: self.max_result_bytes,
+            on_oversize: self.on_oversize,
+        }
+    }
 }
 
 /// One picture tool: an MCP tool answering with the latest snapshot of a

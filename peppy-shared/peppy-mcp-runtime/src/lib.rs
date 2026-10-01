@@ -22,10 +22,19 @@
 //!   exposed action and builds the server for one exposure.
 //! - [`ExposureServer::ingest`] hands out the [`ResourceIngest`] a topic
 //!   pump feeds: [`ResourceIngest::admit`] applies the update-rate gate
-//!   before any decoding work, [`ResourceIngest::publish`] applies the
-//!   representation and size policies and stores the snapshot: its
+//!   before any decoding work (and admits the next message whatever the
+//!   gate while a read waits for it), [`ResourceIngest::publish`] applies
+//!   the representation and size policies and stores the snapshot: its
 //!   document, and under a representation its blob, which a read serves as
-//!   typed contents and a picture tool as an image.
+//!   typed contents and a picture tool as an image. A read answers with the
+//!   first message received after it arrived, or with the stored snapshot
+//!   once the freshness bound has passed in silence.
+//! - A service tool with a representation answers as a picture tool does:
+//!   its response's frame as an image, the rest as the document.
+//! - A bundle with a `call_record` gets a read-only tool that lists the
+//!   last calls of every tool that is not read-only, tasks included, with
+//!   the client that made each and how it ended; the record keeps time on
+//!   [`ExposureServerBuilder::with_wall_clock`].
 //! - [`ExposureSet::serve`] serves every server of the set on one listener,
 //!   each under its [`ExposureServer::endpoint_path`], until the supplied
 //!   cancellation token fires; every other path answers 404.
@@ -35,6 +44,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bridge;
+mod call_record;
 pub mod clock;
 pub mod error;
 pub mod fleet;
