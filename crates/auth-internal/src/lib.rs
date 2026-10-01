@@ -30,7 +30,7 @@
 //! cached session.
 //!
 //! The workspace and the project the person selected as the default target of
-//! the commands are the [`context`], a third file with its own lifecycle.
+//! the commands are the [`selection`], a third file with its own lifecycle.
 //!
 //! # Boundary with consumer crates
 //!
@@ -46,7 +46,6 @@
 
 pub mod cli_config;
 pub mod client;
-pub mod context;
 pub mod csr;
 pub mod device;
 pub mod discovery;
@@ -60,17 +59,18 @@ pub mod refresh;
 pub mod renewal;
 pub mod resolver;
 pub mod revoke;
+pub mod selection;
 pub mod storage;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 pub use cli_config::CliConfig;
 pub use client::{PlatformApi, Principal};
-pub use context::PlatformContext;
 pub use enrollment::{
     CertificateValidity, Enrollment, EnrollmentBundle, EnrollmentDocument, FederationIdentity,
     IssuedMaterial, RouterEndpoint,
 };
 pub use error::{Error as AuthError, Problem, ProblemKind, Result};
 pub use resolver::Credential;
+pub use selection::PlatformSelection;
 pub use storage::{Credentials, ProfileCreds};

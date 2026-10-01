@@ -30,8 +30,9 @@ time = { version = "0.3", optional = true }
 
 [features]
 # Test-only fixtures (`test_support` module) for downstream crates' tests;
-# this crate's own tests see the module via `cfg(test)` instead.
-test-support = ["dep:time"]
+# this crate's own tests see the module via `cfg(test)` instead. The
+# `x509-parser` feature of rcgen reads back the CSR of an enrollment request.
+test-support = ["dep:time", "rcgen/x509-parser"]
 
 [dev-dependencies]
 # Self-reference so the integration tests of this crate see `test_support`,

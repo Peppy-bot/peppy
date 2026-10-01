@@ -1,6 +1,7 @@
 //! `peppy platform logout`: revoke the session's refresh and access tokens at
-//! the issuer and delete the local session and the context. An issuer that is unreachable or
-//! refuses the revocation still results in the local session being cleared.
+//! the issuer and delete the local session and the selection. An issuer that
+//! is unreachable or refuses the revocation still results in the local session
+//! being cleared.
 //! The machine's enrollment is untouched: the daemon keeps federating with its
 //! certificate. API calls need a new sign-in, and so does the renewal of that
 //! certificate.
@@ -56,9 +57,9 @@ impl Command for LogoutCommand {
 
         creds.session = None;
         storage::save(&creds_path, &creds)?;
-        // The context names a workspace and a project of this account, so it
-        // goes with the session.
-        auth::context::remove(&dirs)?;
+        // The selection names a workspace and a project of this account, so
+        // it goes with the session.
+        auth::selection::remove(&dirs)?;
         println!("Logged out ({}).", profile::build_env_name());
 
         if let Ok(Some(enrollment)) = auth::enrollment::load(&dirs) {

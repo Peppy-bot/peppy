@@ -3,12 +3,13 @@
 //! revocation endpoints, and the backend's `/me`, workspace, project and
 //! router-peer routes. All state is isolated per test via the `peppy_dirs`
 //! seam pointed at a tempdir (no `PEPPY_HOME` mutation, so tests run in
-//! parallel); the credentials file, the context, the enrollment bundle and
-//! `peppy_config.json5` all land there. A command that can ask the person is
-//! told how to ask (`Ask`), so no test depends on a terminal. A running daemon is stood in for by a
-//! stub on the control socket. The engine internals (resolver, the platform
-//! client, the enrollment store, the CSR) are covered by the `auth` crate's
-//! own tests.
+//! parallel); the credentials file, the selection, the enrollment bundle, the
+//! daemon state and `peppy_config.json5` all land there. A command that can
+//! ask the person is told how to ask (`Ask`), so no test depends on a
+//! terminal. A running daemon is stood in for by a state file that names this
+//! test process, and by a stub on the control socket where a test needs the
+//! daemon to answer. The engine internals (resolver, the platform client, the
+//! enrollment store, the CSR) are covered by the `auth` crate's own tests.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
@@ -20,25 +21,23 @@ use httpmock::prelude::*;
 use secrecy::ExposeSecret;
 use serde_json::json;
 
-use auth::context::{self as platform_context, Named, PlatformContext};
 use auth::enrollment::{self, EnrollmentDocument, RouterEndpoint};
+use auth::selection::{self as platform_selection, Named, PlatformSelection};
 use auth::storage::{self, Credentials, ProfileCreds};
 use auth::test_support;
 use daemon::state::DaemonState;
 use peppy::commands::Command;
-use peppy::commands::platform::configure::ConfigureCommand;
-use peppy::commands::platform::context::{ContextAction, ContextCommand, ContextCommands};
 use peppy::commands::platform::enroll::EnrollCommand;
 use peppy::commands::platform::login::LoginCommand;
 use peppy::commands::platform::logout::LogoutCommand;
 use peppy::commands::platform::peers::PeersCommand;
-use peppy::commands::platform::projects::ProjectsCommand;
+use peppy::commands::platform::project::{ProjectCommand, ProjectCommands};
 use peppy::commands::platform::router::{RouterAction, RouterCommand, RouterCommands};
 use peppy::commands::platform::select::Ask;
 use peppy::commands::platform::status::StatusCommand;
 use peppy::commands::platform::unenroll::UnenrollCommand;
 use peppy::commands::platform::whoami::WhoamiCommand;
-use peppy::commands::platform::workspaces::WorkspacesCommand;
+use peppy::commands::platform::workspace::{WorkspaceCommand, WorkspaceCommands};
 use peppy::commands::platform::{PlatformCommand, PlatformCommands};
 use peppy::context::AppContext;
 
@@ -168,17 +167,30 @@ fn mock_workspaces_and_projects(server: &MockServer) {
     });
 }
 
-/// `POST .../router/peers` answering a signed enrollment for any request, with
-/// a leaf valid from `test_support::ISSUED_AT` to `test_support::EXPIRES_AT`.
-fn mock_enroll<'a>(server: &'a MockServer, zid: &str) -> httpmock::Mock<'a> {
+/// The core-node name of the daemon whose state the tests write: the name a
+/// machine enrolls under.
+const CORE_NODE: &str = "cn-local-daemon";
+
+/// `POST .../router/peers` of `project` in `workspace`, answering a signed
+/// enrollment with a leaf valid from `test_support::ISSUED_AT` to
+/// `test_support::EXPIRES_AT`. Only a signing request for [`CORE_NODE`] is
+/// answered, so a call count of one proves the CLI posted what it minted,
+/// under the name of the running daemon.
+fn mock_enroll_in<'a>(
+    server: &'a MockServer,
+    workspace: &str,
+    project: &str,
+    zid: &str,
+) -> httpmock::Mock<'a> {
+    let path = format!("/api/workspace/{workspace}/projects/{project}/router/peers");
+    let project = project.to_string();
     let zid = zid.to_string();
     let leaf = test_support::leaf();
     server.mock(move |when, then| {
-        // Only a PEM signing request is answered, so a call count of one proves
-        // the CLI posted what it minted.
-        when.method(POST)
-            .path(PEERS_PATH)
-            .body_includes("-----BEGIN CERTIFICATE REQUEST-----");
+        when.method(POST).path(path).is_true(|request| {
+            test_support::enrollment_request_common_name(request.body().as_ref()).as_deref()
+                == Some(CORE_NODE)
+        });
         then.status(201).json_body(json!({
             "peer": { "id": "peer-1", "name": "robot-7", "certificate_cn": "robot-7",
                       "status": "unknown", "certificate_expires_at": "2027-01-01T00:00:00Z",
@@ -188,9 +200,23 @@ fn mock_enroll<'a>(server: &'a MockServer, zid: &str) -> httpmock::Mock<'a> {
             "trust_anchor": "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n",
             "address": { "host": ROUTER_HOST, "port": 7447 },
             "zenoh_id": zid,
-            "namespace": PROJECT,
+            "namespace": project,
             "zenoh_config": "{ mode: \"router\" }",
         }));
+    })
+}
+
+/// [`mock_enroll_in`] for `PROJECT` of `WORKSPACE`.
+fn mock_enroll<'a>(server: &'a MockServer, zid: &str) -> httpmock::Mock<'a> {
+    mock_enroll_in(server, WORKSPACE, PROJECT, zid)
+}
+
+/// Every enrollment request, in any project, refused. Registered by a test
+/// that expects no enrollment, so its call count is the evidence.
+fn mock_any_enrollment(server: &MockServer) -> httpmock::Mock<'_> {
+    server.mock(|when, then| {
+        when.method(POST).path_includes("/router/peers");
+        then.status(500);
     })
 }
 
@@ -262,27 +288,65 @@ fn write_enrollment(dir: &tempfile::TempDir, peer_id: &str, zid: &str) {
     );
 }
 
-/// The state of a daemon generation under `namespace` with a managed router
-/// under `router_id` (so commands poke the control socket), with this test
-/// process as the pid (so `is_running` holds).
-fn daemon_state(namespace: &str, router_id: &str) -> DaemonState {
+/// The state of a daemon generation of [`CORE_NODE`] under `namespace`, with
+/// this test process as the pid (so `is_running` holds): with a managed router
+/// under `router_id` (so commands poke the control socket), or with an
+/// operator-run router when `router_id` is `None`.
+fn daemon_state(namespace: &str, router_id: Option<&str>) -> DaemonState {
     DaemonState::new(
-        "cn-local-daemon",
+        CORE_NODE,
         "127.0.0.1",
         7447,
         "test-git-hash",
         30,
         config::namespace::Namespace::parse(namespace).expect("valid namespace"),
-        Some(pmi::RouterId::parse(router_id).expect("valid router id")),
+        router_id.map(|id| pmi::RouterId::parse(id).expect("valid router id")),
     )
 }
 
-/// Writes the daemon state file of [`daemon_state`] under `dir`.
+/// Writes the state of a running daemon under `dir`, with a managed router
+/// under `router_id`.
 fn write_daemon_state(dir: &tempfile::TempDir, namespace: &str, router_id: &str) {
+    write_state(dir, &daemon_state(namespace, Some(router_id)));
+}
+
+/// Writes the state of a running daemon under `dir`, with an operator-run
+/// router: it has no control socket.
+fn write_external_daemon_state(dir: &tempfile::TempDir) {
+    write_state(dir, &daemon_state("local", None));
+}
+
+fn write_state(dir: &tempfile::TempDir, state: &DaemonState) {
     let path = DaemonState::state_file_in(dir.path());
     std::fs::create_dir_all(path.parent().expect("state file has a parent"))
         .expect("state file dir");
-    DaemonState::write_to(&path, &daemon_state(namespace, router_id)).expect("write daemon state");
+    DaemonState::write_to(&path, state).expect("write daemon state");
+}
+
+/// Writes the state of a daemon that died under `dir`: a pid outside the
+/// valid range names no live process.
+fn write_dead_daemon_state(dir: &tempfile::TempDir) {
+    let mut stale = daemon_state("local", Some("7f3a9c1e"));
+    stale.daemon_pid = Some(u32::MAX);
+    write_state(dir, &stale);
+}
+
+/// A tempdir with a running daemon under `local` and no session, ready for a
+/// login that enrolls. No stub answers the control socket, so the poke after
+/// an enrollment finds no daemon there, which the command notes.
+fn daemon_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp dir");
+    write_daemon_state(&dir, "local", "7f3a9c1e");
+    dir
+}
+
+/// A tempdir with a seeded session and a running daemon under `local`, ready
+/// for a command that enrolls. The poke after the enrollment finds no daemon
+/// on the control socket, as for [`daemon_dir`].
+fn enrollable_dir(server: &MockServer) -> tempfile::TempDir {
+    let dir = authenticated_dir(server);
+    write_daemon_state(&dir, "local", "7f3a9c1e");
+    dir
 }
 
 /// A stub daemon on the control socket under `dir`. It answers the first poke
@@ -315,7 +379,7 @@ fn stub_restarting_daemon(
         seen.push(line.trim().to_string());
         DaemonState::write_to(
             &DaemonState::state_file_in(&root),
-            &daemon_state(namespace, router_id),
+            &daemon_state(namespace, Some(router_id)),
         )
         .expect("rewrite state");
         answer(&mut line, reply);
@@ -326,6 +390,30 @@ fn stub_restarting_daemon(
 
 // ─── login ───────────────────────────────────────────────────────────────
 
+/// A login against `server` with state under `dir`, with no flag, the restart
+/// prompt skipped and nobody to ask. A test sets what it is about with struct
+/// update syntax.
+fn login(server: &MockServer, dir: &tempfile::TempDir) -> LoginCommand {
+    LoginCommand {
+        api_url: Some(server.base_url()),
+        no_browser: true,
+        workspace: None,
+        project: None,
+        no_enroll: false,
+        yes: true,
+        ask: Ask::Never,
+        peppy_dirs: Some(dirs(dir)),
+    }
+}
+
+/// [`login`] signing in only.
+fn login_only(server: &MockServer, dir: &tempfile::TempDir) -> LoginCommand {
+    LoginCommand {
+        no_enroll: true,
+        ..login(server, dir)
+    }
+}
+
 #[test]
 fn login_persists_credentials_and_resolves_identity() {
     let server = MockServer::start();
@@ -335,15 +423,9 @@ fn login_persists_credentials_and_resolves_identity() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir);
 
-    LoginCommand {
-        api_url: Some(server.base_url()),
-        no_browser: true,
-        no_configure: true,
-        ask: Ask::Never,
-        peppy_dirs: Some(dirs(&dir)),
-    }
-    .execute(&ctx())
-    .expect("login needs no daemon");
+    login_only(&server, &dir)
+        .execute(&ctx())
+        .expect("a login that signs in only needs no daemon");
 
     let creds = storage::load(&path).expect("load creds");
     let pc = creds.session.as_ref().expect("session present");
@@ -356,7 +438,7 @@ fn login_persists_credentials_and_resolves_identity() {
     assert!(me.calls() >= 1, "GET /me should have been called");
     assert!(
         !dirs(&dir).runtime_config_dir().exists(),
-        "login never touches the daemon"
+        "a login that signs in only never touches the daemon"
     );
 }
 
@@ -367,15 +449,7 @@ fn login_seeds_peppy_config_with_resource_servers_block() {
     let _me = mock_me(&server);
     let dir = tempfile::tempdir().expect("temp dir");
 
-    LoginCommand {
-        api_url: Some(server.base_url()),
-        no_browser: true,
-        no_configure: true,
-        ask: Ask::Never,
-        peppy_dirs: Some(dirs(&dir)),
-    }
-    .execute(&ctx())
-    .expect("login");
+    login_only(&server, &dir).execute(&ctx()).expect("login");
 
     // A login on a machine that never ran the daemon still seeds
     // peppy_config.json5 with the resource_servers block (the build's default
@@ -398,15 +472,7 @@ fn login_writes_credentials_file_0600() {
     let _me = mock_me(&server);
     let dir = tempfile::tempdir().expect("temp dir");
 
-    LoginCommand {
-        api_url: Some(server.base_url()),
-        no_browser: true,
-        no_configure: true,
-        ask: Ask::Never,
-        peppy_dirs: Some(dirs(&dir)),
-    }
-    .execute(&ctx())
-    .expect("login");
+    login_only(&server, &dir).execute(&ctx()).expect("login");
 
     let mode = std::fs::metadata(creds_path(&dir))
         .expect("stat")
@@ -416,7 +482,67 @@ fn login_writes_credentials_file_0600() {
     assert_eq!(mode, 0o600, "credentials must be owner-only");
 }
 
-// ─── context ─────────────────────────────────────────────────────────────
+/// A platform older than API contract 3.3.0 does not publish its device page.
+/// The login is refused before the device flow starts, says why, and stores
+/// nothing.
+#[test]
+fn login_refuses_an_older_platform_before_the_flow_starts() {
+    let server = MockServer::start();
+    let device_authorization = mock_login_endpoints_answering(
+        &server,
+        "unused-token",
+        cli_auth_config(&server.base_url(), None),
+    );
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let err = login_only(&server, &dir)
+        .execute(&ctx())
+        .expect_err("a platform older than 3.3.0 cannot be signed in to");
+
+    assert!(
+        err.to_string().contains(
+            "This platform is older than API contract 3.3.0 and does not publish its own \
+             device page"
+        ),
+        "{err}"
+    );
+    assert_eq!(device_authorization.calls(), 0);
+    assert!(!creds_path(&dir).exists(), "a refused login stores nothing");
+}
+
+/// A device page the CLI cannot print safely stops the login before the device
+/// flow starts, so no code is ever issued for it.
+#[test]
+fn login_refuses_an_untrusted_device_page_before_the_flow_starts() {
+    for (address, reason) in [
+        ("ftp://app.example.test/device", "unsupported URL scheme"),
+        (
+            "https://app.example.test/device?user_code=ABCD-EFGH",
+            "query string or fragment",
+        ),
+    ] {
+        let server = MockServer::start();
+        let device_authorization = mock_login_endpoints_answering(
+            &server,
+            "unused-token",
+            cli_auth_config(&server.base_url(), Some(address)),
+        );
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let err = login_only(&server, &dir)
+            .execute(&ctx())
+            .expect_err("an untrusted device page is refused");
+
+        assert!(err.to_string().contains(reason), "{address}: {err}");
+        assert_eq!(device_authorization.calls(), 0, "{address}");
+        assert!(
+            !creds_path(&dir).exists(),
+            "{address}: a refused login stores nothing"
+        );
+    }
+}
+
+// ─── login: the enrollment ───────────────────────────────────────────────
 
 const FIELD: &str = "p-field";
 const SECOND_WORKSPACE: &str = "ws-b";
@@ -456,152 +582,115 @@ fn mock_two_workspaces(server: &MockServer) -> httpmock::Mock<'_> {
     })
 }
 
-/// Writes a context selected against `server` by `subject`.
-fn write_context(
+/// Writes a selection made against `server` by `subject`: `workspace`, and
+/// `project` when there is one.
+fn write_selection(
     dir: &tempfile::TempDir,
     server: &MockServer,
     subject: &str,
     workspace: (&str, &str),
-    project: (&str, &str),
-) -> PlatformContext {
-    let context = PlatformContext {
+    project: Option<(&str, &str)>,
+) -> PlatformSelection {
+    let selection = PlatformSelection {
         api_origin: auth::profile::normalize_api_origin(&server.base_url()).unwrap(),
         subject: subject.into(),
         workspace: Named {
             id: workspace.0.into(),
             name: workspace.1.into(),
         },
-        project: Named {
-            id: project.0.into(),
-            name: project.1.into(),
-        },
-        ..test_support::platform_context()
+        project: project.map(|(id, name)| Named {
+            id: id.into(),
+            name: name.into(),
+        }),
+        ..test_support::platform_selection()
     };
-    platform_context::save(&dirs(dir), &context).expect("write context");
-    context
+    platform_selection::save(&dirs(dir), &selection).expect("write selection");
+    selection
 }
 
-fn stored_context(dir: &tempfile::TempDir) -> Option<PlatformContext> {
-    platform_context::load(&dirs(dir)).expect("the context file parses")
+fn stored_selection(dir: &tempfile::TempDir) -> Option<PlatformSelection> {
+    platform_selection::load(&dirs(dir)).expect("the selection file parses")
 }
 
-fn answers(text: &str) -> Ask {
-    Ask::Reader(Box::new(std::io::Cursor::new(text.as_bytes().to_vec())))
+/// The project of the selection under `dir`, `None` when no project is
+/// selected.
+fn selected_project(dir: &tempfile::TempDir) -> Option<String> {
+    stored_selection(dir)
+        .and_then(|selection| selection.project)
+        .map(|project| project.id)
 }
 
-fn login_with(
-    server: &MockServer,
-    dir: &tempfile::TempDir,
-    no_configure: bool,
-    ask: Ask,
-) -> peppy::error::Result<()> {
-    LoginCommand {
-        api_url: Some(server.base_url()),
-        no_browser: true,
-        no_configure,
-        ask,
-        peppy_dirs: Some(dirs(dir)),
-    }
-    .execute(&ctx())
+fn enrolled_project(dir: &tempfile::TempDir) -> Option<String> {
+    enrollment::load(&dirs(dir))
+        .expect("the bundle parses")
+        .map(|enrollment| enrollment.document.project_id)
 }
 
-/// A platform older than API contract 3.3.0 does not publish its device page.
-/// The login is refused before the device flow starts, says why, and stores
-/// nothing.
+fn has_a_session(dir: &tempfile::TempDir) -> bool {
+    storage::load(&creds_path(dir))
+        .expect("load creds")
+        .session
+        .is_some()
+}
+
+/// The whole login: sign in, pick the only workspace and project with no
+/// question, enroll under the name of the running daemon, wait for it to come
+/// back under the new identity, and verify the link with a second poke.
 #[test]
-fn login_refuses_an_older_platform_before_the_flow_starts() {
-    let server = MockServer::start();
-    let device_authorization = mock_login_endpoints_answering(
-        &server,
-        "unused-token",
-        cli_auth_config(&server.base_url(), None),
-    );
-    let dir = tempfile::tempdir().expect("temp dir");
-
-    let err = login_with(&server, &dir, true, Ask::Never)
-        .expect_err("a platform older than 3.3.0 cannot be signed in to");
-
-    assert!(
-        err.to_string().contains(
-            "This platform is older than API contract 3.3.0 and does not publish its own \
-             device page"
-        ),
-        "{err}"
-    );
-    assert_eq!(device_authorization.calls(), 0);
-    assert!(!creds_path(&dir).exists(), "a refused login stores nothing");
-}
-
-/// A device page the CLI cannot print safely stops the login before the device
-/// flow starts, so no code is ever issued for it.
-#[test]
-fn login_refuses_an_untrusted_device_page_before_the_flow_starts() {
-    for (address, reason) in [
-        ("ftp://app.example.test/device", "unsupported URL scheme"),
-        (
-            "https://app.example.test/device?user_code=ABCD-EFGH",
-            "query string or fragment",
-        ),
-    ] {
-        let server = MockServer::start();
-        let device_authorization = mock_login_endpoints_answering(
-            &server,
-            "unused-token",
-            cli_auth_config(&server.base_url(), Some(address)),
-        );
-        let dir = tempfile::tempdir().expect("temp dir");
-
-        let err = login_with(&server, &dir, true, Ask::Never)
-            .expect_err("an untrusted device page is refused");
-
-        assert!(err.to_string().contains(reason), "{address}: {err}");
-        assert_eq!(device_authorization.calls(), 0, "{address}");
-        assert!(
-            !creds_path(&dir).exists(),
-            "{address}: a refused login stores nothing"
-        );
-    }
-}
-
-#[test]
-fn login_selects_the_only_workspace_and_project_with_no_question() {
+fn login_enrolls_in_the_only_project_with_no_question() {
     let server = MockServer::start();
     mock_login_endpoints(&server, "access-token-1");
     let _me = mock_me(&server);
     mock_workspaces_and_projects(&server);
-    let dir = tempfile::tempdir().expect("temp dir");
+    let enroll = mock_enroll(&server, ZID);
+    let dir = daemon_dir();
+    let stub = stub_restarting_daemon(
+        &dir,
+        PROJECT,
+        ZID,
+        "{\"status\":\"ok\",\"applied\":\"tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447\"}\n",
+    );
 
-    login_with(&server, &dir, false, Ask::Never).expect("login");
+    login(&server, &dir).execute(&ctx()).expect("login");
 
-    let context = stored_context(&dir).expect("a context was selected");
-    assert_eq!(context.workspace.id, WORKSPACE);
-    assert_eq!(context.workspace.name, "Alice's workspace");
+    assert_eq!(enroll.calls(), 1);
+    assert_eq!(stub.join().unwrap(), ["refederate", "refederate"]);
     assert_eq!(
-        context.project.id, PROJECT,
+        enrolled_project(&dir).as_deref(),
+        Some(PROJECT),
         "the archived project does not count"
     );
-    assert_eq!(context.subject, "user-123");
+    let selection = stored_selection(&dir).expect("the project became the selection");
+    assert_eq!(selection.workspace.id, WORKSPACE);
+    assert_eq!(selection.workspace.name, "Alice's workspace");
+    assert_eq!(selected_project(&dir).as_deref(), Some(PROJECT));
+    assert_eq!(selection.subject, "user-123");
     assert_eq!(
-        context.api_origin,
+        selection.api_origin,
         auth::profile::normalize_api_origin(&server.base_url()).unwrap()
     );
 }
 
 #[test]
-fn login_asks_when_there_is_more_than_one_choice() {
+fn login_asks_for_the_workspace_then_the_project() {
     let server = MockServer::start();
     mock_login_endpoints(&server, "access-token-1");
     let _me = mock_me(&server);
     mock_two_workspaces(&server);
-    let dir = tempfile::tempdir().expect("temp dir");
+    let enroll = mock_enroll_in(&server, WORKSPACE, FIELD, ZID);
+    let dir = daemon_dir();
 
     // Workspace 1 of 2, then project 2 of 2.
-    login_with(&server, &dir, false, answers("1\n2\n")).expect("login");
+    LoginCommand {
+        ask: Ask::scripted([0, 1]),
+        ..login(&server, &dir)
+    }
+    .execute(&ctx())
+    .expect("login");
 
-    let context = stored_context(&dir).expect("a context was selected");
-    assert_eq!(context.workspace.id, WORKSPACE);
-    assert_eq!(context.project.id, FIELD);
-    assert_eq!(context.project.name, "Field");
+    assert_eq!(enroll.calls(), 1);
+    assert_eq!(enrolled_project(&dir).as_deref(), Some(FIELD));
+    assert_eq!(selected_project(&dir).as_deref(), Some(FIELD));
 }
 
 /// A workspace with one project asks one question only.
@@ -611,381 +700,657 @@ fn login_does_not_ask_for_the_only_project_of_the_selected_workspace() {
     mock_login_endpoints(&server, "access-token-1");
     let _me = mock_me(&server);
     mock_two_workspaces(&server);
-    let dir = tempfile::tempdir().expect("temp dir");
+    let enroll = mock_enroll_in(&server, SECOND_WORKSPACE, ARM, ZID);
+    let dir = daemon_dir();
 
-    login_with(&server, &dir, false, answers("2\n")).expect("login");
-
-    let context = stored_context(&dir).expect("a context was selected");
-    assert_eq!(context.workspace.id, SECOND_WORKSPACE);
-    assert_eq!(context.project.id, ARM);
-}
-
-/// With nobody to ask, the sign-in is still good: the session is kept, no
-/// context is written, and the command succeeds.
-#[test]
-fn login_with_nobody_to_ask_succeeds_and_writes_no_context() {
-    let server = MockServer::start();
-    mock_login_endpoints(&server, "access-token-1");
-    let _me = mock_me(&server);
-    mock_two_workspaces(&server);
-    let dir = tempfile::tempdir().expect("temp dir");
-
-    login_with(&server, &dir, false, Ask::Never).expect("the sign-in does not fail");
-
-    assert_eq!(stored_context(&dir), None);
-    let creds = storage::load(&creds_path(&dir)).expect("load creds");
-    assert!(creds.session.is_some(), "the session is kept");
-}
-
-#[test]
-fn login_keeps_the_context_of_the_same_identity() {
-    let server = MockServer::start();
-    mock_login_endpoints(&server, "access-token-1");
-    let _me = mock_me(&server);
-    let workspaces = mock_two_workspaces(&server);
-    let dir = tempfile::tempdir().expect("temp dir");
-    let before = write_context(
-        &dir,
-        &server,
-        "user-123",
-        (WORKSPACE, "Alice's workspace"),
-        (FIELD, "Field"),
-    );
-
-    login_with(&server, &dir, false, Ask::Never).expect("login");
-
-    assert_eq!(stored_context(&dir), Some(before));
-    assert_eq!(workspaces.calls(), 0, "nothing is selected again");
-}
-
-#[test]
-fn login_as_a_different_identity_replaces_the_context() {
-    let server = MockServer::start();
-    mock_login_endpoints(&server, "access-token-1");
-    let _me = mock_me(&server);
-    mock_workspaces_and_projects(&server);
-    let dir = tempfile::tempdir().expect("temp dir");
-    write_context(
-        &dir,
-        &server,
-        "someone-else",
-        ("ws-x", "Their workspace"),
-        ("p-x", "Theirs"),
-    );
-
-    login_with(&server, &dir, false, Ask::Never).expect("login");
-
-    let context = stored_context(&dir).expect("a context was selected");
-    assert_eq!(context.subject, "user-123");
-    assert_eq!(context.project.id, PROJECT);
-}
-
-/// The old context belongs to a different account, so it does not stay when
-/// the selection cannot complete.
-#[test]
-fn login_as_a_different_identity_removes_the_context_also_with_nobody_to_ask() {
-    let server = MockServer::start();
-    mock_login_endpoints(&server, "access-token-1");
-    let _me = mock_me(&server);
-    mock_two_workspaces(&server);
-    let dir = tempfile::tempdir().expect("temp dir");
-    write_context(
-        &dir,
-        &server,
-        "someone-else",
-        ("ws-x", "Their workspace"),
-        ("p-x", "Theirs"),
-    );
-
-    login_with(&server, &dir, false, Ask::Never).expect("login");
-
-    assert_eq!(stored_context(&dir), None);
-}
-
-#[test]
-fn login_no_configure_selects_nothing() {
-    let server = MockServer::start();
-    mock_login_endpoints(&server, "access-token-1");
-    let _me = mock_me(&server);
-    let workspaces = mock_two_workspaces(&server);
-    let dir = tempfile::tempdir().expect("temp dir");
-
-    login_with(&server, &dir, true, answers("1\n1\n")).expect("login");
-
-    assert_eq!(stored_context(&dir), None);
-    assert_eq!(workspaces.calls(), 0);
-}
-
-fn configure_with(
-    server: &MockServer,
-    dir: &tempfile::TempDir,
-    workspace: Option<&str>,
-    project: Option<&str>,
-    ask: Ask,
-) -> peppy::error::Result<()> {
-    ConfigureCommand {
-        api_url: Some(server.base_url()),
-        workspace: workspace.map(str::to_string),
-        project: project.map(str::to_string),
-        ask,
-        peppy_dirs: Some(dirs(dir)),
+    LoginCommand {
+        ask: Ask::scripted([1]),
+        ..login(&server, &dir)
     }
     .execute(&ctx())
+    .expect("login");
+
+    assert_eq!(enroll.calls(), 1);
+    assert_eq!(enrolled_project(&dir).as_deref(), Some(ARM));
+    let selection = stored_selection(&dir).expect("selection");
+    assert_eq!(selection.workspace.id, SECOND_WORKSPACE);
 }
 
-fn context_command(
-    server: &MockServer,
-    dir: &tempfile::TempDir,
-    action: ContextAction,
-    ask: Ask,
-) -> peppy::error::Result<()> {
-    ContextCommand {
-        action,
-        api_url: Some(server.base_url()),
-        ask,
-        peppy_dirs: Some(dirs(dir)),
+#[test]
+fn login_with_flags_asks_nothing() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    mock_two_workspaces(&server);
+    let enroll = mock_enroll_in(&server, WORKSPACE, FIELD, ZID);
+    let dir = daemon_dir();
+
+    LoginCommand {
+        workspace: Some("Alice's workspace".to_string()),
+        project: Some("Field".to_string()),
+        ..login(&server, &dir)
     }
     .execute(&ctx())
+    .expect("the flags name the project, by name");
+
+    assert_eq!(enroll.calls(), 1);
+    assert_eq!(enrolled_project(&dir).as_deref(), Some(FIELD));
 }
 
-/// `configure` always runs the selection, also when a context exists.
+/// The last entry of each menu signs in only, and so does a cancelled menu.
+/// The command succeeds: the person decided.
 #[test]
-fn configure_replaces_the_context() {
+fn login_signs_in_only_when_the_person_declines_the_enrollment() {
+    for (answers, what) in [
+        (vec![2], "the last entry of the workspace menu"),
+        (vec![0, 2], "the last entry of the project menu"),
+        (vec![], "a cancelled menu"),
+    ] {
+        let server = MockServer::start();
+        mock_login_endpoints(&server, "access-token-1");
+        let _me = mock_me(&server);
+        mock_two_workspaces(&server);
+        let any_enrollment = mock_any_enrollment(&server);
+        let dir = daemon_dir();
+
+        LoginCommand {
+            ask: Ask::scripted(answers),
+            ..login(&server, &dir)
+        }
+        .execute(&ctx())
+        .unwrap_or_else(|e| panic!("{what}: {e}"));
+
+        assert_eq!(any_enrollment.calls(), 0, "{what}");
+        assert_eq!(enrolled_project(&dir), None, "{what}");
+        assert_eq!(stored_selection(&dir), None, "{what}");
+        assert!(has_a_session(&dir), "{what}: the session is kept");
+    }
+}
+
+/// With more than one workspace and nobody to ask, the machine is not
+/// enrolled: the command fails, keeps the session, and names the command that
+/// enrolls.
+#[test]
+fn login_with_nobody_to_ask_keeps_the_session_and_names_enroll() {
     let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
     mock_two_workspaces(&server);
-    let dir = authenticated_dir(&server);
-    write_context(
-        &dir,
-        &server,
-        "user-123",
-        (WORKSPACE, "Alice's workspace"),
-        (PROJECT, "Lab"),
+    let dir = daemon_dir();
+
+    let err = login(&server, &dir)
+        .execute(&ctx())
+        .expect_err("nobody selects the workspace");
+
+    let message = err.to_string();
+    assert!(
+        message.starts_with("signed in, but this machine is not enrolled: more than one workspace"),
+        "{message}"
     );
-
-    configure_with(&server, &dir, None, None, answers("2\n")).expect("configure");
-
-    let context = stored_context(&dir).expect("context");
-    assert_eq!(context.workspace.id, SECOND_WORKSPACE);
-    assert_eq!(context.project.id, ARM);
+    assert!(
+        message.contains("peppy platform enroll --workspace <id|name>"),
+        "{message}"
+    );
+    assert!(has_a_session(&dir), "the session is kept");
+    assert_eq!(stored_selection(&dir), None);
+    assert_eq!(enrolled_project(&dir), None);
 }
 
+/// A login that enrolls needs the daemon. With none running it stops before
+/// the device flow starts, so the person never approves a code for nothing.
 #[test]
-fn configure_with_flags_asks_nothing() {
-    let server = MockServer::start();
-    mock_two_workspaces(&server);
-    let dir = authenticated_dir(&server);
+fn login_without_a_running_daemon_fails_before_the_device_flow() {
+    for (write_state, what) in [
+        (None, "no state file"),
+        (
+            Some(write_dead_daemon_state as fn(&tempfile::TempDir)),
+            "the state of a daemon that died",
+        ),
+    ] {
+        let server = MockServer::start();
+        let device_authorization = mock_login_endpoints_answering(
+            &server,
+            "unused-token",
+            cli_auth_config(
+                &server.base_url(),
+                Some(&format!("{}/app/device", server.base_url())),
+            ),
+        );
+        let dir = tempfile::tempdir().expect("temp dir");
+        if let Some(write_state) = write_state {
+            write_state(&dir);
+        }
 
-    configure_with(
-        &server,
-        &dir,
-        Some("Alice's workspace"),
-        Some("Field"),
-        Ask::Never,
-    )
-    .expect("configure by name");
-    assert_eq!(stored_context(&dir).expect("context").project.id, FIELD);
+        let err = login(&server, &dir)
+            .execute(&ctx())
+            .expect_err("no daemon to enroll");
 
-    let err = configure_with(&server, &dir, None, None, Ask::Never)
-        .expect_err("more than one workspace and nobody to ask");
-    assert!(err.to_string().contains("--workspace"), "{err}");
-    assert_eq!(
-        stored_context(&dir).expect("context").project.id,
-        FIELD,
-        "a selection that fails writes nothing"
-    );
+        let message = err.to_string();
+        assert!(
+            message.contains("no peppy daemon is running"),
+            "{what}: {message}"
+        );
+        assert!(message.contains("peppy service serve"), "{what}: {message}");
+        assert!(message.contains("--no-enroll"), "{what}: {message}");
+        assert_eq!(device_authorization.calls(), 0, "{what}");
+        assert!(!creds_path(&dir).exists(), "{what}: nothing is stored");
+    }
 }
 
+/// A machine that is enrolled keeps its enrollment: the login signs in, and
+/// needs no daemon and no selection.
 #[test]
-fn configure_needs_a_session() {
+fn login_on_an_enrolled_machine_keeps_the_enrollment() {
     let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    let workspaces = server.mock(|when, then| {
+        when.method(GET).path("/api/workspaces");
+        then.status(500);
+    });
+    let any_enrollment = mock_any_enrollment(&server);
     let dir = tempfile::tempdir().expect("temp dir");
-    let err = configure_with(&server, &dir, None, None, Ask::Never).expect_err("no session");
-    assert!(err.to_string().contains("peppy platform login"), "{err}");
-}
+    write_enrollment(&dir, "peer-old", "7f3a9c1e");
 
-/// `--project` alone looks in the workspace of the context.
-#[test]
-fn context_use_switches_the_project_in_the_workspace_of_the_context() {
-    let server = MockServer::start();
-    mock_two_workspaces(&server);
-    let dir = authenticated_dir(&server);
-    write_context(
-        &dir,
-        &server,
-        "user-123",
-        (WORKSPACE, "Alice's workspace"),
-        (PROJECT, "Lab"),
-    );
-    write_enrollment(&dir, "peer-1", ZID);
+    login(&server, &dir).execute(&ctx()).expect("login");
 
-    context_command(
-        &server,
-        &dir,
-        ContextAction::Use {
-            workspace: None,
-            project: Some("Field".to_string()),
-        },
-        Ask::Never,
-    )
-    .expect("the account has two workspaces, and the context names the one to look in");
-
-    let context = stored_context(&dir).expect("context");
-    assert_eq!(context.workspace.id, WORKSPACE);
-    assert_eq!(context.project.id, FIELD);
+    assert!(has_a_session(&dir));
+    assert_eq!(workspaces.calls(), 0, "nothing is selected");
+    assert_eq!(any_enrollment.calls(), 0);
     assert_eq!(
         enrollment::load(&dirs(&dir))
             .unwrap()
             .unwrap()
             .document
-            .project_id,
-        PROJECT,
-        "a switch does not move the machine"
+            .peer_id,
+        "peer-old"
     );
+}
+
+/// Flags that name a project on an enrolled machine ask to move it, which a
+/// login does not do. It stops before the device flow and names the commands
+/// that do.
+#[test]
+fn login_with_flags_on_an_enrolled_machine_fails_before_the_device_flow() {
+    let server = MockServer::start();
+    let device_authorization = mock_login_endpoints_answering(
+        &server,
+        "unused-token",
+        cli_auth_config(
+            &server.base_url(),
+            Some(&format!("{}/app/device", server.base_url())),
+        ),
+    );
+    let dir = daemon_dir();
+    write_enrollment(&dir, "peer-old", "7f3a9c1e");
+
+    let err = LoginCommand {
+        project: Some("Field".to_string()),
+        ..login(&server, &dir)
+    }
+    .execute(&ctx())
+    .expect_err("a login does not move an enrolled machine");
+
+    let message = err.to_string();
+    assert!(message.contains("already enrolled"), "{message}");
+    assert!(message.contains("--no-enroll"), "{message}");
     assert!(
-        !dirs(&dir).runtime_config_dir().exists(),
-        "a switch never pokes the daemon"
+        message.contains("peppy platform enroll --replace"),
+        "{message}"
     );
+    assert_eq!(device_authorization.calls(), 0);
 }
 
 #[test]
-fn context_show_list_and_clear() {
+fn login_no_enroll_selects_and_enrolls_nothing() {
     let server = MockServer::start();
-    mock_two_workspaces(&server);
-    let dir = authenticated_dir(&server);
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    let workspaces = mock_two_workspaces(&server);
+    let any_enrollment = mock_any_enrollment(&server);
+    let dir = daemon_dir();
 
-    for json in [false, true] {
-        context_command(&server, &dir, ContextAction::Show { json }, Ask::Never)
-            .expect("show with no context");
-    }
-    write_context(
+    login_only(&server, &dir).execute(&ctx()).expect("login");
+
+    assert_eq!(stored_selection(&dir), None);
+    assert_eq!(workspaces.calls(), 0);
+    assert_eq!(any_enrollment.calls(), 0);
+}
+
+#[test]
+fn login_keeps_the_selection_of_the_same_identity() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    mock_two_workspaces(&server);
+    let dir = daemon_dir();
+    let before = write_selection(
         &dir,
         &server,
         "user-123",
         (WORKSPACE, "Alice's workspace"),
-        (FIELD, "Field"),
+        Some((FIELD, "Field")),
     );
-    for json in [false, true] {
-        context_command(&server, &dir, ContextAction::Show { json }, Ask::Never).expect("show");
-        context_command(&server, &dir, ContextAction::List { json }, Ask::Never).expect("list");
-    }
 
-    context_command(&server, &dir, ContextAction::Clear, Ask::Never).expect("clear");
-    assert_eq!(stored_context(&dir), None);
-    context_command(&server, &dir, ContextAction::Clear, Ask::Never).expect("clear two times");
+    LoginCommand {
+        ask: Ask::scripted([]),
+        ..login(&server, &dir)
+    }
+    .execute(&ctx())
+    .expect("the person declines the enrollment");
+
+    assert_eq!(stored_selection(&dir), Some(before));
 }
 
-/// `--workspace` alone selects the only project of that workspace, and asks
-/// when the workspace has more than one. The project of the context is not a
-/// default of a selection.
 #[test]
-fn context_use_with_a_workspace_alone_selects_its_project() {
+fn login_as_a_different_identity_replaces_the_selection() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    mock_workspaces_and_projects(&server);
+    let _enroll = mock_enroll(&server, ZID);
+    let dir = daemon_dir();
+    write_selection(
+        &dir,
+        &server,
+        "someone-else",
+        ("ws-x", "Their workspace"),
+        Some(("p-x", "Theirs")),
+    );
+
+    login(&server, &dir).execute(&ctx()).expect("login");
+
+    let selection = stored_selection(&dir).expect("a selection was made");
+    assert_eq!(selection.subject, "user-123");
+    assert_eq!(selected_project(&dir).as_deref(), Some(PROJECT));
+}
+
+/// The old selection belongs to a different account, so it does not stay when
+/// the person signs in only.
+#[test]
+fn login_as_a_different_identity_removes_the_selection_also_when_it_signs_in_only() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+    mock_two_workspaces(&server);
+    let dir = daemon_dir();
+    write_selection(
+        &dir,
+        &server,
+        "someone-else",
+        ("ws-x", "Their workspace"),
+        Some(("p-x", "Theirs")),
+    );
+
+    LoginCommand {
+        ask: Ask::scripted([]),
+        ..login(&server, &dir)
+    }
+    .execute(&ctx())
+    .expect("login");
+
+    assert_eq!(stored_selection(&dir), None);
+}
+
+// ─── workspace / project ─────────────────────────────────────────────────
+
+fn workspace_command(
+    server: &MockServer,
+    dir: &tempfile::TempDir,
+    command: WorkspaceCommands,
+    ask: Ask,
+) -> peppy::error::Result<()> {
+    WorkspaceCommand {
+        command,
+        api_url: Some(server.base_url()),
+        ask,
+        peppy_dirs: Some(dirs(dir)),
+    }
+    .execute(&ctx())
+}
+
+fn project_command(
+    server: &MockServer,
+    dir: &tempfile::TempDir,
+    command: ProjectCommands,
+    ask: Ask,
+) -> peppy::error::Result<()> {
+    ProjectCommand {
+        command,
+        api_url: Some(server.base_url()),
+        ask,
+        peppy_dirs: Some(dirs(dir)),
+    }
+    .execute(&ctx())
+}
+
+fn use_workspace(workspace: &str) -> WorkspaceCommands {
+    WorkspaceCommands::Use {
+        workspace: Some(workspace.to_string()),
+    }
+}
+
+fn use_project(project: Option<&str>, workspace: Option<&str>) -> ProjectCommands {
+    ProjectCommands::Use {
+        project: project.map(str::to_string),
+        workspace: workspace.map(str::to_string),
+    }
+}
+
+/// The project stays selected when `use` selects its workspace again. A
+/// different workspace starts with no project.
+#[test]
+fn workspace_use_keeps_the_project_of_the_same_workspace_only() {
     let server = MockServer::start();
     mock_two_workspaces(&server);
     let dir = authenticated_dir(&server);
-    write_context(
+    write_selection(
         &dir,
         &server,
         "user-123",
         (WORKSPACE, "Alice's workspace"),
-        (PROJECT, "Lab"),
+        Some((FIELD, "Field")),
     );
-    let use_workspace = |workspace: &str, ask: Ask| {
-        context_command(
+
+    workspace_command(&server, &dir, use_workspace(WORKSPACE), Ask::Never)
+        .expect("the same workspace, by id");
+    assert_eq!(selected_project(&dir).as_deref(), Some(FIELD));
+
+    workspace_command(&server, &dir, use_workspace("Robotics lab"), Ask::Never)
+        .expect("a different workspace, by name");
+    let selection = stored_selection(&dir).expect("selection");
+    assert_eq!(selection.workspace.id, SECOND_WORKSPACE);
+    assert_eq!(selection.project, None);
+}
+
+#[test]
+fn workspace_use_asks_when_there_is_more_than_one() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = authenticated_dir(&server);
+
+    workspace_command(
+        &server,
+        &dir,
+        WorkspaceCommands::Use { workspace: None },
+        Ask::scripted([1]),
+    )
+    .expect("the person selects");
+
+    let selection = stored_selection(&dir).expect("selection");
+    assert_eq!(selection.workspace.id, SECOND_WORKSPACE);
+    assert_eq!(selection.subject, "user-123");
+    assert_eq!(selection.project, None);
+}
+
+#[test]
+fn workspace_use_with_nobody_to_ask_names_the_argument() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = authenticated_dir(&server);
+
+    let use_with = |ask| {
+        workspace_command(
             &server,
             &dir,
-            ContextAction::Use {
-                workspace: Some(workspace.to_string()),
-                project: None,
-            },
+            WorkspaceCommands::Use { workspace: None },
             ask,
         )
     };
 
-    use_workspace("Robotics lab", Ask::Never).expect("one project, no question");
-    assert_eq!(stored_context(&dir).expect("context").project.id, ARM);
-
-    let err = use_workspace(WORKSPACE, Ask::Never).expect_err("two projects, nobody to ask");
-    assert!(err.to_string().contains("--project"), "{err}");
-    assert_eq!(stored_context(&dir).expect("context").project.id, ARM);
-
-    use_workspace(WORKSPACE, answers("2\n")).expect("the person selects");
-    assert_eq!(stored_context(&dir).expect("context").project.id, FIELD);
+    let err = use_with(Ask::Never).expect_err("nobody to ask");
+    assert!(
+        err.to_string()
+            .contains("peppy platform workspace use <id|name>"),
+        "{err}"
+    );
+    let err = use_with(Ask::scripted([])).expect_err("a cancelled menu selects nothing");
+    assert_eq!(err.to_string(), "no workspace was selected");
+    assert_eq!(
+        stored_selection(&dir),
+        None,
+        "a failed selection writes nothing"
+    );
 }
 
-/// With no context, `--project` alone has no workspace to look in when the
-/// account has more than one.
+/// `use` with a project alone looks in the selected workspace, and moves
+/// neither the machine nor the daemon.
 #[test]
-fn context_use_with_a_project_alone_and_no_context_needs_the_workspace() {
+fn project_use_looks_in_the_selected_workspace() {
     let server = MockServer::start();
     mock_two_workspaces(&server);
     let dir = authenticated_dir(&server);
+    write_selection(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        Some((PROJECT, "Lab")),
+    );
+    write_enrollment(&dir, "peer-1", ZID);
 
-    let err = context_command(
+    project_command(&server, &dir, use_project(Some("Field"), None), Ask::Never)
+        .expect("the account has two workspaces, and the selection names the one to look in");
+
+    let selection = stored_selection(&dir).expect("selection");
+    assert_eq!(selection.workspace.id, WORKSPACE);
+    assert_eq!(selected_project(&dir).as_deref(), Some(FIELD));
+    assert_eq!(
+        enrolled_project(&dir).as_deref(),
+        Some(PROJECT),
+        "a selection does not move the machine"
+    );
+    assert!(
+        !dirs(&dir).runtime_config_dir().exists(),
+        "a selection never pokes the daemon"
+    );
+}
+
+/// `--workspace` alone selects the only project of that workspace, and asks
+/// when the workspace has more than one.
+#[test]
+fn project_use_with_a_workspace_flag_selects_its_only_project() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = authenticated_dir(&server);
+    write_selection(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        Some((PROJECT, "Lab")),
+    );
+
+    project_command(
         &server,
         &dir,
-        ContextAction::Use {
-            workspace: None,
-            project: Some("Field".to_string()),
-        },
+        use_project(None, Some("Robotics lab")),
         Ask::Never,
     )
-    .expect_err("which workspace?");
-    assert!(err.to_string().contains("--workspace"), "{err}");
-    assert_eq!(stored_context(&dir), None);
+    .expect("one project, no question");
+    assert_eq!(selected_project(&dir).as_deref(), Some(ARM));
+
+    let err = project_command(
+        &server,
+        &dir,
+        use_project(None, Some(WORKSPACE)),
+        Ask::Never,
+    )
+    .expect_err("two projects, nobody to ask");
+    assert!(
+        err.to_string()
+            .contains("peppy platform project use <id|name>"),
+        "{err}"
+    );
+    assert_eq!(selected_project(&dir).as_deref(), Some(ARM));
+
+    project_command(
+        &server,
+        &dir,
+        use_project(None, Some(WORKSPACE)),
+        Ask::scripted([1]),
+    )
+    .expect("the person selects");
+    assert_eq!(selected_project(&dir).as_deref(), Some(FIELD));
 }
 
-/// A context of a different identity is not the context of this session.
+/// With no selected workspace, `use` asks for the workspace first.
 #[test]
-fn a_context_of_a_different_identity_is_not_used() {
+fn project_use_with_no_selected_workspace_asks_for_it() {
     let server = MockServer::start();
     mock_two_workspaces(&server);
     let dir = authenticated_dir(&server);
-    write_context(
+
+    let err = project_command(&server, &dir, use_project(Some("Field"), None), Ask::Never)
+        .expect_err("which workspace?");
+    assert!(err.to_string().contains("--workspace"), "{err}");
+    assert_eq!(stored_selection(&dir), None);
+
+    project_command(
+        &server,
+        &dir,
+        use_project(None, None),
+        Ask::scripted([0, 1]),
+    )
+    .expect("the workspace, then the project");
+    let selection = stored_selection(&dir).expect("selection");
+    assert_eq!(selection.workspace.id, WORKSPACE);
+    assert_eq!(selected_project(&dir).as_deref(), Some(FIELD));
+}
+
+#[test]
+fn project_use_needs_a_session() {
+    let server = MockServer::start();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let err = project_command(&server, &dir, use_project(None, None), Ask::Never)
+        .expect_err("no session");
+    assert!(err.to_string().contains("peppy platform login"), "{err}");
+}
+
+#[test]
+fn show_list_and_clear_the_selection() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = authenticated_dir(&server);
+
+    for json in [false, true] {
+        workspace_command(&server, &dir, WorkspaceCommands::Show { json }, Ask::Never)
+            .expect("workspace show with no selection");
+        project_command(&server, &dir, ProjectCommands::Show { json }, Ask::Never)
+            .expect("project show with no selection");
+    }
+    project_command(&server, &dir, ProjectCommands::Clear, Ask::Never)
+        .expect("project clear with no selection");
+
+    write_selection(
+        &dir,
+        &server,
+        "user-123",
+        (WORKSPACE, "Alice's workspace"),
+        Some((FIELD, "Field")),
+    );
+    for json in [false, true] {
+        workspace_command(&server, &dir, WorkspaceCommands::Show { json }, Ask::Never)
+            .expect("workspace show");
+        workspace_command(&server, &dir, WorkspaceCommands::List { json }, Ask::Never)
+            .expect("workspace list");
+        project_command(&server, &dir, ProjectCommands::Show { json }, Ask::Never)
+            .expect("project show");
+        project_command(
+            &server,
+            &dir,
+            ProjectCommands::List {
+                workspace: None,
+                json,
+            },
+            Ask::Never,
+        )
+        .expect("project list: the selected workspace of two");
+    }
+
+    project_command(&server, &dir, ProjectCommands::Clear, Ask::Never).expect("project clear");
+    let selection = stored_selection(&dir).expect("the workspace stays selected");
+    assert_eq!(selection.workspace.id, WORKSPACE);
+    assert_eq!(selection.project, None);
+    for json in [false, true] {
+        project_command(&server, &dir, ProjectCommands::Show { json }, Ask::Never)
+            .expect("project show with a workspace alone");
+    }
+
+    workspace_command(&server, &dir, WorkspaceCommands::Clear, Ask::Never)
+        .expect("workspace clear");
+    assert_eq!(stored_selection(&dir), None);
+    workspace_command(&server, &dir, WorkspaceCommands::Clear, Ask::Never)
+        .expect("clear two times");
+}
+
+/// A selection of a different identity is not the selection of this session.
+#[test]
+fn a_selection_of_a_different_identity_is_not_used() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let dir = enrollable_dir(&server);
+    write_selection(
         &dir,
         &server,
         "someone-else",
         (WORKSPACE, "Alice's workspace"),
-        (FIELD, "Field"),
+        Some((FIELD, "Field")),
     );
 
-    let err = enroll_in(&server, &dir, false).expect_err("no context, more than one workspace");
+    let err = enroll_in(&server, &dir, false).expect_err("no selection, more than one workspace");
     assert!(
-        err.to_string().contains("peppy platform configure"),
+        err.to_string().contains("peppy platform workspace use"),
         "{err}"
     );
 }
 
 #[test]
-fn enroll_uses_the_context() {
+fn enroll_uses_the_selected_project() {
     let server = MockServer::start();
     mock_two_workspaces(&server);
     let enroll = mock_enroll(&server, ZID);
-    let dir = authenticated_dir(&server);
-    write_context(
+    let dir = enrollable_dir(&server);
+    write_selection(
         &dir,
         &server,
         "user-123",
         (WORKSPACE, "Alice's workspace"),
-        (PROJECT, "Lab"),
+        Some((PROJECT, "Lab")),
     );
 
-    enroll_in(&server, &dir, false).expect("the context names the project");
+    enroll_in(&server, &dir, false).expect("the selection names the project");
 
     assert_eq!(enroll.calls(), 1);
-    assert_eq!(
-        enrollment::load(&dirs(&dir))
-            .unwrap()
-            .unwrap()
-            .document
-            .project_id,
-        PROJECT
-    );
+    assert_eq!(enrolled_project(&dir).as_deref(), Some(PROJECT));
 }
 
-/// The machine is enrolled in one project and the context names a different
-/// one: `peers` and `router` act on the project of the context.
+/// A workspace selected alone is the default workspace of `enroll`, which
+/// then takes the only project of it.
 #[test]
-fn peers_and_router_use_the_context_before_the_enrollment() {
+fn enroll_uses_the_only_project_of_a_workspace_selected_alone() {
+    let server = MockServer::start();
+    mock_two_workspaces(&server);
+    let enroll = mock_enroll_in(&server, SECOND_WORKSPACE, ARM, ZID);
+    let dir = enrollable_dir(&server);
+    write_selection(
+        &dir,
+        &server,
+        "user-123",
+        (SECOND_WORKSPACE, "Robotics lab"),
+        None,
+    );
+
+    enroll_in(&server, &dir, false).expect("one project in the selected workspace");
+
+    assert_eq!(enroll.calls(), 1);
+    assert_eq!(enrolled_project(&dir).as_deref(), Some(ARM));
+}
+
+/// The machine is enrolled in one project and the selection names a different
+/// one: `peers` and `router` act on the selected project.
+#[test]
+fn peers_and_router_use_the_selected_project_before_the_enrollment() {
     let server = MockServer::start();
     let field_router = format!("/api/workspace/{WORKSPACE}/projects/{FIELD}/router");
     let field_peers = server.mock(|when, then| {
@@ -1005,12 +1370,12 @@ fn peers_and_router_use_the_context_before_the_enrollment() {
     let enrolled_restart = mock_router_action(&server, "restart", "restarting");
     let dir = authenticated_dir(&server);
     write_enrollment(&dir, "peer-1", ZID);
-    write_context(
+    write_selection(
         &dir,
         &server,
         "user-123",
         (WORKSPACE, "Alice's workspace"),
-        (FIELD, "Field"),
+        Some((FIELD, "Field")),
     );
 
     PeersCommand {
@@ -1030,7 +1395,7 @@ fn peers_and_router_use_the_context_before_the_enrollment() {
 }
 
 #[test]
-fn a_refusal_on_the_project_of_the_context_names_configure() {
+fn a_refusal_on_the_selected_project_names_project_use() {
     let server = MockServer::start();
     server.mock(|when, then| {
         when.method(GET).path(format!(
@@ -1041,12 +1406,12 @@ fn a_refusal_on_the_project_of_the_context_names_configure() {
             .json_body(json!({ "type": "about:blank", "title": "Not Found", "status": 404 }));
     });
     let dir = authenticated_dir(&server);
-    write_context(
+    write_selection(
         &dir,
         &server,
         "user-123",
         (WORKSPACE, "Alice's workspace"),
-        ("p-gone", "Gone"),
+        Some(("p-gone", "Gone")),
     );
 
     let err = PeersCommand {
@@ -1060,7 +1425,7 @@ fn a_refusal_on_the_project_of_the_context_names_configure() {
     .expect_err("the project is gone");
     assert_eq!(
         err.to_string(),
-        "Not Found. The context can be out of date. Run `peppy platform configure`."
+        "Not Found. The selected project can be out of date. Run `peppy platform project use`."
     );
 }
 
@@ -1086,12 +1451,12 @@ fn logout_revokes_both_tokens_and_keeps_the_enrollment() {
     });
     let dir = authenticated_dir(&server);
     write_enrollment(&dir, "peer-1", ZID);
-    write_context(
+    write_selection(
         &dir,
         &server,
         "user-123",
         (WORKSPACE, "Alice's workspace"),
-        (PROJECT, "Lab"),
+        Some((PROJECT, "Lab")),
     );
 
     LogoutCommand {
@@ -1106,9 +1471,9 @@ fn logout_revokes_both_tokens_and_keeps_the_enrollment() {
     let after = storage::load(&creds_path(&dir)).expect("load creds");
     assert!(after.session.is_none(), "the session is cleared");
     assert_eq!(
-        platform_context::load(&dirs(&dir)).unwrap(),
+        platform_selection::load(&dirs(&dir)).unwrap(),
         None,
-        "the context goes with the session"
+        "the selection goes with the session"
     );
     assert!(
         enrollment::load(&dirs(&dir)).unwrap().is_some(),
@@ -1169,7 +1534,7 @@ fn logout_heals_a_malformed_credentials_file() {
     assert!(after.session.is_none(), "healed file is logged out");
 }
 
-// ─── whoami / workspaces / projects ──────────────────────────────────────
+// ─── whoami / workspace list / project list ─────────────────────────────
 
 #[test]
 fn whoami_runs_against_a_seeded_session() {
@@ -1190,35 +1555,34 @@ fn whoami_runs_against_a_seeded_session() {
 }
 
 #[test]
-fn workspaces_and_projects_list_in_both_formats() {
+fn workspace_and_project_list_in_both_formats() {
     let server = MockServer::start();
     mock_workspaces_and_projects(&server);
     let dir = authenticated_dir(&server);
 
     for json in [false, true] {
-        WorkspacesCommand {
-            api_url: Some(server.base_url()),
-            json,
-            peppy_dirs: Some(dirs(&dir)),
-        }
-        .execute(&ctx())
-        .expect("workspaces");
-        ProjectsCommand {
-            api_url: Some(server.base_url()),
-            workspace: None,
-            json,
-            peppy_dirs: Some(dirs(&dir)),
-        }
-        .execute(&ctx())
-        .expect("projects (the only workspace is picked)");
+        workspace_command(&server, &dir, WorkspaceCommands::List { json }, Ask::Never)
+            .expect("workspace list");
+        project_command(
+            &server,
+            &dir,
+            ProjectCommands::List {
+                workspace: None,
+                json,
+            },
+            Ask::Never,
+        )
+        .expect("project list (the only workspace is picked)");
     }
-    let err = ProjectsCommand {
-        api_url: Some(server.base_url()),
-        workspace: Some("Nope".to_string()),
-        json: false,
-        peppy_dirs: Some(dirs(&dir)),
-    }
-    .execute(&ctx())
+    let err = project_command(
+        &server,
+        &dir,
+        ProjectCommands::List {
+            workspace: Some("Nope".to_string()),
+            json: false,
+        },
+        Ask::Never,
+    )
     .expect_err("an unknown workspace is refused");
     assert!(
         err.to_string().contains("Alice's workspace"),
@@ -1231,12 +1595,12 @@ fn a_command_that_needs_a_session_fails_without_one() {
     let server = MockServer::start();
     let dir = tempfile::tempdir().expect("temp dir");
 
-    let err = WorkspacesCommand {
-        api_url: Some(server.base_url()),
-        json: false,
-        peppy_dirs: Some(dirs(&dir)),
-    }
-    .execute(&ctx())
+    let err = workspace_command(
+        &server,
+        &dir,
+        WorkspaceCommands::List { json: false },
+        Ask::Never,
+    )
     .expect_err("no session");
     assert!(err.to_string().contains("peppy platform login"), "{err}");
 }
@@ -1252,7 +1616,6 @@ fn enroll_in(
         api_url: Some(server.base_url()),
         workspace: None,
         project: None,
-        name: Some("robot-7".to_string()),
         replace,
         yes: true,
         peppy_dirs: Some(dirs(dir)),
@@ -1260,9 +1623,10 @@ fn enroll_in(
     .execute(&ctx())
 }
 
-/// The whole enrollment: pick the only workspace and project, post the CSR,
-/// write the bundle, poke the daemon, wait for it to come back under the new
-/// identity, and verify the link with a second poke.
+/// The whole enrollment: pick the only workspace and project, post the CSR
+/// under the name of the running daemon, write the bundle, poke the daemon,
+/// wait for it to come back under the new identity, and verify the link with a
+/// second poke.
 #[test]
 fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
     let server = MockServer::start();
@@ -1319,16 +1683,40 @@ fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
     assert!(chain.contains("issuer"), "the chain is kept apart: {chain}");
 }
 
+/// The daemon names this machine and joins the router, so an enrollment
+/// with no daemon running stops before any call to the platform: no token is
+/// refreshed and nothing is minted.
 #[test]
-fn enroll_without_a_daemon_writes_the_bundle_and_succeeds() {
-    let server = MockServer::start();
-    mock_workspaces_and_projects(&server);
-    let _enroll = mock_enroll(&server, ZID);
-    let dir = authenticated_dir(&server);
+fn enroll_without_a_running_daemon_is_refused_before_any_platform_call() {
+    for (write_state, what) in [
+        (None, "no state file"),
+        (
+            Some(write_dead_daemon_state as fn(&tempfile::TempDir)),
+            "the state of a daemon that died",
+        ),
+    ] {
+        let server = MockServer::start();
+        let any_api = server.mock(|when, then| {
+            when.path_includes("/");
+            then.status(500);
+        });
+        let dir = authenticated_dir(&server);
+        if let Some(write_state) = write_state {
+            write_state(&dir);
+        }
 
-    enroll_in(&server, &dir, false).expect("no daemon: the bundle waits for the next start");
+        let err = enroll_in(&server, &dir, false).expect_err("no daemon");
 
-    assert!(enrollment::load(&dirs(&dir)).unwrap().is_some());
+        let message = err.to_string();
+        assert!(
+            message.contains("no peppy daemon is running"),
+            "{what}: {message}"
+        );
+        assert!(message.contains("core node"), "{what}: {message}");
+        assert!(message.contains("peppy service serve"), "{what}: {message}");
+        assert_eq!(any_api.calls(), 0, "{what}");
+        assert_eq!(enrolled_project(&dir), None, "{what}");
+    }
 }
 
 #[test]
@@ -1365,7 +1753,7 @@ fn enroll_replace_enrolls_anew_then_removes_the_old_peer() {
             "pending_change_entries": [], "peers": []
         }));
     });
-    let dir = authenticated_dir(&server);
+    let dir = enrollable_dir(&server);
     write_enrollment(&dir, "peer-old", "7f3a9c1e");
 
     enroll_in(&server, &dir, true).expect("re-enroll");
@@ -1397,7 +1785,7 @@ fn enroll_surfaces_the_platform_refusal_and_writes_nothing() {
             }));
     });
     mock_router_and_peers_with(&server, "pending_restart");
-    let dir = authenticated_dir(&server);
+    let dir = enrollable_dir(&server);
 
     let err = enroll_in(&server, &dir, false).expect_err("refused");
     let message = err.to_string();
@@ -1441,7 +1829,7 @@ fn enroll_on_a_full_router_follows_the_slots_the_platform_reports() {
             when.method(GET).path(PEERS_PATH);
             then.status(500);
         });
-        let dir = authenticated_dir(&server);
+        let dir = enrollable_dir(&server);
 
         let message = enroll_in(&server, &dir, false)
             .expect_err("refused")
@@ -1476,7 +1864,7 @@ fn enroll_prints_the_retry_after_delay_and_does_not_retry() {
                 "title": "Provisioner unavailable", "status": 503,
             }));
     });
-    let dir = authenticated_dir(&server);
+    let dir = enrollable_dir(&server);
 
     let err = enroll_in(&server, &dir, false).expect_err("refused");
     assert_eq!(
@@ -1494,6 +1882,7 @@ fn enroll_in_external_mode_writes_the_bundle_without_poking() {
     let _enroll = mock_enroll(&server, ZID);
     let dir = authenticated_dir(&server);
     write_external_zenoh_config(&dir);
+    write_external_daemon_state(&dir);
 
     enroll_in(&server, &dir, false).expect("external enroll");
 
@@ -1509,7 +1898,7 @@ fn enroll_rejects_a_zenoh_id_the_router_would_refuse() {
     let server = MockServer::start();
     mock_workspaces_and_projects(&server);
     let _enroll = mock_enroll(&server, "0abc");
-    let dir = authenticated_dir(&server);
+    let dir = enrollable_dir(&server);
 
     let err = enroll_in(&server, &dir, false).expect_err("a leading zero is refused");
     assert!(err.to_string().contains("router id"), "{err}");
@@ -1534,7 +1923,7 @@ fn enroll_rejects_an_answer_with_no_router_address() {
             "zenoh_config": format!("{{ connect: {{ endpoints: [\"tls/{ROUTER_HOST}:7447\"] }} }}"),
         }));
     });
-    let dir = authenticated_dir(&server);
+    let dir = enrollable_dir(&server);
 
     let err = enroll_in(&server, &dir, false).expect_err("no address");
     assert!(err.to_string().contains("address"), "{err}");
@@ -1929,17 +2318,66 @@ fn every_platform_command_refuses_a_core_node_override() {
             "login",
             PlatformCommands::Login {
                 no_browser: true,
-                no_configure: false,
+                workspace: None,
+                project: None,
+                no_enroll: false,
+                yes: true,
             },
         ),
         ("logout", PlatformCommands::Logout),
         ("whoami", PlatformCommands::Whoami { json: false }),
-        ("workspaces", PlatformCommands::Workspaces { json: false }),
         (
-            "projects",
-            PlatformCommands::Projects {
-                workspace: None,
-                json: false,
+            "workspace show",
+            PlatformCommands::Workspace {
+                command: WorkspaceCommands::Show { json: false },
+            },
+        ),
+        (
+            "workspace list",
+            PlatformCommands::Workspace {
+                command: WorkspaceCommands::List { json: false },
+            },
+        ),
+        (
+            "workspace use",
+            PlatformCommands::Workspace {
+                command: WorkspaceCommands::Use { workspace: None },
+            },
+        ),
+        (
+            "workspace clear",
+            PlatformCommands::Workspace {
+                command: WorkspaceCommands::Clear,
+            },
+        ),
+        (
+            "project show",
+            PlatformCommands::Project {
+                command: ProjectCommands::Show { json: false },
+            },
+        ),
+        (
+            "project list",
+            PlatformCommands::Project {
+                command: ProjectCommands::List {
+                    workspace: None,
+                    json: false,
+                },
+            },
+        ),
+        (
+            "project use",
+            PlatformCommands::Project {
+                command: ProjectCommands::Use {
+                    project: None,
+                    workspace: None,
+                },
+            },
+        ),
+        (
+            "project clear",
+            PlatformCommands::Project {
+                command: ProjectCommands::Clear,
             },
         ),
         (
@@ -1947,7 +2385,6 @@ fn every_platform_command_refuses_a_core_node_override() {
             PlatformCommands::Enroll {
                 workspace: None,
                 project: None,
-                name: None,
                 replace: false,
                 yes: true,
             },
@@ -1985,40 +2422,6 @@ fn every_platform_command_refuses_a_core_node_override() {
                     workspace: None,
                     project: None,
                 },
-            },
-        ),
-        (
-            "configure",
-            PlatformCommands::Configure {
-                workspace: None,
-                project: None,
-            },
-        ),
-        (
-            "context show",
-            PlatformCommands::Context {
-                command: ContextCommands::Show { json: false },
-            },
-        ),
-        (
-            "context list",
-            PlatformCommands::Context {
-                command: ContextCommands::List { json: false },
-            },
-        ),
-        (
-            "context use",
-            PlatformCommands::Context {
-                command: ContextCommands::Use {
-                    workspace: None,
-                    project: None,
-                },
-            },
-        ),
-        (
-            "context clear",
-            PlatformCommands::Context {
-                command: ContextCommands::Clear,
             },
         ),
     ];

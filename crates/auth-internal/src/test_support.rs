@@ -1,17 +1,17 @@
 //! Fixtures for the tests of this crate and of the crates that consume it: a
-//! valid enrollment, context, peer and refusal. A test takes the one it is
+//! valid enrollment, selection, peer and refusal. A test takes the one it is
 //! about and overrides the fields that matter to it with struct update
 //! syntax, so one place holds what a valid value looks like.
 
 use daemon_config::consts::PeppyDirs;
 
 use crate::client::{PeerStatus, RouterPeer};
-use crate::context::{CONTEXT_VERSION, Named, PlatformContext};
 use crate::enrollment::{
     CertificateValidity, ENROLLMENT_VERSION, Enrollment, EnrollmentBundle, EnrollmentDocument,
     IssuedMaterial, RouterEndpoint, save,
 };
 use crate::error::{Problem, ProblemKind};
+use crate::selection::{Named, PlatformSelection, SELECTION_VERSION};
 use crate::storage::secret;
 
 pub const WORKSPACE: &str = "ws-1";
@@ -117,23 +117,39 @@ pub fn router_peer(id: &str, name: &str, status: PeerStatus) -> RouterPeer {
     }
 }
 
-/// A context of `user-123` at `https://api.example`: project `Field` (`p-2`)
-/// in workspace `Robotics lab` (`ws-2`).
-pub fn platform_context() -> PlatformContext {
-    PlatformContext {
-        version: CONTEXT_VERSION,
+/// A selection of `user-123` at `https://api.example`: project `Field`
+/// (`p-2`) in workspace `Robotics lab` (`ws-2`).
+pub fn platform_selection() -> PlatformSelection {
+    PlatformSelection {
+        version: SELECTION_VERSION,
         api_origin: "https://api.example".into(),
         subject: "user-123".into(),
         workspace: Named {
             id: "ws-2".into(),
             name: "Robotics lab".into(),
         },
-        project: Named {
+        project: Some(Named {
             id: "p-2".into(),
             name: "Field".into(),
-        },
+        }),
         selected_at: ISSUED_AT,
     }
+}
+
+/// The common name of the certificate signing request in the body of an
+/// enrollment (`{ "csr": "<pem>" }`), or `None` when the body carries no
+/// request that parses and verifies.
+pub fn enrollment_request_common_name(body: &[u8]) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let request = rcgen::CertificateSigningRequestParams::from_pem(body["csr"].as_str()?).ok()?;
+    request
+        .params
+        .distinguished_name
+        .iter()
+        .find_map(|(kind, value)| match (kind, value) {
+            (rcgen::DnType::CommonName, rcgen::DnValue::Utf8String(name)) => Some(name.clone()),
+            _ => None,
+        })
 }
 
 /// A refusal of `kind` with `status`, titled `Refused`, with no detail and

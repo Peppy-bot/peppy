@@ -127,6 +127,22 @@ mod tests {
         }
     }
 
+    /// The fixture the consumers check an enrollment request with reads the
+    /// name back from the body the client posts.
+    #[test]
+    fn the_fixture_reads_the_common_name_of_an_enrollment_body() {
+        use crate::test_support::enrollment_request_common_name;
+
+        let identity = generate_peer_identity(&PeerName::parse("robot-7").unwrap()).unwrap();
+        let body = serde_json::json!({ "csr": identity.csr_pem }).to_string();
+        assert_eq!(
+            enrollment_request_common_name(body.as_bytes()).as_deref(),
+            Some("robot-7")
+        );
+        assert_eq!(enrollment_request_common_name(b"{}"), None);
+        assert_eq!(enrollment_request_common_name(b"not json"), None);
+    }
+
     /// What the platform receives: one common name, no extension request, a
     /// P-256 key, and a request the minted key actually signed.
     #[test]

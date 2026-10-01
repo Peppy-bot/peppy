@@ -1,7 +1,7 @@
 //! `peppy platform status`: this machine's enrollment and the renewal of its
 //! certificate, whether the daemon runs under it with a verified link to the
-//! cloud router, the context the commands use, and (when signed in) what the
-//! platform reports about the router and this peer.
+//! cloud router, the workspace and the project the commands use, and (when
+//! signed in) what the platform reports about the router and this peer.
 
 use std::sync::Arc;
 
@@ -9,9 +9,9 @@ use daemon::control::{self as daemon_control, PokeOutcome};
 use daemon_config::consts::PeppyDirs;
 
 use crate::commands::Command;
-use crate::commands::platform::context::{context_json, enrollment_note};
 use crate::commands::platform::peers::peer_status_label;
 use crate::commands::platform::router::pending_change_lines;
+use crate::commands::platform::selection::{enrollment_note, selection_json};
 use crate::commands::platform::{PlatformSession, date_of, federation_is_managed};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -284,12 +284,18 @@ fn human_document(
             out.push_str(&format!("  link      : {}\n", link_line(link)));
         }
     }
-    out.push_str("Context\n");
-    match session.context() {
-        Ok(None) => out.push_str("  none; run `peppy platform configure` to select a project\n"),
-        Ok(Some(context)) => {
-            out.push_str(&format!("  {}\n", context.label()));
-            if let Some(note) = enrollment_note(&context, enrollment.map(|e| &e.document)) {
+    out.push_str("Selection\n");
+    match session.selection() {
+        Ok(None) => out.push_str("  none; run `peppy platform project use` to select a project\n"),
+        Ok(Some(selection)) => {
+            match selection.project_label() {
+                Some(project) => out.push_str(&format!("  {project}\n")),
+                None => out.push_str(&format!(
+                    "  {}; no project is selected\n",
+                    selection.workspace_label()
+                )),
+            }
+            if let Some(note) = enrollment_note(&selection, enrollment.map(|e| &e.document)) {
                 out.push_str(&format!("  {note}\n"));
             }
         }
@@ -387,15 +393,15 @@ fn json_document(
         }),
         Err(e) => serde_json::json!({ "error": e.to_string() }),
     };
-    let context = match session.context() {
-        Ok(context) => context_json(context.as_ref()),
+    let selection = match session.selection() {
+        Ok(selection) => selection_json(selection.as_ref()),
         Err(e) => serde_json::json!({ "error": e.to_string() }),
     };
     serde_json::json!({
         "enrolled": enrollment.is_some(),
         "enrollment": enrollment_json,
         "daemon": daemon_json,
-        "context": context,
+        "selection": selection,
         "platform": platform_json,
     })
 }

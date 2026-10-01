@@ -3,31 +3,36 @@
 //! exchanges the request for a signed certificate, writes the enrollment
 //! bundle, and pokes the daemon so it restarts under the new identity and
 //! verifies the mutual-TLS link. The private key never leaves the machine.
+//!
+//! The daemon must run: the peer takes the name of its core node, and the
+//! daemon is what joins the router. `peppy platform login` enrolls through the
+//! same [`enroll_machine`].
 
 use std::sync::Arc;
 
+use daemon::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
 
 use crate::commands::Command;
 use crate::commands::platform::router::restart_command;
+use crate::commands::platform::select::{self, ProjectInWorkspace};
 use crate::commands::platform::unenroll::removal_report;
 use crate::commands::platform::{
-    FederationPokeAction, PlatformSession, confirm_restart, date_of, external_router_note,
-    federation_is_managed, peers, poke_federation_and_report, select,
+    FederationPokeAction, PlatformSession, confirm_restart, date_of, external_router_note, peers,
+    poke_federation_and_report,
 };
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use auth::client::{PeerStatus, PlatformApi, RouterPeer};
 use auth::csr::{self, PeerName};
-use auth::enrollment::{self, EnrollmentBundle, IssuedMaterial};
+use auth::enrollment::{self, Enrollment, EnrollmentBundle, IssuedMaterial};
+use auth::selection::project_label;
 use auth::{AuthError, Problem, ProblemKind, storage};
 
 pub struct EnrollCommand {
     pub api_url: Option<String>,
     pub workspace: Option<String>,
     pub project: Option<String>,
-    /// The peer's name; defaults to this machine's core-node name.
-    pub name: Option<String>,
     /// Replace an existing enrollment: enroll anew, then remove the old peer.
     pub replace: bool,
     /// Skip the daemon-restart confirmation prompt.
@@ -39,7 +44,6 @@ pub struct EnrollCommand {
 impl Command for EnrollCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
-        let managed = federation_is_managed(session.daemon_state.as_ref(), &session.config);
 
         let existing = session.enrollment()?;
         if let Some(existing) = &existing
@@ -54,108 +58,118 @@ impl Command for EnrollCommand {
             )));
         }
 
-        // The name is checked before the session is resolved, so a bad `--name`
-        // refreshes no token.
-        let name = peer_name(
-            self.name.as_deref(),
-            session
-                .daemon_state
-                .as_ref()
-                .map(|s| s.core_node_name.as_str()),
-            session.config.core_node_name.as_deref(),
-        )?;
+        // The daemon is found before the session is resolved, so a machine
+        // that cannot enroll refreshes no token.
+        let daemon = session.running_daemon().ok_or_else(|| {
+            Error::ExecutionFailed(format!(
+                "no peppy daemon is running. {DAEMON_NEEDED} {START_THE_DAEMON}, then run `peppy \
+                 platform enroll` again."
+            ))
+        })?;
         let mut api = session.api()?;
-        let context = session.context()?;
-        let selection = select::resolve_project(
+        let selection = session.selection()?;
+        let target = select::resolve_project(
             &mut api,
             self.workspace.as_deref(),
             self.project.as_deref(),
-            context.as_ref(),
+            selection.as_ref(),
             &mut select::Ask::Never,
         )?;
-
-        // Confirm before anything is minted, so an aborted enrollment leaves
-        // no peer behind on the platform.
-        if managed
-            && !confirm_restart(
-                ctx,
-                self.yes,
-                &FederationPokeAction::Enroll,
-                session.daemon_state.as_ref(),
-            )?
-        {
-            println!("Enrollment aborted.");
-            return Ok(());
-        }
-
-        let identity = csr::generate_peer_identity(&name)?;
-        let enrolled = match api.enroll_peer(
-            &selection.workspace.id,
-            &selection.project.id,
-            &identity.csr_pem,
-        ) {
-            Ok(enrolled) => enrolled,
-            Err(error) => return Err(explain_refusal(&mut api, &selection, error)),
-        };
-        let bundle = EnrollmentBundle {
-            peer_key_pem: identity.private_key_pem,
-            issued: IssuedMaterial::for_enrollment(
-                &session.api_url,
-                &selection.workspace.id,
-                &selection.project.id,
-                enrolled,
-                storage::now_unix(),
-            )?,
-        };
-        enrollment::save(&session.dirs, &bundle)?;
-        let document = &bundle.issued.document;
-        println!(
-            "Enrolled {} in project {} ({}) of workspace {}.",
-            document.peer_name,
-            selection.project.name,
-            selection.project.id,
-            selection.workspace.name
-        );
-        println!(
-            "The peer certificate expires on {}. The daemon renews it from {}, while this \
-             machine has a session.",
-            date_of(bundle.issued.certificate.not_after),
-            date_of(bundle.issued.certificate.renewal_due_at())
-        );
-
-        // The new enrollment is on disk, so the old peer is now surplus on the
-        // platform. Best effort: a failure here leaves a stale peer to remove
-        // from the web app, never a machine without an enrollment.
-        if let Some(old) = existing {
-            match api.remove_peer(
-                &old.document.workspace_id,
-                &old.document.project_id,
-                &old.document.peer_id,
-            ) {
-                Ok(removal) => print!("{}", removal_report(&old.document, &removal)),
-                Err(e) => println!(
-                    "Warning: could not remove the previous peer {} ({e}); remove it in the web app.",
-                    old.document.peer_id
-                ),
-            }
-        }
-
-        if !managed {
-            println!("{}", external_router_note(&session.dirs));
-            return Ok(());
-        }
-        poke_federation_and_report(&session.dirs, FederationPokeAction::Enroll)
+        enroll_machine(
+            ctx, &session, &mut api, &daemon, &target, existing, self.yes,
+        )
     }
+}
+
+/// Why an enrollment needs the daemon, for the person who has none running.
+pub(crate) const DAEMON_NEEDED: &str = "The enrollment needs it: this machine enrolls under the \
+     name of its core node, and the daemon is what joins the project router.";
+
+/// How the person starts the daemon.
+pub(crate) const START_THE_DAEMON: &str = "Start it with `peppy service serve` (or run it in the \
+     background with `peppy service install`)";
+
+/// Enrolls this machine in the project of `target` under the core-node name
+/// of the running `daemon`, writes the bundle, removes the peer of the
+/// `existing` enrollment it replaces, and pokes the daemon so it restarts
+/// under the new identity. The private key never leaves the machine.
+pub(crate) fn enroll_machine(
+    ctx: &Arc<AppContext>,
+    session: &PlatformSession,
+    api: &mut PlatformApi,
+    daemon: &DaemonState,
+    target: &ProjectInWorkspace,
+    existing: Option<Enrollment>,
+    yes: bool,
+) -> Result<()> {
+    let name = PeerName::parse(&daemon.core_node_name)?;
+    let managed = daemon.has_federation_control();
+
+    // Confirm before anything is minted, so an aborted enrollment leaves no
+    // peer behind on the platform.
+    if managed && !confirm_restart(ctx, yes, &FederationPokeAction::Enroll, Some(daemon))? {
+        println!("Enrollment aborted.");
+        return Ok(());
+    }
+
+    let ProjectInWorkspace { workspace, project } = target;
+    println!(
+        "Enrolling {name} in {}.",
+        project_label(&project.name, &project.id, &workspace.name)
+    );
+    let identity = csr::generate_peer_identity(&name)?;
+    let spinner = crate::terminal::spinner("Waiting for the platform to sign the certificate");
+    let answer = api.enroll_peer(&workspace.id, &project.id, &identity.csr_pem);
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    let enrolled = answer.map_err(|error| explain_refusal(api, target, error))?;
+    let bundle = EnrollmentBundle {
+        peer_key_pem: identity.private_key_pem,
+        issued: IssuedMaterial::for_enrollment(
+            &session.api_url,
+            &workspace.id,
+            &project.id,
+            enrolled,
+            storage::now_unix(),
+        )?,
+    };
+    enrollment::save(&session.dirs, &bundle)?;
+    println!(
+        "The platform signed the peer certificate. It expires on {}, and the daemon renews it \
+         from {}, while this machine has a session.",
+        date_of(bundle.issued.certificate.not_after),
+        date_of(bundle.issued.certificate.renewal_due_at())
+    );
+
+    // The new enrollment is on disk, so the old peer is now surplus on the
+    // platform. Best effort: a failure here leaves a stale peer to remove from
+    // the web app, never a machine without an enrollment.
+    if let Some(old) = existing {
+        match api.remove_peer(
+            &old.document.workspace_id,
+            &old.document.project_id,
+            &old.document.peer_id,
+        ) {
+            Ok(removal) => print!("{}", removal_report(&old.document, &removal)),
+            Err(e) => println!(
+                "Warning: could not remove the previous peer {} ({e}); remove it in the web app.",
+                old.document.peer_id
+            ),
+        }
+    }
+
+    if !managed {
+        println!("{}", external_router_note(&session.dirs));
+        return Ok(());
+    }
+    poke_federation_and_report(&session.dirs, FederationPokeAction::Enroll)
 }
 
 /// Puts a refused enrollment into words the person can act on. The refusals
 /// with a remedy in the CLI are matched on the kind of the problem; every
 /// other refusal prints as the platform sent it.
-fn explain_refusal(
-    api: &mut PlatformApi,
-    selection: &select::Selection,
-    error: AuthError,
-) -> Error {
+fn explain_refusal(api: &mut PlatformApi, target: &ProjectInWorkspace, error: AuthError) -> Error {
     let AuthError::Problem(problem) = &error else {
         return Error::AuthEngine(error);
     };
@@ -167,14 +181,14 @@ fn explain_refusal(
             let peers = match problem.pending_removals {
                 Some(_) => None,
                 None => api
-                    .list_peers(&selection.workspace.id, &selection.project.id)
+                    .list_peers(&target.workspace.id, &target.project.id)
                     .ok(),
             };
             Error::Auth(full_router_message(
                 problem,
                 peers.as_deref(),
-                &selection.workspace.id,
-                &selection.project.id,
+                &target.workspace.id,
+                &target.project.id,
             ))
         }
         ProblemKind::ProvisionerUnavailable => Error::Auth(try_again_message(problem)),
@@ -237,55 +251,10 @@ fn try_again_message(problem: &Problem) -> String {
     }
 }
 
-/// The name this machine enrolls under: the flag, else the running daemon's
-/// core-node name, else the configured one. The daemon derives a
-/// machine-specific default that the CLI cannot see, so a machine whose daemon
-/// has never run and whose config names nothing must be told the name.
-fn peer_name(
-    flag: Option<&str>,
-    daemon_core_node_name: Option<&str>,
-    configured_core_node_name: Option<&str>,
-) -> Result<PeerName> {
-    let raw = flag
-        .or(daemon_core_node_name)
-        .or(configured_core_node_name)
-        .ok_or_else(|| {
-            Error::ExecutionFailed(
-                "no name for this machine: start the daemon once, set `core_node_name` in \
-                 peppy_config.json5, or pass --name <name>"
-                    .to_string(),
-            )
-        })?;
-    Ok(PeerName::parse(raw)?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use auth::test_support::router_peer as peer;
-
-    #[test]
-    fn the_peer_name_prefers_the_flag_then_the_daemon_then_the_config() {
-        assert_eq!(
-            peer_name(Some("flag"), Some("cn-daemon"), Some("cn-config"))
-                .unwrap()
-                .as_str(),
-            "flag"
-        );
-        assert_eq!(
-            peer_name(None, Some("cn-daemon"), Some("cn-config"))
-                .unwrap()
-                .as_str(),
-            "cn-daemon"
-        );
-        assert_eq!(
-            peer_name(None, None, Some("cn-config")).unwrap().as_str(),
-            "cn-config"
-        );
-        let err = peer_name(None, None, None).unwrap_err();
-        assert!(err.to_string().contains("--name"), "{err}");
-        assert!(peer_name(Some(" bad "), None, None).is_err());
-    }
 
     fn problem(kind: ProblemKind, retry_after_secs: Option<u64>) -> Problem {
         Problem {

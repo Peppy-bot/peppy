@@ -1,6 +1,6 @@
 //! The json5 documents this crate keeps on disk: the credentials
 //! ([`crate::storage`]), the enrollment record ([`crate::enrollment`]) and the
-//! context ([`crate::context`]). Each one carries a schema version, and there
+//! selection ([`crate::selection`]). Each one carries a schema version, and there
 //! is one reader per document, for one version: a file of another version is
 //! rejected, and the message names the command that writes the document anew.
 
@@ -16,7 +16,7 @@ pub(crate) trait Versioned {
     /// The one version this crate reads and writes.
     const VERSION: u32;
     /// The kind of document, as a message names it: `credentials`,
-    /// `enrollment`, `context`.
+    /// `enrollment`, `selection`.
     const WHAT: &'static str;
     /// The command that writes the document anew.
     const REMEDY: &'static str;

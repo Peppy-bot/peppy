@@ -1,35 +1,35 @@
 //! The `peppy platform` command group: sign in and out of the platform
 //! (`login`, `logout`, `whoami`), select the workspace and the project the
-//! commands act on (`configure`, `context`), look around the platform
-//! (`workspaces`, `projects`, `peers`), join or leave a project's cloud router
-//! (`enroll`, `unenroll`, `status`), and restart or start that router
-//! (`router`). Each variant maps to a handler in this module's directory; the
-//! OAuth device flow, token storage, the platform API and the enrollment store
-//! they share live in the separate `auth` engine crate, and the config, URL
-//! and credential preamble they all repeat lives here as [`PlatformSession`].
+//! commands act on (`workspace`, `project`), look at the peers of a project
+//! (`peers`), join or leave a project's cloud router (`enroll`, `unenroll`,
+//! `status`), and restart or start that router (`router`). Each variant maps
+//! to a handler in this module's directory; the OAuth device flow, token
+//! storage, the platform API and the enrollment store they share live in the
+//! separate `auth` engine crate, and the config, URL and credential preamble
+//! they all repeat lives here as [`PlatformSession`].
 //!
-//! Signing in and enrolling are independent steps. A session is what the CLI
-//! needs to call the API; an enrollment is what the daemon needs to federate
-//! its router, and it outlives the session. The context is the default target
-//! of the commands: it names a project to the CLI and changes nothing on the
-//! daemon. `enroll` and `unenroll` change the
-//! daemon's identity (its router id and session namespace), so they poke the
-//! running daemon over its control socket and wait for it to restart under the
-//! new identity; a poke that finds the identity unchanged verifies the link.
+//! A session is what the CLI needs to call the API; an enrollment is what the
+//! daemon needs to federate its router, and it outlives the session. `login`
+//! signs in and then enrolls this machine, unless the person declines;
+//! `enroll` enrolls a machine that has a session. The selection is the default
+//! target of the commands: it names a workspace and a project to the CLI and
+//! changes nothing on the daemon. `enroll` and `unenroll` change the daemon's
+//! identity (its router id and session namespace), so they poke the running
+//! daemon over its control socket and wait for it to restart under the new
+//! identity; a poke that finds the identity unchanged verifies the link.
 
-pub mod configure;
-pub mod context;
 pub mod enroll;
 pub mod login;
 pub mod logout;
 pub mod peers;
-pub mod projects;
+pub mod project;
 pub mod router;
 pub mod select;
+pub mod selection;
 pub mod status;
 pub mod unenroll;
 pub mod whoami;
-pub mod workspaces;
+pub mod workspace;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -132,9 +132,10 @@ pub(crate) fn read_daemon_state(dirs: &PeppyDirs) -> Option<DaemonState> {
 /// backend: load (and seed) the peppy config with the daemon's own strict
 /// semantics, resolve the API URL through the profile fallback, locate the
 /// credentials file, and build an HTTP client. The daemon's state rides along
-/// because it decides managed-vs-external for `enroll`/`unenroll`, supplies
-/// the default peer name, and backs `status`; reading it never fails the
-/// command, since a machine with no daemon running is a normal case.
+/// because it decides managed-vs-external for `unenroll` and backs `status`;
+/// reading it never fails the command, since a machine with no daemon running
+/// is a normal case. `enroll` reads the daemon anew with
+/// [`PlatformSession::running_daemon`].
 pub(crate) struct PlatformSession {
     pub dirs: PeppyDirs,
     pub config: daemon_config::peppy_config::PeppyConfig,
@@ -176,7 +177,7 @@ impl PlatformSession {
         Ok(auth::enrollment::load(&self.dirs)?)
     }
 
-    /// The origin of the platform API this session talks to, as a context
+    /// The origin of the platform API this session talks to, as a selection
     /// records it.
     pub(crate) fn api_origin(&self) -> Result<String> {
         Ok(profile::normalize_api_origin(&self.api_url)?)
@@ -196,21 +197,30 @@ impl PlatformSession {
             .filter(|subject| !subject.is_empty())
     }
 
-    /// The context the commands of this session use: the stored one when it
+    /// The selection the commands of this session use: the stored one when it
     /// belongs to this backend and this identity, else `None`. A stored file
-    /// that cannot be read is an error that names `peppy platform configure`.
-    pub(crate) fn context(&self) -> Result<Option<auth::PlatformContext>> {
+    /// that cannot be read is an error that names `peppy platform project
+    /// use`.
+    pub(crate) fn selection(&self) -> Result<Option<auth::PlatformSelection>> {
         let Some(subject) = self.subject() else {
             return Ok(None);
         };
         let api_origin = self.api_origin()?;
-        Ok(auth::context::load(&self.dirs)?
-            .filter(|context| context.belongs_to(&api_origin, &subject)))
+        Ok(auth::selection::load(&self.dirs)?
+            .filter(|selection| selection.belongs_to(&api_origin, &subject)))
+    }
+
+    /// The daemon that runs on this machine now, read anew from its state file
+    /// under `dirs`, or `None` when no daemon runs. An enrollment needs it: the
+    /// peer takes the name of its core node, and it is what joins the router.
+    pub(crate) fn running_daemon(&self) -> Option<DaemonState> {
+        read_daemon_state(&self.dirs).filter(DaemonState::is_running)
     }
 
     /// The project whose router a command acts on (`peers`, `router`): the
-    /// flags, else the context, else the project this machine is enrolled in.
-    /// Returns the enrollment with it, for the command to mark this machine.
+    /// flags, else the selected project, else the project this machine is
+    /// enrolled in. Returns the enrollment with it, for the command to mark
+    /// this machine.
     pub(crate) fn resolve_target(
         &self,
         api: &mut PlatformApi,
@@ -218,12 +228,12 @@ impl PlatformSession {
         project_flag: Option<&str>,
     ) -> Result<(select::Target, Option<auth::Enrollment>)> {
         let enrollment = self.enrollment()?;
-        let context = self.context()?;
+        let selection = self.selection()?;
         let target = select::resolve_target(
             api,
             workspace_flag,
             project_flag,
-            context.as_ref(),
+            selection.as_ref(),
             enrollment.as_ref().map(|e| &e.document),
         )?;
         Ok((target, enrollment))
@@ -254,15 +264,18 @@ fn reject_core_node_override(ctx: &AppContext) -> Result<()> {
 /// skip this entirely for `zenoh.external`, where the command never pokes or
 /// restarts the daemon. Returns `Ok(true)` to proceed. Only prompts when a
 /// daemon is actually running (else there is nothing to restart), stdin is a
-/// TTY (so a script is never blocked on a prompt), and the daemon is running at
-/// least one user node (else the restart wipes nothing worth warning about).
+/// TTY (so a script is never blocked on a prompt, and never waits on the probe
+/// of the node stack), and the daemon is running at least one user node (else
+/// the restart wipes nothing worth warning about).
 pub(crate) fn confirm_restart(
     ctx: &Arc<AppContext>,
     yes: bool,
     action: &FederationPokeAction,
     daemon_state: Option<&DaemonState>,
 ) -> Result<bool> {
-    if yes {
+    use std::io::IsTerminal;
+
+    if yes || !std::io::stdin().is_terminal() {
         return Ok(true);
     }
     // A readable state file can outlive a crashed daemon, so probe the recorded
@@ -548,28 +561,23 @@ pub(crate) fn date_of(unix: i64) -> String {
 
 #[derive(Subcommand)]
 pub enum PlatformCommands {
-    /// Sign in to the platform via the browser (OAuth device flow), then select the workspace and the project
+    /// Sign in to the platform via the browser (OAuth device flow), then enroll this machine in a project
     Login {
         /// Print the verification URL/code instead of opening a browser.
         #[arg(long = "no-browser")]
         no_browser: bool,
-        /// Sign in only; do not select a workspace and a project.
-        #[arg(long = "no-configure")]
-        no_configure: bool,
-    },
-    /// Select the workspace and the project the platform commands act on
-    Configure {
-        /// The workspace, by id or exact name (else you select it from a list).
-        #[arg(long)]
+        /// The workspace of the project to enroll in, by id or exact name (else the only one, else you select it from a menu).
+        #[arg(long, conflicts_with = "no_enroll")]
         workspace: Option<String>,
-        /// The project, by id or exact name (else you select it from a list).
-        #[arg(long)]
+        /// The project to enroll in, by id or exact name (else the only one, else you select it from a menu).
+        #[arg(long, conflicts_with = "no_enroll")]
         project: Option<String>,
-    },
-    /// Show, list, switch or clear the selected workspace and project
-    Context {
-        #[command(subcommand)]
-        command: context::ContextCommands,
+        /// Sign in only; do not enroll this machine.
+        #[arg(long = "no-enroll")]
+        no_enroll: bool,
+        /// Skip the "this restarts the daemon and wipes the node stack" prompt of the enrollment.
+        #[arg(long = "yes", short = 'y', conflicts_with = "no_enroll")]
+        yes: bool,
     },
     /// Sign out: revoke the session's tokens and clear them locally (the enrollment stays)
     Logout,
@@ -579,32 +587,24 @@ pub enum PlatformCommands {
         #[arg(long)]
         json: bool,
     },
-    /// List the workspaces you belong to
-    Workspaces {
-        /// Emit machine-readable JSON.
-        #[arg(long)]
-        json: bool,
+    /// Show, list, select or clear the workspace the platform commands act on
+    Workspace {
+        #[command(subcommand)]
+        command: workspace::WorkspaceCommands,
     },
-    /// List the projects of a workspace
-    Projects {
-        /// The workspace, by id or exact name (else the only one you belong to).
-        #[arg(long)]
-        workspace: Option<String>,
-        /// Emit machine-readable JSON (includes archived projects).
-        #[arg(long)]
-        json: bool,
+    /// Show, list, select or clear the project the platform commands act on
+    Project {
+        #[command(subcommand)]
+        command: project::ProjectCommands,
     },
-    /// Enroll this machine as a peer of a project's cloud router
+    /// Enroll this machine, under the core-node name of its running daemon, as a peer of a project's cloud router
     Enroll {
-        /// The workspace, by id or exact name (else the only one you belong to).
+        /// The workspace, by id or exact name (else the selected one, else the only one).
         #[arg(long)]
         workspace: Option<String>,
-        /// The project, by id or exact name (else the workspace's only project).
+        /// The project, by id or exact name (else the selected one, else the workspace's only project).
         #[arg(long)]
         project: Option<String>,
-        /// The peer's name (the certificate's common name); defaults to this machine's core-node name.
-        #[arg(long)]
-        name: Option<String>,
         /// Replace an existing enrollment: enroll anew, then remove the old peer.
         #[arg(long)]
         replace: bool,
@@ -627,7 +627,7 @@ pub enum PlatformCommands {
         #[arg(long)]
         json: bool,
     },
-    /// List the peers of a project's cloud router (the project of the context by default)
+    /// List the peers of a project's cloud router (the selected project by default)
     Peers {
         /// The workspace, by id or exact name.
         #[arg(long)]
@@ -639,7 +639,7 @@ pub enum PlatformCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Restart or start a project's cloud router (the project of the context by default)
+    /// Restart or start a project's cloud router (the selected project by default)
     Router {
         #[command(subcommand)]
         command: router::RouterCommands,
@@ -661,26 +661,19 @@ impl Command for PlatformCommand {
         match self.command {
             PlatformCommands::Login {
                 no_browser,
-                no_configure,
+                workspace,
+                project,
+                no_enroll,
+                yes,
             } => login::LoginCommand {
                 api_url,
                 no_browser,
-                no_configure,
-                ask: select::Ask::Terminal,
-                peppy_dirs: None,
-            }
-            .execute(app_ctx),
-            PlatformCommands::Configure { workspace, project } => configure::ConfigureCommand {
-                api_url,
                 workspace,
                 project,
+                no_enroll,
+                yes,
                 ask: select::Ask::Terminal,
                 peppy_dirs: None,
-            }
-            .execute(app_ctx),
-            PlatformCommands::Context { command } => context::ContextCommand {
-                api_url,
-                ..context::ContextCommand::from(command)
             }
             .execute(app_ctx),
             PlatformCommands::Logout => logout::LogoutCommand {
@@ -694,30 +687,29 @@ impl Command for PlatformCommand {
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            PlatformCommands::Workspaces { json } => workspaces::WorkspacesCommand {
+            PlatformCommands::Workspace { command } => workspace::WorkspaceCommand {
+                command,
                 api_url,
-                json,
+                ask: select::Ask::Terminal,
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            PlatformCommands::Projects { workspace, json } => projects::ProjectsCommand {
+            PlatformCommands::Project { command } => project::ProjectCommand {
+                command,
                 api_url,
-                workspace,
-                json,
+                ask: select::Ask::Terminal,
                 peppy_dirs: None,
             }
             .execute(app_ctx),
             PlatformCommands::Enroll {
                 workspace,
                 project,
-                name,
                 replace,
                 yes,
             } => enroll::EnrollCommand {
                 api_url,
                 workspace,
                 project,
-                name,
                 replace,
                 yes,
                 peppy_dirs: None,

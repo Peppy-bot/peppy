@@ -1,8 +1,8 @@
 //! `peppy platform router restart` and `start`: act on a project's cloud
 //! router. One project has one router, so the project names it: the
-//! `--workspace`/`--project` flags when they are given, else the project of
-//! the context, else the project this machine is enrolled in. The command
-//! prints the router it found before it acts.
+//! `--workspace`/`--project` flags when they are given, else the selected
+//! project, else the project this machine is enrolled in. The command prints
+//! the router it found before it acts.
 //!
 //! A restart applies every pending change. The router reads its trust anchors
 //! when it starts, so a removed peer is refused, and its slot is free, only
@@ -28,7 +28,7 @@ pub enum RouterCommands {
         /// The workspace, by id or exact name.
         #[arg(long)]
         workspace: Option<String>,
-        /// The project, by id or exact name (else the project of the context, else of the enrollment).
+        /// The project, by id or exact name (else the selected project, else the project of the enrollment).
         #[arg(long)]
         project: Option<String>,
         /// Skip the "this drops each peer link for a moment" prompt.
@@ -40,7 +40,7 @@ pub enum RouterCommands {
         /// The workspace, by id or exact name.
         #[arg(long)]
         workspace: Option<String>,
-        /// The project, by id or exact name (else the project of the context, else of the enrollment).
+        /// The project, by id or exact name (else the selected project, else the project of the enrollment).
         #[arg(long)]
         project: Option<String>,
     },
@@ -332,26 +332,26 @@ mod tests {
             workspace_id: "ws-1".into(),
             project_id: "p-1".into(),
             label: "project p-1".into(),
-            source: select::TargetSource::Context,
+            source: select::TargetSource::Selection,
         };
         let message = refusal(forbidden, RouterAction::Restart, &target).to_string();
         assert!(message.contains("cannot restart"), "{message}");
         assert!(message.contains("manage the infrastructure"), "{message}");
         assert!(
             !message.contains("out of date"),
-            "the router of the context was read just before: {message}"
+            "the router of the selected project was read just before: {message}"
         );
 
         let other = refusal(AuthError::Http("boom".into()), RouterAction::Start, &target);
         assert_eq!(other.to_string(), "boom");
     }
 
-    fn context_target() -> select::Target {
+    fn selected_target() -> select::Target {
         select::Target {
             workspace_id: "ws-1".into(),
             project_id: "p-1".into(),
             label: "project p-1".into(),
-            source: select::TargetSource::Context,
+            source: select::TargetSource::Selection,
         }
     }
 
@@ -362,7 +362,7 @@ mod tests {
     fn a_restart_of_a_stopped_router_names_the_start_then_the_restart() {
         let stopped = AuthError::Problem(problem(ProblemKind::RouterStopped, 409));
         assert_eq!(
-            refusal(stopped, RouterAction::Restart, &context_target()).to_string(),
+            refusal(stopped, RouterAction::Restart, &selected_target()).to_string(),
             "the router is stopped, so there is nothing to restart. Start the router, then \
              restart it. A start alone does not apply the changes that wait:\n\
              \x20   peppy platform router start --workspace ws-1 --project p-1\n\

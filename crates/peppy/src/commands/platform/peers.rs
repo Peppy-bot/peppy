@@ -1,7 +1,7 @@
 //! `peppy platform peers`: the peers enrolled in a project's cloud router, as
 //! the platform reports them, with this machine marked by its peer id. The
-//! project is the one the flags name, else the project of the context, else
-//! the one this machine is enrolled in.
+//! project is the one the flags name, else the selected project, else the one
+//! this machine is enrolled in.
 
 use std::sync::Arc;
 

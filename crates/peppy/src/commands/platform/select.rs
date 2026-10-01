@@ -1,159 +1,221 @@
 //! Resolving which workspace and project a command acts on.
 //!
-//! One candidate is picked in this order: the flag (by id or exact name), the
-//! default the caller gives (the context), the only candidate there is, the
-//! answer of the person when the caller may ask. Any other case is an error
-//! that lists the choices, so a script never lands on a guessed project.
+//! A command that uses the selection as a default (`enroll`, `project list`,
+//! a command whose flags name its project) picks one candidate in this order:
+//! the flag (by id or exact name), the selected one, the only candidate there
+//! is. A command that selects (`workspace use`, `project use`, `login`) picks
+//! in this order: the flag, the only candidate, the answer of the person on a
+//! menu that starts on the selected one. When more than one candidate is left
+//! and there is nobody to ask, the command stops and lists the choices, so a
+//! script never lands on a guessed project.
 //!
 //! A command on an existing router (`peers`, `router`) resolves a [`Target`]:
-//! the flags, else the context, else the project this machine is enrolled in,
-//! else nothing. One project has one router, so the project names it.
+//! the flags, else the selected project, else the project this machine is
+//! enrolled in, else nothing. One project has one router, so the project names
+//! it.
 
-use std::io::{BufRead, IsTerminal};
+use std::collections::VecDeque;
 
+use auth::AuthError;
 use auth::client::{PlatformApi, Project, Workspace};
-use auth::context::{CONTEXT_VERSION, Named, PlatformContext, project_label};
 use auth::enrollment::EnrollmentDocument;
-use auth::{AuthError, storage};
+use auth::selection::{Named, PlatformSelection, project_label};
 
-use crate::commands::confirm::choose_prompt;
-use crate::commands::platform::PlatformSession;
+use crate::commands::menu::{Menu, MenuAnswer, can_show_menu};
 use crate::error::{Error, Result};
 
 /// The workspace and project a command resolved.
-pub(crate) struct Selection {
+pub(crate) struct ProjectInWorkspace {
     pub workspace: Workspace,
     pub project: Project,
 }
 
-/// Whether a resolution may ask the person when more than one candidate is
-/// left, and where it reads the answer.
+/// Whether a pick may ask the person when more than one candidate is left,
+/// and how.
 pub enum Ask {
     /// Do not ask: stop with the list of the choices.
     Never,
-    /// Ask on the terminal. With no terminal on stdin this is [`Ask::Never`].
+    /// Ask on a menu on the terminal. With no terminal this is [`Ask::Never`].
     Terminal,
-    /// Read the answers from this reader.
-    Reader(Box<dyn BufRead>),
+    /// Answer each menu with the next of these positions in its list, and
+    /// cancel the menu when none is left. A test answers with this, with no
+    /// terminal.
+    Scripted(VecDeque<usize>),
 }
 
+impl Ask {
+    /// Answers the menus with `positions`, in order. See [`Ask::Scripted`].
+    pub fn scripted(positions: impl IntoIterator<Item = usize>) -> Self {
+        Self::Scripted(positions.into_iter().collect())
+    }
+
+    /// The answer to `menu`, or `None` when there is nobody to ask.
+    fn answer(&mut self, menu: &Menu) -> Result<Option<MenuAnswer>> {
+        match self {
+            Self::Never => Ok(None),
+            Self::Terminal if can_show_menu() => menu.show().map(Some),
+            Self::Terminal => Ok(None),
+            Self::Scripted(positions) => match positions.pop_front() {
+                None => Ok(Some(MenuAnswer::Cancelled)),
+                Some(position) if position < menu.options.len() => {
+                    Ok(Some(MenuAnswer::Selected(position)))
+                }
+                Some(position) => Err(Error::ExecutionFailed(format!(
+                    "the scripted answer {position} is not a position of the menu {:?}",
+                    menu.title
+                ))),
+            },
+        }
+    }
+}
+
+/// The answer to one question.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Picked<T> {
+    One(T),
+    /// The person declined the question: they selected the entry that
+    /// declines it, or cancelled the menu.
+    Declined,
+}
+
+impl<T> Picked<T> {
+    /// The candidate, or the error of a question the person declined, for a
+    /// command that cannot go on with no candidate.
+    pub(crate) fn required(self, what: &str) -> Result<T> {
+        match self {
+            Self::One(candidate) => Ok(candidate),
+            Self::Declined => Err(Error::ExecutionFailed(format!("no {what} was selected"))),
+        }
+    }
+}
+
+/// What a pick knows besides its candidates.
+pub(crate) struct Question<'a> {
+    /// The title of the menu: what the person selects, as a noun.
+    pub title: &'a str,
+    /// The id or the exact name the command was given.
+    pub flag: Option<&'a str>,
+    /// The id picked with no question when it is one of the candidates: the
+    /// selected one, for a command that uses the selection as a default.
+    pub default_id: Option<&'a str>,
+    /// The id the menu starts on: the selected one, for a command that
+    /// selects.
+    pub current_id: Option<&'a str>,
+    /// The label of a last menu entry that declines the question, or `None`
+    /// for a question that has no such entry.
+    pub decline: Option<&'a str>,
+    /// What the person does when more than one candidate is left and there is
+    /// nobody to ask, after "more than one workspace is available; ".
+    pub remedy: &'a str,
+}
+
+/// The candidates of one pick, with how to read and how to show each.
+struct Candidates<T> {
+    /// The kind of thing, as the flag spells it: `workspace` or `project`.
+    what: &'static str,
+    items: Vec<T>,
+    id_and_name: fn(&T) -> (&String, &String),
+    /// One candidate as a line of the menu.
+    option: fn(&T) -> String,
+}
+
+/// Picks one workspace of the account.
+pub(crate) fn pick_workspace(
+    api: &mut PlatformApi,
+    question: Question,
+    ask: &mut Ask,
+) -> Result<Picked<Workspace>> {
+    let candidates = Candidates {
+        what: "workspace",
+        items: api.list_workspaces()?,
+        id_and_name: |w: &Workspace| (&w.id, &w.name),
+        option: |w: &Workspace| match w.tier.as_str() {
+            "" => w.name.clone(),
+            tier => format!("{}   ({tier})", w.name),
+        },
+    };
+    pick(candidates, question, ask)
+}
+
+/// Picks one project of `workspace` that is not archived.
+pub(crate) fn pick_project(
+    api: &mut PlatformApi,
+    workspace: &Workspace,
+    question: Question,
+    ask: &mut Ask,
+) -> Result<Picked<Project>> {
+    let candidates = Candidates {
+        what: "project",
+        items: active_projects(api, &workspace.id)?,
+        id_and_name: |p: &Project| (&p.id, &p.name),
+        option: |p: &Project| p.name.clone(),
+    };
+    pick(candidates, question, ask)
+}
+
+/// The workspace a command uses: the flag, else `default_workspace_id`, else
+/// the only one, else the answer of the person when `ask` allows it.
 pub(crate) fn resolve_workspace(
     api: &mut PlatformApi,
     flag: Option<&str>,
     default_workspace_id: Option<&str>,
     ask: &mut Ask,
 ) -> Result<Workspace> {
-    let workspaces = api.list_workspaces()?;
-    pick(
-        Candidates {
-            what: "workspace",
-            title: "Workspaces".to_string(),
-            items: workspaces,
-            id_and_name: |w: &Workspace| (&w.id, &w.name),
-            option: |w: &Workspace| match w.tier.as_str() {
-                "" => w.name.clone(),
-                tier => format!("{}   ({tier})", w.name),
-            },
-        },
+    let question = Question {
+        title: "Workspace",
         flag,
-        default_workspace_id,
-        ask,
-    )
+        default_id: default_workspace_id,
+        current_id: None,
+        decline: None,
+        remedy: "run `peppy platform workspace use` to select one, or pass --workspace <id|name>",
+    };
+    pick_workspace(api, question, ask)?.required("workspace")
 }
 
+/// The workspace and the project a command uses, the selection as the
+/// default of each.
 pub(crate) fn resolve_project(
     api: &mut PlatformApi,
     workspace_flag: Option<&str>,
     project_flag: Option<&str>,
-    context: Option<&PlatformContext>,
+    selection: Option<&PlatformSelection>,
     ask: &mut Ask,
-) -> Result<Selection> {
+) -> Result<ProjectInWorkspace> {
     let workspace = resolve_workspace(
         api,
         workspace_flag,
-        context.map(|context| context.workspace.id.as_str()),
+        selection.map(|selection| selection.workspace.id.as_str()),
         ask,
     )?;
-    // The project of the context is the default only in the workspace of the
-    // context: in a different workspace its id names nothing.
-    let default_project_id = context
-        .filter(|context| context.workspace.id == workspace.id)
-        .map(|context| context.project.id.as_str());
-    let project = resolve_project_in(api, &workspace, project_flag, default_project_id, ask)?;
-    Ok(Selection { workspace, project })
-}
-
-/// Picks one project of `workspace`.
-fn resolve_project_in(
-    api: &mut PlatformApi,
-    workspace: &Workspace,
-    flag: Option<&str>,
-    default_project_id: Option<&str>,
-    ask: &mut Ask,
-) -> Result<Project> {
-    let projects = active_projects(api, &workspace.id)?;
-    pick(
-        Candidates {
-            what: "project",
-            title: format!("Projects of {}", workspace.name),
-            items: projects,
-            id_and_name: |p: &Project| (&p.id, &p.name),
-            option: |p: &Project| p.name.clone(),
-        },
-        flag,
-        default_project_id,
-        ask,
-    )
-}
-
-/// Runs the selection and returns the context it makes, for the caller to
-/// save. The flags name the workspace and the project; what no flag names is
-/// the only candidate, or the answer of the person.
-///
-/// A selection is how the person changes the context, so the project of the
-/// stored context is never a default here. Its workspace is one in a single
-/// case: `--project` alone names a project of the workspace the person works
-/// in.
-pub(crate) fn select_context(
-    session: &PlatformSession,
-    api: &mut PlatformApi,
-    workspace_flag: Option<&str>,
-    project_flag: Option<&str>,
-    ask: &mut Ask,
-) -> Result<PlatformContext> {
-    let subject = match session.subject() {
-        Some(subject) => subject,
-        None => api.get_me()?.sub,
+    let title = format!("Project of {}", workspace.name);
+    let question = Question {
+        title: &title,
+        flag: project_flag,
+        default_id: selected_project_in(selection, &workspace).map(|project| project.id.as_str()),
+        current_id: None,
+        decline: None,
+        remedy: "run `peppy platform project use` to select one, or pass --project <id|name>",
     };
-    let current = session.context().ok().flatten();
-    let default_workspace_id = current
-        .as_ref()
-        .filter(|_| workspace_flag.is_none() && project_flag.is_some())
-        .map(|context| context.workspace.id.as_str());
-    let workspace = resolve_workspace(api, workspace_flag, default_workspace_id, ask)?;
-    let project = resolve_project_in(api, &workspace, project_flag, None, ask)?;
-    let selection = Selection { workspace, project };
-    Ok(PlatformContext {
-        version: CONTEXT_VERSION,
-        api_origin: session.api_origin()?,
-        subject,
-        workspace: Named {
-            id: selection.workspace.id,
-            name: selection.workspace.name,
-        },
-        project: Named {
-            id: selection.project.id,
-            name: selection.project.name,
-        },
-        selected_at: storage::now_unix(),
-    })
+    let project = pick_project(api, &workspace, question, ask)?.required("project")?;
+    Ok(ProjectInWorkspace { workspace, project })
+}
+
+/// The selected project when it is a project of `workspace`. The selected
+/// project of a different workspace names nothing in this one.
+pub(crate) fn selected_project_in<'a>(
+    selection: Option<&'a PlatformSelection>,
+    workspace: &Workspace,
+) -> Option<&'a Named> {
+    selection
+        .filter(|selection| selection.workspace.id == workspace.id)
+        .and_then(|selection| selection.project.as_ref())
 }
 
 /// What named the project of a [`Target`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TargetSource {
     Flags,
-    Context,
+    Selection,
     Enrollment,
 }
 
@@ -167,15 +229,15 @@ pub(crate) struct Target {
     pub source: TargetSource,
 }
 
-/// Where a [`Target`] comes from, decided from the flags, the context and the
-/// enrollment alone, before any call to the platform.
+/// Where a [`Target`] comes from, decided from the flags, the selection and
+/// the enrollment alone, before any call to the platform.
 #[derive(Debug, PartialEq, Eq)]
 enum TargetDecision<'a> {
     /// At least one flag was given. The flags always win.
     Flags,
-    /// No flag, and the person selected a context.
-    Context(&'a PlatformContext),
-    /// No flag and no context, and this machine is enrolled.
+    /// No flag, and the person selected a project.
+    Selected(&'a PlatformSelection, &'a Named),
+    /// No flag and no selected project, and this machine is enrolled.
     Enrolled(&'a EnrollmentDocument),
     /// Nothing names a project: the command has no router to act on.
     Unnamed,
@@ -184,14 +246,16 @@ enum TargetDecision<'a> {
 fn decide_target<'a>(
     workspace_flag: Option<&str>,
     project_flag: Option<&str>,
-    context: Option<&'a PlatformContext>,
+    selection: Option<&'a PlatformSelection>,
     enrollment: Option<&'a EnrollmentDocument>,
 ) -> TargetDecision<'a> {
     if workspace_flag.is_some() || project_flag.is_some() {
         return TargetDecision::Flags;
     }
-    if let Some(context) = context {
-        return TargetDecision::Context(context);
+    if let Some(selection) = selection
+        && let Some(project) = &selection.project
+    {
+        return TargetDecision::Selected(selection, project);
     }
     match enrollment {
         Some(document) => TargetDecision::Enrolled(document),
@@ -206,29 +270,37 @@ pub(crate) fn resolve_target(
     api: &mut PlatformApi,
     workspace_flag: Option<&str>,
     project_flag: Option<&str>,
-    context: Option<&PlatformContext>,
+    selection: Option<&PlatformSelection>,
     enrollment: Option<&EnrollmentDocument>,
 ) -> Result<Target> {
-    match decide_target(workspace_flag, project_flag, context, enrollment) {
+    match decide_target(workspace_flag, project_flag, selection, enrollment) {
         TargetDecision::Flags => {
-            let selection =
-                resolve_project(api, workspace_flag, project_flag, context, &mut Ask::Never)?;
+            let resolved = resolve_project(
+                api,
+                workspace_flag,
+                project_flag,
+                selection,
+                &mut Ask::Never,
+            )?;
             Ok(Target {
                 label: project_label(
-                    &selection.project.name,
-                    &selection.project.id,
-                    &selection.workspace.name,
+                    &resolved.project.name,
+                    &resolved.project.id,
+                    &resolved.workspace.name,
                 ),
-                workspace_id: selection.workspace.id,
-                project_id: selection.project.id,
+                workspace_id: resolved.workspace.id,
+                project_id: resolved.project.id,
                 source: TargetSource::Flags,
             })
         }
-        TargetDecision::Context(context) => Ok(Target {
-            workspace_id: context.workspace.id.clone(),
-            project_id: context.project.id.clone(),
-            label: format!("{} (the context)", context.label()),
-            source: TargetSource::Context,
+        TargetDecision::Selected(selection, project) => Ok(Target {
+            workspace_id: selection.workspace.id.clone(),
+            project_id: project.id.clone(),
+            label: format!(
+                "{} (the selected project)",
+                project_label(&project.name, &project.id, &selection.workspace.name)
+            ),
+            source: TargetSource::Selection,
         }),
         TargetDecision::Enrolled(document) => Ok(Target {
             workspace_id: document.workspace_id.clone(),
@@ -245,7 +317,7 @@ pub(crate) fn resolve_target(
             let listing = project_listing(api)
                 .unwrap_or_else(|error| format!("  (the list could not be read: {error})"));
             Err(Error::ExecutionFailed(format!(
-                "no project is selected: run `peppy platform configure` to select one, or pass \
+                "no project is selected: run `peppy platform project use` to select one, or pass \
                  --project <id|name> (and --workspace <id|name>). The projects you can use \
                  are:\n{listing}"
             )))
@@ -253,17 +325,18 @@ pub(crate) fn resolve_target(
     }
 }
 
-/// The error for a call the platform refused on `target`. A context holds ids
-/// from the time of the selection, so a `403` or a `404` on a target that came
-/// from the context can mean that the project was archived or that the person
-/// lost access: the refusal then names the command that selects again.
+/// The error for a call the platform refused on `target`. A selection holds
+/// ids from the time it was made, so a `403` or a `404` on a target that came
+/// from the selection can mean that the project was archived or that the
+/// person lost access: the refusal then names the command that selects again.
 pub(crate) fn refusal_on(target: &Target, error: AuthError) -> Error {
     match &error {
         AuthError::Problem(problem)
-            if target.source == TargetSource::Context && matches!(problem.status, 403 | 404) =>
+            if target.source == TargetSource::Selection && matches!(problem.status, 403 | 404) =>
         {
             Error::Auth(format!(
-                "{problem}. The context can be out of date. Run `peppy platform configure`."
+                "{problem}. The selected project can be out of date. Run `peppy platform project \
+                 use`."
             ))
         }
         _ => Error::AuthEngine(error),
@@ -280,68 +353,28 @@ fn active_projects(api: &mut PlatformApi, workspace_id: &str) -> Result<Vec<Proj
         .collect())
 }
 
-/// Every workspace of the account with its projects that are not archived,
-/// in the order the platform lists them.
-pub(crate) fn active_project_tree(api: &mut PlatformApi) -> Result<Vec<(Workspace, Vec<Project>)>> {
-    api.list_workspaces()?
-        .into_iter()
-        .map(|workspace| {
-            let projects = active_projects(api, &workspace.id)?;
-            Ok((workspace, projects))
-        })
-        .collect()
-}
-
 /// Every project of every workspace of the account that is not archived, one
 /// per line, for an error that asks the person to name one.
 fn project_listing(api: &mut PlatformApi) -> Result<String> {
-    let lines: Vec<String> = active_project_tree(api)?
-        .iter()
-        .flat_map(|(workspace, projects)| {
-            projects.iter().map(move |project| {
-                format!(
-                    "  {}  {}  (workspace {})",
-                    project.id, project.name, workspace.name
-                )
-            })
-        })
-        .collect();
+    let mut lines = Vec::new();
+    for workspace in api.list_workspaces()? {
+        for project in active_projects(api, &workspace.id)? {
+            lines.push(format!(
+                "  {}  {}  (workspace {})",
+                project.id, project.name, workspace.name
+            ));
+        }
+    }
     if lines.is_empty() {
         return Ok("  (none; create one in the web app first)".to_string());
     }
     Ok(lines.join("\n"))
 }
 
-/// The candidates of one pick, with how to read and how to show each.
-struct Candidates<T, I, O>
-where
-    I: Fn(&T) -> (&String, &String),
-    O: Fn(&T) -> String,
-{
-    /// The kind of thing, as the flag spells it: `workspace` or `project`.
-    what: &'static str,
-    /// The heading of the list the person selects from.
-    title: String,
-    items: Vec<T>,
-    id_and_name: I,
-    /// One candidate as a line of the list.
-    option: O,
-}
-
 /// Picks one candidate, in the order of the module docs.
-fn pick<T, I, O>(
-    candidates: Candidates<T, I, O>,
-    flag: Option<&str>,
-    default_id: Option<&str>,
-    ask: &mut Ask,
-) -> Result<T>
-where
-    I: Fn(&T) -> (&String, &String),
-    O: Fn(&T) -> String,
-{
+fn pick<T>(candidates: Candidates<T>, question: Question, ask: &mut Ask) -> Result<Picked<T>> {
     let Candidates {
         what,
-        title,
         items,
         id_and_name,
         option,
@@ -354,68 +387,92 @@ where
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let position_of = |wanted: &str| {
+        items.iter().position(|item| {
+            let (id, name) = id_and_name(item);
+            id == wanted || name == wanted
+        })
+    };
 
-    if let Some(flag) = flag {
-        return items
-            .into_iter()
-            .find(|item| {
-                let (id, name) = id_and_name(item);
-                id == flag || name == flag
-            })
-            .ok_or_else(|| {
-                Error::ExecutionFailed(format!(
-                    "no {what} with id or name {flag:?}; the {what}s you can use are:\n{listing}"
-                ))
-            });
+    if let Some(flag) = question.flag {
+        let position = position_of(flag).ok_or_else(|| {
+            Error::ExecutionFailed(format!(
+                "no {what} with id or name {flag:?}; the {what}s you can use are:\n{listing}"
+            ))
+        })?;
+        return Ok(Picked::One(take(items, position)));
     }
-    if let Some(default_id) = default_id {
-        return items
-            .into_iter()
-            .find(|item| id_and_name(item).0 == default_id)
+    if let Some(default_id) = question.default_id {
+        let position = items
+            .iter()
+            .position(|item| id_and_name(item).0 == default_id)
             .ok_or_else(|| {
                 Error::ExecutionFailed(format!(
-                    "the {what} of the context ({default_id}) is not one you can use; run \
-                     `peppy platform configure` to select again. The {what}s you can use \
-                     are:\n{listing}"
+                    "the selected {what} ({default_id}) is not one you can use; run `peppy \
+                     platform {what} use` to select again. The {what}s you can use are:\n{listing}"
                 ))
-            });
+            })?;
+        return Ok(Picked::One(take(items, position)));
     }
     match items.len() {
-        0 => Err(Error::ExecutionFailed(format!(
-            "no {what} is available to this account; create one in the web app first"
-        ))),
-        1 => Ok(items.into_iter().next().expect("one candidate")),
-        _ => {
-            let options: Vec<String> = items.iter().map(&option).collect();
-            let index = match ask {
-                Ask::Reader(reader) => Some(choose_prompt(
-                    &title,
-                    what,
-                    &options,
-                    Some(reader.as_mut()),
-                )?),
-                Ask::Terminal if std::io::stdin().is_terminal() => {
-                    Some(choose_prompt(&title, what, &options, None)?)
-                }
-                Ask::Terminal | Ask::Never => None,
-            };
-            let Some(index) = index else {
-                return Err(Error::ExecutionFailed(format!(
-                    "more than one {what} is available; run `peppy platform configure` to \
-                     select one, or pass --{what} <id|name>:\n{listing}"
-                )));
-            };
-            Ok(items.into_iter().nth(index).expect("an index of the list"))
+        0 => {
+            return Err(Error::ExecutionFailed(format!(
+                "no {what} is available to this account; create one in the web app first"
+            )));
         }
+        1 => return Ok(Picked::One(take(items, 0))),
+        _ => {}
     }
+
+    let mut options: Vec<String> = items.iter().map(option).collect();
+    options.extend(question.decline.map(str::to_string));
+    let menu = Menu {
+        title: question.title,
+        options: &options,
+        start: menu_start(&items, id_and_name, question.current_id),
+    };
+    match ask.answer(&menu)? {
+        None => Err(Error::ExecutionFailed(format!(
+            "more than one {what} is available; {}:\n{listing}",
+            question.remedy
+        ))),
+        Some(MenuAnswer::Selected(position)) if position < items.len() => {
+            Ok(Picked::One(take(items, position)))
+        }
+        // The entry that declines the question, or a cancelled menu.
+        Some(MenuAnswer::Selected(_) | MenuAnswer::Cancelled) => Ok(Picked::Declined),
+    }
+}
+
+/// Where the menu starts: on the candidate of `current_id`, else on the first
+/// one.
+fn menu_start<T>(
+    items: &[T],
+    id_and_name: fn(&T) -> (&String, &String),
+    current_id: Option<&str>,
+) -> usize {
+    current_id
+        .and_then(|current_id| {
+            items
+                .iter()
+                .position(|item| id_and_name(item).0 == current_id)
+        })
+        .unwrap_or(0)
+}
+
+/// The item at `position`, which the caller found in `items`.
+fn take<T>(items: Vec<T>, position: usize) -> T {
+    items
+        .into_iter()
+        .nth(position)
+        .expect("a position of the list")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use auth::ProblemKind;
-    use auth::test_support::{enrollment_document as enrolled, platform_context as context};
-    use std::io::Cursor;
+    use auth::test_support::{enrollment_document as enrolled, platform_selection as selection};
 
     type Pair = (String, String);
 
@@ -423,12 +480,9 @@ mod tests {
         (id.to_string(), name.to_string())
     }
 
-    fn candidates(
-        items: Vec<Pair>,
-    ) -> Candidates<Pair, impl Fn(&Pair) -> (&String, &String), impl Fn(&Pair) -> String> {
+    fn candidates(items: Vec<Pair>) -> Candidates<Pair> {
         Candidates {
             what: "project",
-            title: "Projects".to_string(),
             items,
             id_and_name: |c: &Pair| (&c.0, &c.1),
             option: |c: &Pair| c.1.clone(),
@@ -439,20 +493,41 @@ mod tests {
         vec![named("id-1", "Lab"), named("id-2", "Field")]
     }
 
-    /// The rule that names the router: a flag always wins, then the context,
-    /// then the enrollment, and with none of them the command has no target.
+    /// A question with nothing but a title and a remedy.
+    fn question() -> Question<'static> {
+        Question {
+            title: "Project",
+            flag: None,
+            default_id: None,
+            current_id: None,
+            decline: None,
+            remedy: "pass --project <id|name>",
+        }
+    }
+
+    fn picked(pick: Result<Picked<Pair>>) -> Pair {
+        match pick.expect("a pick") {
+            Picked::One(pair) => pair,
+            Picked::Declined => panic!("the question was declined"),
+        }
+    }
+
+    /// The rule that names the router: a flag always wins, then the selected
+    /// project, then the enrollment, and with none of them the command has no
+    /// target.
     #[test]
-    fn the_flags_win_then_the_context_then_the_enrollment_then_nothing() {
-        let (context, document) = (context(), enrolled());
+    fn the_flags_win_then_the_selected_project_then_the_enrollment_then_nothing() {
+        let (selection, document) = (selection(), enrolled());
+        let project = selection.project.clone().expect("a selected project");
         for (workspace, project) in [
             (Some("ws"), Some("p")),
             (None, Some("p")),
             (Some("ws"), None),
         ] {
             assert_eq!(
-                decide_target(workspace, project, Some(&context), Some(&document)),
+                decide_target(workspace, project, Some(&selection), Some(&document)),
                 TargetDecision::Flags,
-                "flags win over a context and an enrollment"
+                "flags win over a selection and an enrollment"
             );
             assert_eq!(
                 decide_target(workspace, project, None, None),
@@ -460,33 +535,54 @@ mod tests {
             );
         }
         assert_eq!(
-            decide_target(None, None, Some(&context), Some(&document)),
-            TargetDecision::Context(&context),
-            "the context wins over the enrollment"
+            decide_target(None, None, Some(&selection), Some(&document)),
+            TargetDecision::Selected(&selection, &project),
+            "the selected project wins over the enrollment"
+        );
+        let workspace_only = PlatformSelection {
+            project: None,
+            ..selection.clone()
+        };
+        assert_eq!(
+            decide_target(None, None, Some(&workspace_only), Some(&document)),
+            TargetDecision::Enrolled(&document),
+            "a selected workspace alone names no router"
         );
         assert_eq!(
             decide_target(None, None, None, Some(&document)),
             TargetDecision::Enrolled(&document)
         );
         assert_eq!(
-            decide_target(None, None, None, None),
+            decide_target(None, None, Some(&workspace_only), None),
             TargetDecision::Unnamed
         );
     }
 
     #[test]
     fn a_flag_picks_by_id_or_exact_name() {
-        let by_id = pick(candidates(two()), Some("id-2"), None, &mut Ask::Never).unwrap();
-        assert_eq!(by_id.1, "Field");
-        let by_name = pick(
-            candidates(two()),
-            Some("Lab"),
-            Some("id-2"),
-            &mut Ask::Never,
-        )
-        .unwrap();
-        assert_eq!(by_name.0, "id-1", "the flag wins over the default");
-        let err = pick(candidates(two()), Some("lab"), None, &mut Ask::Never).unwrap_err();
+        let by_id = Question {
+            flag: Some("id-2"),
+            ..question()
+        };
+        assert_eq!(
+            picked(pick(candidates(two()), by_id, &mut Ask::Never)).1,
+            "Field"
+        );
+        let by_name = Question {
+            flag: Some("Lab"),
+            default_id: Some("id-2"),
+            ..question()
+        };
+        assert_eq!(
+            picked(pick(candidates(two()), by_name, &mut Ask::Never)).0,
+            "id-1",
+            "the flag wins over the default"
+        );
+        let wrong_case = Question {
+            flag: Some("lab"),
+            ..question()
+        };
+        let err = pick(candidates(two()), wrong_case, &mut Ask::Never).unwrap_err();
         assert!(
             err.to_string().contains("id-1  Lab"),
             "lists the choices: {err}"
@@ -494,12 +590,18 @@ mod tests {
     }
 
     #[test]
-    fn the_default_picks_by_id_and_a_default_that_is_gone_names_configure() {
-        let picked = pick(candidates(two()), None, Some("id-2"), &mut Ask::Never).unwrap();
-        assert_eq!(picked.1, "Field");
-        let err = pick(candidates(two()), None, Some("id-9"), &mut Ask::Never).unwrap_err();
+    fn the_default_picks_by_id_and_a_default_that_is_gone_names_use() {
+        let default = |id| Question {
+            default_id: Some(id),
+            ..question()
+        };
+        assert_eq!(
+            picked(pick(candidates(two()), default("id-2"), &mut Ask::Never)).1,
+            "Field"
+        );
+        let err = pick(candidates(two()), default("id-9"), &mut Ask::Never).unwrap_err();
         let message = err.to_string();
-        assert!(message.contains("peppy platform configure"), "{message}");
+        assert!(message.contains("peppy platform project use"), "{message}");
         assert!(message.contains("id-1  Lab"), "{message}");
     }
 
@@ -507,30 +609,85 @@ mod tests {
     fn with_no_flag_and_no_default_only_a_single_candidate_is_picked() {
         let one = vec![named("id-1", "Lab")];
         assert_eq!(
-            pick(candidates(one), None, None, &mut Ask::Never)
-                .unwrap()
-                .0,
+            picked(pick(candidates(one), question(), &mut Ask::Never)).0,
             "id-1"
         );
 
-        let err = pick(candidates(Vec::new()), None, None, &mut Ask::Never).unwrap_err();
+        let err = pick(candidates(Vec::new()), question(), &mut Ask::Never).unwrap_err();
         assert!(err.to_string().contains("no project"), "{err}");
 
-        let err = pick(candidates(two()), None, None, &mut Ask::Never).unwrap_err();
-        let message = err.to_string();
-        assert!(message.contains("--project"), "{message}");
-        assert!(message.contains("peppy platform configure"), "{message}");
+        let err = pick(candidates(two()), question(), &mut Ask::Never).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "more than one project is available; pass --project <id|name>:\n  id-1  Lab\n  \
+             id-2  Field",
+            "the remedy of the question, then the choices"
+        );
     }
 
     #[test]
     fn with_more_than_one_candidate_the_person_selects() {
-        let answers = |text: &str| Ask::Reader(Box::new(Cursor::new(text.as_bytes().to_vec())));
-        let picked = pick(candidates(two()), None, None, &mut answers("2\n")).unwrap();
-        assert_eq!(picked.1, "Field");
-        assert!(
-            pick(candidates(two()), None, None, &mut answers("")).is_err(),
-            "end of input selects nothing"
+        assert_eq!(
+            picked(pick(candidates(two()), question(), &mut Ask::scripted([1]))).1,
+            "Field"
         );
+        assert_eq!(
+            pick(candidates(two()), question(), &mut Ask::scripted([])).unwrap(),
+            Picked::Declined,
+            "a cancelled menu declines the question"
+        );
+        assert!(
+            pick(candidates(two()), question(), &mut Ask::scripted([2])).is_err(),
+            "with no entry to decline, the menu has two positions"
+        );
+    }
+
+    /// The entry that declines comes last, after every candidate.
+    #[test]
+    fn the_entry_that_declines_is_the_last_of_the_menu() {
+        let declinable = || Question {
+            decline: Some("Do not enroll this machine"),
+            ..question()
+        };
+        assert_eq!(
+            pick(candidates(two()), declinable(), &mut Ask::scripted([2])).unwrap(),
+            Picked::Declined
+        );
+        assert_eq!(
+            picked(pick(
+                candidates(two()),
+                declinable(),
+                &mut Ask::scripted([0])
+            ))
+            .1,
+            "Lab"
+        );
+        let one = vec![named("id-1", "Lab")];
+        assert_eq!(
+            picked(pick(candidates(one), declinable(), &mut Ask::scripted([]))).1,
+            "Lab",
+            "the only candidate is picked with no menu, so nothing declines it"
+        );
+    }
+
+    /// The menu starts on the selected candidate, so Enter keeps it.
+    #[test]
+    fn the_menu_starts_on_the_selected_candidate() {
+        let id_and_name = candidates(Vec::new()).id_and_name;
+        assert_eq!(menu_start(&two(), id_and_name, Some("id-2")), 1);
+        assert_eq!(menu_start(&two(), id_and_name, None), 0);
+        assert_eq!(
+            menu_start(&two(), id_and_name, Some("id-9")),
+            0,
+            "a selected candidate that is gone starts the menu on the first one"
+        );
+    }
+
+    #[test]
+    fn a_declined_question_is_an_error_where_a_candidate_is_required() {
+        assert_eq!(Picked::One(7).required("project").unwrap(), 7);
+        let err = Picked::<u8>::Declined.required("project").unwrap_err();
+        assert_eq!(err.to_string(), "no project was selected");
     }
 
     fn target(source: TargetSource) -> Target {
@@ -549,18 +706,19 @@ mod tests {
         })
     }
 
-    /// Only a `403` or a `404` on a target from the context gets the hint.
+    /// Only a `403` or a `404` on a target from the selection gets the hint.
     #[test]
-    fn a_refusal_on_a_context_target_names_configure() {
+    fn a_refusal_on_a_selected_target_names_project_use() {
         for status in [403, 404] {
-            let message = refusal_on(&target(TargetSource::Context), problem(status)).to_string();
+            let message = refusal_on(&target(TargetSource::Selection), problem(status)).to_string();
             assert_eq!(
                 message,
-                "Not Found. The context can be out of date. Run `peppy platform configure`."
+                "Not Found. The selected project can be out of date. Run `peppy platform project \
+                 use`."
             );
         }
         assert_eq!(
-            refusal_on(&target(TargetSource::Context), problem(422)).to_string(),
+            refusal_on(&target(TargetSource::Selection), problem(422)).to_string(),
             "Not Found"
         );
         for source in [TargetSource::Flags, TargetSource::Enrollment] {
@@ -571,7 +729,7 @@ mod tests {
         }
         assert_eq!(
             refusal_on(
-                &target(TargetSource::Context),
+                &target(TargetSource::Selection),
                 AuthError::Http("boom".into())
             )
             .to_string(),

@@ -20,6 +20,12 @@ pub fn colors_enabled() -> bool {
     std::io::stdout().is_terminal() && !no_color_requested()
 }
 
+/// Whether stderr should carry ANSI color: the gate of [`colors_enabled`] for
+/// what draws on stderr, such as a menu.
+pub(crate) fn stderr_colors_enabled() -> bool {
+    std::io::stderr().is_terminal() && !no_color_requested()
+}
+
 /// The stdout column budget for width-fitted output: the terminal's width
 /// when stdout is one, `None` when stdout is piped, so redirected output
 /// keeps every row on one line.
