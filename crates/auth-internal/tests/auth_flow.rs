@@ -12,8 +12,11 @@ use secrecy::ExposeSecret;
 use serde_json::json;
 
 use auth::client::{PeerRemoval, PeerStatus, PlatformApi, RouterPhase};
-use auth::enrollment::{self, EnrollmentBundle, IssuedMaterial, RouterEndpoint};
+use auth::enrollment::{
+    self, CertificateValidity, EnrollmentBundle, IssuedMaterial, RouterEndpoint,
+};
 use auth::storage::{self, Credentials, ProfileCreds};
+use auth::test_support::{EXPIRES_AT, ISSUED_AT, leaf_pem};
 use auth::{AuthError, ProblemKind};
 use auth::{http::HttpClient, renewal, resolver};
 use daemon_config::consts::PeppyDirs;
@@ -464,13 +467,14 @@ fn removing_a_peer_is_staged_and_a_missing_peer_is_already_removed() {
 const RENEW_PATH: &str =
     "/api/workspace/ws-1/projects/550e8400-e29b-41d4-a716-446655440000/router/peers/peer-1/renew";
 const ZENOH_ID: &str = "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5";
-const ENROLLED_AT: i64 = 1_700_000_000;
+const DAY: i64 = 24 * 60 * 60;
 
-/// The platform's answer to the enrollment and to the renewal of `peer-1`.
-fn peer_material(leaf: &str, expires_at: &str) -> serde_json::Value {
+/// The platform's answer to the enrollment and to the renewal of `peer-1`,
+/// with `leaf` as the certificate.
+fn peer_material(leaf: &str) -> serde_json::Value {
     json!({
         "peer": { "id": "peer-1", "name": "robot-7", "certificate_cn": "robot-7",
-                  "status": "connected", "certificate_expires_at": expires_at,
+                  "status": "connected", "certificate_expires_at": "2027-01-01T00:00:00Z",
                   "created_at": "2026-10-03T00:00:00Z" },
         "address": { "host": "rtr-p.example", "port": 7447 },
         "certificate": leaf,
@@ -482,27 +486,24 @@ fn peer_material(leaf: &str, expires_at: &str) -> serde_json::Value {
     })
 }
 
-/// A machine enrolled at `api_url` as `peer-1`, with a session of
-/// `session_api_url` when one is given.
+/// A machine enrolled at `api_url` as `peer-1` with a leaf valid from
+/// `ISSUED_AT` to `EXPIRES_AT`, and a session when one is given. Returns the
+/// leaf too, to check that a renewal that fails leaves it in place.
 fn enrolled_machine(
     api_url: &str,
     session: Option<ProfileCreds>,
-) -> (tempfile::TempDir, PeppyDirs) {
+) -> (tempfile::TempDir, PeppyDirs, String) {
     let dir = tempfile::tempdir().expect("temp dir");
     let dirs = PeppyDirs::new(dir.path());
-    let answer = serde_json::from_value(peer_material("first leaf", "2027-01-01T00:00:00Z"))
-        .expect("the enrollment answer parses");
+    let first_leaf = leaf_pem(ISSUED_AT, EXPIRES_AT);
+    let answer =
+        serde_json::from_value(peer_material(&first_leaf)).expect("the enrollment answer parses");
     enrollment::save(
         &dirs,
         &EnrollmentBundle {
             peer_key_pem: storage::secret("key".to_string()),
-            issued: IssuedMaterial::for_enrollment(
-                api_url,
-                WORKSPACE,
-                PROJECT,
-                answer,
-                ENROLLED_AT,
-            ),
+            issued: IssuedMaterial::for_enrollment(api_url, WORKSPACE, PROJECT, answer, ISSUED_AT)
+                .expect("a certificate"),
         },
     )
     .expect("write the enrollment");
@@ -516,7 +517,7 @@ fn enrolled_machine(
         )
         .expect("seed the session");
     }
-    (dir, dirs)
+    (dir, dirs, first_leaf)
 }
 
 fn leaf_on_disk(dirs: &PeppyDirs) -> String {
@@ -527,32 +528,38 @@ fn leaf_on_disk(dirs: &PeppyDirs) -> String {
 #[test]
 fn a_renewal_posts_no_body_and_writes_the_new_leaf() {
     let server = MockServer::start();
+    let renewed_at = ISSUED_AT + 60 * DAY;
+    let second_leaf = leaf_pem(renewed_at, renewed_at + 90 * DAY);
     let renew = server.mock(|when, then| {
         when.method(POST)
             .path(RENEW_PATH)
             .header("authorization", "Bearer seeded-access")
             .body("");
-        then.status(200)
-            .json_body(peer_material("second leaf", "2027-04-01T00:00:00Z"));
+        then.status(200).json_body(peer_material(&second_leaf));
     });
     let session = seeded_creds(&server, storage::now_unix() + 3600);
-    let (_dir, dirs) = enrolled_machine(&server.base_url(), Some(session));
-    let renewed_at = ENROLLED_AT + 60 * 24 * 60 * 60;
+    let (_dir, dirs, _) = enrolled_machine(&server.base_url(), Some(session));
 
-    let document = renewal::renew(&dirs, &HttpClient::new(), renewed_at).expect("renewed");
+    let renewed = renewal::renew(&dirs, &HttpClient::new()).expect("renewed");
 
     assert_eq!(renew.calls(), 1);
-    assert_eq!(document.certificate_issued_at, renewed_at);
-    assert_eq!(document.certificate_expires_at, 1_806_537_600);
-    assert_eq!(document.enrolled_at, ENROLLED_AT);
-    assert_eq!(document.zenoh_id.as_str(), ZENOH_ID);
     assert_eq!(
-        document.router,
+        renewed.certificate,
+        CertificateValidity {
+            not_before: renewed_at,
+            not_after: renewed_at + 90 * DAY,
+        },
+        "the validity is the new leaf's"
+    );
+    assert_eq!(renewed.document.enrolled_at, ISSUED_AT);
+    assert_eq!(renewed.document.zenoh_id.as_str(), ZENOH_ID);
+    assert_eq!(
+        renewed.document.router,
         RouterEndpoint::parse("rtr-p.example", 7447).unwrap()
     );
-    assert_eq!(leaf_on_disk(&dirs), "second leaf");
+    assert_eq!(leaf_on_disk(&dirs), second_leaf);
     let on_disk = enrollment::load(&dirs).unwrap().expect("enrolled");
-    assert_eq!(on_disk.document, document);
+    assert_eq!(on_disk, renewed);
     assert_eq!(std::fs::read_to_string(&on_disk.peer_key).unwrap(), "key");
 }
 
@@ -564,12 +571,14 @@ fn a_renewal_with_an_expired_token_refreshes_the_session_first() {
         when.method(POST)
             .path(RENEW_PATH)
             .header("authorization", "Bearer refreshed-access");
-        then.status(200)
-            .json_body(peer_material("second leaf", "2027-04-01T00:00:00Z"));
+        then.status(200).json_body(peer_material(&leaf_pem(
+            ISSUED_AT + 60 * DAY,
+            EXPIRES_AT + 60 * DAY,
+        )));
     });
-    let (_dir, dirs) = enrolled_machine(&server.base_url(), Some(seeded_creds(&server, 1)));
+    let (_dir, dirs, _) = enrolled_machine(&server.base_url(), Some(seeded_creds(&server, 1)));
 
-    renewal::renew(&dirs, &HttpClient::new(), ENROLLED_AT + 100).expect("renewed");
+    renewal::renew(&dirs, &HttpClient::new()).expect("renewed");
 
     assert_eq!(token.calls(), 1);
     assert_eq!(renew.calls(), 1);
@@ -585,16 +594,18 @@ fn a_renewal_with_no_session_asks_nothing_and_writes_nothing() {
     let server = MockServer::start();
     let renew = server.mock(|when, then| {
         when.method(POST).path(RENEW_PATH);
-        then.status(200)
-            .json_body(peer_material("second leaf", "2027-04-01T00:00:00Z"));
+        then.status(200).json_body(peer_material(&leaf_pem(
+            ISSUED_AT + 60 * DAY,
+            EXPIRES_AT + 60 * DAY,
+        )));
     });
-    let (_dir, dirs) = enrolled_machine(&server.base_url(), None);
+    let (_dir, dirs, first_leaf) = enrolled_machine(&server.base_url(), None);
 
-    let err = renewal::renew(&dirs, &HttpClient::new(), ENROLLED_AT + 100).expect_err("no session");
+    let err = renewal::renew(&dirs, &HttpClient::new()).expect_err("no session");
 
     assert!(matches!(err, AuthError::NotAuthenticated), "{err}");
     assert_eq!(renew.calls(), 0);
-    assert_eq!(leaf_on_disk(&dirs), "first leaf");
+    assert_eq!(leaf_on_disk(&dirs), first_leaf);
 }
 
 /// A token of one platform is not sent to a different platform.
@@ -604,13 +615,15 @@ fn a_session_of_a_different_platform_does_not_renew() {
     let signed_in_at = MockServer::start();
     let renew = enrolled_at.mock(|when, then| {
         when.method(POST).path(RENEW_PATH);
-        then.status(200)
-            .json_body(peer_material("second leaf", "2027-04-01T00:00:00Z"));
+        then.status(200).json_body(peer_material(&leaf_pem(
+            ISSUED_AT + 60 * DAY,
+            EXPIRES_AT + 60 * DAY,
+        )));
     });
     let session = seeded_creds(&signed_in_at, storage::now_unix() + 3600);
-    let (_dir, dirs) = enrolled_machine(&enrolled_at.base_url(), Some(session));
+    let (_dir, dirs, first_leaf) = enrolled_machine(&enrolled_at.base_url(), Some(session));
 
-    let err = renewal::renew(&dirs, &HttpClient::new(), ENROLLED_AT + 100)
+    let err = renewal::renew(&dirs, &HttpClient::new())
         .expect_err("a different platform")
         .to_string();
 
@@ -618,7 +631,7 @@ fn a_session_of_a_different_platform_does_not_renew() {
     assert!(err.contains(&signed_in_at.base_url()), "{err}");
     assert!(err.contains("peppy platform login --api-url"), "{err}");
     assert_eq!(renew.calls(), 0);
-    assert_eq!(leaf_on_disk(&dirs), "first leaf");
+    assert_eq!(leaf_on_disk(&dirs), first_leaf);
 }
 
 #[test]
@@ -636,16 +649,16 @@ fn a_peer_the_platform_cannot_renew_is_a_typed_refusal() {
             }));
     });
     let session = seeded_creds(&server, storage::now_unix() + 3600);
-    let (_dir, dirs) = enrolled_machine(&server.base_url(), Some(session));
+    let (_dir, dirs, first_leaf) = enrolled_machine(&server.base_url(), Some(session));
 
-    let err = renewal::renew(&dirs, &HttpClient::new(), ENROLLED_AT + 100).expect_err("refused");
+    let err = renewal::renew(&dirs, &HttpClient::new()).expect_err("refused");
 
     let AuthError::Problem(problem) = err else {
         panic!("expected a problem, got {err:?}");
     };
     assert_eq!(problem.kind, ProblemKind::PeerNotRenewable);
     assert_eq!(problem.status, 409);
-    assert_eq!(leaf_on_disk(&dirs), "first leaf");
+    assert_eq!(leaf_on_disk(&dirs), first_leaf);
 }
 
 #[test]
@@ -663,9 +676,9 @@ fn a_renewal_inside_the_minimum_interval_carries_the_delay() {
             }));
     });
     let session = seeded_creds(&server, storage::now_unix() + 3600);
-    let (_dir, dirs) = enrolled_machine(&server.base_url(), Some(session));
+    let (_dir, dirs, first_leaf) = enrolled_machine(&server.base_url(), Some(session));
 
-    let err = renewal::renew(&dirs, &HttpClient::new(), ENROLLED_AT + 100).expect_err("refused");
+    let err = renewal::renew(&dirs, &HttpClient::new()).expect_err("refused");
 
     let AuthError::Problem(problem) = err else {
         panic!("expected a problem, got {err:?}");
@@ -677,5 +690,5 @@ fn a_renewal_inside_the_minimum_interval_carries_the_delay() {
     );
     assert_eq!(problem.status, 429);
     assert_eq!(problem.retry_after_secs, Some(1800));
-    assert_eq!(leaf_on_disk(&dirs), "first leaf");
+    assert_eq!(leaf_on_disk(&dirs), first_leaf);
 }

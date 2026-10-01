@@ -16,8 +16,8 @@ use crate::commands::platform::{PlatformSession, date_of, federation_is_managed}
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use auth::client::{PeerStatus, RouterPhase, RouterStatus};
-use auth::enrollment::{Enrollment, EnrollmentDocument};
-use auth::{FederationIdentity, storage};
+use auth::enrollment::Enrollment;
+use auth::{CertificateValidity, FederationIdentity, storage};
 
 const DAY_SECS: i64 = 24 * 60 * 60;
 
@@ -168,9 +168,9 @@ fn platform_report(
 }
 
 /// The certificate line: when it expires, or that it did.
-fn certificate_line(document: &EnrollmentDocument, now: i64) -> String {
-    let expires_at = document.certificate_expires_at;
-    if document.is_expired(now) {
+fn certificate_line(certificate: &CertificateValidity, now: i64) -> String {
+    let expires_at = certificate.not_after;
+    if certificate.is_expired(now) {
         return format!(
             "EXPIRED on {}; if the renewal does not succeed, run `peppy platform enroll \
              --replace`",
@@ -183,10 +183,10 @@ fn certificate_line(document: &EnrollmentDocument, now: i64) -> String {
 
 /// The renewal lines: when the daemon renews the certificate, and what it
 /// needs to do so and does not have.
-fn renewal_lines(document: &EnrollmentDocument, now: i64, means: RenewalMeans) -> Vec<String> {
-    let due_on = date_of(document.renewal_due_at());
+fn renewal_lines(certificate: &CertificateValidity, now: i64, means: RenewalMeans) -> Vec<String> {
+    let due_on = date_of(certificate.renewal_due_at());
     let absent = means.absent_remedies();
-    let schedule = match (document.is_renewal_due(now), absent.is_empty()) {
+    let schedule = match (certificate.is_renewal_due(now), absent.is_empty()) {
         (false, _) => format!("automatic, from {due_on}"),
         (true, true) => format!("due since {due_on}; the daemon tries again each hour"),
         (true, false) => format!("due since {due_on}"),
@@ -231,9 +231,15 @@ fn human_document(
             out.push_str(&format!("  peer      : {} ({})\n", d.peer_name, d.peer_id));
             out.push_str(&format!("  router    : {}\n", d.router.locator()));
             out.push_str(&format!("  zenoh id  : {}\n", d.zenoh_id));
-            out.push_str(&format!("  cert      : {}\n", certificate_line(d, now)));
+            out.push_str(&format!(
+                "  cert      : {}\n",
+                certificate_line(&enrollment.certificate, now)
+            ));
             let means = RenewalMeans::of(daemon, platform);
-            for (index, line) in renewal_lines(d, now, means).iter().enumerate() {
+            for (index, line) in renewal_lines(&enrollment.certificate, now, means)
+                .iter()
+                .enumerate()
+            {
                 let label = if index == 0 {
                     "renewal   :"
                 } else {
@@ -333,6 +339,7 @@ fn json_document(
 ) -> serde_json::Value {
     let enrollment_json = enrollment.map(|e| {
         let d = &e.document;
+        let certificate = &e.certificate;
         serde_json::json!({
             "api_url": d.api_url,
             "workspace_id": d.workspace_id,
@@ -342,11 +349,11 @@ fn json_document(
             "zenoh_id": d.zenoh_id.as_str(),
             "namespace": d.namespace.as_str(),
             "router": d.router.locator(),
-            "certificate_issued_at": d.certificate_issued_at,
-            "certificate_expires_at": d.certificate_expires_at,
-            "certificate_expired": d.is_expired(now),
-            "certificate_renewal_due_at": d.renewal_due_at(),
-            "certificate_renewal_due": d.is_renewal_due(now),
+            "certificate_not_before": certificate.not_before,
+            "certificate_not_after": certificate.not_after,
+            "certificate_expired": certificate.is_expired(now),
+            "certificate_renewal_due_at": certificate.renewal_due_at(),
+            "certificate_renewal_due": certificate.is_renewal_due(now),
             "certificate_renewal_needs": RenewalMeans::of(daemon, platform).absent_names(),
             "enrolled_at": d.enrolled_at,
             "peer_dir": session.dirs.peer_dir(),
@@ -420,23 +427,22 @@ mod tests {
         daemon_running: true,
     };
 
-    /// The record of a certificate issued at [`ISSUED_AT`] for 90 days.
-    fn document() -> EnrollmentDocument {
-        EnrollmentDocument {
-            certificate_issued_at: ISSUED_AT,
-            certificate_expires_at: EXPIRES_AT,
-            ..auth::test_support::enrollment_document()
+    /// A certificate issued at [`ISSUED_AT`] for 90 days.
+    fn certificate() -> CertificateValidity {
+        CertificateValidity {
+            not_before: ISSUED_AT,
+            not_after: EXPIRES_AT,
         }
     }
 
     #[test]
     fn the_certificate_line_gives_the_expiry_and_says_when_it_is_past() {
-        let document = document();
+        let certificate = certificate();
         assert_eq!(
-            certificate_line(&document, EXPIRES_AT - 30 * DAY_SECS),
+            certificate_line(&certificate, EXPIRES_AT - 30 * DAY_SECS),
             format!("expires on {} (in 30 days)", date_of(EXPIRES_AT))
         );
-        let expired = certificate_line(&document, EXPIRES_AT);
+        let expired = certificate_line(&certificate, EXPIRES_AT);
         assert!(expired.starts_with("EXPIRED"), "{expired}");
         assert!(
             expired.contains("peppy platform enroll --replace"),
@@ -446,13 +452,13 @@ mod tests {
 
     #[test]
     fn the_renewal_lines_give_the_schedule() {
-        let document = document();
+        let certificate = certificate();
         assert_eq!(
-            renewal_lines(&document, DUE_AT - 1, ALL_MEANS),
+            renewal_lines(&certificate, DUE_AT - 1, ALL_MEANS),
             [format!("automatic, from {}", date_of(DUE_AT))]
         );
         assert_eq!(
-            renewal_lines(&document, DUE_AT, ALL_MEANS),
+            renewal_lines(&certificate, DUE_AT, ALL_MEANS),
             [format!(
                 "due since {}; the daemon tries again each hour",
                 date_of(DUE_AT)
@@ -464,7 +470,7 @@ mod tests {
     /// command, before the renewal is due and after.
     #[test]
     fn the_renewal_lines_name_what_the_daemon_needs() {
-        let document = document();
+        let certificate = certificate();
         let no_session = RenewalMeans {
             session: false,
             daemon_running: true,
@@ -474,11 +480,11 @@ mod tests {
             daemon_running: false,
         };
 
-        let lines = renewal_lines(&document, ISSUED_AT, no_session);
+        let lines = renewal_lines(&certificate, ISSUED_AT, no_session);
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(lines[1].contains("peppy platform login"), "{lines:?}");
 
-        let lines = renewal_lines(&document, DUE_AT, nothing);
+        let lines = renewal_lines(&certificate, DUE_AT, nothing);
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert_eq!(lines[0], format!("due since {}", date_of(DUE_AT)));
         assert!(lines[1].contains("peppy platform login"), "{lines:?}");

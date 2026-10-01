@@ -6,7 +6,7 @@
 //! * `peer.key`: the peer's private key, PKCS#8 PEM (`0600`).
 //! * `peer.crt`: the signed leaf certificate alone. The daemon presents it and
 //!   nothing above it, so the cloud router closes the link at the leaf's own
-//!   expiry.
+//!   expiry. Its validity is what the renewal is scheduled from.
 //! * `ca.crt`: the project CA the cloud router's certificate chains to.
 //! * `chain.crt`: the leaf's issuing chain, for `openssl verify`. The daemon
 //!   does not read it.
@@ -18,8 +18,8 @@
 //! ([`crate::renewal`]) replaces the certificates and the document, and leaves
 //! the key as it is. An absent `enrollment.json5` means "not enrolled", and a
 //! present one is parsed in full before anything uses it: an unsupported
-//! version, an id zenoh would refuse, or a missing key file fails the load
-//! rather than reaching a router.
+//! version, an id zenoh would refuse, a missing key file, or a leaf that is not
+//! a certificate fails the load rather than reaching a router.
 
 use std::path::{Path, PathBuf};
 
@@ -129,28 +129,45 @@ pub struct EnrollmentDocument {
     /// the daemon and its nodes open.
     pub namespace: Namespace,
     pub router: RouterEndpoint,
-    /// When this machine received the leaf certificate it holds, from the
-    /// enrollment or from the last renewal, unix seconds.
-    pub certificate_issued_at: i64,
-    /// The leaf certificate's expiry, unix seconds. Past this the cloud router
-    /// refuses the link.
-    pub certificate_expires_at: i64,
     /// When this machine enrolled, unix seconds.
     pub enrolled_at: i64,
 }
 
-impl EnrollmentDocument {
+/// The validity of the peer's leaf certificate as the certificate states it,
+/// unix seconds. The cloud router refuses the link past `not_after`, so the
+/// renewal is scheduled from these two dates and from nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CertificateValidity {
+    pub not_before: i64,
+    pub not_after: i64,
+}
+
+impl CertificateValidity {
+    /// The validity of the first certificate of `pem`.
+    pub fn parse_pem(pem: &str) -> Result<Self> {
+        let (_, pem) = x509_parser::pem::parse_x509_pem(pem.as_bytes())
+            .map_err(|e| Error::Auth(format!("the peer certificate is not PEM: {e}")))?;
+        let certificate = pem
+            .parse_x509()
+            .map_err(|e| Error::Auth(format!("the peer certificate is not X.509: {e}")))?;
+        let validity = certificate.validity();
+        Ok(Self {
+            not_before: validity.not_before.timestamp(),
+            not_after: validity.not_after.timestamp(),
+        })
+    }
+
     /// Whether the certificate is at or past expiry at `now_unix`.
     pub fn is_expired(&self, now_unix: i64) -> bool {
-        now_unix >= self.certificate_expires_at
+        now_unix >= self.not_after
     }
 
     /// When the renewal of the certificate becomes due, unix seconds: after
     /// two thirds of its lifetime. The last third is the time that stays for
     /// a renewal that does not succeed at the first attempt.
     pub fn renewal_due_at(&self) -> i64 {
-        let lifetime = (self.certificate_expires_at - self.certificate_issued_at).max(0);
-        self.certificate_issued_at + lifetime / 3 * 2
+        let lifetime = (self.not_after - self.not_before).max(0);
+        self.not_before + lifetime / 3 * 2
     }
 
     /// Whether the renewal of the certificate is due at `now_unix`.
@@ -169,12 +186,14 @@ impl Versioned for EnrollmentDocument {
     }
 }
 
-/// A loaded enrollment: the document plus the absolute paths of the material,
-/// each checked to exist at load so the daemon never renders a config naming a
-/// file that is not there.
+/// A loaded enrollment: the document, the validity of the leaf, and the
+/// absolute paths of the material, each checked to exist at load so the
+/// daemon never renders a config naming a file that is not there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Enrollment {
     pub document: EnrollmentDocument,
+    /// The validity of the leaf in `peer_certificate`.
+    pub certificate: CertificateValidity,
     pub peer_key: PathBuf,
     pub peer_certificate: PathBuf,
     pub trust_anchor: PathBuf,
@@ -198,11 +217,14 @@ impl Enrollment {
 }
 
 /// What the platform issues at an enrollment and at each renewal: the document
-/// and the PEM material that goes with it. The private key is not part of it,
-/// because the platform never holds the key.
+/// and the PEM material that goes with it, with the validity read from the
+/// leaf. The private key is not part of it, because the platform never holds
+/// the key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuedMaterial {
     pub document: EnrollmentDocument,
+    /// The validity of the leaf in `peer_certificate_pem`.
+    pub certificate: CertificateValidity,
     /// The signed leaf alone, as the daemon presents it.
     pub peer_certificate_pem: String,
     pub trust_anchor_pem: String,
@@ -212,46 +234,35 @@ pub struct IssuedMaterial {
 }
 
 impl IssuedMaterial {
-    /// The material of a new enrollment, from the platform's answer.
+    /// The material of a new enrollment, from the platform's answer. A leaf
+    /// that is not a certificate is refused before anything is written.
     pub fn for_enrollment(
         api_url: &str,
         workspace_id: &str,
         project_id: &str,
         enrolled: RouterPeerEnrolled,
         enrolled_at: i64,
-    ) -> Self {
+    ) -> Result<Self> {
         let document = EnrollmentDocument {
             version: ENROLLMENT_VERSION,
             api_url: api_url.trim_end_matches('/').to_string(),
             workspace_id: workspace_id.to_string(),
             project_id: project_id.to_string(),
-            peer_id: enrolled.peer.id,
-            peer_name: enrolled.peer.name,
-            zenoh_id: enrolled.zenoh_id,
-            namespace: enrolled.namespace,
-            router: enrolled.address,
-            certificate_issued_at: enrolled_at,
-            certificate_expires_at: enrolled.peer.certificate_expires_at.timestamp(),
+            peer_id: enrolled.peer.id.clone(),
+            peer_name: enrolled.peer.name.clone(),
+            zenoh_id: enrolled.zenoh_id.clone(),
+            namespace: enrolled.namespace.clone(),
+            router: enrolled.address.clone(),
             enrolled_at,
         };
-        Self {
-            document,
-            peer_certificate_pem: enrolled.certificate,
-            trust_anchor_pem: enrolled.trust_anchor,
-            chain_pem: enrolled.chain,
-            platform_zenoh_config: enrolled.zenoh_config,
-        }
+        Self::with_document(document, enrolled)
     }
 
     /// The material of a renewal of `enrolled`, from the platform's answer. A
     /// renewal gives a new leaf to the same peer: an answer that names a
     /// different peer, zenoh id, namespace or router address is refused,
     /// because the running daemon cannot take any of them without a restart.
-    pub fn for_renewal(
-        enrolled: &EnrollmentDocument,
-        renewed: RouterPeerEnrolled,
-        renewed_at: i64,
-    ) -> Result<Self> {
+    pub fn for_renewal(enrolled: &EnrollmentDocument, renewed: RouterPeerEnrolled) -> Result<Self> {
         let differences = [
             ("peer id", renewed.peer.id != enrolled.peer_id),
             ("zenoh id", renewed.zenoh_id != enrolled.zenoh_id),
@@ -266,17 +277,20 @@ impl IssuedMaterial {
             )));
         }
         let document = EnrollmentDocument {
-            peer_name: renewed.peer.name,
-            certificate_issued_at: renewed_at,
-            certificate_expires_at: renewed.peer.certificate_expires_at.timestamp(),
+            peer_name: renewed.peer.name.clone(),
             ..enrolled.clone()
         };
+        Self::with_document(document, renewed)
+    }
+
+    fn with_document(document: EnrollmentDocument, issued: RouterPeerEnrolled) -> Result<Self> {
         Ok(Self {
             document,
-            peer_certificate_pem: renewed.certificate,
-            trust_anchor_pem: renewed.trust_anchor,
-            chain_pem: renewed.chain,
-            platform_zenoh_config: renewed.zenoh_config,
+            certificate: CertificateValidity::parse_pem(&issued.certificate)?,
+            peer_certificate_pem: issued.certificate,
+            trust_anchor_pem: issued.trust_anchor,
+            chain_pem: issued.chain,
+            platform_zenoh_config: issued.zenoh_config,
         })
     }
 }
@@ -294,8 +308,9 @@ fn document_path(dirs: &PeppyDirs) -> PathBuf {
 
 /// Loads this machine's enrollment. `Ok(None)` when `enrollment.json5` is
 /// absent (not enrolled). An error when it is present but unreadable, of
-/// another version, or missing any of its three PEM files; every message names
-/// `peppy platform enroll` as the remedy.
+/// another version, missing any of its three PEM files, or with a leaf that is
+/// not a certificate; every message names `peppy platform enroll` as the
+/// remedy.
 pub fn load(dirs: &PeppyDirs) -> Result<Option<Enrollment>> {
     let Some(document) = document::load::<EnrollmentDocument>(&document_path(dirs))? else {
         return Ok(None);
@@ -311,11 +326,20 @@ pub fn load(dirs: &PeppyDirs) -> Result<Option<Enrollment>> {
         }
         Ok(file)
     };
+    let peer_certificate = material(PEER_CERTIFICATE_FILE)?;
+    let certificate = CertificateValidity::parse_pem(&std::fs::read_to_string(&peer_certificate)?)
+        .map_err(|e| {
+            Error::Auth(format!(
+                "enrollment material {} cannot be read: {e}; run `peppy platform enroll` again",
+                peer_certificate.display()
+            ))
+        })?;
     Ok(Some(Enrollment {
         peer_key: material(PEER_KEY_FILE)?,
-        peer_certificate: material(PEER_CERTIFICATE_FILE)?,
+        peer_certificate,
         trust_anchor: material(TRUST_ANCHOR_FILE)?,
         document,
+        certificate,
     }))
 }
 
@@ -432,26 +456,23 @@ mod tests {
     use super::*;
     use crate::client::PeerStatus;
     use crate::storage::secret;
-    use crate::test_support::router_peer;
-
-    const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
-    const ZID: &str = "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5";
+    use crate::test_support::{EXPIRES_AT, ISSUED_AT, PROJECT, ZID, leaf_pem, router_peer};
 
     const ROUTER_HOST: &str = "rtr-p.us-east-1.robocloud.dev.peppy.bot";
     const KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n";
-    const ENROLLED_AT: i64 = 1_700_000_000;
-    /// 2027-01-01T00:00:00Z.
-    const FIRST_EXPIRY: i64 = 1_798_761_600;
+    const DAY: i64 = 24 * 60 * 60;
 
     fn certificate(label: &str) -> String {
         format!("-----BEGIN CERTIFICATE-----\n{label}\n-----END CERTIFICATE-----\n")
     }
 
+    /// The answer to an enrollment: a leaf valid from [`ISSUED_AT`] to
+    /// [`EXPIRES_AT`].
     fn enrolled() -> RouterPeerEnrolled {
         RouterPeerEnrolled {
             peer: router_peer("peer-1", "robot-7", PeerStatus::Unknown),
             address: RouterEndpoint::parse(ROUTER_HOST, 7447).unwrap(),
-            certificate: certificate("leaf"),
+            certificate: leaf_pem(ISSUED_AT, EXPIRES_AT),
             chain: certificate("issuer"),
             trust_anchor: certificate("ca"),
             zenoh_id: RouterId::parse(ZID).unwrap(),
@@ -460,12 +481,11 @@ mod tests {
         }
     }
 
-    /// The answer to a renewal of [`enrolled`]: a new leaf and a later expiry
-    /// for the same peer.
+    /// The answer to a renewal of [`enrolled`]: a new leaf, issued 60 days
+    /// after the first, for the same peer.
     fn renewed() -> RouterPeerEnrolled {
         let mut renewed = enrolled();
-        renewed.peer.certificate_expires_at = "2027-04-01T00:00:00Z".parse().unwrap();
-        renewed.certificate = certificate("renewed leaf");
+        renewed.certificate = leaf_pem(ISSUED_AT + 60 * DAY, EXPIRES_AT + 60 * DAY);
         renewed.chain = certificate("renewed issuer");
         renewed.trust_anchor = certificate("renewed ca");
         renewed.zenoh_config = "{ mode: \"router\", renewed: true }".into();
@@ -480,8 +500,9 @@ mod tests {
                 "ws-1",
                 PROJECT,
                 enrolled(),
-                ENROLLED_AT,
-            ),
+                ISSUED_AT,
+            )
+            .expect("a certificate"),
         }
     }
 
@@ -503,39 +524,53 @@ mod tests {
             doc.router.locator(),
             "tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447"
         );
-        assert_eq!(doc.certificate_issued_at, ENROLLED_AT);
-        assert_eq!(doc.certificate_expires_at, FIRST_EXPIRY);
-        assert_eq!(doc.enrolled_at, ENROLLED_AT);
+        assert_eq!(doc.enrolled_at, ISSUED_AT);
         assert_eq!(
-            issued.peer_certificate_pem,
-            certificate("leaf"),
+            issued.certificate,
+            CertificateValidity {
+                not_before: ISSUED_AT,
+                not_after: EXPIRES_AT,
+            },
+            "the validity is read from the leaf"
+        );
+        assert!(
+            issued
+                .peer_certificate_pem
+                .starts_with("-----BEGIN CERTIFICATE-----"),
             "the peer presents the leaf alone"
         );
         assert!(issued.chain_pem.contains("issuer"));
     }
 
-    /// A renewal moves the certificate dates and the material, and keeps the
+    /// A leaf that is not a certificate is refused before anything is written.
+    #[test]
+    fn an_answer_whose_leaf_is_not_a_certificate_is_refused() {
+        let mut answer = enrolled();
+        answer.certificate = certificate("leaf");
+        let err = IssuedMaterial::for_enrollment("https://api.example", "ws-1", PROJECT, answer, 0)
+            .expect_err("not a certificate");
+        assert!(err.to_string().contains("peer certificate"), "{err}");
+    }
+
+    /// A renewal moves the certificate and its validity, and keeps the
     /// identity and the enrollment date.
     #[test]
     fn the_renewal_material_keeps_the_identity_of_the_enrollment() {
         let enrolled = bundle().issued.document;
-        let renewed_at = ENROLLED_AT + 60 * 24 * 60 * 60;
+        let answer = renewed();
 
-        let issued = IssuedMaterial::for_renewal(&enrolled, renewed(), renewed_at)
-            .expect("the same peer renews");
+        let issued =
+            IssuedMaterial::for_renewal(&enrolled, answer.clone()).expect("the same peer renews");
 
+        assert_eq!(issued.document, enrolled);
         assert_eq!(
-            issued.document,
-            EnrollmentDocument {
-                certificate_issued_at: renewed_at,
-                certificate_expires_at: "2027-04-01T00:00:00Z"
-                    .parse::<chrono::DateTime<chrono::Utc>>()
-                    .unwrap()
-                    .timestamp(),
-                ..enrolled
+            issued.certificate,
+            CertificateValidity {
+                not_before: ISSUED_AT + 60 * DAY,
+                not_after: EXPIRES_AT + 60 * DAY,
             }
         );
-        assert_eq!(issued.peer_certificate_pem, certificate("renewed leaf"));
+        assert_eq!(issued.peer_certificate_pem, answer.certificate);
         assert_eq!(issued.trust_anchor_pem, certificate("renewed ca"));
         assert_eq!(issued.chain_pem, certificate("renewed issuer"));
     }
@@ -546,7 +581,7 @@ mod tests {
         let mut answer = renewed();
         answer.peer.name = "robot-7 (arm)".into();
 
-        let issued = IssuedMaterial::for_renewal(&enrolled, answer, ENROLLED_AT).unwrap();
+        let issued = IssuedMaterial::for_renewal(&enrolled, answer).unwrap();
 
         assert_eq!(issued.document.peer_name, "robot-7 (arm)");
     }
@@ -572,7 +607,7 @@ mod tests {
         for (member, change) in cases {
             let mut answer = renewed();
             change(&mut answer);
-            let err = IssuedMaterial::for_renewal(&enrolled, answer, ENROLLED_AT)
+            let err = IssuedMaterial::for_renewal(&enrolled, answer)
                 .expect_err(member)
                 .to_string();
             assert!(err.contains(&format!("a different {member}")), "{err}");
@@ -582,16 +617,20 @@ mod tests {
 
     #[test]
     fn the_renewal_is_due_after_two_thirds_of_the_lifetime() {
-        let mut doc = bundle().issued.document;
-        doc.certificate_issued_at = 1_000;
-        doc.certificate_expires_at = 1_000 + 90;
-        assert_eq!(doc.renewal_due_at(), 1_060);
-        assert!(!doc.is_renewal_due(1_059));
-        assert!(doc.is_renewal_due(1_060));
+        let validity = CertificateValidity {
+            not_before: 1_000,
+            not_after: 1_000 + 90,
+        };
+        assert_eq!(validity.renewal_due_at(), 1_060);
+        assert!(!validity.is_renewal_due(1_059));
+        assert!(validity.is_renewal_due(1_060));
 
         // A leaf that expires before its issue date is due at once.
-        doc.certificate_expires_at = 900;
-        assert_eq!(doc.renewal_due_at(), 1_000);
+        let inverted = CertificateValidity {
+            not_after: 900,
+            ..validity
+        };
+        assert_eq!(inverted.renewal_due_at(), 1_000);
     }
 
     #[test]
@@ -603,6 +642,10 @@ mod tests {
         save(&dirs, &bundle).expect("save");
         let loaded = load(&dirs).expect("load").expect("enrolled");
         assert_eq!(loaded.document, bundle.issued.document);
+        assert_eq!(
+            loaded.certificate, bundle.issued.certificate,
+            "the validity is read from the leaf on disk"
+        );
         assert_eq!(loaded.peer_key, dirs.peer_dir().join(PEER_KEY_FILE));
         assert_eq!(
             std::fs::read_to_string(&loaded.peer_certificate).unwrap(),
@@ -662,17 +705,16 @@ mod tests {
         let dirs = PeppyDirs::new(dir.path());
         let bundle = bundle();
         save(&dirs, &bundle).expect("save");
-        let renewed =
-            IssuedMaterial::for_renewal(&bundle.issued.document, renewed(), ENROLLED_AT + 5)
-                .unwrap();
+        let renewed = IssuedMaterial::for_renewal(&bundle.issued.document, renewed()).unwrap();
 
         save_renewal(&dirs, &renewed).expect("save the renewal");
 
         let loaded = load(&dirs).expect("load").expect("enrolled");
         assert_eq!(loaded.document, renewed.document);
+        assert_eq!(loaded.certificate, renewed.certificate);
         let read = |name: &str| std::fs::read_to_string(dirs.peer_dir().join(name)).unwrap();
         assert_eq!(read(PEER_KEY_FILE), KEY_PEM);
-        assert_eq!(read(PEER_CERTIFICATE_FILE), certificate("renewed leaf"));
+        assert_eq!(read(PEER_CERTIFICATE_FILE), renewed.peer_certificate_pem);
         assert_eq!(read(TRUST_ANCHOR_FILE), certificate("renewed ca"));
         assert_eq!(read(CHAIN_FILE), certificate("renewed issuer"));
         assert_eq!(
@@ -694,8 +736,7 @@ mod tests {
     fn a_renewal_writes_nothing_on_a_machine_that_is_not_enrolled() {
         let dir = tempfile::tempdir().unwrap();
         let dirs = PeppyDirs::new(dir.path());
-        let renewed =
-            IssuedMaterial::for_renewal(&bundle().issued.document, renewed(), ENROLLED_AT).unwrap();
+        let renewed = IssuedMaterial::for_renewal(&bundle().issued.document, renewed()).unwrap();
 
         let err = save_renewal(&dirs, &renewed).expect_err("not enrolled");
 
@@ -785,6 +826,13 @@ mod tests {
         }
 
         std::fs::write(&document_file, &good).unwrap();
+        let leaf_file = dirs.peer_dir().join(PEER_CERTIFICATE_FILE);
+        std::fs::write(&leaf_file, certificate("not x509")).unwrap();
+        let err = load(&dirs).expect_err("a leaf that is not a certificate");
+        assert!(err.to_string().contains(PEER_CERTIFICATE_FILE), "{err}");
+        assert!(err.to_string().contains("peppy platform enroll"), "{err}");
+
+        std::fs::write(&leaf_file, leaf_pem(ISSUED_AT, EXPIRES_AT)).unwrap();
         std::fs::remove_file(dirs.peer_dir().join(PEER_KEY_FILE)).unwrap();
         let err = load(&dirs).expect_err("missing key");
         assert!(err.to_string().contains(PEER_KEY_FILE), "{err}");
@@ -792,9 +840,9 @@ mod tests {
 
     #[test]
     fn expiry_is_a_plain_comparison_against_the_given_clock() {
-        let doc = bundle().issued.document;
-        assert!(!doc.is_expired(doc.certificate_expires_at - 1));
-        assert!(doc.is_expired(doc.certificate_expires_at));
+        let validity = bundle().issued.certificate;
+        assert!(!validity.is_expired(validity.not_after - 1));
+        assert!(validity.is_expired(validity.not_after));
     }
 
     #[test]

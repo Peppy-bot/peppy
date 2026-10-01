@@ -105,7 +105,7 @@ impl Command for EnrollCommand {
                 &selection.project.id,
                 enrolled,
                 storage::now_unix(),
-            ),
+            )?,
         };
         enrollment::save(&session.dirs, &bundle)?;
         let document = &bundle.issued.document;
@@ -119,8 +119,8 @@ impl Command for EnrollCommand {
         println!(
             "The peer certificate expires on {}. The daemon renews it from {}, while this \
              machine has a session.",
-            date_of(document.certificate_expires_at),
-            date_of(document.renewal_due_at())
+            date_of(bundle.issued.certificate.not_after),
+            date_of(bundle.issued.certificate.renewal_due_at())
         );
 
         // The new enrollment is on disk, so the old peer is now surplus on the

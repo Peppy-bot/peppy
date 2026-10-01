@@ -68,8 +68,8 @@ pub use cli_config::CliConfig;
 pub use client::{PlatformApi, Principal};
 pub use context::PlatformContext;
 pub use enrollment::{
-    Enrollment, EnrollmentBundle, EnrollmentDocument, FederationIdentity, IssuedMaterial,
-    RouterEndpoint,
+    CertificateValidity, Enrollment, EnrollmentBundle, EnrollmentDocument, FederationIdentity,
+    IssuedMaterial, RouterEndpoint,
 };
 pub use error::{Error as AuthError, Problem, ProblemKind, Result};
 pub use resolver::Credential;

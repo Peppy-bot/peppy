@@ -233,9 +233,8 @@ async fn reconcile(
     };
 
     let now = (deps.clock)();
-    if enrollment.document.is_expired(now) {
-        let expired_at =
-            super::certificate_renewal::rfc3339(enrollment.document.certificate_expires_at);
+    if enrollment.certificate.is_expired(now) {
+        let expired_at = super::certificate_renewal::rfc3339(enrollment.certificate.not_after);
         warn!(
             expired_at = %expired_at,
             "router federation: the peer certificate has expired; the cloud router refuses the link"

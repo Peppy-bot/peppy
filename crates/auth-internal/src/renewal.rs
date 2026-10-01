@@ -22,14 +22,14 @@ use crate::resolver::{self, Credential};
 use crate::{profile, storage};
 
 /// Renews the certificate of the enrollment under `dirs` and writes the new
-/// material. Returns the document of the renewed enrollment. `now_unix` is
-/// recorded as the issue time of the new leaf.
+/// material. Returns the renewed enrollment, with the validity of the new
+/// leaf.
 ///
 /// Nothing is written when the platform refuses, when its answer names a
-/// different identity, or when the enrollment on disk changed while the
-/// platform answered.
-pub fn renew(dirs: &PeppyDirs, http: &HttpClient, now_unix: i64) -> Result<EnrollmentDocument> {
-    renew_with(dirs, now_unix, |document| {
+/// different identity or carries a leaf that is not a certificate, or when
+/// the enrollment on disk changed while the platform answered.
+pub fn renew(dirs: &PeppyDirs, http: &HttpClient) -> Result<Enrollment> {
+    renew_with(dirs, |document| {
         let credential = credential_for(dirs, http, document)?;
         PlatformApi::new(http, &document.api_url, credential).renew_peer(
             &document.workspace_id,
@@ -43,12 +43,11 @@ pub fn renew(dirs: &PeppyDirs, http: &HttpClient, now_unix: i64) -> Result<Enrol
 /// document of the enrollment and returns the platform's answer.
 fn renew_with(
     dirs: &PeppyDirs,
-    now_unix: i64,
     ask: impl FnOnce(&EnrollmentDocument) -> Result<RouterPeerEnrolled>,
-) -> Result<EnrollmentDocument> {
+) -> Result<Enrollment> {
     let enrolled = load_enrolled(dirs)?;
     let answer = ask(&enrolled.document)?;
-    let renewed = IssuedMaterial::for_renewal(&enrolled.document, answer, now_unix)?;
+    let renewed = IssuedMaterial::for_renewal(&enrolled.document, answer)?;
 
     // `peppy platform enroll --replace` and `unenroll` write the same files.
     // The new leaf belongs to the enrollment this renewal started from, so it
@@ -61,7 +60,11 @@ fn renew_with(
         ));
     }
     enrollment::save_renewal(dirs, &renewed)?;
-    Ok(renewed.document)
+    Ok(Enrollment {
+        document: renewed.document,
+        certificate: renewed.certificate,
+        ..enrolled
+    })
 }
 
 fn load_enrolled(dirs: &PeppyDirs) -> Result<Enrollment> {
@@ -97,13 +100,14 @@ fn credential_for(
 mod tests {
     use super::*;
     use crate::client::PeerStatus;
-    use crate::enrollment::{EnrollmentBundle, PEER_CERTIFICATE_FILE, RouterEndpoint};
-    use crate::test_support::router_peer;
+    use crate::enrollment::{
+        CertificateValidity, EnrollmentBundle, PEER_CERTIFICATE_FILE, RouterEndpoint,
+    };
+    use crate::test_support::{EXPIRES_AT, ISSUED_AT, PROJECT, ZID, leaf, leaf_pem, router_peer};
     use config::namespace::Namespace;
     use pmi::RouterId;
 
-    const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
-    const ENROLLED_AT: i64 = 1_700_000_000;
+    const DAY: i64 = 24 * 60 * 60;
 
     fn answer(peer_id: &str, leaf: &str) -> RouterPeerEnrolled {
         RouterPeerEnrolled {
@@ -112,24 +116,28 @@ mod tests {
             certificate: leaf.into(),
             chain: "chain".into(),
             trust_anchor: "ca".into(),
-            zenoh_id: RouterId::parse("2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5").unwrap(),
+            zenoh_id: RouterId::parse(ZID).unwrap(),
             namespace: Namespace::parse(PROJECT).unwrap(),
             zenoh_config: "{}".into(),
         }
     }
 
-    fn enroll(dirs: &PeppyDirs, peer_id: &str) {
+    /// Enrolls `peer_id` with the fixture leaf, and returns that leaf.
+    fn enroll(dirs: &PeppyDirs, peer_id: &str) -> String {
+        let first_leaf = leaf();
         let bundle = EnrollmentBundle {
             peer_key_pem: storage::secret("key".into()),
             issued: IssuedMaterial::for_enrollment(
                 "https://api.example.test",
                 "ws-1",
                 PROJECT,
-                answer(peer_id, "first leaf"),
-                ENROLLED_AT,
-            ),
+                answer(peer_id, &first_leaf),
+                ISSUED_AT,
+            )
+            .expect("a certificate"),
         };
         enrollment::save(dirs, &bundle).expect("enroll");
+        first_leaf
     }
 
     fn leaf_on_disk(dirs: &PeppyDirs) -> String {
@@ -141,32 +149,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dirs = PeppyDirs::new(dir.path());
         enroll(&dirs, "peer-1");
+        let second_leaf = leaf_pem(ISSUED_AT + 60 * DAY, EXPIRES_AT + 60 * DAY);
 
-        let document = renew_with(&dirs, ENROLLED_AT + 100, |document| {
+        let renewed = renew_with(&dirs, |document| {
             assert_eq!(document.peer_id, "peer-1");
-            Ok(answer("peer-1", "second leaf"))
+            Ok(answer("peer-1", &second_leaf))
         })
         .expect("renewed");
 
-        assert_eq!(document.certificate_issued_at, ENROLLED_AT + 100);
-        assert_eq!(document.enrolled_at, ENROLLED_AT);
-        assert_eq!(leaf_on_disk(&dirs), "second leaf");
+        assert_eq!(
+            renewed.certificate,
+            CertificateValidity {
+                not_before: ISSUED_AT + 60 * DAY,
+                not_after: EXPIRES_AT + 60 * DAY,
+            },
+            "the validity is the new leaf's"
+        );
+        assert_eq!(renewed.document.enrolled_at, ISSUED_AT);
+        assert_eq!(leaf_on_disk(&dirs), second_leaf);
         let on_disk = enrollment::load(&dirs).unwrap().expect("enrolled");
-        assert_eq!(on_disk.document, document);
+        assert_eq!(on_disk, renewed);
     }
 
     #[test]
     fn a_refusal_of_the_platform_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let dirs = PeppyDirs::new(dir.path());
-        enroll(&dirs, "peer-1");
+        let first_leaf = enroll(&dirs, "peer-1");
         let before = enrollment::load(&dirs).unwrap();
 
-        let err = renew_with(&dirs, ENROLLED_AT + 100, |_| Err(Error::NotAuthenticated))
-            .expect_err("refused");
+        let err = renew_with(&dirs, |_| Err(Error::NotAuthenticated)).expect_err("refused");
 
         assert!(matches!(err, Error::NotAuthenticated));
-        assert_eq!(leaf_on_disk(&dirs), "first leaf");
+        assert_eq!(leaf_on_disk(&dirs), first_leaf);
         assert_eq!(enrollment::load(&dirs).unwrap(), before);
     }
 
@@ -178,10 +193,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dirs = PeppyDirs::new(dir.path());
         enroll(&dirs, "peer-1");
+        let mut second_enrollment_leaf = String::new();
 
-        let err = renew_with(&dirs, ENROLLED_AT + 100, |_| {
-            enroll(&dirs, "peer-2");
-            Ok(answer("peer-1", "second leaf"))
+        let err = renew_with(&dirs, |_| {
+            second_enrollment_leaf = enroll(&dirs, "peer-2");
+            Ok(answer("peer-1", &leaf()))
         })
         .expect_err("the enrollment changed");
 
@@ -189,7 +205,7 @@ mod tests {
             err.to_string().contains("changed during the renewal"),
             "{err}"
         );
-        assert_eq!(leaf_on_disk(&dirs), "first leaf");
+        assert_eq!(leaf_on_disk(&dirs), second_enrollment_leaf);
         let on_disk = enrollment::load(&dirs).unwrap().expect("enrolled");
         assert_eq!(on_disk.document.peer_id, "peer-2");
     }
@@ -201,9 +217,9 @@ mod tests {
         let dirs = PeppyDirs::new(dir.path());
         enroll(&dirs, "peer-1");
 
-        let err = renew_with(&dirs, ENROLLED_AT + 100, |_| {
+        let err = renew_with(&dirs, |_| {
             enrollment::remove(&dirs).unwrap();
-            Ok(answer("peer-1", "second leaf"))
+            Ok(answer("peer-1", &leaf()))
         })
         .expect_err("the enrollment is gone");
 
@@ -219,10 +235,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dirs = PeppyDirs::new(dir.path());
 
-        let err = renew_with(&dirs, ENROLLED_AT, |_| {
-            panic!("the platform must not be asked")
-        })
-        .expect_err("not enrolled");
+        let err = renew_with(&dirs, |_| panic!("the platform must not be asked"))
+            .expect_err("not enrolled");
 
         assert!(err.to_string().contains("not enrolled"), "{err}");
     }

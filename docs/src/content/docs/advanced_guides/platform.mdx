@@ -229,10 +229,12 @@ machines with the firewall of the host.
 
 The peer certificate is valid for 90 days, and the daemon renews it. The
 renewal becomes due after two thirds of the lifetime of the certificate, which
-is day 60 of 90. The daemon then asks the platform for a new certificate for
-the same key and writes it over `peer.crt`. The peer keeps its id, its zenoh
-identity and its slot on the router. The daemon does not restart, and the
-router does not restart.
+is day 60 of 90. The lifetime is the one the certificate in `peer.crt` states,
+so the schedule follows the certificate and not a clock of this machine. The
+daemon then asks the platform for a new certificate for the same key and
+writes it over `peer.crt`. The peer keeps its id, its zenoh identity and its
+slot on the router. The daemon does not restart, and the router does not
+restart.
 
 The running link keeps the certificate it opened with. The cloud router closes
 that link when that certificate expires, and the daemon's router opens it again

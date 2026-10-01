@@ -168,9 +168,11 @@ fn mock_workspaces_and_projects(server: &MockServer) {
     });
 }
 
-/// `POST .../router/peers` answering a signed enrollment for any request.
+/// `POST .../router/peers` answering a signed enrollment for any request, with
+/// a leaf valid from `test_support::ISSUED_AT` to `test_support::EXPIRES_AT`.
 fn mock_enroll<'a>(server: &'a MockServer, zid: &str) -> httpmock::Mock<'a> {
     let zid = zid.to_string();
+    let leaf = test_support::leaf();
     server.mock(move |when, then| {
         // Only a PEM signing request is answered, so a call count of one proves
         // the CLI posted what it minted.
@@ -181,7 +183,7 @@ fn mock_enroll<'a>(server: &'a MockServer, zid: &str) -> httpmock::Mock<'a> {
             "peer": { "id": "peer-1", "name": "robot-7", "certificate_cn": "robot-7",
                       "status": "unknown", "certificate_expires_at": "2027-01-01T00:00:00Z",
                       "created_at": "2026-10-03T00:00:00Z" },
-            "certificate": "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n",
+            "certificate": leaf,
             "chain": "-----BEGIN CERTIFICATE-----\nissuer\n-----END CERTIFICATE-----\n",
             "trust_anchor": "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n",
             "address": { "host": ROUTER_HOST, "port": 7447 },
@@ -245,7 +247,8 @@ fn authenticated_dir(server: &MockServer) -> tempfile::TempDir {
 }
 
 /// Writes an enrollment in `PROJECT` of `WORKSPACE` under `dir`, as a previous
-/// `enroll` would have, with placeholder PEM material.
+/// `enroll` would have, with a leaf that is valid now and placeholder material
+/// for the rest.
 fn write_enrollment(dir: &tempfile::TempDir, peer_id: &str, zid: &str) {
     test_support::write_enrollment(
         &dirs(dir),
@@ -254,7 +257,6 @@ fn write_enrollment(dir: &tempfile::TempDir, peer_id: &str, zid: &str) {
             peer_id: peer_id.into(),
             zenoh_id: pmi::RouterId::parse(zid).unwrap(),
             router: RouterEndpoint::parse(ROUTER_HOST, 7447).unwrap(),
-            certificate_expires_at: 9_999_999_999,
             ..test_support::enrollment_document()
         },
     );
@@ -1292,12 +1294,12 @@ fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
     assert_eq!(d.namespace.as_str(), PROJECT);
     assert_eq!(d.router.locator(), format!("tls/{ROUTER_HOST}:7447"));
     assert_eq!(d.api_url, server.base_url());
-    assert_eq!(d.certificate_expires_at, 1_798_761_600);
     assert_eq!(
-        d.certificate_issued_at, d.enrolled_at,
-        "the first leaf is issued at the enrollment"
+        enrolled.certificate,
+        test_support::certificate_validity(),
+        "the validity is read from the leaf the platform signed"
     );
-    assert!(d.renewal_due_at() < d.certificate_expires_at);
+    assert!(enrolled.certificate.renewal_due_at() < enrolled.certificate.not_after);
     let key = std::fs::read_to_string(&enrolled.peer_key).unwrap();
     assert!(
         key.starts_with("-----BEGIN PRIVATE KEY-----"),
@@ -1305,8 +1307,13 @@ fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
     );
     let cert = std::fs::read_to_string(&enrolled.peer_certificate).unwrap();
     assert_eq!(
-        cert, "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n",
+        cert.matches("-----BEGIN CERTIFICATE-----").count(),
+        1,
         "the peer presents the leaf alone"
+    );
+    assert!(
+        !cert.contains("issuer"),
+        "the chain is not in the leaf file"
     );
     let chain = std::fs::read_to_string(dirs(&dir).peer_dir().join("chain.crt")).unwrap();
     assert!(chain.contains("issuer"), "the chain is kept apart: {chain}");

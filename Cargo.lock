@@ -310,6 +310,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 name = "auth"
 version = "0.0.1"
 dependencies = [
+ "auth",
  "chrono",
  "daemon-config",
  "httpmock",
@@ -323,9 +324,11 @@ dependencies = [
  "serde_json5",
  "tempfile",
  "thiserror 2.0.20",
+ "time",
  "tracing",
  "ureq",
  "url",
+ "x509-parser",
 ]
 
 [[package]]

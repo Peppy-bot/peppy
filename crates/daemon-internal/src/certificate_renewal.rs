@@ -2,8 +2,8 @@
 //!
 //! The cloud router closes the link of a peer when the leaf certificate of
 //! that peer expires. This task asks the platform for a new leaf when the
-//! renewal is due ([`auth::EnrollmentDocument::renewal_due_at`]), and
-//! [`auth::renewal::renew`] writes it over `peer.crt`. The identity of the
+//! renewal is due ([`auth::CertificateValidity::renewal_due_at`], read from
+//! `peer.crt` itself), and [`auth::renewal::renew`] writes it over `peer.crt`. The identity of the
 //! peer does not change, so the generation does not restart: zenoh reads
 //! `peer.crt` each time it opens the link, and the link that the cloud router
 //! closes at the expiry of the old leaf opens again with the new one.
@@ -21,7 +21,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use auth::{AuthError, Enrollment, EnrollmentDocument, ProblemKind};
+use auth::{AuthError, Enrollment, ProblemKind};
 use daemon_config::consts::PeppyDirs;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -37,9 +37,9 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// no delay or for a delay of zero.
 const MIN_RETRY_DELAY: Duration = Duration::from_secs(10);
 
-/// Asks the platform for a new leaf and writes it. The argument is the current
-/// unix time. The call blocks: it does HTTP and file I/O.
-type Renewer = Arc<dyn Fn(i64) -> auth::Result<EnrollmentDocument> + Send + Sync>;
+/// Asks the platform for a new leaf and writes it; the answer is the renewed
+/// enrollment. The call blocks: it does HTTP and file I/O.
+type Renewer = Arc<dyn Fn() -> auth::Result<Enrollment> + Send + Sync>;
 
 /// Waits for the given time. Injected so that a test does not wait.
 type Sleeper = Arc<dyn Fn(Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
@@ -76,8 +76,8 @@ impl CertificateRenewal {
         Self {
             deps: RenewalDeps {
                 enrollment: Arc::new(move || auth::enrollment::load(&peppy_dirs)),
-                renewer: Arc::new(move |now| {
-                    auth::renewal::renew(&renewal_dirs, &auth::http::HttpClient::new(), now)
+                renewer: Arc::new(move || {
+                    auth::renewal::renew(&renewal_dirs, &auth::http::HttpClient::new())
                 }),
                 clock: Arc::new(auth::storage::now_unix),
                 sleeper: Arc::new(|time| Box::pin(tokio::time::sleep(time))),
@@ -129,13 +129,13 @@ async fn check_and_renew(deps: &RenewalDeps) -> Step {
     };
 
     let now = (deps.clock)();
-    let document = &enrollment.document;
-    if !document.is_renewal_due(now) {
-        return Step::Wait(time_until(document.renewal_due_at(), now).min(CHECK_INTERVAL));
+    let certificate = enrollment.certificate;
+    if !certificate.is_renewal_due(now) {
+        return Step::Wait(time_until(certificate.renewal_due_at(), now).min(CHECK_INTERVAL));
     }
 
     let renewer = deps.renewer.clone();
-    let renewed = run_blocking(move || renewer(now)).await;
+    let renewed = run_blocking(move || renewer()).await;
     step_after_renewal(&enrollment, renewed)
 }
 
@@ -175,15 +175,15 @@ fn time_until(then_unix: i64, now_unix: i64) -> Duration {
 /// Logs the result of a renewal and says when the next check is.
 fn step_after_renewal(
     enrollment: &Enrollment,
-    renewed: std::result::Result<EnrollmentDocument, RenewalFailure>,
+    renewed: std::result::Result<Enrollment, RenewalFailure>,
 ) -> Step {
     let peer = &enrollment.document.peer_id;
     let failure = match renewed {
-        Ok(document) => {
+        Ok(renewed) => {
             info!(
                 peer = %peer,
-                expires_at = %rfc3339(document.certificate_expires_at),
-                next_renewal_at = %rfc3339(document.renewal_due_at()),
+                expires_at = %rfc3339(renewed.certificate.not_after),
+                next_renewal_at = %rfc3339(renewed.certificate.renewal_due_at()),
                 "certificate renewal: the peer certificate is renewed"
             );
             return Step::Wait(CHECK_INTERVAL);
@@ -191,7 +191,7 @@ fn step_after_renewal(
         Err(failure) => failure,
     };
 
-    let expires_at = rfc3339(enrollment.document.certificate_expires_at);
+    let expires_at = rfc3339(enrollment.certificate.not_after);
     match &failure {
         RenewalFailure::Refused(AuthError::Problem(problem))
             if problem.kind == ProblemKind::PeerNotRenewable =>
@@ -250,6 +250,7 @@ pub(crate) fn rfc3339(unix: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use auth::CertificateValidity;
     use auth::test_support::{self, ISSUED_AT};
     use std::collections::VecDeque;
     use std::sync::Mutex;
@@ -262,10 +263,9 @@ mod tests {
     /// The enrollment with a leaf issued at `issued_at` for [`LIFETIME`].
     fn enrollment(issued_at: i64) -> Enrollment {
         Enrollment {
-            document: EnrollmentDocument {
-                certificate_issued_at: issued_at,
-                certificate_expires_at: issued_at + LIFETIME,
-                ..test_support::enrollment_document()
+            certificate: CertificateValidity {
+                not_before: issued_at,
+                not_after: issued_at + LIFETIME,
             },
             ..test_support::enrollment()
         }
@@ -324,13 +324,15 @@ mod tests {
                 self.renewals.clone(),
             );
             let clock = self.now.clone();
+            let renewal_clock = self.now.clone();
             let (slept_clock, sleeps) = (self.now.clone(), self.sleeps.clone());
             RenewalDeps {
                 enrollment: Arc::new(move || match &*on_disk.lock().unwrap() {
                     Ok(enrollment) => Ok(enrollment.clone()),
                     Err(error) => Err(AuthError::Auth(error.to_string())),
                 }),
-                renewer: Arc::new(move |now| {
+                renewer: Arc::new(move || {
+                    let now = renewal_clock.load(Ordering::SeqCst);
                     renewals.lock().unwrap().push(now);
                     let answer = script
                         .lock()
@@ -342,7 +344,7 @@ mod tests {
                         Answer::Renewed => {
                             let renewed = enrollment(now);
                             *disk.lock().unwrap() = Ok(Some(renewed.clone()));
-                            Ok(renewed.document)
+                            Ok(renewed)
                         }
                     }
                 }),

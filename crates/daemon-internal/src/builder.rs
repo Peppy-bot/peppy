@@ -219,7 +219,7 @@ impl ServeCommandBuilder {
     ) -> Result<ZenohAdapter> {
         let (router_id, connect_endpoints, tls) = match enrollment {
             Some(enrollment) => {
-                if enrollment.document.is_expired(auth::storage::now_unix()) {
+                if enrollment.certificate.is_expired(auth::storage::now_unix()) {
                     warn!(
                         "the platform peer certificate has expired; the cloud router refuses \
                          this daemon's link until the daemon renews the certificate, which \
@@ -647,14 +647,11 @@ mod tests {
     use auth::test_support::{PROJECT, ZID};
 
     /// Enrolls the machine under `data_root` in [`PROJECT`] as [`ZID`], with
-    /// a certificate that does not expire.
+    /// a certificate that is valid now.
     fn write_enrollment(data_root: &std::path::Path) {
         auth::test_support::write_enrollment(
             &PeppyDirs::new(data_root),
-            auth::enrollment::EnrollmentDocument {
-                certificate_expires_at: i64::MAX,
-                ..auth::test_support::enrollment_document()
-            },
+            auth::test_support::enrollment_document(),
         );
     }
 

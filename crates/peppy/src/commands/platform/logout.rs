@@ -70,7 +70,7 @@ impl Command for LogoutCommand {
             println!(
                 "The daemon cannot renew the peer certificate with no session. The certificate \
                  expires on {}; run `peppy platform login` before then.",
-                super::date_of(enrollment.document.certificate_expires_at)
+                super::date_of(enrollment.certificate.not_after)
             );
         }
         Ok(())

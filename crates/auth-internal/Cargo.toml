@@ -22,15 +22,24 @@ thiserror = "2.0"
 tracing = "0.1"
 ureq = { version = "3.1", features = ["platform-verifier"] }
 url = "2"
+# Reads the validity of the peer's leaf certificate, which the renewal is
+# scheduled from.
+x509-parser = "0.18"
+# Only for the `test-support` fixtures, which mint a leaf with set dates.
+time = { version = "0.3", optional = true }
 
 [features]
 # Test-only fixtures (`test_support` module) for downstream crates' tests;
 # this crate's own tests see the module via `cfg(test)` instead.
-test-support = []
+test-support = ["dep:time"]
 
 [dev-dependencies]
+# Self-reference so the integration tests of this crate see `test_support`,
+# which the library exposes to them through the feature alone.
+auth = { path = ".", features = ["test-support"] }
 httpmock = "0.8"
 # The `x509-parser` feature reads a CSR back, so a test can pin what the
 # platform receives: one common name, no extensions, a P-256 key.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
 tempfile = "3.8"
+time = "0.3"
