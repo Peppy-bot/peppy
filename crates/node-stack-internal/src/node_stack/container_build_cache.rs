@@ -13,6 +13,10 @@
 //! * `sccache-cache/` persists compiled artifacts via `RUSTC_WRAPPER` and
 //!   `SCCACHE_DIR`. The sccache executable ships inside the peppy Rust base
 //!   image, so the wrapper is only activated for defs that bootstrap from it.
+//! * `downloads/` holds files a `%post` fetches from the network, named by
+//!   their sha256, via `PEPPY_DOWNLOAD_CACHE`. No tool reads that variable
+//!   on its own: a def opts in by looking a pinned file up there before it
+//!   downloads it, and by storing what it downloads under its checksum.
 //!
 //! Caching is best effort and fails open: when anything is missing or goes
 //! wrong during setup, the build proceeds exactly as it would without this
@@ -47,6 +51,13 @@ const SCCACHE_IMAGE: &str = "peppybot/rust-cargo-base";
 /// the container-side environment so the two can never desynchronize.
 const CARGO_HOME_SUBDIR: &str = "cargo-home";
 const SCCACHE_CACHE_SUBDIR: &str = "sccache-cache";
+const DOWNLOADS_SUBDIR: &str = "downloads";
+
+/// Names the downloads directory inside the build. Its presence is what tells
+/// a `%post` that the cache is bind mounted: without the bind, `/peppy-cache`
+/// is a plain directory of the image and whatever a build writes there ships
+/// in the image.
+const DOWNLOAD_CACHE_ENV_VAR: &str = "PEPPY_DOWNLOAD_CACHE";
 
 /// Cache bind and environment for one container build.
 ///
@@ -170,6 +181,17 @@ fn prepare_in(cache_root: &Path, sccache_in_image: bool) -> Option<ContainerBuil
         }
     }
 
+    match std::fs::create_dir_all(cache_root.join(DOWNLOADS_SUBDIR)) {
+        Ok(()) => {
+            env.push((
+                DOWNLOAD_CACHE_ENV_VAR,
+                format!("{BIND_DEST}/{DOWNLOADS_SUBDIR}"),
+            ));
+            parts.push("downloads");
+        }
+        Err(e) => warn!("download cache disabled for this build: {e}"),
+    }
+
     Some(ContainerBuildCache {
         host_dir: cache_root.to_path_buf(),
         env,
@@ -240,12 +262,13 @@ mod tests {
     }
 
     #[test]
-    fn rust_base_image_gets_registry_and_sccache() {
+    fn rust_base_image_gets_registry_sccache_and_downloads() {
         let root = tempfile::tempdir().expect("create temp dir");
         let cache = prepare_in(root.path(), true).expect("cache prepared");
 
         assert!(root.path().join(CARGO_HOME_SUBDIR).is_dir());
         assert!(root.path().join(SCCACHE_CACHE_SUBDIR).is_dir());
+        assert!(root.path().join(DOWNLOADS_SUBDIR).is_dir());
         let keys: Vec<&str> = cache.env.iter().map(|(k, _)| *k).collect();
         assert_eq!(
             keys,
@@ -253,26 +276,54 @@ mod tests {
                 "CARGO_HOME",
                 "RUSTC_WRAPPER",
                 "SCCACHE_DIR",
-                "SCCACHE_SERVER_PORT"
+                "SCCACHE_SERVER_PORT",
+                "PEPPY_DOWNLOAD_CACHE"
             ]
         );
         assert_eq!(cache.env[1].1, "sccache");
+        assert_eq!(cache.env[4].1, "/peppy-cache/downloads");
         assert_eq!(
             cache.summary,
-            "Container build cache: cargo registry + sccache"
+            "Container build cache: cargo registry + sccache + downloads"
         );
     }
 
     #[test]
-    fn image_without_sccache_gets_registry_only() {
+    fn image_without_sccache_gets_registry_and_downloads() {
         let root = tempfile::tempdir().expect("create temp dir");
         let cache = prepare_in(root.path(), false).expect("cache prepared");
 
         assert_eq!(
             cache.env,
-            vec![("CARGO_HOME", format!("{BIND_DEST}/{CARGO_HOME_SUBDIR}"))]
+            vec![
+                ("CARGO_HOME", format!("{BIND_DEST}/{CARGO_HOME_SUBDIR}")),
+                (
+                    "PEPPY_DOWNLOAD_CACHE",
+                    format!("{BIND_DEST}/{DOWNLOADS_SUBDIR}")
+                ),
+            ]
         );
-        assert_eq!(cache.summary, "Container build cache: cargo registry");
+        assert_eq!(
+            cache.summary,
+            "Container build cache: cargo registry + downloads"
+        );
+    }
+
+    #[test]
+    fn unusable_downloads_dir_keeps_the_other_caches() {
+        let root = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(root.path().join(DOWNLOADS_SUBDIR), b"not a directory")
+            .expect("block the downloads dir with a file");
+        let cache = prepare_in(root.path(), true).expect("cache prepared");
+
+        assert!(
+            cache.env.iter().all(|(k, _)| *k != "PEPPY_DOWNLOAD_CACHE"),
+            "a build must not be told about a downloads dir that does not exist"
+        );
+        assert_eq!(
+            cache.summary,
+            "Container build cache: cargo registry + sccache"
+        );
     }
 
     #[test]
