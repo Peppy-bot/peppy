@@ -9,16 +9,18 @@
 //! CLI is installed on user machines while the backend deploys independently,
 //! so an older CLI routinely meets a newer backend. The platform adds members
 //! to its answers in each minor version of the contract, so no type here
-//! refuses an unknown member, and no answer is checked against a schema. Status-like fields the
-//! backend enumerates (`RouterPeer::status`, `RouterStatus::phase`) are kept
-//! as strings for the same reason: a value this CLI has not heard of renders
-//! as itself instead of failing the whole listing.
+//! refuses an unknown member, and no answer is checked against a schema. The
+//! values the backend enumerates ([`PeerStatus`], [`RouterPhase`]) are parsed
+//! to enums that keep a value this CLI has not heard of as `Other`, so it
+//! renders as itself instead of failing the whole listing.
+
+use std::fmt;
 
 use chrono::{DateTime, Utc};
 use config::namespace::Namespace;
 use pmi::RouterId;
 use secrecy::ExposeSecret;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use super::http::{HttpClient, HttpResponse};
 use super::resolver::{Credential, SessionContext, refresh_and_persist};
@@ -77,6 +79,107 @@ impl Project {
     }
 }
 
+/// Whether the router sees a peer connected, as the platform reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(from = "String", into = "String")]
+pub enum PeerStatus {
+    Connected,
+    /// The router has not reported on the peer.
+    Unknown,
+    /// The peer was removed; the router refuses it from its next restart.
+    PendingRestart,
+    /// A status this CLI has not heard of, as the platform sent it.
+    Other(String),
+}
+
+impl PeerStatus {
+    /// The status as the platform spells it.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Connected => "connected",
+            Self::Unknown => "unknown",
+            Self::PendingRestart => "pending_restart",
+            Self::Other(status) => status,
+        }
+    }
+}
+
+impl From<String> for PeerStatus {
+    fn from(status: String) -> Self {
+        match status.as_str() {
+            "connected" => Self::Connected,
+            "unknown" => Self::Unknown,
+            "pending_restart" => Self::PendingRestart,
+            _ => Self::Other(status),
+        }
+    }
+}
+
+impl From<PeerStatus> for String {
+    fn from(status: PeerStatus) -> Self {
+        status.as_str().to_string()
+    }
+}
+
+impl fmt::Display for PeerStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What a project's cloud router is doing, as the platform reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(from = "String", into = "String")]
+pub enum RouterPhase {
+    Provisioning,
+    Running,
+    Restarting,
+    /// The person stopped the router.
+    Stopped,
+    Degraded,
+    /// A phase this CLI has not heard of, as the platform sent it.
+    Other(String),
+}
+
+impl RouterPhase {
+    /// The phase as the platform spells it.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Provisioning => "provisioning",
+            Self::Running => "running",
+            Self::Restarting => "restarting",
+            Self::Stopped => "stopped",
+            Self::Degraded => "degraded",
+            Self::Other(phase) => phase,
+        }
+    }
+}
+
+impl From<String> for RouterPhase {
+    fn from(phase: String) -> Self {
+        match phase.as_str() {
+            "provisioning" => Self::Provisioning,
+            "running" => Self::Running,
+            "restarting" => Self::Restarting,
+            "stopped" => Self::Stopped,
+            "degraded" => Self::Degraded,
+            _ => Self::Other(phase),
+        }
+    }
+}
+
+impl From<RouterPhase> for String {
+    fn from(phase: RouterPhase) -> Self {
+        phase.as_str().to_string()
+    }
+}
+
+impl fmt::Display for RouterPhase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// One enrolled router peer of a project.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouterPeer {
@@ -84,8 +187,7 @@ pub struct RouterPeer {
     pub name: String,
     #[serde(default)]
     pub certificate_cn: String,
-    /// `connected`, `unknown` or `pending_restart` as the platform reports it.
-    pub status: String,
+    pub status: PeerStatus,
     pub certificate_expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
@@ -111,27 +213,16 @@ pub struct RouterPeerEnrolled {
     pub zenoh_config: String,
 }
 
-/// Where a project's cloud router listens, as the router read shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct RouterAddress {
-    pub host: String,
-    pub port: u16,
-}
-
 /// The platform's view of one peer's connection.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouterPeerStatus {
     pub id: String,
-    pub status: String,
-    #[serde(default)]
-    pub last_seen_at: Option<DateTime<Utc>>,
+    pub status: PeerStatus,
 }
 
 /// One change that waits for a router restart to apply.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PendingChange {
-    /// `size`, `peer`, `certificate` or `configuration`.
-    pub kind: String,
     /// The platform's sentence for the person.
     pub description: String,
     pub staged_at: DateTime<Utc>,
@@ -144,15 +235,12 @@ pub struct PendingChange {
 /// removal, a restart and a start).
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouterStatus {
-    /// `provisioning`, `running`, `restarting`, `stopped` or `degraded`.
-    pub phase: String,
+    pub phase: RouterPhase,
     #[serde(default)]
     pub desired_state: String,
-    /// Whether the caller may start, stop and restart the router.
+    /// Where the router answers, present only while it runs.
     #[serde(default)]
-    pub can_manage_infra: bool,
-    #[serde(default)]
-    pub address: Option<RouterAddress>,
+    pub address: Option<RouterEndpoint>,
     /// Whether a change (a removed peer, a new size) waits for a restart.
     #[serde(default)]
     pub pending_changes: bool,
@@ -623,6 +711,45 @@ mod tests {
             r#"{{"type":"about:blank","title":"t","status":422,{NEW}}}"#
         ))
         .expect("ProblemDocument");
+    }
+
+    /// A value the platform enumerates parses to its variant, and a value this
+    /// CLI has not heard of is kept and renders as itself.
+    #[test]
+    fn enumerated_values_parse_to_their_variant_and_keep_an_unknown_one() {
+        let status = |json: &str| serde_json::from_str::<PeerStatus>(json).unwrap();
+        assert_eq!(status(r#""connected""#), PeerStatus::Connected);
+        assert_eq!(status(r#""unknown""#), PeerStatus::Unknown);
+        assert_eq!(status(r#""pending_restart""#), PeerStatus::PendingRestart);
+        assert_eq!(
+            status(r#""some_future_state""#),
+            PeerStatus::Other("some_future_state".into())
+        );
+        assert_eq!(
+            status(r#""some_future_state""#).to_string(),
+            "some_future_state"
+        );
+        assert_eq!(
+            serde_json::to_string(&PeerStatus::PendingRestart).unwrap(),
+            r#""pending_restart""#
+        );
+
+        let phase = |json: &str| serde_json::from_str::<RouterPhase>(json).unwrap();
+        for (json, expected) in [
+            (r#""provisioning""#, RouterPhase::Provisioning),
+            (r#""running""#, RouterPhase::Running),
+            (r#""restarting""#, RouterPhase::Restarting),
+            (r#""stopped""#, RouterPhase::Stopped),
+            (r#""degraded""#, RouterPhase::Degraded),
+            (r#""hibernating""#, RouterPhase::Other("hibernating".into())),
+        ] {
+            assert_eq!(phase(json), expected);
+            assert_eq!(
+                serde_json::to_string(&phase(json)).unwrap(),
+                json,
+                "renders as the platform spells it"
+            );
+        }
     }
 
     #[test]

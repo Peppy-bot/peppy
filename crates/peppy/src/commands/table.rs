@@ -1,10 +1,12 @@
-//! Box-drawing table primitives shared by the commands that render tables
-//! (`stack list`, `stack benchmark`, `repo search`) so they draw the same
-//! borders, alignment, ANSI handling, and terminal fitting. Cells may carry
-//! embedded newlines: a cell that spans several lines makes the whole row
-//! that tall, padding the shorter cells. Under a width budget the widest
-//! columns give way first, never below their header's width, and over-long
-//! cells wrap onto continuation lines, so the box holds in any terminal.
+//! Table primitives shared by the commands that render tables, so they
+//! measure, align and handle ANSI the same way. [`render_table`] draws a box
+//! (`stack list`, `stack benchmark`, `repo search`): cells may carry embedded
+//! newlines, a cell that spans several lines makes the whole row that tall,
+//! padding the shorter cells, and under a width budget the widest columns
+//! give way first, never below their header's width, with over-long cells
+//! wrapped onto continuation lines, so the box holds in any terminal.
+//! [`render_columns`] draws plain space-aligned columns (the `platform`
+//! listings).
 
 use std::fmt::Write as _;
 
@@ -250,6 +252,38 @@ pub(super) fn render_table(
     let _ = writeln!(out);
 }
 
+/// Renders `rows` under `headers` as space-aligned columns, each column as
+/// wide as its widest value, two spaces between columns, and no trailing
+/// whitespace on a line. Widths are measured with [`col_width`], so a wide
+/// glyph in a name does not skew the columns after it.
+pub(super) fn render_columns<const N: usize>(headers: [&str; N], rows: &[[String; N]]) -> String {
+    let widths: Vec<usize> = (0..N)
+        .map(|column| {
+            rows.iter()
+                .map(|row| col_width(&row[column]))
+                .chain(std::iter::once(col_width(headers[column])))
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let line = |cells: Vec<&str>| {
+        let mut s = String::new();
+        for (column, cell) in cells.iter().enumerate() {
+            if column > 0 {
+                s.push_str("  ");
+            }
+            s.push_str(cell);
+            s.push_str(&" ".repeat(widths[column].saturating_sub(col_width(cell))));
+        }
+        format!("{}\n", s.trim_end())
+    };
+    let mut out = line(headers.to_vec());
+    for row in rows {
+        out.push_str(&line(row.iter().map(String::as_str).collect()));
+    }
+    out
+}
+
 fn write_border(out: &mut String, widths: &[usize], left: char, sep: char, right: char) {
     let _ = write!(out, "{}", left);
     for (i, w) in widths.iter().enumerate() {
@@ -294,6 +328,21 @@ mod tests {
     fn col_width_skips_ansi() {
         assert_eq!(col_width("\x1b[36mabc\x1b[0m"), 3);
         assert_eq!(col_width("abc"), 3);
+    }
+
+    /// Columns are as wide as their widest value in display columns, so a
+    /// wide glyph takes two and the next column stays aligned; a line never
+    /// ends in whitespace.
+    #[test]
+    fn render_columns_aligns_by_display_width_and_trims_the_line_end() {
+        let rows = [
+            ["ab".to_string(), "x".to_string(), String::new()],
+            ["日本".to_string(), "yy".to_string(), "note".to_string()],
+        ];
+        assert_eq!(
+            render_columns(["ID", "V", ""], &rows),
+            "ID    V\nab    x\n日本  yy  note\n"
+        );
     }
 
     #[test]

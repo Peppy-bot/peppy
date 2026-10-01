@@ -18,13 +18,13 @@ use std::path::{Path, PathBuf};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::error::{Error, Result};
-use crate::fs_perms::{restrict_dir, restrict_file};
+use crate::document::{self, Versioned};
+use crate::error::Result;
+use crate::fs_perms::restrict_dir;
 
-/// On-disk schema version of `credentials.json5`. Bumped on any shape change;
-/// there is intentionally **no reader for an older version**. A file of any
-/// other version (including an unversioned one, which reads as `0`) is
-/// rejected by [`load`], and the user signs in again.
+/// On-disk schema version of `credentials.json5`. There is one reader, for
+/// this version. A file of any other version (including an unversioned one,
+/// which reads as `0`) is rejected by [`load`], and the user signs in again.
 pub const CREDENTIALS_VERSION: u32 = 2;
 
 /// Whole `credentials.json5` document: the schema version and a single cached
@@ -32,8 +32,7 @@ pub const CREDENTIALS_VERSION: u32 = 2;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Credentials {
     /// Schema version (see [`CREDENTIALS_VERSION`]). Defaults to `0` when absent
-    /// so an old/unversioned file is detected and rejected rather than
-    /// half-interpreted.
+    /// so an unversioned file is rejected rather than half-interpreted.
     #[serde(default)]
     pub version: u32,
     #[serde(default)]
@@ -48,6 +47,16 @@ impl Default for Credentials {
             version: CREDENTIALS_VERSION,
             session: None,
         }
+    }
+}
+
+impl Versioned for Credentials {
+    const VERSION: u32 = CREDENTIALS_VERSION;
+    const WHAT: &'static str = "credentials";
+    const REMEDY: &'static str = "peppy platform login";
+
+    fn version(&self) -> u32 {
+        self.version
     }
 }
 
@@ -151,47 +160,19 @@ pub fn credentials_path(dirs: &daemon_config::consts::PeppyDirs) -> PathBuf {
 }
 
 /// Loads the credentials document, returning an empty one when the file does
-/// not exist yet (first login).
+/// not exist yet (first login). A file of another version is rejected.
 pub fn load(path: &Path) -> Result<Credentials> {
-    match std::fs::read_to_string(path) {
-        Ok(content) => {
-            let creds: Credentials = serde_json5::from_str(&content)
-                .map_err(|e| Error::Auth(format!("failed to parse {}: {e}", path.display())))?;
-            // No back-compat reader: any other version (including the
-            // unversioned old format, which reads as 0) is rejected outright so
-            // a stale-shaped file is never half-interpreted.
-            if creds.version != CREDENTIALS_VERSION {
-                return Err(Error::Auth(format!(
-                    "credentials file {} is an unsupported format (v{}, expected v{}); \
-                     run `peppy platform login` again",
-                    path.display(),
-                    creds.version,
-                    CREDENTIALS_VERSION
-                )));
-            }
-            Ok(creds)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Credentials::default()),
-        Err(e) => Err(Error::Io(e)),
-    }
+    Ok(document::load(path)?.unwrap_or_default())
 }
 
 /// Atomically writes the credentials document, setting `conf/` to `0700` and the
 /// file to `0600` so the secrets are owner-only.
 pub fn save(path: &Path, creds: &Credentials) -> Result<()> {
-    let content = json5_pretty::to_string_pretty(creds)
-        .map_err(|e| Error::Auth(format!("failed to serialize credentials: {e}")))?;
-
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         restrict_dir(parent)?;
     }
-
-    daemon_config::atomic_write::publish_atomic(path, |tmp| {
-        std::fs::write(tmp, &content)?;
-        restrict_file(tmp)
-    })?;
-    Ok(())
+    document::save(path, creds, true)
 }
 
 /// Current time as unix seconds (0 if the clock predates the epoch).
@@ -248,11 +229,10 @@ mod tests {
         assert_eq!(Credentials::default().version, CREDENTIALS_VERSION);
     }
 
-    /// A version 1 document carried a cached `router` block beside the session.
-    /// It is rejected as a whole, naming the command that replaces it, rather
-    /// than having its session half-read.
+    /// A file of another version is rejected as a whole, naming the command
+    /// that replaces it, rather than having its session half-read.
     #[test]
-    fn rejects_a_version_one_file() {
+    fn rejects_a_file_of_another_version() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("conf").join("credentials.json5");
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
@@ -264,9 +244,9 @@ mod tests {
                 router: { endpoint: "tls/cap:7443", protocol: "tls", repull_after: 1,
                 namespace: "550e8400-e29b-41d4-a716-446655440000", subject: "auth0|alice" } }"#,
         )
-        .expect("write old file");
+        .expect("write the file");
 
-        let err = load(&path).expect_err("old format must be rejected");
+        let err = load(&path).expect_err("another version must be rejected");
         let msg = err.to_string();
         assert!(
             msg.contains("unsupported format") && msg.contains("peppy platform login"),
@@ -279,7 +259,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("conf").join("credentials.json5");
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-        std::fs::write(&path, r#"{ session: null }"#).expect("write old file");
+        std::fs::write(&path, r#"{ session: null }"#).expect("write the file");
 
         assert!(load(&path).is_err());
     }

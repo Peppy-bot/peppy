@@ -167,8 +167,9 @@ impl std::fmt::Display for RenewalFailure {
     }
 }
 
+/// The time from `now_unix` to `then_unix`; zero when `then_unix` is past.
 fn time_until(then_unix: i64, now_unix: i64) -> Duration {
-    Duration::from_secs(then_unix.saturating_sub(now_unix).max(0).unsigned_abs())
+    Duration::from_secs(u64::try_from(then_unix.saturating_sub(now_unix)).unwrap_or(0))
 }
 
 /// Logs the result of a renewal and says when the next check is.
@@ -238,7 +239,9 @@ fn retry_delay(retry_after_secs: Option<u64>) -> Duration {
         .map_or(CHECK_INTERVAL, |asked| asked.max(MIN_RETRY_DELAY))
 }
 
-fn rfc3339(unix: i64) -> String {
+/// Unix seconds as RFC 3339 for the log, or the number itself when it is not
+/// a date.
+pub(crate) fn rfc3339(unix: i64) -> String {
     chrono::DateTime::from_timestamp(unix, 0)
         .map(|time| time.to_rfc3339())
         .unwrap_or_else(|| unix.to_string())
@@ -247,50 +250,31 @@ fn rfc3339(unix: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use auth::Problem;
-    use auth::enrollment::RouterEndpoint;
-    use config::namespace::Namespace;
-    use pmi::RouterId;
+    use auth::test_support::{self, ISSUED_AT};
     use std::collections::VecDeque;
-    use std::path::PathBuf;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicI64, Ordering};
 
     const DAY: i64 = 24 * 60 * 60;
-    const ISSUED_AT: i64 = 1_700_000_000;
     const LIFETIME: i64 = 90 * DAY;
     const DUE_AT: i64 = ISSUED_AT + 60 * DAY;
 
+    /// The enrollment with a leaf issued at `issued_at` for [`LIFETIME`].
     fn enrollment(issued_at: i64) -> Enrollment {
         Enrollment {
             document: EnrollmentDocument {
-                version: auth::enrollment::ENROLLMENT_VERSION,
-                api_url: "https://api.example".into(),
-                workspace_id: "ws".into(),
-                project_id: "550e8400-e29b-41d4-a716-446655440000".into(),
-                peer_id: "peer-1".into(),
-                peer_name: "robot-7".into(),
-                zenoh_id: RouterId::parse("2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5").unwrap(),
-                namespace: Namespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap(),
-                router: RouterEndpoint::parse("rtr-p.example", 7447).unwrap(),
                 certificate_issued_at: issued_at,
                 certificate_expires_at: issued_at + LIFETIME,
-                enrolled_at: ISSUED_AT,
+                ..test_support::enrollment_document()
             },
-            peer_key: PathBuf::from("/peer/peer.key"),
-            peer_certificate: PathBuf::from("/peer/peer.crt"),
-            trust_anchor: PathBuf::from("/peer/ca.crt"),
+            ..test_support::enrollment()
         }
     }
 
     fn problem(kind: ProblemKind, status: u16, retry_after_secs: Option<u64>) -> AuthError {
-        AuthError::Problem(Problem {
-            kind,
-            status,
-            title: "refused".into(),
-            detail: None,
+        AuthError::Problem(auth::Problem {
             retry_after_secs,
-            pending_removals: None,
+            ..test_support::problem(kind, status)
         })
     }
 

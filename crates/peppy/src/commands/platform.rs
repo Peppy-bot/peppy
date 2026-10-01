@@ -40,7 +40,7 @@ use core_node_api::{NodeStage, SerializedNodeGraph};
 use daemon_config::consts::PeppyDirs;
 use peppylib::core_node::transport::poll;
 
-use auth::{http::HttpClient, profile, storage};
+use auth::{FederationIdentity, http::HttpClient, profile, storage};
 
 use super::Command;
 use crate::commands::CALLER_INSTANCE_ID;
@@ -79,43 +79,6 @@ const RESTART_POLL_DEADLINE: Duration = Duration::from_secs(60);
 /// only briefly before we fall back to showing the warning.
 const STACK_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The identity the enrollment on disk under `dirs` prescribes for the daemon:
-/// its session namespace (`local` when not enrolled) and, when enrolled, the
-/// router id it must run under. The same resolution the daemon does at startup,
-/// so the CLI can confirm the daemon came back under exactly what it wrote.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ExpectedIdentity {
-    namespace: config::namespace::Namespace,
-    router_id: Option<pmi::RouterId>,
-}
-
-impl ExpectedIdentity {
-    fn read(dirs: &PeppyDirs) -> Result<Self> {
-        let enrollment = auth::enrollment::load(dirs).map_err(Error::AuthEngine)?;
-        Ok(match enrollment {
-            Some(enrollment) => Self {
-                namespace: enrollment.document.namespace,
-                router_id: Some(enrollment.document.zenoh_id),
-            },
-            None => Self {
-                namespace: config::namespace::Namespace::local(),
-                router_id: None,
-            },
-        })
-    }
-
-    /// Whether a daemon generation's recorded state matches this identity. An
-    /// unenrolled daemon runs a per-boot id nothing on disk names, so only the
-    /// namespace is compared then.
-    fn matches(&self, state: &DaemonState) -> bool {
-        state.namespace == self.namespace
-            && self
-                .router_id
-                .as_ref()
-                .is_none_or(|expected| state.router_id.as_ref() == Some(expected))
-    }
-}
-
 /// Whether a federation poke follows an enrollment or an unenrollment. Affects
 /// the user-facing wording and whether a federation failure is fatal: an
 /// enrollment whose link cannot be verified fails (the enrollment is kept),
@@ -149,7 +112,7 @@ pub(crate) fn federation_is_managed(
     config: &daemon_config::peppy_config::PeppyConfig,
 ) -> bool {
     match state {
-        Some(state) if state.is_running() => state.federation_control,
+        Some(state) if state.is_running() => state.has_federation_control(),
         _ => config.zenoh.external_endpoint().is_none(),
     }
 }
@@ -202,21 +165,32 @@ impl PlatformSession {
     /// The cached session as a ready credential, or the not-authenticated error
     /// naming `peppy platform login`.
     pub(crate) fn credential(&self) -> Result<auth::Credential> {
-        auth::resolver::resolve(&self.creds_path, &self.http).map_err(Error::AuthEngine)
+        Ok(auth::resolver::resolve(&self.creds_path, &self.http)?)
+    }
+
+    /// This machine's enrollment, `None` when it is not enrolled. A present
+    /// enrollment that cannot be read is an error that names `peppy platform
+    /// enroll`.
+    pub(crate) fn enrollment(&self) -> Result<Option<auth::Enrollment>> {
+        Ok(auth::enrollment::load(&self.dirs)?)
     }
 
     /// The origin of the platform API this session talks to, as a context
     /// records it.
     pub(crate) fn api_origin(&self) -> Result<String> {
-        profile::normalize_api_origin(&self.api_url).map_err(Error::AuthEngine)
+        Ok(profile::normalize_api_origin(&self.api_url)?)
+    }
+
+    /// The session as the credentials file holds it now, or `None` when
+    /// there is no session or the file cannot be read.
+    pub(crate) fn cached_session(&self) -> Option<auth::ProfileCreds> {
+        storage::load(&self.creds_path).ok()?.session
     }
 
     /// The subject of the signed-in identity as the session cached it, or
     /// `None` when there is no session or its identity is not known.
     pub(crate) fn subject(&self) -> Option<String> {
-        storage::load(&self.creds_path)
-            .ok()?
-            .session
+        self.cached_session()
             .map(|session| session.subject)
             .filter(|subject| !subject.is_empty())
     }
@@ -229,9 +203,31 @@ impl PlatformSession {
             return Ok(None);
         };
         let api_origin = self.api_origin()?;
-        Ok(auth::context::load(&self.dirs)
-            .map_err(Error::AuthEngine)?
+        Ok(auth::context::load(&self.dirs)?
             .filter(|context| context.belongs_to(&api_origin, &subject)))
+    }
+
+    /// The project whose router a command acts on (`peers`, `router`): the
+    /// flags, else the context, else the project this machine is enrolled in.
+    /// Returns the enrollment with it, for the command to mark this machine.
+    pub(crate) fn resolve_target(
+        &self,
+        cred: &mut auth::Credential,
+        workspace_flag: Option<&str>,
+        project_flag: Option<&str>,
+    ) -> Result<(select::Target, Option<auth::Enrollment>)> {
+        let enrollment = self.enrollment()?;
+        let context = self.context()?;
+        let target = select::resolve_target(
+            &self.http,
+            &self.api_url,
+            cred,
+            workspace_flag,
+            project_flag,
+            context.as_ref(),
+            enrollment.as_ref().map(|e| &e.document),
+        )?;
+        Ok((target, enrollment))
     }
 }
 
@@ -405,7 +401,7 @@ fn await_restart(
     read_timeout: Duration,
     action: &FederationPokeAction,
 ) -> Result<()> {
-    let expected = ExpectedIdentity::read(dirs)?;
+    let expected = FederationIdentity::on_disk(dirs)?;
     let subcommand = action.subcommand();
     let spinner =
         crate::terminal::spinner("Waiting for the daemon to restart under the new identity");
@@ -422,7 +418,7 @@ fn await_restart(
 
         // A concurrent enroll/unenroll rewrote the enrollment mid-restart, so the
         // daemon will not come back under what we wrote.
-        if ExpectedIdentity::read(dirs)? != expected {
+        if FederationIdentity::on_disk(dirs)? != expected {
             break Err(Error::Auth(format!(
                 "the enrollment changed during the restart; re-run `peppy platform {subcommand}`"
             )));
@@ -434,7 +430,7 @@ fn await_restart(
         // value.
         let back = matches!(
             DaemonState::read_from(&DaemonState::state_file_in(dirs.root())),
-            Ok(state) if expected.matches(&state)
+            Ok(state) if state.runs_under(&expected)
         );
         if !back {
             continue;
@@ -538,10 +534,16 @@ fn report_unenroll(outcome: PokeOutcome) {
     }
 }
 
-/// A unix timestamp as a calendar date for human output.
+/// A time as a calendar date for human output.
+pub(crate) fn date(time: &chrono::DateTime<chrono::Utc>) -> String {
+    time.format("%Y-%m-%d").to_string()
+}
+
+/// A unix timestamp as a calendar date for human output, or the number itself
+/// when it is not a date.
 pub(crate) fn date_of(unix: i64) -> String {
     chrono::DateTime::from_timestamp(unix, 0)
-        .map(|t| t.format("%Y-%m-%d").to_string())
+        .map(|time| date(&time))
         .unwrap_or_else(|| unix.to_string())
 }
 
@@ -549,9 +551,6 @@ pub(crate) fn date_of(unix: i64) -> String {
 pub enum PlatformCommands {
     /// Sign in to the platform via the browser (OAuth device flow), then select the workspace and the project
     Login {
-        /// Override the backend base URL (else the build default / PEPPY_API_URL).
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// Print the verification URL/code instead of opening a browser.
         #[arg(long = "no-browser")]
         no_browser: bool,
@@ -561,8 +560,6 @@ pub enum PlatformCommands {
     },
     /// Select the workspace and the project the platform commands act on
     Configure {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// The workspace, by id or exact name (else you select it from a list).
         #[arg(long)]
         workspace: Option<String>,
@@ -576,30 +573,21 @@ pub enum PlatformCommands {
         command: context::ContextCommands,
     },
     /// Sign out: revoke the session's tokens and clear them locally (the enrollment stays)
-    Logout {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
-    },
+    Logout,
     /// Show the signed-in identity, backend, and token status
     Whoami {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
     },
     /// List the workspaces you belong to
     Workspaces {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
     },
     /// List the projects of a workspace
     Projects {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// The workspace, by id or exact name (else the only one you belong to).
         #[arg(long)]
         workspace: Option<String>,
@@ -609,8 +597,6 @@ pub enum PlatformCommands {
     },
     /// Enroll this machine as a peer of a project's cloud router
     Enroll {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// The workspace, by id or exact name (else the only one you belong to).
         #[arg(long)]
         workspace: Option<String>,
@@ -629,8 +615,6 @@ pub enum PlatformCommands {
     },
     /// Remove this machine from its project's cloud router
     Unenroll {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// Only delete the local enrollment; do not remove the peer on the platform.
         #[arg(long = "local-only")]
         local_only: bool,
@@ -640,16 +624,12 @@ pub enum PlatformCommands {
     },
     /// Show this machine's enrollment and the state of its router link
     Status {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
     },
     /// List the peers of a project's cloud router (the project of the context by default)
     Peers {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// The workspace, by id or exact name.
         #[arg(long)]
         workspace: Option<String>,
@@ -668,6 +648,8 @@ pub enum PlatformCommands {
 }
 
 pub struct PlatformCommand {
+    /// The `--api-url` of the group, accepted before and after the subcommand.
+    pub api_url: Option<String>,
     pub command: PlatformCommands,
 }
 
@@ -676,9 +658,9 @@ impl Command for PlatformCommand {
         // Refused for the whole group, before any command does work: see
         // `reject_core_node_override`.
         reject_core_node_override(app_ctx)?;
+        let api_url = self.api_url;
         match self.command {
             PlatformCommands::Login {
-                api_url,
                 no_browser,
                 no_configure,
             } => login::LoginCommand {
@@ -689,11 +671,7 @@ impl Command for PlatformCommand {
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            PlatformCommands::Configure {
-                api_url,
-                workspace,
-                project,
-            } => configure::ConfigureCommand {
+            PlatformCommands::Configure { workspace, project } => configure::ConfigureCommand {
                 api_url,
                 workspace,
                 project,
@@ -701,31 +679,29 @@ impl Command for PlatformCommand {
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            PlatformCommands::Context { command } => {
-                context::ContextCommand::from(command).execute(app_ctx)
+            PlatformCommands::Context { command } => context::ContextCommand {
+                api_url,
+                ..context::ContextCommand::from(command)
             }
-            PlatformCommands::Logout { api_url } => logout::LogoutCommand {
+            .execute(app_ctx),
+            PlatformCommands::Logout => logout::LogoutCommand {
                 api_url,
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            PlatformCommands::Whoami { api_url, json } => whoami::WhoamiCommand {
+            PlatformCommands::Whoami { json } => whoami::WhoamiCommand {
                 api_url,
                 json,
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            PlatformCommands::Workspaces { api_url, json } => workspaces::WorkspacesCommand {
+            PlatformCommands::Workspaces { json } => workspaces::WorkspacesCommand {
                 api_url,
                 json,
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            PlatformCommands::Projects {
-                api_url,
-                workspace,
-                json,
-            } => projects::ProjectsCommand {
+            PlatformCommands::Projects { workspace, json } => projects::ProjectsCommand {
                 api_url,
                 workspace,
                 json,
@@ -733,7 +709,6 @@ impl Command for PlatformCommand {
             }
             .execute(app_ctx),
             PlatformCommands::Enroll {
-                api_url,
                 workspace,
                 project,
                 name,
@@ -749,25 +724,20 @@ impl Command for PlatformCommand {
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            PlatformCommands::Unenroll {
-                api_url,
-                local_only,
-                yes,
-            } => unenroll::UnenrollCommand {
+            PlatformCommands::Unenroll { local_only, yes } => unenroll::UnenrollCommand {
                 api_url,
                 local_only,
                 yes,
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            PlatformCommands::Status { api_url, json } => status::StatusCommand {
+            PlatformCommands::Status { json } => status::StatusCommand {
                 api_url,
                 json,
                 peppy_dirs: None,
             }
             .execute(app_ctx),
             PlatformCommands::Peers {
-                api_url,
                 workspace,
                 project,
                 json,
@@ -779,9 +749,11 @@ impl Command for PlatformCommand {
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            PlatformCommands::Router { command } => {
-                router::RouterCommand::from(command).execute(app_ctx)
+            PlatformCommands::Router { command } => router::RouterCommand {
+                api_url,
+                ..router::RouterCommand::from(command)
             }
+            .execute(app_ctx),
         }
     }
 }
@@ -789,7 +761,7 @@ impl Command for PlatformCommand {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExpectedIdentity, federation_is_managed, read_daemon_state, report_enroll, report_unenroll,
+        federation_is_managed, read_daemon_state, report_enroll, report_unenroll,
         stack_has_user_nodes,
     };
     use core_node_api::{
@@ -819,27 +791,24 @@ mod tests {
         }
     }
 
-    fn state(namespace: &str, router_id: Option<&str>, federation_control: bool) -> DaemonState {
+    fn state(router_id: Option<&str>) -> DaemonState {
         DaemonState::new(
             "cn-test",
             "127.0.0.1",
             7447,
             "test",
             5,
-            config::namespace::Namespace::parse(namespace).unwrap(),
+            config::namespace::Namespace::local(),
             router_id.map(|id| pmi::RouterId::parse(id).unwrap()),
-            federation_control,
         )
     }
 
     /// Writes a daemon state file under `dirs` whose recorded pid is this test
-    /// process (so `is_running` holds).
-    fn write_running_state(dirs: &PeppyDirs, federation_control: bool) {
-        DaemonState::write_to(
-            &DaemonState::state_file_in(dirs.root()),
-            &state("local", Some("7f3a"), federation_control),
-        )
-        .expect("write daemon state");
+    /// process (so `is_running` holds): a managed router when `router_id`
+    /// names one, an operator-run router otherwise.
+    fn write_running_state(dirs: &PeppyDirs, router_id: Option<&str>) {
+        DaemonState::write_to(&DaemonState::state_file_in(dirs.root()), &state(router_id))
+            .expect("write daemon state");
     }
 
     #[test]
@@ -862,14 +831,14 @@ mod tests {
         let dirs = PeppyDirs::new(dir.path());
 
         // Managed daemon, external config on disk: the poke must still happen.
-        write_running_state(&dirs, true);
+        write_running_state(&dirs, Some("7f3a"));
         assert!(
             federation_is_managed(read_daemon_state(&dirs).as_ref(), &external_config()),
             "a running managed daemon must be poked even if the disk config went external"
         );
 
         // External daemon, managed config on disk: there is no control socket.
-        write_running_state(&dirs, false);
+        write_running_state(&dirs, None);
         assert!(
             !federation_is_managed(read_daemon_state(&dirs).as_ref(), &managed_config()),
             "a running external daemon has no control socket to poke"
@@ -880,7 +849,7 @@ mod tests {
     fn a_stale_state_file_from_a_dead_daemon_falls_back_to_the_disk_config() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dirs = PeppyDirs::new(dir.path());
-        let mut stale = state("local", None, false);
+        let mut stale = state(None);
         // A pid outside the valid range names no live process, so the state is
         // stale and the disk config decides again.
         stale.daemon_pid = Some(u32::MAX);
@@ -891,30 +860,6 @@ mod tests {
             federation_is_managed(read_daemon_state(&dirs).as_ref(), &managed_config()),
             "a dead daemon's state must not override the disk config"
         );
-    }
-
-    /// The identity the restart wait looks for: namespace and, when enrolled,
-    /// the pinned router id; an unenrolled daemon's per-boot id is not compared.
-    #[test]
-    fn the_expected_identity_matches_the_daemon_state_it_prescribes() {
-        const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
-        let enrolled = ExpectedIdentity {
-            namespace: config::namespace::Namespace::parse(PROJECT).unwrap(),
-            router_id: Some(pmi::RouterId::parse("2f6c1d8e").unwrap()),
-        };
-        assert!(enrolled.matches(&state(PROJECT, Some("2f6c1d8e"), true)));
-        assert!(
-            !enrolled.matches(&state(PROJECT, Some("7f3a"), true)),
-            "the old generation under the same project but a different id is not back yet"
-        );
-        assert!(!enrolled.matches(&state("local", Some("2f6c1d8e"), true)));
-
-        let local = ExpectedIdentity {
-            namespace: config::namespace::Namespace::local(),
-            router_id: None,
-        };
-        assert!(local.matches(&state("local", Some("abc123"), true)));
-        assert!(!local.matches(&state(PROJECT, None, true)));
     }
 
     /// Builds an instance-less node fixed at `stage`. The bindings/instances are

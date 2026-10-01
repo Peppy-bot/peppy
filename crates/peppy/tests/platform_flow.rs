@@ -20,11 +20,10 @@ use httpmock::prelude::*;
 use secrecy::ExposeSecret;
 use serde_json::json;
 
-use auth::context::{self as platform_context, CONTEXT_VERSION, Named, PlatformContext};
-use auth::enrollment::{
-    self, EnrollmentBundle, EnrollmentDocument, IssuedMaterial, RouterEndpoint,
-};
+use auth::context::{self as platform_context, Named, PlatformContext};
+use auth::enrollment::{self, EnrollmentDocument, RouterEndpoint};
 use auth::storage::{self, Credentials, ProfileCreds};
+use auth::test_support;
 use daemon::state::DaemonState;
 use peppy::commands::Command;
 use peppy::commands::platform::configure::ConfigureCommand;
@@ -245,53 +244,43 @@ fn authenticated_dir(server: &MockServer) -> tempfile::TempDir {
     dir
 }
 
-/// Writes an enrollment in `PROJECT` under `dir`, as a previous `enroll` would
-/// have, with placeholder PEM material.
+/// Writes an enrollment in `PROJECT` of `WORKSPACE` under `dir`, as a previous
+/// `enroll` would have, with placeholder PEM material.
 fn write_enrollment(dir: &tempfile::TempDir, peer_id: &str, zid: &str) {
-    let bundle = EnrollmentBundle {
-        peer_key_pem: storage::secret("key".into()),
-        issued: IssuedMaterial {
-            document: EnrollmentDocument {
-                version: enrollment::ENROLLMENT_VERSION,
-                api_url: "https://api.example".into(),
-                workspace_id: WORKSPACE.into(),
-                project_id: PROJECT.into(),
-                peer_id: peer_id.into(),
-                peer_name: "robot-7".into(),
-                zenoh_id: pmi::RouterId::parse(zid).unwrap(),
-                namespace: config::namespace::Namespace::parse(PROJECT).unwrap(),
-                router: RouterEndpoint::parse(ROUTER_HOST, 7447).unwrap(),
-                certificate_issued_at: 1_700_000_000,
-                certificate_expires_at: 9_999_999_999,
-                enrolled_at: 1_700_000_000,
-            },
-            peer_certificate_pem: "cert".into(),
-            trust_anchor_pem: "ca".into(),
-            chain_pem: "chain".into(),
-            platform_zenoh_config: "{}".into(),
+    test_support::write_enrollment(
+        &dirs(dir),
+        EnrollmentDocument {
+            workspace_id: WORKSPACE.into(),
+            peer_id: peer_id.into(),
+            zenoh_id: pmi::RouterId::parse(zid).unwrap(),
+            router: RouterEndpoint::parse(ROUTER_HOST, 7447).unwrap(),
+            certificate_expires_at: 9_999_999_999,
+            ..test_support::enrollment_document()
         },
-    };
-    enrollment::save(&dirs(dir), &bundle).expect("write enrollment");
+    );
 }
 
-/// Writes a daemon state file recording this generation under `namespace` and
-/// `router_id`, with this test process as the pid (so `is_running` holds) and a
-/// managed router (so commands poke the control socket).
-fn write_daemon_state(dir: &tempfile::TempDir, namespace: &str, router_id: Option<&str>) {
-    let state = DaemonState::new(
+/// The state of a daemon generation under `namespace` with a managed router
+/// under `router_id` (so commands poke the control socket), with this test
+/// process as the pid (so `is_running` holds).
+fn daemon_state(namespace: &str, router_id: &str) -> DaemonState {
+    DaemonState::new(
         "cn-local-daemon",
         "127.0.0.1",
         7447,
         "test-git-hash",
         30,
         config::namespace::Namespace::parse(namespace).expect("valid namespace"),
-        router_id.map(|id| pmi::RouterId::parse(id).unwrap()),
-        true,
-    );
+        Some(pmi::RouterId::parse(router_id).expect("valid router id")),
+    )
+}
+
+/// Writes the daemon state file of [`daemon_state`] under `dir`.
+fn write_daemon_state(dir: &tempfile::TempDir, namespace: &str, router_id: &str) {
     let path = DaemonState::state_file_in(dir.path());
     std::fs::create_dir_all(path.parent().expect("state file has a parent"))
         .expect("state file dir");
-    DaemonState::write_to(&path, &state).expect("write daemon state");
+    DaemonState::write_to(&path, &daemon_state(namespace, router_id)).expect("write daemon state");
 }
 
 /// A stub daemon on the control socket under `dir`. It answers the first poke
@@ -301,7 +290,7 @@ fn write_daemon_state(dir: &tempfile::TempDir, namespace: &str, router_id: Optio
 fn stub_restarting_daemon(
     dir: &tempfile::TempDir,
     namespace: &'static str,
-    router_id: Option<&'static str>,
+    router_id: &'static str,
     reply: &'static str,
 ) -> std::thread::JoinHandle<Vec<String>> {
     let peppy_dirs = dirs(dir);
@@ -322,17 +311,11 @@ fn stub_restarting_daemon(
         let mut line = String::new();
         answer(&mut line, "{\"status\":\"restarting\"}\n");
         seen.push(line.trim().to_string());
-        let state = DaemonState::new(
-            "cn-local-daemon",
-            "127.0.0.1",
-            7447,
-            "test-git-hash",
-            30,
-            config::namespace::Namespace::parse(namespace).unwrap(),
-            router_id.map(|id| pmi::RouterId::parse(id).unwrap()),
-            true,
-        );
-        DaemonState::write_to(&DaemonState::state_file_in(&root), &state).expect("rewrite state");
+        DaemonState::write_to(
+            &DaemonState::state_file_in(&root),
+            &daemon_state(namespace, router_id),
+        )
+        .expect("rewrite state");
         answer(&mut line, reply);
         seen.push(line.trim().to_string());
         seen
@@ -480,7 +463,6 @@ fn write_context(
     project: (&str, &str),
 ) -> PlatformContext {
     let context = PlatformContext {
-        version: CONTEXT_VERSION,
         api_origin: auth::profile::normalize_api_origin(&server.base_url()).unwrap(),
         subject: subject.into(),
         workspace: Named {
@@ -491,7 +473,7 @@ fn write_context(
             id: project.0.into(),
             name: project.1.into(),
         },
-        selected_at: 1_700_000_000,
+        ..test_support::platform_context()
     };
     platform_context::save(&dirs(dir), &context).expect("write context");
     context
@@ -1285,11 +1267,11 @@ fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
     mock_workspaces_and_projects(&server);
     let enroll = mock_enroll(&server, ZID);
     let dir = authenticated_dir(&server);
-    write_daemon_state(&dir, "local", Some("7f3a9c1e"));
+    write_daemon_state(&dir, "local", "7f3a9c1e");
     let stub = stub_restarting_daemon(
         &dir,
         PROJECT,
-        Some(ZID),
+        ZID,
         "{\"status\":\"ok\",\"applied\":\"tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447\"}\n",
     );
 
@@ -1581,11 +1563,11 @@ fn unenroll_removes_the_peer_and_the_bundle_and_restarts_the_daemon() {
     });
     let dir = authenticated_dir(&server);
     write_enrollment(&dir, "peer-1", ZID);
-    write_daemon_state(&dir, PROJECT, Some(ZID));
+    write_daemon_state(&dir, PROJECT, ZID);
     let stub = stub_restarting_daemon(
         &dir,
         "local",
-        Some("7f3a9c1e"),
+        "7f3a9c1e",
         "{\"status\":\"ok\",\"applied\":null}\n",
     );
 
@@ -1939,35 +1921,16 @@ fn every_platform_command_refuses_a_core_node_override() {
         (
             "login",
             PlatformCommands::Login {
-                api_url: api_url.clone(),
                 no_browser: true,
                 no_configure: false,
             },
         ),
-        (
-            "logout",
-            PlatformCommands::Logout {
-                api_url: api_url.clone(),
-            },
-        ),
-        (
-            "whoami",
-            PlatformCommands::Whoami {
-                api_url: api_url.clone(),
-                json: false,
-            },
-        ),
-        (
-            "workspaces",
-            PlatformCommands::Workspaces {
-                api_url: api_url.clone(),
-                json: false,
-            },
-        ),
+        ("logout", PlatformCommands::Logout),
+        ("whoami", PlatformCommands::Whoami { json: false }),
+        ("workspaces", PlatformCommands::Workspaces { json: false }),
         (
             "projects",
             PlatformCommands::Projects {
-                api_url: api_url.clone(),
                 workspace: None,
                 json: false,
             },
@@ -1975,7 +1938,6 @@ fn every_platform_command_refuses_a_core_node_override() {
         (
             "enroll",
             PlatformCommands::Enroll {
-                api_url: api_url.clone(),
                 workspace: None,
                 project: None,
                 name: None,
@@ -1986,22 +1948,14 @@ fn every_platform_command_refuses_a_core_node_override() {
         (
             "unenroll",
             PlatformCommands::Unenroll {
-                api_url: api_url.clone(),
                 local_only: false,
                 yes: true,
             },
         ),
-        (
-            "status",
-            PlatformCommands::Status {
-                api_url: api_url.clone(),
-                json: false,
-            },
-        ),
+        ("status", PlatformCommands::Status { json: false }),
         (
             "peers",
             PlatformCommands::Peers {
-                api_url: api_url.clone(),
                 workspace: None,
                 project: None,
                 json: false,
@@ -2011,7 +1965,6 @@ fn every_platform_command_refuses_a_core_node_override() {
             "router restart",
             PlatformCommands::Router {
                 command: RouterCommands::Restart {
-                    api_url: api_url.clone(),
                     workspace: None,
                     project: None,
                     yes: true,
@@ -2022,7 +1975,6 @@ fn every_platform_command_refuses_a_core_node_override() {
             "router start",
             PlatformCommands::Router {
                 command: RouterCommands::Start {
-                    api_url: api_url.clone(),
                     workspace: None,
                     project: None,
                 },
@@ -2031,7 +1983,6 @@ fn every_platform_command_refuses_a_core_node_override() {
         (
             "configure",
             PlatformCommands::Configure {
-                api_url: api_url.clone(),
                 workspace: None,
                 project: None,
             },
@@ -2039,26 +1990,19 @@ fn every_platform_command_refuses_a_core_node_override() {
         (
             "context show",
             PlatformCommands::Context {
-                command: ContextCommands::Show {
-                    api_url: api_url.clone(),
-                    json: false,
-                },
+                command: ContextCommands::Show { json: false },
             },
         ),
         (
             "context list",
             PlatformCommands::Context {
-                command: ContextCommands::List {
-                    api_url: api_url.clone(),
-                    json: false,
-                },
+                command: ContextCommands::List { json: false },
             },
         ),
         (
             "context use",
             PlatformCommands::Context {
                 command: ContextCommands::Use {
-                    api_url,
                     workspace: None,
                     project: None,
                 },
@@ -2073,9 +2017,12 @@ fn every_platform_command_refuses_a_core_node_override() {
     ];
 
     for (name, command) in commands {
-        let error = PlatformCommand { command }
-            .execute(&redirected)
-            .expect_err(&format!("`platform {name}` must refuse --core-node"));
+        let error = PlatformCommand {
+            api_url: api_url.clone(),
+            command,
+        }
+        .execute(&redirected)
+        .expect_err(&format!("`platform {name}` must refuse --core-node"));
         assert!(
             error.to_string().contains("--core-node"),
             "`platform {name}` must name the flag it refused: {error}"

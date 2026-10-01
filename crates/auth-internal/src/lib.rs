@@ -49,6 +49,7 @@ pub mod context;
 pub mod csr;
 pub mod device;
 pub mod discovery;
+mod document;
 pub mod enrollment;
 mod error;
 mod fs_perms;
@@ -59,12 +60,15 @@ pub mod renewal;
 pub mod resolver;
 pub mod revoke;
 pub mod storage;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use cli_config::CliConfig;
 pub use client::Principal;
 pub use context::PlatformContext;
 pub use enrollment::{
-    Enrollment, EnrollmentBundle, EnrollmentDocument, IssuedMaterial, RouterEndpoint,
+    Enrollment, EnrollmentBundle, EnrollmentDocument, FederationIdentity, IssuedMaterial,
+    RouterEndpoint,
 };
 pub use error::{Error as AuthError, Problem, ProblemKind, Result};
 pub use resolver::Credential;

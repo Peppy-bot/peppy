@@ -36,7 +36,7 @@ impl Command for UnenrollCommand {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
         let managed = federation_is_managed(session.daemon_state.as_ref(), &session.config);
 
-        let Some(existing) = enrollment::load(&session.dirs).map_err(Error::AuthEngine)? else {
+        let Some(existing) = session.enrollment()? else {
             println!("This machine is not enrolled.");
             return Ok(());
         };
@@ -116,35 +116,25 @@ pub(crate) fn removal_report(document: &EnrollmentDocument, removal: &PeerRemova
 #[cfg(test)]
 mod tests {
     use super::*;
-    use auth::client::{PendingChange, RouterStatus};
+    use auth::client::{PendingChange, RouterPhase, RouterStatus};
 
+    /// The record of a machine enrolled in project `p-1`.
     fn document() -> EnrollmentDocument {
         EnrollmentDocument {
-            version: enrollment::ENROLLMENT_VERSION,
-            api_url: "https://api.example".into(),
-            workspace_id: "ws-1".into(),
             project_id: "p-1".into(),
-            peer_id: "peer-1".into(),
-            peer_name: "robot-7".into(),
-            zenoh_id: pmi::RouterId::parse("7f3a9c1e").unwrap(),
             namespace: config::namespace::Namespace::parse("p-1").unwrap(),
-            router: auth::RouterEndpoint::parse("rtr.example", 7447).unwrap(),
-            certificate_issued_at: 1_700_000_000,
-            certificate_expires_at: 2_000_000_000,
-            enrolled_at: 1_700_000_000,
+            ..auth::test_support::enrollment_document()
         }
     }
 
     #[test]
     fn a_staged_removal_prints_what_waits_and_the_restart_command() {
         let staged = PeerRemoval::Staged(RouterStatus {
-            phase: "running".into(),
+            phase: RouterPhase::Running,
             desired_state: "running".into(),
-            can_manage_infra: false,
             address: None,
             pending_changes: true,
             pending_change_entries: vec![PendingChange {
-                kind: "peer".into(),
                 description: "peer robot-7 removed".into(),
                 staged_at: "2026-09-28T10:00:00Z".parse().unwrap(),
                 deadline: None,
@@ -165,9 +155,8 @@ mod tests {
     #[test]
     fn a_removal_on_a_stopped_router_gives_the_two_commands() {
         let staged = PeerRemoval::Staged(RouterStatus {
-            phase: "stopped".into(),
+            phase: RouterPhase::Stopped,
             desired_state: "stopped".into(),
-            can_manage_infra: false,
             address: None,
             pending_changes: true,
             pending_change_entries: Vec::new(),

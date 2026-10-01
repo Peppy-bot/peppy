@@ -21,10 +21,8 @@
 //! kept valid by [`super::certificate_renewal`].
 
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
-use auth::Enrollment;
-use config::namespace::Namespace;
+use auth::{Enrollment, FederationIdentity};
 use daemon_config::consts::PeppyDirs;
-use pmi::RouterId;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -65,34 +63,6 @@ fn real_prober() -> Prober {
     Arc::new(|host, port, tls, timeout| -> ProbeFuture {
         Box::pin(async move { pmi::probe_tls_reachable(&host, port, &tls, timeout).await })
     })
-}
-
-/// The identity a daemon generation runs under: the namespace its sessions
-/// open with and, when enrolled, the platform-minted id its router pins.
-/// Compared against the enrollment on disk to decide whether a poke can be
-/// answered live or needs a generation restart. An unenrolled generation runs
-/// a per-boot router id that nothing on disk names, so it carries `None`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FederationIdentity {
-    pub(crate) namespace: Namespace,
-    pub(crate) zenoh_id: Option<RouterId>,
-}
-
-impl FederationIdentity {
-    /// The identity `enrollment` prescribes: the project namespace and zid when
-    /// enrolled, `local` and no pinned id otherwise.
-    pub(crate) fn of(enrollment: Option<&Enrollment>) -> Self {
-        match enrollment {
-            Some(enrollment) => Self {
-                namespace: enrollment.document.namespace.clone(),
-                zenoh_id: Some(enrollment.document.zenoh_id.clone()),
-            },
-            None => Self {
-                namespace: Namespace::local(),
-                zenoh_id: None,
-            },
-        }
-    }
 }
 
 /// Outcome of one poke, reported back over the control socket so the CLI can
@@ -265,9 +235,7 @@ async fn reconcile(
     let now = (deps.clock)();
     if enrollment.document.is_expired(now) {
         let expired_at =
-            chrono::DateTime::from_timestamp(enrollment.document.certificate_expires_at, 0)
-                .map(|t| t.to_rfc3339())
-                .unwrap_or_else(|| enrollment.document.certificate_expires_at.to_string());
+            super::certificate_renewal::rfc3339(enrollment.document.certificate_expires_at);
         warn!(
             expired_at = %expired_at,
             "router federation: the peer certificate has expired; the cloud router refuses the link"
@@ -298,37 +266,23 @@ async fn reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use auth::enrollment::{EnrollmentDocument, RouterEndpoint};
-    use std::path::PathBuf;
+    use auth::enrollment::EnrollmentDocument;
+    use auth::test_support::{self, EXPIRES_AT, ZID};
+    use pmi::RouterId;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-    const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
-    const ZID: &str = "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5";
     const LOCATOR: &str = "tls/rtr-p.example:7447";
-    const EXPIRES_AT: i64 = 2_000_000_000;
 
-    /// An enrollment whose material paths are nominal: the reader is injected,
-    /// so nothing here opens them.
+    /// The enrollment under `zid`. The reader is injected, so nothing opens
+    /// its material.
     fn enrollment(zid: &str) -> Enrollment {
         Enrollment {
             document: EnrollmentDocument {
-                version: auth::enrollment::ENROLLMENT_VERSION,
-                api_url: "https://api.example".into(),
-                workspace_id: "ws".into(),
-                project_id: PROJECT.into(),
-                peer_id: "peer-1".into(),
-                peer_name: "robot-7".into(),
                 zenoh_id: RouterId::parse(zid).unwrap(),
-                namespace: Namespace::parse(PROJECT).unwrap(),
-                router: RouterEndpoint::parse("rtr-p.example", 7447).unwrap(),
-                certificate_issued_at: 1_700_000_000,
-                certificate_expires_at: EXPIRES_AT,
-                enrolled_at: 1_700_000_000,
+                ..test_support::enrollment_document()
             },
-            peer_key: PathBuf::from("/peer/peer.key"),
-            peer_certificate: PathBuf::from("/peer/peer.crt"),
-            trust_anchor: PathBuf::from("/peer/ca.crt"),
+            ..test_support::enrollment()
         }
     }
 
@@ -348,44 +302,13 @@ mod tests {
         (prober, calls)
     }
 
-    struct TestDeps {
-        enrollment: EnrollmentReader,
-        prober: Prober,
-        clock: Clock,
-    }
-
-    impl TestDeps {
-        /// The uninteresting case: enrolled, a passing probe, a clock well
-        /// before the certificate expires.
-        fn new() -> Self {
-            Self {
-                enrollment: reader(Some(enrollment(ZID))),
-                prober: counting_prober(Ok(())).0,
-                clock: Arc::new(|| EXPIRES_AT - 1),
-            }
-        }
-
-        fn enrollment(mut self, enrollment: EnrollmentReader) -> Self {
-            self.enrollment = enrollment;
-            self
-        }
-
-        fn prober(mut self, prober: Prober) -> Self {
-            self.prober = prober;
-            self
-        }
-
-        fn clock(mut self, now: i64) -> Self {
-            self.clock = Arc::new(move || now);
-            self
-        }
-
-        fn build(self) -> FederationDeps {
-            FederationDeps {
-                enrollment: self.enrollment,
-                prober: self.prober,
-                clock: self.clock,
-            }
+    /// The uninteresting case: enrolled, a passing probe, a clock well before
+    /// the certificate expires. A test overrides the field it is about.
+    fn deps() -> FederationDeps {
+        FederationDeps {
+            enrollment: reader(Some(enrollment(ZID))),
+            prober: counting_prober(Ok(())).0,
+            clock: Arc::new(|| EXPIRES_AT - 1),
         }
     }
 
@@ -396,7 +319,7 @@ mod tests {
     #[tokio::test]
     async fn an_enrolled_generation_probes_and_reports_applied() {
         let (prober, calls) = counting_prober(Ok(()));
-        let deps = TestDeps::new().prober(prober).build();
+        let deps = FederationDeps { prober, ..deps() };
 
         let outcome = reconcile(&deps, &enrolled_generation(), false).await;
 
@@ -411,7 +334,7 @@ mod tests {
     async fn a_failing_probe_reports_unreachable() {
         let reason = "received fatal alert: UnknownCA";
         let (prober, calls) = counting_prober(Err(reason.to_string()));
-        let deps = TestDeps::new().prober(prober).build();
+        let deps = FederationDeps { prober, ..deps() };
 
         let outcome = reconcile(&deps, &enrolled_generation(), false).await;
 
@@ -432,19 +355,20 @@ mod tests {
             millis.store(timeout.as_millis() as u64, Ordering::SeqCst);
             Box::pin(async { Ok(()) })
         });
-        let deps = TestDeps::new().prober(prober).build();
+        let deps = FederationDeps { prober, ..deps() };
 
         reconcile(&deps, &enrolled_generation(), false).await;
 
         let (host, port, tls) = seen.lock().unwrap().clone().expect("probed");
         assert_eq!((host.as_str(), port), ("rtr-p.example", 7447));
-        assert_eq!(tls, enrollment(ZID).federation_target().1);
-        assert_eq!(tls.root_ca_certificate, Some(PathBuf::from("/peer/ca.crt")));
+        let enrolled = enrollment(ZID);
+        assert_eq!(tls, enrolled.federation_target().1);
+        assert_eq!(tls.root_ca_certificate, Some(enrolled.trust_anchor.clone()));
         assert_eq!(
             tls.connect_identity,
             Some(pmi::ConnectIdentity {
-                certificate: PathBuf::from("/peer/peer.crt"),
-                private_key: PathBuf::from("/peer/peer.key"),
+                certificate: enrolled.peer_certificate.clone(),
+                private_key: enrolled.peer_key.clone(),
             })
         );
         assert!(tls.verify_name_on_connect);
@@ -457,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn a_pinned_router_reports_pinned_and_never_probes() {
         let (prober, calls) = counting_prober(Ok(()));
-        let deps = TestDeps::new().prober(prober).build();
+        let deps = FederationDeps { prober, ..deps() };
 
         assert_eq!(
             reconcile(&deps, &enrolled_generation(), true).await,
@@ -469,10 +393,11 @@ mod tests {
     #[tokio::test]
     async fn an_unenrolled_generation_reports_applied_none_and_never_probes() {
         let (prober, calls) = counting_prober(Ok(()));
-        let deps = TestDeps::new()
-            .enrollment(reader(None))
-            .prober(prober)
-            .build();
+        let deps = FederationDeps {
+            enrollment: reader(None),
+            prober,
+            ..deps()
+        };
 
         assert_eq!(
             reconcile(&deps, &FederationIdentity::of(None), false).await,
@@ -501,10 +426,11 @@ mod tests {
         ];
         for (label, enrollment, generation) in cases {
             let (prober, calls) = counting_prober(Ok(()));
-            let deps = TestDeps::new()
-                .enrollment(enrollment)
-                .prober(prober)
-                .build();
+            let deps = FederationDeps {
+                enrollment,
+                prober,
+                ..deps()
+            };
 
             assert_eq!(
                 reconcile(&deps, &generation, false).await,
@@ -520,7 +446,10 @@ mod tests {
     /// new namespace.
     #[tokio::test]
     async fn a_pinned_router_still_restarts_on_an_identity_change() {
-        let deps = TestDeps::new().enrollment(reader(None)).build();
+        let deps = FederationDeps {
+            enrollment: reader(None),
+            ..deps()
+        };
         assert_eq!(
             reconcile(&deps, &enrolled_generation(), true).await,
             FederationOutcome::Restart
@@ -530,7 +459,11 @@ mod tests {
     #[tokio::test]
     async fn an_expired_certificate_reports_unreachable_without_probing() {
         let (prober, calls) = counting_prober(Ok(()));
-        let deps = TestDeps::new().prober(prober).clock(EXPIRES_AT).build();
+        let deps = FederationDeps {
+            prober,
+            clock: Arc::new(|| EXPIRES_AT),
+            ..deps()
+        };
 
         let outcome = reconcile(&deps, &enrolled_generation(), false).await;
 
@@ -552,7 +485,10 @@ mod tests {
     async fn an_unreadable_enrollment_reports_failed() {
         let failing: EnrollmentReader =
             Arc::new(|| Err(auth::AuthError::Auth("enrollment material missing".into())));
-        let deps = TestDeps::new().enrollment(failing).build();
+        let deps = FederationDeps {
+            enrollment: failing,
+            ..deps()
+        };
 
         assert_eq!(
             reconcile(&deps, &enrolled_generation(), false).await,
@@ -565,7 +501,7 @@ mod tests {
     #[tokio::test]
     async fn pokes_are_serviced_and_acked() {
         let (prober, calls) = counting_prober(Ok(()));
-        let deps = TestDeps::new().prober(prober).build();
+        let deps = FederationDeps { prober, ..deps() };
         let (trigger_tx, trigger_rx) = mpsc::channel(8);
         let generation = enrolled_generation();
         let task =
@@ -593,23 +529,5 @@ mod tests {
             .await
             .expect("the loop ends once the senders are gone")
             .expect("the task did not panic");
-    }
-
-    #[test]
-    fn the_identity_follows_the_enrollment() {
-        assert_eq!(
-            FederationIdentity::of(None),
-            FederationIdentity {
-                namespace: Namespace::local(),
-                zenoh_id: None
-            }
-        );
-        assert_eq!(
-            enrolled_generation(),
-            FederationIdentity {
-                namespace: Namespace::parse(PROJECT).unwrap(),
-                zenoh_id: Some(RouterId::parse(ZID).unwrap())
-            }
-        );
     }
 }

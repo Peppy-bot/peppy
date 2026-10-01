@@ -200,7 +200,6 @@ mod tests {
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
             config::namespace::Namespace::local(),
             None,
-            false,
         );
         DaemonState::write_to(&state_path, &state).expect("daemon state should write");
 

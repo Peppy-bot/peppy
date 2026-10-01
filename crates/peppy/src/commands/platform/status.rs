@@ -15,9 +15,9 @@ use crate::commands::platform::router::pending_change_lines;
 use crate::commands::platform::{PlatformSession, date_of, federation_is_managed};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use auth::client::{self, RouterStatus};
-use auth::enrollment::{self, Enrollment, EnrollmentDocument};
-use auth::storage;
+use auth::client::{self, PeerStatus, RouterPhase, RouterStatus};
+use auth::enrollment::{Enrollment, EnrollmentDocument};
+use auth::{FederationIdentity, storage};
 
 const DAY_SECS: i64 = 24 * 60 * 60;
 
@@ -61,30 +61,32 @@ impl RenewalMeans {
         }
     }
 
-    /// One line for each thing that is absent, with the command that adds it.
-    fn absent(self) -> Vec<&'static str> {
+    /// Each thing that is absent: its name for a machine, and the command
+    /// that adds it for a person.
+    fn absent(self) -> impl Iterator<Item = (&'static str, &'static str)> {
         [
-            (self.session, "needs a session: run `peppy platform login`"),
+            (
+                self.session,
+                "no_session",
+                "needs a session: run `peppy platform login`",
+            ),
             (
                 self.daemon_running,
+                "daemon_not_running",
                 "needs the daemon: start it with `peppy service serve`",
             ),
         ]
         .into_iter()
-        .filter(|(present, _)| !present)
-        .map(|(_, remedy)| remedy)
-        .collect()
+        .filter(|(present, _, _)| !present)
+        .map(|(_, name, remedy)| (name, remedy))
     }
 
-    fn absent_json(self) -> Vec<&'static str> {
-        [
-            (self.session, "no_session"),
-            (self.daemon_running, "daemon_not_running"),
-        ]
-        .into_iter()
-        .filter(|(present, _)| !present)
-        .map(|(_, name)| name)
-        .collect()
+    fn absent_names(self) -> Vec<&'static str> {
+        self.absent().map(|(name, _)| name).collect()
+    }
+
+    fn absent_remedies(self) -> Vec<&'static str> {
+        self.absent().map(|(_, remedy)| remedy).collect()
     }
 }
 
@@ -92,13 +94,13 @@ impl RenewalMeans {
 struct PlatformReport {
     router: RouterStatus,
     /// This peer's status as the platform reports it, if it still lists it.
-    peer_status: Option<String>,
+    peer_status: Option<PeerStatus>,
 }
 
 impl Command for StatusCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
-        let enrollment = enrollment::load(&session.dirs).map_err(Error::AuthEngine)?;
+        let enrollment = session.enrollment()?;
         let daemon = daemon_report(&session, enrollment.as_ref());
         let platform = match &enrollment {
             Some(enrollment) => platform_report(&session, enrollment),
@@ -125,15 +127,12 @@ fn daemon_report(session: &PlatformSession, enrollment: Option<&Enrollment>) -> 
     let Some(state) = session.daemon_state.as_ref().filter(|s| s.is_running()) else {
         return DaemonReport::NotRunning;
     };
-    let expected_namespace = enrollment
-        .map(|e| e.document.namespace.clone())
-        .unwrap_or_else(config::namespace::Namespace::local);
-    let namespace_matches = state.namespace == expected_namespace;
+    let expected = FederationIdentity::of(enrollment);
+    let namespace_matches = state.namespace == expected.namespace;
     if !federation_is_managed(Some(state), &session.config) {
         return DaemonReport::External { namespace_matches };
     }
-    let identity_matches = namespace_matches
-        && enrollment.is_none_or(|e| state.router_id.as_ref() == Some(&e.document.zenoh_id));
+    let identity_matches = state.runs_under(&expected);
     let socket = daemon_control::federation_control_socket_path(&session.dirs);
     let link = daemon_control::poke_refederate(&socket, daemon_control::POKE_READ_TIMEOUT);
     DaemonReport::Managed {
@@ -161,17 +160,13 @@ fn platform_report(
         &document.workspace_id,
         &document.project_id,
     )?;
-    let peers = client::list_peers(
-        &session.http,
-        &session.api_url,
-        &mut cred,
-        &document.workspace_id,
-        &document.project_id,
-    )?;
-    let peer_status = peers
-        .into_iter()
-        .find(|p| p.id == document.peer_id)
-        .map(|p| p.status);
+    // The router read lists every enrolled peer with its status, so this
+    // peer's status is in it, when the platform still lists the peer.
+    let peer_status = router
+        .peers
+        .iter()
+        .find(|peer| peer.id == document.peer_id)
+        .map(|peer| peer.status.clone());
     Ok(Some(PlatformReport {
         router,
         peer_status,
@@ -196,7 +191,7 @@ fn certificate_line(document: &EnrollmentDocument, now: i64) -> String {
 /// needs to do so and does not have.
 fn renewal_lines(document: &EnrollmentDocument, now: i64, means: RenewalMeans) -> Vec<String> {
     let due_on = date_of(document.renewal_due_at());
-    let absent = means.absent();
+    let absent = means.absent_remedies();
     let schedule = match (document.is_renewal_due(now), absent.is_empty()) {
         (false, _) => format!("automatic, from {due_on}"),
         (true, true) => format!("due since {due_on}; the daemon tries again each hour"),
@@ -311,10 +306,10 @@ fn human_document(
                     .router
                     .address
                     .as_ref()
-                    .map(|a| format!(" at {}:{}", a.host, a.port))
+                    .map(|address| format!(" at {}:{}", address.host(), address.port()))
                     .unwrap_or_default();
                 out.push_str(&format!("  router    : {}{address}\n", report.router.phase));
-                if report.router.phase == "stopped" {
+                if report.router.phase == RouterPhase::Stopped {
                     out.push_str("              start it with `peppy platform router start`\n");
                 }
                 for line in pending_change_lines(&report.router) {
@@ -324,7 +319,7 @@ fn human_document(
                     "  this peer : {}\n",
                     report
                         .peer_status
-                        .as_deref()
+                        .as_ref()
                         .map(peer_status_label)
                         .unwrap_or("not listed (removed?)")
                 ));
@@ -358,7 +353,7 @@ fn json_document(
             "certificate_expired": d.is_expired(now),
             "certificate_renewal_due_at": d.renewal_due_at(),
             "certificate_renewal_due": d.is_renewal_due(now),
-            "certificate_renewal_needs": RenewalMeans::of(daemon, platform).absent_json(),
+            "certificate_renewal_needs": RenewalMeans::of(daemon, platform).absent_names(),
             "enrolled_at": d.enrolled_at,
             "peer_dir": session.dirs.peer_dir(),
         })
@@ -382,7 +377,9 @@ fn json_document(
             "router": {
                 "phase": report.router.phase,
                 "desired_state": report.router.desired_state,
-                "address": report.router.address.as_ref().map(|a| serde_json::json!({ "host": a.host, "port": a.port })),
+                "address": report.router.address.as_ref().map(|address| {
+                    serde_json::json!({ "host": address.host(), "port": address.port() })
+                }),
                 "pending_changes": report.router.pending_changes,
             },
             "this_peer_status": report.peer_status,
@@ -420,7 +417,8 @@ fn link_json(link: &PokeOutcome) -> serde_json::Value {
 mod tests {
     use super::*;
 
-    const ISSUED_AT: i64 = 1_700_000_000;
+    use auth::test_support::ISSUED_AT;
+
     const EXPIRES_AT: i64 = ISSUED_AT + 90 * DAY_SECS;
     const DUE_AT: i64 = ISSUED_AT + 60 * DAY_SECS;
     const ALL_MEANS: RenewalMeans = RenewalMeans {
@@ -428,21 +426,12 @@ mod tests {
         daemon_running: true,
     };
 
+    /// The record of a certificate issued at [`ISSUED_AT`] for 90 days.
     fn document() -> EnrollmentDocument {
         EnrollmentDocument {
-            version: enrollment::ENROLLMENT_VERSION,
-            api_url: "https://api.example.test".into(),
-            workspace_id: "ws-1".into(),
-            project_id: "550e8400-e29b-41d4-a716-446655440000".into(),
-            peer_id: "peer-1".into(),
-            peer_name: "robot-7".into(),
-            zenoh_id: pmi::RouterId::parse("abc123").unwrap(),
-            namespace: config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000")
-                .unwrap(),
-            router: auth::RouterEndpoint::parse("rtr.example", 7447).unwrap(),
             certificate_issued_at: ISSUED_AT,
             certificate_expires_at: EXPIRES_AT,
-            enrolled_at: ISSUED_AT,
+            ..auth::test_support::enrollment_document()
         }
     }
 
@@ -500,7 +489,7 @@ mod tests {
         assert_eq!(lines[0], format!("due since {}", date_of(DUE_AT)));
         assert!(lines[1].contains("peppy platform login"), "{lines:?}");
         assert!(lines[2].contains("peppy service serve"), "{lines:?}");
-        assert_eq!(nothing.absent_json(), ["no_session", "daemon_not_running"]);
-        assert!(ALL_MEANS.absent_json().is_empty());
+        assert_eq!(nothing.absent_names(), ["no_session", "daemon_not_running"]);
+        assert!(ALL_MEANS.absent_names().is_empty());
     }
 }

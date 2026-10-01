@@ -2,10 +2,11 @@ use super::certificate_renewal::CertificateRenewal;
 use super::core_node::CoreNodeRunner;
 use super::federation_control::FederationControl;
 use super::messaging_router::{MessagingRouter, teardown_budget_for};
-use super::router_federation::{FederationIdentity, RouterFederation};
+use super::router_federation::RouterFederation;
 use super::serve::{CompositeCommand, Serve};
 use crate::error::{Error, Result};
 use crate::state::DaemonState;
+use auth::{Enrollment, FederationIdentity};
 use config::namespace::Namespace;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::PeppyConfig;
@@ -46,42 +47,37 @@ pub struct ServeCommandBuilder {
     /// their paths from it.
     peppy_dirs: PeppyDirs,
     peppy_config: PeppyConfig,
-    /// The federation task to arm, set by
-    /// [`with_messaging_router`](Self::with_messaging_router) for a managed
-    /// zenoh router: what this generation's router and sessions were built
-    /// from, so a control-socket poke can tell a changed enrollment from an
-    /// unchanged one, and whether the router runs an operator-pinned config.
-    /// `None` for an external router (the operator owns its federation) and
-    /// for the non-zenoh engines.
-    federation: Option<FederationArming>,
-    /// Whether this generation is enrolled, set by
-    /// [`Self::with_messaging_router`]. An enrolled generation arms the task
-    /// that renews the peer certificate, with a managed router and with an
+    /// This generation's identity, resolved once in
+    /// [`with_messaging_router`](Self::with_messaging_router) from the
+    /// enrollment on disk: the routing namespace (`local` when not enrolled,
+    /// else the project id) that the daemon's own session, [`DaemonState`] and
+    /// the core node (and thus every spawned node) open under, and the router
+    /// id the enrollment pins. The federation task compares pokes against it,
+    /// and an enrolled generation (one with a pinned id) arms the task that
+    /// renews the peer certificate, with a managed router and with an
     /// operator-run one: the certificate of the peer expires in both.
-    enrolled: bool,
-    /// The routing namespace resolved once for this daemon generation from the
-    /// enrollment on disk (`local` when not enrolled, else the project id).
-    /// Resolved in [`with_messaging_router`](Self::with_messaging_router) and
-    /// applied to the daemon's own session there; also threaded into
-    /// [`DaemonState`] and the core node (and thus every spawned node). A
-    /// single source for the whole generation.
-    namespace: Namespace,
-    /// The managed router's transport identity: the enrollment's zenoh id when
-    /// enrolled, a fresh per-boot id otherwise. `None` for an external router
-    /// (the operator owns its identity) and for the non-zenoh engines.
-    /// Recorded in [`DaemonState`] so the CLI can tell the generation it poked
-    /// from the one that replaced it.
-    router_id: Option<RouterId>,
+    identity: FederationIdentity,
+    /// The managed zenoh router of this generation, set by
+    /// [`with_messaging_router`](Self::with_messaging_router). `None` for an
+    /// external router (the operator owns its identity and its federation) and
+    /// for the non-zenoh engines, which arm no federation task and bind no
+    /// control socket.
+    managed_router: Option<ManagedRouter>,
     /// The shared coordinator token for this generation: cloned into every serve
     /// task (so a restart/stop unparks them for graceful teardown) and handed to
     /// [`Serve`] (which cancels it on its way out). Created per generation.
     teardown_token: CancellationToken,
 }
 
-/// What the federation task compares pokes against; see
-/// [`ServeCommandBuilder::federation`].
-struct FederationArming {
-    identity: FederationIdentity,
+/// What [`ServeCommandBuilder::build`] needs to know about a managed zenoh
+/// router.
+struct ManagedRouter {
+    /// The router's transport identity: the enrollment's zenoh id when
+    /// enrolled, a fresh per-boot id otherwise. Recorded in [`DaemonState`] so
+    /// the CLI can tell the generation it poked from the one that replaced it.
+    router_id: RouterId,
+    /// Whether the router runs an operator-pinned `ZENOH_CONFIG`, so its
+    /// federation is the operator's and a poke verifies nothing.
     pinned: bool,
 }
 
@@ -103,12 +99,10 @@ impl ServeCommandBuilder {
             git_hash: git_hash.into(),
             peppy_dirs,
             peppy_config: PeppyConfig::default(),
-            federation: None,
-            enrolled: false,
-            // Default for the mock/other engines that never resolve a namespace;
+            // The identity of the mock/other engines, which read no enrollment;
             // the zenoh path overwrites this in `with_messaging_router`.
-            namespace: Namespace::local(),
-            router_id: None,
+            identity: FederationIdentity::of(None),
+            managed_router: None,
             teardown_token: CancellationToken::new(),
         })
     }
@@ -156,12 +150,7 @@ impl ServeCommandBuilder {
                         "could not read this machine's platform enrollment: {error}"
                     ))
                 })?;
-                let namespace = enrollment
-                    .as_ref()
-                    .map(|enrollment| enrollment.document.namespace.clone())
-                    .unwrap_or_else(Namespace::local);
-                self.namespace = namespace.clone();
-                self.enrolled = enrollment.is_some();
+                self.identity = FederationIdentity::of(enrollment.as_ref());
 
                 let gossip = self.peppy_config.zenoh.gossip();
                 let external_endpoint = self
@@ -176,47 +165,15 @@ impl ServeCommandBuilder {
                     Some(endpoint) => {
                         ZenohAdapter::with_external_router(&endpoint, gossip, subscriber_buffers)?
                     }
-                    None => {
-                        let (router_id, connect_endpoints, tls) = match &enrollment {
-                            Some(enrollment) => {
-                                if enrollment.document.is_expired(auth::storage::now_unix()) {
-                                    warn!(
-                                        "the platform peer certificate has expired; the cloud \
-                                         router refuses this daemon's link until the daemon \
-                                         renews the certificate, which needs a session \
-                                         (`peppy platform login`), or until `peppy platform \
-                                         enroll --replace` mints a new one"
-                                    );
-                                }
-                                let (locator, tls) = enrollment.federation_target();
-                                (
-                                    enrollment.document.zenoh_id.clone(),
-                                    vec![locator],
-                                    Some(tls),
-                                )
-                            }
-                            None => (RouterId::generate(), Vec::new(), None),
-                        };
-                        self.router_id = Some(router_id.clone());
-                        let adapter = ZenohAdapter::with_router(
-                            ZenohNetProtocol::Tcp,
-                            "0.0.0.0",
-                            listening_port,
-                            gossip,
-                            subscriber_buffers,
-                            connect_endpoints,
-                            tls,
-                            router_id,
-                        )?;
-                        self.federation = Some(FederationArming {
-                            identity: FederationIdentity::of(enrollment.as_ref()),
-                            pinned: adapter.router_config_is_pinned(),
-                        });
-                        adapter
-                    }
+                    None => self.managed_router_adapter(
+                        enrollment.as_ref(),
+                        listening_port,
+                        gossip,
+                        subscriber_buffers,
+                    )?,
                 }
                 .with_session_reconnect()
-                .with_namespace(Some(namespace));
+                .with_namespace(Some(self.identity.namespace.clone()));
                 MessengerAdapter::Zenoh(adapter)
             }
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),
@@ -247,6 +204,53 @@ impl ServeCommandBuilder {
                     self.teardown_token.clone(),
                 )));
         Ok(self)
+    }
+
+    /// Builds the managed zenoh router: standalone under a per-boot id when
+    /// not enrolled; under the platform-minted id, dialing the project's cloud
+    /// router over mutual TLS, when enrolled. Records the router for
+    /// [`Self::build`] to arm the federation task and the control socket.
+    fn managed_router_adapter(
+        &mut self,
+        enrollment: Option<&Enrollment>,
+        listening_port: u16,
+        gossip: bool,
+        subscriber_buffers: SubscriberBufferSizes,
+    ) -> Result<ZenohAdapter> {
+        let (router_id, connect_endpoints, tls) = match enrollment {
+            Some(enrollment) => {
+                if enrollment.document.is_expired(auth::storage::now_unix()) {
+                    warn!(
+                        "the platform peer certificate has expired; the cloud router refuses \
+                         this daemon's link until the daemon renews the certificate, which \
+                         needs a session (`peppy platform login`), or until `peppy platform \
+                         enroll --replace` mints a new one"
+                    );
+                }
+                let (locator, tls) = enrollment.federation_target();
+                (
+                    enrollment.document.zenoh_id.clone(),
+                    vec![locator],
+                    Some(tls),
+                )
+            }
+            None => (RouterId::generate(), Vec::new(), None),
+        };
+        let adapter = ZenohAdapter::with_router(
+            ZenohNetProtocol::Tcp,
+            "0.0.0.0",
+            listening_port,
+            gossip,
+            subscriber_buffers,
+            connect_endpoints,
+            tls,
+            router_id.clone(),
+        )?;
+        self.managed_router = Some(ManagedRouter {
+            router_id,
+            pinned: adapter.router_config_is_pinned(),
+        });
+        Ok(adapter)
     }
 
     pub fn with_core_node(mut self, core_node_name: Option<String>) -> Result<Self> {
@@ -300,7 +304,7 @@ impl ServeCommandBuilder {
                     self.peppy_dirs.clone(),
                     self.messaging_ready.clone(),
                     self.peppy_config,
-                    self.namespace.clone(),
+                    self.identity.namespace.clone(),
                     name_claim_settle,
                     self.teardown_token.clone(),
                     core_node_done_tx,
@@ -318,12 +322,10 @@ impl ServeCommandBuilder {
                         &core_node_name,
                         &self.git_hash,
                         shutdown_grace_secs,
-                        self.namespace.clone(),
-                        self.router_id.clone(),
-                        // `true` exactly when this generation arms the federation
-                        // task below (a control socket will exist), so the
-                        // platform commands can follow the running daemon's mode.
-                        self.federation.is_some(),
+                        self.identity.namespace.clone(),
+                        self.managed_router
+                            .as_ref()
+                            .map(|router| router.router_id.clone()),
                     )
                 };
                 let state_path = DaemonState::state_file_in(self.peppy_dirs.root());
@@ -352,7 +354,7 @@ impl ServeCommandBuilder {
         // the link when it did not. External zenoh and the mock engine have no
         // control channel and never restart through this path.
         let mut restart_rx: Option<watch::Receiver<bool>> = None;
-        if let Some(arming) = self.federation.take() {
+        if let Some(router) = self.managed_router.take() {
             // Poke channel: the control socket reaches the federation task
             // through it. Bounded + tiny: pokes are rare and serviced one at a time.
             let (trigger_tx, trigger_rx) = tokio::sync::mpsc::channel(8);
@@ -366,8 +368,8 @@ impl ServeCommandBuilder {
                         // The data root the task re-reads the enrollment from.
                         self.peppy_dirs.clone(),
                         trigger_rx,
-                        arming.identity,
-                        arming.pinned,
+                        self.identity.clone(),
+                        router.pinned,
                         self.teardown_token.clone(),
                     )));
 
@@ -385,7 +387,7 @@ impl ServeCommandBuilder {
                     )));
         }
 
-        if self.enrolled {
+        if self.identity.router_id.is_some() {
             self.composite_command =
                 self.composite_command
                     .add_async_command(Box::new(CertificateRenewal::new(
@@ -418,7 +420,6 @@ fn daemon_state_for_messenger(
     shutdown_grace_secs: u64,
     namespace: Namespace,
     router_id: Option<RouterId>,
-    federation_control: bool,
 ) -> DaemonState {
     let (messaging_host, messaging_port) = messenger
         .messaging_locator()
@@ -437,7 +438,6 @@ fn daemon_state_for_messenger(
         shutdown_grace_secs,
         namespace,
         router_id,
-        federation_control,
     )
 }
 
@@ -561,7 +561,7 @@ mod tests {
                 .with_messaging_router("zenoh".to_string())
                 .expect("build external messaging adapter without starting it");
         assert!(
-            builder.federation.is_none(),
+            builder.managed_router.is_none(),
             "external mode must not arm router federation"
         );
         let messenger = builder
@@ -589,8 +589,10 @@ mod tests {
             "regression-git-hash",
             42,
             Namespace::local(),
-            builder.router_id.clone(),
-            builder.federation.is_some(),
+            builder
+                .managed_router
+                .as_ref()
+                .map(|router| router.router_id.clone()),
         );
         assert_eq!(state.messaging_host, "zenoh-router.regression.test");
         assert_eq!(state.messaging_port, 17555);
@@ -599,7 +601,7 @@ mod tests {
             "an external router's identity is the operator's, not recorded"
         );
         assert!(
-            !state.federation_control,
+            !state.has_federation_control(),
             "external mode must record no federation control channel in the daemon state"
         );
     }
@@ -625,18 +627,16 @@ mod tests {
         let data_root = tempfile::tempdir().expect("temp data root");
         let builder = managed_builder(data_root.path());
 
-        let arming = builder
-            .federation
+        let router = builder
+            .managed_router
             .as_ref()
             .expect("managed mode must arm router federation");
-        assert_eq!(arming.identity, FederationIdentity::of(None));
-        assert!(!arming.pinned);
-        assert!(
-            !builder.enrolled,
-            "a machine that is not enrolled has no certificate to renew"
+        assert!(!router.pinned);
+        assert_eq!(
+            builder.identity,
+            FederationIdentity::of(None),
+            "a machine that is not enrolled runs under `local` and renews no certificate"
         );
-        assert_eq!(builder.namespace, Namespace::local());
-        assert!(builder.router_id.is_some(), "a per-boot identity is minted");
         let messenger = builder.messenger_handle().expect("messenger");
         assert!(
             messenger.blocking_lock().router_links_probe().is_none(),
@@ -644,43 +644,18 @@ mod tests {
         );
     }
 
-    const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
-    const ZID: &str = "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5";
+    use auth::test_support::{PROJECT, ZID};
 
-    /// Enrolls the machine under `data_root` in [`PROJECT`] as [`ZID`].
+    /// Enrolls the machine under `data_root` in [`PROJECT`] as [`ZID`], with
+    /// a certificate that does not expire.
     fn write_enrollment(data_root: &std::path::Path) {
-        use auth::enrollment::{
-            EnrollmentBundle, EnrollmentDocument, IssuedMaterial, RouterEndpoint,
-        };
-
-        let document = EnrollmentDocument {
-            version: auth::enrollment::ENROLLMENT_VERSION,
-            api_url: "https://api.example".into(),
-            workspace_id: "ws".into(),
-            project_id: PROJECT.into(),
-            peer_id: "peer-1".into(),
-            peer_name: "robot-7".into(),
-            zenoh_id: RouterId::parse(ZID).unwrap(),
-            namespace: Namespace::parse(PROJECT).unwrap(),
-            router: RouterEndpoint::parse("rtr-p.example", 7447).unwrap(),
-            certificate_issued_at: 1_700_000_000,
-            certificate_expires_at: i64::MAX,
-            enrolled_at: 1_700_000_000,
-        };
-        auth::enrollment::save(
+        auth::test_support::write_enrollment(
             &PeppyDirs::new(data_root),
-            &EnrollmentBundle {
-                peer_key_pem: auth::storage::secret("key".into()),
-                issued: IssuedMaterial {
-                    document,
-                    peer_certificate_pem: "cert".into(),
-                    trust_anchor_pem: "ca".into(),
-                    chain_pem: "chain".into(),
-                    platform_zenoh_config: "{}".into(),
-                },
+            auth::enrollment::EnrollmentDocument {
+                certificate_expires_at: i64::MAX,
+                ..auth::test_support::enrollment_document()
             },
-        )
-        .expect("write the enrollment");
+        );
     }
 
     /// Enrolled: the router boots under the enrollment's id and namespace,
@@ -693,20 +668,15 @@ mod tests {
 
         let builder = managed_builder(data_root.path());
 
-        assert!(
-            builder.enrolled,
-            "an enrolled machine renews its certificate"
-        );
-        let arming = builder.federation.as_ref().expect("armed");
         assert_eq!(
-            arming.identity,
+            builder.identity,
             FederationIdentity {
                 namespace: Namespace::parse(PROJECT).unwrap(),
-                zenoh_id: Some(RouterId::parse(ZID).unwrap()),
+                router_id: Some(RouterId::parse(ZID).unwrap()),
             }
         );
-        assert_eq!(builder.namespace.as_str(), PROJECT);
-        assert_eq!(builder.router_id, Some(RouterId::parse(ZID).unwrap()));
+        let router = builder.managed_router.as_ref().expect("armed");
+        assert_eq!(router.router_id, RouterId::parse(ZID).unwrap());
         let messenger = builder.messenger_handle().expect("messenger");
         let probe = messenger
             .blocking_lock()
@@ -740,9 +710,15 @@ mod tests {
         .with_messaging_router("zenoh".to_string())
         .expect("build external messaging adapter without starting it");
 
-        assert!(builder.federation.is_none());
-        assert!(builder.enrolled);
-        assert_eq!(builder.namespace.as_str(), PROJECT);
+        assert!(builder.managed_router.is_none());
+        assert_eq!(
+            builder.identity,
+            FederationIdentity {
+                namespace: Namespace::parse(PROJECT).unwrap(),
+                router_id: Some(RouterId::parse(ZID).unwrap()),
+            },
+            "an enrolled machine renews its certificate under an operator-run router too"
+        );
     }
 
     /// A present but broken enrollment fails startup rather than booting a
@@ -752,7 +728,7 @@ mod tests {
         let data_root = tempfile::tempdir().expect("temp data root");
         let dirs = PeppyDirs::new(data_root.path());
         std::fs::create_dir_all(dirs.peer_dir()).unwrap();
-        std::fs::write(dirs.peer_dir().join("enrollment.json5"), "{ version: 1 }").unwrap();
+        std::fs::write(dirs.peer_dir().join("enrollment.json5"), "{ version: 2 }").unwrap();
         let peppy_config = PeppyConfig {
             zenoh: daemon_config::peppy_config::ZenohConfig::Managed(
                 daemon_config::peppy_config::ManagedZenohConfig::default(),

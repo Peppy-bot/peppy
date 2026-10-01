@@ -77,6 +77,9 @@ enum Commands {
     },
     /// Platform account and project router: sign in, select a project, enroll this machine, show its status
     Platform {
+        /// Override the backend base URL (else the build default / PEPPY_API_URL).
+        #[arg(long = "api-url", global = true)]
+        api_url: Option<String>,
         #[command(subcommand)]
         command: platform::PlatformCommands,
     },
@@ -131,7 +134,9 @@ fn main() {
             container::ContainerCommand { command }.execute(&app_ctx)
         }
         Commands::Repo { command } => repo::RepoCommand { command }.execute(&app_ctx),
-        Commands::Platform { command } => platform::PlatformCommand { command }.execute(&app_ctx),
+        Commands::Platform { api_url, command } => {
+            platform::PlatformCommand { api_url, command }.execute(&app_ctx)
+        }
         Commands::Mcp { command } => mcp::McpCommand { command }.execute(&app_ctx),
         Commands::Info {} => info::InfoCommand.execute(&app_ctx),
     };
@@ -510,8 +515,8 @@ mod tests {
         }
     }
 
-    /// The group is spelled `platform`, and only `platform`: there is no
-    /// `auth` alias, hidden command, or compatibility parser to fall back on.
+    /// Every spelling of the group parses, and a subcommand or a flag the
+    /// group does not have is refused, with no alias to fall back on.
     #[test]
     fn platform_subcommands_parse() {
         for args in [
@@ -535,6 +540,15 @@ mod tests {
             vec!["peppy", "platform", "login", "--api-url", "http://x:3000"],
             vec!["peppy", "platform", "logout"],
             vec!["peppy", "platform", "logout", "--api-url", "http://x:3000"],
+            vec!["peppy", "platform", "--api-url", "http://x:3000", "whoami"],
+            vec![
+                "peppy",
+                "platform",
+                "router",
+                "start",
+                "--api-url",
+                "http://x:3000",
+            ],
             vec!["peppy", "platform", "whoami", "--json"],
             vec!["peppy", "platform", "workspaces", "--json"],
             vec!["peppy", "platform", "projects", "--workspace", "Lab"],
@@ -579,14 +593,44 @@ mod tests {
             );
         }
 
-        assert!(Cli::try_parse_from(["peppy", "auth", "whoami"]).is_err());
-        assert!(Cli::try_parse_from(["peppy", "platform", "login", "--yes"]).is_err());
-        assert!(Cli::try_parse_from(["peppy", "platform", "list"]).is_err());
-        assert!(Cli::try_parse_from(["peppy", "platform", "federate"]).is_err());
-        assert!(Cli::try_parse_from(["peppy", "platform", "router"]).is_err());
-        assert!(Cli::try_parse_from(["peppy", "platform", "context"]).is_err());
-        assert!(Cli::try_parse_from(["peppy", "platform", "context", "switch"]).is_err());
-        assert!(Cli::try_parse_from(["peppy", "platform", "router", "stop"]).is_err());
+        for args in [
+            vec!["peppy", "auth", "whoami"],
+            vec!["peppy", "platform", "login", "--yes"],
+            vec!["peppy", "platform", "not-a-subcommand"],
+            vec!["peppy", "platform", "router"],
+            vec!["peppy", "platform", "context"],
+            vec!["peppy", "platform", "context", "switch"],
+            vec!["peppy", "platform", "router", "stop"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_err(),
+                "{args:?} should be refused"
+            );
+        }
+    }
+
+    /// `--api-url` is one flag of the group, read from before and from after
+    /// the subcommand, down to a nested one.
+    #[test]
+    fn the_api_url_of_the_group_is_read_from_either_side_of_the_subcommand() {
+        for args in [
+            vec!["peppy", "platform", "--api-url", "http://x:3000", "status"],
+            vec!["peppy", "platform", "status", "--api-url", "http://x:3000"],
+            vec![
+                "peppy",
+                "platform",
+                "context",
+                "list",
+                "--api-url",
+                "http://x:3000",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(args.clone()).expect("parses");
+            let Commands::Platform { api_url, .. } = cli.command else {
+                panic!("{args:?} is a platform command");
+            };
+            assert_eq!(api_url.as_deref(), Some("http://x:3000"), "{args:?}");
+        }
     }
 
     /// `status` is its own command (the enrollment and the router link), not a
@@ -597,7 +641,8 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Platform {
-                command: platform::PlatformCommands::Status { .. }
+                command: platform::PlatformCommands::Status { .. },
+                ..
             }
         ));
     }

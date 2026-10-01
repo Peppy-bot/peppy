@@ -23,6 +23,11 @@ tracing = "0.1"
 ureq = { version = "3.1", features = ["platform-verifier"] }
 url = "2"
 
+[features]
+# Test-only fixtures (`test_support` module) for downstream crates' tests;
+# this crate's own tests see the module via `cfg(test)` instead.
+test-support = []
+
 [dev-dependencies]
 httpmock = "0.8"
 # The `x509-parser` feature reads a CSR back, so a test can pin what the

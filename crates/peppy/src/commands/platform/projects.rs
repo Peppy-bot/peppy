@@ -11,6 +11,7 @@ use daemon_config::consts::PeppyDirs;
 use crate::commands::Command;
 use crate::commands::platform::workspaces::current_mark;
 use crate::commands::platform::{PlatformSession, select};
+use crate::commands::table::render_columns;
 use crate::context::AppContext;
 use crate::error::Result;
 use auth::client;
@@ -76,7 +77,7 @@ impl Command for ProjectsCommand {
             println!("No projects; create one in the web app first.");
             return Ok(());
         }
-        print!("{}", super::peers::table(["", "ID", "NAME"], &rows));
+        print!("{}", render_columns(["", "ID", "NAME"], &rows));
         Ok(())
     }
 }

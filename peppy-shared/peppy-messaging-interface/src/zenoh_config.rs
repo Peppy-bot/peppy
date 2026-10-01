@@ -118,22 +118,10 @@ pub async fn probe_tls_reachable(
     let mut roots = RootCertStore::empty();
     match &tls.root_ca_certificate {
         Some(path) => {
-            let bytes = std::fs::read(path)
-                .map_err(|e| format!("read root CA `{}` failed: {e}", path.display()))?;
-            let mut added = 0usize;
-            for cert in rustls_pemfile::certs(&mut &bytes[..]) {
-                let cert =
-                    cert.map_err(|e| format!("parse root CA `{}` failed: {e}", path.display()))?;
+            for cert in read_pem_certificates(path, "root CA")? {
                 roots
                     .add(cert)
                     .map_err(|e| format!("add root CA `{}` failed: {e}", path.display()))?;
-                added += 1;
-            }
-            if added == 0 {
-                return Err(format!(
-                    "root CA `{}` contained no certificates",
-                    path.display()
-                ));
             }
         }
         None => {
@@ -209,6 +197,26 @@ pub async fn probe_tls_reachable(
     }
 }
 
+/// Every certificate of the PEM bundle at `path`, in the order written. An
+/// error names the bundle as `label` does; an empty bundle is an error.
+fn read_pem_certificates(
+    path: &std::path::Path,
+    label: &str,
+) -> Result<Vec<tokio_rustls::rustls::pki_types::CertificateDer<'static>>, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("read {label} `{}` failed: {e}", path.display()))?;
+    let certs = rustls_pemfile::certs(&mut &bytes[..])
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| format!("parse {label} `{}` failed: {e}", path.display()))?;
+    if certs.is_empty() {
+        return Err(format!(
+            "{label} `{}` contained no certificates",
+            path.display()
+        ));
+    }
+    Ok(certs)
+}
+
 /// Reads a [`ConnectIdentity`]'s PEM files into the rustls types a client
 /// handshake presents: every certificate in the bundle (leaf first, as written)
 /// and the single private key.
@@ -221,27 +229,7 @@ fn load_connect_identity(
     ),
     String,
 > {
-    let cert_path = &identity.certificate;
-    let cert_bytes = std::fs::read(cert_path).map_err(|e| {
-        format!(
-            "read client certificate `{}` failed: {e}",
-            cert_path.display()
-        )
-    })?;
-    let certs = rustls_pemfile::certs(&mut &cert_bytes[..])
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| {
-            format!(
-                "parse client certificate `{}` failed: {e}",
-                cert_path.display()
-            )
-        })?;
-    if certs.is_empty() {
-        return Err(format!(
-            "client certificate `{}` contained no certificates",
-            cert_path.display()
-        ));
-    }
+    let certs = read_pem_certificates(&identity.certificate, "client certificate")?;
     let key_path = &identity.private_key;
     let key_bytes = std::fs::read(key_path)
         .map_err(|e| format!("read client key `{}` failed: {e}", key_path.display()))?;

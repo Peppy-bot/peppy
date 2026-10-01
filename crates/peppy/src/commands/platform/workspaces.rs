@@ -7,6 +7,7 @@ use daemon_config::consts::PeppyDirs;
 
 use crate::commands::Command;
 use crate::commands::platform::PlatformSession;
+use crate::commands::table::render_columns;
 use crate::context::AppContext;
 use crate::error::Result;
 use auth::client;
@@ -57,7 +58,7 @@ impl Command for WorkspacesCommand {
                 ]
             })
             .collect();
-        print!("{}", super::peers::table(["", "ID", "NAME", "TIER"], &rows));
+        print!("{}", render_columns(["", "ID", "NAME", "TIER"], &rows));
         Ok(())
     }
 }

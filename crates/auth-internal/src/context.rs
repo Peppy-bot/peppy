@@ -16,7 +16,8 @@ use std::path::PathBuf;
 use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
+use crate::document::{self, Versioned};
+use crate::error::Result;
 use crate::fs_perms::restrict_dir;
 
 /// On-disk schema version of `platform_context.json5`. There is no reader for
@@ -60,10 +61,23 @@ impl PlatformContext {
 
     /// The context in words, for the person.
     pub fn label(&self) -> String {
-        format!(
-            "project {} ({}) in workspace {}",
-            self.project.name, self.project.id, self.workspace.name
-        )
+        project_label(&self.project.name, &self.project.id, &self.workspace.name)
+    }
+}
+
+/// A project in words, for the person: its name, its id, and the name of its
+/// workspace.
+pub fn project_label(project_name: &str, project_id: &str, workspace_name: &str) -> String {
+    format!("project {project_name} ({project_id}) in workspace {workspace_name}")
+}
+
+impl Versioned for PlatformContext {
+    const VERSION: u32 = CONTEXT_VERSION;
+    const WHAT: &'static str = "context";
+    const REMEDY: &'static str = "peppy platform configure";
+
+    fn version(&self) -> u32 {
+        self.version
     }
 }
 
@@ -77,73 +91,27 @@ pub fn context_path(dirs: &PeppyDirs) -> PathBuf {
 /// made). An error when it is present but does not parse or is of another
 /// version; the message names `peppy platform configure` as the remedy.
 pub fn load(dirs: &PeppyDirs) -> Result<Option<PlatformContext>> {
-    let path = context_path(dirs);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(Error::Io(e)),
-    };
-    let context: PlatformContext = serde_json5::from_str(&content).map_err(|e| {
-        Error::Auth(format!(
-            "failed to parse {}: {e}; run `peppy platform configure` again",
-            path.display()
-        ))
-    })?;
-    if context.version != CONTEXT_VERSION {
-        return Err(Error::Auth(format!(
-            "context file {} is an unsupported format (v{}, expected v{}); \
-             run `peppy platform configure` again",
-            path.display(),
-            context.version,
-            CONTEXT_VERSION
-        )));
-    }
-    Ok(Some(context))
+    document::load(&context_path(dirs))
 }
 
 /// Atomically writes the context.
 pub fn save(dirs: &PeppyDirs, context: &PlatformContext) -> Result<()> {
-    let content = json5_pretty::to_string_pretty(context)
-        .map_err(|e| Error::Auth(format!("failed to serialize the context: {e}")))?;
     let conf = dirs.conf_dir();
     std::fs::create_dir_all(&conf)?;
     // `conf/` holds the credentials too; keep it owner-only as `storage` does.
     restrict_dir(&conf)?;
-    daemon_config::atomic_write::publish_atomic(&context_path(dirs), |tmp| {
-        std::fs::write(tmp, &content)
-    })?;
-    Ok(())
+    document::save(&context_path(dirs), context, false)
 }
 
 /// Removes the context. Absent is not an error: there is then no context.
 pub fn remove(dirs: &PeppyDirs) -> Result<()> {
-    match std::fs::remove_file(context_path(dirs)) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(Error::Io(e)),
-    }
+    document::remove_if_present(&context_path(dirs))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn context() -> PlatformContext {
-        PlatformContext {
-            version: CONTEXT_VERSION,
-            api_origin: "https://api.example.test".into(),
-            subject: "user-123".into(),
-            workspace: Named {
-                id: "ws-1".into(),
-                name: "Robotics lab".into(),
-            },
-            project: Named {
-                id: "p-1".into(),
-                name: "Lab".into(),
-            },
-            selected_at: 1_700_000_000,
-        }
-    }
+    use crate::test_support::platform_context as context;
 
     #[test]
     fn save_then_load_round_trips_and_remove_clears() {
@@ -183,13 +151,13 @@ mod tests {
     #[test]
     fn a_context_belongs_to_one_backend_and_one_identity() {
         let context = context();
-        assert!(context.belongs_to("https://api.example.test", "user-123"));
-        assert!(!context.belongs_to("https://api.example.test", "user-456"));
-        assert!(!context.belongs_to("https://other.example.test", "user-123"));
+        assert!(context.belongs_to("https://api.example", "user-123"));
+        assert!(!context.belongs_to("https://api.example", "user-456"));
+        assert!(!context.belongs_to("https://other.example", "user-123"));
         let mut unknown = context.clone();
         unknown.subject = String::new();
         assert!(
-            !unknown.belongs_to("https://api.example.test", ""),
+            !unknown.belongs_to("https://api.example", ""),
             "an identity that is not known owns no context"
         );
     }
@@ -198,7 +166,7 @@ mod tests {
     fn the_label_names_the_project_and_the_workspace() {
         assert_eq!(
             context().label(),
-            "project Lab (p-1) in workspace Robotics lab"
+            "project Field (p-2) in workspace Robotics lab"
         );
     }
 }

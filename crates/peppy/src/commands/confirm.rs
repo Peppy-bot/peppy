@@ -5,21 +5,28 @@ use crate::error::{Error, Result};
 /// Prompts the user with a message and waits for y/yes confirmation.
 /// If `reader` is provided, reads from it; otherwise reads from stdin.
 pub(crate) fn confirm_prompt(message: &str, reader: Option<&mut dyn BufRead>) -> Result<bool> {
-    print!("{message}");
+    let response = read_answer(message, reader)?.unwrap_or_default();
+    Ok(matches!(
+        response.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+/// Prints `prompt` and reads one line of answer from `reader`, else from
+/// stdin. `None` at the end of the input: there is then no person to ask.
+fn read_answer(prompt: &str, reader: Option<&mut (dyn BufRead + '_)>) -> Result<Option<String>> {
+    print!("{prompt}");
     io::stdout()
         .flush()
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to write confirmation prompt: {e}")))?;
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to write the prompt: {e}")))?;
 
     let mut input = String::new();
-    if let Some(reader) = reader {
-        reader.read_line(&mut input)
-    } else {
-        io::stdin().read_line(&mut input)
+    let read = match reader {
+        Some(reader) => reader.read_line(&mut input),
+        None => io::stdin().read_line(&mut input),
     }
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to read confirmation response: {e}")))?;
-
-    let response = input.trim().to_ascii_lowercase();
-    Ok(matches!(response.as_str(), "y" | "yes"))
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to read the answer: {e}")))?;
+    Ok((read > 0).then_some(input))
 }
 
 /// Prints `options` as a numbered list under `title` and asks the person to
@@ -39,20 +46,10 @@ pub(crate) fn choose_prompt(
         println!("  {}) {option}", index + 1);
     }
     loop {
-        print!("Select a {what} [1-{}]: ", options.len());
-        io::stdout()
-            .flush()
-            .map_err(|e| Error::ExecutionFailed(format!("Failed to write the prompt: {e}")))?;
-
-        let mut input = String::new();
-        let read = match reader.as_mut() {
-            Some(reader) => reader.read_line(&mut input),
-            None => io::stdin().read_line(&mut input),
-        }
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to read the answer: {e}")))?;
-        if read == 0 {
+        let prompt = format!("Select a {what} [1-{}]: ", options.len());
+        let Some(input) = read_answer(&prompt, reader.as_deref_mut())? else {
             return Err(Error::ExecutionFailed(format!("no {what} was selected")));
-        }
+        };
         match parse_choice(&input, options.len()) {
             Some(index) => return Ok(index),
             None => println!("Type a number from 1 to {}.", options.len()),

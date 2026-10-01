@@ -11,7 +11,7 @@ use httpmock::prelude::*;
 use secrecy::ExposeSecret;
 use serde_json::json;
 
-use auth::client::{self, PeerRemoval};
+use auth::client::{self, PeerRemoval, PeerStatus, RouterPhase};
 use auth::enrollment::{self, EnrollmentBundle, IssuedMaterial, RouterEndpoint};
 use auth::storage::{self, Credentials, ProfileCreds};
 use auth::{AuthError, ProblemKind};
@@ -360,10 +360,8 @@ fn restarting_and_starting_the_router_post_with_no_body() {
         client::restart_router(&http, &server.base_url(), &mut cred, WORKSPACE, PROJECT)
             .expect("restart");
     assert_eq!(restart.calls(), 1);
-    assert_eq!(restarted.phase, "restarting");
-    assert!(restarted.can_manage_infra);
+    assert_eq!(restarted.phase, RouterPhase::Restarting);
     assert_eq!(restarted.pending_change_entries.len(), 1);
-    assert_eq!(restarted.pending_change_entries[0].kind, "peer");
     assert_eq!(
         restarted.pending_change_entries[0].description,
         "peer robot-7 removed"
@@ -372,7 +370,7 @@ fn restarting_and_starting_the_router_post_with_no_body() {
     let started = client::start_router(&http, &server.base_url(), &mut cred, WORKSPACE, PROJECT)
         .expect("start");
     assert_eq!(start.calls(), 1);
-    assert_eq!(started.phase, "provisioning");
+    assert_eq!(started.phase, RouterPhase::Provisioning);
 }
 
 /// A caller without the permission to manage the infrastructure gets a
@@ -437,18 +435,18 @@ fn peers_and_router_status_parse_the_contract() {
     let peers = client::list_peers(&http, &server.base_url(), &mut cred, WORKSPACE, PROJECT)
         .expect("peers");
     assert_eq!(peers.len(), 2);
-    assert_eq!(peers[0].status, "connected");
-    assert_eq!(peers[1].status, "a_status_this_cli_has_not_heard_of");
+    assert_eq!(peers[0].status, PeerStatus::Connected);
+    assert_eq!(
+        peers[1].status,
+        PeerStatus::Other("a_status_this_cli_has_not_heard_of".into())
+    );
 
     let router = client::router_status(&http, &server.base_url(), &mut cred, WORKSPACE, PROJECT)
         .expect("router");
-    assert_eq!(router.phase, "running");
+    assert_eq!(router.phase, RouterPhase::Running);
     assert_eq!(
         router.address,
-        Some(client::RouterAddress {
-            host: "rtr-p.example".into(),
-            port: 7447
-        })
+        Some(RouterEndpoint::parse("rtr-p.example", 7447).unwrap())
     );
     assert_eq!(router.peers[0].id, "peer-1");
     assert!(!router.pending_changes);
@@ -713,7 +711,12 @@ fn a_renewal_inside_the_minimum_interval_carries_the_delay() {
     let AuthError::Problem(problem) = err else {
         panic!("expected a problem, got {err:?}");
     };
-    assert_eq!(problem.kind, ProblemKind::RateLimited);
+    assert_eq!(
+        problem.kind,
+        ProblemKind::Other("https://peppy.bot/problems/rate-limited".into()),
+        "a delay is read from `Retry-After`, whatever the type of the refusal"
+    );
+    assert_eq!(problem.status, 429);
     assert_eq!(problem.retry_after_secs, Some(1800));
     assert_eq!(leaf_on_disk(&dirs), "first leaf");
 }

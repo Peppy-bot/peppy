@@ -15,35 +15,29 @@ use daemon_config::consts::PeppyDirs;
 use crate::commands::Command;
 use crate::commands::platform::PlatformSession;
 use crate::commands::platform::configure::{select_and_save, selected_report};
-use crate::commands::platform::select::Ask;
+use crate::commands::platform::select::{self, Ask};
 use crate::context::AppContext;
 use crate::error::Result;
 use auth::PlatformContext;
-use auth::client::{self, Project, Workspace};
+use auth::client::{Project, Workspace};
 use auth::enrollment::EnrollmentDocument;
 
 #[derive(Subcommand)]
 pub enum ContextCommands {
     /// Show the selected workspace and project
     Show {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
     },
     /// List every workspace and project, the selected ones marked
     List {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
     },
     /// Switch to a different workspace and project
     Use {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// The workspace, by id or exact name (else you select it from a list).
         #[arg(long)]
         workspace: Option<String>,
@@ -80,21 +74,20 @@ pub struct ContextCommand {
     pub peppy_dirs: Option<PeppyDirs>,
 }
 
+/// The command of the terminal: the group's `--api-url` is set by the caller.
 impl From<ContextCommands> for ContextCommand {
     fn from(command: ContextCommands) -> Self {
-        let (action, api_url) = match command {
-            ContextCommands::Show { api_url, json } => (ContextAction::Show { json }, api_url),
-            ContextCommands::List { api_url, json } => (ContextAction::List { json }, api_url),
-            ContextCommands::Use {
-                api_url,
-                workspace,
-                project,
-            } => (ContextAction::Use { workspace, project }, api_url),
-            ContextCommands::Clear => (ContextAction::Clear, None),
+        let action = match command {
+            ContextCommands::Show { json } => ContextAction::Show { json },
+            ContextCommands::List { json } => ContextAction::List { json },
+            ContextCommands::Use { workspace, project } => {
+                ContextAction::Use { workspace, project }
+            }
+            ContextCommands::Clear => ContextAction::Clear,
         };
         Self {
             action,
-            api_url,
+            api_url: None,
             ask: Ask::Terminal,
             peppy_dirs: None,
         }
@@ -145,15 +138,7 @@ fn show(session: &PlatformSession, json: bool) -> Result<()> {
 fn list(session: &PlatformSession, json: bool) -> Result<()> {
     let mut cred = session.credential()?;
     let context = session.context()?;
-    let mut tree = Vec::new();
-    for workspace in client::list_workspaces(&session.http, &session.api_url, &mut cred)? {
-        let projects: Vec<Project> =
-            client::list_projects(&session.http, &session.api_url, &mut cred, &workspace.id)?
-                .into_iter()
-                .filter(|project| !project.is_archived())
-                .collect();
-        tree.push((workspace, projects));
-    }
+    let tree = select::active_project_tree(&session.http, &session.api_url, &mut cred)?;
     if json {
         println!("{}", tree_json(&tree, context.as_ref()));
         return Ok(());
@@ -247,39 +232,14 @@ fn tree_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use auth::context::{CONTEXT_VERSION, Named};
+    use auth::test_support::{enrollment_document, platform_context as context};
 
-    fn context() -> PlatformContext {
-        PlatformContext {
-            version: CONTEXT_VERSION,
-            api_origin: "https://api.example".into(),
-            subject: "user-123".into(),
-            workspace: Named {
-                id: "ws-2".into(),
-                name: "Robotics lab".into(),
-            },
-            project: Named {
-                id: "p-2".into(),
-                name: "Field".into(),
-            },
-            selected_at: 1_700_000_000,
-        }
-    }
-
+    /// The record of a machine enrolled in `project_id`.
     fn enrolled_in(project_id: &str) -> EnrollmentDocument {
         EnrollmentDocument {
-            version: auth::enrollment::ENROLLMENT_VERSION,
-            api_url: "https://api.example".into(),
-            workspace_id: "ws-2".into(),
             project_id: project_id.into(),
-            peer_id: "peer-1".into(),
-            peer_name: "robot-7".into(),
-            zenoh_id: pmi::RouterId::parse("7f3a9c1e").unwrap(),
             namespace: config::namespace::Namespace::parse(project_id).unwrap(),
-            router: auth::RouterEndpoint::parse("rtr.example", 7447).unwrap(),
-            certificate_issued_at: 1_700_000_000,
-            certificate_expires_at: 2_000_000_000,
-            enrolled_at: 1_700_000_000,
+            ..enrollment_document()
         }
     }
 

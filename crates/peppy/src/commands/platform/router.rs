@@ -15,24 +15,16 @@ use clap::Subcommand;
 use daemon_config::consts::PeppyDirs;
 
 use crate::commands::Command;
-use crate::commands::platform::{PlatformSession, ask_to_continue, select};
+use crate::commands::platform::{PlatformSession, ask_to_continue, date, select};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use auth::client::{self, RouterStatus};
+use auth::client::{self, PeerStatus, RouterPhase, RouterStatus};
 use auth::{AuthError, ProblemKind};
-
-/// The peer status the platform gives a removed peer until the router restarts.
-const PENDING_RESTART: &str = "pending_restart";
-
-/// The phase of a router the person stopped.
-const STOPPED: &str = "stopped";
 
 #[derive(Subcommand)]
 pub enum RouterCommands {
     /// Restart the router, which applies every pending change
     Restart {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// The workspace, by id or exact name.
         #[arg(long)]
         workspace: Option<String>,
@@ -45,8 +37,6 @@ pub enum RouterCommands {
     },
     /// Start a stopped router
     Start {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
         /// The workspace, by id or exact name.
         #[arg(long)]
         workspace: Option<String>,
@@ -83,29 +73,25 @@ pub struct RouterCommand {
     pub peppy_dirs: Option<PeppyDirs>,
 }
 
+/// The command of the terminal: the group's `--api-url` is set by the caller.
 impl From<RouterCommands> for RouterCommand {
     fn from(command: RouterCommands) -> Self {
         match command {
             RouterCommands::Restart {
-                api_url,
                 workspace,
                 project,
                 yes,
             } => Self {
                 action: RouterAction::Restart,
-                api_url,
+                api_url: None,
                 workspace,
                 project,
                 yes,
                 peppy_dirs: None,
             },
-            RouterCommands::Start {
-                api_url,
-                workspace,
-                project,
-            } => Self {
+            RouterCommands::Start { workspace, project } => Self {
                 action: RouterAction::Start,
-                api_url,
+                api_url: None,
                 workspace,
                 project,
                 yes: true,
@@ -119,16 +105,10 @@ impl Command for RouterCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
         let mut cred = session.credential()?;
-        let enrollment = auth::enrollment::load(&session.dirs).map_err(Error::AuthEngine)?;
-        let context = session.context()?;
-        let target = select::resolve_target(
-            &session.http,
-            &session.api_url,
+        let (target, _) = session.resolve_target(
             &mut cred,
             self.workspace.as_deref(),
             self.project.as_deref(),
-            context.as_ref(),
-            enrollment.as_ref().map(|e| &e.document),
         )?;
 
         let before = client::router_status(
@@ -143,7 +123,7 @@ impl Command for RouterCommand {
 
         // A stopped router has nothing to restart. Say so before the question,
         // which is about a router that runs.
-        if self.action == RouterAction::Restart && before.phase == STOPPED {
+        if self.action == RouterAction::Restart && before.phase == RouterPhase::Stopped {
             return Err(stopped_router(&target));
         }
         if self.action == RouterAction::Restart
@@ -208,7 +188,11 @@ fn refusal(error: AuthError, action: RouterAction, target: &select::Target) -> E
 fn stopped_router(target: &select::Target) -> Error {
     Error::Auth(format!(
         "the router is stopped, so there is nothing to restart. {}",
-        how_to_apply(STOPPED, &target.workspace_id, &target.project_id)
+        how_to_apply(
+            &RouterPhase::Stopped,
+            &target.workspace_id,
+            &target.project_id,
+        )
     ))
 }
 
@@ -217,7 +201,7 @@ fn describe(label: &str, status: &RouterStatus) -> String {
     let waiting = status
         .peers
         .iter()
-        .filter(|peer| peer.status == PENDING_RESTART)
+        .filter(|peer| peer.status == PeerStatus::PendingRestart)
         .count();
     let mut out = format!("Router of {label}\n");
     out.push_str(&format!("  phase    : {}\n", status.phase));
@@ -241,12 +225,12 @@ pub(crate) fn pending_change_lines(status: &RouterStatus) -> Vec<String> {
         .pending_change_entries
         .iter()
         .map(|change| {
-            let staged = change.staged_at.format("%Y-%m-%d");
+            let staged = date(&change.staged_at);
             match change.deadline {
                 Some(deadline) => format!(
                     "{} (staged {staged}, the platform restarts the router on {})",
                     change.description,
-                    deadline.format("%Y-%m-%d")
+                    date(&deadline)
                 ),
                 None => format!("{} (staged {staged})", change.description),
             }
@@ -268,9 +252,9 @@ pub(crate) fn start_command(workspace_id: &str, project_id: &str) -> String {
 /// How the person applies the changes that wait on a router in `phase`: a
 /// restart. A stopped router takes two commands, because the platform refuses
 /// the restart of a stopped router and a start alone applies nothing.
-pub(crate) fn how_to_apply(phase: &str, workspace_id: &str, project_id: &str) -> String {
+pub(crate) fn how_to_apply(phase: &RouterPhase, workspace_id: &str, project_id: &str) -> String {
     let restart = restart_command(workspace_id, project_id);
-    if phase != STOPPED {
+    if *phase != RouterPhase::Stopped {
         return format!("Restart the router:\n    {restart}");
     }
     format!(
@@ -283,14 +267,13 @@ pub(crate) fn how_to_apply(phase: &str, workspace_id: &str, project_id: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use auth::Problem;
     use auth::client::{PendingChange, RouterPeerStatus};
+    use auth::test_support::problem;
 
-    fn status(peers: &[&str], pending: Vec<PendingChange>) -> RouterStatus {
+    fn status(peers: &[PeerStatus], pending: Vec<PendingChange>) -> RouterStatus {
         RouterStatus {
-            phase: "running".into(),
+            phase: RouterPhase::Running,
             desired_state: "running".into(),
-            can_manage_infra: true,
             address: None,
             pending_changes: !pending.is_empty(),
             pending_change_entries: pending,
@@ -299,8 +282,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, status)| RouterPeerStatus {
                     id: format!("peer-{i}"),
-                    status: status.to_string(),
-                    last_seen_at: None,
+                    status: status.clone(),
                 })
                 .collect(),
         }
@@ -308,7 +290,6 @@ mod tests {
 
     fn removal() -> PendingChange {
         PendingChange {
-            kind: "peer".into(),
             description: "peer robot-7 removed".into(),
             staged_at: "2026-09-28T10:00:00Z".parse().unwrap(),
             deadline: None,
@@ -319,7 +300,14 @@ mod tests {
     fn the_description_names_the_router_its_peers_and_what_waits() {
         let out = describe(
             "project Lab (p-1) in workspace Alice's workspace",
-            &status(&["connected", "unknown", PENDING_RESTART], vec![removal()]),
+            &status(
+                &[
+                    PeerStatus::Connected,
+                    PeerStatus::Unknown,
+                    PeerStatus::PendingRestart,
+                ],
+                vec![removal()],
+            ),
         );
         assert_eq!(
             out,
@@ -332,7 +320,7 @@ mod tests {
 
     #[test]
     fn a_router_with_nothing_pending_prints_no_pending_line() {
-        let out = describe("project p-1", &status(&["connected"], Vec::new()));
+        let out = describe("project p-1", &status(&[PeerStatus::Connected], Vec::new()));
         assert_eq!(
             out,
             "Router of project p-1\n  phase    : running\n  peers    : 1\n"
@@ -353,14 +341,7 @@ mod tests {
 
     #[test]
     fn a_403_is_worded_as_a_missing_permission() {
-        let forbidden = AuthError::Problem(Problem {
-            kind: ProblemKind::Other("about:blank".into()),
-            status: 403,
-            title: "Forbidden".into(),
-            detail: None,
-            retry_after_secs: None,
-            pending_removals: None,
-        });
+        let forbidden = AuthError::Problem(problem(ProblemKind::Other("about:blank".into()), 403));
         let target = select::Target {
             workspace_id: "ws-1".into(),
             project_id: "p-1".into(),
@@ -393,14 +374,7 @@ mod tests {
     /// nothing.
     #[test]
     fn a_restart_of_a_stopped_router_names_the_start_then_the_restart() {
-        let stopped = AuthError::Problem(Problem {
-            kind: ProblemKind::RouterStopped,
-            status: 409,
-            title: "Router stopped".into(),
-            detail: None,
-            retry_after_secs: None,
-            pending_removals: None,
-        });
+        let stopped = AuthError::Problem(problem(ProblemKind::RouterStopped, 409));
         assert_eq!(
             refusal(stopped, RouterAction::Restart, &context_target()).to_string(),
             "the router is stopped, so there is nothing to restart. Start the router, then \
@@ -412,14 +386,20 @@ mod tests {
 
     #[test]
     fn a_router_that_runs_takes_one_command_to_apply_its_changes() {
-        for phase in ["running", "degraded", "provisioning", "restarting"] {
+        for phase in [
+            RouterPhase::Running,
+            RouterPhase::Degraded,
+            RouterPhase::Provisioning,
+            RouterPhase::Restarting,
+            RouterPhase::Other("hibernating".into()),
+        ] {
             assert_eq!(
-                how_to_apply(phase, "ws-1", "p-1"),
+                how_to_apply(&phase, "ws-1", "p-1"),
                 "Restart the router:\n    peppy platform router restart --workspace ws-1 --project p-1",
                 "{phase}"
             );
         }
-        assert!(how_to_apply(STOPPED, "ws-1", "p-1").contains("router start"));
+        assert!(how_to_apply(&RouterPhase::Stopped, "ws-1", "p-1").contains("router start"));
     }
 
     #[test]

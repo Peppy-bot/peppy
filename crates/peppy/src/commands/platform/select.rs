@@ -12,7 +12,7 @@
 use std::io::{BufRead, IsTerminal};
 
 use auth::client::{self, Project, Workspace};
-use auth::context::{CONTEXT_VERSION, Named, PlatformContext};
+use auth::context::{CONTEXT_VERSION, Named, PlatformContext, project_label};
 use auth::enrollment::EnrollmentDocument;
 use auth::http::HttpClient;
 use auth::{AuthError, storage};
@@ -98,8 +98,7 @@ pub(crate) fn resolve_project(
     Ok(Selection { workspace, project })
 }
 
-/// Picks one project of `workspace`. Archived projects own no router and are
-/// not candidates.
+/// Picks one project of `workspace`.
 fn resolve_project_in(
     http: &HttpClient,
     api_url: &str,
@@ -109,10 +108,7 @@ fn resolve_project_in(
     default_project_id: Option<&str>,
     ask: &mut Ask,
 ) -> Result<Project> {
-    let projects: Vec<Project> = client::list_projects(http, api_url, cred, &workspace.id)?
-        .into_iter()
-        .filter(|project| !project.is_archived())
-        .collect();
+    let projects = active_projects(http, api_url, cred, &workspace.id)?;
     pick(
         Candidates {
             what: "project",
@@ -259,9 +255,10 @@ pub(crate) fn resolve_target(
                 &mut Ask::Never,
             )?;
             Ok(Target {
-                label: format!(
-                    "project {} ({}) in workspace {}",
-                    selection.project.name, selection.project.id, selection.workspace.name
+                label: project_label(
+                    &selection.project.name,
+                    &selection.project.id,
+                    &selection.workspace.name,
                 ),
                 workspace_id: selection.workspace.id,
                 project_id: selection.project.id,
@@ -314,6 +311,36 @@ pub(crate) fn refusal_on(target: &Target, error: AuthError) -> Error {
     }
 }
 
+/// The projects of `workspace_id` that are not archived. An archived project
+/// owns no router, so no command acts on it.
+fn active_projects(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut auth::Credential,
+    workspace_id: &str,
+) -> Result<Vec<Project>> {
+    Ok(client::list_projects(http, api_url, cred, workspace_id)?
+        .into_iter()
+        .filter(|project| !project.is_archived())
+        .collect())
+}
+
+/// Every workspace of the account with its projects that are not archived,
+/// in the order the platform lists them.
+pub(crate) fn active_project_tree(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut auth::Credential,
+) -> Result<Vec<(Workspace, Vec<Project>)>> {
+    client::list_workspaces(http, api_url, cred)?
+        .into_iter()
+        .map(|workspace| {
+            let projects = active_projects(http, api_url, cred, &workspace.id)?;
+            Ok((workspace, projects))
+        })
+        .collect()
+}
+
 /// Every project of every workspace of the account that is not archived, one
 /// per line, for an error that asks the person to name one.
 fn project_listing(
@@ -321,18 +348,17 @@ fn project_listing(
     api_url: &str,
     cred: &mut auth::Credential,
 ) -> Result<String> {
-    let mut lines = Vec::new();
-    for workspace in client::list_workspaces(http, api_url, cred)? {
-        for project in client::list_projects(http, api_url, cred, &workspace.id)? {
-            if project.is_archived() {
-                continue;
-            }
-            lines.push(format!(
-                "  {}  {}  (workspace {})",
-                project.id, project.name, workspace.name
-            ));
-        }
-    }
+    let lines: Vec<String> = active_project_tree(http, api_url, cred)?
+        .iter()
+        .flat_map(|(workspace, projects)| {
+            projects.iter().map(move |project| {
+                format!(
+                    "  {}  {}  (workspace {})",
+                    project.id, project.name, workspace.name
+                )
+            })
+        })
+        .collect();
     if lines.is_empty() {
         return Ok("  (none; create one in the web app first)".to_string());
     }
@@ -440,7 +466,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use auth::{Problem, ProblemKind};
+    use auth::ProblemKind;
+    use auth::test_support::{enrollment_document as enrolled, platform_context as context};
     use std::io::Cursor;
 
     type Pair = (String, String);
@@ -463,40 +490,6 @@ mod tests {
 
     fn two() -> Vec<Pair> {
         vec![named("id-1", "Lab"), named("id-2", "Field")]
-    }
-
-    fn enrolled() -> EnrollmentDocument {
-        EnrollmentDocument {
-            version: auth::enrollment::ENROLLMENT_VERSION,
-            api_url: "https://api.example".into(),
-            workspace_id: "ws-1".into(),
-            project_id: "p-1".into(),
-            peer_id: "peer-1".into(),
-            peer_name: "robot-7".into(),
-            zenoh_id: pmi::RouterId::parse("7f3a9c1e").unwrap(),
-            namespace: config::namespace::Namespace::parse("p-1").unwrap(),
-            router: auth::RouterEndpoint::parse("rtr.example", 7447).unwrap(),
-            certificate_issued_at: 1_700_000_000,
-            certificate_expires_at: 2_000_000_000,
-            enrolled_at: 1_700_000_000,
-        }
-    }
-
-    fn context() -> PlatformContext {
-        PlatformContext {
-            version: CONTEXT_VERSION,
-            api_origin: "https://api.example".into(),
-            subject: "user-123".into(),
-            workspace: Named {
-                id: "ws-2".into(),
-                name: "Robotics lab".into(),
-            },
-            project: Named {
-                id: "p-2".into(),
-                name: "Field".into(),
-            },
-            selected_at: 1_700_000_000,
-        }
     }
 
     /// The rule that names the router: a flag always wins, then the context,
@@ -603,13 +596,9 @@ mod tests {
     }
 
     fn problem(status: u16) -> AuthError {
-        AuthError::Problem(Problem {
-            kind: ProblemKind::Other("about:blank".into()),
-            status,
+        AuthError::Problem(auth::Problem {
             title: "Not Found".into(),
-            detail: None,
-            retry_after_secs: None,
-            pending_removals: None,
+            ..auth::test_support::problem(ProblemKind::Other("about:blank".into()), status)
         })
     }
 

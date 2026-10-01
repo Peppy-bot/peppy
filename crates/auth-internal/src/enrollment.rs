@@ -30,13 +30,14 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 use crate::client::RouterPeerEnrolled;
+use crate::document::{self, Versioned};
 use crate::error::{Error, Result};
-use crate::fs_perms::{restrict_dir, restrict_file};
+use crate::fs_perms::restrict_dir;
 
-/// On-disk schema version of `enrollment.json5`. Bumped on any shape change;
-/// there is no reader for an older version. A file of another version is
-/// rejected by [`load`], and the machine enrolls again.
-pub const ENROLLMENT_VERSION: u32 = 2;
+/// On-disk schema version of `enrollment.json5`. There is one reader, for
+/// this version. A file of another version is rejected by [`load`], and the
+/// machine enrolls again.
+pub const ENROLLMENT_VERSION: u32 = 1;
 pub const ENROLLMENT_FILE: &str = "enrollment.json5";
 pub const PEER_KEY_FILE: &str = "peer.key";
 pub const PEER_CERTIFICATE_FILE: &str = "peer.crt";
@@ -158,6 +159,16 @@ impl EnrollmentDocument {
     }
 }
 
+impl Versioned for EnrollmentDocument {
+    const VERSION: u32 = ENROLLMENT_VERSION;
+    const WHAT: &'static str = "enrollment";
+    const REMEDY: &'static str = "peppy platform enroll";
+
+    fn version(&self) -> u32 {
+        self.version
+    }
+}
+
 /// A loaded enrollment: the document plus the absolute paths of the material,
 /// each checked to exist at load so the daemon never renders a config naming a
 /// file that is not there.
@@ -223,13 +234,13 @@ impl IssuedMaterial {
             certificate_expires_at: enrolled.peer.certificate_expires_at.timestamp(),
             enrolled_at,
         };
-        Self::with_document(
+        Self {
             document,
-            enrolled.certificate,
-            enrolled.trust_anchor,
-            enrolled.chain,
-            enrolled.zenoh_config,
-        )
+            peer_certificate_pem: enrolled.certificate,
+            trust_anchor_pem: enrolled.trust_anchor,
+            chain_pem: enrolled.chain,
+            platform_zenoh_config: enrolled.zenoh_config,
+        }
     }
 
     /// The material of a renewal of `enrolled`, from the platform's answer. A
@@ -260,29 +271,13 @@ impl IssuedMaterial {
             certificate_expires_at: renewed.peer.certificate_expires_at.timestamp(),
             ..enrolled.clone()
         };
-        Ok(Self::with_document(
+        Ok(Self {
             document,
-            renewed.certificate,
-            renewed.trust_anchor,
-            renewed.chain,
-            renewed.zenoh_config,
-        ))
-    }
-
-    fn with_document(
-        document: EnrollmentDocument,
-        peer_certificate_pem: String,
-        trust_anchor_pem: String,
-        chain_pem: String,
-        platform_zenoh_config: String,
-    ) -> Self {
-        Self {
-            document,
-            peer_certificate_pem,
-            trust_anchor_pem,
-            chain_pem,
-            platform_zenoh_config,
-        }
+            peer_certificate_pem: renewed.certificate,
+            trust_anchor_pem: renewed.trust_anchor,
+            chain_pem: renewed.chain,
+            platform_zenoh_config: renewed.zenoh_config,
+        })
     }
 }
 
@@ -302,27 +297,9 @@ fn document_path(dirs: &PeppyDirs) -> PathBuf {
 /// another version, or missing any of its three PEM files; every message names
 /// `peppy platform enroll` as the remedy.
 pub fn load(dirs: &PeppyDirs) -> Result<Option<Enrollment>> {
-    let path = document_path(dirs);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(Error::Io(e)),
+    let Some(document) = document::load::<EnrollmentDocument>(&document_path(dirs))? else {
+        return Ok(None);
     };
-    let document: EnrollmentDocument = serde_json5::from_str(&content).map_err(|e| {
-        Error::Auth(format!(
-            "failed to parse {}: {e}; run `peppy platform enroll` again",
-            path.display()
-        ))
-    })?;
-    if document.version != ENROLLMENT_VERSION {
-        return Err(Error::Auth(format!(
-            "enrollment file {} is an unsupported format (v{}, expected v{}); \
-             run `peppy platform enroll` again",
-            path.display(),
-            document.version,
-            ENROLLMENT_VERSION
-        )));
-    }
     let peer_dir = dirs.peer_dir();
     let material = |name: &str| -> Result<PathBuf> {
         let file = peer_dir.join(name);
@@ -355,7 +332,7 @@ pub fn save(dirs: &PeppyDirs, bundle: &EnrollmentBundle) -> Result<()> {
         restrict_dir(conf)?;
     }
 
-    publish(
+    document::publish(
         &peer_dir.join(PEER_KEY_FILE),
         bundle.peer_key_pem.expose_secret(),
         true,
@@ -382,36 +359,15 @@ pub fn save_renewal(dirs: &PeppyDirs, renewed: &IssuedMaterial) -> Result<()> {
 /// Publishes what the platform issued, the document last: a crash before it
 /// lands leaves the document of the material that was there before.
 fn publish_issued(peer_dir: &Path, issued: &IssuedMaterial) -> Result<()> {
-    publish(
-        &peer_dir.join(PEER_CERTIFICATE_FILE),
-        &issued.peer_certificate_pem,
-        false,
-    )?;
-    publish(
-        &peer_dir.join(TRUST_ANCHOR_FILE),
-        &issued.trust_anchor_pem,
-        false,
-    )?;
-    publish(&peer_dir.join(CHAIN_FILE), &issued.chain_pem, false)?;
-    publish(
-        &peer_dir.join(PLATFORM_ZENOH_CONFIG_FILE),
-        &issued.platform_zenoh_config,
-        false,
-    )?;
-    let document = json5_pretty::to_string_pretty(&issued.document)
-        .map_err(|e| Error::Auth(format!("failed to serialize the enrollment: {e}")))?;
-    publish(&peer_dir.join(ENROLLMENT_FILE), &document, true)
-}
-
-fn publish(path: &Path, content: &str, owner_only: bool) -> Result<()> {
-    daemon_config::atomic_write::publish_atomic(path, |tmp| {
-        std::fs::write(tmp, content)?;
-        if owner_only {
-            restrict_file(tmp)?;
-        }
-        Ok(())
-    })?;
-    Ok(())
+    for (file, content) in [
+        (PEER_CERTIFICATE_FILE, &issued.peer_certificate_pem),
+        (TRUST_ANCHOR_FILE, &issued.trust_anchor_pem),
+        (CHAIN_FILE, &issued.chain_pem),
+        (PLATFORM_ZENOH_CONFIG_FILE, &issued.platform_zenoh_config),
+    ] {
+        document::publish(&peer_dir.join(file), content, false)?;
+    }
+    document::save(&peer_dir.join(ENROLLMENT_FILE), &issued.document, true)
 }
 
 /// Removes the whole peer directory. Absent is not an error: the machine is
@@ -424,20 +380,59 @@ pub fn remove(dirs: &PeppyDirs) -> Result<()> {
     }
 }
 
-/// The namespace the enrollment under `dirs` resolves to: the project's when
-/// enrolled, `local` otherwise. The same resolution the daemon does at startup,
-/// so the CLI can confirm the daemon came back under what it just wrote.
-pub fn namespace(dirs: &PeppyDirs) -> Result<Namespace> {
-    Ok(load(dirs)?
-        .map(|enrollment| enrollment.document.namespace)
-        .unwrap_or_else(Namespace::local))
+/// The identity an enrollment prescribes for a daemon generation: the
+/// namespace its sessions open with and, when enrolled, the platform-minted id
+/// its router pins. The daemon compares the identity of the enrollment on disk
+/// with the one it booted under to decide whether a poke needs a generation
+/// restart, and the CLI compares it with the daemon's recorded state to
+/// confirm that the daemon came back under what it just wrote. An unenrolled
+/// generation runs a per-boot router id that nothing on disk names, so it
+/// carries `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationIdentity {
+    pub namespace: Namespace,
+    pub router_id: Option<RouterId>,
+}
+
+impl FederationIdentity {
+    /// The identity `enrollment` prescribes: the project namespace and zenoh
+    /// id when enrolled, `local` and no pinned id otherwise.
+    pub fn of(enrollment: Option<&Enrollment>) -> Self {
+        match enrollment {
+            Some(enrollment) => Self {
+                namespace: enrollment.document.namespace.clone(),
+                router_id: Some(enrollment.document.zenoh_id.clone()),
+            },
+            None => Self {
+                namespace: Namespace::local(),
+                router_id: None,
+            },
+        }
+    }
+
+    /// The identity the enrollment under `dirs` prescribes.
+    pub fn on_disk(dirs: &PeppyDirs) -> Result<Self> {
+        Ok(Self::of(load(dirs)?.as_ref()))
+    }
+
+    /// Whether a generation that runs under `namespace` and `router_id` runs
+    /// under this identity. An unenrolled identity pins no router id, so the
+    /// per-boot id of such a generation is not compared.
+    pub fn is_run_by(&self, namespace: &Namespace, router_id: Option<&RouterId>) -> bool {
+        self.namespace == *namespace
+            && self
+                .router_id
+                .as_ref()
+                .is_none_or(|expected| router_id == Some(expected))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::RouterPeer;
+    use crate::client::PeerStatus;
     use crate::storage::secret;
+    use crate::test_support::router_peer;
 
     const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
     const ZID: &str = "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5";
@@ -454,14 +449,7 @@ mod tests {
 
     fn enrolled() -> RouterPeerEnrolled {
         RouterPeerEnrolled {
-            peer: RouterPeer {
-                id: "peer-1".into(),
-                name: "robot-7".into(),
-                certificate_cn: "robot-7".into(),
-                status: "unknown".into(),
-                certificate_expires_at: "2027-01-01T00:00:00Z".parse().unwrap(),
-                created_at: "2026-10-03T00:00:00Z".parse().unwrap(),
-            },
+            peer: router_peer("peer-1", "robot-7", PeerStatus::Unknown),
             address: RouterEndpoint::parse(ROUTER_HOST, 7447).unwrap(),
             certificate: certificate("leaf"),
             chain: certificate("issuer"),
@@ -632,7 +620,13 @@ mod tests {
             std::fs::read_to_string(dirs.peer_dir().join(PLATFORM_ZENOH_CONFIG_FILE)).unwrap(),
             bundle.issued.platform_zenoh_config
         );
-        assert_eq!(namespace(&dirs).unwrap().as_str(), PROJECT);
+        assert_eq!(
+            FederationIdentity::on_disk(&dirs).unwrap(),
+            FederationIdentity {
+                namespace: Namespace::parse(PROJECT).unwrap(),
+                router_id: Some(RouterId::parse(ZID).unwrap()),
+            }
+        );
 
         let (locator, tls) = loaded.federation_target();
         assert_eq!(locator, "tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447");
@@ -657,7 +651,6 @@ mod tests {
 
         remove(&dirs).expect("remove");
         assert!(load(&dirs).unwrap().is_none());
-        assert_eq!(namespace(&dirs).unwrap(), Namespace::local());
         remove(&dirs).expect("removing twice is fine");
     }
 
@@ -716,7 +709,52 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dirs = PeppyDirs::new(dir.path());
         assert!(load(&dirs).unwrap().is_none());
-        assert_eq!(namespace(&dirs).unwrap(), Namespace::local());
+        assert_eq!(
+            FederationIdentity::on_disk(&dirs).unwrap(),
+            FederationIdentity::of(None)
+        );
+    }
+
+    /// The identity of an unenrolled generation is `local` with no pinned id;
+    /// a generation matches it under any per-boot id. An enrolled identity is
+    /// matched by its namespace and its zenoh id together.
+    #[test]
+    fn the_identity_follows_the_enrollment_and_pins_the_id_only_when_enrolled() {
+        let local = Namespace::local();
+        let project = Namespace::parse(PROJECT).unwrap();
+        let zid = RouterId::parse(ZID).unwrap();
+        let other = RouterId::parse("7f3a").unwrap();
+
+        let unenrolled = FederationIdentity::of(None);
+        assert_eq!(
+            unenrolled,
+            FederationIdentity {
+                namespace: local.clone(),
+                router_id: None
+            }
+        );
+        assert!(unenrolled.is_run_by(&local, Some(&other)));
+        assert!(unenrolled.is_run_by(&local, None));
+        assert!(!unenrolled.is_run_by(&project, None));
+
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(dir.path());
+        save(&dirs, &bundle()).expect("save");
+        let enrolled = FederationIdentity::on_disk(&dirs).unwrap();
+        assert_eq!(
+            enrolled,
+            FederationIdentity {
+                namespace: project.clone(),
+                router_id: Some(zid.clone())
+            }
+        );
+        assert!(enrolled.is_run_by(&project, Some(&zid)));
+        assert!(
+            !enrolled.is_run_by(&project, Some(&other)),
+            "the old generation under the same project but another id is not back yet"
+        );
+        assert!(!enrolled.is_run_by(&local, Some(&zid)));
+        assert!(!enrolled.is_run_by(&project, None));
     }
 
     /// Every way the directory can be present but unusable fails the load with
@@ -730,7 +768,8 @@ mod tests {
         let good = std::fs::read_to_string(&document_file).unwrap();
 
         for (label, content) in [
-            ("version", good.replace("version: 2", "version: 1")),
+            ("version", good.replace("version: 1", "version: 2")),
+            ("unversioned", good.replace("version: 1,", "")),
             ("leading-zero zid", good.replace(ZID, "0abc")),
             ("uppercase zid", good.replace(ZID, "ABC")),
             ("namespace", good.replace(PROJECT, "**")),

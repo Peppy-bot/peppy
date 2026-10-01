@@ -99,8 +99,9 @@ fn credential_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::RouterPeer;
+    use crate::client::PeerStatus;
     use crate::enrollment::{EnrollmentBundle, PEER_CERTIFICATE_FILE, RouterEndpoint};
+    use crate::test_support::router_peer;
     use config::namespace::Namespace;
     use pmi::RouterId;
 
@@ -109,14 +110,7 @@ mod tests {
 
     fn answer(peer_id: &str, leaf: &str) -> RouterPeerEnrolled {
         RouterPeerEnrolled {
-            peer: RouterPeer {
-                id: peer_id.into(),
-                name: "robot-7".into(),
-                certificate_cn: "robot-7".into(),
-                status: "unknown".into(),
-                certificate_expires_at: "2027-01-01T00:00:00Z".parse().unwrap(),
-                created_at: "2026-10-03T00:00:00Z".parse().unwrap(),
-            },
+            peer: router_peer(peer_id, "robot-7", PeerStatus::Unknown),
             address: RouterEndpoint::parse("rtr-p.example", 7447).unwrap(),
             certificate: leaf.into(),
             chain: "chain".into(),

@@ -8,10 +8,11 @@ use std::sync::Arc;
 use daemon_config::consts::PeppyDirs;
 
 use crate::commands::Command;
-use crate::commands::platform::{PlatformSession, select};
+use crate::commands::platform::{PlatformSession, date, select};
+use crate::commands::table::render_columns;
 use crate::context::AppContext;
-use crate::error::{Error, Result};
-use auth::client::{self, RouterPeer};
+use crate::error::Result;
+use auth::client::{self, PeerStatus, RouterPeer};
 
 pub struct PeersCommand {
     pub api_url: Option<String>,
@@ -26,17 +27,10 @@ impl Command for PeersCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
         let mut cred = session.credential()?;
-        let enrollment = auth::enrollment::load(&session.dirs).map_err(Error::AuthEngine)?;
-
-        let context = session.context()?;
-        let target = select::resolve_target(
-            &session.http,
-            &session.api_url,
+        let (target, enrollment) = session.resolve_target(
             &mut cred,
             self.workspace.as_deref(),
             self.project.as_deref(),
-            context.as_ref(),
-            enrollment.as_ref().map(|e| &e.document),
         )?;
         let peers = client::list_peers(
             &session.http,
@@ -53,12 +47,8 @@ impl Command for PeersCommand {
         } = target;
         let this_machine = enrollment
             .as_ref()
-            .map(|e| e.document.peer_id.as_str())
-            .filter(|_| {
-                enrollment
-                    .as_ref()
-                    .is_some_and(|e| e.document.project_id == project_id)
-            });
+            .filter(|e| e.document.project_id == project_id)
+            .map(|e| e.document.peer_id.as_str());
 
         if self.json {
             let doc = serde_json::json!({
@@ -85,10 +75,10 @@ impl Command for PeersCommand {
 /// The status of a peer in words for the person. `unknown` is a real state of
 /// the platform: the router's admin space is off or did not answer, so the
 /// platform has nothing to report. It is not a failure of the peer.
-pub(crate) fn peer_status_label(status: &str) -> &str {
+pub(crate) fn peer_status_label(status: &PeerStatus) -> &str {
     match status {
-        "unknown" => "not reported by the platform",
-        other => other,
+        PeerStatus::Unknown => "not reported by the platform",
+        other => other.as_str(),
     }
 }
 
@@ -111,7 +101,7 @@ pub(crate) fn render_human(
             [
                 p.name.clone(),
                 peer_status_label(&p.status).to_string(),
-                p.certificate_expires_at.format("%Y-%m-%d").to_string(),
+                date(&p.certificate_expires_at),
                 p.id.clone(),
                 if Some(p.id.as_str()) == this_machine {
                     "(this machine)".to_string()
@@ -121,64 +111,26 @@ pub(crate) fn render_human(
             ]
         })
         .collect();
-    out.push_str(&table(["PEER", "STATUS", "CERT EXPIRES", "ID", ""], &rows));
-    out
-}
-
-/// Renders `rows` under `headers` as space-aligned columns, each column as wide
-/// as its widest value, with no trailing whitespace on a line.
-pub(crate) fn table<const N: usize>(headers: [&str; N], rows: &[[String; N]]) -> String {
-    let widths: Vec<usize> = (0..N)
-        .map(|i| {
-            rows.iter()
-                .map(|r| r[i].chars().count())
-                .chain(std::iter::once(headers[i].chars().count()))
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-    let line = |cells: Vec<&str>| {
-        let mut s = String::new();
-        for (i, cell) in cells.iter().enumerate() {
-            if i > 0 {
-                s.push_str("  ");
-            }
-            s.push_str(cell);
-            let pad = widths[i].saturating_sub(cell.chars().count());
-            s.push_str(&" ".repeat(pad));
-        }
-        format!("{}\n", s.trim_end())
-    };
-    let mut out = line(headers.to_vec());
-    for row in rows {
-        out.push_str(&line(row.iter().map(String::as_str).collect()));
-    }
+    out.push_str(&render_columns(
+        ["PEER", "STATUS", "CERT EXPIRES", "ID", ""],
+        &rows,
+    ));
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn peer(id: &str, name: &str, status: &str) -> RouterPeer {
-        RouterPeer {
-            id: id.into(),
-            name: name.into(),
-            certificate_cn: name.into(),
-            status: status.into(),
-            certificate_expires_at: "2027-01-01T00:00:00Z".parse().unwrap(),
-            created_at: "2026-10-03T00:00:00Z".parse().unwrap(),
-        }
-    }
+    use auth::test_support::router_peer as peer;
 
     #[test]
     fn this_machine_sorts_first_and_is_marked() {
         let out = render_human(
             "p-1",
             &[
-                peer("peer-2", "bench", "unknown"),
-                peer("peer-1", "robot-7", "connected"),
-                peer("peer-3", "arm", "pending_restart"),
+                peer("peer-2", "bench", PeerStatus::Unknown),
+                peer("peer-1", "robot-7", PeerStatus::Connected),
+                peer("peer-3", "arm", PeerStatus::PendingRestart),
             ],
             Some("peer-1"),
         );
@@ -196,9 +148,16 @@ mod tests {
     /// what it means.
     #[test]
     fn only_unknown_is_put_into_words() {
-        assert_eq!(peer_status_label("unknown"), "not reported by the platform");
-        for status in ["connected", "pending_restart", "some_future_state"] {
-            assert_eq!(peer_status_label(status), status);
+        assert_eq!(
+            peer_status_label(&PeerStatus::Unknown),
+            "not reported by the platform"
+        );
+        for status in [
+            PeerStatus::Connected,
+            PeerStatus::PendingRestart,
+            PeerStatus::Other("some_future_state".into()),
+        ] {
+            assert_eq!(peer_status_label(&status), status.as_str());
         }
     }
 

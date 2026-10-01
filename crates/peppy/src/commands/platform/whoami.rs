@@ -2,7 +2,6 @@
 //! print the identity, backend, and token validity. `--json` emits a
 //! machine-readable object (never including raw tokens).
 
-use std::path::Path;
 use std::sync::Arc;
 
 use daemon_config::consts::PeppyDirs;
@@ -31,7 +30,9 @@ impl Command for WhoamiCommand {
         match session.credential() {
             Ok(mut cred) => {
                 let principal = client::get_me(&session.http, &session.api_url, &mut cred)?;
-                let expires_at = session_expiry(&session.creds_path);
+                // Read after the resolution of the credential, which refreshes
+                // and persists a token that is about to expire.
+                let expires_at = session.cached_session().map(|pc| pc.expires_at);
                 if self.json {
                     print_json(env_name, &session.api_url, &principal, expires_at);
                 } else {
@@ -55,14 +56,6 @@ impl Command for WhoamiCommand {
             Err(e) => Err(e),
         }
     }
-}
-
-/// Reads the cached session's access-token expiry (unix seconds), if any.
-fn session_expiry(creds_path: &Path) -> Option<i64> {
-    storage::load(creds_path)
-        .ok()?
-        .session
-        .map(|pc| pc.expires_at)
 }
 
 fn token_is_valid(expires_at: Option<i64>) -> bool {

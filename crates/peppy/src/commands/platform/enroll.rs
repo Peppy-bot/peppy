@@ -17,7 +17,7 @@ use crate::commands::platform::{
 };
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use auth::client::RouterPeer;
+use auth::client::{PeerStatus, RouterPeer};
 use auth::csr::{self, PeerName};
 use auth::enrollment::{self, EnrollmentBundle, IssuedMaterial};
 use auth::{AuthError, Problem, ProblemKind, client, storage};
@@ -41,7 +41,7 @@ impl Command for EnrollCommand {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
         let managed = federation_is_managed(session.daemon_state.as_ref(), &session.config);
 
-        let existing = enrollment::load(&session.dirs).map_err(Error::AuthEngine)?;
+        let existing = session.enrollment()?;
         if let Some(existing) = &existing
             && !self.replace
         {
@@ -54,7 +54,8 @@ impl Command for EnrollCommand {
             )));
         }
 
-        let mut cred = session.credential()?;
+        // The name is checked before the session is resolved, so a bad `--name`
+        // refreshes no token.
         let name = peer_name(
             self.name.as_deref(),
             session
@@ -63,6 +64,7 @@ impl Command for EnrollCommand {
                 .map(|s| s.core_node_name.as_str()),
             session.config.core_node_name.as_deref(),
         )?;
+        let mut cred = session.credential()?;
         let context = session.context()?;
         let selection = select::resolve_project(
             &session.http,
@@ -228,7 +230,7 @@ fn full_router_message(
             let listing = peers::render_human(project_id, peers, None);
             let waiting = peers
                 .iter()
-                .filter(|peer| peer.status == "pending_restart")
+                .filter(|peer| peer.status == PeerStatus::PendingRestart)
                 .count();
             match waiting {
                 0 => format!("{problem}\n\n{listing}\nEach slot is in use. {REMOVE_A_PEER_FIRST}"),
@@ -270,12 +272,13 @@ fn peer_name(
                     .to_string(),
             )
         })?;
-    PeerName::parse(raw).map_err(Error::AuthEngine)
+    Ok(PeerName::parse(raw)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use auth::test_support::router_peer as peer;
 
     #[test]
     fn the_peer_name_prefers_the_flag_then_the_daemon_then_the_config() {
@@ -302,23 +305,9 @@ mod tests {
 
     fn problem(kind: ProblemKind, retry_after_secs: Option<u64>) -> Problem {
         Problem {
-            kind,
-            status: 422,
             title: "Peer limit reached".into(),
-            detail: None,
             retry_after_secs,
-            pending_removals: None,
-        }
-    }
-
-    fn peer(id: &str, name: &str, status: &str) -> RouterPeer {
-        RouterPeer {
-            id: id.into(),
-            name: name.into(),
-            certificate_cn: name.into(),
-            status: status.into(),
-            certificate_expires_at: "2027-01-01T00:00:00Z".parse().unwrap(),
-            created_at: "2026-10-03T00:00:00Z".parse().unwrap(),
+            ..auth::test_support::problem(kind, 422)
         }
     }
 
@@ -327,8 +316,8 @@ mod tests {
         let message = full_router_message(
             &problem(ProblemKind::PeerLimitReached, None),
             Some(&[
-                peer("peer-1", "arm", "connected"),
-                peer("peer-2", "bench", "pending_restart"),
+                peer("peer-1", "arm", PeerStatus::Connected),
+                peer("peer-2", "bench", PeerStatus::PendingRestart),
             ]),
             "ws-1",
             "p-1",
@@ -351,7 +340,7 @@ mod tests {
     fn a_full_router_with_no_removed_peer_asks_for_a_removal() {
         let message = full_router_message(
             &problem(ProblemKind::PeerLimitReached, None),
-            Some(&[peer("peer-1", "arm", "connected")]),
+            Some(&[peer("peer-1", "arm", PeerStatus::Connected)]),
             "ws-1",
             "p-1",
         );
@@ -367,7 +356,7 @@ mod tests {
             pending_removals,
             ..problem(ProblemKind::PeerLimitReached, None)
         };
-        let listed = [peer("peer-2", "bench", "pending_restart")];
+        let listed = [peer("peer-2", "bench", PeerStatus::PendingRestart)];
 
         assert_eq!(
             full_router_message(&with(Some(2)), None, "ws-1", "p-1"),

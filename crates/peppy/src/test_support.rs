@@ -420,7 +420,6 @@ impl ServeCommandEmulation {
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
             config::namespace::Namespace::local(),
             None,
-            false,
         );
         DaemonState::write_to(&daemon_state_path, &daemon_state)
             .expect("failed to write daemon state");

@@ -104,16 +104,15 @@ mod zenoh_tls_tests {
         start_router_with_tls(TlsConfig::server(certs.cert.clone(), certs.key.clone())).await
     }
 
-    /// Like [`start_tls_router`], but the listener requires every client to
-    /// present a certificate chained to the `minica` CA: the shape of a
-    /// platform project router.
+    /// A listener that requires every client to present a certificate chained
+    /// to the `minica` CA: the shape of a platform project router.
+    fn mtls_server_tls(certs: &Certs) -> TlsConfig {
+        TlsConfig::mtls_server(certs.cert.clone(), certs.key.clone(), certs.ca.clone())
+    }
+
+    /// Like [`start_tls_router`], but with [`mtls_server_tls`].
     async fn start_mtls_router(certs: &Certs) -> (Messenger, u16) {
-        start_router_with_tls(TlsConfig::mtls_server(
-            certs.cert.clone(),
-            certs.key.clone(),
-            certs.ca.clone(),
-        ))
-        .await
+        start_router_with_tls(mtls_server_tls(certs)).await
     }
 
     async fn start_router_with_tls(tls: TlsConfig) -> (Messenger, u16) {
@@ -303,6 +302,83 @@ mod zenoh_tls_tests {
         drop(_router);
     }
 
+    /// How long the inter-router link gets to come up. A link that comes up
+    /// does so in tens of milliseconds; a link that the remote router refuses
+    /// never does, so this is also how long the negative case waits.
+    const LINK_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// The federated topology: a *remote* router with `remote_tls`, and a
+    /// *local* router (plaintext for its own nodes) that dials it with
+    /// `upstream_tls`. `linked` is whether the local router's admin space
+    /// reported the inter-router link established within [`LINK_TIMEOUT`],
+    /// which is the signal the daemon itself waits on.
+    struct Federation {
+        _remote: Messenger,
+        remote_port: u16,
+        _local: Messenger,
+        local_port: u16,
+        linked: bool,
+    }
+
+    async fn federate(remote_tls: TlsConfig, upstream_tls: TlsConfig) -> Federation {
+        let (remote, remote_port) = start_router_with_tls(remote_tls).await;
+        let (local, local_port) = start_federated_router(remote_port, upstream_tls).await;
+        let linked = local
+            .router_links_probe()
+            .expect("a federated router dials an upstream")
+            .wait_established(LINK_TIMEOUT)
+            .await;
+        Federation {
+            _remote: remote,
+            remote_port,
+            _local: local,
+            local_port,
+            linked,
+        }
+    }
+
+    /// Publishes `payload` on `topic` into the REMOTE router over TLS with
+    /// `publisher_tls`, and returns what a subscriber on the LOCAL router
+    /// (attached over plaintext loopback) received within `RECV_TIMEOUT`.
+    async fn relay(
+        federation: &Federation,
+        publisher_tls: &TlsConfig,
+        topic: &str,
+        payload: &'static [u8],
+    ) -> Option<Bytes> {
+        let subscriber = open_plaintext_client(federation.local_port).await;
+        let subscription = subscriber
+            .subscribe_topic(&receiver(topic), SubscriberQoS::Standard)
+            .await
+            .expect("subscribe on the local router");
+
+        let mut publisher = open_tls_client(federation.remote_port, publisher_tls).await;
+        // The subscription must propagate local-router -> (tls federation) ->
+        // remote-router before the publish; a single discovery wait is too short
+        // for the cross-router hop, so allow a couple of rounds.
+        wait_for_subscriber_discovery().await;
+        wait_for_subscriber_discovery().await;
+        publisher
+            .publish_topic(
+                &sender(topic),
+                Payload::from_bytes(Bytes::from_static(payload)),
+                PublisherQoS::Standard,
+                true,
+            )
+            .await
+            .expect("publish on the remote router");
+
+        tokio::time::timeout(RECV_TIMEOUT, subscription.rx.recv_async())
+            .await
+            .ok()
+            .map(|received| {
+                received
+                    .expect("subscription channel open")
+                    .payload()
+                    .to_bytes()
+            })
+    }
+
     /// The federated topology end-to-end: a *local* router (plaintext for its
     /// own nodes) federated over `tls/` to a *remote* router. A subscriber on
     /// the LOCAL router receives a message a publisher sends into the REMOTE
@@ -312,49 +388,27 @@ mod zenoh_tls_tests {
     /// nodes to the remote network.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn federated_routers_relay_across_the_tls_link() {
-        const TOPIC: &str = "federation_round_trip";
         let _lock = ZENOH_SERIAL.lock().await;
         let certs = write_certs();
 
-        let (_remote, remote_port) = start_tls_router(&certs).await;
-        let (_local, local_port) =
-            start_federated_router(remote_port, trusting_client_tls(&certs)).await;
-        // Give the local router a moment to dial and federate with the remote
-        // (the inter-router session establishes asynchronously after spawn).
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        let federation = federate(
+            TlsConfig::server(certs.cert.clone(), certs.key.clone()),
+            trusting_client_tls(&certs),
+        )
+        .await;
+        assert!(
+            federation.linked,
+            "the local router linked to the remote one"
+        );
 
-        // Subscriber attaches to the LOCAL router over plaintext loopback.
-        let subscriber = open_plaintext_client(local_port).await;
-        let subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
-            .await
-            .expect("subscribe on the local router");
-
-        // Publisher attaches to the REMOTE router over TLS.
-        let mut publisher = open_tls_client(remote_port, &trusting_client_tls(&certs)).await;
-        // The subscription must propagate local-router → (tls federation) →
-        // remote-router before the publish; a single discovery wait is too short
-        // for the cross-router hop, so allow a couple of rounds.
-        wait_for_subscriber_discovery().await;
-        wait_for_subscriber_discovery().await;
-        publisher
-            .publish_topic(
-                &sender(TOPIC),
-                Payload::from_bytes(Bytes::from_static(b"across-the-federation")),
-                PublisherQoS::Standard,
-                true,
-            )
-            .await
-            .expect("publish on the remote router");
-
-        let msg = tokio::time::timeout(RECV_TIMEOUT, subscription.rx.recv_async())
-            .await
-            .expect("timed out waiting for a message across the federation")
-            .expect("subscription channel closed");
-        assert_eq!(msg.payload(), &Bytes::from_static(b"across-the-federation"));
-
-        drop(_local);
-        drop(_remote);
+        let received = relay(
+            &federation,
+            &trusting_client_tls(&certs),
+            "federation_round_trip",
+            b"across-the-federation",
+        )
+        .await;
+        assert_eq!(received, Some(Bytes::from_static(b"across-the-federation")));
     }
 
     /// The platform shape end-to-end: the remote router requires client
@@ -365,88 +419,42 @@ mod zenoh_tls_tests {
     /// ones zenoh reads and that the mutual handshake carries traffic.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn mtls_federated_routers_relay_across_the_link() {
-        const TOPIC: &str = "mtls_federation_round_trip";
         let _lock = ZENOH_SERIAL.lock().await;
         let certs = write_certs();
 
-        let (_remote, remote_port) = start_mtls_router(&certs).await;
-        let (_local, local_port) =
-            start_federated_router(remote_port, identified_client_tls(&certs)).await;
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        let federation = federate(mtls_server_tls(&certs), identified_client_tls(&certs)).await;
+        assert!(
+            federation.linked,
+            "the identified local router linked to the mTLS remote"
+        );
 
-        let subscriber = open_plaintext_client(local_port).await;
-        let subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
-            .await
-            .expect("subscribe on the local router");
-
-        let mut publisher = open_tls_client(remote_port, &identified_client_tls(&certs)).await;
-        wait_for_subscriber_discovery().await;
-        wait_for_subscriber_discovery().await;
-        publisher
-            .publish_topic(
-                &sender(TOPIC),
-                Payload::from_bytes(Bytes::from_static(b"across-mtls")),
-                PublisherQoS::Standard,
-                true,
-            )
-            .await
-            .expect("publish on the remote router");
-
-        let msg = tokio::time::timeout(RECV_TIMEOUT, subscription.rx.recv_async())
-            .await
-            .expect("timed out waiting for a message across the mTLS federation")
-            .expect("subscription channel closed");
-        assert_eq!(msg.payload(), &Bytes::from_static(b"across-mtls"));
-
-        drop(_local);
-        drop(_remote);
+        let received = relay(
+            &federation,
+            &identified_client_tls(&certs),
+            "mtls_federation_round_trip",
+            b"across-mtls",
+        )
+        .await;
+        assert_eq!(received, Some(Bytes::from_static(b"across-mtls")));
     }
 
     /// Negative path for mutual TLS: a local router that trusts the remote CA
     /// but presents no identity is refused by a listener that requires one, so
-    /// nothing published into the remote router reaches it, while an identified
-    /// publisher proves the remote router is serving.
+    /// no inter-router link is ever established, while an identified client
+    /// proves the remote router is serving.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_router_requiring_client_certificates_rejects_an_identity_free_link() {
-        const TOPIC: &str = "mtls_identity_free";
         let _lock = ZENOH_SERIAL.lock().await;
         let certs = write_certs();
 
-        let (_remote, remote_port) = start_mtls_router(&certs).await;
-        let (_local, local_port) =
-            start_federated_router(remote_port, trusting_client_tls(&certs)).await;
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        let subscriber = open_plaintext_client(local_port).await;
-        let subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
-            .await
-            .expect("subscribe on the local router");
-
-        let mut publisher = open_tls_client(remote_port, &identified_client_tls(&certs)).await;
-        wait_for_subscriber_discovery().await;
-        wait_for_subscriber_discovery().await;
-        publisher
-            .publish_topic(
-                &sender(TOPIC),
-                Payload::from_bytes(Bytes::from_static(b"should-not-cross")),
-                PublisherQoS::Standard,
-                true,
-            )
-            .await
-            .expect("publish on the remote router");
-
-        let delivered = tokio::time::timeout(Duration::from_secs(3), subscription.rx.recv_async())
-            .await
-            .is_ok();
+        let federation = federate(mtls_server_tls(&certs), trusting_client_tls(&certs)).await;
+        // The remote router is up and serves identified clients, so the absent
+        // link below is the missing identity's doing, not a router still starting.
+        drop(open_tls_client(federation.remote_port, &identified_client_tls(&certs)).await);
         assert!(
-            !delivered,
+            !federation.linked,
             "a router without a client certificate must not join an mTLS router"
         );
-
-        drop(_local);
-        drop(_remote);
     }
 
     /// The daemon's link probe presents the same identity the router does, so
