@@ -208,22 +208,34 @@ def format_change(before: int | None, now: int) -> str:
     return ("+" if change > 0 else "-") + format_bytes(abs(change))
 
 
-def label_directory(key: str, mount_points: dict[str, str], home: str) -> str:
+def shorten_path(path: str, places: list[tuple[str, str]]) -> str:
+    """Write path from the first of places it is in, by that place's name.
+
+    places pairs a directory with its name, such as the home directory with
+    `~`; one inside another comes first.
+    """
+    for directory, name in places:
+        directory = directory.rstrip("/")
+        if directory and (path == directory or path.startswith(directory + "/")):
+            return name + path[len(directory) :]
+    return path
+
+
+def label_directory(key: str, mount_points: dict[str, str], places: list[tuple[str, str]]) -> str:
     """Name a directory under `mounts/` by the path the job sees it at."""
     cache, _, rest = key.partition("/")
     point = mount_points.get(cache)
     if point is None:
         return f"{CACHES_DIR}/{key} (not mounted by this job)"
-    if home and (point == home or point.startswith(home.rstrip("/") + "/")):
-        point = "~" + point[len(home.rstrip("/")) :]
+    point = shorten_path(point, places)
     return f"{point}/{rest}" if rest else point
 
 
-def cache_rows(measurement: Measurement, record: Record | None, mount_points: dict[str, str], home: str) -> list[Row]:
+def cache_rows(measurement: Measurement, record: Record | None, mount_points: dict[str, str], places: list[tuple[str, str]]) -> list[Row]:
     caches = sorted(k for k in measurement.directories if "/" not in k)
     return [
         Row(
-            label=label_directory(key, mount_points, home),
+            label=label_directory(key, mount_points, places),
             at_restore=record.directories.get(key) if record else None,
             now=measurement.directories[key],
         )
@@ -231,12 +243,12 @@ def cache_rows(measurement: Measurement, record: Record | None, mount_points: di
     ]
 
 
-def largest_rows(measurement: Measurement, record: Record | None, mount_points: dict[str, str], home: str) -> list[Row]:
+def largest_rows(measurement: Measurement, record: Record | None, mount_points: dict[str, str], places: list[tuple[str, str]]) -> list[Row]:
     inner = [k for k in measurement.directories if "/" in k]
     inner.sort(key=lambda k: (-measurement.directories[k], k))
     return [
         Row(
-            label=label_directory(key, mount_points, home),
+            label=label_directory(key, mount_points, places),
             at_restore=record.directories.get(key) if record else None,
             now=measurement.directories[key],
         )
@@ -259,7 +271,7 @@ def render_report(
     record: Record | None,
     notes: list[str],
     mount_points: dict[str, str],
-    home: str,
+    places: list[tuple[str, str]],
 ) -> str:
     disk = measurement.disk
     share = 100 * disk.used_bytes / disk.total_bytes if disk.total_bytes else 0.0
@@ -278,14 +290,14 @@ def render_report(
         f"| Used | {used} |",
         "",
     ]
-    caches = cache_rows(measurement, record, mount_points, home)
+    caches = cache_rows(measurement, record, mount_points, places)
     if not caches:
         lines += ["No cache directory on the disk.", ""]
     else:
         lines += ["#### Caches", ""]
         lines += render_table(caches, record is not None)
         lines += [""]
-        largest = largest_rows(measurement, record, mount_points, home)
+        largest = largest_rows(measurement, record, mount_points, places)
         if largest:
             lines += [f"#### Largest directories in the caches (up to {LARGEST_DIRECTORIES})", ""]
             lines += render_table(largest, record is not None)
@@ -376,7 +388,12 @@ def main() -> int:
     notes = [record_note] if record_note else []
     notes += measurement.notes
     notes += [write_note] if write_note else []
-    append_summary(render_report(name, measurement, record, notes, mount_points, os.environ.get("HOME", "")))
+    # The workspace is inside the home directory, so it is tried first.
+    places = [
+        (os.environ.get("GITHUB_WORKSPACE", ""), "$GITHUB_WORKSPACE"),
+        (os.environ.get("HOME", ""), "~"),
+    ]
+    append_summary(render_report(name, measurement, record, notes, mount_points, places))
     return 0
 
 

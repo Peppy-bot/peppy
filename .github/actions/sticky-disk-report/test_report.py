@@ -19,6 +19,8 @@ import report
 
 DISK = "/mnt/runs-on/stickydisk"
 HOME = "/home/runner"
+WORKSPACE = "/home/runner/_work/public-peppy-libs/public-peppy-libs"
+PLACES = [(WORKSPACE, "$GITHUB_WORKSPACE"), (HOME, "~")]
 NODES_CACHE = "home-runner-.cache-nodes-hub-ci-0a1b2c3d"
 UV_CACHE = "home-runner-.cache-uv-11111111"
 GONE_CACHE = "home-runner-.cache-old-22222222"
@@ -167,10 +169,17 @@ class FormatTest(unittest.TestCase):
         self.assertEqual(report.format_change(2 * GIB, GIB), "-1.0 GiB")
 
     def test_a_directory_is_named_by_its_mount_point(self):
-        points = {NODES_CACHE: "/home/runner/.cache/nodes-hub-ci", "opt": "/opt/cache", "near": "/home/runner2/x"}
+        points = {
+            NODES_CACHE: "/home/runner/.cache/nodes-hub-ci",
+            "target": f"{WORKSPACE}/target",
+            "opt": "/opt/cache",
+            "near": "/home/runner2/x",
+        }
         cases = {
             NODES_CACHE: "~/.cache/nodes-hub-ci",
             f"{NODES_CACHE}/target": "~/.cache/nodes-hub-ci/target",
+            # The workspace is in the home directory, and its name wins.
+            "target/debug": "$GITHUB_WORKSPACE/target/debug",
             "opt/sub": "/opt/cache/sub",
             # A path that only starts with the same letters as home is not in it.
             "near": "/home/runner2/x",
@@ -178,7 +187,12 @@ class FormatTest(unittest.TestCase):
         }
         for key, label in cases.items():
             with self.subTest(key=key):
-                self.assertEqual(report.label_directory(key, points, HOME), label)
+                self.assertEqual(report.label_directory(key, points, PLACES), label)
+
+    def test_a_path_outside_every_place_stays_whole(self):
+        self.assertEqual(report.shorten_path("/opt/cache", PLACES), "/opt/cache")
+        self.assertEqual(report.shorten_path(HOME, PLACES), "~")
+        self.assertEqual(report.shorten_path("/x", [("", "~")]), "/x")
 
 
 class RenderTest(unittest.TestCase):
@@ -203,7 +217,7 @@ class RenderTest(unittest.TestCase):
             }
         )
         self.assertEqual(
-            report.render_report("node-tests", now, before, ["A note."], self.points, HOME),
+            report.render_report("node-tests", now, before, ["A note."], self.points, PLACES),
             "\n".join(
                 [
                     "### Sticky disk `node-tests`",
@@ -236,14 +250,14 @@ class RenderTest(unittest.TestCase):
 
     def test_without_a_record_only_the_current_sizes_show(self):
         now = measurement({NODES_CACHE: 2 * GIB, f"{NODES_CACHE}/target": 2 * GIB}, used=2 * GIB)
-        text = report.render_report("node-tests", now, None, [], self.points, HOME)
+        text = report.render_report("node-tests", now, None, [], self.points, PLACES)
         self.assertIn("| Restored | No record of an earlier job:", text)
         self.assertIn("| Used | 2.0 GiB of 200.0 GiB (1%) |", text)
         self.assertIn("| `~/.cache/nodes-hub-ci` | - | 2.0 GiB | - |", text)
         self.assertIn("| `~/.cache/nodes-hub-ci/target` | - | 2.0 GiB | - |", text)
 
     def test_a_disk_without_caches_says_so(self):
-        text = report.render_report("node-tests", measurement({}), None, [], {}, HOME)
+        text = report.render_report("node-tests", measurement({}), None, [], {}, PLACES)
         self.assertIn("No cache directory on the disk.", text)
         self.assertNotIn("#### Caches", text)
 
@@ -252,7 +266,7 @@ class RenderTest(unittest.TestCase):
         directories.update({f"{NODES_CACHE}/d{i:02}": i * GIB for i in range(1, 13)})
         # Two of the same size are listed by name.
         directories[f"{NODES_CACHE}/a-tie"] = 12 * GIB
-        rows = report.largest_rows(measurement(directories), None, self.points, HOME)
+        rows = report.largest_rows(measurement(directories), None, self.points, PLACES)
         self.assertEqual(
             [row.label.rsplit("/", 1)[1] for row in rows],
             ["a-tie", "d12", "d11", "d10", "d09", "d08", "d07", "d06", "d05", "d04"],
