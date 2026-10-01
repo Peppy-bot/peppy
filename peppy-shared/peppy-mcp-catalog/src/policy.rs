@@ -60,6 +60,41 @@ pub enum OversizePolicy {
     Reject,
 }
 
+/// The policies that shape the content a client receives, read off the
+/// entry that carries them: the image representation a frame is published
+/// under, the cap on the size of the content, and what is done when the
+/// cap is exceeded. A topic's snapshot and a service's answer take them
+/// alike, and the rules the three follow together are checked here once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContentPolicies<'a> {
+    pub representation: Option<&'a ImageRepresentation>,
+    pub max_result_bytes: Option<NonZeroU64>,
+    pub on_oversize: Option<OversizePolicy>,
+}
+
+impl ContentPolicies<'_> {
+    /// The document-level rules the three fields must satisfy together,
+    /// with `context` naming the entry in every error.
+    pub fn check_coherence(&self, context: &str) -> Result<(), String> {
+        if self.on_oversize.is_some() && self.max_result_bytes.is_none() {
+            return Err(format!(
+                "{context}: `on_oversize` requires `max_result_bytes` to set the size it acts on"
+            ));
+        }
+        if self.on_oversize == Some(OversizePolicy::Downscale)
+            && !self
+                .representation
+                .is_some_and(|representation| representation.image.downscales())
+        {
+            return Err(format!(
+                "{context}: `on_oversize: \"downscale\"` requires a `jpeg` or `png16` image \
+                 representation"
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Interpret an image-carrying topic through named members of its derived
 /// schema and publish it in the declared codec. Frames whose encoding
 /// already matches the codec pass through without transcoding. A `jpeg`

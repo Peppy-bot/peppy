@@ -14,8 +14,9 @@ use rmcp::model::{
 };
 use serde_json::{Value, json};
 use support::{
-    FRAME_URI, GUARD, STATUS_URI, connect, connect_with_tasks, fixture_bundle, fixture_exposures,
-    fixture_server, poll_task_until, protocol_error, sample_rgb8_frame, serve_set, start_set,
+    FRAME_URI, GUARD, STATUS_URI, Streaming, connect, connect_with_tasks, fixture_bundle,
+    fixture_exposures, fixture_server, poll_task_until, protocol_error, sample_rgb8_frame,
+    serve_set, start_set,
 };
 use tokio::sync::mpsc::{UnboundedSender, error::TryRecvError, unbounded_channel};
 
@@ -40,6 +41,7 @@ async fn identical_public_names_resolve_to_their_own_endpoint() {
         assert_eq!(
             names,
             [
+                "camera.recent_calls",
                 "front_camera.info",
                 "front_camera.look",
                 "front_camera.set_brightness",
@@ -65,15 +67,13 @@ async fn identical_public_names_resolve_to_their_own_endpoint() {
         .server
         .ingest("front_camera.status")
         .expect("resource exists");
-    let token = ingest.admit().expect("gate open");
-    ingest
-        .publish(token, json!({ "battery": 87 }))
-        .expect("publishes");
+    let status = Streaming::of(ingest, json!({ "battery": 87 }));
 
     let read = first_client
         .read_resource(ReadResourceRequestParams::new(STATUS_URI))
         .await
         .expect("the publishing endpoint serves its snapshot");
+    status.stop().await;
     let rmcp::model::ResourceContents::TextResourceContents { text, .. } =
         read.contents.first().expect("one content item")
     else {

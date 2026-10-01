@@ -13,7 +13,8 @@
 
 use peppy_mcp_catalog::ExposureBundle;
 use peppy_mcp_runtime::{
-    ActionContext, ActionExit, CancelledGoal, Clock, ExposureServer, ExposureSet, ToolCall,
+    ActionContext, ActionExit, CancelledGoal, Clock, ExposureServer, ExposureSet, ResourceIngest,
+    ToolCall,
 };
 use rmcp::model::{
     ClientCapabilities, ClientInfo, DetailedTask, GetTaskParams, ProgressNotificationParam,
@@ -237,8 +238,43 @@ const BUNDLE_TEMPLATE: &str = r#"{
       "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
       "output_schema": { "type": "object" }
     }
-  ]
+  ],
+  "call_record": {
+    "name": "camera.recent_calls",
+    "description": "The last state-changing calls of this endpoint, newest first.",
+    "keep": 20
+  }
 }"#;
+
+/// A topic that streams: `value` published through `ingest` every few
+/// milliseconds until the stream is stopped, as a camera or a state topic
+/// does, so a read that arrives while it runs answers with the next
+/// message. The fixture clock stands still, so the interval gate admits
+/// the first message alone; every later one is admitted for a waiting
+/// reader.
+pub struct Streaming {
+    publisher: tokio::task::JoinHandle<()>,
+}
+
+impl Streaming {
+    pub fn of(ingest: ResourceIngest, value: Value) -> Self {
+        let publisher = tokio::spawn(async move {
+            loop {
+                if let Some(token) = ingest.admit() {
+                    ingest.publish(token, value.clone()).expect("publishes");
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        Self { publisher }
+    }
+
+    /// Ends the stream; no message is published once this returns.
+    pub async fn stop(self) {
+        self.publisher.abort();
+        let _ = self.publisher.await;
+    }
+}
 
 /// One served endpoint of the fixture set, with the in-process handle its
 /// snapshots are fed through and the manual clock its policies run on.
@@ -443,6 +479,14 @@ pub async fn serve_set(servers: Vec<(Expected, ExposureServer, Arc<AtomicU64>)>)
 
 pub async fn connect(url: &str) -> Client {
     connect_as(url, ClientInfo::default()).await
+}
+
+/// Connects a client that names itself `name` at `version`, the identity
+/// the call record keeps.
+pub async fn connect_named(url: &str, name: &str, version: &str) -> Client {
+    let mut info = ClientInfo::default();
+    info.client_info = rmcp::model::Implementation::new(name, version);
+    connect_as(url, info).await
 }
 
 /// Connects a client that declares the SEP-2663 tasks extension capability;

@@ -9,8 +9,8 @@
 //! [`build_exposure_bundle`]: crate::build_exposure_bundle
 
 use crate::policy::{
-    ActionOperation, FreshnessPolicy, GoalBound, ImageCodec, ImageRepresentation, OversizePolicy,
-    ServiceOperation, UpdatePolicy,
+    ActionOperation, ContentPolicies, FreshnessPolicy, GoalBound, ImageCodec, ImageRepresentation,
+    OversizePolicy, ServiceOperation, UpdatePolicy,
 };
 use indexmap::IndexMap;
 use peppy_config_model::fingerprint::ManifestFingerprint;
@@ -57,6 +57,40 @@ pub struct McpExposure {
     pub manifest: ExposureManifest,
     pub server: ServerIdentity,
     pub surface: ExposureSurface,
+    /// The record of the state-changing calls the endpoint takes, when the
+    /// document declares one.
+    pub call_record: Option<CallRecord>,
+}
+
+/// A tool that answers the last calls of every tool of the exposure that is
+/// not read-only, newest first: who called what, with what, and how it
+/// ended. The endpoint keeps the record in memory for the life of the
+/// process, and the tool itself leaves no entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CallRecord {
+    pub tool: PublicName,
+    #[serde(deserialize_with = "deserialize_prose")]
+    pub description: String,
+    /// How many calls the endpoint keeps, 1 to [`CALL_RECORD_MAX_KEEP`].
+    #[serde(deserialize_with = "deserialize_keep")]
+    pub keep: u32,
+}
+
+/// The most calls a record keeps.
+pub const CALL_RECORD_MAX_KEEP: u32 = 1000;
+
+fn deserialize_keep<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let keep = u32::deserialize(deserializer)?;
+    if keep == 0 || keep > CALL_RECORD_MAX_KEEP {
+        return Err(de::Error::custom(format!(
+            "`keep` must be between 1 and {CALL_RECORD_MAX_KEEP}, got {keep}"
+        )));
+    }
+    Ok(keep)
 }
 
 /// What an exposure publishes: the targets a launcher fills, or the robots
@@ -122,6 +156,8 @@ struct RawMcpExposure {
     robots: Option<RobotSurface>,
     #[serde(deserialize_with = "deserialize_targets")]
     targets: IndexMap<String, RawExposureTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call_record: Option<CallRecord>,
 }
 
 impl TryFrom<RawMcpExposure> for McpExposure {
@@ -157,11 +193,15 @@ impl TryFrom<RawMcpExposure> for McpExposure {
                 claim(name)?;
             }
         }
+        if let Some(record) = &raw.call_record {
+            claim(record.tool.as_str())?;
+        }
         Ok(Self {
             peppy_schema: raw.peppy_schema,
             manifest: raw.manifest,
             server: raw.server,
             surface,
+            call_record: raw.call_record,
         })
     }
 }
@@ -197,6 +237,7 @@ impl From<McpExposure> for RawMcpExposure {
             server: exposure.server,
             robots,
             targets,
+            call_record: exposure.call_record,
         }
     }
 }
@@ -535,40 +576,18 @@ pub struct PictureTool {
 }
 
 impl TopicExposure {
+    /// The policies that shape the snapshot a read serves.
+    pub fn content_policies(&self) -> ContentPolicies<'_> {
+        ContentPolicies {
+            representation: self.representation.as_ref(),
+            max_result_bytes: self.max_result_bytes,
+            on_oversize: self.on_oversize,
+        }
+    }
+
     fn check_coherence(&self, target_name: &str) -> Result<(), String> {
         let context = format!("target `{target_name}` topic `{}`", self.member);
-        if let Some(representation) = &self.representation
-            && representation.quality.is_some()
-            && representation.image != ImageCodec::Jpeg
-        {
-            return Err(format!(
-                "{context}: `quality` applies only to the `jpeg` image representation"
-            ));
-        }
-        if let Some(representation) = &self.representation
-            && representation.depth_range.is_some()
-            && representation.image != ImageCodec::Jpeg
-        {
-            return Err(format!(
-                "{context}: `depth_range` applies only to the `jpeg` image representation"
-            ));
-        }
-        if self.on_oversize.is_some() && self.max_result_bytes.is_none() {
-            return Err(format!(
-                "{context}: `on_oversize` requires `max_result_bytes` to set the size it acts on"
-            ));
-        }
-        if self.on_oversize == Some(OversizePolicy::Downscale)
-            && !self
-                .representation
-                .as_ref()
-                .is_some_and(|r| r.image.downscales())
-        {
-            return Err(format!(
-                "{context}: `on_oversize: \"downscale\"` requires a `jpeg` or `png16` image \
-                 representation"
-            ));
-        }
+        self.content_policies().check_coherence(&context)?;
         if self.picture.is_some() {
             let not_a_picture = match self.representation.as_ref().map(|r| r.image) {
                 Some(ImageCodec::Jpeg) => None,
@@ -592,7 +611,10 @@ impl TopicExposure {
 }
 
 /// A service member exposed as an MCP tool that completes within one
-/// request.
+/// request. A service whose response carries a frame can answer it as a
+/// picture: under a `representation`, the frame is published in the
+/// representation's codec as an image block beside the rest of the
+/// response, which is the document.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceExposure {
@@ -613,14 +635,33 @@ pub struct ServiceExposure {
         deserialize_with = "deserialize_restrict"
     )]
     pub restrict: IndexMap<String, RestrictBounds>,
-    /// Cap on the serialized size of the tool result content, in bytes. A
-    /// response exceeding it is reported as a tool error.
+    /// The image representation of a response that carries a frame; its
+    /// fields name members of the response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation: Option<ImageRepresentation>,
+    /// Cap on the serialized size of the tool result content, in bytes:
+    /// the serialized document plus, under a representation, the base64
+    /// text of the blob. A response exceeding it is reported as a tool
+    /// error, unless `on_oversize` downscales it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_result_bytes: Option<NonZeroU64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_oversize: Option<OversizePolicy>,
 }
 
 impl ServiceExposure {
+    /// The policies that shape the answer a call receives.
+    pub fn content_policies(&self) -> ContentPolicies<'_> {
+        ContentPolicies {
+            representation: self.representation.as_ref(),
+            max_result_bytes: self.max_result_bytes,
+            on_oversize: self.on_oversize,
+        }
+    }
+
     fn check_coherence(&self, target_name: &str) -> Result<(), String> {
+        self.content_policies()
+            .check_coherence(&format!("target `{target_name}` service `{}`", self.member))?;
         for (field, bounds) in &self.restrict {
             let context = format!(
                 "target `{target_name}` service `{}`: `restrict.{field}`",
@@ -2035,9 +2076,128 @@ mod tests {
         assert!(parse_err(&unknown).contains("unknown field `quality`"));
     }
 
+    /// `camera_and_recording` with a record of `keep` calls.
+    fn with_record(keep: &str) -> String {
+        camera_and_recording().replace(
+            "targets: {",
+            &format!(
+                r#"call_record: {{
+                tool: "camera.recent_calls",
+                description: "The last state-changing calls of this endpoint.",
+                keep: {keep},
+            }},
+            targets: {{"#
+            ),
+        )
+    }
+
+    #[test]
+    fn a_call_record_names_its_tool_in_the_public_namespace_and_keeps_1_to_1000_calls() {
+        let exposure = parse(&with_record("200")).expect("a record parses");
+        let record = exposure.call_record.expect("the record");
+        assert_eq!(record.tool.as_str(), "camera.recent_calls");
+        assert_eq!(
+            record.description,
+            "The last state-changing calls of this endpoint."
+        );
+        assert_eq!(record.keep, 200);
+        assert!(
+            parse(&camera_and_recording())
+                .expect("parses")
+                .call_record
+                .is_none(),
+            "a document without one keeps no record"
+        );
+
+        for (keep, problem) in [
+            ("0", "`keep` must be between 1 and 1000, got 0"),
+            ("1001", "`keep` must be between 1 and 1000, got 1001"),
+        ] {
+            let err = parse_err(&with_record(keep));
+            assert!(err.contains(problem), "{keep}: {err}");
+        }
+        assert_eq!(
+            parse(&with_record("1000"))
+                .expect("the bound is inclusive")
+                .call_record
+                .expect("the record")
+                .keep,
+            CALL_RECORD_MAX_KEEP
+        );
+
+        let taken = with_record("10").replace(
+            r#"tool: "camera.recent_calls""#,
+            r#"tool: "front_camera.info""#,
+        );
+        assert!(
+            parse_err(&taken).contains("`front_camera.info` is declared more than once"),
+            "the record tool shares the public namespace"
+        );
+        let unknown = with_record("10").replace("keep: 10,", "keep: 10, clients: [],");
+        assert!(parse_err(&unknown).contains("unknown field `clients`"));
+    }
+
+    /// The camera's info service answering with a picture: a service with
+    /// the representation and size policies a topic takes.
+    fn pictured_info(policies: &str) -> String {
+        camera_and_recording().replace(
+            r#"operation: "read_only",
+                            deadline_ms: 2000,"#,
+            &format!(
+                r#"operation: "read_only",
+                            deadline_ms: 2000,
+                            {policies}"#
+            ),
+        )
+    }
+
+    #[test]
+    fn a_service_takes_the_representation_and_size_policies_of_a_topic() {
+        let exposure = parse(&pictured_info(&format!(
+            r#"representation: {{ image: "jpeg", quality: 80, {FRAME_FIELDS} }},
+               max_result_bytes: 524288,
+               on_oversize: "downscale","#
+        )))
+        .expect("a pictured service parses");
+        let info = &targets_of(&exposure)["front_camera"].services[0];
+        let representation = info.representation.as_ref().expect("representation");
+        assert_eq!(representation.image, ImageCodec::Jpeg);
+        assert_eq!(
+            representation.quality,
+            Some(JpegQuality::new(80).expect("valid"))
+        );
+        assert_eq!(representation.fields.data, "frame");
+        assert_eq!(info.max_result_bytes.map(NonZeroU64::get), Some(524288));
+        assert_eq!(info.on_oversize, Some(OversizePolicy::Downscale));
+        assert_eq!(
+            info.content_policies(),
+            ContentPolicies {
+                representation: Some(representation),
+                max_result_bytes: info.max_result_bytes,
+                on_oversize: info.on_oversize,
+            }
+        );
+
+        // The rules the three follow together hold for a service as for a
+        // topic.
+        let err = parse_err(&pictured_info(
+            r#"max_result_bytes: 65536, on_oversize: "downscale","#,
+        ));
+        assert!(
+            err.contains("target `front_camera` service `video_stream_info`")
+                && err.contains(r#"`on_oversize: "downscale"` requires a `jpeg`"#),
+            "{err}"
+        );
+        let err = parse_err(&pictured_info(r#"on_oversize: "reject","#));
+        assert!(
+            err.contains("`on_oversize` requires `max_result_bytes`"),
+            "{err}"
+        );
+    }
+
     #[test]
     fn round_trips_through_serde() {
-        let exposure = parse(&camera_and_recording()).expect("parses");
+        let exposure = parse(&with_record("50")).expect("parses");
         let serialized = serde_json::to_string(&exposure).expect("serializes");
         let reparsed: McpExposure = serde_json::from_str(&serialized).expect("reparses");
         assert_eq!(reparsed, exposure);

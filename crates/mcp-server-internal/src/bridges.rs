@@ -333,19 +333,24 @@ pub(crate) async fn pump_resource(
         let Some(ingest) = ingest_of(&producer) else {
             continue;
         };
-        feed(&ingest, || subscription.decode(&message));
+        if feed(&ingest, || subscription.decode(&message)) {
+            // The decode and the transcode ran on this thread of the
+            // runtime: a reader the publish woke gets its turn before the
+            // next message is looked at.
+            tokio::task::yield_now().await;
+        }
     }
 }
 
 /// Offers one message to a resource: the update-rate gate runs before any
 /// conversion or transcoding, then the decoded snapshot meets the
-/// resource's policies.
+/// resource's policies. Whether the message was admitted, and so decoded.
 fn feed<E: std::fmt::Display>(
     ingest: &ResourceIngest,
     decode: impl FnOnce() -> Result<serde_json::Value, E>,
-) {
+) -> bool {
     let Some(token) = ingest.admit() else {
-        return;
+        return false;
     };
     match decode() {
         Ok(value) => {
@@ -357,6 +362,7 @@ fn feed<E: std::fmt::Display>(
             tracing::debug!(%error, resource = ingest.resource_name(), "message does not convert")
         }
     }
+    true
 }
 
 /// The producer a call goes to: the member the runtime routed it to on a

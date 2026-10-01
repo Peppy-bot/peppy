@@ -21,9 +21,10 @@ use rmcp::model::{
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
 use support::{
-    Client, FRAME_URI, GUARD, STATUS_URI, assert_ended_cancelled, confirmation_accept, connect,
-    connect_logging_progress, connect_with_tasks, fixture_bundle, fixture_exposures,
-    fixture_server, poll_task_until, protocol_error, sample_rgb8_frame, serve_set, start_set,
+    Client, FRAME_URI, GUARD, STATUS_URI, Streaming, assert_ended_cancelled, confirmation_accept,
+    connect, connect_logging_progress, connect_named, connect_with_tasks, fixture_bundle,
+    fixture_exposures, fixture_server, poll_task_until, protocol_error, sample_rgb8_frame,
+    serve_set, start_set,
 };
 
 const MS: u64 = 1_000_000;
@@ -32,7 +33,7 @@ const MS: u64 = 1_000_000;
 async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
     let set = start_set().await;
     for endpoint in &set.endpoints {
-        let client = connect(&endpoint.url).await;
+        let client = connect_named(&endpoint.url, "loopback-test", "1.0").await;
 
         // The catalog matches the bundle and carries the caching hints.
         let tools = client.list_tools(None).await.expect("tools/list answers");
@@ -41,6 +42,7 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
         assert_eq!(
             tool_names,
             [
+                "camera.recent_calls",
                 "front_camera.info",
                 "front_camera.look",
                 "front_camera.set_brightness",
@@ -156,7 +158,9 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
         }
         subscription.cancel().await.expect("subscription cancels");
 
-        // The published snapshot serves with the remaining freshness as ttlMs.
+        // The status streams on: a read answers with the message that
+        // arrives after it, with the remaining freshness as ttlMs.
+        let status = Streaming::of(ingest, json!({ "battery": 87 }));
         let read = client
             .read_resource(ReadResourceRequestParams::new(STATUS_URI))
             .await
@@ -193,17 +197,14 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
             Some(unavailable.message.as_ref())
         );
 
-        // An rgb8 frame published through the ingest serves as a document
+        // An rgb8 frame streamed through the ingest serves as a document
         // without the frame and the frame as a JPEG blob, with the same
         // remaining-freshness hint as any other snapshot.
         let frame_ingest = endpoint
             .server
             .ingest("front_camera.latest_frame")
             .expect("resource exists");
-        let token = frame_ingest.admit().expect("gate open");
-        frame_ingest
-            .publish(token, sample_rgb8_frame())
-            .expect("frame publishes");
+        let frames = Streaming::of(frame_ingest, sample_rgb8_frame());
         let read = client
             .read_resource(ReadResourceRequestParams::new(FRAME_URI))
             .await
@@ -320,6 +321,46 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
             .expect("bridge failures are tool errors");
         assert_eq!(called.is_error, Some(true));
 
+        // The record lists the three state-changing calls, newest first,
+        // under the identity the client declared; the read-only calls, the
+        // picture tool and the reads left no entry.
+        let recorded = client
+            .call_tool(CallToolRequestParams::new("camera.recent_calls"))
+            .await
+            .expect("the record answers");
+        assert_eq!(recorded.is_error, Some(false));
+        let calls = recorded.structured_content.expect("structured")["calls"]
+            .as_array()
+            .cloned()
+            .expect("the calls");
+        let summary: Vec<(&str, &str, Value)> = calls
+            .iter()
+            .map(|call| {
+                (
+                    call["tool"].as_str().expect("tool"),
+                    call["outcome"].as_str().expect("outcome"),
+                    call["arguments"]["value"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("front_camera.set_brightness", "failed", json!(13)),
+                ("front_camera.set_brightness", "refused", json!(65)),
+                ("front_camera.set_brightness", "completed", json!(12)),
+            ]
+        );
+        for call in &calls {
+            assert_eq!(
+                call["client"],
+                json!({ "name": "loopback-test", "version": "1.0" })
+            );
+        }
+        assert_eq!(calls[0]["message"], "call failed: 13 is reserved");
+
+        status.stop().await;
+        frames.stop().await;
         client.cancel().await.expect("client disconnects");
 
         // Once the injected clock passes max_age_ms, a fresh connection reads
@@ -375,10 +416,7 @@ async fn a_picture_tool_is_never_a_task() {
             .server
             .ingest("front_camera.latest_frame")
             .expect("resource exists");
-        let token = frame_ingest.admit().expect("gate open");
-        frame_ingest
-            .publish(token, sample_rgb8_frame())
-            .expect("frame publishes");
+        let frames = Streaming::of(frame_ingest, sample_rgb8_frame());
 
         let client = connect_with_tasks(&endpoint.url).await;
         let response = client
@@ -391,6 +429,7 @@ async fn a_picture_tool_is_never_a_task() {
         assert_eq!(looked.is_error, Some(false));
         let image = looked.content[0].as_image().expect("the image block");
         assert_is_jpeg(&image.data);
+        frames.stop().await;
         client.cancel().await.expect("client disconnects");
     }
     set.stop().await;

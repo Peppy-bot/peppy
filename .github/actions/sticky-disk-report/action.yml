@@ -1,0 +1,20 @@
+name: Sticky disk report
+description: >-
+  Writes a report of the job's RunsOn sticky disk to the job summary at the
+  end of the job: the size of the disk and the space used, and for each cache
+  on it and for its largest directories, the size at the restore, the size
+  now and the change. It shows what the snapshot RunsOn takes after the job
+  holds and what grows in it. Run it right after the runs-on/action step that
+  mounts the caches: post steps run in the reverse order of their steps, so
+  the report then runs before runs-on/action unmounts the disk. The job's
+  runs-on label must request a sticky disk (`sticky=<name>:<size>`). The
+  report runs for a job that failed or was cancelled too, because RunsOn
+  snapshots those disks as well, and it never fails the job.
+
+# A post step exists for JavaScript actions only, so the action is a
+# JavaScript shim around report.py, which the changes job of tests.yml tests.
+runs:
+  using: node24
+  main: main.js
+  post: post.js
+  post-if: always()

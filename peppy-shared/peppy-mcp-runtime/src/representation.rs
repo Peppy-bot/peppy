@@ -1,7 +1,8 @@
 //! Topic snapshot policies: image representation and result-size handling.
 //!
-//! [`apply_topic_policies`] runs after the update-rate gate admitted a
-//! message and the bridge decoded it to canonical JSON. It transcodes
+//! [`apply_content_policies`] runs after the update-rate gate admitted a
+//! message and the bridge decoded it to canonical JSON, and on the answer
+//! of a service exposed under a representation. It transcodes
 //! image-carrying snapshots to the declared codec: under `jpeg`, colour
 //! frames as they are and 16-bit depth frames as a greyscale picture; under
 //! `png16`, 16-bit single-channel frames such as a depth map losslessly.
@@ -18,7 +19,8 @@ use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::{DynamicImage, ExtendedColorType, GrayImage, ImageFormat, Luma, RgbImage};
 use peppy_mcp_catalog::{
-    DepthRange, ImageCodec, ImageFieldMap, ImageRepresentation, OversizePolicy, ResourcePolicies,
+    ContentPolicies, DepthRange, ImageCodec, ImageFieldMap, ImageRepresentation, OversizePolicy,
+    ResourcePolicies,
 };
 use serde_json::Value;
 use std::borrow::Cow;
@@ -108,13 +110,13 @@ pub(crate) fn listed_mime_type(policies: &ResourcePolicies) -> &'static str {
     policies.blob_mime_type().unwrap_or(DOCUMENT_MIME_TYPE)
 }
 
-/// Applies the representation policy and the size policy to a snapshot,
-/// returning the content a read serves.
-pub(crate) fn apply_topic_policies(
-    policies: &ResourcePolicies,
+/// Applies the representation policy and the size policy to a message,
+/// returning the content a read or a tool call serves.
+pub(crate) fn apply_content_policies(
+    policies: ContentPolicies<'_>,
     mut value: Value,
 ) -> Result<SnapshotContent, PublishError> {
-    let content = match &policies.representation {
+    let content = match policies.representation {
         Some(representation) => {
             match representation.image {
                 ImageCodec::Raw => {}
@@ -140,13 +142,45 @@ pub(crate) fn apply_topic_policies(
     if policies.on_oversize != Some(OversizePolicy::Downscale) {
         return Err(oversize);
     }
-    let Some(representation) = &policies.representation else {
+    let Some(representation) = policies.representation else {
         return Err(oversize);
     };
     let Some(downscale) = Downscale::of(representation) else {
         return Err(oversize);
     };
     downscale_to_fit(&downscale, representation, value, content, limit)
+}
+
+/// The content a service tool answers under its policies: as
+/// [`apply_content_policies`] builds it, except that a response whose data
+/// member is the empty string carries no frame and is the document alone,
+/// without that member. A service that refuses answers so, with its
+/// `message`.
+pub(crate) fn apply_response_policies(
+    policies: ContentPolicies<'_>,
+    mut value: Value,
+) -> Result<SnapshotContent, PublishError> {
+    let Some(representation) = policies.representation else {
+        return apply_content_policies(policies, value);
+    };
+    let data = &representation.fields.data;
+    let no_frame = value
+        .get(data)
+        .and_then(Value::as_str)
+        .is_some_and(str::is_empty);
+    if !no_frame {
+        return apply_content_policies(policies, value);
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.shift_remove(data);
+    }
+    apply_content_policies(
+        ContentPolicies {
+            representation: None,
+            ..policies
+        },
+        value,
+    )
 }
 
 /// Takes the encoded frame out of the snapshot as the base64 text its data
@@ -713,9 +747,11 @@ mod tests {
     #[test]
     fn png16_transcodes_u16_frames_losslessly() {
         for encoding in U16_ENCODINGS {
-            let content =
-                apply_topic_policies(&png16_policies(None, None), depth_frame(encoding, 8, 4))
-                    .expect("transcodes");
+            let content = apply_content_policies(
+                png16_policies(None, None).content(),
+                depth_frame(encoding, 8, 4),
+            )
+            .expect("transcodes");
             assert_eq!(
                 document(&content),
                 json!({ "encoding": "png", "width": 8, "height": 4 }),
@@ -738,7 +774,7 @@ mod tests {
         let sixteen = BASE64
             .encode(encode_png16(&Luma16Image::from_pixel(1, 1, Luma([7u16]))).expect("encodes"));
         let png = json!({ "frame": sixteen, "encoding": "png", "width": 1, "height": 1 });
-        let content = apply_topic_policies(&png16_policies(None, None), png)
+        let content = apply_content_policies(png16_policies(None, None).content(), png)
             .expect("a 16-bit single-channel PNG passes through");
         assert_eq!(
             content.blob,
@@ -755,12 +791,12 @@ mod tests {
         let png = json!({
             "frame": BASE64.encode(&eight), "encoding": "png", "width": 1, "height": 1,
         });
-        let error = apply_topic_policies(&png16_policies(None, None), png)
+        let error = apply_content_policies(png16_policies(None, None).content(), png)
             .expect_err("an 8-bit color PNG is not a depth frame");
         assert!(matches!(error, PublishError::BadFrame { .. }));
 
         let color = solid_frame("rgb8", [1, 2, 3], 2, 2);
-        let error = apply_topic_policies(&png16_policies(None, None), color)
+        let error = apply_content_policies(png16_policies(None, None).content(), color)
             .expect_err("a color frame is not a 16-bit frame");
         assert!(
             matches!(error, PublishError::UnsupportedEncoding { encoding } if encoding == "rgb8")
@@ -768,7 +804,7 @@ mod tests {
 
         let mut short = depth_frame("z16", 4, 4);
         short["frame"] = json!(BASE64.encode([0u8; 6]));
-        let error = apply_topic_policies(&png16_policies(None, None), short)
+        let error = apply_content_policies(png16_policies(None, None).content(), short)
             .expect_err("a short buffer is a bad frame");
         assert!(matches!(error, PublishError::BadFrame { .. }));
     }
@@ -776,11 +812,14 @@ mod tests {
     #[test]
     fn png16_downscales_by_keeping_samples() {
         let value = depth_frame("z16", 64, 64);
-        let full =
-            apply_topic_policies(&png16_policies(None, None), value.clone()).expect("transcodes");
+        let full = apply_content_policies(png16_policies(None, None).content(), value.clone())
+            .expect("transcodes");
         let limit = full.size() / 2;
-        let content = apply_topic_policies(&png16_policies(Some(limit), Some("downscale")), value)
-            .expect("downscales to fit");
+        let content = apply_content_policies(
+            png16_policies(Some(limit), Some("downscale")).content(),
+            value,
+        )
+        .expect("downscales to fit");
         assert!(content.size() <= limit);
         assert_eq!(
             document(&content),
@@ -811,7 +850,8 @@ mod tests {
         }));
         let value = solid_frame("rgb8", [1, 2, 3], 4, 4);
         let frame = value["frame"].as_str().expect("base64 text").to_string();
-        let content = apply_topic_policies(&raw_policies, value).expect("raw passes through");
+        let content =
+            apply_content_policies(raw_policies.content(), value).expect("raw passes through");
         assert_eq!(
             document(&content),
             json!({ "encoding": "rgb8", "width": 4, "height": 4 })
@@ -832,7 +872,7 @@ mod tests {
             "update": { "max_hz": 2.0 },
         }));
         let value = solid_frame("rgb8", [1, 2, 3], 4, 4);
-        let content = apply_topic_policies(&plain, value.clone()).expect("publishes");
+        let content = apply_content_policies(plain.content(), value.clone()).expect("publishes");
         assert_eq!(document(&content), value, "the frame stays in the document");
         assert_eq!(content.blob, None);
     }
@@ -852,8 +892,8 @@ mod tests {
     fn frames_already_jpeg_encoded_pass_through_without_transcoding() {
         let frame = BASE64.encode(b"not really a jpeg, and never decoded");
         let value = json!({ "frame": frame, "encoding": "mjpeg", "width": 4, "height": 4 });
-        let content =
-            apply_topic_policies(&jpeg_policies(None, None), value).expect("mjpeg passes through");
+        let content = apply_content_policies(jpeg_policies(None, None).content(), value)
+            .expect("mjpeg passes through");
         assert_eq!(
             document(&content),
             json!({ "encoding": "mjpeg", "width": 4, "height": 4 })
@@ -870,7 +910,8 @@ mod tests {
     #[test]
     fn rgb8_frames_transcode_to_jpeg_and_rewrite_the_encoding() {
         let value = solid_frame("rgb8", [200, 30, 30], 8, 8);
-        let content = apply_topic_policies(&jpeg_policies(None, None), value).expect("transcodes");
+        let content =
+            apply_content_policies(jpeg_policies(None, None).content(), value).expect("transcodes");
         assert_eq!(
             document(&content),
             json!({ "encoding": "mjpeg", "width": 8, "height": 8 })
@@ -887,7 +928,8 @@ mod tests {
     #[test]
     fn bgr8_frames_swap_channels_before_encoding() {
         let value = solid_frame("bgr8", [200, 30, 30], 8, 8);
-        let content = apply_topic_policies(&jpeg_policies(None, None), value).expect("transcodes");
+        let content =
+            apply_content_policies(jpeg_policies(None, None).content(), value).expect("transcodes");
         let decoded = decoded_jpeg(&content).to_rgb8();
         let pixel = decoded.get_pixel(4, 4);
         assert!(
@@ -918,8 +960,8 @@ mod tests {
     fn z16_frames_transcode_to_a_greyscale_jpeg_spanning_the_depth_range() {
         for (reading, expected_shade) in [(100u16, 255u8), (10000, 0), (0, 0), (5050, 128)] {
             let value = solid_depth_frame(reading, 8, 8);
-            let content =
-                apply_topic_policies(&depth_policies(None, None), value).expect("transcodes");
+            let content = apply_content_policies(depth_policies(None, None).content(), value)
+                .expect("transcodes");
             assert_eq!(
                 document(&content),
                 json!({ "encoding": "mjpeg", "width": 8, "height": 8 })
@@ -937,7 +979,7 @@ mod tests {
     #[test]
     fn z16_frames_without_a_depth_range_are_refused() {
         let value = solid_depth_frame(500, 4, 4);
-        let error = apply_topic_policies(&jpeg_policies(None, None), value)
+        let error = apply_content_policies(jpeg_policies(None, None).content(), value)
             .expect_err("no scale to render readings on");
         assert_eq!(error, PublishError::DepthRangeMissing);
     }
@@ -945,7 +987,8 @@ mod tests {
     #[test]
     fn a_depth_range_leaves_colour_frames_untouched() {
         let value = solid_frame("rgb8", [200, 30, 30], 8, 8);
-        let content = apply_topic_policies(&depth_policies(None, None), value).expect("transcodes");
+        let content = apply_content_policies(depth_policies(None, None).content(), value)
+            .expect("transcodes");
         let decoded = decoded_jpeg(&content).to_rgb8();
         let pixel = decoded.get_pixel(4, 4);
         assert!(
@@ -962,7 +1005,7 @@ mod tests {
             "width": 4,
             "height": 4,
         });
-        let error = apply_topic_policies(&depth_policies(None, None), value)
+        let error = apply_content_policies(depth_policies(None, None).content(), value)
             .expect_err("3 bytes are not a 4x4 depth frame");
         assert!(
             matches!(error, PublishError::BadFrame { .. }),
@@ -973,12 +1016,15 @@ mod tests {
     #[test]
     fn downscale_keeps_a_depth_picture_one_channel() {
         let value = noisy_depth_frame(128, 128);
-        let full_size = apply_topic_policies(&depth_policies(None, None), value.clone())
+        let full_size = apply_content_policies(depth_policies(None, None).content(), value.clone())
             .expect("transcodes")
             .size();
         let limit = full_size / 2;
-        let content = apply_topic_policies(&depth_policies(Some(limit), Some("downscale")), value)
-            .expect("downscale fits the frame");
+        let content = apply_content_policies(
+            depth_policies(Some(limit), Some("downscale")).content(),
+            value,
+        )
+        .expect("downscale fits the frame");
         assert!(content.size() <= limit);
         let document = document(&content);
         let width = document["width"].as_u64().expect("width is rewritten");
@@ -994,7 +1040,7 @@ mod tests {
     #[test]
     fn unsupported_encodings_are_refused() {
         let value = solid_frame("yuyv", [1, 2, 3], 4, 4);
-        let error = apply_topic_policies(&jpeg_policies(None, None), value)
+        let error = apply_content_policies(jpeg_policies(None, None).content(), value)
             .expect_err("yuyv is not transcodable");
         assert_eq!(
             error,
@@ -1012,7 +1058,7 @@ mod tests {
             "width": 4,
             "height": 4,
         });
-        let error = apply_topic_policies(&jpeg_policies(None, None), value)
+        let error = apply_content_policies(jpeg_policies(None, None).content(), value)
             .expect_err("3 bytes are not a 4x4 frame");
         assert!(
             matches!(error, PublishError::BadFrame { .. }),
@@ -1028,7 +1074,7 @@ mod tests {
             "width": u32::MAX,
             "height": u32::MAX,
         });
-        let error = apply_topic_policies(&jpeg_policies(None, None), value)
+        let error = apply_content_policies(jpeg_policies(None, None).content(), value)
             .expect_err("the RGB8 buffer those dimensions ask for exceeds usize");
         assert!(
             matches!(error, PublishError::BadFrame { .. }),
@@ -1039,7 +1085,7 @@ mod tests {
     #[test]
     fn missing_and_mistyped_representation_fields_are_refused() {
         let missing = json!({ "encoding": "rgb8", "width": 4, "height": 4 });
-        let error = apply_topic_policies(&jpeg_policies(None, None), missing)
+        let error = apply_content_policies(jpeg_policies(None, None).content(), missing)
             .expect_err("data field is absent");
         assert_eq!(
             error,
@@ -1051,7 +1097,7 @@ mod tests {
         );
 
         let mistyped = json!({ "frame": 7, "encoding": "rgb8", "width": 4, "height": 4 });
-        let error = apply_topic_policies(&jpeg_policies(None, None), mistyped)
+        let error = apply_content_policies(jpeg_policies(None, None).content(), mistyped)
             .expect_err("data field is not a string");
         assert_eq!(
             error,
@@ -1072,7 +1118,7 @@ mod tests {
             "on_oversize": "reject",
         }));
         let value = json!({ "status": "x".repeat(64) });
-        let error = apply_topic_policies(&reject_policies, value)
+        let error = apply_content_policies(reject_policies.content(), value)
             .expect_err("oversize snapshot should be rejected");
         assert!(
             matches!(error, PublishError::Oversize { limit: 32, .. }),
@@ -1099,15 +1145,15 @@ mod tests {
         };
         let value = solid_frame("rgb8", [1, 2, 3], 4, 4);
         let unlimited =
-            apply_topic_policies(&raw_policies(None), value.clone()).expect("publishes");
+            apply_content_policies(raw_policies(None).content(), value.clone()).expect("publishes");
         let blob = unlimited.blob.as_ref().expect("a blob").base64.len() as u64;
         let size = unlimited.document.len() as u64 + blob;
         assert_eq!(unlimited.size(), size);
 
-        let fits = apply_topic_policies(&raw_policies(Some(size)), value.clone())
+        let fits = apply_content_policies(raw_policies(Some(size)).content(), value.clone())
             .expect("content of exactly the limit fits");
         assert_eq!(fits, unlimited);
-        let error = apply_topic_policies(&raw_policies(Some(size - 1)), value)
+        let error = apply_content_policies(raw_policies(Some(size - 1)).content(), value)
             .expect_err("the document and the blob together exceed the limit");
         assert!(blob < size - 1, "the blob alone is under the limit");
         assert_eq!(
@@ -1127,7 +1173,7 @@ mod tests {
             "max_result_bytes": 1024,
             "on_oversize": "reject",
         }));
-        let content = apply_topic_policies(&reject_policies, json!({ "status": "ok" }))
+        let content = apply_content_policies(reject_policies.content(), json!({ "status": "ok" }))
             .expect("small snapshot fits");
         assert_eq!(
             content,
@@ -1141,12 +1187,15 @@ mod tests {
     #[test]
     fn downscale_halves_dimensions_until_the_snapshot_fits() {
         let value = noisy_frame(128, 128);
-        let full_size = apply_topic_policies(&jpeg_policies(None, None), value.clone())
+        let full_size = apply_content_policies(jpeg_policies(None, None).content(), value.clone())
             .expect("transcodes")
             .size();
         let limit = full_size / 2;
-        let content = apply_topic_policies(&jpeg_policies(Some(limit), Some("downscale")), value)
-            .expect("downscale fits the frame");
+        let content = apply_content_policies(
+            jpeg_policies(Some(limit), Some("downscale")).content(),
+            value,
+        )
+        .expect("downscale fits the frame");
         assert!(content.size() <= limit);
         let document = document(&content);
         let width = document["width"].as_u64().expect("width is rewritten");
@@ -1164,10 +1213,62 @@ mod tests {
     }
 
     #[test]
+    fn a_response_with_a_frame_is_the_picture_and_one_without_is_the_document_alone() {
+        let policies = jpeg_policies(Some(4096), Some("downscale"));
+        let mut answered = solid_frame("rgb8", [200, 30, 30], 8, 8);
+        answered["success"] = json!(true);
+        answered["message"] = json!("");
+        let content = apply_response_policies(policies.content(), answered.clone())
+            .expect("the frame transcodes");
+        assert_eq!(
+            document(&content),
+            json!({ "encoding": "mjpeg", "width": 8, "height": 8, "success": true, "message": "" })
+        );
+        assert_eq!(
+            content,
+            apply_content_policies(policies.content(), answered).expect("the frame transcodes"),
+            "a response with a frame is the content a topic's snapshot would be"
+        );
+
+        let policies = jpeg_policies(Some(128), Some("downscale"));
+        let refused = json!({
+            "success": false,
+            "message": "the simulation runs without rendering",
+            "encoding": "",
+            "width": 0,
+            "height": 0,
+            "frame": "",
+        });
+        let content =
+            apply_response_policies(policies.content(), refused).expect("a refusal is answered");
+        assert!(content.blob.is_none(), "no frame, no blob");
+        assert_eq!(
+            document(&content),
+            json!({
+                "success": false,
+                "message": "the simulation runs without rendering",
+                "encoding": "",
+                "width": 0,
+                "height": 0,
+            })
+        );
+
+        // The size policy holds the document alone as it holds a picture.
+        let long = json!({ "message": "x".repeat(160), "frame": "" });
+        let error = apply_response_policies(policies.content(), long)
+            .expect_err("160 bytes of message exceed the 128 byte limit");
+        assert!(
+            matches!(error, PublishError::Oversize { limit: 128, .. }),
+            "got {error:?}"
+        );
+    }
+
+    #[test]
     fn downscale_gives_up_below_the_minimum_edge_and_rejects() {
         let value = noisy_frame(64, 64);
-        let error = apply_topic_policies(&jpeg_policies(Some(24), Some("downscale")), value)
-            .expect_err("24 bytes can never fit a frame");
+        let error =
+            apply_content_policies(jpeg_policies(Some(24), Some("downscale")).content(), value)
+                .expect_err("24 bytes can never fit a frame");
         assert!(
             matches!(error, PublishError::Oversize { limit: 24, .. }),
             "got {error:?}"

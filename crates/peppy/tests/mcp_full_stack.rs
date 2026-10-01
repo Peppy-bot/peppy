@@ -55,9 +55,10 @@ const WAIT: Duration = Duration::from_secs(120);
 const STATUS_URI: &str = "peppy://resource/front_camera.status";
 const FRAME_URI: &str = "peppy://resource/front_camera.latest_frame";
 
-/// The camera contract: two topics, three services, one action, so every
+/// The camera contract: two topics, four services, one action, so every
 /// published behaviour has a member behind it. `freeze_probe` is never
-/// answered by the provider, which is what exercises the deadline path.
+/// answered by the provider, which is what exercises the deadline path;
+/// `snapshot` answers with a frame, or with none when asked for a blank.
 const CAMERA_CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
     manifest: { name: "rgb_camera", tag: "v1" },
@@ -100,6 +101,18 @@ const CAMERA_CONTRACT: &str = r#"{
             {
                 name: "freeze_probe",
                 response_message_format: { ok: "bool" },
+            },
+            {
+                name: "snapshot",
+                request_message_format: { blank: "bool" },
+                response_message_format: {
+                    success: "bool",
+                    message: "string",
+                    frame: { $type: "array", $items: "u8" },
+                    encoding: "string",
+                    width: "u16",
+                    height: "u16",
+                },
             },
         ],
         actions: [
@@ -174,6 +187,7 @@ const CAMERA_NODE_CONFIG: &str = r#"{
                 { link_id: "camera", name: "video_stream_info" },
                 { link_id: "camera", name: "set_brightness" },
                 { link_id: "camera", name: "freeze_probe" },
+                { link_id: "camera", name: "snapshot" },
             ],
         },
         actions: {
@@ -185,14 +199,15 @@ const CAMERA_NODE_CONFIG: &str = r#"{
 }"#;
 
 /// The camera: 8x8 rgb8 frames and a status snapshot every 100 ms, the
-/// info and brightness services, never an answer to `freeze_probe`, and
+/// info, brightness and snapshot services, never an answer to
+/// `freeze_probe`, and
 /// `record_clip` running short goals to completion while parking long ones
 /// on the cancel signal (republishing feedback so progress is observable
 /// regardless of sensor-data QoS drops).
 const CAMERA_MAIN: &str = r#"
 use peppygen::emitted_topics::camera::{camera_status, video_stream};
 use peppygen::exposed_actions::camera::record_clip;
-use peppygen::exposed_services::camera::{set_brightness, video_stream_info};
+use peppygen::exposed_services::camera::{set_brightness, snapshot, video_stream_info};
 use peppygen::{NodeBuilder, Result};
 use std::time::Duration;
 
@@ -280,6 +295,34 @@ fn main() -> Result<()> {
                 })
                 .await
                 .expect("handle set_brightness");
+            }
+        });
+        let runner = node_runner.clone();
+        tokio::spawn(async move {
+            loop {
+                snapshot::handle_next_request(&runner, |request| {
+                    if request.data.blank {
+                        return Ok(snapshot::Response::new(
+                            false,
+                            "the shutter is closed".to_owned(),
+                            Vec::new(),
+                            String::new(),
+                            0,
+                            0,
+                        ));
+                    }
+                    let frame: Vec<u8> = (0..8u32 * 8 * 3).map(|i| (i % 251) as u8).collect();
+                    Ok(snapshot::Response::new(
+                        true,
+                        String::new(),
+                        frame,
+                        "rgb8".to_owned(),
+                        8,
+                        8,
+                    ))
+                })
+                .await
+                .expect("handle snapshot");
             }
         });
         Ok(())
@@ -388,6 +431,11 @@ fn camera_endpoint_exposure(tag: &str, title: &str, sha256: Option<&str>) -> Str
             title: "{title}",
             instructions: "Observe and control the front camera on this robot.",
         }},
+        call_record: {{
+            tool: "camera.recent_calls",
+            description: "The last state-changing calls of this endpoint, newest first.",
+            keep: 50,
+        }},
         targets: {{
             front_camera: {{
                 contract: {{ name: "rgb_camera", tag: "v1"{pin} }},
@@ -447,6 +495,25 @@ fn camera_endpoint_exposure(tag: &str, title: &str, sha256: Option<&str>) -> Str
                         description: "Report the frame-freeze detector state.",
                         operation: "read_only",
                         deadline_ms: 1500,
+                    }},
+                    {{
+                        member: "snapshot",
+                        tool: "front_camera.snapshot",
+                        description: "Take one picture with the front camera.",
+                        operation: "read_only",
+                        deadline_ms: 5000,
+                        representation: {{
+                            image: "jpeg",
+                            quality: 80,
+                            fields: {{
+                                data: "frame",
+                                encoding: "encoding",
+                                width: "width",
+                                height: "height",
+                            }},
+                        }},
+                        max_result_bytes: 524288,
+                        on_oversize: "downscale",
                     }},
                 ],
                 actions: [
@@ -1374,12 +1441,28 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     assert_eq!(
         tool_names,
         [
+            "camera.recent_calls",
             "front_camera.freeze_probe",
             "front_camera.info",
             "front_camera.look",
             "front_camera.record_clip",
-            "front_camera.set_brightness"
+            "front_camera.set_brightness",
+            "front_camera.snapshot"
         ]
+    );
+    let snapshot_tool = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "front_camera.snapshot")
+        .expect("the pictured service is listed");
+    assert!(
+        snapshot_tool
+            .output_schema
+            .as_ref()
+            .is_some_and(|schema| schema["properties"].get("frame").is_none()
+                && schema["properties"].get("message").is_some()),
+        "the output schema of a pictured service is the schema of its document: {:?}",
+        snapshot_tool.output_schema
     );
     let look_tool = tools
         .tools
@@ -1447,6 +1530,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         .iter()
         .chain(catalog["tasks"].as_array().expect("tasks"))
         .chain(catalog["pictures"].as_array().expect("pictures"))
+        .chain(std::iter::once(&catalog["call_record"]))
         .map(|entry| entry["name"].as_str().expect("name"))
         .collect();
     catalog_tools.sort_unstable();
@@ -1583,6 +1667,85 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         .await
         .expect("a deadline miss is a tool error, not a protocol error");
     assert_eq!(called.is_error, Some(true), "got {:?}", called.content);
+
+    // --- A service that answers with a picture: the frame as an image
+    // block beside the document, and a refusal as the document alone.
+    let snapped = client
+        .call_tool(
+            CallToolRequestParams::new("front_camera.snapshot")
+                .with_arguments(object(json!({ "blank": false }))),
+        )
+        .await
+        .expect("the pictured service answers");
+    assert_eq!(
+        looked_document(snapped),
+        json!({ "success": true, "message": "", "encoding": "mjpeg", "width": 8, "height": 8 })
+    );
+    let blank = client
+        .call_tool(
+            CallToolRequestParams::new("front_camera.snapshot")
+                .with_arguments(object(json!({ "blank": true }))),
+        )
+        .await
+        .expect("the pictured service answers");
+    assert_eq!(blank.is_error, Some(false), "got {:?}", blank.content);
+    assert_eq!(
+        blank.structured_content,
+        Some(json!({
+            "success": false,
+            "message": "the shutter is closed",
+            "encoding": "",
+            "width": 0,
+            "height": 0,
+        }))
+    );
+    assert_eq!(
+        blank.content.len(),
+        1,
+        "the document alone: {:?}",
+        blank.content
+    );
+
+    // --- The record: the three brightness calls, newest first, under the
+    // client's identity; the read-only calls and the reads left no entry.
+    let recorded = client
+        .call_tool(CallToolRequestParams::new("camera.recent_calls"))
+        .await
+        .expect("the record answers");
+    assert_eq!(recorded.is_error, Some(false), "got {:?}", recorded.content);
+    let calls = recorded.structured_content.expect("structured")["calls"]
+        .as_array()
+        .cloned()
+        .expect("the calls");
+    let summary: Vec<(&str, &str, Value)> = calls
+        .iter()
+        .map(|call| {
+            (
+                call["tool"].as_str().expect("tool"),
+                call["outcome"].as_str().expect("outcome"),
+                call["arguments"]["value"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("front_camera.set_brightness", "refused", json!(65)),
+            ("front_camera.set_brightness", "completed", json!(-12)),
+            ("front_camera.set_brightness", "completed", json!(12)),
+        ]
+    );
+    for call in &calls {
+        assert_eq!(
+            call["client"]["name"], "rmcp",
+            "the client's identity as its requests name it: {call:?}"
+        );
+        assert!(
+            call["started_at"]
+                .as_str()
+                .is_some_and(|at| at.ends_with('Z'))
+        );
+    }
 
     // --- Privacy: a live but unselected member, an unknown tool, an
     // unknown resource, and every path but the endpoints.

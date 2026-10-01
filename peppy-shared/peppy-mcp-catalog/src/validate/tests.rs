@@ -1,5 +1,7 @@
 use super::*;
+use crate::policy::{ImageCodec, OversizePolicy};
 use serde::Deserialize;
+use std::num::NonZeroU64;
 use std::path::Path;
 
 /// Source documents for the bundle golden. The exposure carries the literal
@@ -1168,5 +1170,151 @@ fn a_fixed_bundle_carries_no_robot_surface() {
     assert!(
         !bundle.to_json_string().contains("\"robots\""),
         "an absent surface is not written"
+    );
+}
+
+/// A contract with one service that answers with a picture, as a
+/// simulation's free viewpoint does.
+const VIEW_CONTRACT: &str = r#"{
+    peppy_schema: "contract/v1",
+    manifest: { name: "scene_view", tag: "v1" },
+    interfaces: {
+        services: [
+            {
+                name: "render_view",
+                request_message_format: {
+                    position: { $type: "array", $items: "f64" },
+                    target: { $type: "array", $items: "f64" },
+                },
+                response_message_format: {
+                    success: "bool",
+                    message: "string",
+                    encoding: "string",
+                    width: "u32",
+                    height: "u32",
+                    frame: { $type: "array", $items: "u8" },
+                },
+            },
+        ],
+    },
+}"#;
+
+/// An exposure of the view contract: its service as `scene.look` under
+/// `policies`, and a record of the endpoint's calls.
+fn view_exposure(policies: &str) -> String {
+    format!(
+        r#"{{
+        peppy_schema: "mcp_exposure/v1",
+        manifest: {{ name: "simulation", tag: "v1" }},
+        server: {{ title: "Simulation" }},
+        call_record: {{
+            tool: "scene.recent_calls",
+            description: "The last state-changing calls of this endpoint.",
+            keep: 200,
+        }},
+        targets: {{
+            view: {{
+                contract: {{ name: "scene_view", tag: "v1", sha256: "{view_sha}" }},
+                services: [
+                    {{
+                        member: "render_view",
+                        tool: "scene.look",
+                        description: "Look at the world from a free viewpoint.",
+                        operation: "read_only",
+                        deadline_ms: 10000,
+                        {policies}
+                    }},
+                ],
+            }},
+        }},
+    }}"#,
+        view_sha = sha_of(VIEW_CONTRACT),
+    )
+}
+
+#[test]
+fn a_pictured_service_publishes_the_schema_of_its_document_and_the_bundle_carries_the_record() {
+    let frame_fields =
+        r#"fields: { data: "frame", encoding: "encoding", width: "width", height: "height" }"#;
+    let bundle = build(
+        &view_exposure(&format!(
+            r#"representation: {{ image: "jpeg", quality: 80, {frame_fields} }},
+               max_result_bytes: 524288,
+               on_oversize: "downscale","#
+        )),
+        &[&fixture(VIEW_CONTRACT)],
+    );
+    let look = &bundle.tools[0];
+    assert_eq!(look.name, "scene.look");
+    assert_eq!(
+        look.representation.as_ref().map(|r| r.image),
+        Some(ImageCodec::Jpeg)
+    );
+    assert_eq!(look.max_result_bytes.map(NonZeroU64::get), Some(524288));
+    assert_eq!(look.on_oversize, Some(OversizePolicy::Downscale));
+    assert_eq!(
+        look.output_schema["properties"]
+            .as_object()
+            .expect("object schema")
+            .keys()
+            .collect::<Vec<_>>(),
+        ["success", "message", "encoding", "width", "height"],
+        "the document leaves out the member the picture carries"
+    );
+    assert_eq!(
+        look.output_schema["required"],
+        serde_json::json!(["success", "message", "encoding", "width", "height"])
+    );
+    assert_eq!(
+        look.input_schema["properties"]
+            .as_object()
+            .expect("object schema")
+            .keys()
+            .collect::<Vec<_>>(),
+        ["position", "target"]
+    );
+    assert_eq!(
+        bundle.call_record,
+        Some(CallRecordEntry {
+            name: "scene.recent_calls".to_string(),
+            description: "The last state-changing calls of this endpoint.".to_string(),
+            keep: 200,
+        })
+    );
+
+    // Without a representation the whole response is the document, and the
+    // record round-trips through the bundle's JSON.
+    let plain = build(&view_exposure(""), &[&fixture(VIEW_CONTRACT)]);
+    assert_eq!(
+        plain.tools[0].output_schema["properties"]["frame"]["contentEncoding"],
+        "base64"
+    );
+    assert!(plain.tools[0].representation.is_none());
+    let reparsed =
+        ExposureBundle::from_json_str(&plain.to_json_string()).expect("the bundle reparses");
+    assert_eq!(reparsed.call_record, plain.call_record);
+}
+
+#[test]
+fn a_pictured_service_needs_its_representation_fields_in_the_response() {
+    let violations = violations_of(
+        &view_exposure(
+            r#"representation: {
+                image: "jpeg",
+                fields: { data: "picture", encoding: "encoding", width: "width", height: "message" },
+            },"#,
+        ),
+        &[&fixture(VIEW_CONTRACT)],
+    );
+    assert_eq!(violations.len(), 2, "{violations:?}");
+    assert!(
+        violations[0].contains("target `view` service `render_view`")
+            && violations[0].contains("no root member `picture`"),
+        "{violations:?}"
+    );
+    assert!(
+        violations[1].contains("`height` names `message`")
+            && violations[1].contains("`u8`, `u16`, or `u32`"),
+        "{violations:?}"
     );
 }
