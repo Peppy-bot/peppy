@@ -54,10 +54,11 @@ pub struct PeppyLauncher {
     /// link) are deferred to the flattened result, where the selected
     /// options' deployments are part of the document.
     pub components: Vec<ComponentAxis>,
-    /// The base's changes to instances defined elsewhere, applied after all
-    /// fragment adjustments. How a base specializes fragments shared between
-    /// launchers. Requires `components`: with nothing to specialize, an
-    /// adjustment is indirection around a file the author can edit directly.
+    /// The launcher's changes to instances it or its options define,
+    /// applied after the `adjustments` under the selected options. How a launcher
+    /// specializes fragments shared between launchers. Requires
+    /// `components`: with nothing to specialize, an adjustment is
+    /// indirection around a file the author can edit directly.
     pub adjustments: Vec<Adjustment>,
     /// The selections this family refuses to be: rules that a resolved
     /// selection must satisfy or the launch is refused before anything is
@@ -280,8 +281,8 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
             deployments: DeploymentEntries,
             #[serde(default)]
             components: Vec<ComponentAxis>,
-            #[serde(default)]
-            adjustments: Vec<Adjustment>,
+            #[serde(default, deserialize_with = "super::composition::written")]
+            adjustments: Option<Vec<Adjustment>>,
             #[serde(default)]
             constraints: Vec<SelectionConstraint>,
             #[serde(default)]
@@ -289,6 +290,8 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
         }
 
         let raw = RawPeppyLauncher::deserialize(deserializer)?;
+        let adjustments = super::composition::named_entries(raw.adjustments)
+            .map_err(|e| de::Error::custom(format!("top-level `adjustments`: {e}")))?;
 
         validate_core_node_links(&raw.core_nodes).map_err(de::Error::custom)?;
         super::composition::validate_axes(&raw.components, AxisScope::Launcher)
@@ -302,7 +305,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
         // adjustments should hear that adjustments do not belong here, not
         // that one of its guards names an axis the (empty) `components` list
         // does not declare.
-        if raw.components.is_empty() && !raw.adjustments.is_empty() {
+        if raw.components.is_empty() && !adjustments.is_empty() {
             return Err(de::Error::custom(
                 "this launcher declares `adjustments` but no `components`: with nothing to \
                  specialize, an adjustment is indirection around a file the author can edit \
@@ -310,7 +313,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                  the adjustments specialize",
             ));
         }
-        super::composition::validate_launcher_adjustments(&raw.adjustments, axes)
+        super::composition::validate_launcher_adjustments(&adjustments, axes)
             .map_err(de::Error::custom)?;
         // Same shape of refusal as the adjustments one above: a constraint
         // speaks in axis and option names, so without axes it refers to
@@ -336,7 +339,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
             deployments: raw.deployments.nodes,
             option_deployments: raw.deployments.options,
             components: raw.components,
-            adjustments: raw.adjustments,
+            adjustments,
             constraints: raw.constraints,
             framework: raw.framework,
         })

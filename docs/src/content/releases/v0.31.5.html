@@ -1,0 +1,37 @@
+<entry>
+  <title>v0.31.5</title>
+  <id>https://docs.peppy.bot/releases/v0-31-5/</id>
+  <updated>2026-09-30T00:00:00Z</updated>
+
+  <summary>New MCP picture tools, camera blobs, and progress-bounded actions; --nv GPU on Jetson; launcher adjustments reworked.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.31.5&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;New MCP picture tools, camera blobs, and progress-bounded actions; --nv GPU on Jetson; launcher adjustments reworked.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on September 30, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A launcher option no longer accepts a bare list of fragments; write several files as &lt;code&gt;{ fragments: ["a.json5", "b.json5"] }&lt;/code&gt;, the object form that also carries the option's own &lt;code&gt;adjustments&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;A fragment may adjust only the instances it deploys; move writes to other instances into the launcher's &lt;code&gt;adjustments&lt;/code&gt;, at the top level or under the option that selects the fragment.&lt;/li&gt;
+&lt;li&gt;An MCP read of a topic with a &lt;code&gt;representation&lt;/code&gt; returns its frame as a separate typed blob, removed from the JSON document and its schema; &lt;code&gt;resources/list&lt;/code&gt; now reports the blob's image MIME type.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;MCP exposures&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A topic with a &lt;code&gt;jpeg&lt;/code&gt; representation can declare a &lt;code&gt;picture&lt;/code&gt; tool that returns the latest frame as an image beside the rest of the message.&lt;/li&gt;
+&lt;li&gt;An action tool can set &lt;code&gt;progress_timeout_ms&lt;/code&gt; instead of &lt;code&gt;deadline_ms&lt;/code&gt; to bound a goal by its time without progress; it needs a feedback topic and no confirmation gate.&lt;/li&gt;
+&lt;li&gt;A cancelled action goal now returns the provider's result, in the tool error for a call or the status message for a task, and says why it was cancelled.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Containers&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;--nv&lt;/code&gt; containers on an NVIDIA Jetson now receive every driver library from the host's L4T container manifest, so CUDA and graphics run there as on desktop.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Actions&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Unread action feedback buffers the newest messages, drops the oldest when full while always keeping the stream's end, and never blocks reading the goal's result.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>

@@ -3914,11 +3914,11 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
 
 /// A composed launch, end to end: the launcher declares a `backend` axis
 /// whose two options deploy the same registered node under different
-/// instance ids, and an optional `extras` axis whose fragment adjusts both
-/// candidates (one of which is absent in any given selection, so the launch
-/// also exercises the skip). `--with` picks beta and the extras; what runs
-/// is the flattened single deployment, and the coordinator echoes the full
-/// resolution before anything starts. The launcher also declares a
+/// instance ids, and an optional `extras` axis whose option's adjustments
+/// touch both candidates (one of which is absent in any given selection, so
+/// the launch also exercises the skip). `--with` picks beta and the extras;
+/// what runs is the flattened single deployment, and the coordinator echoes
+/// the full resolution before anything starts. The launcher also declares a
 /// constraint this selection satisfies, so a satisfied constraint is shown
 /// not to stand in a real launch's way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4016,7 +4016,10 @@ async fn stack_launch_flattens_a_composed_launcher() {
                     name: "extras",
                     cardinality: "zero_or_one",
                     options: {{
-                        on: "fragments/extras.json5",
+                        on: {{ adjustments: [
+                            {{ target: "alpha_inst", set_arguments: {{ tuned: true }} }},
+                            {{ target: "beta_inst", set_arguments: {{ tuned: true }} }},
+                        ] }},
                     }},
                 }},
             ],
@@ -4030,19 +4033,6 @@ async fn stack_launch_flattens_a_composed_launcher() {
         deployment("beta_inst"),
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
-    fs::create_dir_all(nodes_dir.path().join("fragments"))
-        .expect("fragments dir should be writable");
-    fs::write(
-        nodes_dir.path().join("fragments/extras.json5"),
-        r#"{
-            peppy_schema: "launcher_fragment/v1",
-            adjustments: [
-                { target: "alpha_inst", set_arguments: { tuned: true } },
-                { target: "beta_inst", set_arguments: { tuned: true } },
-            ],
-        }"#,
-    )
-    .expect("fragment should be writable");
 
     StackCommand {
         command: StackCommands::Launch(LauncherArgs {
@@ -4255,9 +4245,6 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
                 { source: { name: "recorder", tag: "v1" },
                   instances: [{ instance_id: "recorder_inst" }] },
             ],
-            adjustments: [
-                { target: "panel_inst", add_links: { recorder: ["recorder_inst"] } },
-            ],
         }"#,
     )
     .expect("fragment");
@@ -4276,7 +4263,12 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
                   } },
                 { name: "recorder", cardinality: "zero_or_one",
                   provides: ["recorder_inst"],
-                  options: { on: "fragments/recorder.json5" } },
+                  options: { on: {
+                      fragments: ["fragments/recorder.json5"],
+                      adjustments: [
+                          { target: "panel_inst", add_links: { recorder: ["recorder_inst"] } },
+                      ],
+                  } } },
             ],
             adjustments: [
                 { target: "sim_inst", set_arguments: { hardware_version: "v2" } },
@@ -4301,7 +4293,7 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
 
     assert!(
         document.contains("recorder_inst") && document.contains("panel_inst"),
-        "the flat document carries the base and the selected fragment: {document}"
+        "the flat document carries the launcher's own deployments and the selected fragment: {document}"
     );
     assert!(
         !document.contains("components"),
@@ -4319,12 +4311,12 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
     );
     assert!(
         report_text.contains("panel_inst.links.recorder")
-            && report_text.contains("fragments/recorder.json5"),
+            && report_text.contains("panel.json5, option `recorder.on`"),
         "the applied attach is listed with its origin: {report_text}"
     );
     assert!(
         report_text.contains("sim_inst") && report_text.contains("not in this selection"),
-        "the base's sleeping adjustment is listed as skipped: {report_text}"
+        "the launcher's top-level entry is listed as skipped: {report_text}"
     );
 }
 

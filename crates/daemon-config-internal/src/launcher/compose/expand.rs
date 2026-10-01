@@ -2,7 +2,7 @@
 //! collected and merged by source, its adjustments planned and applied in
 //! order, and the report of what they did.
 
-use super::super::composition::{Adjustment, OriginatedAdjustment};
+use super::super::composition::OriginatedAdjustment;
 use super::super::types::{
     ClockDeclaration, Deployment, DeploymentInstance, LauncherFramework, LinkTargets, LinkValue,
     Selection, WALL_CLOCK,
@@ -13,7 +13,7 @@ use super::load::LoadedFragment;
 use super::report::{AppliedAdjustment, AppliedChange, SkipReason, SkippedAdjustment};
 use super::select::UnitSelection;
 use config::runtime::Name;
-use std::collections::{BTreeMap, HashMap, btree_map::Entry};
+use std::collections::{BTreeMap, HashMap};
 
 /// One deployment with the label of the document it came from.
 #[derive(Clone)]
@@ -23,16 +23,17 @@ pub(super) struct OriginatedDeployment<'a> {
 }
 
 /// What one unit expands: the deployments already in its scope, the
-/// fragments the selection pulled in, and the base adjustments that speak
-/// about it.
+/// fragments the selection pulled in, and the launcher's adjustments that
+/// speak about it.
 pub(super) struct Unit<'a> {
     /// Deployments in scope before any fragment: the launcher's own for the
     /// stack, the composed stack's for a copy.
     pub base: Vec<OriginatedDeployment<'a>>,
     pub fragments: Vec<&'a LoadedFragment>,
-    pub base_adjustments: Vec<&'a Adjustment>,
-    pub base_origin: String,
-    /// A copy's own adjustments; they run after the base's.
+    /// The launcher's adjustments reaching this unit, in the order the
+    /// launcher applies them.
+    pub launcher_adjustments: Vec<OriginatedAdjustment<'a>>,
+    /// A copy's own adjustments; they run after the launcher's.
     pub copy_adjustments: Vec<OriginatedAdjustment<'a>>,
     pub selection: UnitSelection,
 }
@@ -47,24 +48,11 @@ pub(super) struct Expanded {
     pub skipped: Vec<SkippedAdjustment>,
 }
 
-/// One adjustment paired with where it came from and whether it speaks for
-/// a fragment (bound by the no-fighting rules) or for the base (which may
-/// override anything a fragment set).
-struct PlannedAdjustment<'a> {
-    adjustment: &'a Adjustment,
-    origin: String,
-    /// Identifies the fragment an adjustment belongs to for the conflict
-    /// rules: two adjustments from one fragment are one author applying list
-    /// order, two from different fragments are two authors fighting. `None`
-    /// marks the base, the author who owns the file, which joins no
-    /// conflict at all.
-    fragment_id: Option<usize>,
-}
-
 /// Collects the unit's deployments, base first, then each fragment's in
-/// order, and applies its adjustments: fragments in collection order, then
-/// the base in list order. An adjustment runs only if its guard holds and its
-/// target is in this unit; each skip is recorded.
+/// order, and applies the adjustments: each fragment's own in collection
+/// order, the launcher's in list order, then a copy's own. An adjustment
+/// runs only if its guard holds and its target is in this unit; each skip
+/// is recorded.
 pub(super) fn expand_unit(
     unit: &Unit<'_>,
     core_nodes: &[String],
@@ -74,7 +62,6 @@ pub(super) fn expand_unit(
     let mut merged = merge_by_source(&collected);
     let links = union_core_nodes(unit, core_nodes);
     let (running, skipped) = plan_adjustments(unit, &defined);
-    check_conflicts(&running)?;
     let mut applied = Vec::new();
     for step in &running {
         let instance = instance_named(&mut merged, step.adjustment.target.as_str());
@@ -213,12 +200,15 @@ fn union_core_nodes(unit: &Unit<'_>, core_nodes: &[String]) -> Vec<String> {
     links
 }
 
-/// The adjustments that run, in order (fragments in collection order, the
-/// base, then the copy's own), and the ones skipped with their reason.
+/// The adjustments that run, in order, and the ones skipped with their
+/// reason. The order is what decides a field two entries both write, the
+/// later one winning: each fragment's own entries in collection order, then
+/// the launcher's, its options' in the order `components` declares their
+/// axes and then its top-level list, then the copy's own.
 fn plan_adjustments<'a>(
-    unit: &Unit<'a>,
+    unit: &'a Unit<'a>,
     defined: &HashMap<&str, &str>,
-) -> (Vec<PlannedAdjustment<'a>>, Vec<SkippedAdjustment>) {
+) -> (Vec<OriginatedAdjustment<'a>>, Vec<SkippedAdjustment>) {
     let planned = unit
         .fragments
         .iter()
@@ -227,26 +217,17 @@ fn plan_adjustments<'a>(
                 .body
                 .adjustments
                 .iter()
-                .map(|adjustment| PlannedAdjustment {
+                .map(|adjustment| OriginatedAdjustment {
                     adjustment,
                     origin: fragment.origin.clone(),
-                    fragment_id: Some(fragment.id),
                 })
         })
         .chain(
-            unit.base_adjustments
+            unit.launcher_adjustments
                 .iter()
-                .map(|adjustment| PlannedAdjustment {
-                    adjustment,
-                    origin: unit.base_origin.clone(),
-                    fragment_id: None,
-                }),
-        )
-        .chain(unit.copy_adjustments.iter().map(|entry| PlannedAdjustment {
-            adjustment: entry.adjustment,
-            origin: entry.origin.clone(),
-            fragment_id: None,
-        }));
+                .chain(&unit.copy_adjustments)
+                .cloned(),
+        );
     let mut running = Vec::new();
     let mut skipped = Vec::new();
     for step in planned {
@@ -292,7 +273,7 @@ pub(super) fn instance_named_mut<'a>(
 /// lists them, recording each field written.
 fn apply_adjustment(
     instance: &mut DeploymentInstance,
-    step: &PlannedAdjustment<'_>,
+    step: &OriginatedAdjustment<'_>,
     applied: &mut Vec<AppliedAdjustment>,
 ) -> Result<(), CompositionError> {
     let target = step.adjustment.target.to_string();
@@ -401,123 +382,4 @@ pub(super) fn append_links(
         slot: slot.to_owned(),
         added: err.target,
     })
-}
-
-/// The key spaces an adjustment can write in. `add_links` shares the links
-/// space with `set_links` and `unset_links`: appending to a slot and
-/// replacing it are two claims on the same entry. An instance reads one
-/// clock, so `framework` holds the single key `clock`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum KeySpace {
-    Arguments,
-    Framework,
-    Links,
-}
-
-impl KeySpace {
-    fn label(self) -> &'static str {
-        match self {
-            KeySpace::Arguments => "arguments",
-            KeySpace::Framework => "framework",
-            KeySpace::Links => "links",
-        }
-    }
-}
-
-/// The conflict rules among the surviving fragment adjustments: a field
-/// is written by one fragment. The base owns the file, so its later entries
-/// win over its earlier ones and over any fragment's. Both maps are ordered
-/// so when several pairs fight, the one reported is the same on every run.
-fn check_conflicts(running: &[PlannedAdjustment<'_>]) -> Result<(), CompositionError> {
-    let mut writers: BTreeMap<(&str, KeySpace, &str), (Option<usize>, String)> = BTreeMap::new();
-    let mut adders: BTreeMap<(&str, &str), String> = BTreeMap::new();
-    for step in running {
-        if step.fragment_id.is_none() {
-            continue;
-        }
-        let target = step.adjustment.target.as_str();
-        let written_keys = step
-            .adjustment
-            .set_arguments
-            .iter()
-            .flat_map(|arguments| arguments.keys())
-            .map(|key| (KeySpace::Arguments, key.as_str()))
-            .chain(
-                step.adjustment
-                    .set_framework
-                    .iter()
-                    .filter(|framework| framework.clock.is_some())
-                    .map(|_| (KeySpace::Framework, "clock")),
-            )
-            .chain(
-                step.adjustment
-                    .set_links
-                    .iter()
-                    .flat_map(|links| links.keys())
-                    .map(|key| (KeySpace::Links, key.as_str())),
-            )
-            .chain(
-                step.adjustment
-                    .unset_links
-                    .iter()
-                    .flatten()
-                    .map(|key| (KeySpace::Links, key.as_str())),
-            );
-        for (space, key) in written_keys {
-            claim_write(&mut writers, target, space, key, step)?;
-        }
-        for key in step
-            .adjustment
-            .add_links
-            .iter()
-            .flat_map(|links| links.keys())
-        {
-            adders.insert((target, key.as_str()), step.origin.clone());
-        }
-    }
-    // Appending to a slot and replacing it are two claims on the same
-    // entry, from one fragment or two, and the pair is refused whichever
-    // order it would apply in.
-    for ((target, key), adder_origin) in &adders {
-        if let Some((_writer_id, writer_origin)) = writers.get(&(target, KeySpace::Links, key)) {
-            return Err(CompositionError::AdjustmentsConflict {
-                target: (*target).to_owned(),
-                field: format!("links.{key}"),
-                first: writer_origin.clone(),
-                second: adder_origin.clone(),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Records one fragment's claim on a `(target, key)` write slot, refusing
-/// when a different fragment already claimed it. Two adjustments from one
-/// fragment are one author applying list order, so the later supersedes
-/// the earlier's claim.
-fn claim_write<'a>(
-    writers: &mut BTreeMap<(&'a str, KeySpace, &'a str), (Option<usize>, String)>,
-    target: &'a str,
-    space: KeySpace,
-    key: &'a str,
-    step: &PlannedAdjustment<'_>,
-) -> Result<(), CompositionError> {
-    match writers.entry((target, space, key)) {
-        Entry::Vacant(slot) => {
-            slot.insert((step.fragment_id, step.origin.clone()));
-        }
-        Entry::Occupied(mut slot) => {
-            let (claimed_by, first) = slot.get_mut();
-            if *claimed_by != step.fragment_id {
-                return Err(CompositionError::AdjustmentsConflict {
-                    target: target.to_owned(),
-                    field: format!("{}.{key}", space.label()),
-                    first: first.clone(),
-                    second: step.origin.clone(),
-                });
-            }
-            *first = step.origin.clone();
-        }
-    }
-    Ok(())
 }

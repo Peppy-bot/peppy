@@ -27,7 +27,7 @@ The [installation guide](https://docs.peppy.bot/guides/installation/) covers ver
 The [quickstart](https://docs.peppy.bot/quickstart/) takes you from nothing installed to a simulated bimanual [OpenArm](https://openarm.dev/) you can drive from your browser, without cloning a repository or writing any code:
 
 ```sh
-peppy stack launch openarm_v2 --with=mujoco,web_commander
+peppy stack launch openarm_simulation --with mujoco
 ```
 
 That single command adds, builds, and starts every node in the selection, in dependency order, under the background service.

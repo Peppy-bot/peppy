@@ -2187,8 +2187,15 @@ fn peppy_mcp_serve_refuses_without_a_spec_and_with_an_invalid_one() {
 /// A launcher running the per-robot surface once for the stack, beside one
 /// `robot` component whose only option is `option`, read from
 /// `<option>.json5`. `copies` is the deployment line's own `instances`
-/// entry, empty for a fleet the launch starts with no robot.
-fn fleet_launcher(port: u16, option: &str, copies: &str) -> String {
+/// entry, empty for a fleet the launch starts with no robot. The launcher's
+/// entry under the option fills `front_camera` with the copy's `front_camera`
+/// ids.
+fn fleet_launcher(port: u16, option: &str, front_camera: &[&str], copies: &str) -> String {
+    let front_camera = front_camera
+        .iter()
+        .map(|id| format!("\"{id}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         r#"{{
         peppy_schema: "launcher/v1",
@@ -2196,7 +2203,14 @@ fn fleet_launcher(port: u16, option: &str, copies: &str) -> String {
             {{
                 name: "robot",
                 cardinality: "zero_or_more",
-                options: {{ {option}: "{option}.json5" }},
+                options: {{
+                    {option}: {{
+                        fragments: ["{option}.json5"],
+                        adjustments: [
+                            {{ target: "mcp_server", add_links: {{ front_camera: [{front_camera}] }} }},
+                        ],
+                    }},
+                }},
             }},
         ],
         deployments: [
@@ -2219,8 +2233,9 @@ fn write_robot_fragment(stack: &Stack, option: &str, fragment: &str) {
     .expect("write the robot fragment");
 }
 
-/// A robot fragment whose one camera fills `front_camera`, a target every
-/// robot of the fleet surface fills once.
+/// A robot fragment deploying one camera, which the launcher's entry under
+/// the robot's option writes into `front_camera`, a target every robot of
+/// the fleet surface fills once.
 const CAMERA_ROBOT_FRAGMENT: &str = r#"{
     peppy_schema: "launcher_fragment/v1",
     deployments: [
@@ -2228,9 +2243,6 @@ const CAMERA_ROBOT_FRAGMENT: &str = r#"{
             source: { name: "mock_uvc_camera:v1" },
             instances: [{ instance_id: "cam" }],
         },
-    ],
-    adjustments: [
-        { target: "mcp_server", add_links: { front_camera: ["cam"] } },
     ],
 }"#;
 
@@ -2336,7 +2348,10 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
     // --- No robot yet: the endpoint is up with an empty fleet, and a call
     // naming a robot says how one is added.
     stack
-        .launch_launcher(&fleet_launcher(port, "camera_robot", ""), Vec::new())
+        .launch_launcher(
+            &fleet_launcher(port, "camera_robot", &["cam"], ""),
+            Vec::new(),
+        )
         .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", stack.run_logs()));
     wait_for_port(port, || stack.run_logs()).await;
     let listing = stack.stack_list().await;
@@ -2572,6 +2587,7 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
             &fleet_launcher(
                 port,
                 "camera_robot",
+                &["cam"],
                 r#", instances: [{ instance_id: "alpha" }]"#,
             ),
             vec![LaunchJoin {
@@ -2587,8 +2603,9 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
     stack.reset();
 }
 
-/// A robot fragment writing two of its own cameras into `front_camera`, a
-/// target every robot of the fleet surface fills once.
+/// A robot fragment deploying two cameras, both of which the launcher's
+/// entry under the robot's option writes into `front_camera`, a target every
+/// robot of the fleet surface fills once.
 const TWO_CAMERA_ROBOT_FRAGMENT: &str = r#"{
     peppy_schema: "launcher_fragment/v1",
     deployments: [
@@ -2597,14 +2614,11 @@ const TWO_CAMERA_ROBOT_FRAGMENT: &str = r#"{
             instances: [{ instance_id: "left_cam" }, { instance_id: "right_cam" }],
         },
     ],
-    adjustments: [
-        { target: "mcp_server", add_links: { front_camera: ["left_cam", "right_cam"] } },
-    ],
 }"#;
 
-/// A robot whose fragment fills a once-per-robot target with two of its
-/// instances is refused while the launch is still a plan, naming the robot
-/// and both ids the fragment wrote.
+/// A robot whose option's entry fills a once-per-robot target with two of
+/// its instances is refused while the launch is still a plan, naming the
+/// robot and both ids the entry wrote.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_robot_filling_a_once_per_robot_target_twice_is_refused_at_launch() {
     let stack = Stack::boot(false).await;
@@ -2612,6 +2626,7 @@ async fn a_robot_filling_a_once_per_robot_target_twice_is_refused_at_launch() {
     let error = stack.launch_launcher_error(&fleet_launcher(
         ephemeral_port(),
         "two_camera_robot",
+        &["left_cam", "right_cam"],
         r#", instances: [{ instance_id: "alpha" }]"#,
     ));
     assert!(
@@ -2646,9 +2661,9 @@ async fn a_camera_outside_every_copy_cannot_fill_a_per_robot_target() {
     assert!(
         error.contains(
             "`the_camera` fills `mcp_server.links.front_camera` from outside any copy, and every \
-             member of `front_camera` belongs to a copy. Add the instance from a copy's own \
-             fragment with `add_links: { front_camera: [\"<id>\"] }` on `mcp_server`, and drop it \
-             from `mcp_server`'s `links`"
+             member of `front_camera` belongs to a copy. Add the instance from the launcher's \
+             `adjustments` under the copy's option, with `add_links: { front_camera: [\"<id>\"] }` \
+             on `mcp_server`, and drop it from `mcp_server`'s `links`"
         ),
         "{error}"
     );
@@ -2662,7 +2677,10 @@ async fn a_join_filling_a_once_per_robot_target_twice_is_refused() {
     let port = ephemeral_port();
     write_robot_fragment(&stack, "two_camera_robot", TWO_CAMERA_ROBOT_FRAGMENT);
     stack
-        .launch_launcher(&fleet_launcher(port, "two_camera_robot", ""), Vec::new())
+        .launch_launcher(
+            &fleet_launcher(port, "two_camera_robot", &["left_cam", "right_cam"], ""),
+            Vec::new(),
+        )
         .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", stack.run_logs()));
     wait_for_port(port, || stack.run_logs()).await;
     let client = connect(&endpoint(port, "/fleet_cameras/v1/mcp")).await;

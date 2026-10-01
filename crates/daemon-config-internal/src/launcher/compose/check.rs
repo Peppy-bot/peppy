@@ -214,6 +214,7 @@ fn check_file_copies_over(
     label: &str,
 ) -> Vec<String> {
     let launcher = &prepared.launcher;
+    let routed = prepared.routed();
     let mut problems = Vec::new();
     // Each copy the file deploys, and whether some legal stack admits it.
     let mut admitted: BTreeMap<String, bool> = BTreeMap::new();
@@ -322,6 +323,7 @@ fn check_file_copies_over(
                             with,
                             arguments: &settings.arguments,
                             adjustments: &settings.adjustments,
+                            routed: &routed,
                             origin: CopyOrigin::File,
                         },
                         &taken_before,
@@ -378,6 +380,7 @@ fn check_copies_over(
     problems: &mut Vec<String>,
 ) -> Vec<(String, UnitSelection)> {
     let launcher = &prepared.launcher;
+    let routed = prepared.routed();
     let mut legal_copies: Vec<(String, UnitSelection)> = Vec::new();
     for item in repeatable {
         for copy_selection in enumerate_copy(item.loaded, &item.axis.name) {
@@ -439,6 +442,7 @@ fn check_copies_over(
                         with: &settings.with,
                         arguments: &settings.arguments,
                         adjustments: &settings.adjustments,
+                        routed: &routed,
                         origin: CopyOrigin::Join,
                     },
                     &bare.core_nodes,

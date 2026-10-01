@@ -2,9 +2,10 @@
 //! launch, join and removal it answers.
 
 use super::super::composition::{
-    Adjustment, ArgumentOverrides, ComponentCardinality, CopySettings, OptionDeployment,
+    ArgumentOverrides, ComponentCardinality, CopySettings, OptionDeployment,
 };
 use super::super::types::{LauncherFramework, PeppyLauncher};
+use super::adjustments::{Routed, route};
 use super::constraints::{self, ConstraintScope};
 use super::copy::{
     self, ComposedCopy, CopyRecord, CopyRequest, argument_overrides, combine, compose_copy,
@@ -108,6 +109,7 @@ impl PreparedLauncher {
         let framework = self.stack_framework(&selection)?;
         let mut taken = bare.core_nodes.clone();
         let mut copies: Vec<ComposedCopy> = Vec::new();
+        let routed = self.routed();
         // The words scoped to a copy, `NAME.option`, laid over the copy's
         // settings.
         let scoped_words = |name: &Name,
@@ -135,6 +137,7 @@ impl PreparedLauncher {
                         with: &with,
                         arguments: &settings.arguments,
                         adjustments: &settings.adjustments,
+                        routed: &routed,
                         origin: CopyOrigin::File,
                     },
                     &taken,
@@ -176,7 +179,7 @@ impl PreparedLauncher {
                 )
                 .map_err(|error| as_typed(&join.name, error))?;
             launcher = joined.launcher;
-            report.add_copy(joined.copy, joined.report.applied, joined.report.skipped);
+            report.absorb(joined.report);
         }
         // Every copy this launch starts is on the plan now, the file's and
         // the command line's, so this is where a `one_or_more` axis is held
@@ -233,6 +236,7 @@ impl PreparedLauncher {
             &argument_overrides(request.arguments)?,
         );
         let bare = self.compose_stack(stack.selection)?;
+        let routed = self.routed();
         let copy = compose_copy(
             self,
             stack.selection,
@@ -244,18 +248,22 @@ impl PreparedLauncher {
                 with: &settings.with,
                 arguments: &settings.arguments,
                 adjustments: &settings.adjustments,
+                routed: &routed,
                 origin,
             },
             &stack.launcher.core_nodes,
         )?;
         let launcher = copy::attach(stack.launcher, &copy)?;
         let record = copy.record();
-        let report = CompositionReport {
+        let mut report = CompositionReport {
             selection: stack.selection.clone(),
-            copies: vec![record.clone()],
-            applied: copy::against_running(stack.launcher, copy.applied),
-            skipped: copy.skipped,
+            ..CompositionReport::default()
         };
+        report.add_copy(
+            record.clone(),
+            copy::against_running(stack.launcher, copy.applied),
+            copy.skipped,
+        );
         Ok(ComposedJoin {
             launcher,
             copy: record,
@@ -335,6 +343,7 @@ impl PreparedLauncher {
         // records that describe them, so a slot one of them pairs into is
         // not handed back as vacant.
         let mut released = HashSet::new();
+        let routed = self.routed();
         for record in remaining {
             let with: BTreeMap<String, String> = record
                 .selection
@@ -357,6 +366,7 @@ impl PreparedLauncher {
                     with: &with,
                     arguments: &ArgumentOverrides::default(),
                     adjustments: &[],
+                    routed: &routed,
                     origin: CopyOrigin::Join,
                 },
                 &[],
@@ -374,39 +384,27 @@ impl PreparedLauncher {
         let in_play =
             constraints::constraints_in_play(&self.launcher, &fragments, ConstraintScope::Stack);
         constraints::check(&in_play, selection)?;
-        let copy_axes: Vec<CopyAxis<'_>> = self
-            .launcher
-            .repeatable_axes()
-            .map(|axis| CopyAxis {
-                name: axis.name.as_str(),
-                defines: self
-                    .loaded
-                    .options_of(&axis.name)
-                    .flat_map(|(_, option)| option.definable_ids())
-                    .collect(),
-            })
-            .collect();
-        // The ids a stack option or the base can define.
-        let stack_ids: HashSet<&str> = self
-            .launcher
-            .deployments
+        // The stack's selection holds no axis that runs as copies, so an
+        // entry under such an option is never part of the stack; an entry
+        // reaching the copies from an option that fills once or the top
+        // level is reported here, one line per axis.
+        let routed = self.routed();
+        let mut launcher_adjustments = Vec::new();
+        let mut in_copies = Vec::new();
+        for routed in routed
             .iter()
-            .flat_map(|deployment| &deployment.instances)
-            .map(|instance| instance.instance_id.as_str())
-            .chain(
-                self.launcher
-                    .stack_axes()
-                    .flat_map(|axis| self.loaded.options_of(&axis.name))
-                    .flat_map(|(_, option)| option.definable_ids()),
-            )
-            .collect();
-        let base_adjustments = self
-            .launcher
-            .adjustments
-            .iter()
-            .filter(|adjustment| copy_axis_of(adjustment, &stack_ids, &copy_axes).is_none())
-            .collect();
-        let base_origin = self.base_origin();
+            .filter(|routed| routed.entry.selected_in(selection))
+        {
+            if routed.copy_axes.is_empty() {
+                launcher_adjustments.push(routed.entry.originated());
+            }
+            in_copies.extend(routed.copy_axes.iter().map(|axis| SkippedAdjustment {
+                target: routed.entry.adjustment.target.to_string(),
+                reason: SkipReason::RunsInCopies((*axis).to_owned()),
+                origin: routed.entry.origin.clone(),
+            }));
+        }
+        let deployments_origin = self.top_level_origin("deployments");
         let unit = Unit {
             base: self
                 .launcher
@@ -414,31 +412,30 @@ impl PreparedLauncher {
                 .iter()
                 .map(|deployment| OriginatedDeployment {
                     deployment,
-                    origin: base_origin.clone(),
+                    origin: deployments_origin.clone(),
                 })
                 .collect(),
             fragments,
-            base_adjustments,
-            base_origin: base_origin.clone(),
+            launcher_adjustments,
             copy_adjustments: Vec::new(),
             selection: selection.clone(),
         };
         let mut expanded = expand_unit(&unit, &self.launcher.core_nodes)?;
-        let in_copies = self.launcher.adjustments.iter().filter_map(|adjustment| {
-            let axis = copy_axis_of(adjustment, &stack_ids, &copy_axes)?;
-            Some(SkippedAdjustment {
-                target: adjustment.target.to_string(),
-                reason: SkipReason::RunsInCopies(axis.to_owned()),
-                origin: base_origin.clone(),
-            })
-        });
         expanded.skipped.extend(in_copies);
         Ok(expanded)
     }
 
-    /// How the report and the refusals name the launcher's own entries.
-    pub(super) fn base_origin(&self) -> String {
-        format!("{} (base)", self.label)
+    /// How the report and the refusals name one top-level key of the
+    /// launcher itself.
+    fn top_level_origin(&self, key: &str) -> String {
+        format!("{}, top-level `{key}`", self.label)
+    }
+
+    /// The launcher's adjustments in the order they apply, each with the
+    /// units that run it.
+    pub(super) fn routed(&self) -> Vec<Routed<'_>> {
+        let (_, routed) = route(&self.launcher, &self.loaded, &self.label);
+        routed
     }
 
     /// The clock domains the stack declares: the launcher's own and every
@@ -449,7 +446,7 @@ impl PreparedLauncher {
         selection: &UnitSelection,
     ) -> Result<LauncherFramework, CompositionError> {
         merge_clocks(
-            &self.base_origin(),
+            &self.top_level_origin("framework"),
             &self.launcher.framework,
             &self.loaded.stack_fragments(selection),
         )
@@ -491,35 +488,4 @@ fn as_typed(name: &Name, error: CompositionError) -> CompositionError {
         }
         other => other,
     }
-}
-
-/// One copy axis of a launcher, with every instance id its options can
-/// define.
-struct CopyAxis<'a> {
-    name: &'a str,
-    defines: HashSet<&'a str>,
-}
-
-/// The copy axis that reaches one launcher adjustment: the axis its guard
-/// names, or the axis whose options alone define its target. Each copy of
-/// that axis runs the adjustment, so the stack does not.
-fn copy_axis_of<'a>(
-    adjustment: &Adjustment,
-    stack_ids: &HashSet<&str>,
-    copy_axes: &[CopyAxis<'a>],
-) -> Option<&'a str> {
-    let guarded = copy_axes
-        .iter()
-        .find(|axis| constraints::names_axis(adjustment.when.as_ref(), axis.name));
-    if let Some(axis) = guarded {
-        return Some(axis.name);
-    }
-    let target = adjustment.target.as_str();
-    if stack_ids.contains(target) {
-        return None;
-    }
-    copy_axes
-        .iter()
-        .find(|axis| axis.defines.contains(target))
-        .map(|axis| axis.name)
 }
