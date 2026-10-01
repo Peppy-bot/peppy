@@ -73,8 +73,8 @@ pub(super) fn constraints_in_play<'a>(
 }
 
 /// Every guard entry must match the selection: naming several axes is an
-/// AND, which is how a base writes "only when the headset leads the real
-/// robot".
+/// AND, which is how a launcher writes "only when the headset leads the
+/// real robot".
 pub(super) fn guard_holds(selection: &UnitSelection, when: &SelectionCondition) -> bool {
     when.iter().all(|(axis, options)| {
         selection

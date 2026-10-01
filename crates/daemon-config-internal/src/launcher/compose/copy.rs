@@ -7,12 +7,13 @@ use super::super::types::{
     Deployment, DeploymentInstance, LauncherFramework, LinkTargets, LinkValue, PeppyLauncher,
     Selection, split_link_target,
 };
-use super::constraints::{self, ConstraintInPlay, ConstraintScope, names_axis};
+use super::adjustments::Routed;
+use super::constraints::{self, ConstraintInPlay, ConstraintScope};
 use super::error::CompositionError;
 use super::expand::{
     Expanded, OriginatedDeployment, Unit, append_links, expand_unit, instance_named_mut,
 };
-use super::load::{LoadedFragment, LoadedOption};
+use super::load::{LoadedFragment, LoadedOption, node_ids};
 use super::prepared::PreparedLauncher;
 use super::report::{AppliedAdjustment, AppliedChange, SkippedAdjustment, render, render_option};
 use super::select::{CopyOrigin, UnitSelection, resolve_copy};
@@ -190,6 +191,8 @@ pub(super) struct CopyRequest<'a> {
     /// The copy's own adjustments, run after the launcher's and before
     /// `arguments`.
     pub adjustments: &'a [OriginatedAdjustment<'a>],
+    /// The launcher's adjustments, routed.
+    pub routed: &'a [Routed<'a>],
     pub origin: CopyOrigin,
 }
 
@@ -273,6 +276,7 @@ pub(super) fn compose_copy(
         with,
         arguments,
         adjustments,
+        routed,
         origin,
     } = request;
     check_copy_name(name)?;
@@ -295,12 +299,7 @@ pub(super) fn compose_copy(
             domain: domain.to_string(),
         });
     }
-    let owned: HashSet<String> = fragments
-        .iter()
-        .flat_map(|fragment| &fragment.body.deployments)
-        .flat_map(|deployment| &deployment.instances)
-        .map(|instance| instance.instance_id.to_string())
-        .collect();
+    let owned: HashSet<&str> = node_ids(fragments.iter().copied()).collect();
     if owned.is_empty() {
         return Err(CompositionError::CopyStartsNothing {
             copy: name.to_string(),
@@ -313,21 +312,30 @@ pub(super) fn compose_copy(
         .flat_map(|d| &d.instances)
         .map(|instance| instance.instance_id.as_str())
         .collect();
-    if let Some(reused) = owned.iter().find(|id| stack_ids.contains(id.as_str())) {
+    if let Some(reused) = owned.iter().find(|id| stack_ids.contains(*id)) {
         return Err(CompositionError::CopyReusesStackId {
             option: loaded.name.clone(),
-            id: reused.clone(),
+            id: (*reused).to_owned(),
         });
     }
 
     constraints::check(&in_play, &selection)?;
 
-    let base_adjustments = launcher
-        .adjustments
+    // An entry reaching an instance the option can define, running or
+    // not, is the copy's: its skip is reported under the copy's name.
+    let definable = loaded.definable_ids();
+    let launcher_adjustments = routed
         .iter()
-        .filter(|adjustment| {
-            names_axis(adjustment.when.as_ref(), axis) || owned.contains(adjustment.target.as_str())
+        .filter(|routed| {
+            routed.entry.selected_in(&selection)
+                && routed.entry.reaches_copy(
+                    axis,
+                    &definable,
+                    &prepared.launcher,
+                    &routed.stack_ids,
+                )
         })
+        .map(|routed| routed.entry.originated())
         .collect();
     let unit = Unit {
         base: bare
@@ -339,8 +347,7 @@ pub(super) fn compose_copy(
             })
             .collect(),
         fragments,
-        base_adjustments,
-        base_origin: prepared.base_origin(),
+        launcher_adjustments,
         copy_adjustments: adjustments.to_vec(),
         selection,
     };
@@ -349,7 +356,7 @@ pub(super) fn compose_copy(
 
     // Mint the owned ids under the name; every link naming one follows it.
     let mut minted: HashMap<String, Name> = HashMap::new();
-    for id in &owned {
+    for &id in &owned {
         let name_for = instance_id_in_copy(name, id);
         if stack_ids.contains(name_for.as_str()) {
             return Err(CompositionError::PrefixedIdCollision {
@@ -357,7 +364,7 @@ pub(super) fn compose_copy(
                 id: name_for.to_string(),
             });
         }
-        minted.insert(id.clone(), name_for);
+        minted.insert(id.to_owned(), name_for);
     }
     let rewrite = |target: &str| -> String {
         let (id, suffix) = split_link_target(target);
@@ -402,21 +409,26 @@ pub(super) fn compose_copy(
     }
     let mut core_nodes: Vec<String> = expanded.core_nodes;
     core_nodes.push(name.to_string());
-    let applied = rewrite_report(name, expanded.applied, &minted, &rewrite)?;
+    let owns = |target: &str| minted.values().any(|id| id.as_str() == target);
+    let applied: Vec<AppliedAdjustment> =
+        rewrite_report(name, expanded.applied, &minted, &rewrite)?;
     let stack_writes = applied
         .iter()
-        .filter(|entry| !minted.values().any(|id| id.as_str() == entry.target))
+        .filter(|entry| !owns(&entry.target))
         .map(|entry| StackWriteEntry {
             instance: entry.target.clone(),
             write: entry.change.clone(),
         })
         .collect();
+    // A skip about an instance only this copy can define reads under the
+    // minted id; one about a stack instance keeps the id that runs there.
     let skipped = expanded
         .skipped
         .into_iter()
         .map(|mut entry| {
-            if let Some(minted) = minted.get(&entry.target) {
-                entry.target = minted.to_string();
+            let target = entry.target.as_str();
+            if definable.contains(target) && !stack_ids.contains(target) {
+                entry.target = instance_id_in_copy(name, target).to_string();
             }
             entry
         })
@@ -460,7 +472,7 @@ pub(super) fn argument_overrides(
 fn apply_overrides(
     name: &Name,
     expanded: &mut Expanded,
-    owned: &HashSet<String>,
+    owned: &HashSet<&str>,
     arguments: &ArgumentOverrides,
 ) -> Result<(), CompositionError> {
     let origin = format!("arguments of copy `{name}`");

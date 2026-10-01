@@ -67,6 +67,54 @@ fn connection_refusals(errors: &[daemon_config::ParsingError]) -> String {
         .join("\n")
 }
 
+/// The launcher's adjustment under an option binds an instance's clock, and
+/// the report names the option.
+#[test]
+fn an_options_adjustment_binds_a_clock() {
+    let directory = tempdir().unwrap();
+    write(
+        &directory.path().join("sim.json5"),
+        &fragment_file(r#"deployments: []"#),
+    );
+    let launcher = r#"{
+        peppy_schema: "launcher/v1",
+        framework: { clocks: { simulation: { publisher: "engine_inst" } } },
+        components: [
+            { name: "engine", cardinality: "zero_or_one", options: { mujoco: {
+                fragments: ["sim.json5"],
+                adjustments: [{ target: "arm_inst", set_framework: { clock: "simulation" } }],
+            } } },
+        ],
+        deployments: [
+            { source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] },
+            { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+        ],
+    }"#;
+    let composed = prepare(directory.path(), launcher)
+        .launch(&words(&["mujoco"]), &[])
+        .expect("the adjustment applies");
+    let bound = composed
+        .report
+        .applied
+        .iter()
+        .find(|entry| entry.target == "arm_inst")
+        .expect("the option binds the arm's clock");
+    assert!(
+        matches!(&bound.change, AppliedChange::Clock { old: None, new } if new.as_str() == "simulation"),
+        "{:?}",
+        bound.change
+    );
+    assert_eq!(bound.origin, "fleet.json5, option `engine.mujoco`");
+    let clocks = resolve_clocks(&composed.launcher, &placements(), &ClockIncarnations::new())
+        .expect("the adjusted instance resolves");
+    assert!(
+        clocks
+            .of("arm_inst")
+            .is_compatible_with(clocks.of("engine_inst")),
+        "the adjustment put the arm on the engine's timeline"
+    );
+}
+
 /// Naming an instance as a domain's publisher assigns it that domain and the
 /// role together, so its entry carries no binding of its own.
 #[test]
@@ -257,11 +305,7 @@ fn two_documents_declaring_one_domain_must_agree() {
         panic!("expected ClockDomainConflict, got: {error}");
     };
     assert_eq!(conflict.domain, "simulation");
-    assert!(
-        conflict.first_origin.contains("fleet.json5"),
-        "{}",
-        conflict.first_origin
-    );
+    assert_eq!(conflict.first_origin, "fleet.json5, top-level `framework`");
     assert!(
         conflict.second_origin.contains("mujoco.json5"),
         "{}",
@@ -292,43 +336,31 @@ fn two_documents_declaring_one_domain_must_agree() {
     );
 }
 
-/// An adjustment binds an instance's clock, and the report names the field
-/// with the value it replaced. Two fragments binding one instance's clock are
-/// two authors writing one field, which is refused.
+/// A fragment binds the clock of an instance it deploys, and the report
+/// names the fragment the binding came from.
 #[test]
-fn an_adjustment_binds_a_clock_and_two_fragments_cannot_both_bind_one() {
+fn a_fragments_adjustment_binds_the_clock_of_an_instance_it_deploys() {
     let directory = tempdir().unwrap();
     write(
         &directory.path().join("sim.json5"),
         &fragment_file(
-            r#"adjustments: [{ target: "arm_inst", set_framework: { clock: "simulation" } }]"#,
+            r#"deployments: [{ source: { name: "arm", tag: "v1" },
+                               instances: [{ instance_id: "arm_inst" }] }],
+               adjustments: [{ target: "arm_inst", set_framework: { clock: "simulation" } }]"#,
         ),
     );
-    write(
-        &directory.path().join("bench.json5"),
-        &fragment_file(
-            r#"adjustments: [{ target: "arm_inst", set_framework: { clock: "wall" } }]"#,
-        ),
-    );
-    let launcher = |option: &str| {
-        format!(
-            r#"{{
-                peppy_schema: "launcher/v1",
-                framework: {{ clocks: {{ simulation: {{ publisher: "engine_inst" }} }} }},
-                components: [
-                    {{ name: "engine", cardinality: "zero_or_one", options: {{ {option} }} }},
-                ],
-                deployments: [
-                    {{ source: {{ name: "engine", tag: "v1" }},
-                       instances: [{{ instance_id: "engine_inst" }}] }},
-                    {{ source: {{ name: "arm", tag: "v1" }},
-                       instances: [{{ instance_id: "arm_inst" }}] }},
-                ],
-            }}"#
-        )
-    };
+    let launcher = r#"{
+        peppy_schema: "launcher/v1",
+        framework: { clocks: { simulation: { publisher: "engine_inst" } } },
+        components: [
+            { name: "engine", cardinality: "zero_or_one", options: { mujoco: "sim.json5" } },
+        ],
+        deployments: [
+            { source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] },
+        ],
+    }"#;
 
-    let composed = prepare(directory.path(), &launcher(r#"mujoco: "sim.json5""#))
+    let composed = prepare(directory.path(), launcher)
         .launch(&words(&["mujoco"]), &[])
         .expect("the adjustment applies");
     let bound = composed
@@ -342,6 +374,7 @@ fn an_adjustment_binds_a_clock_and_two_fragments_cannot_both_bind_one() {
         "{:?}",
         bound.change
     );
+    assert_eq!(bound.origin, "sim.json5");
     let lines = composed.report.render_lines();
     assert!(
         lines
@@ -356,20 +389,6 @@ fn an_adjustment_binds_a_clock_and_two_fragments_cannot_both_bind_one() {
             .of("arm_inst")
             .is_compatible_with(clocks.of("engine_inst")),
         "the adjustment put the arm on the engine's timeline"
-    );
-
-    let error = prepare(
-        directory.path(),
-        &launcher(r#"mujoco: ["sim.json5", "bench.json5"]"#),
-    )
-    .launch(&words(&["mujoco"]), &[])
-    .expect_err("two fragments cannot both bind one clock");
-    let CompositionError::AdjustmentsConflict { target, field, .. } = &error else {
-        panic!("expected AdjustmentsConflict, got: {error}");
-    };
-    assert_eq!(
-        (target.as_str(), field.as_str()),
-        ("arm_inst", "framework.clock")
     );
 }
 

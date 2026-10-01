@@ -44,8 +44,8 @@ pub enum ServeError {
     #[error(
         "the stack binds members exposure `{exposure}` cannot serve:\n{problems}\nA per-robot \
          surface is filled by copies alone, each target once per robot unless the target \
-         declares an argument: bind each instance from its copy's fragment with `add_links`, \
-         one per target"
+         declares an argument: bind each instance from the launcher's `adjustments` under its \
+         copy's option with `add_links`, one per target"
     )]
     Fleet { exposure: String, problems: String },
     #[error(transparent)]
