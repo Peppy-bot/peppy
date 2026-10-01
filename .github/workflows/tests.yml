@@ -48,8 +48,12 @@ env:
 # the cargo registry and the build scripts' tool cache, so it compiles only
 # what the change touched. RunsOn restores the newest snapshot of that disk
 # taken on the same branch, or on dev when the branch has none, and never
-# writes a pull request's run back to dev. A pull request from a fork runs on
-# the same runners, so what holds fork code is the repository's fork-PR
+# writes a pull request's run back to dev. The sticky disk cleanup of the
+# RunsOn stack (infraops) deletes every snapshot of a disk once a week, so the
+# disk starts blank again, and deletes the snapshot of a pull request that has
+# not run for 2 days. Each job writes what its disk holds and what grew in it
+# to its summary (the sticky-disk-report action). A pull request from a fork
+# runs on the same runners, so what holds fork code is the repository's fork-PR
 # approval policy, which holds every outside contributor's run until a
 # maintainer approves it.
 #
@@ -127,6 +131,15 @@ jobs:
         run: |
           python3 -m unittest discover \
             --start-directory .github/actions/cargo-target-sweep \
+            --pattern 'test_*.py' --verbose
+
+      # Every cargo job of this workflow and the hubs' CI jobs with a sticky
+      # disk run the sticky-disk-report action, from `dev` for the hubs. Its
+      # cases need nothing but Python, so they run on every change.
+      - name: Test the sticky disk report
+        run: |
+          python3 -m unittest discover \
+            --start-directory .github/actions/sticky-disk-report \
             --pattern 'test_*.py' --verbose
 
       # The merge-set bot (merge-set.yml) keeps the pull requests of a set

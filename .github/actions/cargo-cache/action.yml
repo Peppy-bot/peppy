@@ -2,8 +2,9 @@ name: Cargo build cache
 description: >-
   Keeps the suite's cargo target directory, the cargo registry, the build
   scripts' tool cache and pixi's package cache on the job's RunsOn sticky
-  disk, so a job compiles only what changed since the suite last ran. The
-  job's runs-on label must request the suite's sticky disk
+  disk, so a job compiles only what changed since the suite last ran, and
+  reports what the disk holds in the job summary (the sticky-disk-report
+  action). The job's runs-on label must request the suite's sticky disk
   (`sticky=<suite>:<size>`). Expects the checkout and the Rust toolchain to be
   in place, and must precede every cargo step.
 
@@ -40,41 +41,21 @@ runs:
     #
     # Everything there is keyed by content or rebuilt by cargo when stale, so
     # what a run finds is a hit for the same bytes or a miss, never state one
-    # run depends on another having written.
+    # run depends on another having written. Cargo never removes an artifact
+    # that a dependency bump or a profile change superseded, so a target
+    # directory only grows: what bounds it is the weekly reset of every
+    # sticky disk (the sticky disk cleanup of the RunsOn stack in infraops),
+    # after which the first run starts empty and pays one cold build.
     - uses: runs-on/action@v2
       with:
         sticky_cache: |
           cargo
           custom,path=~/.peppy/tmp,path=~/.cache/rattler,path=~/.cache/peppy-ci
 
-    # The month is in the name because cargo never removes an artifact a
-    # dependency bump or a profile change superseded, so a target directory
-    # only grows. The first run of a month starts empty and pays one cold
-    # build, the prune below drops the previous month, and a directory is
-    # never older than a month of leftovers.
-    - name: Name the suite's cache directory
-      id: cache
-      shell: bash
-      run: |
-        set -euo pipefail
-        echo "dir=$HOME/.cache/peppy-ci/${{ inputs.suite }}-$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
-
-    # Drops this suite's directories from every other month.
-    - name: Prune the previous months' caches
-      shell: bash
-      run: |
-        set -euo pipefail
-        keep="${{ steps.cache.outputs.dir }}"
-        root="$HOME/.cache/peppy-ci"
-        prefix="${{ inputs.suite }}-"
-        mkdir -p "$root"
-        for d in "$root/$prefix"*; do
-          [ -d "$d" ] || continue
-          if [ "$d" != "$keep" ]; then
-            echo "Pruning stale cache $d"
-            rm -rf "$d"
-          fi
-        done
+    # Writes what the disk holds and what grew in it to the job summary at the
+    # end of the job. Its post step runs before the one of runs-on/action
+    # above, which unmounts the disk.
+    - uses: ./.github/actions/sticky-disk-report
 
     # Only the suite's target directory is redirected, and through a symlink
     # rather than CARGO_TARGET_DIR: the docs snippet runner builds its nodes
@@ -99,7 +80,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        disk="${{ steps.cache.outputs.dir }}"
+        disk="$HOME/.cache/peppy-ci/${{ inputs.suite }}"
         # link <path> <store>: the path becomes a symlink to the store. A
         # real directory already at the path is a cargo step that ran before
         # this action, an ordering mistake this refuses to hide.
@@ -118,8 +99,3 @@ runs:
           echo "CARGO_INCREMENTAL=0"
           echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only"
         } >> "$GITHUB_ENV"
-        # Two invocations: du counts a directory once per invocation, so the
-        # target subtrees would print nothing after target itself.
-        echo "Cache contents at start:"
-        du -sh "$disk"/* 2>/dev/null || true
-        du -sh "$disk"/target/* 2>/dev/null || true

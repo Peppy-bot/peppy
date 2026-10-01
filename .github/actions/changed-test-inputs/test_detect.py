@@ -147,9 +147,10 @@ class Detection(unittest.TestCase):
 
     def test_a_change_to_the_cargo_plumbing_runs_the_cargo_suites(self):
         # The install suite builds its archive through the cargo cache too,
-        # and never through cargo-suite.
+        # which runs the sticky disk report, and never through cargo-suite.
         for path, install_script in (
             (".github/actions/cargo-cache/action.yml", "true"),
+            (".github/actions/sticky-disk-report/report.py", "true"),
             (".github/actions/cargo-suite/action.yml", "false"),
         ):
             with self.subTest(path=path):
