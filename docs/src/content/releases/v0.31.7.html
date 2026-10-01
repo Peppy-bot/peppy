@@ -1,0 +1,38 @@
+<entry>
+  <title>v0.31.7</title>
+  <id>https://docs.peppy.bot/releases/v0-31-7/</id>
+  <updated>2026-10-01T00:00:00Z</updated>
+
+  <summary>The peppy platform commands are rebuilt around workspaces, projects, and enrolling machines in a project's cloud router.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.31.7&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;The peppy platform commands are rebuilt around workspaces, projects, and enrolling machines in a project's cloud router.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on October 1, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy platform list&lt;/code&gt; is removed; &lt;code&gt;peppy platform peers&lt;/code&gt; now lists a project's router peers, with columns for peer name, status, certificate expiry, and id.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;PEPPY_API_KEY&lt;/code&gt; personal-access-token authentication is removed; sign in with &lt;code&gt;peppy platform login&lt;/code&gt; instead.&lt;/li&gt;
+&lt;li&gt;The &lt;code&gt;zenoh.managed.federation&lt;/code&gt; block (with &lt;code&gt;connect_timeout_secs&lt;/code&gt;) is gone from &lt;code&gt;peppy_config.json5&lt;/code&gt;; remove it or the daemon refuses to load the config.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy platform status&lt;/code&gt; now reports this machine's enrollment and router link; use &lt;code&gt;peppy platform whoami&lt;/code&gt; for the signed-in identity.&lt;/li&gt;
+&lt;li&gt;Run &lt;code&gt;peppy platform login&lt;/code&gt; again after upgrading, because the previous credentials file is no longer read.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Signing in and enrolling&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy platform login&lt;/code&gt; signs you in and then enrolls this machine in a project's cloud router, with &lt;code&gt;--workspace&lt;/code&gt;, &lt;code&gt;--project&lt;/code&gt;, and &lt;code&gt;--no-enroll&lt;/code&gt; to steer it.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy platform enroll&lt;/code&gt; joins an already-signed-in machine to a project, &lt;code&gt;--replace&lt;/code&gt; mints a fresh identity, and &lt;code&gt;peppy platform unenroll&lt;/code&gt; removes it (&lt;code&gt;--local-only&lt;/code&gt; deletes only the local record).&lt;/li&gt;
+&lt;li&gt;Enrolling or unenrolling restarts the daemon under the new identity and wipes the running node stack, prompting first unless you pass &lt;code&gt;--yes&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;The daemon renews the peer certificate automatically while you stay signed in, so an enrolled machine keeps its cloud-router link without manual steps.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy platform logout&lt;/code&gt; revokes the session and clears the selection but leaves the machine enrolled, so the daemon stays connected until its certificate expires.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Workspaces, projects, and the router&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy platform workspace&lt;/code&gt; and &lt;code&gt;peppy platform project&lt;/code&gt; (each with &lt;code&gt;show&lt;/code&gt;, &lt;code&gt;list&lt;/code&gt;, &lt;code&gt;use&lt;/code&gt;, and &lt;code&gt;clear&lt;/code&gt;) pick the default workspace and project the other commands act on.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy platform router restart&lt;/code&gt; applies pending changes such as a removed peer, and &lt;code&gt;peppy platform router start&lt;/code&gt; starts a stopped router.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
