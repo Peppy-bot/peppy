@@ -17,7 +17,8 @@
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
-    MessageFormat, NativeEmittedTopic, PeppygenLanguage, QoSProfile, SchemaType, TypeToken,
+    MessageFormat, NativeEmittedTopic, PeppygenLanguage, QoSProfile, SchemaType, TopicRetention,
+    TypeToken,
 };
 use generator::{
     ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, NodeTree,
@@ -38,6 +39,7 @@ fn make_topic(distinguishing_field: &str) -> NativeEmittedTopic {
     NativeEmittedTopic {
         name: "video_stream".to_string(),
         qos_profile: QoSProfile::SensorData,
+        retention: TopicRetention::LiveOnly,
         message_format: Some(MessageFormat(fields)),
     }
 }

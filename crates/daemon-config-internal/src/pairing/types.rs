@@ -46,19 +46,51 @@ impl PeppyPairing {
     }
 }
 
-/// One topic of the conversation. The [`config::node::EmittedTopic`] fields
-/// plus `emitted_by`, which names the emitting role; the other role consumes
-/// the topic.
+/// One topic of the conversation: its name, QoS and shape, plus `emitted_by`,
+/// which names the emitting role; the other role consumes the topic. A pairing
+/// topic is live only.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawPairingTopic")]
 pub struct PairingTopic {
     pub emitted_by: String,
-    #[serde(default)]
     pub name: String,
-    #[serde(default)]
     pub qos_profile: QoSProfile,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message_format: Option<MessageFormat>,
+}
+
+/// A pairing topic as written. `retention` is read only to refuse it by name.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPairingTopic {
+    emitted_by: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    qos_profile: QoSProfile,
+    #[serde(default)]
+    message_format: Option<MessageFormat>,
+    #[serde(default, deserialize_with = "config::node::deserialize_present")]
+    retention: Option<()>,
+}
+
+impl TryFrom<RawPairingTopic> for PairingTopic {
+    type Error = String;
+
+    fn try_from(raw: RawPairingTopic) -> Result<Self, String> {
+        if raw.retention.is_some() {
+            return Err(format!(
+                "pairing topic `{}` must not carry `retention`: a pairing topic is live only",
+                raw.name
+            ));
+        }
+        Ok(Self {
+            emitted_by: raw.emitted_by,
+            name: raw.name,
+            qos_profile: raw.qos_profile,
+            message_format: raw.message_format,
+        })
+    }
 }
 
 /// Custom deserialization enforcing the pairing-document invariants after
@@ -217,6 +249,28 @@ mod tests {
         }"#;
         let parsed: PeppyPairing = serde_json5::from_str(json5).expect("should parse");
         assert!(parsed.topics.iter().all(|t| t.emitted_by == "sender"));
+    }
+
+    #[test]
+    fn a_pairing_topic_refuses_retention() {
+        let json5 = r#"{
+            peppy_schema: "pairing/v1",
+            manifest: { name: "telemetry_link", tag: "v1" },
+            roles: ["sender", "receiver"],
+            topics: [
+                { emitted_by: "sender", name: "samples", retention: { latest: 1 } }
+            ]
+        }"#;
+        let err =
+            serde_json5::from_str::<PeppyPairing>(json5).expect_err("pairing topics are live only");
+        serde_json5::from_str::<PeppyPairing>(&json5.replace("{ latest: 1 }", "null"))
+            .expect_err("a null is a present key");
+        assert!(
+            err.to_string().contains(
+                "pairing topic `samples` must not carry `retention`: a pairing topic is live only"
+            ),
+            "error: {err}"
+        );
     }
 
     #[test]
