@@ -462,7 +462,7 @@ impl ZenohAdapter {
                 }
             };
 
-            let mut adapter = Self::with_router(
+            let adapter = Self::with_router(
                 ZenohNetProtocol::Tcp,
                 host,
                 port,
@@ -477,13 +477,6 @@ impl ZenohAdapter {
                 RouterId::generate(),
             )?
             .with_namespace(namespace.clone());
-            // An ephemeral router's caller is typically a test process, which
-            // can die by SIGKILL without running any Drop. Have the kernel reap
-            // the zenohd child in that case (Linux only) so killed test runs
-            // cannot strand routers holding ports.
-            if let Some(facade) = adapter.zenohd.as_mut() {
-                facade.set_kill_on_parent_death();
-            }
             // A lightweight client probe (no listener, no peer discovery) is the
             // cheapest reliable "router accepts sessions yet?" check.
             let probe_config = render_probe_config(ZenohNetProtocol::Tcp, host, port, None);

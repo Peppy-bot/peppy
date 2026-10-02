@@ -44,8 +44,8 @@ tokio-rustls = { version = "0.26", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
 
-# `PR_SET_PDEATHSIG` for the ephemeral router's kernel-enforced reaping (see
-# `ZenohdFacade::set_kill_on_parent_death`). Linux-only by construction.
+# `PR_SET_PDEATHSIG` so the kernel ends a managed router with its owner process
+# (see `zenohd::spawner`). Linux-only by construction.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
