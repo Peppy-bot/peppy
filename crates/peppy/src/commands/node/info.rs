@@ -1,3 +1,4 @@
+use config::node::TopicRetention;
 use config::{DefaultValue, ParameterSpec, type_token_name};
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use std::collections::BTreeSet;
@@ -236,8 +237,10 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
                         Some(native) => {
                             let _ = writeln!(
                                 out,
-                                "  - {} (qos: {:?})",
-                                native.name, native.qos_profile
+                                "  - {} (qos: {:?}{})",
+                                native.name,
+                                native.qos_profile,
+                                retention_note(native.retention)
                             );
                         }
                         None => {
@@ -360,6 +363,15 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
     }
 
     let _ = writeln!(out);
+}
+
+/// What a native emitted topic's line says of its retention: nothing for a
+/// live-only topic.
+fn retention_note(retention: TopicRetention) -> String {
+    match retention {
+        TopicRetention::LiveOnly => String::new(),
+        retaining => format!(", retention: {retaining}"),
+    }
 }
 
 /// Suffix naming the `manifest.implements` slot a contract-backed produced
@@ -526,6 +538,41 @@ mod tests {
                 PathBuf::from("/tmp/peppy/logs/run/inst-def.log"),
             ],
         }
+    }
+
+    /// A native emitted topic's line states its QoS, and its retention when it
+    /// retains.
+    #[test]
+    fn print_node_info_states_the_retention_of_a_retaining_topic() {
+        let config = NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "arm", tag: "v1" },
+                interfaces: {
+                    topics: { emits: [
+                        { name: "joint_state", qos_profile: "sensor_data", message_format: { position: "f64" } },
+                        { name: "robot_mode", qos_profile: "reliable", retention: { latest: 3 }, message_format: { mode: "string" } },
+                    ] },
+                },
+                execution: { language: "rust", run_cmd: ["./bin"] },
+            }"#,
+        )
+        .expect("parse config");
+
+        let mut out = String::new();
+        format_node_info(
+            &mut out,
+            &NodeInfo {
+                config,
+                ..sample_response()
+            },
+        );
+
+        assert!(out.contains("  - joint_state (qos: SensorData)\n"), "{out}");
+        assert!(
+            out.contains("  - robot_mode (qos: Reliable, retention: latest 3)\n"),
+            "{out}"
+        );
     }
 
     /// Each endpoint of an instance is listed under its instance line as
