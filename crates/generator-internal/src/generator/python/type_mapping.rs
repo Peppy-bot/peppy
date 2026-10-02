@@ -1,7 +1,7 @@
 use super::identifiers::sanitize_python_identifier;
 use crate::error::{Error, Result};
 use crate::generator::naming::{array_item_type_name, to_camel_case};
-use config::node::{PeppygenLanguage, QoSProfile, SchemaType, TypeToken};
+use config::node::{PeppygenLanguage, QoSProfile, SchemaType, TopicRetention, TypeToken};
 use std::collections::HashMap;
 
 /// A field in a Python dataclass.
@@ -166,6 +166,16 @@ pub fn uses_optional(fields: &[PythonField], nested_classes: &[NestedDataclass])
         || nested_classes
             .iter()
             .any(|c| c.fields.iter().any(|f| f.is_optional))
+}
+
+/// Returns the Python expression for a topic's retention.
+pub fn retention_python(retention: TopicRetention) -> String {
+    match retention {
+        TopicRetention::LiveOnly => "peppylib.TopicRetention.live_only()".to_string(),
+        TopicRetention::Latest { depth } => {
+            format!("peppylib.TopicRetention.latest({})", depth.get())
+        }
+    }
 }
 
 /// Returns the Python string for a QoS profile variant.

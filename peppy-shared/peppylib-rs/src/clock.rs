@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use config::runtime::{ClockBinding, ClockDomainId, ClockRole, ProducerRef};
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
 use core_node_api::{TopicId, names};
@@ -427,6 +427,7 @@ impl ClockPublisher {
             Some(&domain.link_id()),
             TopicId::Clock.name(),
             QoSProfile::SensorData,
+            TopicRetention::LiveOnly,
         )
         .await?;
         Ok(Some(Self {

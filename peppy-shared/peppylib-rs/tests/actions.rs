@@ -3,7 +3,7 @@ mod common;
 mod feedback_flood;
 
 use common::test_node_target;
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use peppylib::PeppyError;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, CancelState, ConcurrentAction,
@@ -1731,6 +1731,7 @@ mod unread_feedback {
             TOPIC,
             &ProducerRef::new(CORE, PROVIDER),
             QoSProfile::Reliable,
+            TopicRetention::LiveOnly,
         )
         .await
         .expect("the caller subscribes");
@@ -1742,6 +1743,7 @@ mod unread_feedback {
             None,
             TOPIC,
             QoSProfile::Reliable,
+            TopicRetention::LiveOnly,
         )
         .await
         .expect("the provider declares its publisher");

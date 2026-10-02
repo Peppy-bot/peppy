@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use core_node_api::names;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{MessengerHandle, ProducerRef, TopicMessenger};
@@ -47,6 +47,7 @@ pub(crate) async fn publish_once(
         None,
         topic_name,
         qos,
+        TopicRetention::LiveOnly,
     )
     .await?;
     publisher.publish(payload).await

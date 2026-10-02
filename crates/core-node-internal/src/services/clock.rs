@@ -1,7 +1,7 @@
 pub(crate) mod list;
 pub(crate) mod watch;
 use crate::Result;
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use core_node_api::encoding::ClockTick;
 use core_node_api::names;
 use core_node_api::{ServiceId, TopicId};
@@ -96,6 +96,7 @@ async fn declare_sensor_publisher(
         None,
         topic,
         QoSProfile::SensorData,
+        TopicRetention::LiveOnly,
     )
     .await
     .map_err(Into::into)

@@ -22,7 +22,7 @@ use crate::helpers::{
     test_tmp_root, wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
-use config::node::MessageFormat;
+use config::node::{MessageFormat, TopicRetention};
 use config::runtime::{BoundProducers, Name, NodeInstanceConfig, RuntimeConfig};
 use daemon_config::contract::PeppyContractParser;
 use generator::{ContractOrigin, LanguageGenerator};
@@ -438,6 +438,7 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
             binding("frame").target,
             binding("frame").member,
             QoSProfile::Standard,
+            TopicRetention::LiveOnly,
             shutdown.clone(),
         )
         .await

@@ -4,6 +4,7 @@ use crate::generator::naming::{array_item_type_name, to_camel_case};
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, FormatRuleViolation,
     MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, SchemaType,
+    TopicRetention,
 };
 use daemon_config::consts::PeppyDirs;
 use indexmap::IndexMap;
@@ -359,6 +360,23 @@ pub fn follows_the_set_doc(cardinality: Cardinality) -> Option<&'static str> {
         .then_some("The subscription follows the set as a join grows it or a removal shrinks it.")
 }
 
+/// The sentence a topic's generated publisher and subscription docs carry
+/// when the topic retains; a live-only topic's docs have none.
+pub fn retention_doc(retention: TopicRetention) -> Option<String> {
+    let TopicRetention::Latest { depth } = retention else {
+        return None;
+    };
+    Some(match depth.get() {
+        1 => "The topic retains its newest message: a subscription that starts later also \
+              receives it."
+            .to_string(),
+        depth => format!(
+            "The topic retains its newest {depth} messages: a subscription that starts later \
+             also receives them."
+        ),
+    })
+}
+
 impl DependencyContext {
     /// Pre-wrapped doc lines for the `bound_members()` accessor a set slot
     /// carries beside `bound_producers()`: the same set, each member with the
@@ -584,6 +602,8 @@ pub enum InterfaceVariant {
     ConsumedTopic {
         topic: ConsumedTopic,
         message_format: MessageFormat,
+        /// The retention the topic's producer declares.
+        retention: TopicRetention,
         dependency: DependencyContext,
     },
     ConsumedService {
@@ -654,15 +674,18 @@ impl DeploymentInterface {
         Self::new(InterfaceVariant::ExposedAction { action, origin })
     }
 
-    /// A consumed topic, with its resolved message format and dependency context.
+    /// A consumed topic, with the message format and retention its producer
+    /// declares and its dependency context.
     pub fn consumed_topic(
         topic: ConsumedTopic,
         message_format: MessageFormat,
+        retention: TopicRetention,
         dependency: DependencyContext,
     ) -> Self {
         Self::new(InterfaceVariant::ConsumedTopic {
             topic,
             message_format,
+            retention,
             dependency,
         })
     }
@@ -802,6 +825,7 @@ pub trait LanguageGenerator {
         &mut self,
         topic: &ConsumedTopic,
         arguments: MessageFormat,
+        retention: TopicRetention,
         dependency: &DependencyContext,
     ) -> Result<()>;
     fn add_consumed_service(
@@ -866,8 +890,9 @@ impl DeploymentInterface {
             InterfaceVariant::ConsumedTopic {
                 topic,
                 message_format,
+                retention,
                 dependency,
-            } => backend.add_consumed_topic(topic, message_format.clone(), dependency),
+            } => backend.add_consumed_topic(topic, message_format.clone(), *retention, dependency),
             InterfaceVariant::ConsumedService {
                 service,
                 request_format,
@@ -1010,6 +1035,19 @@ fn validate_sibling_type_name_collisions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_retaining_topics_doc_sentence_counts_its_messages() {
+        assert_eq!(retention_doc(TopicRetention::LiveOnly), None);
+        assert_eq!(
+            retention_doc(TopicRetention::latest(1).unwrap()).unwrap(),
+            "The topic retains its newest message: a subscription that starts later also receives it."
+        );
+        assert_eq!(
+            retention_doc(TopicRetention::latest(3).unwrap()).unwrap(),
+            "The topic retains its newest 3 messages: a subscription that starts later also receives them."
+        );
+    }
 
     #[test]
     fn dependency_context_constructors_set_origin_and_link_id() {

@@ -1490,3 +1490,25 @@ pub const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
   }
 }
 "#;
+
+/// How the emitter of a two-node topic test publishes, and when its receiver
+/// starts.
+#[derive(Clone, Copy)]
+pub enum TopicScenario {
+    /// A live-only topic published at a rate, with both nodes started together.
+    LiveStream,
+    /// A retaining topic published once during the emitter's setup, with the
+    /// receiver started once the emitter is healthy.
+    RetainingThenLateJoin,
+}
+
+impl TopicScenario {
+    pub fn retention(self) -> config::node::TopicRetention {
+        match self {
+            Self::LiveStream => config::node::TopicRetention::LiveOnly,
+            Self::RetainingThenLateJoin => {
+                config::node::TopicRetention::latest(1).expect("1 is in range")
+            }
+        }
+    }
+}

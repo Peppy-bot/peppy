@@ -15,7 +15,7 @@ use peppy_mcp_catalog::{BundleContractPin, ExposureBundle, GoalBound, ValidatedE
 use peppy_mcp_runtime::{
     ActionContext, ActionExit, CancelledGoal, Recipient, ResourceIngest, ToolCall, ToolCallError,
 };
-use peppylib::config::QoSProfile;
+use peppylib::config::{QoSProfile, TopicRetention};
 use peppylib::messaging::{CancelState, MessengerHandle, ProducerRef, SenderTarget};
 use peppylib::runtime::NodeRunner;
 use serde_json::Value;
@@ -313,6 +313,9 @@ pub(crate) async fn pump_resource(
         resource.binding.contract.clone(),
         &resource.binding.member,
         resource.qos.clone(),
+        // A resource reads live traffic: the pump takes a message only once
+        // its producer's ingest is registered.
+        TopicRetention::LiveOnly,
     )
     .await
     {

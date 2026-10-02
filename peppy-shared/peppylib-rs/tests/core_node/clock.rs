@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use config::runtime::{
     ClockBinding, ClockDomainId, ClockIncarnation, CoreNodeName, Name, ProducerRef,
 };
@@ -191,6 +191,7 @@ async fn publish_domain_tick(
         Some(&link_id),
         TopicId::Clock.name(),
         QoSProfile::SensorData,
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("declare the domain's publisher");

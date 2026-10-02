@@ -18,6 +18,7 @@ from peppylib import (
     QoSProfile,
     SenderTarget,
     TopicMessenger,
+    TopicRetention,
     ZenohdInstance,
 )
 
@@ -185,6 +186,7 @@ async def test_messenger_communication():
             topic_name,
             ProducerRef(core_node, instance_id),
             qos,
+            TopicRetention.live_only(),
         )
 
         # Allow subscription to propagate
@@ -200,6 +202,7 @@ async def test_messenger_communication():
             SenderTarget.node(node_name, NODE_TAG),
             topic_name,
             qos,
+            TopicRetention.live_only(),
         )
         publish_result = await publisher.publish(payload)
         assert publish_result is None
@@ -226,6 +229,60 @@ async def test_messenger_communication():
         # No link_id was bound on the publisher, so the keyexpr carries the
         # default sentinel rather than a slot name.
         assert message.link_id == DEFAULT_LINK_ID_SENTINEL
+
+
+def test_topic_retention_states_a_policy():
+    """`TopicRetention` compares by value and refuses a depth above the maximum."""
+    assert TopicRetention.live_only() == TopicRetention.live_only()
+    assert TopicRetention.latest() == TopicRetention.latest(1)
+    assert TopicRetention.latest(3) != TopicRetention.latest(1)
+    assert TopicRetention.latest(1) != TopicRetention.live_only()
+    assert repr(TopicRetention.live_only()) == "TopicRetention.live_only()"
+    assert repr(TopicRetention.latest(3)) == "TopicRetention.latest(3)"
+    assert TopicRetention.latest(0) == TopicRetention.live_only()
+
+    with pytest.raises(ValueError, match="`latest` keeps from 0 to 1024 messages, got 1025"):
+        TopicRetention.latest(1025)
+
+
+@pytest.mark.asyncio
+async def test_a_late_subscriber_reads_the_retained_message():
+    """A retaining topic publishes with no subscriber, and a subscription
+    opened afterwards reads the message."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        test_id = uuid.uuid4().hex[:8]
+        core_node = f"test_core_{test_id}"
+        instance_id = f"test_instance_{test_id}"
+        target = SenderTarget.node(f"test_node_{test_id}", NODE_TAG)
+        topic_name = f"robot_mode_{test_id}"
+        retention = TopicRetention.latest()
+
+        sender_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        publisher = await TopicMessenger.declare_publisher(
+            sender_handle,
+            core_node,
+            instance_id,
+            target,
+            topic_name,
+            QoSProfile.Reliable,
+            retention=retention,
+        )
+        await publisher.publish(b"ready")
+
+        receiver_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        subscription = await TopicMessenger.subscribe(
+            receiver_handle,
+            core_node,
+            instance_id,
+            target,
+            topic_name,
+            ProducerRef(core_node, instance_id),
+            QoSProfile.Reliable,
+            retention=retention,
+        )
+
+        message = await asyncio.wait_for(subscription.on_next_message(), timeout=5.0)
+        assert message.payload == b"ready"
 
 
 @pytest.mark.asyncio
@@ -257,6 +314,7 @@ async def test_message_exposes_the_producers_bound_link_id():
             topic_name,
             ProducerRef(core_node, instance_id),
             qos,
+            TopicRetention.live_only(),
         )
         await asyncio.sleep(0.05)
 
@@ -267,6 +325,7 @@ async def test_message_exposes_the_producers_bound_link_id():
             SenderTarget.node(node_name, NODE_TAG),
             topic_name,
             qos,
+            TopicRetention.live_only(),
             link_id,
         )
         await publisher.publish(b"joint states")
@@ -304,4 +363,5 @@ async def test_subscribe_rejects_producer_list():
                     f"test_topic_{test_id}",
                     producers,
                     QoSProfile.Reliable,
+                    TopicRetention.live_only(),
                 )

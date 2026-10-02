@@ -28,6 +28,12 @@
 //! those receivers when it is asked for a message, polling them in a rotated
 //! order, so every message waits in its own member's wire buffer until it is
 //! read and a busy member never queues a quiet one behind its backlog.
+//!
+//! On a retaining topic a new wire subscription also delivers the messages its
+//! producer retains. The stale filter can drop them: the slot moves off a pin
+//! and back before the converge task runs, and the reader looks in between.
+//! The reader then asks the converge task to declare that pin again, so the
+//! retained messages reach it once the slot follows the pin.
 
 use crate::error::Result;
 use crate::messaging::{MessengerHandle, ProducerRef, Subscription};
@@ -35,7 +41,7 @@ use crate::runtime::TaskHandle;
 use crate::types::Message;
 use config::node::QoSProfile;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::sync::{Notify, watch};
 use tracing::warn;
@@ -84,6 +90,43 @@ pub(crate) trait FollowedSlot: Sized + Send + Sync + 'static {
     /// the producer `pin` follows: the defensive second guard behind the
     /// pinned keyexpr.
     fn published_by(pin: &Self::Pin, message: &Message) -> bool;
+    /// Whether a new wire subscription of this stream also delivers the
+    /// messages its producer retains.
+    fn replays_retained(_wire: &Self::Wire) -> bool {
+        false
+    }
+}
+
+/// The declarations the reader asks of the converge task.
+#[derive(Default)]
+struct Redeclarations {
+    /// Rung with every request.
+    requested: Notify,
+    /// Wire channels whose buffered message the stale filter dropped on a
+    /// stream that replays retained messages.
+    stale_replays: Mutex<Vec<WireReceiver>>,
+}
+
+impl Redeclarations {
+    /// Asks for the subscription that feeds `channel` to be replaced, so the
+    /// retained messages the stale filter dropped are replayed.
+    fn replay(&self, channel: &WireReceiver) {
+        self.stale_replays
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(channel.clone());
+        self.requested.notify_one();
+    }
+
+    /// The wire channels whose subscriptions are to be replaced.
+    fn take_stale_replays(&self) -> Vec<WireReceiver> {
+        std::mem::take(
+            &mut *self
+                .stale_replays
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
 }
 
 /// What every declaration of one stream subscribes as and against, fixed for
@@ -97,12 +140,12 @@ pub(crate) struct StreamWiring<S: FollowedSlot> {
     pub(crate) qos: QoSProfile,
 }
 
+/// A handle on the wire channel one subscription delivers into.
+type WireReceiver = flume::Receiver<pmi::TopicMessage>;
+
 /// One followed member as the reader polls it: its pin and a handle on the wire
 /// receiver of the subscription the converge task holds for it.
-type Member<S> = (
-    Arc<<S as FollowedSlot>::Pin>,
-    flume::Receiver<pmi::TopicMessage>,
-);
+type Member<S> = (Arc<<S as FollowedSlot>::Pin>, WireReceiver);
 
 /// The followed members in the slot's own order, as the converge task last
 /// settled them.
@@ -119,11 +162,16 @@ pub(crate) struct SlotStream<S: FollowedSlot> {
     /// The members this reader polls, reloaded from `members_rx` before the
     /// next read once the converge task has published a change.
     members: Members<S>,
+    /// Wire channels the reader asked the converge task to replace, left out of
+    /// every reload until a publish no longer carries them.
+    replacing: Vec<WireReceiver>,
     /// Rotating first-poll position, so a busy member cannot starve a quiet one.
     next_start: usize,
-    /// Rung by the reader when a followed member's wire channel closes, so the
-    /// converge task declares it again.
-    closed: Arc<Notify>,
+    /// Whether a new wire subscription starts with retained messages.
+    replays_retained: bool,
+    /// Asked by the reader when a followed member's wire channel closes, or
+    /// when the stale filter drops a retained replay.
+    redeclarations: Arc<Redeclarations>,
     converge_task: TaskHandle<()>,
 }
 
@@ -156,7 +204,7 @@ impl<S: FollowedSlot> SlotStream<S> {
                 if self.members_rx.changed().await.is_err() {
                     return None; // runtime teardown
                 }
-                self.members = self.members_rx.borrow_and_update().clone();
+                self.reload_members();
                 continue;
             }
 
@@ -178,7 +226,7 @@ impl<S: FollowedSlot> SlotStream<S> {
             };
 
             match received {
-                None => self.members = self.members_rx.borrow_and_update().clone(),
+                None => self.reload_members(),
                 Some((idx, Ok(raw))) => {
                     let pin = &self.members[idx].0;
                     let message = Message::from(raw);
@@ -187,6 +235,14 @@ impl<S: FollowedSlot> SlotStream<S> {
                     let followed = S::is_followed(&self.state_rx.borrow(), pin);
                     if S::published_by(pin, &message) && followed {
                         return Some((Arc::clone(pin), message));
+                    }
+                    if !followed && self.replays_retained {
+                        // The converge task replaces this subscription, and
+                        // its next publish carries the members it keeps.
+                        let channel = self.members[idx].1.clone();
+                        self.redeclarations.replay(&channel);
+                        self.replacing.push(channel);
+                        self.members = without_member::<S>(&self.members, idx);
                     }
                 }
                 Some((idx, Err(_))) => {
@@ -205,19 +261,54 @@ impl<S: FollowedSlot> SlotStream<S> {
                             instance_id = %producer.instance_id,
                             "a followed member's wire channel closed; declaring it again"
                         );
-                        self.closed.notify_one();
+                        self.redeclarations.requested.notify_one();
                     }
-                    self.members = self
-                        .members
-                        .iter()
-                        .enumerate()
-                        .filter(|(position, _)| *position != idx)
-                        .map(|(_, member)| member.clone())
-                        .collect();
+                    self.members = without_member::<S>(&self.members, idx);
                 }
             }
         }
     }
+}
+
+impl<S: FollowedSlot> SlotStream<S> {
+    /// Takes the members the converge task published last, less the channels
+    /// the reader asked it to replace. A publish that no longer carries such a
+    /// channel ends its exclusion.
+    fn reload_members(&mut self) {
+        let published = self.members_rx.borrow_and_update().clone();
+        self.members = members_without_replaced::<S>(&published, &mut self.replacing);
+    }
+}
+
+/// `published` less the channels in `replacing`, which keeps only the
+/// channels `published` still carries.
+fn members_without_replaced<S: FollowedSlot>(
+    published: &Members<S>,
+    replacing: &mut Vec<WireReceiver>,
+) -> Members<S> {
+    replacing.retain(|channel| {
+        published
+            .iter()
+            .any(|(_, member)| member.same_channel(channel))
+    });
+    if replacing.is_empty() {
+        return Arc::clone(published);
+    }
+    published
+        .iter()
+        .filter(|(_, member)| !replacing.iter().any(|channel| channel.same_channel(member)))
+        .cloned()
+        .collect()
+}
+
+/// `members` less the one at `idx`: the reader stops polling it.
+fn without_member<S: FollowedSlot>(members: &Members<S>, idx: usize) -> Members<S> {
+    members
+        .iter()
+        .enumerate()
+        .filter(|(position, _)| *position != idx)
+        .map(|(_, member)| member.clone())
+        .collect()
 }
 
 /// Dropping the stream aborts the converge task, which drops every wire
@@ -255,29 +346,33 @@ pub(crate) async fn start_slot_stream<S: FollowedSlot>(
     }
     let (members_tx, members_rx) = watch::channel(members_of::<S>(&current));
     let members = members_rx.borrow().clone();
-    let closed = Arc::new(Notify::new());
+    let replays_retained = S::replays_retained(&wiring.wire);
+    let redeclarations = Arc::new(Redeclarations::default());
     let converge_task = crate::runtime::spawn(follow_the_set::<S>(
         wiring,
         state_rx.clone(),
         current,
         members_tx,
-        Arc::clone(&closed),
+        Arc::clone(&redeclarations),
     ));
     Ok(SlotStream {
         state_rx,
         members_rx,
         members,
+        replacing: Vec::new(),
         next_start: 0,
-        closed,
+        replays_retained,
+        redeclarations,
         converge_task,
     })
 }
 
 /// The converge loop: keeps one wire subscription per followed pin as the
 /// slot's set changes, publishing the followed members after each change. A pin
-/// whose wire channel closed under it is declared again at once, and a pin
-/// whose declaration failed is declared again after a backoff, until it
-/// succeeds or the slot stops following it.
+/// whose wire channel closed under it is declared again at once, and so is a
+/// pin whose retained replay the stale filter dropped. A pin whose declaration
+/// failed is declared again after a backoff, until it succeeds or the slot
+/// stops following it.
 /// Ends when the slot's state channel closes (runtime teardown), dropping every
 /// subscription it holds.
 async fn follow_the_set<S: FollowedSlot>(
@@ -285,7 +380,7 @@ async fn follow_the_set<S: FollowedSlot>(
     mut state_rx: watch::Receiver<S::State>,
     mut current: Vec<(Arc<S::Pin>, Subscription)>,
     members_tx: watch::Sender<Members<S>>,
-    closed: Arc<Notify>,
+    redeclarations: Arc<Redeclarations>,
 ) {
     let mut redeclare_delay = FIRST_REDECLARE_DELAY;
     loop {
@@ -296,13 +391,19 @@ async fn follow_the_set<S: FollowedSlot>(
                     return; // runtime teardown
                 }
             }
-            () = closed.notified() => {}
+            () = redeclarations.requested.notified() => {}
             () = tokio::time::sleep(redeclare_delay), if owed => {
                 redeclare_delay = (redeclare_delay * 2).min(MAX_REDECLARE_DELAY);
             }
         }
 
         let desired = S::desired(&state_rx.borrow_and_update());
+        let stale_replays = redeclarations.take_stale_replays();
+        current.retain(|(_, subscription)| {
+            !stale_replays
+                .iter()
+                .any(|stale| stale.same_channel(subscription.wire_receiver()))
+        });
         let Converged {
             current: converged,
             failed,
@@ -440,7 +541,7 @@ async fn converge_subscriptions<S: FollowedSlot>(
 /// without consuming a message. The ubiquitous single-member set receives
 /// directly, with no future collection at all.
 async fn recv_first_ready<T>(
-    members: &[(T, flume::Receiver<pmi::TopicMessage>)],
+    members: &[(T, WireReceiver)],
     start: usize,
 ) -> (
     usize,
@@ -514,7 +615,7 @@ mod tests {
         use super::*;
         use crate::messaging::{MessengerHandle, ProducerRef, SenderTarget, TopicMessenger};
         use crate::types::Payload;
-        use config::node::QoSProfile;
+        use config::node::{QoSProfile, TopicRetention};
         use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
         use std::collections::HashMap;
         use std::sync::Mutex as StdMutex;
@@ -561,6 +662,7 @@ mod tests {
 
         struct TestWire {
             target: SenderTarget,
+            retention: TopicRetention,
             declarations: Arc<Declarations>,
         }
 
@@ -600,12 +702,17 @@ mod tests {
                     &wiring.topic,
                     pin,
                     wiring.qos.clone(),
+                    wiring.wire.retention,
                 )
                 .await
             }
 
             fn published_by(pin: &ProducerRef, message: &Message) -> bool {
                 published_by_producer(pin, message)
+            }
+
+            fn replays_retained(wire: &TestWire) -> bool {
+                !wire.retention.is_live_only()
             }
         }
 
@@ -627,12 +734,21 @@ mod tests {
             shared: &Arc<Mutex<Messenger>>,
             declarations: Arc<Declarations>,
         ) -> StreamWiring<TestSlot> {
+            wiring_with(shared, declarations, TopicRetention::LiveOnly)
+        }
+
+        fn wiring_with(
+            shared: &Arc<Mutex<Messenger>>,
+            declarations: Arc<Declarations>,
+            retention: TopicRetention,
+        ) -> StreamWiring<TestSlot> {
             StreamWiring {
                 messenger: MessengerHandle::from_shared(Arc::clone(shared)),
                 as_core_node: CORE.to_string(),
                 as_instance_id: READER.to_string(),
                 wire: TestWire {
                     target: target(),
+                    retention,
                     declarations,
                 },
                 topic: TOPIC.to_string(),
@@ -645,6 +761,15 @@ mod tests {
             instance_id: &str,
             body: &'static [u8],
         ) {
+            publish_with(shared, instance_id, body, TopicRetention::LiveOnly).await;
+        }
+
+        async fn publish_with(
+            shared: &Arc<Mutex<Messenger>>,
+            instance_id: &str,
+            body: &'static [u8],
+            retention: TopicRetention,
+        ) {
             let publisher = TopicMessenger::declare_publisher(
                 &MessengerHandle::from_shared(Arc::clone(shared)),
                 CORE,
@@ -653,6 +778,7 @@ mod tests {
                 None,
                 TOPIC,
                 QoSProfile::Reliable,
+                retention,
             )
             .await
             .expect("declare publisher");
@@ -660,6 +786,118 @@ mod tests {
                 .publish(Payload::from_static(body))
                 .await
                 .expect("publish");
+        }
+
+        /// Polls the reader once on the calling task of a `current_thread`
+        /// test, so the converge task has not run since the last state change.
+        fn reads_nothing_in_one_poll(stream: &mut SlotStream<TestSlot>) -> bool {
+            let mut read = std::pin::pin!(stream.next());
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            read.as_mut().poll(&mut context).is_pending()
+        }
+
+        /// A reload leaves out the channels the reader asked to replace, and
+        /// forgets each one once a publish no longer carries it.
+        #[test]
+        fn a_reload_leaves_out_the_channels_the_reader_asked_to_replace() {
+            let channel = || flume::unbounded::<pmi::TopicMessage>().1;
+            let (front, rear) = (Arc::new(producer("front")), Arc::new(producer("rear")));
+            let (front_rx, rear_rx) = (channel(), channel());
+            let mut replacing = vec![front_rx.clone()];
+
+            let published: Members<TestSlot> = Arc::from([
+                (Arc::clone(&front), front_rx),
+                (Arc::clone(&rear), rear_rx.clone()),
+            ]);
+            let members = members_without_replaced::<TestSlot>(&published, &mut replacing);
+            assert_eq!(members.len(), 1);
+            assert!(members[0].1.same_channel(&rear_rx));
+            assert_eq!(replacing.len(), 1, "the publish still carries the channel");
+
+            let replaced: Members<TestSlot> = Arc::from([
+                (Arc::clone(&front), channel()),
+                (Arc::clone(&rear), rear_rx),
+            ]);
+            let members = members_without_replaced::<TestSlot>(&replaced, &mut replacing);
+            assert_eq!(members.len(), 2);
+            assert!(
+                replacing.is_empty(),
+                "the publish no longer carries the channel"
+            );
+        }
+
+        /// The slot moves off a producer and back before the converge task
+        /// runs, and the reader looks in between: the stale filter drops the
+        /// producer's retained message. The pin is declared again, so the
+        /// reader gets the message once the slot follows the producer.
+        #[tokio::test(flavor = "current_thread")]
+        async fn a_retained_message_the_stale_filter_dropped_is_replayed() {
+            let retains_latest = TopicRetention::latest(1).expect("1 is in range");
+            let shared = shared_messenger().await;
+            publish_with(&shared, "arm_1", b"ready", retains_latest).await;
+            let declarations = Arc::new(Declarations::default());
+            let (state_tx, state_rx) = watch::channel(vec![producer("arm_1")]);
+            let mut stream = start_slot_stream::<TestSlot>(
+                wiring_with(&shared, Arc::clone(&declarations), retains_latest),
+                state_rx,
+            )
+            .await
+            .expect("the pin declares");
+
+            state_tx.send(Vec::new()).expect("state send");
+            assert!(
+                reads_nothing_in_one_poll(&mut stream),
+                "the retained message is stale while the slot is off its producer"
+            );
+            state_tx.send(vec![producer("arm_1")]).expect("state send");
+
+            let (pin, message) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+                .await
+                .expect("the retained message is replayed")
+                .expect("the stream is open");
+            assert_eq!(*pin, producer("arm_1"));
+            assert_eq!(&*message.payload_bytes(), b"ready");
+            assert_eq!(
+                *declarations.attempts.lock().unwrap(),
+                2,
+                "the pin was declared again"
+            );
+        }
+
+        /// A live-only stream goes through the same sequence with a buffered
+        /// message: the stale filter drops it and the pin keeps its
+        /// subscription, which delivers the next message.
+        #[tokio::test(flavor = "current_thread")]
+        async fn a_live_only_stream_keeps_its_subscription_past_a_stale_message() {
+            let shared = shared_messenger().await;
+            let declarations = Arc::new(Declarations::default());
+            let (state_tx, state_rx) = watch::channel(vec![producer("arm_1")]);
+            let mut stream =
+                start_slot_stream::<TestSlot>(wiring(&shared, Arc::clone(&declarations)), state_rx)
+                    .await
+                    .expect("the pin declares");
+            publish_from(&shared, "arm_1", b"buffered").await;
+
+            state_tx.send(Vec::new()).expect("state send");
+            assert!(
+                reads_nothing_in_one_poll(&mut stream),
+                "the buffered message is stale while the slot is off its producer"
+            );
+            state_tx.send(vec![producer("arm_1")]).expect("state send");
+            // Lets the converge task take the two state changes.
+            tokio::task::yield_now().await;
+
+            publish_from(&shared, "arm_1", b"next").await;
+            let (_, message) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+                .await
+                .expect("the kept subscription delivers")
+                .expect("the stream is open");
+            assert_eq!(&*message.payload_bytes(), b"next");
+            assert_eq!(
+                *declarations.attempts.lock().unwrap(),
+                1,
+                "the pin was declared once"
+            );
         }
 
         /// The first declaration is the caller's to see: a slot whose pin

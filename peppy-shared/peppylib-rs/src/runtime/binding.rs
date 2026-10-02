@@ -7,6 +7,10 @@
 //! bound producer, pinned to the producer's `(core_node, instance_id)`: a
 //! producer joining the set is subscribed, and one leaving it is dropped along
 //! with anything it had buffered.
+//!
+//! On a retaining topic each new wire subscription also delivers the messages
+//! its producer retains. A producer that enters the set, or leaves it and enters
+//! again, delivers them to a reader that may already have read them.
 
 use crate::error::{Error, Result};
 use crate::messaging::{
@@ -17,17 +21,25 @@ use crate::runtime::slot_stream::{
 };
 use crate::runtime::{CancellationToken, NodeRunner};
 use crate::types::Message;
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use tokio::sync::watch;
 
 /// The consumer slot kind for the shared slot_stream engine: one pin per bound
 /// producer, keyed on its wire address.
 struct BoundFollow;
 
+/// What every pin of a consumer slot's stream subscribes against: the node or
+/// contract target its producers serve the topic under, and the topic's
+/// retention.
+struct BoundWire {
+    from_target: SenderTarget,
+    retention: TopicRetention,
+}
+
 impl FollowedSlot for BoundFollow {
     type State = BoundSetState;
     type Pin = ProducerRef;
-    type Wire = SenderTarget;
+    type Wire = BoundWire;
 
     fn desired(state: &BoundSetState) -> Vec<ProducerRef> {
         state.producers.producers().cloned().collect()
@@ -46,12 +58,17 @@ impl FollowedSlot for BoundFollow {
             &wiring.messenger,
             &wiring.as_core_node,
             &wiring.as_instance_id,
-            wiring.wire.clone(),
+            wiring.wire.from_target.clone(),
             &wiring.topic,
             pin,
             wiring.qos.clone(),
+            wiring.wire.retention,
         )
         .await
+    }
+
+    fn replays_retained(wire: &BoundWire) -> bool {
+        !wire.retention.is_live_only()
     }
 
     fn published_by(pin: &ProducerRef, message: &Message) -> bool {
@@ -62,7 +79,9 @@ impl FollowedSlot for BoundFollow {
 /// Stream of one topic from every producer bound to a consumer slot, merged
 /// client-side. Message order is preserved independently per producer, with no
 /// total ordering across producers; ready producers are merged fairly, so a busy
-/// one cannot starve a quiet one. Delivery is a live stream, never a mailbox.
+/// one cannot starve a quiet one. A live-only topic delivers what a producer
+/// publishes while the slot follows it. A retaining topic also delivers the
+/// messages each producer retains.
 pub struct BoundSetSubscription {
     stream: SlotStream<BoundFollow>,
     shutdown: CancellationToken,
@@ -106,13 +125,15 @@ pub fn watch_bound_set(
 /// call sites; `from_target` is the node or contract target the producers serve
 /// the topic under. Declares a wire subscription for every producer bound now
 /// and fails if one cannot be declared; a declaration failing while the stream
-/// runs is declared again on a backoff.
+/// runs is declared again on a backoff. `retention` is the topic's declared
+/// policy.
 pub async fn subscribe_bound_set(
     node_runner: &NodeRunner,
     link_id: &str,
     from_target: SenderTarget,
     topic: &str,
     qos: QoSProfile,
+    retention: TopicRetention,
 ) -> Result<BoundSetSubscription> {
     let processor = node_runner.processor();
     let watch_rx = watch_bound_set(node_runner, link_id)?;
@@ -124,6 +145,7 @@ pub async fn subscribe_bound_set(
         from_target,
         topic.to_string(),
         qos,
+        retention,
         node_runner.cancellation_token().clone(),
     )
     .await
@@ -143,13 +165,17 @@ pub async fn subscribe_bound_set_with_watch(
     from_target: SenderTarget,
     topic: String,
     qos: QoSProfile,
+    retention: TopicRetention,
     shutdown: CancellationToken,
 ) -> Result<BoundSetSubscription> {
     let wiring = StreamWiring {
         messenger,
         as_core_node,
         as_instance_id,
-        wire: from_target,
+        wire: BoundWire {
+            from_target,
+            retention,
+        },
         topic,
         qos,
     };

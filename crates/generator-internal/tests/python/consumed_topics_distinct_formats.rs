@@ -17,7 +17,7 @@ use crate::helpers::{
     contract_dep, init_python_project_venv, init_python_user_node, run_uv, test_peppy_dirs,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage};
+use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage, TopicRetention};
 use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
 use std::fs;
 use std::path::Path;
@@ -152,6 +152,7 @@ fn consumed_topic(slot: Slot) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
         topic,
         message_format,
+        retention: TopicRetention::LiveOnly,
         dependency,
     })
 }

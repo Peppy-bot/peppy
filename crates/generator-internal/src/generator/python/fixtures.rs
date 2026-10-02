@@ -24,7 +24,7 @@ use super::mock::{
     production_import_line, production_module_path, target_python_expr,
 };
 use super::scaffold::sanitize_python_module_name;
-use super::type_mapping::qos_profile_python;
+use super::type_mapping::{qos_profile_python, retention_python};
 use crate::error::Result;
 use crate::generator::types::{InterfaceArtifact, InterfaceKind, scoped_schema_key};
 use config::node::Cardinality;
@@ -245,6 +245,7 @@ class Subscription:
                     "TOPIC_NAME,",
                     "producer,",
                     &format!("{qos},"),
+                    &format!("retention={},", retention_python(spec.retention)),
                 ],
                 ")",
             );

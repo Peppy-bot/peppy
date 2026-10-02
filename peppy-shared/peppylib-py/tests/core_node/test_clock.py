@@ -17,6 +17,7 @@ from peppylib import (
     SenderTarget,
     StandaloneConfig,
     TopicMessenger,
+    TopicRetention,
     clock,
 )
 
@@ -98,6 +99,7 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
             SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
             "clock",
             QoSProfile.SensorData,
+            TopicRetention.live_only(),
         )
         await publisher.publish(canned.encode())
 
@@ -161,6 +163,7 @@ async def test_a_consumer_reads_the_ticks_of_its_domain(tmp_path):
             SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
             "clock",
             QoSProfile.SensorData,
+            TopicRetention.live_only(),
             link_id=_link_id(1),
         )
         await publisher.publish(clock.ClockTick(time=sim_ns).encode())
@@ -198,6 +201,7 @@ async def test_a_consumer_of_an_earlier_lifetime_reads_nothing_from_the_replacem
             SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
             "clock",
             QoSProfile.SensorData,
+            TopicRetention.live_only(),
             _link_id(2),
         )
         await publisher.publish(clock.ClockTick(time=99_000_000_000).encode())

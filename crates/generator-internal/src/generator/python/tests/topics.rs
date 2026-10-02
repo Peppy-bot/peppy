@@ -2,6 +2,7 @@ use super::*;
 use crate::error::Error;
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    TopicRetention,
 };
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
@@ -438,6 +439,68 @@ fn emit_topic_with_dynamic_object_array() {
     );
 }
 
+/// The retention a topic's producer declares reaches both generated call
+/// sites: the publisher of the emitted topic and the subscription of the
+/// consumed one.
+#[test]
+fn a_topics_retention_reaches_its_publisher_and_its_subscription() {
+    let live_only = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
+    let retains_three = NativeEmittedTopic {
+        retention: TopicRetention::latest(3).expect("3 is in range"),
+        ..live_only.clone()
+    };
+    let retains_three_doc = crate::generator::types::retention_doc(retains_three.retention)
+        .expect("a retaining topic has a doc sentence");
+    for (topic, stated, documented) in [
+        (&live_only, "peppylib.TopicRetention.live_only()", false),
+        (&retains_three, "peppylib.TopicRetention.latest(3)", true),
+    ] {
+        let mut generator = PythonGenerator::new();
+        generator.add_emitted_topic(topic, None).unwrap();
+        let emitted = render_artifacts(generator.into_artifacts())
+            .into_iter()
+            .next()
+            .expect("artifact is present");
+        assert_contains_all(
+            &emitted,
+            &[
+                &format!("RETENTION = {stated}"),
+                "QOS,\n        retention=RETENTION,",
+            ],
+        );
+        assert_eq!(
+            emitted.contains(&retains_three_doc),
+            documented,
+            "{emitted}"
+        );
+
+        let mut generator = PythonGenerator::new();
+        generator
+            .add_consumed_topic(
+                &parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1),
+                parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1),
+                topic.retention,
+                &native_dep("uvc_camera", "v1", "cam_left"),
+            )
+            .unwrap();
+        let consumed = render_artifacts(generator.into_artifacts())
+            .into_iter()
+            .next()
+            .expect("artifact is present");
+        assert_contains_all(
+            &consumed,
+            &[&format!(
+                "peppylib.QoSProfile.Standard,\n        retention={stated},"
+            )],
+        );
+        assert_eq!(
+            consumed.contains(&retains_three_doc),
+            documented,
+            "{consumed}"
+        );
+    }
+}
+
 /// The generated subscribe splices the slot's runtime binding lookup as
 /// the bound-set argument: `node_runner.bound_producers(<link_id>)`
 /// resolves at runtime to the bound producers' full
@@ -450,7 +513,12 @@ fn consumed_topic_with_link_id_splices_runtime_binding_target() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_topic(&topic, format, &native_dep("uvc_camera", "v1", "cam_left"))
+        .add_consumed_topic(
+            &topic,
+            format,
+            TopicRetention::LiveOnly,
+            &native_dep("uvc_camera", "v1", "cam_left"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
@@ -527,6 +595,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             .add_consumed_topic(
                 &topic,
                 format,
+                TopicRetention::LiveOnly,
                 &crate::DependencyContext::native("uvc_camera", "v1", "cam_left", cardinality),
             )
             .unwrap();
@@ -581,6 +650,7 @@ fn consumed_topic() {
         .add_consumed_topic(
             &topic,
             format,
+            TopicRetention::LiveOnly,
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
@@ -780,6 +850,7 @@ fn consumed_topic_escapes_python_keyword_fields() {
         .add_consumed_topic(
             &topic,
             format,
+            TopicRetention::LiveOnly,
             &native_dep("keyword_source", "v1", "keyword_source"),
         )
         .unwrap();
@@ -812,6 +883,7 @@ fn consumed_two_topics_same_node() {
         .add_consumed_topic(
             &video_topic,
             video_format,
+            TopicRetention::LiveOnly,
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
@@ -819,6 +891,7 @@ fn consumed_two_topics_same_node() {
         .add_consumed_topic(
             &sound_topic,
             sound_format,
+            TopicRetention::LiveOnly,
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
@@ -909,6 +982,7 @@ fn no_user_facing_producer_identity_params() {
         .add_consumed_topic(
             &topic,
             topic_format,
+            TopicRetention::LiveOnly,
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();

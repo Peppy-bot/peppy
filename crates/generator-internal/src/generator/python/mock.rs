@@ -24,7 +24,7 @@ use super::deserialization;
 use super::scaffold::sanitize_python_module_name;
 use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
-use super::type_mapping::qos_profile_python;
+use super::type_mapping::{qos_profile_python, retention_python};
 use super::{PythonGenerator, PythonSchemaInfo};
 use crate::error::Result;
 use crate::generator::types::{InterfaceArtifact, InterfaceKind};
@@ -475,6 +475,7 @@ def __init__(self, core) -> None:
                         &format!("{target},"),
                         &format!("{topic_name:?},"),
                         "peppylib.QoSProfile.Standard,",
+                        &format!("retention={},", retention_python(spec.retention)),
                     ],
                     ")",
                 );

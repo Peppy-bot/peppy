@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use peppylib::messaging::{MessengerHandle, PeerInfo, SenderTarget, TopicMessenger};
 use peppylib::types::Payload;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
@@ -196,6 +196,7 @@ pub async fn publish_once(
         None,
         topic_name,
         qos,
+        TopicRetention::LiveOnly,
     )
     .await?;
     publisher.publish(payload).await

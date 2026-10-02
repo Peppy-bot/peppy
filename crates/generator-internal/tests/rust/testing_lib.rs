@@ -16,7 +16,7 @@
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedService,
+    NativeExposedService, TopicRetention,
 };
 use daemon_config::consts::PEPPYLIB_OUTPUT_PATH;
 use generator::{ConsumedActionMessage, DependencyContext, LanguageGenerator, PeerContext};
@@ -263,7 +263,12 @@ fn generated_mocks_and_fixtures_drive_a_node_end_to_end() {
     let frame_format: MessageFormat = serde_json5::from_str(CONSUMED_FRAME_FORMAT).unwrap();
     let camera_dep = DependencyContext::native("uvc_camera", "v1", "camera", Cardinality::One);
     generator
-        .add_consumed_topic(&frame_topic, frame_format, &camera_dep)
+        .add_consumed_topic(
+            &frame_topic,
+            frame_format,
+            TopicRetention::LiveOnly,
+            &camera_dep,
+        )
         .unwrap();
 
     let enable: ConsumedService = serde_json5::from_str(CONSUMED_ENABLE_SERVICE).unwrap();

@@ -9,7 +9,7 @@ use super::*;
 use crate::generator::testgen::{
     DepLinkSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
-use config::node::{Cardinality, MessageFormat, NativeEmittedTopic};
+use config::node::{Cardinality, MessageFormat, NativeEmittedTopic, TopicRetention};
 
 fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
     let mut registry = TestGenRegistry::default();
@@ -168,6 +168,7 @@ fn a_member_shadowing_one_of_the_mock_s_own_bindings_is_a_hard_error() {
                 name: "session".to_string(),
                 module_link: "camera".to_string(),
                 format: MessageFormat::default(),
+                retention: TopicRetention::LiveOnly,
             }],
             services: Vec::new(),
             actions: Vec::new(),
@@ -184,6 +185,35 @@ fn a_member_shadowing_one_of_the_mock_s_own_bindings_is_a_hard_error() {
                 if sanitized == "session" && second == "camera/session"
         ),
         "expected a collision against the mock's own `session`, got: {error}"
+    );
+}
+
+/// The mock publisher of a consumed topic and the fixture subscription of an
+/// emitted topic each declare their topic's retention.
+#[test]
+fn a_retaining_topic_reaches_its_mock_publisher_and_its_fixture_subscription() {
+    let registry = TestGenRegistry::with_retaining_topics();
+
+    let rendered_by =
+        |render: fn(&mut RustGenerator, &TestGenRegistry) -> crate::error::Result<()>| {
+            let mut generator = RustGenerator::new();
+            render(&mut generator, &registry).unwrap();
+            generator
+                .into_artifacts()
+                .iter()
+                .flat_map(|artifact| artifact.code_output.chars())
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>()
+        };
+    let mocks = rendered_by(super::super::mock::render);
+    assert!(
+        mocks.contains("QoSProfile::Standard,{constRETENTION:peppylib::config::TopicRetention=matchpeppylib::config::TopicRetention::latest(3,)"),
+        "the mock publisher declares the retention:\n{mocks}"
+    );
+    let fixtures = rendered_by(super::super::fixtures::render);
+    assert!(
+        fixtures.contains("QoSProfile::Reliable,{constRETENTION:peppylib::config::TopicRetention=matchpeppylib::config::TopicRetention::latest(3,)"),
+        "the fixture subscription declares the retention:\n{fixtures}"
     );
 }
 
@@ -228,5 +258,29 @@ fn harness_of_a_node_emitting_a_topic_lints_clean() {
         )
         .unwrap();
         generator.add_emitted_topic(&status, None).unwrap();
+    });
+}
+
+/// This is a long running test that verifies the generated code passes clippy.
+/// A retaining topic's mock publisher and fixture subscription each state the
+/// retention as a constant built in place.
+#[test]
+fn harness_of_a_node_with_retaining_topics_lints_clean() {
+    assert_generated_node_lints_clean(|generator| {
+        let status: NativeEmittedTopic = serde_json5::from_str(
+            r#"{ name: "status", retention: { latest: 3 }, message_format: { outcome: "string" } }"#,
+        )
+        .unwrap();
+        generator.add_emitted_topic(&status, None).unwrap();
+        let robot_mode: config::node::ConsumedTopic =
+            serde_json5::from_str(r#"{ link_id: "robot", name: "robot_mode" }"#).unwrap();
+        generator
+            .add_consumed_topic(
+                &robot_mode,
+                serde_json5::from_str(r#"{ mode: "string" }"#).unwrap(),
+                TopicRetention::latest(3).unwrap(),
+                &crate::DependencyContext::native("robot_state", "v1", "robot", Cardinality::One),
+            )
+            .unwrap();
     });
 }

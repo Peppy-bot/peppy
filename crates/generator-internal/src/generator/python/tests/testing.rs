@@ -8,7 +8,7 @@ use super::*;
 use crate::generator::testgen::{
     DepLinkSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
-use config::node::{Cardinality, MessageFormat};
+use config::node::{Cardinality, MessageFormat, TopicRetention};
 use tempfile::TempDir;
 
 fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
@@ -161,6 +161,7 @@ fn a_member_shadowing_one_of_the_mock_s_own_bindings_is_a_hard_error() {
                 name: "session".to_string(),
                 module_link: "camera".to_string(),
                 format: MessageFormat::default(),
+                retention: TopicRetention::LiveOnly,
             }],
             services: Vec::new(),
             actions: Vec::new(),
@@ -177,5 +178,40 @@ fn a_member_shadowing_one_of_the_mock_s_own_bindings_is_a_hard_error() {
                 if sanitized == "session" && second == "camera/session"
         ),
         "expected a collision against the mock's own `session`, got: {error}"
+    );
+}
+
+/// The mock publisher of a consumed topic and the fixture subscription of an
+/// emitted topic each declare their topic's retention.
+#[test]
+fn a_retaining_topic_reaches_its_mock_publisher_and_its_fixture_subscription() {
+    let registry = TestGenRegistry::with_retaining_topics();
+    const DECLARED: &str = "retention=peppylib.TopicRetention.latest(3),";
+
+    let declares_in = |artifacts: Vec<InterfaceArtifact>, call: &str| {
+        artifacts.iter().any(|artifact| {
+            artifact.code_output.contains(call) && artifact.code_output.contains(DECLARED)
+        })
+    };
+
+    let mut generator = PythonGenerator::new();
+    super::super::mock::render(&mut generator, &registry).unwrap();
+    assert!(
+        declares_in(
+            generator.into_artifacts(),
+            "peppylib.testing.TestTopicPublisher.declare("
+        ),
+        "the mock publisher declares the retention"
+    );
+
+    let mut generator = PythonGenerator::new();
+    let node_dir = TempDir::new().unwrap();
+    super::super::fixtures::render(&mut generator, &registry, node_dir.path()).unwrap();
+    assert!(
+        declares_in(
+            generator.into_artifacts(),
+            "peppylib.TopicMessenger.subscribe("
+        ),
+        "the fixture subscription declares the retention"
     );
 }

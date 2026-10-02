@@ -199,25 +199,42 @@ pub(super) fn build_dependency_lookup(
 /// `depends_on.contracts`. Keys are trimmed names, matching the consumer
 /// side's `.trim()` comparisons.
 pub(super) struct DependencyOfferings {
-    pub(super) topics: HashMap<String, config::node::MessageFormat>,
+    pub(super) topics: HashMap<String, OfferedTopic>,
     pub(super) services:
         HashMap<String, (config::node::MessageFormat, config::node::MessageFormat)>,
     pub(super) actions: HashMap<String, ConsumedActionMessage>,
 }
 
+/// What a consumer takes from its producer's declaration of a topic: the
+/// message format it decodes and the retention it subscribes with.
+#[derive(Clone)]
+pub(super) struct OfferedTopic {
+    pub(super) message_format: config::node::MessageFormat,
+    pub(super) retention: config::node::TopicRetention,
+}
+
+impl OfferedTopic {
+    pub(super) fn of(topic: &config::node::NativeEmittedTopic) -> Self {
+        Self {
+            message_format: topic.message_format.clone().unwrap_or_default(),
+            retention: topic.retention,
+        }
+    }
+}
+
 pub(super) fn build_dependency_offerings(
     dep_config: &config::node::NodeConfig,
 ) -> DependencyOfferings {
-    let mut topics: HashMap<String, config::node::MessageFormat> = HashMap::new();
+    let mut topics: HashMap<String, OfferedTopic> = HashMap::new();
     let mut services: HashMap<String, (config::node::MessageFormat, config::node::MessageFormat)> =
         HashMap::new();
     let mut actions: HashMap<String, ConsumedActionMessage> = HashMap::new();
 
     for emitted in dep_config.interfaces.native_emits() {
-        if let Some(fmt) = &emitted.message_format {
+        if emitted.message_format.is_some() {
             topics
                 .entry(emitted.name.trim().to_string())
-                .or_insert_with(|| fmt.clone());
+                .or_insert_with(|| OfferedTopic::of(emitted));
         }
     }
     for exposed in dep_config.interfaces.native_service_exposes() {

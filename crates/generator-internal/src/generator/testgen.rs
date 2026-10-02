@@ -11,7 +11,7 @@
 
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService, QoSProfile,
+    NativeExposedAction, NativeExposedService, QoSProfile, TopicRetention,
 };
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -137,6 +137,7 @@ pub(crate) struct DepTopicSpec {
     /// same-producer topics through distinct entries on one slot.
     pub module_link: String,
     pub format: MessageFormat,
+    pub retention: TopicRetention,
 }
 
 /// A consumed dep service the mock serves. `request` is `None` for
@@ -214,6 +215,7 @@ pub(crate) struct ObservedLinkSpec {
 pub(crate) struct EmittedSpec {
     pub name: String,
     pub qos: QoSProfile,
+    pub retention: TopicRetention,
     pub format: MessageFormat,
     pub origin: Option<ContractOrigin>,
 }
@@ -305,12 +307,14 @@ impl TestGenRegistry {
         &mut self,
         topic: &ConsumedTopic,
         format: &MessageFormat,
+        retention: TopicRetention,
         dependency: &DependencyContext,
     ) {
         self.dep_entry(dependency).topics.push(DepTopicSpec {
             name: topic.name.clone(),
             module_link: topic.link_id.clone(),
             format: format.clone(),
+            retention,
         });
     }
 
@@ -395,6 +399,7 @@ impl TestGenRegistry {
         self.own.emitted.push(EmittedSpec {
             name: topic.name.clone(),
             qos: topic.qos_profile.clone(),
+            retention: topic.retention,
             format: topic.message_format.clone().unwrap_or_default(),
             origin: origin.cloned(),
         });
@@ -427,5 +432,44 @@ impl TestGenRegistry {
             result: non_empty(messages.result_response.as_ref()),
             origin: origin.cloned(),
         });
+    }
+}
+
+#[cfg(test)]
+impl TestGenRegistry {
+    /// A node that consumes the retaining topic `robot_mode` on its `robot`
+    /// slot and emits the retaining topic `status`, each keeping 3 messages.
+    pub(crate) fn with_retaining_topics() -> Self {
+        let retention = TopicRetention::latest(3).unwrap();
+        let format: MessageFormat = serde_json5::from_str(r#"{ mode: "string" }"#).unwrap();
+        let mut registry = Self::default();
+        registry.record_node_identity("relay_node", "v1");
+        registry.deps.insert(
+            "robot".to_string(),
+            DepLinkSpec {
+                producer_name: "robot_state".to_string(),
+                target: TargetSpec::Node {
+                    name: "robot_state".to_string(),
+                    tag: "v1".to_string(),
+                },
+                cardinality: Cardinality::One,
+                topics: vec![DepTopicSpec {
+                    name: "robot_mode".to_string(),
+                    module_link: "robot".to_string(),
+                    format: format.clone(),
+                    retention,
+                }],
+                services: Vec::new(),
+                actions: Vec::new(),
+            },
+        );
+        registry.own.emitted.push(EmittedSpec {
+            name: "status".to_string(),
+            qos: QoSProfile::Reliable,
+            retention,
+            format,
+            origin: None,
+        });
+        registry
     }
 }

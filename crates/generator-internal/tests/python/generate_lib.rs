@@ -1,4 +1,5 @@
 use crate::helpers;
+use config::node::TopicRetention;
 use config::{
     consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH},
     node::{ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, PeppygenLanguage},
@@ -428,6 +429,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
     let expected_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
         topic: consumed_topic,
         message_format: consumed_format,
+        retention: TopicRetention::LiveOnly,
         dependency: helpers::native_dep(EXPOSED_NODE_NAME, "v1", EXPOSED_NODE_NAME),
     })];
 
@@ -790,6 +792,7 @@ fn generate_peppygen_python_lib_renders_optional_accessor_for_a_zero_or_one_cont
     let interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
         topic: consumed_topic,
         message_format: consumed_format,
+        retention: TopicRetention::LiveOnly,
         dependency: generator::DependencyContext::contract(
             CONTRACT_NAME,
             "v1",

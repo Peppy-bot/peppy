@@ -4,7 +4,9 @@ use crate::helpers::{
     python_consumer_stub_node_config, send_shutdown, spawn_python_run, test_peppy_dirs,
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
-use crate::helpers::{EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, native_dep};
+use crate::helpers::{
+    EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, TopicScenario, native_dep,
+};
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
@@ -39,12 +41,61 @@ const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 }
 "#;
 
+/// The emitter of the retaining scenario: it publishes one frame during setup
+/// and keeps no publisher.
+const RETAINING_EMITTER_MAIN: &str = r#"
+import asyncio
+import time
+from peppygen import NodeBuilder
+from peppygen.emitted_topics import video_stream
+
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    publisher = await video_stream.declare_publisher(node_runner)
+    await publisher.publish(
+        video_stream.build_message(
+            video_stream.MessageHeader(stamp=time.time(), frame_id=0),
+            "rgb8",
+            640,
+            480,
+            bytes([1, 2, 3]),
+            ["left", "right"],
+        )
+    )
+    print("emitter: published the retained frame", flush=True)
+    return []
+
+def main():
+    NodeBuilder().run(setup)
+
+if __name__ == "__main__":
+    main()
+"#;
+
 /// Creates 2 Python projects in separate directories and checks if they can send/receive topics.
 #[rstest::rstest]
 #[case::peer(crate::helpers::LocalNodesTopology::Peer)]
 #[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn topics_communication(#[case] topology: crate::helpers::LocalNodesTopology) {
+    run_emitter_and_receiver(topology, TopicScenario::LiveStream).await;
+}
+
+/// A receiver that starts after the emitter published its one frame on a
+/// retaining topic reads that frame from its first `next()`.
+#[rstest::rstest]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_receiver_started_late_reads_the_retained_frame(
+    #[case] topology: crate::helpers::LocalNodesTopology,
+) {
+    run_emitter_and_receiver(topology, TopicScenario::RetainingThenLateJoin).await;
+}
+
+async fn run_emitter_and_receiver(
+    topology: crate::helpers::LocalNodesTopology,
+    scenario: TopicScenario,
+) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -67,6 +118,7 @@ async fn topics_communication(#[case] topology: crate::helpers::LocalNodesTopolo
         .add_consumed_topic(
             &consumed_topic,
             subscribed_format,
+            scenario.retention(),
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
@@ -160,7 +212,10 @@ if __name__ == "__main__":
     // --- Emitter project
     let emitter_instance_id = EMITTER_INSTANCE_ID;
     let temp_dir_proj1 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
-    let emitted_topic: NativeEmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
+    let emitted_topic = NativeEmittedTopic {
+        retention: scenario.retention(),
+        ..serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap()
+    };
     let (mut generator, emitter_dir, user_node_emitter, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_proj1, STUB_PYTHON_NODE_CONFIG);
     let emitter_parameters: config::ParameterSchema =
@@ -206,7 +261,7 @@ if __name__ == "__main__":
         .unwrap();
 
     init_python_user_node(&user_node_emitter);
-    let emitter_main = r#"
+    let live_emitter_main = r#"
 import asyncio
 import time
 from peppygen import NodeBuilder
@@ -246,6 +301,10 @@ if __name__ == "__main__":
     main()
 "#;
 
+    let emitter_main = match scenario {
+        TopicScenario::LiveStream => live_emitter_main,
+        TopicScenario::RetainingThenLateJoin => RETAINING_EMITTER_MAIN,
+    };
     let main_file = user_node_emitter.join("main.py");
     fs::write(main_file, emitter_main).expect("failed to write main.py");
 
@@ -267,19 +326,21 @@ if __name__ == "__main__":
     init_python_project_venv(&user_node_receiver);
     init_python_project_venv(&user_node_emitter);
 
-    // Spawn both processes
-    let mut receiver_child = spawn_python_run(
-        &user_node_receiver,
-        &[(RUNTIME_CONFIG_VAR_NAME, &user_node_receiver_config_str)],
-    );
-    let mut emitter_child = spawn_python_run(
-        &user_node_emitter,
-        &[(
-            RUNTIME_CONFIG_VAR_NAME,
-            &user_node_emitter_runtime_config_str,
-        )],
-    );
-
+    let spawn_receiver = || {
+        spawn_python_run(
+            &user_node_receiver,
+            &[(RUNTIME_CONFIG_VAR_NAME, &user_node_receiver_config_str)],
+        )
+    };
+    let spawn_emitter = || {
+        spawn_python_run(
+            &user_node_emitter,
+            &[(
+                RUNTIME_CONFIG_VAR_NAME,
+                &user_node_emitter_runtime_config_str,
+            )],
+        )
+    };
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for shutdown");
@@ -290,22 +351,27 @@ if __name__ == "__main__":
         target_core_node: TEST_CORE_NODE,
     };
 
-    // Wait for both nodes to expose health/ready endpoints.
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        RECEIVER_NODE_NAME,
-        receiver_instance_id,
-        &mut receiver_child,
-        &user_node_receiver,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
+    // A node's health service is reachable once its setup returned: for the
+    // retaining emitter, once it published its one frame. The late-join
+    // receiver starts after that.
+    let live_receiver = matches!(scenario, TopicScenario::LiveStream).then(&spawn_receiver);
+    let mut emitter_child = spawn_emitter();
     wait_for_health_service_reachable_or_exit(
         &ctx,
         UVC_CAMERA_NODE_NAME,
         emitter_instance_id,
         &mut emitter_child,
         &user_node_emitter,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+    let mut receiver_child = live_receiver.unwrap_or_else(&spawn_receiver);
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        RECEIVER_NODE_NAME,
+        receiver_instance_id,
+        &mut receiver_child,
+        &user_node_receiver,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
