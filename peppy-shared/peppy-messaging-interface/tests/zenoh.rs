@@ -7,6 +7,7 @@ mod zenoh_tests {
         RECV_TIMEOUT, ZENOH_SERIAL, receiver, sender, wait_for_subscriber_discovery,
     };
     use bytes::Bytes;
+    use config::node::TopicRetention;
     use pmi::{
         MessengerBackend, Payload, PresenceScope, PublisherQoS, RouterId, SubscriberBufferSizes,
         SubscriberQoS, ZenohAdapter, ZenohNetProtocol,
@@ -107,7 +108,11 @@ mod zenoh_tests {
             .await
             .expect("subscriber start_session");
         let mut subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver(TOPIC),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("subscribe");
 
@@ -186,7 +191,11 @@ mod zenoh_tests {
             .await
             .expect("subscriber start_session");
         let mut subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver(TOPIC),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("subscribe");
 
@@ -285,7 +294,11 @@ mod zenoh_tests {
             .await
             .expect("subscriber start_session");
         let mut subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver(TOPIC),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("subscribe");
 
@@ -352,7 +365,11 @@ mod zenoh_tests {
             .await
             .expect("subscriber start_session");
         let mut subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver(TOPIC),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("subscribe");
 
@@ -443,7 +460,11 @@ mod zenoh_tests {
             .await
             .expect("subscriber start_session");
         let mut subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver(TOPIC),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("subscribe");
 
@@ -512,7 +533,11 @@ mod zenoh_tests {
 
         let mut sub = instance
             .messenger()
-            .subscribe_topic(&receiver("basic_topic"), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver("basic_topic"),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("Failed to subscribe");
 
@@ -551,12 +576,20 @@ mod zenoh_tests {
 
         let mut sub1 = instance
             .messenger()
-            .subscribe_topic(&receiver("topic1"), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver("topic1"),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("Failed to subscribe to topic1");
         let mut sub2 = instance
             .messenger()
-            .subscribe_topic(&receiver("topic2"), SubscriberQoS::HighThroughput)
+            .subscribe_topic(
+                &receiver("topic2"),
+                SubscriberQoS::HighThroughput,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("Failed to subscribe to topic2");
 
@@ -608,7 +641,11 @@ mod zenoh_tests {
 
         let mut sub = instance
             .messenger()
-            .subscribe_topic(&receiver("multi_topic"), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver("multi_topic"),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("Failed to subscribe");
 
@@ -667,7 +704,11 @@ mod zenoh_tests {
 
         let mut late_sub = instance
             .messenger()
-            .subscribe_topic(&receiver("late_topic"), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver("late_topic"),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("Failed to create late subscription");
 
@@ -1019,7 +1060,11 @@ mod zenoh_tests {
 
         let mut sub = router_instance
             .messenger()
-            .subscribe_topic(&receiver("connect_test"), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver("connect_test"),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("Failed to subscribe");
 
@@ -1062,7 +1107,11 @@ mod zenoh_tests {
 
         let mut sub = instance
             .messenger()
-            .subscribe_topic(&receiver("port_test"), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver("port_test"),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("Failed to subscribe");
 
@@ -1134,7 +1183,11 @@ mod zenoh_tests {
 
         let subscriber = open_namespaced(&host, port, "workspace-a").await;
         let mut subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver(TOPIC),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("subscribe");
 
@@ -1468,7 +1521,11 @@ mod zenoh_tests {
 
         let subscriber = open_namespaced(&host, port, pmi::Namespace::local().as_str()).await;
         let mut subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver(TOPIC),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("subscribe");
 

@@ -25,10 +25,11 @@
 //! asserts zero `zenoh::api::handlers::fifo` ERROR events during a wildcard
 //! service call with a late-replying sibling producer.
 
+use crate::declared::DeclaredTopics;
 use crate::error::{Error, Result};
 #[cfg(feature = "router")]
 use crate::router_id::RouterId;
-use crate::subscription_buffer::{Buffering, subscription_channel};
+use crate::subscription_buffer::{Buffering, queue_capacity, subscription_channel};
 use crate::types::{
     ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer, IncomingRequest,
     LivelinessEvent, LivelinessToken, LivelinessWatch, Payload, PresenceScope, PublisherQoS,
@@ -44,6 +45,7 @@ use crate::zenoh_config::{
     SessionMode, TlsConfig, ZenohConfigSpec, connectable_host, peer_listen_endpoint, render_config,
 };
 use config::namespace::Namespace;
+use config::node::{RetentionDepth, TopicRetention};
 // `render_probe_config` and the `zenohd` module (facade/health/config-path) are
 // only used by the router-management paths; a `zenoh`-without-`router` build (the
 // backend, which only renders configs and opens client sessions) does not see them.
@@ -59,7 +61,7 @@ use crate::{MessengerBackend, Subscription};
 use std::net::SocketAddr;
 #[cfg(feature = "router")]
 use std::net::TcpListener;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use tracing::info;
 
 #[cfg(feature = "router")]
@@ -150,8 +152,13 @@ impl Drop for ZenohdInstance {
     }
 }
 
+use zenoh::Wait;
 use zenoh::qos::{CongestionControl, Priority};
 use zenoh::sample::{Sample, SampleFields, SampleKind};
+use zenoh_ext::{
+    AdvancedPublisher, AdvancedPublisherBuilderExt, AdvancedSubscriberBuilderExt, CacheConfig,
+    HistoryConfig, RepliesConfig,
+};
 
 /// Resolved config for a node/daemon peer session, plus the inputs needed to
 /// rebuild it (the reconnecting session is re-derived on every
@@ -186,6 +193,9 @@ pub struct ZenohAdapter {
     zenohd: Option<zenohd::ZenohdFacade>,
     client_config: ZenohClientConfig,
     session: Option<Arc<zenoh::Session>>,
+    /// The publish keys the open session declared, and each retaining one's
+    /// publisher. Emptied whenever the session starts or stops.
+    declared: Mutex<DeclaredTopics<Arc<RetainingPublisher>>>,
     /// When true, [`start_session`](MessengerBackend::start_session) opens a
     /// reconnecting session (see [`ZenohReconnectingClientConfigTemplate`]).
     reconnect_session: bool,
@@ -236,6 +246,7 @@ impl ZenohAdapter {
             zenohd: Some(facade),
             client_config,
             session: None,
+            declared: Mutex::default(),
             reconnect_session: false,
         })
     }
@@ -265,6 +276,7 @@ impl ZenohAdapter {
             zenohd: Some(facade),
             client_config,
             session: None,
+            declared: Mutex::default(),
             reconnect_session: false,
         })
     }
@@ -345,6 +357,7 @@ impl ZenohAdapter {
             zenohd: None,
             client_config,
             session: None,
+            declared: Mutex::default(),
             reconnect_session: false,
         })
     }
@@ -768,11 +781,15 @@ impl MessengerBackend for ZenohAdapter {
             "Zenoh {} session connected to {}://{}:{}",
             mode, &self.client_config.protocol, &self.client_config.host, &self.client_config.port
         );
+        self.forget_declared_topics();
         self.session = Some(Arc::new(session));
         Ok(())
     }
 
     async fn stop_session(&mut self) -> Result<()> {
+        // A retaining publisher no handle holds undeclares while the session
+        // is still open.
+        self.forget_declared_topics();
         if let Some(session) = self.session.take() {
             // Close while zenohd is still alive so the undeclare-face
             // messages reach the router. Drop's later close becomes a
@@ -790,6 +807,7 @@ impl MessengerBackend for ZenohAdapter {
         &self,
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
+        retention: TopicRetention,
     ) -> Result<Subscription> {
         let drop_secondary = recv.drops_secondary_publishes();
         self.subscribe_keyexpr(
@@ -797,6 +815,7 @@ impl MessengerBackend for ZenohAdapter {
             qos,
             Buffering::Backpressure,
             drop_secondary,
+            retention,
         )
         .await
     }
@@ -808,13 +827,10 @@ impl MessengerBackend for ZenohAdapter {
         qos: PublisherQoS,
         is_primary: bool,
     ) -> Result<()> {
-        self.publish_keyexpr(
-            &ZenohWireFormat::topic_publish(sender),
-            payload,
-            qos,
-            is_primary,
-        )
-        .await
+        let keyexpr = ZenohWireFormat::topic_publish(sender);
+        self.declared_topics().refuse_live_only(&keyexpr, qos)?;
+        self.publish_keyexpr(&keyexpr, payload, qos, is_primary)
+            .await
     }
 
     async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceQueryable> {
@@ -974,6 +990,7 @@ impl MessengerBackend for ZenohAdapter {
             qos,
             Buffering::Feedback(buffer),
             false,
+            TopicRetention::LiveOnly,
         )
         .await
     }
@@ -1171,15 +1188,15 @@ impl MessengerBackend for ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    /// Pre-bind a per-topic publisher for `sender`. The returned publisher
-    /// holds an `Arc<Session>` clone so its `publish` is independent of the
-    /// `Arc<Mutex<Messenger>>` global lock.
+    /// Pre-bind a per-topic publisher for `sender`. Its `publish` is
+    /// independent of the `Arc<Mutex<Messenger>>` global lock.
     pub fn declare_topic_publisher(
         &self,
         sender: &TopicWireSender,
         qos: PublisherQoS,
+        retention: TopicRetention,
     ) -> Result<ZenohPublisher> {
-        self.declare_publisher_keyexpr(ZenohWireFormat::topic_publish(sender), qos)
+        self.declare_publisher_keyexpr(ZenohWireFormat::topic_publish(sender), qos, retention)
     }
 
     /// Pre-bind a per-goal action-feedback publisher.
@@ -1190,26 +1207,49 @@ impl ZenohAdapter {
         goal_id: &str,
         qos: PublisherQoS,
     ) -> Result<ZenohPublisher> {
-        self.declare_publisher_keyexpr(
+        let session = self.open_session()?;
+        Ok(live_route(
+            session,
             ZenohWireFormat::action_feedback_publish(recv, link_id, goal_id),
             qos,
-        )
+        ))
     }
 
     fn declare_publisher_keyexpr(
         &self,
         topic: String,
         qos: PublisherQoS,
+        retention: TopicRetention,
     ) -> Result<ZenohPublisher> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
-        Ok(ZenohPublisher {
-            session: Arc::clone(session),
-            topic,
-            qos: ZenohQoS::from(qos),
+        let session = self.open_session()?;
+        let declared = self
+            .declared_topics()
+            .declare(&topic, retention, qos, |depth| {
+                declare_retaining_publisher(session, &topic, depth, qos)
+            })?;
+        Ok(match declared {
+            Some(publisher) => ZenohPublisher(PublishRoute::Retaining(publisher)),
+            None => live_route(session, topic, qos),
         })
+    }
+
+    fn open_session(&self) -> Result<&Arc<zenoh::Session>> {
+        self.session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))
+    }
+
+    fn declared_topics(
+        &self,
+    ) -> std::sync::MutexGuard<'_, DeclaredTopics<Arc<RetainingPublisher>>> {
+        self.declared.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn forget_declared_topics(&mut self) {
+        self.declared
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
     }
 
     /// Waits until a subscriber whose key expression matches `keyexpr` is known
@@ -1354,10 +1394,11 @@ impl ZenohAdapter {
         qos: SubscriberQoS,
         buffering: Buffering,
         drop_secondary: bool,
+        retention: TopicRetention,
     ) -> Result<Subscription> {
         let (sink, rx) = subscription_channel(
             &keyexpr,
-            self.client_config.buffer_sizes.size_for(qos),
+            queue_capacity(self.client_config.buffer_sizes.size_for(qos), retention),
             buffering,
         );
 
@@ -1407,12 +1448,84 @@ impl ZenohAdapter {
                         );
                     }
                 }
-            })
+            });
+        // A retaining topic's subscriber first asks each publisher for the
+        // messages it keeps, and asks again when a publisher appears later.
+        // The replayed messages pass through the callback above.
+        let TopicRetention::Latest { depth } = retention else {
+            let subscriber = subscriber
+                .await
+                .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+            return Ok(Subscription::new(rx, Box::new(subscriber)));
+        };
+        // The subscriber orders retained and live messages by timestamp, per
+        // publishing session, so it reads the retained messages of one key per
+        // session. The order holds while the clocks of the machines on the
+        // path agree to within 500 ms, the bound past which a hop stamps a
+        // message again.
+        let subscriber = subscriber
+            .history(
+                HistoryConfig::default()
+                    .max_samples(depth.get())
+                    .detect_late_publishers(),
+            )
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
-
         Ok(Subscription::new(rx, Box::new(subscriber)))
     }
+}
+
+/// A live-only topic's publisher: each publish is one `session.put()`.
+fn live_route(session: &Arc<zenoh::Session>, topic: String, qos: PublisherQoS) -> ZenohPublisher {
+    ZenohPublisher(PublishRoute::Live {
+        session: Arc::clone(session),
+        topic,
+        qos: ZenohQoS::from(qos),
+    })
+}
+
+/// The session's publisher for one retaining topic.
+struct RetainingPublisher {
+    publisher: AdvancedPublisher<'static>,
+    /// Held across each put: a message takes its timestamp, enters the cache
+    /// and goes out before the next one starts, so the cache and every
+    /// subscriber end on the same newest message.
+    put_order: Mutex<()>,
+}
+
+/// Declares the publisher of a retaining topic. It keeps its newest `depth`
+/// messages and serves them to subscribers that join later, under the topic's
+/// own QoS.
+fn declare_retaining_publisher(
+    session: &zenoh::Session,
+    topic: &str,
+    depth: RetentionDepth,
+    qos: PublisherQoS,
+) -> Result<Arc<RetainingPublisher>> {
+    let qos = ZenohQoS::from(qos);
+    let replies = RepliesConfig::default()
+        .congestion_control(qos.congestion_control)
+        .priority(qos.priority)
+        .express(qos.express);
+    session
+        .declare_publisher(topic.to_string())
+        .congestion_control(qos.congestion_control)
+        .priority(qos.priority)
+        .express(qos.express)
+        .cache(
+            CacheConfig::default()
+                .max_samples(depth.get())
+                .replies_config(replies),
+        )
+        .publisher_detection()
+        .wait()
+        .map(|publisher| {
+            Arc::new(RetainingPublisher {
+                publisher,
+                put_order: Mutex::default(),
+            })
+        })
+        .map_err(|e| Error::PublisherCreationError(e.to_string()))
 }
 
 /// Per-query inbound handler. Parses the selector, verifies the caller's
@@ -1511,17 +1624,22 @@ fn process_inbound_query(
     let _ = tx.send(request);
 }
 
-/// Zenoh-side per-topic publisher returned by [`ZenohAdapter::declare_publisher`].
-///
-/// Mirrors [`ZenohAdapter::publish`]'s `session.put()` path (NOT a long-lived
-/// `zenoh::pubsub::Publisher`); see the comment there about routing
-/// interference between successive service polls. The win here is bypassing
-/// the central `Messenger` mutex; zenoh's session itself is lock-free for
-/// `put`.
-pub struct ZenohPublisher {
-    session: Arc<zenoh::Session>,
-    topic: String,
-    qos: ZenohQoS,
+/// Zenoh-side per-topic publisher returned by
+/// [`ZenohAdapter::declare_topic_publisher`]. Its `publish` takes no adapter
+/// lock.
+pub struct ZenohPublisher(PublishRoute);
+
+enum PublishRoute {
+    /// A live-only topic: each publish is one `session.put()`, and no Zenoh
+    /// publisher is declared.
+    Live {
+        session: Arc<zenoh::Session>,
+        topic: String,
+        qos: ZenohQoS,
+    },
+    /// A retaining topic: the session's one publisher for the key, which
+    /// keeps its newest messages for subscribers that join later.
+    Retaining(Arc<RetainingPublisher>),
 }
 
 /// In-flight wait for a matching subscriber, issued by
@@ -1586,23 +1704,38 @@ impl SubscriberMatchWait {
 
 impl ZenohPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
-        // Pre-bound publishers are single-link (one keyexpr per declare),
-        // so from a wildcard subscriber's view this publish is the only
-        // one for its emit and must be marked primary. Topic publishers
-        // that need multi-link fan-out should go through `emit`, not
-        // `declare_publisher` — see the rustdoc on
-        // `TopicMessenger::declare_publisher`.
-        self.session
-            .put(&self.topic, payload.as_ref())
-            .attachment(TopicAttachment { is_primary: true }.encode().to_vec())
-            .congestion_control(self.qos.congestion_control)
-            .priority(self.qos.priority)
-            .express(self.qos.express)
-            .await
-            .map_err(|e| Error::PublishError {
-                topic: e.to_string(),
-            })?;
-        Ok(())
+        // A pre-bound publisher has one keyexpr, so each publish is the only
+        // one of its emit and is marked primary.
+        let attachment = TopicAttachment { is_primary: true }.encode().to_vec();
+        let published = match &self.0 {
+            PublishRoute::Live {
+                session,
+                topic,
+                qos,
+            } => {
+                session
+                    .put(topic, payload.as_ref())
+                    .attachment(attachment)
+                    .congestion_control(qos.congestion_control)
+                    .priority(qos.priority)
+                    .express(qos.express)
+                    .await
+            }
+            PublishRoute::Retaining(retaining) => {
+                let _in_order = retaining
+                    .put_order
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                retaining
+                    .publisher
+                    .put(payload.as_ref())
+                    .attachment(attachment)
+                    .wait()
+            }
+        };
+        published.map_err(|e| Error::PublishError {
+            topic: e.to_string(),
+        })
     }
 }
 

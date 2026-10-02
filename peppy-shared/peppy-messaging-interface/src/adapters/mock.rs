@@ -1,5 +1,8 @@
+use super::super::declared::DeclaredTopics;
 use super::super::error::{Error, Result};
-use super::super::subscription_buffer::{Buffering, SubscriptionSink, subscription_channel};
+use super::super::subscription_buffer::{
+    Buffering, SubscriptionSink, queue_capacity, subscription_channel,
+};
 use super::super::types::{
     AbortOnDrop, ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer,
     IncomingRequest, LivelinessEvent, LivelinessToken, LivelinessWatch, Message, Messenger,
@@ -12,7 +15,8 @@ use super::super::wire::{
     ActionWireReceiver, ActionWireSender, Segment, ServiceQueryKind, ServiceWireReceiver,
     ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
-use std::collections::HashMap;
+use config::node::{RetentionDepth, TopicRetention};
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -90,6 +94,43 @@ impl Drop for MockUndeclare {
 /// published.
 pub type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<MockSubscription>>>>;
 
+/// The messages one retaining mock topic keeps: its newest `depth`, oldest
+/// first.
+#[derive(Clone)]
+struct RetainedMessages {
+    depth: RetentionDepth,
+    messages: Arc<Mutex<VecDeque<TopicMessage>>>,
+}
+
+impl RetainedMessages {
+    fn new(depth: RetentionDepth) -> Self {
+        Self {
+            depth,
+            messages: Arc::new(Mutex::new(VecDeque::with_capacity(depth.get()))),
+        }
+    }
+
+    /// Keeps `message` as the newest, dropping the oldest past the depth.
+    fn keep(&self, message: TopicMessage) {
+        let mut messages = self.messages.lock().unwrap();
+        if messages.len() == self.depth.get() {
+            messages.pop_front();
+        }
+        messages.push_back(message);
+    }
+
+    /// The newest `depth` kept messages, oldest first.
+    fn newest(&self, depth: RetentionDepth) -> Vec<TopicMessage> {
+        let messages = self.messages.lock().unwrap();
+        let skipped = messages.len().saturating_sub(depth.get());
+        messages.iter().skip(skipped).cloned().collect()
+    }
+}
+
+/// The publish keys the mock session declared, and each retaining one's
+/// messages, shared with its publishers.
+type MockDeclaredTopics = Arc<Mutex<DeclaredTopics<RetainedMessages>>>;
+
 /// One in-flight query routed from a `get_keyexpr` caller to a queryable
 /// whose declared keyexpr intersects the caller's selector. `attachment`
 /// mirrors the Zenoh query attachment (carrying the request kind plus the
@@ -136,6 +177,7 @@ pub struct MockAdapter {
     pub(crate) is_router_started: bool,
     pub(crate) messages: MessageLog,
     pub(crate) subscriptions: SubscriptionMap,
+    declared: MockDeclaredTopics,
     pub(crate) queryables: QueryableMap,
     liveliness: LivelinessState,
 }
@@ -147,6 +189,7 @@ impl Default for MockAdapter {
             is_router_started: false,
             messages: Arc::new(Mutex::new(HashMap::new())),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            declared: Arc::default(),
             queryables: Arc::new(Mutex::new(HashMap::new())),
             liveliness: Arc::new(Mutex::new(MockLivelinessState::default())),
         }
@@ -181,6 +224,7 @@ impl MockAdapter {
 impl MessengerBackend for MockAdapter {
     async fn start_session(&mut self) -> Result<()> {
         self.is_session_connected = true;
+        self.declared.lock().unwrap().clear();
         Ok(())
     }
 
@@ -194,6 +238,7 @@ impl MessengerBackend for MockAdapter {
 
         self.messages.lock().unwrap().clear();
         self.subscriptions.lock().unwrap().clear();
+        self.declared.lock().unwrap().clear();
         self.queryables.lock().unwrap().clear();
 
         // Mirror Zenoh: closing the session removes every liveliness token
@@ -221,6 +266,7 @@ impl MessengerBackend for MockAdapter {
         &self,
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
+        retention: TopicRetention,
     ) -> Result<Subscription> {
         let drop_secondary = recv.drops_secondary_publishes();
         self.subscribe_keyexpr(
@@ -228,6 +274,7 @@ impl MessengerBackend for MockAdapter {
             qos,
             Buffering::Backpressure,
             drop_secondary,
+            retention,
         )
         .await
     }
@@ -236,11 +283,15 @@ impl MessengerBackend for MockAdapter {
         &mut self,
         sender: &TopicWireSender,
         payload: Payload,
-        _qos: PublisherQoS,
+        qos: PublisherQoS,
         is_primary: bool,
     ) -> Result<()> {
-        self.publish_keyexpr(ZenohWireFormat::topic_publish(sender), payload, is_primary)
-            .await
+        let topic = ZenohWireFormat::topic_publish(sender);
+        self.declared
+            .lock()
+            .unwrap()
+            .refuse_live_only(&topic, qos)?;
+        self.publish_keyexpr(topic, payload, is_primary).await
     }
 
     async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceQueryable> {
@@ -353,6 +404,7 @@ impl MessengerBackend for MockAdapter {
             qos,
             Buffering::Feedback(buffer),
             false,
+            TopicRetention::LiveOnly,
         )
         .await
     }
@@ -680,9 +732,10 @@ impl MockAdapter {
     pub fn declare_topic_publisher(
         &self,
         sender: &TopicWireSender,
-        _qos: PublisherQoS,
-    ) -> MockPublisher {
-        self.declare_publisher_keyexpr(ZenohWireFormat::topic_publish(sender))
+        qos: PublisherQoS,
+        retention: TopicRetention,
+    ) -> Result<MockPublisher> {
+        self.declare_publisher_keyexpr(ZenohWireFormat::topic_publish(sender), qos, retention)
     }
 
     /// Pre-bind a per-goal action-feedback publisher.
@@ -692,18 +745,52 @@ impl MockAdapter {
         link_id: &str,
         goal_id: &str,
         _qos: PublisherQoS,
-    ) -> MockPublisher {
-        self.declare_publisher_keyexpr(ZenohWireFormat::action_feedback_publish(
-            recv, link_id, goal_id,
+    ) -> Result<MockPublisher> {
+        Ok(self.publisher(
+            ZenohWireFormat::action_feedback_publish(recv, link_id, goal_id),
+            None,
         ))
     }
 
-    fn declare_publisher_keyexpr(&self, topic: String) -> MockPublisher {
+    fn declare_publisher_keyexpr(
+        &self,
+        topic: String,
+        qos: PublisherQoS,
+        retention: TopicRetention,
+    ) -> Result<MockPublisher> {
+        let retained = self
+            .declared
+            .lock()
+            .unwrap()
+            .declare(&topic, retention, qos, |depth| {
+                Ok(RetainedMessages::new(depth))
+            })?;
+        Ok(self.publisher(topic, retained))
+    }
+
+    /// A publisher of `topic` that keeps `retained`, when the topic retains.
+    fn publisher(&self, topic: String, retained: Option<RetainedMessages>) -> MockPublisher {
         MockPublisher {
             topic,
             subscriptions: Arc::clone(&self.subscriptions),
             messages: Arc::clone(&self.messages),
+            retained,
         }
+    }
+
+    /// The messages a subscription of `pattern` replays at its declaration:
+    /// the newest `depth` of every retaining topic the pattern intersects.
+    fn retained_messages(&self, pattern: &str, retention: TopicRetention) -> Vec<TopicMessage> {
+        let TopicRetention::Latest { depth } = retention else {
+            return Vec::new();
+        };
+        self.declared
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(keyexpr, _)| Self::key_exprs_intersect(pattern, keyexpr))
+            .flat_map(|(_, topic)| topic.newest(depth))
+            .collect()
     }
 
     async fn publish_keyexpr(
@@ -723,6 +810,7 @@ impl MockAdapter {
             is_primary,
             &self.messages,
             &self.subscriptions,
+            None,
         )
         .await
     }
@@ -733,13 +821,15 @@ impl MockAdapter {
     /// directly) and [`MockPublisher::publish`] (which clones the same
     /// `Arc`s for lock-free per-topic publishing). `is_primary` is the
     /// wire-attachment dedup marker — subscribers that wildcarded the
-    /// link_id slot drop non-primary fan-out.
+    /// link_id slot drop non-primary fan-out. A retaining topic keeps the
+    /// message in `retained`.
     async fn route_publish(
         topic: &str,
         message: &Message,
         is_primary: bool,
         messages: &MessageLog,
         subscriptions: &SubscriptionMap,
+        retained: Option<&RetainedMessages>,
     ) -> Result<()> {
         let response = Self::to_response_message(message)?;
 
@@ -753,6 +843,12 @@ impl MockAdapter {
 
         let sinks: Vec<SubscriptionSink> = {
             let subscriptions = subscriptions.lock().unwrap();
+            // Kept under the subscriptions lock, which a new subscription
+            // holds while it replays: it replays this message or receives it
+            // live, never both.
+            if let Some(retained) = retained {
+                retained.keep(response.clone());
+            }
             let mut matched = Vec::new();
             for (pattern, subs) in subscriptions.iter() {
                 if !Self::key_exprs_intersect(pattern, topic) {
@@ -793,6 +889,7 @@ impl MockAdapter {
         qos: SubscriberQoS,
         buffering: Buffering,
         drop_secondary: bool,
+        retention: TopicRetention,
     ) -> Result<Subscription> {
         if !self.is_session_connected {
             return Err(Error::SubscribeError {
@@ -800,15 +897,21 @@ impl MockAdapter {
             });
         }
 
-        let (sink, rx) = subscription_channel(
-            topic,
-            SubscriberBufferSizes::default().size_for(qos),
-            buffering,
-        );
+        let tier_size = SubscriberBufferSizes::default().size_for(qos);
         let declared = Arc::new(AtomicBool::new(true));
 
-        {
+        let rx = {
             let mut subscriptions = self.subscriptions.lock().unwrap();
+            let replay = self.retained_messages(topic, retention);
+            // The queue fits the whole replay, so no delivery below waits.
+            let (sink, rx) = subscription_channel(
+                topic,
+                queue_capacity(tier_size, retention).max(replay.len()),
+                buffering,
+            );
+            for message in replay {
+                sink.deliver(message);
+            }
             subscriptions
                 .entry(topic.to_string())
                 .or_default()
@@ -817,7 +920,8 @@ impl MockAdapter {
                     drop_secondary,
                     declared: Arc::clone(&declared),
                 });
-        }
+            rx
+        };
 
         // The mock writes directly into the sink from `publish_keyexpr`, and
         // the guard undeclares the subscription when its handle drops. The
@@ -914,6 +1018,8 @@ pub struct MockPublisher {
     topic: String,
     subscriptions: SubscriptionMap,
     messages: MessageLog,
+    /// The topic's retained messages, when it retains.
+    retained: Option<RetainedMessages>,
 }
 
 impl MockPublisher {
@@ -927,6 +1033,7 @@ impl MockPublisher {
             true,
             &self.messages,
             &self.subscriptions,
+            self.retained.as_ref(),
         )
         .await
     }
@@ -1532,15 +1639,23 @@ mod tests {
         .expect("recv right");
 
         let sub_any = adapter
-            .subscribe_topic(&recv_any, SubscriberQoS::Standard)
+            .subscribe_topic(&recv_any, SubscriberQoS::Standard, TopicRetention::LiveOnly)
             .await
             .expect("wildcard subscribe");
         let sub_left = adapter
-            .subscribe_topic(&recv_left, SubscriberQoS::Standard)
+            .subscribe_topic(
+                &recv_left,
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("pinned left subscribe");
         let sub_right = adapter
-            .subscribe_topic(&recv_right, SubscriberQoS::Standard)
+            .subscribe_topic(
+                &recv_right,
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("pinned right subscribe");
 
@@ -1618,12 +1733,12 @@ mod tests {
         .expect("receiver");
 
         let subscription = messenger
-            .subscribe_topic(&receiver, SubscriberQoS::Standard)
+            .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
             .await
             .expect("subscribe");
 
         let publisher = messenger
-            .declare_topic_publisher(&sender, PublisherQoS::Standard)
+            .declare_topic_publisher(&sender, PublisherQoS::Standard, TopicRetention::LiveOnly)
             .expect("declare publisher");
         publisher
             .publish(bytes::Bytes::from_static(b"frame-0"))
@@ -1691,5 +1806,268 @@ mod tests {
             .await
             .expect("feedback subscriber receives the goal update");
         assert_eq!(received.payload().to_bytes().as_ref(), b"progress-50");
+    }
+
+    /// Retaining topics on the mock, mirroring `tests/retention.rs` on Zenoh.
+    mod retention {
+        use super::*;
+        use crate::wire::SenderTarget;
+
+        use crate::declared::test_support::latest;
+
+        const TOPIC: &str = "robot_mode";
+
+        fn target() -> SenderTarget {
+            SenderTarget::node("robot", "v1").expect("node target")
+        }
+
+        fn sender_from(instance: &str) -> TopicWireSender {
+            TopicWireSender::new("pub_core", instance, target(), None, TOPIC).expect("sender")
+        }
+
+        /// A subscription to the topic from every publishing instance.
+        fn receiver() -> TopicWireReceiver {
+            TopicWireReceiver::new(
+                "sub_core",
+                "sub_inst",
+                None,
+                None,
+                Some(target()),
+                None,
+                TOPIC,
+            )
+            .expect("receiver")
+        }
+
+        async fn connected() -> MockAdapter {
+            let mut adapter = MockAdapter::default();
+            adapter.start_session().await.expect("session should start");
+            adapter
+        }
+
+        async fn publish(publisher: &MockPublisher, values: impl IntoIterator<Item = u64>) {
+            for value in values {
+                publisher
+                    .publish(bytes::Bytes::from(value.to_string()))
+                    .await
+                    .expect("publish");
+            }
+        }
+
+        /// The values waiting in `subscription`, in the order its reader gets
+        /// them.
+        fn waiting(subscription: &Subscription) -> Vec<u64> {
+            subscription
+                .rx
+                .try_iter()
+                .map(|message| {
+                    String::from_utf8_lossy(&message.payload().to_bytes())
+                        .parse()
+                        .expect("a number")
+                })
+                .collect()
+        }
+
+        async fn subscribe(adapter: &MockAdapter, retention: TopicRetention) -> Subscription {
+            adapter
+                .subscribe_topic(&receiver(), SubscriberQoS::Standard, retention)
+                .await
+                .expect("subscribe")
+        }
+
+        fn retaining_publisher(adapter: &MockAdapter, depth: usize) -> MockPublisher {
+            adapter
+                .declare_topic_publisher(
+                    &sender_from("pub_inst"),
+                    PublisherQoS::Standard,
+                    latest(depth),
+                )
+                .expect("declare the retaining publisher")
+        }
+
+        #[tokio::test]
+        async fn a_late_subscriber_reads_the_retained_value_then_live_values() {
+            let adapter = connected().await;
+            let publisher = retaining_publisher(&adapter, 1);
+            publish(&publisher, 1..=3).await;
+
+            let subscription = subscribe(&adapter, latest(1)).await;
+            assert_eq!(waiting(&subscription), [3]);
+
+            publish(&publisher, 4..=5).await;
+            assert_eq!(waiting(&subscription), [4, 5]);
+        }
+
+        #[tokio::test]
+        async fn a_retention_depth_replays_that_many_oldest_first() {
+            let adapter = connected().await;
+            let publisher = retaining_publisher(&adapter, 3);
+            publish(&publisher, 1..=5).await;
+
+            assert_eq!(waiting(&subscribe(&adapter, latest(3)).await), [3, 4, 5]);
+            assert_eq!(waiting(&subscribe(&adapter, latest(1)).await), [5]);
+        }
+
+        /// A subscription that asks for more than the topic keeps reads what
+        /// the topic keeps.
+        #[tokio::test]
+        async fn a_topic_keeps_no_more_than_its_depth() {
+            let adapter = connected().await;
+            let publisher = retaining_publisher(&adapter, 1);
+            publish(&publisher, 1..=3).await;
+
+            assert_eq!(waiting(&subscribe(&adapter, latest(3)).await), [3]);
+        }
+
+        #[tokio::test]
+        async fn a_subscriber_before_any_publication_reads_the_first_one() {
+            let adapter = connected().await;
+            let publisher = retaining_publisher(&adapter, 1);
+
+            let subscription = subscribe(&adapter, latest(1)).await;
+            assert!(waiting(&subscription).is_empty());
+
+            publish(&publisher, [1]).await;
+            assert_eq!(waiting(&subscription), [1]);
+        }
+
+        #[tokio::test]
+        async fn a_live_only_side_replays_nothing() {
+            let adapter = connected().await;
+            let publisher = retaining_publisher(&adapter, 1);
+            publish(&publisher, [1]).await;
+            let live_only_subscription = subscribe(&adapter, TopicRetention::LiveOnly).await;
+            assert!(waiting(&live_only_subscription).is_empty());
+            publish(&publisher, [2]).await;
+            assert_eq!(waiting(&live_only_subscription), [2]);
+
+            let live_only_publisher = adapter
+                .declare_topic_publisher(
+                    &sender_from("live_inst"),
+                    PublisherQoS::Standard,
+                    TopicRetention::LiveOnly,
+                )
+                .expect("declare the live-only publisher");
+            adapter
+                .declare_topic_publisher(
+                    &sender_from("live_inst"),
+                    PublisherQoS::Important,
+                    TopicRetention::LiveOnly,
+                )
+                .expect("a live-only topic is declared again under any QoS");
+            publish(&live_only_publisher, [7]).await;
+            assert_eq!(waiting(&subscribe(&adapter, latest(1)).await), [2]);
+        }
+
+        #[tokio::test]
+        async fn a_subscription_over_two_publishers_reads_one_value_from_each() {
+            let adapter = connected().await;
+            for (instance, value) in [("inst_a", 10), ("inst_b", 20)] {
+                let publisher = adapter
+                    .declare_topic_publisher(
+                        &sender_from(instance),
+                        PublisherQoS::Standard,
+                        latest(1),
+                    )
+                    .expect("declare the retaining publisher");
+                publish(&publisher, [value - 1, value]).await;
+            }
+
+            let mut replayed = waiting(&subscribe(&adapter, latest(1)).await);
+            replayed.sort_unstable();
+            assert_eq!(replayed, [10, 20]);
+        }
+
+        #[tokio::test]
+        async fn a_replay_larger_than_the_queue_tier_fits_the_queue() {
+            let tier_size = SubscriberBufferSizes::default().size_for(SubscriberQoS::Standard);
+            let depth = tier_size + 72;
+            let adapter = connected().await;
+            let publisher = retaining_publisher(&adapter, depth);
+            publish(&publisher, 1..=depth as u64).await;
+
+            let replayed = waiting(&subscribe(&adapter, latest(depth)).await);
+            assert_eq!(replayed, (1..=depth as u64).collect::<Vec<_>>());
+        }
+
+        #[tokio::test]
+        async fn the_retained_value_outlives_the_publisher_handle() {
+            let adapter = connected().await;
+            let publisher = retaining_publisher(&adapter, 1);
+            publish(&publisher, [1]).await;
+            drop(publisher);
+
+            assert_eq!(waiting(&subscribe(&adapter, latest(1)).await), [1]);
+        }
+
+        #[tokio::test]
+        async fn a_second_declaration_states_the_same_retention_and_qos() {
+            let mut adapter = connected().await;
+            let sender = sender_from("pub_inst");
+            let _publisher = retaining_publisher(&adapter, 1);
+            retaining_publisher(&adapter, 1);
+            let refused =
+                adapter.declare_topic_publisher(&sender, PublisherQoS::Standard, latest(3));
+            assert!(
+                matches!(refused, Err(Error::RetainingTopicMismatch { .. })),
+                "another depth should be refused"
+            );
+
+            let live_only_first = sender_from("live_first");
+            adapter
+                .declare_topic_publisher(
+                    &live_only_first,
+                    PublisherQoS::Standard,
+                    TopicRetention::LiveOnly,
+                )
+                .expect("a live-only declaration");
+            let refused = adapter.declare_topic_publisher(
+                &live_only_first,
+                PublisherQoS::Standard,
+                latest(1),
+            );
+            assert!(
+                matches!(refused, Err(Error::RetainingTopicMismatch { .. })),
+                "a retaining declaration after a live-only one should be refused"
+            );
+            let one_shot = adapter
+                .publish_topic(
+                    &sender,
+                    Payload::from_bytes(bytes::Bytes::from_static(b"9")),
+                    PublisherQoS::Standard,
+                    true,
+                )
+                .await;
+            assert!(
+                matches!(one_shot, Err(Error::RetainingTopicMismatch { .. })),
+                "a one-shot publish on a retaining topic should be refused"
+            );
+        }
+
+        #[tokio::test]
+        async fn stopping_the_session_forgets_its_retaining_topics() {
+            let mut adapter = connected().await;
+            let publisher = retaining_publisher(&adapter, 1);
+            publish(&publisher, [1]).await;
+
+            adapter.stop_session().await.expect("session should stop");
+            adapter.start_session().await.expect("session should start");
+
+            assert!(waiting(&subscribe(&adapter, latest(1)).await).is_empty());
+            retaining_publisher(&adapter, 3);
+        }
+
+        /// A session started again without a stop declares its topics anew.
+        #[tokio::test]
+        async fn starting_the_session_again_forgets_its_retaining_topics() {
+            let mut adapter = connected().await;
+            let publisher = retaining_publisher(&adapter, 1);
+            publish(&publisher, [1]).await;
+
+            adapter.start_session().await.expect("session should start");
+
+            assert!(waiting(&subscribe(&adapter, latest(3)).await).is_empty());
+            retaining_publisher(&adapter, 3);
+        }
     }
 }
