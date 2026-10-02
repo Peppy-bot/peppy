@@ -43,5 +43,8 @@ nix = { version = "0.31", default-features = false, features = ["signal"] }
 serde_json5 = "0.2.1"
 # `mkfifo` and `geteuid` for the build artifact cache fingerprint tests.
 nix = { version = "0.31", default-features = false, features = ["fs", "user"] }
-# `start_paused` virtual-clock tests for the build progress monitor.
-tokio = { version = "1", features = ["test-util"] }
+# `start_paused` virtual-clock tests for the build progress monitor, and the
+# loopback cargo registry of the cargo progress test.
+tokio = { version = "1", features = ["test-util", "net"] }
+# Gzips the `.crate` archive the loopback cargo registry serves.
+flate2 = "1"

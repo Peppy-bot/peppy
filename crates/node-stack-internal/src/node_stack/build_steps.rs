@@ -20,6 +20,29 @@ use crate::node_stack::container_build_cache;
 use config::node::PeppygenLanguage;
 use containers::BuildActivityProbe;
 
+/// The cargo settings every build runs with: a container build's `%post` and
+/// a process node's `build_cmd` alike, whatever the node's language, since a
+/// Python build can run cargo too (a Rust extension it compiles).
+///
+/// Off a terminal, cargo prints a line only when a crate download completes.
+/// Until then it holds the crate in memory and burns no CPU, so a large crate
+/// on a slow connection gives the build idle clock no output line, no bytes
+/// on disk and no CPU time (see [`crate::build_progress`]), and the idle
+/// timeout kills a build that is still downloading. With these settings cargo
+/// repaints its progress line, ended by a bare `\r`, each time the line
+/// changes: the `remaining bytes` of a download change as bytes arrive, and
+/// the build output reader forwards such repaints (see
+/// [`crate::build_io::LineSplitter`]). A download that receives nothing
+/// leaves the line as it is, so cargo prints nothing and the idle timeout
+/// still fires.
+///
+/// Cargo requires a width when it prints progress to a pipe, as a pipe has
+/// none to read.
+const CARGO_PROGRESS_ENV: [(&str, &str); 2] = [
+    ("CARGO_TERM_PROGRESS_WHEN", "always"),
+    ("CARGO_TERM_PROGRESS_WIDTH", "80"),
+];
+
 /// Validates that `node_tag` is safe to splice into a filename joined under
 /// the storage directory. Re-validates the raw `Manifest::tag` string before
 /// it ever reaches `storage_dir.join(...)` to prevent path traversal or
@@ -242,6 +265,10 @@ pub(super) async fn build_container_image(
         if let Some(key) = &build_key {
             cmd_builder = cmd_builder.cancel_pgid(key);
         }
+        // A def that exports its own values in `%post` overrides these.
+        for (key, value) in CARGO_PROGRESS_ENV {
+            cmd_builder = cmd_builder.apptainer_env(key, value);
+        }
         if let Some(cache) = &build_cache {
             cmd_builder = cmd_builder.bind(
                 &cache.host_dir.to_string_lossy(),
@@ -463,6 +490,11 @@ pub(super) async fn run_build_cmd(
     // Detach stdin so a misbehaving `build_cmd` cannot read from (or block
     // on) the daemon's stdin. Mirrors `build_container_image`.
     command.stdin(Stdio::null());
+    // The cargo settings go first, so the goal's own values for them, set
+    // next, take precedence.
+    for (key, value) in CARGO_PROGRESS_ENV {
+        command.env(key, value);
+    }
     for (key, value) in env_vars {
         command.env(key, value);
     }
@@ -701,6 +733,365 @@ mod tests {
         )
         .await
         .expect("the stub tool must resolve through the env_vars PATH alone");
+    }
+
+    /// A shell-form `build_cmd` that prints the cargo progress settings it
+    /// runs with.
+    #[cfg(unix)]
+    const PRINT_CARGO_PROGRESS_SETTINGS: &str =
+        r#"echo "progress: $CARGO_TERM_PROGRESS_WHEN $CARGO_TERM_PROGRESS_WIDTH""#;
+
+    /// Runs `script` as a shell-form `build_cmd` with `env_vars`, and returns
+    /// the lines that reached the feedback channel.
+    #[cfg(unix)]
+    async fn build_cmd_output(script: &str, env_vars: &[(String, String)]) -> Vec<String> {
+        let working_dir = tempfile::tempdir().expect("tempdir should succeed");
+        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel();
+        run_build_cmd(
+            Some(&vec![script.to_string()]),
+            working_dir.path(),
+            env_vars,
+            &feedback_tx,
+            test_log_file(),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("the build_cmd should succeed");
+        let mut lines = Vec::new();
+        while let Ok(line) = feedback_rx.try_recv() {
+            lines.push(line.line);
+        }
+        lines
+    }
+
+    /// A `build_cmd` runs with [`CARGO_PROGRESS_ENV`], whatever the
+    /// environment of the daemon says.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_build_cmd_runs_with_the_cargo_progress_settings() {
+        let lines = build_cmd_output(PRINT_CARGO_PROGRESS_SETTINGS, &[]).await;
+        assert!(
+            lines.contains(&"progress: always 80".to_string()),
+            "the build_cmd must see the cargo progress settings, got {lines:?}"
+        );
+    }
+
+    /// The environment a build goal carries wins over [`CARGO_PROGRESS_ENV`]:
+    /// a caller that sets one of the settings gets its own value, and the
+    /// other setting still applies.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_build_cmd_keeps_a_cargo_progress_setting_of_the_goal() {
+        let env_vars = vec![("CARGO_TERM_PROGRESS_WHEN".to_string(), "never".to_string())];
+        let lines = build_cmd_output(PRINT_CARGO_PROGRESS_SETTINGS, &env_vars).await;
+        assert!(
+            lines.contains(&"progress: never 80".to_string()),
+            "the goal's own setting must win, got {lines:?}"
+        );
+    }
+
+    /// Name of the one crate [`HeldDownloadRegistry`] serves.
+    const HELD_CRATE: &str = "held_crate";
+
+    /// A sparse cargo registry on loopback that serves [`HELD_CRATE`] 0.1.0
+    /// and sends half of its download, then holds the other half until
+    /// `release` is notified. The server task ends with the registry.
+    struct HeldDownloadRegistry {
+        /// The `index` value of a cargo registry that names this one.
+        index_url: String,
+        release: Arc<tokio::sync::Notify>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    /// What [`HeldDownloadRegistry`] serves, by request path.
+    struct HeldRegistryFiles {
+        config: String,
+        index_entry: String,
+        archive: Vec<u8>,
+    }
+
+    impl HeldDownloadRegistry {
+        async fn start() -> Self {
+            use sha2::Digest;
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("the registry should bind a loopback port");
+            let base_url = format!(
+                "http://{}",
+                listener.local_addr().expect("the registry has an address")
+            );
+            let archive = held_crate_archive();
+            let checksum: String = sha2::Sha256::digest(&archive)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let files = Arc::new(HeldRegistryFiles {
+                config: format!(r#"{{"dl":"{base_url}/dl"}}"#),
+                index_entry: format!(
+                    r#"{{"name":"{HELD_CRATE}","vers":"0.1.0","deps":[],"cksum":"{checksum}","features":{{}},"yanked":false}}"#
+                ),
+                archive,
+            });
+            let release = Arc::new(tokio::sync::Notify::new());
+            let server = tokio::spawn({
+                let release = Arc::clone(&release);
+                async move {
+                    while let Ok((socket, _)) = listener.accept().await {
+                        tokio::spawn(serve_registry_request(
+                            socket,
+                            Arc::clone(&files),
+                            Arc::clone(&release),
+                        ));
+                    }
+                }
+            });
+            Self {
+                index_url: format!("sparse+{base_url}/index/"),
+                release,
+                server,
+            }
+        }
+    }
+
+    impl Drop for HeldDownloadRegistry {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    /// The `.crate` archive of [`HELD_CRATE`] 0.1.0. Its padding does not
+    /// compress, so half of the archive is a download with bytes left.
+    fn held_crate_archive() -> Vec<u8> {
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let padding: Vec<u8> = (0..64 * 1024)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect();
+        let manifest = format!(
+            "[package]\nname = \"{HELD_CRATE}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+        );
+        let files: [(&str, &[u8]); 3] = [
+            ("Cargo.toml", manifest.as_bytes()),
+            ("src/lib.rs", b""),
+            ("padding.bin", &padding),
+        ];
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (path, contents) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            builder
+                .append_data(&mut header, format!("{HELD_CRATE}-0.1.0/{path}"), contents)
+                .expect("append to the crate archive");
+        }
+        builder
+            .into_inner()
+            .expect("finish the crate tarball")
+            .finish()
+            .expect("finish the crate gzip stream")
+    }
+
+    /// Answers one request of a connection to [`HeldDownloadRegistry`], then
+    /// closes the connection.
+    async fn serve_registry_request(
+        mut socket: tokio::net::TcpStream,
+        files: Arc<HeldRegistryFiles>,
+        release: Arc<tokio::sync::Notify>,
+    ) -> std::io::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok(());
+            }
+            request.extend_from_slice(&chunk[..read]);
+        }
+        let request = String::from_utf8_lossy(&request);
+        let path = request.split(' ').nth(1).unwrap_or_default();
+        let index_path = format!(
+            "/index/{}/{}/{HELD_CRATE}",
+            &HELD_CRATE[..2],
+            &HELD_CRATE[2..4]
+        );
+        let download_path = format!("/dl/{HELD_CRATE}/0.1.0/download");
+        let header = |status: &str, length: usize| {
+            format!("HTTP/1.1 {status}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n")
+        };
+
+        if path == download_path {
+            let (sent, held) = files.archive.split_at(files.archive.len() / 2);
+            socket
+                .write_all(header("200 OK", files.archive.len()).as_bytes())
+                .await?;
+            socket.write_all(sent).await?;
+            socket.flush().await?;
+            release.notified().await;
+            return socket.write_all(held).await;
+        }
+        let body = match path {
+            "/index/config.json" => files.config.as_bytes(),
+            path if path == index_path => files.index_entry.as_bytes(),
+            _ => {
+                return socket
+                    .write_all(header("404 Not Found", 0).as_bytes())
+                    .await;
+            }
+        };
+        socket
+            .write_all(header("200 OK", body.len()).as_bytes())
+            .await?;
+        socket.write_all(body).await
+    }
+
+    /// Reads cargo's stderr until a repaint, a fragment ended by a bare
+    /// `\r`, names the bytes a download has left. `Err` carries everything
+    /// read when the stream ends without one.
+    ///
+    /// The fragments are cut here, not by [`crate::build_io::LineSplitter`]:
+    /// the splitter holds a fragment ended by `\r` until the next byte shows
+    /// it is not half of a `\r\n`, and cargo prints nothing after its repaint
+    /// while the download is held. In a build, the next repaint is that byte.
+    async fn first_remaining_bytes_repaint(
+        stderr: &mut tokio::process::ChildStderr,
+    ) -> std::result::Result<String, String> {
+        use tokio::io::AsyncReadExt;
+
+        let mut output = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = stderr
+                .read(&mut chunk)
+                .await
+                .map_err(|e| format!("reading cargo's stderr failed: {e}"))?;
+            if read == 0 {
+                return Err(String::from_utf8_lossy(&output).into_owned());
+            }
+            output.extend_from_slice(&chunk[..read]);
+            let repaint = output
+                .split_inclusive(|byte| matches!(byte, b'\r' | b'\n'))
+                .filter(|fragment| fragment.ends_with(b"\r"))
+                .map(String::from_utf8_lossy)
+                .find(|fragment| fragment.contains("remaining bytes"));
+            if let Some(repaint) = repaint {
+                return Ok(repaint.trim_end().to_owned());
+            }
+        }
+    }
+
+    /// [`CARGO_PROGRESS_ENV`] makes cargo report a crate download while it is
+    /// in flight, which is what keeps the idle clock of a build alive on a
+    /// slow connection: with the registry holding the download half sent,
+    /// cargo repaints a progress line, ended by a bare `\r`, that names the
+    /// bytes left. The registry holds the download until that repaint
+    /// arrives, so the test waits on the repaint and not on a duration.
+    /// Without the settings, cargo prints nothing until the download
+    /// completes, and the test never sees a repaint.
+    ///
+    /// The test reads cargo's stderr itself rather than through
+    /// [`run_build_cmd`]: cargo prints a progress line only when it changes,
+    /// so a held download yields few repaints, and the build output reader
+    /// may coalesce one of them away (the other tests here and those of
+    /// [`crate::build_io`] cover how the reader forwards repaints).
+    #[tokio::test]
+    async fn cargo_reports_a_held_crate_download_with_the_progress_settings() {
+        use tokio::io::AsyncReadExt;
+
+        // Bounds a hang only: the outcome never depends on how fast cargo is.
+        const HANG_GUARD: Duration = Duration::from_secs(300);
+        // Cargo and the curl it embeds route a request through these when
+        // they are set, and no proxy reaches the loopback registry.
+        const PROXY_ENV_VARS: [&str; 7] = [
+            "CARGO_HTTP_PROXY",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ];
+
+        let registry = HeldDownloadRegistry::start().await;
+        let project = tempfile::tempdir().expect("tempdir should succeed");
+        std::fs::write(
+            project.path().join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"held_download_probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+                 [dependencies]\n{HELD_CRATE} = {{ version = \"=0.1.0\", registry = \"held\" }}\n"
+            ),
+        )
+        .expect("write the probe manifest");
+        std::fs::create_dir(project.path().join("src")).expect("create the probe src dir");
+        std::fs::write(project.path().join("src").join("lib.rs"), b"")
+            .expect("write the probe lib.rs");
+        let cargo_home = tempfile::tempdir().expect("tempdir should succeed");
+
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let mut command = tokio::process::Command::new(cargo);
+        // How cargo prints must not depend on where the test runs: CI sets
+        // `CARGO_TERM_COLOR=always`, which wraps the status word of the
+        // repaint in escape codes, and `CARGO_TERM_QUIET` hides the progress
+        // line. Removed before `CARGO_PROGRESS_ENV` is set, as its variables
+        // share the prefix.
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("CARGO_TERM_") {
+                command.env_remove(key);
+            }
+        }
+        for proxy in PROXY_ENV_VARS {
+            command.env_remove(proxy);
+        }
+        command
+            .arg("fetch")
+            .current_dir(project.path())
+            .envs(CARGO_PROGRESS_ENV)
+            .env("CARGO_HOME", cargo_home.path())
+            .env("CARGO_REGISTRIES_HELD_INDEX", &registry.index_url)
+            // Cargo abandons a download that moves less than 10 bytes a
+            // second for this many seconds, and the held one moves none.
+            .env("CARGO_HTTP_TIMEOUT", "3600")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn().expect("cargo should start");
+        let mut stderr = child.stderr.take().expect("cargo's stderr is piped");
+
+        let repaint = tokio::time::timeout(HANG_GUARD, first_remaining_bytes_repaint(&mut stderr))
+            .await
+            .expect(
+                "cargo printed no repaint naming the remaining bytes while its download was held",
+            )
+            .unwrap_or_else(|output| {
+                panic!("cargo ended its output without a remaining bytes repaint:\n{output}")
+            });
+        registry.release.notify_one();
+
+        let mut rest = Vec::new();
+        stderr
+            .read_to_end(&mut rest)
+            .await
+            .expect("read the rest of cargo's stderr");
+        let status = child.wait().await.expect("wait for cargo");
+        assert!(
+            status.success(),
+            "cargo fetch must finish once the download is released, got {status}:\n{}",
+            String::from_utf8_lossy(&rest)
+        );
+        assert!(
+            repaint.contains("Downloading 1 crate, remaining bytes:"),
+            "the repaint must name the held download, got {repaint:?}"
+        );
     }
 
     /// The destination is the keyed slot under `built_nodes/<name>_<tag>/`,

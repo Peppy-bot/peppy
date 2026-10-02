@@ -385,6 +385,9 @@ pub(crate) enum LineTerminator {
     /// A bare `\r`: a terminal repaint (progress bars). Forwarded at most
     /// once per coalescing interval.
     CarriageReturn,
+    /// The stream ended before the fragment was terminated: a real line (a
+    /// last message printed without its `\n`), so always forwarded.
+    EndOfStream,
 }
 
 /// Splits a byte stream into fragments on `\n`, `\r`, and `\r\n` (one break),
@@ -432,16 +435,18 @@ impl LineSplitter {
         }
     }
 
-    /// The trailing fragment at EOF, if any: an unterminated partial line, or
-    /// a fragment whose `\r` classification never resolved. Callers forward it
-    /// unconditionally so the last repaint (the "100%" that matters) lands.
-    pub(crate) fn finish(&mut self) -> Option<String> {
-        if self.pending_cr || !self.partial.is_empty() {
-            self.pending_cr = false;
-            Some(self.take_partial())
-        } else {
-            None
-        }
+    /// The trailing fragment at EOF, if any: a fragment ended by a `\r` that
+    /// no `\n` followed, which is a repaint, or an unterminated partial line.
+    /// Callers forward it unconditionally so the last repaint (the "100%"
+    /// that matters) lands.
+    pub(crate) fn finish(&mut self) -> Option<(String, LineTerminator)> {
+        let terminator = match (self.pending_cr, self.partial.is_empty()) {
+            (true, _) => LineTerminator::CarriageReturn,
+            (false, false) => LineTerminator::EndOfStream,
+            (false, true) => return None,
+        };
+        self.pending_cr = false;
+        Some((self.take_partial(), terminator))
     }
 
     fn take_partial(&mut self) -> String {
@@ -461,11 +466,11 @@ impl LineSplitter {
 /// idle-clock notifications see at most two lines per second from repaints.
 pub(crate) const REPAINT_FORWARD_MIN_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Decides which fragments forward: `\n`-terminated lines always do, bare-`\r`
-/// repaints only when at least [`REPAINT_FORWARD_MIN_INTERVAL`] has passed
-/// since the last forwarded line. Suppressed fragments are dropped entirely
-/// (no log write, no stderr tail), matching their pre-`\r`-splitting
-/// invisibility.
+/// Decides which fragments forward: real lines (`\n`-terminated, or cut off by
+/// the end of the stream) always do, bare-`\r` repaints only when at least
+/// [`REPAINT_FORWARD_MIN_INTERVAL`] has passed since the last forwarded line.
+/// Suppressed fragments are dropped entirely (no log write, no stderr tail),
+/// matching their pre-`\r`-splitting invisibility.
 #[derive(Default)]
 pub(crate) struct RepaintCoalescer {
     last_forward: Option<Instant>,
@@ -475,7 +480,7 @@ impl RepaintCoalescer {
     /// Whether a fragment with `terminator` observed at `now` forwards.
     pub(crate) fn should_forward(&mut self, terminator: LineTerminator, now: Instant) -> bool {
         let forward = match terminator {
-            LineTerminator::Newline => true,
+            LineTerminator::Newline | LineTerminator::EndOfStream => true,
             LineTerminator::CarriageReturn => self
                 .last_forward
                 .is_none_or(|last| now.duration_since(last) >= REPAINT_FORWARD_MIN_INTERVAL),
@@ -493,9 +498,9 @@ impl RepaintCoalescer {
 /// Reads output from a `tokio::io::AsyncRead` (typically a
 /// `tokio::process::ChildStdout`/`ChildStderr`), splits it into lines on `\n`,
 /// `\r`, and `\r\n` (see [`LineSplitter`]), writes each forwarded line to the
-/// log file, captures forwarded stderr lines into the optional
-/// `stderr_buffer`, and forwards each over `feedback_tx` (gated by
-/// `publish_enabled`). `\n`-terminated lines always forward; bare-`\r` repaint
+/// log file, captures forwarded stderr lines, repaints aside, into the
+/// optional `stderr_buffer`, and forwards each over `feedback_tx` (gated by
+/// `publish_enabled`). Real lines always forward; bare-`\r` repaint
 /// fragments are coalesced (see [`RepaintCoalescer`]) and suppressed ones skip
 /// the log file and stderr tail too. The final fragment before EOF always
 /// forwards so a progress stream's last repaint lands.
@@ -529,7 +534,10 @@ where
 
         // Forwards one line: log file, first-stdout signal, stderr tail,
         // publish gate, feedback channel. Suppressed repaints never reach it.
-        let forward_line = |line: String| {
+        // A forwarded repaint skips the stderr tail: the tail explains a
+        // failure, and a progress bar that repaints between a tool's error
+        // lines (cargo's, while its other jobs finish) would push them out.
+        let forward_line = |line: String, terminator: LineTerminator| {
             write_feedback_log_line(&log_file, stream, &line);
             hooks.on_line(&line);
 
@@ -541,6 +549,7 @@ where
 
             // Always capture stderr for error diagnostics, regardless of publish state
             if matches!(stream, FeedbackStream::Stderr)
+                && terminator != LineTerminator::CarriageReturn
                 && let Some(buffer) = &stderr_buffer
             {
                 push_stderr_line(buffer, &line);
@@ -578,8 +587,8 @@ where
                 Ok(0) => {
                     // EOF: the trailing fragment always forwards, so the last
                     // repaint of a progress stream is never lost.
-                    if let Some(line) = splitter.finish() {
-                        forward_line(line);
+                    if let Some((line, terminator)) = splitter.finish() {
+                        forward_line(line, terminator);
                     }
                     break Ok(());
                 }
@@ -597,7 +606,7 @@ where
             let now = Instant::now();
             splitter.push(&buf[..n], |line, terminator| {
                 if coalescer.should_forward(terminator, now) {
-                    forward_line(line);
+                    forward_line(line, terminator);
                 }
             });
         };
@@ -670,15 +679,13 @@ mod tests {
 
     // -- LineSplitter --
 
-    fn split_all(chunks: &[&[u8]]) -> Vec<(String, Option<LineTerminator>)> {
+    fn split_all(chunks: &[&[u8]]) -> Vec<(String, LineTerminator)> {
         let mut splitter = LineSplitter::default();
         let mut out = Vec::new();
         for chunk in chunks {
-            splitter.push(chunk, |line, term| out.push((line, Some(term))));
+            splitter.push(chunk, |line, term| out.push((line, term)));
         }
-        if let Some(line) = splitter.finish() {
-            out.push((line, None));
-        }
+        out.extend(splitter.finish());
         out
     }
 
@@ -688,10 +695,10 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ("a".to_string(), Some(LineTerminator::CarriageReturn)),
-                ("b".to_string(), Some(LineTerminator::Newline)),
-                ("c".to_string(), Some(LineTerminator::Newline)),
-                ("d".to_string(), None),
+                ("a".to_string(), LineTerminator::CarriageReturn),
+                ("b".to_string(), LineTerminator::Newline),
+                ("c".to_string(), LineTerminator::Newline),
+                ("d".to_string(), LineTerminator::EndOfStream),
             ]
         );
     }
@@ -705,16 +712,27 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ("x".to_string(), Some(LineTerminator::Newline)),
-                ("y".to_string(), None),
+                ("x".to_string(), LineTerminator::Newline),
+                ("y".to_string(), LineTerminator::EndOfStream),
             ]
         );
     }
 
+    /// A `\r` that the end of the stream leaves unresolved had no `\n` after
+    /// it, so the fragment it ends is a repaint.
     #[test]
-    fn splitter_yields_a_trailing_cr_fragment_at_eof() {
+    fn splitter_yields_a_trailing_cr_fragment_at_eof_as_a_repaint() {
         let got = split_all(&[b"50%\r"]);
-        assert_eq!(got, vec![("50%".to_string(), None)]);
+        assert_eq!(
+            got,
+            vec![("50%".to_string(), LineTerminator::CarriageReturn)]
+        );
+    }
+
+    #[test]
+    fn splitter_yields_nothing_at_eof_after_a_terminated_line() {
+        let got = split_all(&[b"done\n"]);
+        assert_eq!(got, vec![("done".to_string(), LineTerminator::Newline)]);
     }
 
     #[test]
@@ -726,9 +744,9 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ("a".to_string(), Some(LineTerminator::Newline)),
-                ("".to_string(), Some(LineTerminator::Newline)),
-                ("b".to_string(), None),
+                ("a".to_string(), LineTerminator::Newline),
+                ("".to_string(), LineTerminator::Newline),
+                ("b".to_string(), LineTerminator::EndOfStream),
             ]
         );
     }
@@ -756,6 +774,12 @@ mod tests {
         assert!(coalescer.should_forward(
             LineTerminator::CarriageReturn,
             t0 + Duration::from_millis(20) + REPAINT_FORWARD_MIN_INTERVAL
+        ));
+        // A line the end of the stream cut off is a real line: it forwards
+        // right after a repaint too.
+        assert!(coalescer.should_forward(
+            LineTerminator::EndOfStream,
+            t0 + Duration::from_millis(30) + REPAINT_FORWARD_MIN_INTERVAL
         ));
     }
 
@@ -853,5 +877,76 @@ mod tests {
             seen_unpublished, seen,
             "the hook sees the lines before the publish gate"
         );
+    }
+
+    /// Reads `input` to EOF as a stderr stream through
+    /// [`spawn_output_reader_async`], and returns the lines that reached the
+    /// feedback channel and the stderr tail it collected.
+    async fn read_stderr(input: &[u8]) -> (Vec<String>, Vec<String>) {
+        let log_file = Arc::new(StdMutex::new(
+            NamedTempFile::new()
+                .expect("temp log")
+                .reopen()
+                .expect("reopen"),
+        ));
+        let tail = Arc::new(StdMutex::new(VecDeque::new()));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = spawn_output_reader_async(
+            std::io::Cursor::new(input.to_vec()),
+            tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(LineRecordingHooks::default()) as Arc<dyn OutputReaderHooks>,
+            FeedbackStream::Stderr,
+            Some(Arc::clone(&tail)),
+            log_file,
+        );
+        handle
+            .await
+            .expect("join should succeed")
+            .expect("read should succeed");
+        let mut forwarded = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            forwarded.push(line.line);
+        }
+        let tail = tail.lock().iter().cloned().collect();
+        (forwarded, tail)
+    }
+
+    /// The stderr tail explains a failure, so the progress bar cargo repaints
+    /// between its error lines must not push them out of it. The repaints
+    /// still forward: they are output, and they reset the idle clock. Both
+    /// kinds of repaint are covered: the first one of a quiet stream, which
+    /// the coalescer forwards, and the one the end of the stream leaves.
+    #[tokio::test]
+    async fn async_reader_keeps_repaints_out_of_the_stderr_tail() {
+        let (forwarded, tail) = read_stderr(
+            b"    Building [==>  ] 1/2: a\rerror: could not compile `b`\n    Building [===> ] 1/2: a\r",
+        )
+        .await;
+        assert_eq!(
+            forwarded,
+            vec![
+                "    Building [==>  ] 1/2: a".to_string(),
+                "error: could not compile `b`".to_string(),
+                "    Building [===> ] 1/2: a".to_string(),
+            ]
+        );
+        assert_eq!(tail, vec!["error: could not compile `b`".to_string()]);
+    }
+
+    /// A last message printed without its `\n` is a real line, so it is part
+    /// of the tail.
+    #[tokio::test]
+    async fn async_reader_keeps_a_line_the_stream_cut_off_in_the_stderr_tail() {
+        let (forwarded, tail) =
+            read_stderr(b"    Building [==>  ] 1/2: a\rerror: could not compile `b`").await;
+        assert_eq!(
+            forwarded,
+            vec![
+                "    Building [==>  ] 1/2: a".to_string(),
+                "error: could not compile `b`".to_string(),
+            ]
+        );
+        assert_eq!(tail, vec!["error: could not compile `b`".to_string()]);
     }
 }
