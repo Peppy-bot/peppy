@@ -13,6 +13,7 @@ use crate::services::repo::status::{self, RepoStatus, RepoStatusFailure};
 use crate::services::repo::{
     REPOS_FILE, RepoOwners, normalize_repo_entries, parse_repo_entry, source_identity,
 };
+use crate::source_url::SourceUrl;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
     GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, ReadRef, RepoRefreshFeedback, RepoRefreshGoal,
@@ -705,7 +706,7 @@ pub(crate) fn process_refresh(
             RepoSource::Fs(path) => (read_fs_repo(path, &exclusions, on_feedback), None),
             RepoSource::Git { repo_url, repo_ref } => {
                 on_feedback(RepoRefreshFeedback::Progress {
-                    message: format!("Cloning {}", source.display_label(build)),
+                    message: format!("Cloning {}", shown_label(&source, build)),
                 });
                 let read_ref = repo_ref.read_ref(build);
                 let read = read_git_repo(
@@ -745,7 +746,7 @@ pub(crate) fn process_refresh(
                 let retained = retained_items(&previous, &owners, id);
                 let failure = RepoFailure {
                     id,
-                    label: source.display_label(build),
+                    label: shown_label(&source, build),
                     kind,
                     detail,
                     retained: retained.len(),
@@ -943,8 +944,12 @@ fn read_git_repo(
         })
         .map_err(|e| unreachable(ref_not_served(repo_url, repo_ref, read, build, &e)))?;
     }
-    let commit = head_commit(&repo)
-        .map_err(|e| unreachable(format!("the clone of {repo_url} has no usable commit: {e}")))?;
+    let commit = head_commit(&repo).map_err(|e| {
+        unreachable(format!(
+            "the clone of {} has no usable commit: {e}",
+            SourceUrl::new(repo_url)
+        ))
+    })?;
 
     // The configured ref is what attributes an entry back to its repository,
     // and the ref it was read at is what a later fetch of the pinned commit
@@ -979,27 +984,52 @@ fn ref_not_served(
     build: &PeppyBuild,
     error: &str,
 ) -> String {
+    let shown_url = SourceUrl::new(repo_url);
     match (repo_ref, build) {
         (GitRepoRef::PeppyRelease, PeppyBuild::Release(version)) => format!(
-            "{repo_url} does not carry the tag `{}`, which `{PEPPY_RELEASE_REF}` reads in peppy \
+            "{shown_url} does not carry the tag `{}`, which `{PEPPY_RELEASE_REF}` reads in peppy \
              {version}: {error}",
             read.short_name()
         ),
         (GitRepoRef::PeppyRelease, PeppyBuild::Unreleased) => format!(
-            "{repo_url} does not serve `{}`, which `{PEPPY_RELEASE_REF}` reads in a peppy build \
+            "{shown_url} does not serve `{}`, which `{PEPPY_RELEASE_REF}` reads in a peppy build \
              that is not a release: {error}",
             read.short_name()
         ),
         _ => format!(
-            "{repo_url} does not serve the configured ref `{}`: {error}",
+            "{shown_url} does not serve the configured ref `{}`: {error}",
             read.short_name()
         ),
+    }
+}
+
+/// The label of `source` as the daemon writes it: a git URL appears without
+/// its credentials and its query.
+fn shown_label(source: &RepoSource, build: &PeppyBuild) -> String {
+    let label = source.display_label(build);
+    match source {
+        RepoSource::Git { repo_url, .. } => SourceUrl::new(repo_url).redact_in(&label),
+        RepoSource::Fs(_) => label,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_label_shows_a_git_url_without_its_credentials_and_keeps_its_ref() {
+        let source = RepoSource::Git {
+            repo_url: "https://oauth2:glpat-secret@gitlab.example/acme/nodes.git".to_owned(),
+            repo_ref: GitRepoRef::parse("main").expect("a git name"),
+        };
+        assert_eq!(
+            shown_label(&source, &PeppyBuild::Unreleased),
+            "https://gitlab.example/acme/nodes.git (ref: main)"
+        );
+        let fs = RepoSource::Fs("/srv/nodes".into());
+        assert_eq!(shown_label(&fs, &PeppyBuild::Unreleased), "/srv/nodes");
+    }
     use crate::services::node::checkout_repo_ref;
     use crate::services::node::test_git_daemon::GitDaemon;
     use crate::services::repo::cache::test_support::{write_excluded_repos, write_repos};

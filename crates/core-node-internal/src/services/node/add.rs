@@ -17,6 +17,7 @@ use super::{
     resolve_local_archive_source, sanitize_repo_path, write_error_to_log,
 };
 use crate::Result;
+use crate::source_url::SourceUrl;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{MissingDependencyPolicy, validate_dependency_specs};
@@ -211,7 +212,7 @@ fn shallow_validate_config(
     if let Some(e) = last_err {
         return Err(ShallowCheckError::ShallowFetchFailed(format!(
             "shallow fetch failed: {}",
-            e
+            SourceUrl::new(repo_url).redact_in(&e.to_string())
         )));
     }
 
@@ -539,8 +540,11 @@ fn download_http_bundle_once(
 ) -> std::result::Result<(), DownloadAttemptError> {
     use sha2::{Digest, Sha256};
 
+    let shown_url = SourceUrl::new(url.as_str());
     let expected_bytes = expected_sha256
-        .map(|hex| decode_sha256_hex(hex).map_err(|e| format!("Invalid SHA256 for {}: {}", url, e)))
+        .map(|hex| {
+            decode_sha256_hex(hex).map_err(|e| format!("Invalid SHA256 for {shown_url}: {e}"))
+        })
         .transpose()
         .map_err(DownloadAttemptError::Fatal)?;
 
@@ -550,7 +554,8 @@ fn download_http_bundle_once(
             HttpError::StatusCode(code) => format!("unexpected status code {code}"),
             other => other.to_string(),
         };
-        let msg = format!("Failed to download bundle from {}: {}", url, reason);
+        let reason = shown_url.redact_in(&reason);
+        let msg = format!("Failed to download bundle from {shown_url}: {reason}");
         if transient {
             DownloadAttemptError::Transient(msg)
         } else {
@@ -583,7 +588,7 @@ fn download_http_bundle_once(
             // never opened; the retry restarts from File::create's truncate.
             DownloadAttemptError::Transient(format!(
                 "Failed to read response body from {}: {}",
-                url, e
+                shown_url, e
             ))
         })?;
         if read == 0 {
@@ -639,7 +644,7 @@ fn download_http_bundle_once(
             std::fs::remove_file(destination).ok();
             return Err(DownloadAttemptError::Fatal(format!(
                 "SHA256 checksum mismatch for {}: expected {}, computed {}",
-                url,
+                shown_url,
                 expected_sha256.unwrap_or_default(),
                 encode_hex(computed.as_slice()),
             )));
@@ -676,7 +681,8 @@ fn extract_http_bundle(
     destination: &Path,
     url: &url::Url,
 ) -> std::result::Result<(), String> {
-    extract_tar_zst(bundle_path, destination).map_err(|e| format!("{} (source: {})", e, url))
+    extract_tar_zst(bundle_path, destination)
+        .map_err(|e| format!("{e} (source: {})", SourceUrl::new(url.as_str())))
 }
 
 async fn resolve_http_source_with_feedback(
@@ -872,7 +878,10 @@ async fn resolve_node_add_source(
         } => {
             let _ = feedback_tx.send(FeedbackLine {
                 stream: FeedbackStream::Stdout,
-                line: format!("Cloning repository {}...", repo_url.to_bstring()),
+                line: format!(
+                    "Cloning repository {}...",
+                    SourceUrl::new(&repo_url.to_bstring().to_string())
+                ),
             });
             resolve_git_source(
                 repo_url,
@@ -885,7 +894,10 @@ async fn resolve_node_add_source(
         NodeSource::Http { url, sha256 } => {
             let _ = feedback_tx.send(FeedbackLine {
                 stream: FeedbackStream::Stdout,
-                line: format!("Downloading bundle from {}...", url),
+                line: format!(
+                    "Downloading bundle from {}...",
+                    SourceUrl::new(url.as_str())
+                ),
             });
             resolve_http_source_with_feedback(
                 url,
@@ -1205,11 +1217,13 @@ async fn handle_goal_request(
             repo_ref,
         } => debug!(
             "Received `node_add` goal from {sender_instance_id}, source=git:{}::{} ({:?})",
-            repo_url, repo_path, repo_ref
+            SourceUrl::new(&repo_url.to_bstring().to_string()),
+            repo_path,
+            repo_ref
         ),
         NodeSource::Http { url, .. } => debug!(
             "Received `node_add` goal from {sender_instance_id}, source=http:{}",
-            url
+            SourceUrl::new(url.as_str())
         ),
         NodeSource::Pinned { .. } => debug!(
             "Received `node_add` goal from {sender_instance_id}, source=pinned ({} closure pin(s))",

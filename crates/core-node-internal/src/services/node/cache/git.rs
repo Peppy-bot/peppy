@@ -21,6 +21,7 @@ use super::super::checkout_repo_ref;
 use super::super::git_utils::{clone_repo_shallow, fetch_with_progress, head_commit};
 use super::key;
 use super::keyed_lock::KeyedLocks;
+use crate::source_url::SourceUrl;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::repository::GitCommit;
 use parking_lot::Mutex;
@@ -195,6 +196,7 @@ pub fn ensure_checkout_at_commit(
     commit: &GitCommit,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PathBuf, String> {
+    let shown_url = SourceUrl::new(repo_url);
     let dir = checkout_dir_for(peppy_dirs, repo_url, commit);
     let lock_key = dir.to_string_lossy().into_owned();
     let lock = LOCKS.lock_for(&lock_key);
@@ -214,7 +216,7 @@ pub fn ensure_checkout_at_commit(
     clear_dir(&dir)?;
 
     on_feedback(&format!(
-        "Cloning {repo_url} at {commit} into cache at {}",
+        "Cloning {shown_url} at {commit} into cache at {}",
         dir.display()
     ));
     let repo = clone_repo_shallow(repo_url, &dir, &mut |line| on_feedback(line))?;
@@ -226,7 +228,7 @@ pub fn ensure_checkout_at_commit(
     if checkout_repo_ref(&repo, commit.as_str()).is_err() {
         fetch_commit(&repo, repo_url, read_ref, commit, on_feedback)?;
         checkout_repo_ref(&repo, commit.as_str()).map_err(|e| {
-            format!("Failed to check out commit {commit} of {repo_url} after fetching it: {e}")
+            format!("Failed to check out commit {commit} of {shown_url} after fetching it: {e}")
         })?;
     }
     touch_last_used(&dir);
@@ -250,6 +252,7 @@ pub fn ensure_checkout_at_commit(
 /// Best-effort, and infallible from the caller's side: whatever goes wrong,
 /// the cache is left as it was and the checkout is cloned again on demand.
 pub fn adopt_checkout(peppy_dirs: &PeppyDirs, repo_url: &str, commit: &GitCommit, dir: PathBuf) {
+    let shown_url = SourceUrl::new(repo_url);
     let dst = checkout_dir_for(peppy_dirs, repo_url, commit);
     let lock = LOCKS.lock_for(&dst.to_string_lossy());
     let _guard = lock.lock();
@@ -262,20 +265,20 @@ pub fn adopt_checkout(peppy_dirs: &PeppyDirs, repo_url: &str, commit: &GitCommit
         return;
     }
     if let Err(e) = clear_dir(&dst) {
-        debug!("Keeping the clone of {repo_url} out of the checkout cache: {e}");
+        debug!("Keeping the clone of {shown_url} out of the checkout cache: {e}");
         discard(&dir);
         return;
     }
     match std::fs::rename(&dir, &dst) {
         Ok(()) => {
             debug!(
-                "Adopted the clone of {repo_url} at {commit} as {}",
+                "Adopted the clone of {shown_url} at {commit} as {}",
                 dst.display()
             );
             touch_last_used(&dst);
         }
         Err(e) => {
-            debug!("Keeping the clone of {repo_url} out of the checkout cache: {e}");
+            debug!("Keeping the clone of {shown_url} out of the checkout cache: {e}");
             discard(&dir);
         }
     }
@@ -352,8 +355,9 @@ fn fetch_commit(
     commit: &GitCommit,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<(), String> {
+    let shown_url = SourceUrl::new(repo_url);
     on_feedback(&format!(
-        "Commit {commit} is not in the shallow clone of {repo_url}; fetching it"
+        "Commit {commit} is not in the shallow clone of {shown_url}; fetching it"
     ));
 
     let by_hash = repo.find_remote("origin").and_then(|mut remote| {
@@ -367,7 +371,7 @@ fn fetch_commit(
 
     let refspec = read_ref.unwrap_or("HEAD");
     on_feedback(&format!(
-        "{repo_url} does not serve commits by hash; fetching the full history of {refspec}"
+        "{shown_url} does not serve commits by hash; fetching the full history of {refspec}"
     ));
     repo.find_remote("origin")
         .and_then(|mut remote| {
@@ -375,13 +379,16 @@ fn fetch_commit(
                 on_feedback(line)
             })
         })
-        .map_err(|e| format!("Failed to fetch {refspec} from {repo_url}: {e}"))?;
+        .map_err(|e| {
+            let error = shown_url.redact_in(&e.to_string());
+            format!("Failed to fetch {refspec} from {shown_url}: {error}")
+        })?;
 
     if has_commit(repo, commit) {
         return Ok(());
     }
     Err(format!(
-        "commit {commit} is not reachable at {repo_url}. The pin names bytes this remote no \
+        "commit {commit} is not reachable at {shown_url}. The pin names bytes this remote no \
          longer serves, which means the repository was rewritten or the commit was never pushed"
     ))
 }

@@ -8,6 +8,7 @@
 //! repository is a `git@host:owner/repo.git` URL away rather than a local
 //! checkout this machine must register instead.
 
+use crate::source_url::SourceUrl;
 use crate::ssh_config::{IdentityAgent, SshHostConfig, SshTarget, resolve_host_config};
 use core_node_api::encoding::ReadRef;
 use daemon_config::repository::GitCommit;
@@ -102,7 +103,10 @@ pub(crate) fn checkout_read_ref(
         .and_then(|mut remote| {
             fetch_with_progress(&mut remote, repo_url, &refspec, true, on_progress)
         })
-        .map_err(|e| format!("fetching `{refspec}` failed: {e}"))?;
+        .map_err(|e| {
+            let error = SourceUrl::new(repo_url).redact_in(&e.to_string());
+            format!("fetching `{refspec}` failed: {error}")
+        })?;
     checkout_repo_ref(repo, &git_name).map_err(|e| e.to_string())
 }
 
@@ -200,9 +204,11 @@ pub(crate) fn clone_with_progress(
     fetch_opts.remote_callbacks(progress_callbacks(repo_url, "Cloning", on_progress));
     builder.fetch_options(fetch_opts);
 
-    let repo = builder
-        .clone(repo_url, dst)
-        .map_err(|e| format!("Failed to clone {}: {}", repo_url, e))?;
+    let repo = builder.clone(repo_url, dst).map_err(|e| {
+        let shown_url = SourceUrl::new(repo_url);
+        let error = shown_url.redact_in(&e.to_string());
+        format!("Failed to clone {shown_url}: {error}")
+    })?;
 
     if let Some(r) = repo_ref {
         checkout_repo_ref(&repo, r)
@@ -237,7 +243,7 @@ fn progress_callbacks<'cb>(
     verb: &'static str,
     on_progress: &'cb mut dyn FnMut(&str),
 ) -> git2::RemoteCallbacks<'cb> {
-    let repo_url_owned = repo_url.to_string();
+    let shown_url = SourceUrl::new(repo_url).to_string();
     let mut last_report = Instant::now()
         .checked_sub(PROGRESS_REPORT_INTERVAL)
         .unwrap_or_else(Instant::now);
@@ -247,8 +253,7 @@ fn progress_callbacks<'cb>(
         if last_report.elapsed() >= PROGRESS_REPORT_INTERVAL {
             last_report = Instant::now();
             on_progress(&format!(
-                "{verb} {repo_url}: received {recv}/{total} objects ({bytes})",
-                repo_url = repo_url_owned,
+                "{verb} {shown_url}: received {recv}/{total} objects ({bytes})",
                 recv = progress.received_objects(),
                 total = progress.total_objects(),
                 bytes = format_bytes(progress.received_bytes()),
@@ -457,8 +462,12 @@ fn agent_mismatch(target: &SshTarget, selected: &Path, bound: Option<&Path>) -> 
 
 /// The plan for the connection libgit2 opened to `url`, authing as `user`.
 fn plan_for_url(url: &str, user: String) -> Result<SshCredentialPlan, String> {
-    let target = SshTarget::from_git_url(url)
-        .ok_or_else(|| format!("{url} is not an ssh URL peppy can read a host from"))?;
+    let target = SshTarget::from_git_url(url).ok_or_else(|| {
+        format!(
+            "{} is not an ssh URL peppy can read a host from",
+            SourceUrl::new(url)
+        )
+    })?;
     let host_config = resolve_host_config(&target)?;
     let process_agent = std::env::var_os("SSH_AUTH_SOCK")
         .filter(|socket| !socket.is_empty())
