@@ -766,7 +766,8 @@ class CiRun:
 
 
 def latest_ci_run(runs_response: Mapping) -> CiRun | None:
-    """The most recent peppy CI run of a commit; None when it has none yet.
+    """The most recent peppy CI run of a commit on a branch; None when it has
+    none yet.
 
     The most recent run is the one of the highest id: ids grow with every run
     GitHub creates.
@@ -1313,11 +1314,17 @@ def look_for_dev_build(
 ) -> UploadedDevBuild | DevBuildPending:
     """The dev build of the head of peppy's branch of the set, else of `dev`,
     or why it is not there yet. Each look reads that head again, so a look
-    after a push to the branch looks for the build of the new head."""
+    after a push to the branch looks for the build of the new head.
+
+    Only the runs of that branch count. A release gives `main` the commit at
+    the head of `dev`. The run of that push to `main` is newer than the run
+    of `dev`, and it builds the dev build only when the install inputs
+    changed (install-archive in tests.yml).
+    """
     branch, commit = choose_peppy_branch(set_name, peppy_heads(set_name))
     runs = github.get_json(
         f"/repos/{PEPPY_REPOSITORY}/actions/workflows/{PEPPY_CI_WORKFLOW}/runs",
-        {"head_sha": commit, "per_page": 100},
+        {"head_sha": commit, "branch": branch, "per_page": 100},
     )
     run = latest_ci_run(runs)
     artifacts = [] if run is None else run_artifacts(run.id, DEV_BUILD_ARTIFACT, github)
