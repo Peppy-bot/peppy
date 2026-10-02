@@ -28,7 +28,7 @@ Each takes a `NodeRunner`, the same handle your node receives from `NodeBuilder(
 
 ## When to use this
 
-- **A shared blackboard.** One node computes a value (a calibration result, a chosen target, a mode flag) and another reads it later. Unlike a topic, the reader does not have to be subscribed at the moment the value is produced; it can ask for the key whenever it needs it.
+- **A shared blackboard.** One node computes a value (a calibration result, a chosen target, a mode flag) and another reads it later. The reader asks for the key whenever it needs it, also after the writer stopped. A [topic that retains](/advanced_guides/topics/#retaining-the-latest-value) hands its latest value to late subscribers too, for as long as its producer runs.
 - **Last-known-value handoff.** A node that restarts can read back the value it stored before, as long as the core node stayed up, instead of recomputing from scratch.
 - **Small cross-node state that does not warrant a service contract.** When defining a request/response service is more ceremony than the data is worth, a well-known key is often enough.
 

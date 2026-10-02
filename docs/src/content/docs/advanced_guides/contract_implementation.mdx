@@ -127,7 +127,7 @@ A producer node claims a contract in `manifest.implements`. Each entry names a c
   </TabItem>
 </Tabs>
 
-A contract-backed entry is `{link_id, name}`, plus an optional `refine` block described [below](#refining-the-contracts-generic-arrays). The shape and QoS come from the contract document, never from the manifest: an inline `message_format`, `qos_profile`, or service/action payload field on a contract-backed entry is rejected at parse time. The `name` is a strict selector, byte-equal to a member the contract declares.
+A contract-backed entry is `{link_id, name}`, plus an optional `refine` block described [below](#refining-the-contracts-generic-arrays). The shape, QoS and [retention](/advanced_guides/topics/#retaining-the-latest-value) come from the contract document, never from the manifest: an inline `message_format`, `qos_profile`, `retention`, or service/action payload field on a contract-backed entry is rejected at parse time. The `name` is a strict selector, byte-equal to a member the contract declares.
 
 The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `implements` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the shapes natively would get, nested under the implements slot's `link_id` (`emitted_topics/cam/video_stream`), not the contract's name or tag.
 

@@ -194,6 +194,8 @@ These are local Peppy queue capacities, not Zenoh router buffers, and they apply
 
 When a topic subscriber falls behind and its local queue fills up, its session stops taking messages from the connection the topic arrives on until the subscriber takes one. This holds up every message on that connection, not only the topic's: in the router topology that is all of the node's traffic; in the peer topology it is the traffic from the publishing peer, or from the router for a publisher on another machine. Once the network buffers of that connection are full, the stall reaches the sending side: messages published with the `standard` or `sensor_data` profile are dropped there, and messages published with the `reliable` or `critical` profile wait for room. When one of them waits five seconds, Zenoh closes the connection to the slow session. An action goal's feedback buffer never makes its session wait: when it is full, it drops its oldest unread message instead. Raise a capacity to absorb longer bursts at the cost of memory and worst-case latency; lower it to surface backpressure, or message loss, sooner. The defaults match Peppy's built-in behavior, so you only need to touch this block to tune backpressure.
 
+A subscription to a topic that [retains](/advanced_guides/topics/#retaining-the-latest-value) holds at least as many messages as the topic retains, whatever these capacities say.
+
 Both values must be greater than `0`; the daemon rejects a zero buffer size at startup.
 
 ## `zenoh.external`: use an operator-run router

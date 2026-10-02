@@ -24,7 +24,7 @@ Topics also underpin two higher-level constructs: [contract implementation](/adv
 ## Emitting a topic
 
 A node that publishes messages declares its topics under `interfaces.topics.emits` in its `peppy.json5`.
-Each topic defines a `name`, a `qos_profile`, and a `message_format`:
+Each topic defines a `name`, a `qos_profile`, and a `message_format`, and can declare a [`retention`](#retaining-the-latest-value):
 
 <Tabs>
   <TabItem label="Python">
@@ -114,6 +114,71 @@ The `qos_profile` sets the **publisher's** delivery behavior for this topic; con
 - **`standard`**: balanced defaults suitable for most use cases. This is the default when `qos_profile` is omitted.
 - **`reliable`**: blocks on congestion instead of dropping, at the cost of higher latency.
 - **`critical`**: the same block-on-congestion guarantee as `reliable`, dispatched at the highest scheduling priority with express batching, for the lowest latency on safety-critical data.
+
+### Retaining the latest value
+
+A topic is **live only** by default: a consumer receives the messages published after it subscribes.
+A topic that carries state, such as a robot's mode or its battery level, can **retain** its newest message. A consumer that starts later reads that message at once, then follows the live updates through the same subscription.
+
+Set `retention` on the emitted topic:
+
+```json5
+{
+  name: "robot_mode",
+  qos_profile: "reliable",
+  retention: { latest: 1 },
+  message_format: {
+    mode: "string"
+  }
+}
+```
+
+| `retention` | A consumer that subscribes later receives |
+|---|---|
+| `{ latest: 1 }` | The newest message. |
+| `{ latest: 5 }` | The newest 5 messages, oldest first. The number goes up to 1024, and `{ latest: 0 }` is live only. |
+
+A [contract](/advanced_guides/contract_implementation/) declares `retention` on its topic the same way, and every producer that implements the contract retains accordingly:
+
+```json5
+interfaces: {
+  topics: [
+    {
+      name: "robot_mode",
+      retention: { latest: 5 },
+      message_format: {
+        mode: "string"
+      }
+    }
+  ]
+}
+```
+
+The producer declares the policy and consumers follow it. `peppy node sync` reads the policy from the producer's manifest, or from the [contract](/advanced_guides/contract_implementation/) that defines the topic, and the generated `subscribe` applies it. A consumer's manifest and code stay as they are.
+
+:::note
+Sync a consumer again after its producer changes its `retention`. Until then the consumer subscribes with the policy it was generated with, and a consumer generated for a live-only topic receives the live messages of a retaining one.
+:::
+
+A retaining topic keeps these promises:
+
+- **One set of messages per producer instance.** Each running producer instance keeps its own newest messages. On a slot bound to several producers, the consumer receives each producer's retained messages, tagged with that producer.
+- **For as long as the instance runs.** The messages stay in the producer's process from its first publication until it stops, also after its code drops the publisher. A producer that restarts has nothing retained until it publishes. For a value that must outlive the node, use the [datastore](/advanced_guides/datastore/).
+- **Nothing before the first publication.** A consumer of a topic that has not published yet waits for the first publication.
+- **The newest value, as old as it is.** A retained message was published at some earlier time. Carry a timestamp in the message when its age matters.
+- **In order.** A consumer that subscribes while the producer publishes reads each producer's messages in the order they were published, ending on the newest. A message still in transit when the consumer subscribed can arrive first, and the retained messages older than it are then not delivered. The order relies on message timestamps, so it holds while the clocks of the machines between the producer and the consumer agree to within 500 ms.
+- **After a reconnect.** A consumer whose connection to its producer drops and returns reads the messages its producer published during the outage and still retains, then the live messages. A message it read before the outage is delivered once.
+- **Again when a producer enters the slot again.** A consumer receives a producer's retained messages each time that producer enters the slot's bound set, including a producer that left the set and came back.
+
+:::caution
+Retention fits state. A retained **event** or **command** reaches every node that subscribes later, and again when its producer enters the slot again, so a consumer acts on it once more. Keep those topics live only.
+:::
+
+The retained messages travel under the topic's own `qos_profile`. Under `reliable` or `critical` they wait for room. Under `standard` or `sensor_data` congestion drops them as it drops live messages.
+
+A producer holds each retained message in memory, and a consumer's queue holds at least as many messages as the topic retains. A new subscription fetches a producer's retained messages twice, once when it starts and once when it detects the producer, so keep the number small for large messages.
+
+[Pairing](/advanced_guides/pairing/) topics, pairing observers and [action](/advanced_guides/actions/) feedback are live only, and so are the resources an [MCP server](/advanced_guides/mcp/) reads.
 
 ### Publishing messages
 
@@ -206,7 +271,7 @@ fn main() -> Result<()> {
 Nested objects become generated types whose fields match the object definition: a struct in Rust (`video_stream::MessageHeader`), a dataclass in Python (`video_stream.MessageHeader`).
 
 A producer publishes a **single stream** regardless of how many consumers are listening, and it never knows about the bindings consumers use to address it.
-Starting the producer before any consumer (or after them) is equally valid; consumers attach when they show up.
+Starting the producer before any consumer (or after them) is equally valid; consumers attach when they show up. A consumer that attaches later starts from the next publication, or from the retained messages of a topic that [retains](#retaining-the-latest-value).
 
 For a topic with a simple message format:
 
@@ -393,7 +458,7 @@ fn main() -> Result<()> {
 - `None` (`Ok(None)` in Rust) once the node is shutting down and no queued message remains, or once the runtime is torn down.
 - an error if a received payload fails to deserialize: `Err(..)` in Rust, a raised exception in Python. The error names the message type that failed to decode, and neither tears down the subscription nor shrinks the bound set.
 
-Each underlying subscription holds an in-order buffer, so a message published between `next` calls is kept, not dropped; loop on `next` and nothing is lost in the gap between iterations. Message order is preserved independently per producer (no total ordering across producers is promised), and ready producers are merged fairly so one busy producer cannot indefinitely starve another. `ProducerRef` is `Eq + Hash`, so it keys per-producer state directly; to follow a single producer, filter on the yielded producer.
+Each underlying subscription holds an in-order buffer, so a message published between `next` calls is kept, not dropped; loop on `next` and nothing is lost in the gap between iterations. On a topic that [retains](#retaining-the-latest-value), `next` yields the messages a producer retains before its later ones, and a message still in transit when the subscription started can arrive first, in which case the older retained ones are not delivered. Message order is preserved independently per producer (no total ordering across producers is promised), and ready producers are merged fairly so one busy producer cannot indefinitely starve another. `ProducerRef` is `Eq + Hash`, so it keys per-producer state directly; to follow a single producer, filter on the yielded producer.
 
 There are no call-site producer-targeting arguments at all. Which producers reach a slot is decided entirely by application bindings (see [Bindings and routing](#bindings-and-routing) below): a slot receives messages only from the producer instances bound to it, and each resolved binding carries the producer's full `(core_node, instance_id)` wire address, so the slot can never match a producer that merely shares the instance_id on another core node. The producer segments of a keyexpr are never wildcarded: a federated router forwards traffic only for the explicitly bound producers, and every subscriber stays fully pinned (and auditable) in the zenoh admin space. That same full identity is what `next` returns with every message, so a consumer can pass it straight back into any producer-targeting call (a `ProducerRef` yielded by the slot's own subscription is a member of the slot's bound set by construction).
 

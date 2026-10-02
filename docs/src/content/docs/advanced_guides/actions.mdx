@@ -166,7 +166,7 @@ The `result_service` never carries a user-defined request. A `get_result` call i
 
 The `feedback_topic` block is optional: actions that don't stream progress can omit it entirely. When you do declare `feedback_topic`, however, its `message_format` is required and cannot be empty: every feedback message must carry a non-empty payload, since empty payloads are reserved as the framework's per-goal end-of-stream signal (see [Receiving feedback](#receiving-feedback)). A `feedback_topic` declared without a `message_format`, or with an empty one, is rejected when the config is parsed, identically for Rust and Python nodes.
 
-The server always publishes feedback with the `reliable` profile's settings; a `qos_profile` key on `feedback_topic` is not read by the generated code, and the feedback subscription's own QoS is chosen by the client at `fire_goal`.
+Feedback is live only: `feedback_topic` takes no `retention`. The server always publishes feedback with the `reliable` profile's settings; a `qos_profile` key on `feedback_topic` is not read by the generated code, and the feedback subscription's own QoS is chosen by the client at `fire_goal`.
 
 ### Handling goals
 

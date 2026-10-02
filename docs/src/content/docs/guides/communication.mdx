@@ -209,7 +209,7 @@ $ peppy stack list
 ```
 
 We need to make sure that at least one instance is started for `hello_receiver:v1` and another one for `hello_world_param:v1`.
-Starting order does not affect message delivery: a subscriber started later still receives everything published after it binds. It does constrain `--link`, though: the producer instance must already exist to be named in the flag, so the producer starts first.
+Starting order does not affect message delivery: a subscriber started later still receives everything published after it binds, and the retained messages of a topic that [retains](/advanced_guides/topics/#retaining-the-latest-value). It does constrain `--link`, though: the producer instance must already exist to be named in the flag, so the producer starts first.
 Let's start a `hello_world_param:v1` instance:
 ```
 $ peppy node run hello_world_param:v1 name=planet

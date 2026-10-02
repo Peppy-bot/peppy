@@ -188,7 +188,9 @@ and never creates a goal.
   one-way delivery latency on live traffic (`receive_time − source_time`). This
   is observe-only: the benchmark subscribes to the producer's actual stream and
   times real messages, so for a camera it reflects the cost of moving a full
-  frame, not a token-sized probe. It is **exact when the producer and the core
+  frame, not a token-sized probe. It times live messages only: the messages a
+  [retaining topic](/advanced_guides/topics/#retaining-the-latest-value) keeps
+  are not replayed to it. It is **exact when the producer and the core
   node share a host**. Across hosts it depends on clock synchronization (see
   below).
 
