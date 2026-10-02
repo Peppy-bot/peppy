@@ -222,8 +222,10 @@ impl PeppyDirs {
         self.root.join("cache")
     }
 
-    /// Shared build cache bind mounted into Rust container builds
-    /// (cargo registry and sccache artifacts).
+    /// Shared build cache bind mounted into Rust and Python container builds:
+    /// the cargo registry and sccache artifacts of Rust builds, the uv
+    /// packages and Python interpreters of Python builds, and the pinned
+    /// downloads of both.
     pub fn container_build_cache_dir(&self) -> PathBuf {
         self.cache_dir().join("container_build")
     }

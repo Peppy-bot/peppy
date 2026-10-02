@@ -425,23 +425,39 @@ the same node.
 
 ### Build caches inside container builds
 
-Rust container builds reuse a shared cache across builds, without any
-per-node configuration. The daemon bind mounts `~/.peppy/cache/container_build`
-into the build at `/peppy-cache` and points the `%post` toolchain at it:
+Rust and Python container builds reuse a shared cache across builds, without
+any per-node configuration. The daemon bind mounts
+`~/.peppy/cache/container_build` into the build at `/peppy-cache` and points
+the `%post` toolchain at it.
 
-- The crates.io registry persists via `CARGO_HOME`, so dependencies are
-  downloaded once instead of on every build.
-- [sccache](https://github.com/mozilla/sccache) caches rustc invocations via
-  `RUSTC_WRAPPER`, so unchanged crates are not recompiled. The executable
-  ships inside `peppybot/rust-cargo-base`, so nothing needs to be installed
-  on the host, on Linux or macOS; the wrapper is activated only for defs
-  that bootstrap from that image.
-- `PEPPY_DOWNLOAD_CACHE` names `/peppy-cache/downloads`, a directory for the
-  files a `%post` downloads. No tool reads it on its own: a def that pins a
-  download by its sha256 looks the file up there under that checksum before
-  it downloads it, and stores what it downloaded there once the checksum
-  matches. A rebuild then reaches the network only for a pin it has not
-  seen yet.
+A Rust container build gets:
+
+- The crates.io registry in `cargo-home/`, via `CARGO_HOME`, so dependencies
+  are downloaded once instead of on every build.
+- [sccache](https://github.com/mozilla/sccache) caches rustc invocations in
+  `sccache-cache/`, via `RUSTC_WRAPPER` and `SCCACHE_DIR`, so unchanged
+  crates are not recompiled. The executable ships inside
+  `peppybot/rust-cargo-base`, so nothing needs to be installed on the host,
+  on Linux or macOS; the wrapper is activated only for defs that bootstrap
+  from that image.
+
+A Python container build gets:
+
+- The packages uv downloads and builds in `uv-cache/`, via `UV_CACHE_DIR`,
+  so a rebuild installs every package it already downloaded from the cache.
+- The interpreter archives `uv python install` downloads in `uv-python/`,
+  via `UV_PYTHON_CACHE_DIR`, so each Python version is downloaded once.
+- `UV_LINK_MODE=copy`: uv copies the files of the packages it installs from
+  its cache into the image. The cache is a bind mount, where uv cannot
+  hard-link into the image, and a copy keeps every file of the image
+  independent of the host cache.
+
+Both get `PEPPY_DOWNLOAD_CACHE`, which names `/peppy-cache/downloads`, a
+directory for the files a `%post` downloads. No tool reads it on its own: a
+def that pins a download by its sha256 looks the file up there under that
+checksum before it downloads it, and stores what it downloaded there once
+the checksum matches. A rebuild then reaches the network only for a pin it
+has not seen yet.
 
 A def tests for `PEPPY_DOWNLOAD_CACHE`, not for `/peppy-cache`: the variable
 is set only when the cache is bind mounted, while `/peppy-cache` also exists
@@ -475,29 +491,69 @@ binds cannot create their destination. The peppy base images
 enables caching automatically when a def file bootstraps from one of them.
 Any other base image must create the directory itself (`RUN mkdir
 /peppy-cache` in its Dockerfile) and the def file must mention
-`/peppy-cache` to opt in; such builds get registry and download caching,
-and sccache additionally requires the image to provide the executable on
-its PATH.
+`/peppy-cache` to opt in. Such a Rust build gets registry and download
+caching but not sccache, which the daemon activates only for defs that
+bootstrap from `peppybot/rust-cargo-base`. Such a Python build gets the uv
+package, interpreter and download caches.
 :::
 
-Caching is best effort: if any part of it is unavailable, the build runs
-exactly as it would without caching. Set `PEPPY_NO_CONTAINER_BUILD_CACHE=1`
-in the daemon's environment to disable caching entirely. When the def file
-mentions rustup (installing it in `%post` is incompatible with the
-`CARGO_HOME` override) or sets one of the managed variables itself, caching
-is skipped automatically for that build.
+Caching is best effort and never fails a build: when the main directory of
+the cache of a build (`cargo-home/` or `uv-cache/`) is unavailable, the build
+runs exactly as it would without caching, and when another part is
+unavailable, the build runs without that part only. Set
+`PEPPY_NO_CONTAINER_BUILD_CACHE=1` in the daemon's environment to disable
+caching entirely. The daemon also skips the cache for one build when the def
+file or `apptainer_build_extra_args` mention one of the markers of the
+build's language:
+
+| Language | Markers |
+|---|---|
+| Rust | `rustup` (installing it in `%post` is incompatible with the `CARGO_HOME` override), `CARGO_HOME`, `RUSTC_WRAPPER`, `SCCACHE_DIR`, `SCCACHE_SERVER_PORT` |
+| Python | `UV_CACHE_DIR`, `UV_PYTHON_CACHE_DIR`, `UV_LINK_MODE`, `--link-mode` (the flag of uv overrides `UV_LINK_MODE`) |
+
+A Python def that installs rustup, to build a Rust extension for example,
+keeps its uv cache: the Python cache sets no cargo variable.
+
+After each Python container build that uses the cache and succeeds, the
+daemon prunes `uv-cache/` with `uv cache prune`, run with the uv of the
+image that the build wrote. Each build stages the local projects of the node
+again (the node itself, and `.peppy/libs/peppylib` with its native
+extension), so uv builds them again and keeps every earlier build of them,
+which no later build uses. The prune removes these. It also removes each
+file or directory at the top of `uv-cache/` that is not a cache directory of
+uv, and each archive in `archive-v0/` that no cache entry names; other files
+in the cache directories of uv stay. A line of the build output gives the
+result, for example
+`Container build cache: uv cache pruned: Removed 15 files (6.8MiB)`.
+
+A failed prune does not fail the build. A build that fails or is cancelled
+does not prune. A build prunes only when no other Python container build
+uses the cache; else a later build that succeeds prunes it. A Python build
+that starts while another build prunes waits until the prune ends, and a line
+of the build output says so:
+`Container build cache: waiting for another build to prune the uv cache`.
+
+The prune runs the first `uv` on the `PATH` of the image that is not in a
+Python virtual environment, as `%post` does not see the virtual environment
+that a `%environment` puts on `PATH`. There is no prune when the image has
+no such `uv`, and the daemon stops a prune that runs for 30 seconds. uv also
+removes the entries of a cache layout that is not its own: nodes whose
+images have uv versions with different cache layouts remove each other's
+entries.
 
 :::note
 The cache lives at `~/.peppy/cache/container_build` and is safe to delete
-at any time; the next build recreates it. The sccache half prunes itself to
-sccache's size limit (10 GiB by default), while `cargo-home/` grows with
-every dependency version ever built and `downloads/` with every pin ever
-fetched; both are only reclaimed by deleting them.
-Because the directory is shared and writable, anything a `%post` writes
-there persists into later builds on the same machine, the same trust the
-build itself already runs with. On macOS, builds run inside the Lima VM:
-the cache directory is bind mounted through it and the environment rides
-the guest command, so container builds cache the same way as on Linux.
+at any time; the next build recreates it. `sccache-cache/` prunes itself to
+sccache's size limit (10 GiB by default). `cargo-home/` grows with every
+dependency version ever built, `uv-python/` with every Python version ever
+installed, and `downloads/` with every pin ever fetched; they are only
+reclaimed by deleting them. `uv-cache/` grows with every package version
+ever installed. Because the directory is shared and writable, what a
+`%post` writes there can persist into later builds on the same machine, the
+same trust the build itself already runs with. On macOS, builds run inside
+the Lima VM: the cache directory is bind mounted through it and the
+environment rides the guest command, so container builds cache the same way
+as on Linux.
 :::
 
 ## Extra runtime arguments

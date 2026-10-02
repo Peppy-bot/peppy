@@ -9,6 +9,6 @@ pub(crate) mod registry_auth;
 mod tests;
 
 pub use activity::{BuildActivity, BuildActivityProbe};
-pub use facade::Apptainer;
+pub use facade::{Apptainer, ApptainerCommand};
 #[cfg(target_os = "linux")]
 pub use facade::{SetupStatus, check_setup_status};

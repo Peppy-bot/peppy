@@ -8,7 +8,7 @@ mod apptainer;
 mod error;
 mod mount_source;
 
-pub use apptainer::Apptainer;
+pub use apptainer::{Apptainer, ApptainerCommand};
 pub use apptainer::{BuildActivity, BuildActivityProbe};
 #[cfg(target_os = "linux")]
 pub use apptainer::{SetupStatus, check_setup_status};

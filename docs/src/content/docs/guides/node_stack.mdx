@@ -57,6 +57,10 @@ The format is `<node_name>:<tag>` for a node that is already part of the node st
     :::caution
     [uv](https://docs.astral.sh/uv/getting-started/installation/) must be installed on your system. Without it, the build will fail with a `No such file or directory` error.
     :::
+
+    :::note
+    Container builds on the peppy Python base image cache the packages and the Python interpreter archives uv downloads automatically, so a rebuild downloads neither again; see [Build caching](/advanced_guides/containers/#build-caching).
+    :::
   </TabItem>
   <TabItem label="Rust">
     :::caution

@@ -14,11 +14,14 @@ use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
 use crate::build_io::{
-    FeedbackLine, FeedbackStream, announce, spawn_in_process_group, stream_child_output,
+    ChildWrapper, FeedbackLine, FeedbackStream, announce, spawn_in_process_group,
+    stream_child_output,
 };
-use crate::node_stack::container_build_cache;
+use crate::node_stack::container_build_cache::{
+    self, SoleUvCacheUse, UvCachePruneOutcome, UvCacheUse,
+};
 use config::node::PeppygenLanguage;
-use containers::BuildActivityProbe;
+use containers::{BuildActivity, BuildActivityProbe};
 
 /// The cargo settings every build runs with: a container build's `%post` and
 /// a process node's `build_cmd` alike, whatever the node's language, since a
@@ -157,7 +160,8 @@ fn failed_fetching_base_image(stderr_tail: &[String]) -> bool {
 /// working directory. Build output is streamed to both the CLI (via the feedback
 /// publisher) and the log file. On failure, the last
 /// [`crate::build_io::STDERR_TAIL_LINES`] lines of stderr are included in the
-/// error message.
+/// error message. When the build succeeds, a Python build with the uv cache
+/// prunes that cache (see [`prune_uv_cache`]).
 ///
 /// Returns the path of the resulting `.sif` file, left in `working_dir` for
 /// [`move_sif_to_storage`] to relocate.
@@ -209,9 +213,8 @@ pub(super) async fn build_container_image(
     let output_path = inputs.working_dir.join(&sif_name);
     let def_path = inputs.working_dir.join(inputs.def_file);
 
-    // Cache preparation is filesystem work (def read, layout creation, an
-    // ELF inspection, potentially a binary download), so it runs on the
-    // blocking pool like the other build I/O above. A def file that cannot
+    // Cache preparation is filesystem work (def read, layout creation), so
+    // it runs on the blocking pool like the other build I/O above. A def file that cannot
     // be read as UTF-8 skips caching outright, since the conflict scan
     // cannot see what such a build references; a missing def file surfaces
     // as an apptainer error below either way.
@@ -230,6 +233,13 @@ pub(super) async fn build_container_image(
     if let Some(cache) = &build_cache {
         announce(inputs.feedback_tx, &inputs.log_file, cache.summary.clone());
     }
+    // A Python build uses `uv-cache/` from here until it ends.
+    let uv_cache_use = match &build_cache {
+        Some(cache) if cache.uses_uv_cache() => {
+            Some(begin_uv_cache_use(&cache.host_dir, &inputs).await?)
+        }
+        _ => None,
+    };
 
     // On macOS the build runs inside a Lima VM, so SIGKILL'ing the host
     // `limactl shell` does not reach the guest `apptainer build` or its
@@ -270,11 +280,7 @@ pub(super) async fn build_container_image(
             cmd_builder = cmd_builder.apptainer_env(key, value);
         }
         if let Some(cache) = &build_cache {
-            cmd_builder = cmd_builder.bind(
-                &cache.host_dir.to_string_lossy(),
-                Some(container_build_cache::BIND_DEST),
-                None,
-            );
+            cmd_builder = bind_build_cache(cmd_builder, &cache.host_dir);
             for (key, value) in &cache.env {
                 cmd_builder = cmd_builder.apptainer_env(key, value);
             }
@@ -287,14 +293,8 @@ pub(super) async fn build_container_image(
         let std_cmd = cmd_builder
             .into_std_command()
             .map_err(|e| format!("Failed to build apptainer command: {}", e))?;
-
-        let mut cmd = tokio::process::Command::from(std_cmd);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.stdin(Stdio::null());
-
-        let child = spawn_in_process_group(cmd)
-            .map_err(|e| format!("Failed to spawn apptainer build: {}", e))?;
+        let child =
+            spawn_piped(std_cmd).map_err(|e| format!("Failed to spawn apptainer build: {}", e))?;
 
         // Activity progress: apptainer suppresses per-blob download progress
         // off-TTY, so a slow base-image pull (and the silent "Creating SIF file..."
@@ -330,30 +330,18 @@ pub(super) async fn build_container_image(
             Err(stream_err) => {
                 // A `--force` supersede SIGKILL'd + reaped the host child
                 // above; now reach into the VM and kill the guest process
-                // group too (no-op on Linux). Reuses the already-initialized
-                // facade. Runs on a blocking thread because the guest kill
-                // shells out to `limactl`.
+                // group too.
                 if inputs.cancel_token.is_cancelled()
                     && let Some(key) = build_key
                 {
-                    match tokio::task::spawn_blocking(move || {
-                        apptainer.kill_guest_process_group(&key)
-                    })
-                    .await
-                    {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => {
-                            debug!("Failed to kill guest process group on build cancellation: {e}")
-                        }
-                        Err(e) => debug!("Guest-kill task failed on build cancellation: {e}"),
-                    }
+                    kill_guest_process_group(apptainer, key).await;
                 }
                 return Err(stream_err);
             }
         };
 
         if status.success() {
-            return Ok(output_path);
+            break;
         }
 
         if attempt < CONTAINER_BUILD_ATTEMPTS
@@ -379,6 +367,221 @@ pub(super) async fn build_container_image(
             msg.push_str(&stderr_tail.join("\n"));
         }
         return Err(msg);
+    }
+
+    if let Some(uv_cache_use) = uv_cache_use {
+        prune_uv_cache(uv_cache_use, apptainer, &output_path, &inputs, build_key).await?;
+    }
+    Ok(output_path)
+}
+
+/// Kills the guest process group of the command that ran with
+/// `cancel_pgid(key)`: under Lima, a SIGKILL of the host `limactl shell`
+/// does not reach the guest apptainer or its children. A no-op on the native
+/// backend. Runs on a blocking thread because the guest kill shells out to
+/// `limactl`.
+async fn kill_guest_process_group(apptainer: containers::Apptainer, key: String) {
+    match tokio::task::spawn_blocking(move || apptainer.kill_guest_process_group(&key)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => debug!("Failed to kill guest process group: {e}"),
+        Err(e) => debug!("Guest-kill task failed: {e}"),
+    }
+}
+
+/// Binds the cache root at [`container_build_cache::BIND_DEST`]. The build
+/// and the prune of its uv cache bind it alike, so both see the cache at the
+/// same place.
+fn bind_build_cache<'a>(
+    cmd_builder: containers::ApptainerCommand<'a>,
+    cache_root: &Path,
+) -> containers::ApptainerCommand<'a> {
+    cmd_builder.bind(
+        &cache_root.to_string_lossy(),
+        Some(container_build_cache::BIND_DEST),
+        None,
+    )
+}
+
+/// Spawns `std_cmd` with its output piped and no input, as the leader of a
+/// process group (see [`spawn_in_process_group`]).
+fn spawn_piped(std_cmd: std::process::Command) -> std::io::Result<Box<dyn ChildWrapper>> {
+    let mut cmd = tokio::process::Command::from(std_cmd);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.stdin(Stdio::null());
+    spawn_in_process_group(cmd)
+}
+
+/// Starts the use of the uv cache under `cache_root` by a Python build (see
+/// [`UvCacheUse`]). While another build prunes the cache, the build waits,
+/// and a line says so: the line also starts the build idle clock again.
+async fn begin_uv_cache_use(
+    cache_root: &Path,
+    inputs: &ContainerBuildInputs<'_>,
+) -> std::result::Result<UvCacheUse, String> {
+    if let Some(uv_cache_use) = UvCacheUse::try_begin(cache_root) {
+        return Ok(uv_cache_use);
+    }
+    announce(
+        inputs.feedback_tx,
+        &inputs.log_file,
+        container_build_cache::prune_wait_line(),
+    );
+    tokio::select! {
+        uv_cache_use = UvCacheUse::begin(cache_root) => Ok(uv_cache_use),
+        _ = inputs.cancel_token.cancelled() => Err("build cancelled".to_string()),
+    }
+}
+
+/// Prunes `uv-cache/` after a Python build has written `image`, unless
+/// another build uses the cache, and reports the outcome as a line of build
+/// output (see [`UvCachePruneOutcome`]). A line also comes before the prune,
+/// which starts the build idle clock again.
+///
+/// The prune runs `uv cache prune` inside `image`, with the cache bound as
+/// for the build: the uv of the image is the uv that wrote the entries of
+/// this build. A uv removes the entries of a cache layout it does not know,
+/// such as the layout of another uv version, so a uv from elsewhere could
+/// remove what the build has just cached (see
+/// [`container_build_cache::uv_cache_prune_command`] for how the prune
+/// finds that uv). The daemon environment stays out of the container, so no
+/// `UV_*` variable of the host changes what uv does, and `--contain` keeps the
+/// home directory, `/tmp` and the working directory of the host out of the
+/// container. `--no-home` keeps the home directory
+/// of the image visible: the peppy Python base image keeps uv under
+/// `/root`, which is the home of a daemon that runs as root, and `--contain`
+/// alone puts an empty directory over it. With `--no-home`, apptainer
+/// cannot enter the home of a user that is not root, so `--cwd /` names
+/// where the prune starts.
+///
+/// A failed prune does not fail the build: this returns `Err` only when the
+/// build is cancelled while the prune runs.
+async fn prune_uv_cache(
+    uv_cache_use: UvCacheUse,
+    apptainer: containers::Apptainer,
+    image: &Path,
+    inputs: &ContainerBuildInputs<'_>,
+    build_key: Option<String>,
+) -> std::result::Result<(), String> {
+    let outcome = match uv_cache_use.end() {
+        Some(sole_use) => {
+            announce(
+                inputs.feedback_tx,
+                &inputs.log_file,
+                container_build_cache::prune_start_line(),
+            );
+            run_uv_cache_prune(&sole_use, apptainer, image, inputs, build_key).await?
+        }
+        None => UvCachePruneOutcome::InUseByAnotherBuild,
+    };
+    announce(inputs.feedback_tx, &inputs.log_file, outcome.line());
+    Ok(())
+}
+
+/// Runs the prune of [`prune_uv_cache`] with the sole use of the cache.
+async fn run_uv_cache_prune(
+    sole_use: &SoleUvCacheUse,
+    apptainer: containers::Apptainer,
+    image: &Path,
+    inputs: &ContainerBuildInputs<'_>,
+    build_key: Option<String>,
+) -> std::result::Result<UvCachePruneOutcome, String> {
+    let command = container_build_cache::uv_cache_prune_command();
+    let command: Vec<&str> = command.iter().map(String::as_str).collect();
+    let mut cmd_builder = apptainer
+        .exec(&image.to_string_lossy(), &command)
+        .clean_env()
+        .raw_flag("--contain")
+        .raw_flag("--no-home")
+        .raw_flag("--cwd")
+        .raw_flag("/")
+        .lima_shell_extra_args(inputs.lima_shell_extra_args);
+    cmd_builder = bind_build_cache(cmd_builder, sole_use.cache_root());
+    if let Some(key) = &build_key {
+        cmd_builder = cmd_builder.cancel_pgid(key);
+    }
+    let std_cmd = match cmd_builder.into_std_command() {
+        Ok(std_cmd) => std_cmd,
+        Err(e) => {
+            return Ok(UvCachePruneOutcome::Failed {
+                reason: format!("cannot build the apptainer command: {e}"),
+            });
+        }
+    };
+
+    let outcome = run_uv_cache_prune_child(
+        std_cmd,
+        tokio::time::sleep(container_build_cache::UV_CACHE_PRUNE_TIMEOUT),
+        container_build_cache::UV_CACHE_PRUNE_STOP_GRACE,
+        Arc::clone(&inputs.log_file),
+        inputs.cancel_token,
+    )
+    .await;
+    // The host process group of the prune is dead; under Lima, its guest
+    // process group can still run.
+    if matches!(outcome, Err(_) | Ok(UvCachePruneOutcome::TimedOut))
+        && let Some(key) = build_key
+    {
+        kill_guest_process_group(apptainer, key).await;
+    }
+    outcome
+}
+
+/// Runs the prune process `std_cmd` until it ends or `deadline` comes. Its
+/// lines go to `log_file` only. Returns `Err` when `cancel_token` fires.
+///
+/// At `deadline`, the process group of the prune gets a SIGTERM and
+/// `stop_grace` to stop, and then a SIGKILL. On a SIGTERM, apptainer stops
+/// uv, unmounts the image and removes a temporary sandbox of it, which a
+/// SIGKILL leaves behind.
+async fn run_uv_cache_prune_child(
+    std_cmd: std::process::Command,
+    deadline: impl Future<Output = ()>,
+    stop_grace: Duration,
+    log_file: Arc<StdMutex<File>>,
+    cancel_token: &CancellationToken,
+) -> std::result::Result<UvCachePruneOutcome, String> {
+    let child = match spawn_piped(std_cmd) {
+        Ok(child) => child,
+        Err(e) => {
+            return Ok(UvCachePruneOutcome::Failed {
+                reason: format!("cannot start the prune: {e}"),
+            });
+        }
+    };
+    let process_group = child.id();
+    // The receiver is dropped at once: `stream_child_output` writes the lines
+    // of the prune to the log, and nothing else reads them.
+    let (output_tx, _) = mpsc::unbounded_channel();
+    let mut run = std::pin::pin!(stream_child_output(
+        child,
+        BuildActivity::default,
+        &output_tx,
+        log_file,
+        true,
+        cancel_token,
+    ));
+    let ended = tokio::select! {
+        biased;
+        ended = run.as_mut() => ended,
+        () = deadline => {
+            if let Some(leader) = process_group {
+                crate::process_group::terminate_process_group(leader);
+            }
+            // The drop of `run` SIGKILLs what is still alive after the grace.
+            let stopped = tokio::time::timeout(stop_grace, run.as_mut()).await;
+            if let Ok(Err(cancelled)) = stopped
+                && cancel_token.is_cancelled()
+            {
+                return Err(cancelled);
+            }
+            return Ok(UvCachePruneOutcome::TimedOut);
+        }
+    };
+    match ended {
+        Ok((status, stderr_tail)) => Ok(UvCachePruneOutcome::of_run(status, &stderr_tail)),
+        Err(cancelled) if cancel_token.is_cancelled() => Err(cancelled),
+        Err(reason) => Ok(UvCachePruneOutcome::Failed { reason }),
     }
 }
 
@@ -625,6 +828,157 @@ mod tests {
         Arc::new(StdMutex::new(
             tempfile::tempfile().expect("tempfile should succeed"),
         ))
+    }
+
+    /// A `sh -c` command that stands in for the prune process.
+    fn shell(script: &str) -> std::process::Command {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    /// Runs `std_cmd` as a prune with `deadline`, `stop_grace` and
+    /// `cancel_token`, and returns its result and the build log it wrote.
+    async fn run_prune_child(
+        std_cmd: std::process::Command,
+        deadline: impl Future<Output = ()>,
+        stop_grace: Duration,
+        cancel_token: &CancellationToken,
+    ) -> (std::result::Result<UvCachePruneOutcome, String>, String) {
+        let log = tempfile::NamedTempFile::new().expect("create the build log");
+        let log_file = Arc::new(StdMutex::new(log.reopen().expect("open the build log")));
+        let result =
+            run_uv_cache_prune_child(std_cmd, deadline, stop_grace, log_file, cancel_token).await;
+        let log_text = std::fs::read_to_string(log.path()).expect("read the build log");
+        (result, log_text)
+    }
+
+    /// Bounds a hang only: the outcome never depends on how fast the host is.
+    const PRUNE_HANG_GUARD: Duration = Duration::from_secs(300);
+
+    /// A deadline that never comes within a test.
+    fn no_deadline() -> tokio::time::Sleep {
+        tokio::time::sleep(PRUNE_HANG_GUARD)
+    }
+
+    /// A deadline that comes once `marker` exists: a prune child that writes
+    /// it has set up its signal handling.
+    async fn deadline_once_written(marker: PathBuf) {
+        while !marker.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_prune_that_ends_well_gives_the_last_line_of_uv() {
+        let (result, log) = run_prune_child(
+            shell("echo 'Pruning cache at: /peppy-cache/uv-cache' >&2; echo 'Removed 1 file' >&2"),
+            no_deadline(),
+            PRUNE_HANG_GUARD,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            Ok(UvCachePruneOutcome::Pruned {
+                summary: Some("Removed 1 file".to_string())
+            })
+        );
+        assert!(
+            log.contains("[stderr] Removed 1 file"),
+            "the lines of the prune must reach the build log, got:\n{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prune_that_fails_gives_its_reason_and_no_error() {
+        let (result, _) = run_prune_child(
+            shell("echo 'error: Permission denied (os error 13)' >&2; exit 2"),
+            no_deadline(),
+            PRUNE_HANG_GUARD,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            Ok(UvCachePruneOutcome::Failed {
+                reason: "error: Permission denied (os error 13)".to_string()
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prune_that_cannot_start_fails_with_no_error() {
+        let (result, _) = run_prune_child(
+            std::process::Command::new("peppy-test-no-such-prune"),
+            no_deadline(),
+            PRUNE_HANG_GUARD,
+            &CancellationToken::new(),
+        )
+        .await;
+        let Ok(UvCachePruneOutcome::Failed { reason }) = result else {
+            panic!("a prune that cannot start must fail, got {result:?}");
+        };
+        assert!(
+            reason.starts_with("cannot start the prune:"),
+            "got {reason}"
+        );
+    }
+
+    /// A prune that never ends on its own gets a SIGTERM at its deadline,
+    /// which it can stop on.
+    #[tokio::test]
+    async fn a_prune_past_its_deadline_gets_a_sigterm_and_times_out() {
+        let dir = tempfile::tempdir().expect("tempdir should succeed");
+        let ready = dir.path().join("ready");
+        let mut prune =
+            shell("trap 'echo stopped on SIGTERM >&2; exit 0' TERM; : > \"$0\"; sleep 1000 & wait");
+        prune.arg(&ready);
+        let (result, log) = run_prune_child(
+            prune,
+            deadline_once_written(ready),
+            PRUNE_HANG_GUARD,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(result, Ok(UvCachePruneOutcome::TimedOut));
+        assert!(
+            log.contains("[stderr] stopped on SIGTERM"),
+            "the prune must get a SIGTERM before a SIGKILL, got:\n{log}"
+        );
+    }
+
+    /// A prune that ignores the SIGTERM gets a SIGKILL after its grace.
+    #[tokio::test]
+    async fn a_prune_that_ignores_the_sigterm_is_killed_after_its_grace() {
+        let dir = tempfile::tempdir().expect("tempdir should succeed");
+        let ready = dir.path().join("ready");
+        let mut prune = shell("trap '' TERM; : > \"$0\"; sleep 1000 & wait");
+        prune.arg(&ready);
+        let (result, _) = run_prune_child(
+            prune,
+            deadline_once_written(ready),
+            Duration::ZERO,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(result, Ok(UvCachePruneOutcome::TimedOut));
+    }
+
+    /// A cancel during the prune cancels the build, as a cancel during the
+    /// build itself does.
+    #[tokio::test]
+    async fn a_cancel_during_the_prune_cancels_the_build() {
+        let cancel_token = CancellationToken::new();
+        cancel_token.cancel();
+        let (result, _) = run_prune_child(
+            shell("exec sleep 1000"),
+            no_deadline(),
+            PRUNE_HANG_GUARD,
+            &cancel_token,
+        )
+        .await;
+        assert_eq!(result, Err("build cancelled".to_string()));
     }
 
     #[tokio::test]
