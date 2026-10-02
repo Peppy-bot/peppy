@@ -76,6 +76,21 @@ struct Robot {
     fills: IndexMap<String, Fill>,
 }
 
+impl Robot {
+    /// The targets the robot fills any number of times with a member named
+    /// `name`, in fill order. A target filled once keeps no member names, so
+    /// it is never one of them.
+    fn targets_with_member(&self, name: &str) -> Vec<String> {
+        self.fills
+            .iter()
+            .filter(
+                |(_, fill)| matches!(fill, Fill::Many { named, .. } if named.contains_key(name)),
+            )
+            .map(|(target, _)| target.clone())
+            .collect()
+    }
+}
+
 /// The fleet as the source reports it, grouped by robot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Fleet {
@@ -99,13 +114,7 @@ pub(crate) enum RouteRefusal {
         /// The robots of the stack that fill the target.
         robots_with: Vec<String>,
     },
-    NoSuchMember {
-        robot: String,
-        target: String,
-        argument: String,
-        name: String,
-        names: Vec<String>,
-    },
+    NoSuchMember(Box<NoSuchMember>),
     /// A call on a target filled any number of times named no member.
     MemberUnnamed {
         robot: String,
@@ -151,17 +160,7 @@ impl std::fmt::Display for RouteRefusal {
                     robots => write!(f, "; the robots with a `{target}` are {}", quoted(robots)),
                 }
             }
-            Self::NoSuchMember {
-                robot,
-                target,
-                argument,
-                name,
-                names,
-            } => write!(
-                f,
-                "robot `{robot}` has no `{target}` named `{name}` (`{argument}`); it has {}",
-                quoted(names)
-            ),
+            Self::NoSuchMember(refusal) => write!(f, "{refusal}"),
             Self::MemberUnnamed {
                 robot,
                 target,
@@ -185,6 +184,45 @@ impl std::fmt::Display for RouteRefusal {
                 instances.len(),
                 quoted(instances)
             ),
+        }
+    }
+}
+
+/// Payload for [`RouteRefusal::NoSuchMember`]: a call on a target filled any
+/// number of times named a member the robot does not fill it with. Boxed in
+/// the variant so its fields do not inflate `RouteRefusal` past the
+/// `clippy::result_large_err` threshold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NoSuchMember {
+    robot: String,
+    target: String,
+    argument: String,
+    name: String,
+    /// The members the robot fills `target` with.
+    names: Vec<String>,
+    /// The other targets the robot fills with a member named `name`, in the
+    /// robot's fill order.
+    targets_with: Vec<String>,
+}
+
+impl std::fmt::Display for NoSuchMember {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            robot,
+            target,
+            argument,
+            name,
+            names,
+            targets_with,
+        } = self;
+        write!(
+            f,
+            "robot `{robot}` has no `{target}` named `{name}` (`{argument}`); it has {}",
+            quoted(names)
+        )?;
+        match targets_with.as_slice() {
+            [] => Ok(()),
+            targets => write!(f, "; its `{name}` fills {}", quoted(targets)),
         }
     }
 }
@@ -315,16 +353,16 @@ impl Fleet {
         match (fill, name) {
             (Fill::Once(address), _) => Ok(address.clone()),
             (Fill::Many { argument, named }, Some(name)) => {
-                named
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| RouteRefusal::NoSuchMember {
+                named.get(name).cloned().ok_or_else(|| {
+                    RouteRefusal::NoSuchMember(Box::new(NoSuchMember {
                         robot: robot.to_string(),
                         target: target.to_string(),
                         argument: argument.clone(),
                         name: name.to_string(),
                         names: named.keys().cloned().collect(),
-                    })
+                        targets_with: entry.targets_with_member(name),
+                    }))
+                })
             }
             (Fill::Many { argument, named }, None) => Err(RouteRefusal::MemberUnnamed {
                 robot: robot.to_string(),
@@ -740,6 +778,76 @@ mod tests {
                 .to_string(),
             "`alpha` is not a robot of this stack, which has no robot; `peppy stack join \
              OPTION:NAME` adds one"
+        );
+    }
+
+    /// An RGBD camera: the robot fills its depth targets with `chest`, and
+    /// its `camera` target with the wrist cameras alone.
+    #[test]
+    fn a_refused_member_names_the_other_targets_the_robot_fills_with_its_name() {
+        let arguments = HashMap::from([
+            ("postures".to_string(), None),
+            ("camera".to_string(), Some("camera".to_string())),
+            ("depth_camera".to_string(), Some("camera".to_string())),
+            ("camera_profile".to_string(), Some("camera".to_string())),
+            ("camera_geometry".to_string(), Some("camera".to_string())),
+        ]);
+        let fleet = Fleet::group(
+            vec![
+                // A target filled once keeps no member names, so this member
+                // named `chest` is never listed.
+                member("postures", "alpha_backbone", Some("alpha"), "chest"),
+                member("camera", "alpha_wrist_left", Some("alpha"), "wrist_left"),
+                member("camera", "alpha_wrist_right", Some("alpha"), "wrist_right"),
+                member("depth_camera", "alpha_chest", Some("alpha"), "chest"),
+                member(
+                    "camera_profile",
+                    "alpha_chest_profile",
+                    Some("alpha"),
+                    "chest",
+                ),
+                member(
+                    "camera_geometry",
+                    "alpha_wrist_left_geometry",
+                    Some("alpha"),
+                    "wrist_left",
+                ),
+                member(
+                    "camera_geometry",
+                    "alpha_chest_geometry",
+                    Some("alpha"),
+                    "chest",
+                ),
+                member("depth_camera", "bravo_head", Some("bravo"), "head"),
+            ],
+            &arguments,
+        );
+        assert!(fleet.problems().is_empty());
+        assert_eq!(
+            fleet
+                .route("alpha", "camera", Some("chest"))
+                .unwrap_err()
+                .to_string(),
+            "robot `alpha` has no `camera` named `chest` (`camera`); it has `wrist_left`, \
+             `wrist_right`; its `chest` fills `depth_camera`, `camera_profile`, `camera_geometry`"
+        );
+        assert_eq!(
+            fleet
+                .route("alpha", "depth_camera", Some("wrist_left"))
+                .unwrap_err()
+                .to_string(),
+            "robot `alpha` has no `depth_camera` named `wrist_left` (`camera`); it has `chest`; \
+             its `wrist_left` fills `camera`, `camera_geometry`"
+        );
+        // Only the robot's own targets are named: `head` fills a target of
+        // `bravo`, not of `alpha`.
+        assert_eq!(
+            fleet
+                .route("alpha", "camera", Some("head"))
+                .unwrap_err()
+                .to_string(),
+            "robot `alpha` has no `camera` named `head` (`camera`); it has `wrist_left`, \
+             `wrist_right`"
         );
     }
 
