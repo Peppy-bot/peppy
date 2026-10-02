@@ -573,8 +573,9 @@ class DevBuild(unittest.TestCase):
 
     def peppy_ci(self, heads, runs_by_commit, artifacts_by_run):
         """Stand-ins for the reads of peppy: the branch heads of each look in
-        turn, and the GitHub API with the CI runs of each commit and the dev
-        build artifacts, (id, expired) pairs, of each run."""
+        turn, and the GitHub API with the CI runs of each commit on each
+        branch and the dev build artifacts, (id, expired) pairs, of each
+        run."""
         return (
             patch.object(resolve, "ls_remote_heads", side_effect=heads),
             FakePeppyApi(runs_by_commit, artifacts_by_run),
@@ -585,7 +586,11 @@ class DevBuild(unittest.TestCase):
     ):
         heads, api = self.peppy_ci(
             [{SET_NAME: PEPPY_BRANCH_COMMIT, "dev": PEPPY_DEV_COMMIT}],
-            {PEPPY_BRANCH_COMMIT: runs_response((7, "completed", "success"))},
+            {
+                PEPPY_BRANCH_COMMIT: {
+                    SET_NAME: runs_response((7, "completed", "success"))
+                }
+            },
             {7: [(70, False)]},
         )
         with (
@@ -609,7 +614,7 @@ class DevBuild(unittest.TestCase):
     def test_a_job_that_installs_a_pending_dev_build_fails_with_the_way_on(self):
         heads, api = self.peppy_ci(
             [{SET_NAME: PEPPY_BRANCH_COMMIT, "dev": PEPPY_DEV_COMMIT}],
-            {PEPPY_BRANCH_COMMIT: runs_response((7, "in_progress", None))},
+            {PEPPY_BRANCH_COMMIT: {SET_NAME: runs_response((7, "in_progress", None))}},
             {7: []},
         )
         with (
@@ -641,8 +646,10 @@ class DevBuild(unittest.TestCase):
                 {SET_NAME: pushed, "dev": PEPPY_DEV_COMMIT},
             ],
             {
-                PEPPY_BRANCH_COMMIT: runs_response((7, "completed", "cancelled")),
-                pushed: runs_response((8, "in_progress", None)),
+                PEPPY_BRANCH_COMMIT: {
+                    SET_NAME: runs_response((7, "completed", "cancelled"))
+                },
+                pushed: {SET_NAME: runs_response((8, "in_progress", None))},
             },
             {7: [], 8: [(80, False)]},
         )
@@ -662,15 +669,40 @@ class DevBuild(unittest.TestCase):
         )
 
     def test_a_head_without_a_ci_run_reads_no_artifacts(self):
-        heads, api = self.peppy_ci(
-            [{"dev": PEPPY_DEV_COMMIT}], {PEPPY_DEV_COMMIT: runs_response()}, {}
-        )
+        heads, api = self.peppy_ci([{"dev": PEPPY_DEV_COMMIT}], {}, {})
         with heads:
             found = resolve.look_for_dev_build(None, api)
         self.assertEqual(
             found,
             resolve.DevBuildPending(
                 PEPPY_DEV_COMMIT, "no CI run exists yet for the head of `dev`"
+            ),
+        )
+
+    def test_the_build_is_looked_for_in_the_runs_of_the_branch_alone(self):
+        # A release gives `main` the commit at the head of `dev`, so that
+        # commit has a run on each branch. The newer run, on `main`, has no
+        # dev build: install-archive builds one there only when the install
+        # inputs changed.
+        heads, api = self.peppy_ci(
+            [{"dev": PEPPY_DEV_COMMIT}],
+            {
+                PEPPY_DEV_COMMIT: {
+                    "dev": runs_response((7, "completed", "success")),
+                    "main": runs_response((8, "completed", "success")),
+                }
+            },
+            {7: [(70, False)], 8: []},
+        )
+        with heads:
+            found = resolve.look_for_dev_build(None, api)
+        self.assertEqual(
+            found,
+            resolve.UploadedDevBuild(
+                "dev",
+                PEPPY_DEV_COMMIT,
+                ci_run("completed", "success", run_id=7),
+                dev_build_artifacts((70, False))[0],
             ),
         )
 
@@ -688,7 +720,8 @@ class DevBuild(unittest.TestCase):
 
 class FakePeppyApi:
     """A stand-in for the GitHubReader of a job, which answers the two reads
-    of a look: the CI runs of a commit, and the dev build artifacts of a
+    of a look: the CI runs of a commit, on the branch the query names or on
+    every branch as GitHub gives them, and the dev build artifacts of a
     run."""
 
     RUNS_PATH = (
@@ -705,7 +738,15 @@ class FakePeppyApi:
 
     def get_json(self, path, query):
         if path == self.RUNS_PATH:
-            return self.runs_by_commit[query["head_sha"]]
+            by_branch = self.runs_by_commit.get(query["head_sha"], {})
+            if "branch" in query:
+                return by_branch.get(query["branch"], runs_response())
+            runs = [
+                run
+                for response in by_branch.values()
+                for run in response["workflow_runs"]
+            ]
+            return {"total_count": len(runs), "workflow_runs": runs}
         run_id = int(self.ARTIFACTS_PATH.fullmatch(path).group(1))
         return artifacts_response(query["name"], *self.artifacts_by_run[run_id])
 
