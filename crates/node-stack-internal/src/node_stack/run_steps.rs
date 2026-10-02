@@ -22,7 +22,7 @@ use tracing::{debug, warn};
 use tokio::sync::mpsc;
 
 use crate::archive::extract_tar_zst;
-use crate::build_io::{FeedbackLine, FeedbackStream, write_feedback_log_line};
+use crate::build_io::{FeedbackLine, announce_warning};
 
 /// Per-process counter used to name temporary runtime config files uniquely.
 ///
@@ -586,11 +586,7 @@ pub(super) fn ensure_bind_sources(
         }
         let warning = containers::auto_created_warning(&bind.src);
         warn!("{}", warning);
-        write_feedback_log_line(feedback_sink, FeedbackStream::Warning, &warning);
-        let _ = feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Warning,
-            line: warning,
-        });
+        announce_warning(feedback_tx, feedback_sink, warning);
     }
     Ok(())
 }
@@ -731,6 +727,7 @@ pub(super) fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::build_io::FeedbackStream;
 
     fn make_log_sink() -> (Arc<StdMutex<File>>, tempfile::NamedTempFile) {
         let tmp = tempfile::NamedTempFile::new().expect("tempfile");

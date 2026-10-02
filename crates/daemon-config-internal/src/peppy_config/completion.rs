@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use super::{
     API_FIELD_SNIPPET, CORE_NODE_NAME_SECTION_SNIPPET, DAEMON_GRACE_FIELD_SNIPPET,
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET,
-    LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, MANAGED_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET,
-    SHUTDOWN_GRACE_FIELD_SNIPPET, STANDARD_BUFFER_FIELD_SNIPPET,
+    LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, MANAGED_SECTION_SNIPPET, PYPI_MIRROR_SECTION_SNIPPET,
+    RESOURCE_SERVERS_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET, STANDARD_BUFFER_FIELD_SNIPPET,
     SUBSCRIBER_BUFFERS_SECTION_SNIPPET, ZENOH_SECTION_SNIPPET,
 };
 
@@ -113,6 +113,14 @@ const SECTIONS: &[EntrySpec] = &[
                 children: &[],
             },
         ],
+    },
+    // Spelled `pypi_mirror: null,` in the template, which counts as present
+    // like `core_node_name` above.
+    EntrySpec {
+        key: "pypi_mirror",
+        snippet: PYPI_MIRROR_SECTION_SNIPPET,
+        alternatives: &[],
+        children: &[],
     },
     EntrySpec {
         key: "resource_servers",
@@ -657,8 +665,8 @@ pub(super) fn leaf_paths(value: &Value) -> Vec<String> {
 mod tests {
     use super::super::{
         DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
-        DEFAULT_PEPPY_CONFIG_TEMPLATE, DEFAULT_SHUTDOWN_GRACE_SECS, PEPPY_CONFIG_FILE, PeppyConfig,
-        SHUTDOWN_GRACE_FIELD_SNIPPET, TEMPLATE_HEADER,
+        DEFAULT_PEPPY_CONFIG_TEMPLATE, DEFAULT_SHUTDOWN_GRACE_SECS, PEPPY_CONFIG_FILE,
+        PYPI_MIRROR_SECTION_SNIPPET, PeppyConfig, SHUTDOWN_GRACE_FIELD_SNIPPET, TEMPLATE_HEADER,
     };
     use super::*;
 
@@ -821,6 +829,7 @@ mod tests {
             completion.added_paths,
             [
                 "core_node_name",
+                "pypi_mirror",
                 "resource_servers",
                 "zenoh.managed.subscriber_buffers",
                 "lifecycle.shutdown_grace_secs",
@@ -1002,15 +1011,55 @@ mod tests {
         // byte of the user's file untouched.
         let close = content.rfind('}').unwrap();
         let expected = format!(
-            "{}\n{}\n{}\n{}\n{}{}",
+            "{}\n{}\n{}\n{}\n{}\n{}{}",
             &content[..close],
             super::super::CORE_NODE_NAME_SECTION_SNIPPET,
             super::super::ZENOH_SECTION_SNIPPET,
             super::super::LIFECYCLE_SECTION_SNIPPET,
+            PYPI_MIRROR_SECTION_SNIPPET,
             super::super::RESOURCE_SERVERS_SECTION_SNIPPET,
             &content[close..]
         );
         assert_eq!(completed, expected);
+    }
+
+    /// A file written before `pypi_mirror` existed gains the key with its
+    /// comment in front of the root's closing brace, and every other byte
+    /// stays where it was.
+    #[test]
+    fn missing_pypi_mirror_is_added_with_its_comment() {
+        let content = DEFAULT_PEPPY_CONFIG_TEMPLATE.replacen(
+            &format!("{PYPI_MIRROR_SECTION_SNIPPET}\n"),
+            "",
+            1,
+        );
+        assert!(!content.contains("pypi_mirror"));
+
+        let completion = complete_config_content(&content).expect("pypi_mirror is missing");
+
+        assert_eq!(completion.added_paths, ["pypi_mirror"]);
+        let close = content.rfind('}').unwrap();
+        assert_eq!(
+            completion.content,
+            format!(
+                "{}\n{}{}",
+                &content[..close],
+                PYPI_MIRROR_SECTION_SNIPPET,
+                &content[close..]
+            )
+        );
+        assert_eq!(parse(&completion.content), PeppyConfig::default());
+        assert!(complete_config_content(&completion.content).is_none());
+    }
+
+    #[test]
+    fn explicit_null_pypi_mirror_counts_as_present() {
+        let completed = complete_config_content("{ pypi_mirror: null }")
+            .expect("every other section missing")
+            .content;
+        assert_eq!(parse(&completed), PeppyConfig::default());
+        assert_eq!(completed.matches("pypi_mirror:").count(), 1);
+        assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]

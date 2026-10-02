@@ -13,6 +13,7 @@ use core_node_api::{
     SerializedNode,
 };
 use daemon_config::consts::PeppyDirs;
+use daemon_config::peppy_config::PackagesBaseUrl;
 use tokio::process::Child;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -28,6 +29,7 @@ use super::build_steps::{
     ContainerBuildInputs, archive_dir_to_storage, build_container_image, move_sif_to_storage,
     run_build_cmd,
 };
+use super::pypi_mirror;
 use super::run_steps::{
     SpawnCommand, SpawnContainerInputs, build_built_in_command, build_container_command,
     build_process_command, create_instance_dir, extract_node_archive, kill_and_collect_error,
@@ -224,6 +226,10 @@ pub struct BuildContext<'a> {
     /// When set, an artifact already in storage for the staged tree's
     /// fingerprint is ignored and this build's result replaces it.
     pub rebuild: bool,
+    /// The PyPI mirror a Python build downloads the PyPI files of its
+    /// `uv.lock` from, or `None` for PyPI itself (`pypi_mirror` in
+    /// `peppy_config.json5`). Other nodes ignore it.
+    pub pypi_mirror: Option<&'a PackagesBaseUrl>,
 }
 
 /// What [`NodeEntity::build`] snapshots under its Phase 1 write lock, so the
@@ -730,6 +736,47 @@ impl NodeEntity {
         };
         announce(ctx.feedback_tx, &ctx.log_file, line);
 
+        // The staged locks are rewritten after the fingerprint was taken, so
+        // a build reuses or replaces the same artifact with and without a
+        // mirror. Container and process nodes both build from the staged
+        // tree, so both download from the mirror.
+        let mirror_feedback = pypi_mirror::BuildFeedback {
+            feedback_tx: ctx.feedback_tx,
+            log_file: &ctx.log_file,
+        };
+        let rewritten_locks = match ctx.pypi_mirror {
+            Some(mirror) if snapshot.language == PeppygenLanguage::Python => {
+                pypi_mirror::apply(ctx.working_dir, mirror, &mirror_feedback, &ctx.cancel_token)
+                    .await
+            }
+            _ => pypi_mirror::RewrittenLocks::none(),
+        };
+        // A build cancelled before it starts its build (during the mirror
+        // check, say) stops here instead of starting a child only to kill it.
+        if ctx.cancel_token.is_cancelled() {
+            rewritten_locks.restore(&mirror_feedback).await;
+            return Err(snapshot.build_failed("build cancelled".to_string()));
+        }
+
+        let published = Self::build_and_publish(snapshot, ctx, kind, slot.path).await;
+        // A failed build puts the staged locks back: a cancelled build hands
+        // its staged tree to the next build of the node, which must
+        // fingerprint the tree as it was staged. A build that succeeds keeps
+        // the rewritten locks, and its artifact holds them.
+        if published.is_err() {
+            rewritten_locks.restore(&mirror_feedback).await;
+        }
+        published
+    }
+
+    /// Builds the artifact of the snapshot in the staged working dir and
+    /// publishes it at `destination`, the slot the build resolved.
+    async fn build_and_publish(
+        snapshot: &BuildSnapshot,
+        ctx: &BuildContext<'_>,
+        kind: ArtifactKind,
+        destination: PathBuf,
+    ) -> Result<PathBuf> {
         // A container build hands back the image it wrote; a process build
         // leaves its output in the working dir, which is archived whole.
         let built_image = match &snapshot.container {
@@ -759,7 +806,7 @@ impl NodeEntity {
                 })
                 .await
                 .map(Some)
-                .map_err(|reason| snapshot.build_failed(reason))?
+                .map_err(|reason| snapshot.build_failed(reason))
             }
             None => {
                 // Process node: run build_cmd inside the working dir.
@@ -772,10 +819,11 @@ impl NodeEntity {
                     &ctx.cancel_token,
                 )
                 .await
-                .map_err(|reason| snapshot.build_failed(format!("build_cmd failed: {reason}")))?;
-                None
+                .map(|()| None)
+                .map_err(|reason| snapshot.build_failed(format!("build_cmd failed: {reason}")))
             }
         };
+        let built_image = built_image?;
 
         // Publishing is blocking I/O (tar+zstd or fs::copy on potentially
         // multi-GB images), so it runs via `spawn_blocking` off the tokio
@@ -783,7 +831,6 @@ impl NodeEntity {
         // parking_lot guard is never held across blocking I/O. Pruning runs
         // after the publish so storage keeps this build's artifact only.
         let working_dir = ctx.working_dir.to_path_buf();
-        let destination = slot.path;
         tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
             let published = match &built_image {
                 Some(sif_source) => move_sif_to_storage(sif_source, &destination)?,
@@ -1743,6 +1790,7 @@ mod tests {
                 env_vars: &[],
                 cancel_token: CancellationToken::new(),
                 rebuild: false,
+                pypi_mirror: None,
             },
         )
         .await

@@ -74,6 +74,9 @@ tokio = { version = "1", features = ["full", "test-util"] }
 rstest = { workspace = true }
 httptest = "0.16.3"
 tracing-subscriber = "0.3"
+# `PackagesBaseUrl::loopback_http_for_tests`: the PyPI mirror of the build
+# tests is an `httptest` server on loopback.
+daemon-config = { workspace = true, features = ["test-support"] }
 
 [features]
 container_e2e = []

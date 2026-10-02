@@ -24,7 +24,9 @@
 //!
 //! Construction is explicit: [`NodeStack::new`] takes the root config, an
 //! optional root instance id, and the root path; [`NodeStack::with_shutdown_grace`]
-//! is the builder knob for the cooperative-shutdown grace period. The crate
+//! is the builder knob for the cooperative-shutdown grace period, and
+//! [`NodeStack::with_pypi_mirror`] the one for the PyPI mirror of Python
+//! builds. The crate
 //! reads no environment variables and performs no lazy global init. It does
 //! keep two process-wide monotonic counters (documented at their definitions
 //! in `node_stack::entity` and `node_stack::run_steps`); both are intentional

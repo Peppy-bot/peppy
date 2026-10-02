@@ -6,6 +6,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use config::runtime::Name;
+use daemon_config::peppy_config::PackagesBaseUrl;
+use httpmock::Method::HEAD;
+use httpmock::MockServer;
 use node_stack::{
     Artifact, BuildContext, CACHED_BUILD_REUSE_PREFIX, InstanceState, NodeEntity, NodeStack,
     NodeStackError, NodeStage, WorkingDirGuard,
@@ -445,6 +448,7 @@ async fn concurrent_builds_are_rejected_immediately() {
                     env_vars: &[],
                     cancel_token: CancellationToken::new(),
                     rebuild: false,
+                    pypi_mirror: None,
                 },
             )
             .await
@@ -468,6 +472,7 @@ async fn concurrent_builds_are_rejected_immediately() {
             env_vars: &[],
             cancel_token: CancellationToken::new(),
             rebuild: false,
+            pypi_mirror: None,
         },
     )
     .await;
@@ -501,12 +506,19 @@ async fn concurrent_builds_are_rejected_immediately() {
 // Build with build_cmd: Added → Building → Built (or Building → Added on failure)
 // ===========================================================================
 
-/// Returns a sensor config whose `execution.build_cmd` runs the given shell snippet.
+/// Returns a Rust sensor config whose `execution.build_cmd` runs the given
+/// shell snippet.
+fn sensor_config_with_build_cmd(build_cmd_shell: &str) -> config::node::NodeConfig {
+    sensor_config_in_language("rust", build_cmd_shell)
+}
+
+/// Returns a sensor config in `language` whose `execution.build_cmd` runs
+/// the given shell snippet.
 ///
 /// Builds the config programmatically (rather than format!-ing JSON) so the
 /// shell snippet can contain quotes, backslashes, and braces without breaking
 /// the JSON5 parser.
-fn sensor_config_with_build_cmd(build_cmd_shell: &str) -> config::node::NodeConfig {
+fn sensor_config_in_language(language: &str, build_cmd_shell: &str) -> config::node::NodeConfig {
     // Embed the snippet via serde_json so any special characters are escaped
     // correctly into a JSON string literal.
     let escaped_snippet = serde_json5::to_string(&build_cmd_shell.to_string())
@@ -526,7 +538,7 @@ fn sensor_config_with_build_cmd(build_cmd_shell: &str) -> config::node::NodeConf
                 }}
             }},
             execution: {{
-                language: "rust",
+                language: "{language}",
                 build_cmd: ["sh", "-c", {snippet}],
                 run_cmd: ["sensor"]
             }}
@@ -605,14 +617,41 @@ fn build_count(counter: &std::path::Path) -> usize {
 /// and drives the real `NodeEntity::build` over the harness's working dir,
 /// returning the published artifact.
 async fn build_sensor(h: &BuildHarness, build_cmd_shell: &str, rebuild: bool) -> PathBuf {
+    build_sensor_from(
+        h,
+        sensor_config_with_build_cmd(build_cmd_shell),
+        rebuild,
+        None,
+    )
+    .await
+}
+
+/// [`build_sensor`] for any `sensor:v1` config, with a PyPI mirror.
+async fn build_sensor_from(
+    h: &BuildHarness,
+    config: config::node::NodeConfig,
+    rebuild: bool,
+    pypi_mirror: Option<&PackagesBaseUrl>,
+) -> PathBuf {
+    try_build_sensor_from(h, config, rebuild, pypi_mirror, CancellationToken::new())
+        .await
+        .expect("build should succeed")
+}
+
+/// [`build_sensor_from`] for a build that may fail. `NodeStackError` is the
+/// error of `NodeEntity::build`, which the library allows to be large.
+#[allow(clippy::result_large_err)]
+async fn try_build_sensor_from(
+    h: &BuildHarness,
+    config: config::node::NodeConfig,
+    rebuild: bool,
+    pypi_mirror: Option<&PackagesBaseUrl>,
+    cancel_token: CancellationToken,
+) -> Result<PathBuf, NodeStackError> {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
     stack
-        .push_config(
-            sensor_config_with_build_cmd(build_cmd_shell),
-            false,
-            &config_path,
-        )
+        .push_config(config, false, &config_path)
         .expect("push_config should succeed");
     let handle = stack.find("sensor", "v1").expect("entity should exist");
     NodeEntity::build(
@@ -623,12 +662,32 @@ async fn build_sensor(h: &BuildHarness, build_cmd_shell: &str, rebuild: bool) ->
             feedback_tx: &h.feedback_tx,
             log_file: Arc::clone(&h.log_file),
             env_vars: &[],
-            cancel_token: CancellationToken::new(),
+            cancel_token,
             rebuild,
+            pypi_mirror,
         },
     )
     .await
-    .expect("build should succeed")
+}
+
+/// The text of the file at `path`, relative to the archived tree, in the
+/// `.tar.zst` archive of a process build, or `None` when it has no such file.
+fn archived_text(archive: &std::path::Path, path: &str) -> Option<String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(archive).expect("open archive");
+    let decoder = zstd::stream::read::Decoder::new(file).expect("zstd decoder");
+    let mut tar = tar::Archive::new(decoder);
+    for entry in tar.entries().expect("tar entries") {
+        let mut entry = entry.expect("tar entry");
+        let entry_path = entry.path().expect("entry path").into_owned();
+        if entry_path.strip_prefix(".").unwrap_or(&entry_path) == std::path::Path::new(path) {
+            let mut text = String::new();
+            entry.read_to_string(&mut text).expect("read archived file");
+            return Some(text);
+        }
+    }
+    None
 }
 
 fn assert_keyed_artifact_path(
@@ -680,6 +739,7 @@ async fn build_runs_add_cmd_for_process_node() {
             env_vars: &[],
             cancel_token: CancellationToken::new(),
             rebuild: false,
+            pypi_mirror: None,
         },
     )
     .await
@@ -696,21 +756,8 @@ async fn build_runs_add_cmd_for_process_node() {
     assert_keyed_artifact_path(&archive, &h.peppy_dirs);
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 
-    // Decode the archive and look for the marker.
-    let f = std::fs::File::open(&archive).expect("open archive");
-    let dec = zstd::stream::read::Decoder::new(f).expect("zstd decoder");
-    let mut tar = tar::Archive::new(dec);
-    let mut found = false;
-    for entry in tar.entries().expect("tar entries") {
-        let entry = entry.expect("tar entry");
-        let path = entry.path().expect("entry path").into_owned();
-        if path.file_name() == Some(std::ffi::OsStr::new("marker.txt")) {
-            found = true;
-            break;
-        }
-    }
     assert!(
-        found,
+        archived_text(&archive, "marker.txt").is_some(),
         "marker.txt produced by build_cmd should be in archive"
     );
 
@@ -826,6 +873,7 @@ async fn a_missing_working_dir_fails_the_build_at_fingerprinting() {
             env_vars: &[],
             cancel_token: CancellationToken::new(),
             rebuild: false,
+            pypi_mirror: None,
         },
     )
     .await
@@ -842,6 +890,329 @@ async fn a_missing_working_dir_fails_the_build_at_fingerprinting() {
         matches!(handle.read().stage(), NodeStage::Building { .. }),
         "the failure contract leaves the entity in Building"
     );
+}
+
+// ===========================================================================
+// Build: the PyPI mirror of Python builds
+// ===========================================================================
+
+const PYPI_PACKAGES_BASE: &str = "https://files.pythonhosted.org/packages/";
+/// A wheel the test mirror has, with the size the lock records.
+const WHEEL_ON_MIRROR: &str = "aa/bb/1f2e/on_mirror-1.0-py3-none-any.whl";
+/// A wheel the test mirror does not have.
+const WHEEL_NOT_ON_MIRROR: &str = "cc/dd/3a4b/not_on_mirror-1.0-py3-none-any.whl";
+
+/// A lock that pins [`WHEEL_ON_MIRROR`] and [`WHEEL_NOT_ON_MIRROR`] on PyPI.
+fn lock_with_two_pypi_wheels() -> String {
+    format!(
+        r#"version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[[package]]
+name = "not-on-mirror"
+version = "1.0"
+source = {{ registry = "https://pypi.org/simple" }}
+wheels = [
+    {{ url = "{PYPI_PACKAGES_BASE}{WHEEL_NOT_ON_MIRROR}", hash = "sha256:11", size = 50, upload-time = "2026-09-16T20:45:19.163Z" }},
+]
+
+[[package]]
+name = "on-mirror"
+version = "1.0"
+source = {{ registry = "https://pypi.org/simple" }}
+wheels = [
+    {{ url = "{PYPI_PACKAGES_BASE}{WHEEL_ON_MIRROR}", hash = "sha256:22", size = 40, upload-time = "2026-09-16T20:45:19.163Z" }},
+]
+"#
+    )
+}
+
+/// A loopback PyPI mirror on a mock server that has [`WHEEL_ON_MIRROR`]
+/// alone and answers `404` for anything else.
+struct TestMirror<'a> {
+    base: PackagesBaseUrl,
+    mocks: [httpmock::Mock<'a>; 2],
+}
+
+impl<'a> TestMirror<'a> {
+    async fn serve_on(server: &'a MockServer) -> Self {
+        let on_mirror = server
+            .mock_async(|when, then| {
+                when.method(HEAD)
+                    .path(format!("/packages/{WHEEL_ON_MIRROR}"));
+                then.status(200).header("content-length", "40");
+            })
+            .await;
+        // Defined last, so it answers only what the mock above does not.
+        let anything_else = server
+            .mock_async(|when, then| {
+                when.any_request();
+                then.status(404);
+            })
+            .await;
+        Self {
+            base: PackagesBaseUrl::loopback_http_for_tests(&server.url("/packages/")),
+            mocks: [on_mirror, anything_else],
+        }
+    }
+
+    /// Every request the mirror received.
+    async fn requests(&self) -> usize {
+        let mut requests = 0;
+        for mock in &self.mocks {
+            requests += mock.calls_async().await;
+        }
+        requests
+    }
+}
+
+fn python_sensor_config() -> config::node::NodeConfig {
+    sensor_config_in_language("python", "true")
+}
+
+#[tokio::test]
+async fn a_python_build_with_a_mirror_points_the_files_the_mirror_has_at_it() {
+    let mut h = build_harness();
+    let lock = lock_with_two_pypi_wheels();
+    std::fs::write(h.working_dir.path().join("uv.lock"), &lock).expect("stage the lock");
+    let server = MockServer::start_async().await;
+    let mirror = TestMirror::serve_on(&server).await;
+
+    let archive = build_sensor_from(&h, python_sensor_config(), false, Some(&mirror.base)).await;
+
+    let mirror_url = format!("{}{WHEEL_ON_MIRROR}", mirror.base.as_str());
+    assert_eq!(
+        archived_text(&archive, "uv.lock").as_deref(),
+        Some(
+            lock.replacen(
+                &format!("{PYPI_PACKAGES_BASE}{WHEEL_ON_MIRROR}"),
+                &mirror_url,
+                1
+            )
+            .as_str()
+        ),
+        "the file the mirror has points at it, and the other one stays on PyPI"
+    );
+    assert_eq!(mirror.requests().await, 2, "one HEAD per locked file");
+    let lines = h.drain_feedback();
+    let summary = format!(
+        "PyPI mirror: {}; uv.lock: 1 of 2 locked files from the mirror, 1 from files.pythonhosted.org",
+        mirror.base.host()
+    );
+    assert!(lines.contains(&summary), "{lines:?}");
+}
+
+#[tokio::test]
+async fn the_artifact_of_a_mirrored_build_is_keyed_by_the_tree_before_the_rewrite() {
+    let without_mirror = build_harness();
+    let with_mirror = build_harness();
+    for h in [&without_mirror, &with_mirror] {
+        std::fs::write(
+            h.working_dir.path().join("uv.lock"),
+            lock_with_two_pypi_wheels(),
+        )
+        .expect("stage the lock");
+    }
+    let server = MockServer::start_async().await;
+    let mirror = TestMirror::serve_on(&server).await;
+
+    let plain = build_sensor_from(&without_mirror, python_sensor_config(), false, None).await;
+    let mirrored = build_sensor_from(
+        &with_mirror,
+        python_sensor_config(),
+        false,
+        Some(&mirror.base),
+    )
+    .await;
+
+    assert_ne!(
+        archived_text(&mirrored, "uv.lock"),
+        archived_text(&plain, "uv.lock"),
+        "the mirrored build rewrote its staged lock"
+    );
+    assert_eq!(
+        mirrored.file_name(),
+        plain.file_name(),
+        "both artifacts are named after the fingerprint of the same staged tree"
+    );
+}
+
+/// A failed build puts the original lock back in the staged tree, which a
+/// cancelled build hands to the next build of the node.
+#[tokio::test]
+async fn a_python_build_that_fails_puts_the_staged_lock_back() {
+    let h = build_harness();
+    let lock = lock_with_two_pypi_wheels();
+    let staged_lock = h.working_dir.path().join("uv.lock");
+    std::fs::write(&staged_lock, &lock).expect("stage the lock");
+    let server = MockServer::start_async().await;
+    let mirror = TestMirror::serve_on(&server).await;
+    let control = tempfile::tempdir().expect("control tempdir");
+    let seen_by_build = control.path().join("seen.lock");
+    let config = sensor_config_in_language(
+        "python",
+        &format!("cp uv.lock '{}'; exit 1", seen_by_build.display()),
+    );
+
+    let error = try_build_sensor_from(
+        &h,
+        config,
+        false,
+        Some(&mirror.base),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("build_cmd exits 1");
+
+    assert!(
+        matches!(error, NodeStackError::BuildFailed { .. }),
+        "{error:?}"
+    );
+    let mirror_url = format!("{}{WHEEL_ON_MIRROR}", mirror.base.as_str());
+    assert!(
+        std::fs::read_to_string(&seen_by_build)
+            .expect("build_cmd copied the lock it saw")
+            .contains(&mirror_url),
+        "the build step saw the rewritten lock"
+    );
+    assert_eq!(std::fs::read_to_string(&staged_lock).unwrap(), lock);
+}
+
+/// A publish that fails after the build step puts the original lock back
+/// too.
+#[tokio::test]
+async fn a_python_build_whose_publish_fails_puts_the_staged_lock_back() {
+    let h = build_harness();
+    let lock = lock_with_two_pypi_wheels();
+    let staged_lock = h.working_dir.path().join("uv.lock");
+    std::fs::write(&staged_lock, &lock).expect("stage the lock");
+    // A file where the storage directory of the node goes fails the publish.
+    let storage = h.peppy_dirs.built_node_dir("sensor", "v1");
+    std::fs::create_dir_all(storage.parent().expect("storage has a parent"))
+        .expect("create the storage root");
+    std::fs::write(&storage, b"not a directory").expect("block the storage dir");
+    let server = MockServer::start_async().await;
+    let mirror = TestMirror::serve_on(&server).await;
+
+    let error = try_build_sensor_from(
+        &h,
+        python_sensor_config(),
+        false,
+        Some(&mirror.base),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("the publish fails");
+
+    match error {
+        NodeStackError::BuildFailed { reason, .. } => assert!(
+            reason.contains("failed to archive node directory"),
+            "{reason}"
+        ),
+        other => panic!("expected BuildFailed, got {other:?}"),
+    }
+    assert_eq!(mirror.requests().await, 2, "the mirror step ran");
+    assert_eq!(std::fs::read_to_string(&staged_lock).unwrap(), lock);
+}
+
+/// A build cancelled while the mirror check waits on a mirror that does
+/// not answer stops before its build step: `build_cmd` never runs.
+#[tokio::test]
+async fn a_build_cancelled_during_the_mirror_check_never_starts_its_build() {
+    let h = build_harness();
+    let lock = lock_with_two_pypi_wheels();
+    std::fs::write(h.working_dir.path().join("uv.lock"), &lock).expect("stage the lock");
+    // Accepts each connection and never answers on it.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the silent mirror");
+    let port = listener.local_addr().expect("silent mirror address").port();
+    tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((connection, _)) = listener.accept().await {
+            open.push(connection);
+        }
+    });
+    let mirror =
+        PackagesBaseUrl::loopback_http_for_tests(&format!("http://127.0.0.1:{port}/packages/"));
+    let control = tempfile::tempdir().expect("control tempdir");
+    let marker = control.path().join("built");
+    let config = sensor_config_in_language("python", &format!("touch '{}'", marker.display()));
+    let cancel_token = CancellationToken::new();
+    cancel_token.cancel();
+
+    let error = try_build_sensor_from(&h, config, false, Some(&mirror), cancel_token)
+        .await
+        .expect_err("a cancelled build fails");
+
+    match error {
+        NodeStackError::BuildFailed { reason, .. } => {
+            assert_eq!(reason, "build cancelled")
+        }
+        other => panic!("expected BuildFailed, got {other:?}"),
+    }
+    assert!(!marker.exists(), "build_cmd must not run");
+    assert_eq!(
+        std::fs::read_to_string(h.working_dir.path().join("uv.lock")).unwrap(),
+        lock
+    );
+}
+
+#[tokio::test]
+async fn a_build_that_reuses_an_artifact_asks_the_mirror_nothing() {
+    let mut h = build_harness();
+    let lock = lock_with_two_pypi_wheels();
+    let staged_lock = h.working_dir.path().join("uv.lock");
+    std::fs::write(&staged_lock, &lock).expect("stage the lock");
+    let server = MockServer::start_async().await;
+    let mirror = TestMirror::serve_on(&server).await;
+    let first = build_sensor_from(&h, python_sensor_config(), false, None).await;
+    h.drain_feedback();
+
+    let reused = build_sensor_from(&h, python_sensor_config(), false, Some(&mirror.base)).await;
+
+    assert_eq!(reused, first);
+    assert_eq!(mirror.requests().await, 0);
+    assert_eq!(std::fs::read_to_string(&staged_lock).unwrap(), lock);
+    let lines = h.drain_feedback();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with(CACHED_BUILD_REUSE_PREFIX)),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.starts_with("PyPI mirror")),
+        "{lines:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_rust_build_and_a_python_build_without_a_mirror_leave_the_lock_alone() {
+    let server = MockServer::start_async().await;
+    let mirror = TestMirror::serve_on(&server).await;
+    let lock = lock_with_two_pypi_wheels();
+    for (config, pypi_mirror) in [
+        (sensor_config_with_build_cmd("true"), Some(&mirror.base)),
+        (python_sensor_config(), None),
+    ] {
+        let mut h = build_harness();
+        std::fs::write(h.working_dir.path().join("uv.lock"), &lock).expect("stage the lock");
+
+        let archive = build_sensor_from(&h, config, false, pypi_mirror).await;
+
+        assert_eq!(
+            archived_text(&archive, "uv.lock").as_deref(),
+            Some(lock.as_str())
+        );
+        let lines = h.drain_feedback();
+        assert!(
+            !lines.iter().any(|line| line.starts_with("PyPI mirror")),
+            "{lines:?}"
+        );
+    }
+    assert_eq!(mirror.requests().await, 0);
 }
 
 // ===========================================================================
@@ -1384,6 +1755,7 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
                 env_vars: &[],
                 cancel_token: CancellationToken::new(),
                 rebuild: false,
+                pypi_mirror: None,
             },
         )
         .await

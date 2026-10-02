@@ -64,11 +64,28 @@ pub fn announce(
     log_file: &Arc<StdMutex<File>>,
     line: String,
 ) {
-    write_feedback_log_line(log_file, FeedbackStream::Stdout, &line);
-    let _ = feedback_tx.send(FeedbackLine {
-        stream: FeedbackStream::Stdout,
-        line,
-    });
+    announce_on(FeedbackStream::Stdout, feedback_tx, log_file, line);
+}
+
+/// Announces a daemon-side warning: the line lands in the log and on the
+/// feedback channel as a warning, which the launch output keeps in view
+/// after the lines of the step scroll past.
+pub fn announce_warning(
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+    log_file: &Arc<StdMutex<File>>,
+    line: String,
+) {
+    announce_on(FeedbackStream::Warning, feedback_tx, log_file, line);
+}
+
+fn announce_on(
+    stream: FeedbackStream,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+    log_file: &Arc<StdMutex<File>>,
+    line: String,
+) {
+    write_feedback_log_line(log_file, stream, &line);
+    let _ = feedback_tx.send(FeedbackLine { stream, line });
 }
 
 /// Writes the canonical "executing a command" header to a log file in the

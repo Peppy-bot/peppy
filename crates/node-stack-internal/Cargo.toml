@@ -37,6 +37,15 @@ process-wrap = { version = "10.0.0", features = ["tokio1", "process-group"] }
 # Safe wrapper for the process-group signals (`killpg`) the stack sends its
 # children, keeping the crate free of `unsafe`.
 nix = { version = "0.31", default-features = false, features = ["signal"] }
+# The PyPI mirror of Python builds: `toml_edit` rewrites the URLs of a
+# staged uv.lock and keeps the rest of the file as it is, `reqwest` asks the
+# mirror which locked files it has, and `futures` keeps a bounded number of
+# those requests in flight. Like uv, the requests go through the proxy that
+# ALL_PROXY, HTTPS_PROXY or HTTP_PROXY of the daemon names and skip the hosts
+# of NO_PROXY; `socks` lets that proxy be a SOCKS one.
+toml_edit = "0.25"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "socks"] }
+futures = "0.3"
 
 
 [dev-dependencies]
@@ -48,3 +57,7 @@ nix = { version = "0.31", default-features = false, features = ["fs", "user"] }
 tokio = { version = "1", features = ["test-util", "net"] }
 # Gzips the `.crate` archive the loopback cargo registry serves.
 flate2 = "1"
+# The PyPI mirror the presence check and the build-flow tests ask, and the
+# loopback packages base URL that points at it.
+httpmock = "0.8"
+daemon-config = { workspace = true, features = ["test-support"] }
