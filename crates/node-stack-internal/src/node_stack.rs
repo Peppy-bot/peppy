@@ -4,6 +4,7 @@ mod build_steps;
 mod container_build_cache;
 mod entity;
 mod pairing;
+mod pypi_mirror;
 mod run_steps;
 
 pub use build_artifact_cache::CACHED_BUILD_REUSE_PREFIX;
@@ -27,6 +28,7 @@ use core_node_api::encoding::LaunchIdentity;
 use core_node_api::{
     InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph, SerializedPairingSlot,
 };
+use daemon_config::peppy_config::PackagesBaseUrl;
 use names_generator2::get_random;
 use parking_lot::RwLock;
 use petgraph::{
@@ -1020,6 +1022,11 @@ pub struct NodeStack {
     /// `config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS` for constructors
     /// (mostly tests) that don't set it explicitly.
     shutdown_grace: Duration,
+    /// The PyPI mirror Python builds download the PyPI files of their
+    /// `uv.lock` from (`pypi_mirror` in `peppy_config.json5`), or `None` for
+    /// PyPI itself. Daemon-only state resolved once at startup, like
+    /// `shutdown_grace`; the build paths read it into their `BuildContext`.
+    pypi_mirror: Option<PackagesBaseUrl>,
 }
 
 impl NodeStack {
@@ -1054,6 +1061,7 @@ impl NodeStack {
             shared: Arc::new(RwLock::new(NodeStackInner::new(root_entity))),
             add_log_paths: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             shutdown_grace: Duration::from_secs(config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS),
+            pypi_mirror: None,
         }
     }
 
@@ -1070,6 +1078,20 @@ impl NodeStack {
     /// `peppy node stop` wait before force-killing a node's process group.
     pub fn shutdown_grace(&self) -> Duration {
         self.shutdown_grace
+    }
+
+    /// Sets the PyPI mirror of Python builds (from
+    /// `peppy_config.pypi_mirror`). Builder form, like
+    /// [`NodeStack::with_shutdown_grace`]; `None` is the default.
+    pub fn with_pypi_mirror(mut self, mirror: Option<PackagesBaseUrl>) -> Self {
+        self.pypi_mirror = mirror;
+        self
+    }
+
+    /// The PyPI mirror Python builds download the PyPI files of their
+    /// `uv.lock` from, or `None` for PyPI itself.
+    pub fn pypi_mirror(&self) -> Option<&PackagesBaseUrl> {
+        self.pypi_mirror.as_ref()
     }
 
     /// Records the add-log path for a `(name, tag)` key. Called by the

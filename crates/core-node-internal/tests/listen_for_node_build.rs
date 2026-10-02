@@ -160,6 +160,124 @@ async fn listen_for_node_build_runs_build_cmd() {
     );
 }
 
+/// The daemon hands the PyPI mirror of its config to every build: a Python
+/// node build points the locked files the mirror has at it, keeps the other
+/// one on PyPI, and says so in its log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_build_takes_the_pypi_mirror_of_the_daemon_config() {
+    use httptest::matchers::request;
+    use httptest::responders::status_code;
+    use httptest::{Expectation, Server};
+
+    const NODE_NAME: &str = "pypi_mirror_node";
+    const NODE_TAG: &str = "v1";
+    const PYPI_PACKAGES_BASE: &str = "https://files.pythonhosted.org/packages/";
+    const ON_MIRROR: &str = "aa/bb/1f2e/on_mirror-1.0-py3-none-any.whl";
+    const NOT_ON_MIRROR: &str = "cc/dd/3a4b/not_on_mirror-1.0-py3-none-any.whl";
+
+    let mirror_server = Server::run();
+    mirror_server.expect(
+        Expectation::matching(request::method_path(
+            "HEAD",
+            format!("/packages/{ON_MIRROR}"),
+        ))
+        .respond_with(status_code(200).insert_header("content-length", "40")),
+    );
+    mirror_server.expect(
+        Expectation::matching(request::method_path(
+            "HEAD",
+            format!("/packages/{NOT_ON_MIRROR}"),
+        ))
+        .respond_with(status_code(404)),
+    );
+    let mirror = daemon_config::peppy_config::PackagesBaseUrl::loopback_http_for_tests(
+        &mirror_server.url_str("/packages/"),
+    );
+    let started_core_node = common::start_core_node_with_pypi_mirror(mirror.clone()).await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    write_peppy_json5(
+        source_dir.path(),
+        &format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{ name: "{NODE_NAME}", tag: "{NODE_TAG}" }},
+                execution: {{
+                    language: "python",
+                    build_cmd: ["true"],
+                    run_cmd: ["sleep", "10"]
+                }}
+            }}"#
+        ),
+    );
+    let lock = format!(
+        r#"version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[[package]]
+name = "not-on-mirror"
+version = "1.0"
+source = {{ registry = "https://pypi.org/simple" }}
+wheels = [
+    {{ url = "{PYPI_PACKAGES_BASE}{NOT_ON_MIRROR}", hash = "sha256:11", size = 50 }},
+]
+
+[[package]]
+name = "on-mirror"
+version = "1.0"
+source = {{ registry = "https://pypi.org/simple" }}
+wheels = [
+    {{ url = "{PYPI_PACKAGES_BASE}{ON_MIRROR}", hash = "sha256:22", size = 40 }},
+]
+"#
+    );
+    std::fs::write(source_dir.path().join("uv.lock"), &lock).expect("write uv.lock");
+
+    let (node_name, node_tag) =
+        stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
+    let build_result = send_node_build_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        &node_name,
+        &node_tag,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Vec::new(),
+        None,
+    )
+    .await
+    .expect("node_build request should succeed");
+    assert!(
+        build_result.success,
+        "node_build should succeed, got error: {:?}",
+        build_result.error_message
+    );
+
+    let archive_path = entity_artifact_path(&started_core_node.node_stack, NODE_NAME, NODE_TAG);
+    assert_eq!(
+        read_file_from_archive(&archive_path, "uv.lock"),
+        lock.replacen(
+            &format!("{PYPI_PACKAGES_BASE}{ON_MIRROR}"),
+            &format!("{}{ON_MIRROR}", mirror.as_str()),
+            1
+        )
+    );
+    let log = std::fs::read_to_string(&build_result.log_path).expect("read the build log");
+    assert!(
+        log.contains(&format!(
+            "PyPI mirror: {}; uv.lock: 1 of 2 locked files from the mirror, 1 from files.pythonhosted.org",
+            mirror.host()
+        )),
+        "the build log must say where the files come from, got:\n{log}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source_dir.path().join("uv.lock")).expect("read the source lock"),
+        lock,
+        "the rewrite touches the staged copy only"
+    );
+}
+
 /// Polls until `pid_file` exists and holds a non-empty PID, returning it.
 async fn wait_for_pid_file(pid_file: &Path) -> String {
     common::poll_until(

@@ -244,6 +244,28 @@ pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> St
     .await
 }
 
+/// Variant of [`start_core_node_with_mock_messenger`] whose config names a
+/// PyPI mirror (`peppy_config.pypi_mirror`), for the tests of Python builds
+/// that download from it.
+pub async fn start_core_node_with_pypi_mirror(
+    mirror: daemon_config::peppy_config::PackagesBaseUrl,
+) -> StartedCoreNode {
+    let (data_dir, peppy_dirs) = init_test_data_dir();
+    let shared_messenger = create_mock_messenger().await;
+    let peppy_config = daemon_config::peppy_config::PeppyConfig {
+        pypi_mirror: Some(mirror),
+        ..Default::default()
+    };
+    start_core_node_with_messenger(
+        shared_messenger,
+        default_node_arguments(),
+        data_dir,
+        peppy_dirs,
+        peppy_config,
+    )
+    .await
+}
+
 pub async fn start_core_node_with_health_timeout(
     node_start_health_timeout: Duration,
 ) -> StartedCoreNode {
@@ -659,6 +681,7 @@ pub async fn real_build_and_spawn_instance(
             env_vars: &[],
             cancel_token: tokio_util::sync::CancellationToken::new(),
             rebuild: false,
+            pypi_mirror: None,
         },
     )
     .await

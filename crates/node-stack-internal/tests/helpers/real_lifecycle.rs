@@ -141,6 +141,7 @@ pub async fn build_ready(
             env_vars: &[],
             cancel_token: tokio_util::sync::CancellationToken::new(),
             rebuild: false,
+            pypi_mirror: None,
         },
     )
     .await

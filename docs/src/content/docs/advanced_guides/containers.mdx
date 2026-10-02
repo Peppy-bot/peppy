@@ -556,6 +556,95 @@ environment rides the guest command, so container builds cache the same way
 as on Linux.
 :::
 
+### PyPI mirror for Python builds
+
+Python builds download their packages from PyPI. When PyPI is slow from the
+host, set `pypi_mirror` in the
+[daemon configuration](/advanced_guides/daemon_config/#pypi_mirror-pypi-mirror-for-python-builds)
+to the packages base URL of a PyPI mirror, and restart the daemon:
+
+```json5
+pypi_mirror: "https://pypi.tuna.tsinghua.edu.cn/packages/",
+```
+
+Before a Python node builds, a container node or a process node alike, the
+daemon reads each `uv.lock` in the staged copy of the node. It collects the
+files that the lock pins by sha256 for packages from a registry, at a URL
+below `https://files.pythonhosted.org/packages/`. It asks the mirror for each
+of these files with a `HEAD` request, 8 at a time, and puts the mirror in the
+URL of each file that the mirror has with the size the lock records. Every
+other file keeps its PyPI URL, so a file that the mirror does not have yet
+still comes from PyPI.
+
+Only the staged copy changes: the node sources stay as they are, and the
+[build artifact cache](#build-artifact-cache) keys the build by the staged
+tree as it was before the change, so a build finds the same artifact with
+and without a mirror. The image or the archive of the node holds the
+rewritten `uv.lock`.
+
+A mirror that you do not control is safe: uv checks each file it downloads
+against the sha256 in the lock, and the lock comes from the repository of
+the node. A mirror can make a build slow or make it fail, but it cannot
+change what the build installs. uv accepts the rewritten lock with
+`uv sync`, `uv sync --locked` and `uv sync --frozen`, and the uv cache stays
+valid when you change or remove the mirror. Packages from other sources (a
+direct URL, git, a path), registry files on another host (such as the files
+that `download.pytorch.org` serves itself), and files that no lock pins do
+not use the mirror. Files that no lock pins include the build requirements
+uv installs to build the node and its `.peppy/libs` projects (such as
+hatchling and setuptools), the Python interpreter, GitHub release assets,
+apt packages and base image layers.
+
+The presence check uses the proxy that `ALL_PROXY`, `HTTPS_PROXY` or
+`HTTP_PROXY` names in the environment of the daemon (HTTP or SOCKS), and
+skips the hosts in `NO_PROXY`, as uv does.
+
+Each build that uses the mirror shows one line per `uv.lock`, which names
+the lock, as the build may not read every lock of the node (the lock of a
+test project, for example):
+
+```
+PyPI mirror: pypi.tuna.tsinghua.edu.cn; uv.lock: 868 of 870 locked files from the mirror, 2 from files.pythonhosted.org
+```
+
+A check that takes more than a few seconds also shows how many files it
+checked. When the mirror does not answer, when a `uv.lock` cannot be read or
+written, or when the check cannot run, the build shows a warning and
+downloads the files concerned from PyPI. A mirror that answers the `HEAD`
+request for a file but then fails to send the file makes uv fail the build:
+build again, or set `pypi_mirror` back to `null`.
+
+A packages base URL is the URL under which a mirror keeps the files of PyPI
+with the path layout of `https://files.pythonhosted.org/packages/`: the path
+of a file after the packages base URL is the same on both. It is not the
+index URL of the mirror, which ends with `/simple/`. Some mirrors and their
+packages base URL:
+
+| Mirror | Location | Packages base URL |
+|---|---|---|
+| OSSO | Netherlands | `https://pypi.osso.nl/packages/` |
+| Yandex | Russia | `https://mirror.yandex.ru/pypi/web/packages/` |
+| Tsinghua University (TUNA) | China | `https://pypi.tuna.tsinghua.edu.cn/packages/` |
+| USTC | China | `https://mirrors.ustc.edu.cn/pypi/packages/` |
+| Nanjing University | China | `https://mirror.nju.edu.cn/pypi/web/packages/` |
+| SJTU | China | `https://mirror.sjtu.edu.cn/pypi-packages/` |
+| Huawei Cloud | CDN | `https://repo.huaweicloud.com/repository/pypi/packages/` |
+
+To check that a mirror has a file, take the URL of the file from your
+`uv.lock`, replace `https://files.pythonhosted.org/packages/` with the
+packages base URL of the mirror, and send a `HEAD` request that follows
+redirects. The mirror has the file when the last answer is `200` with a
+`Content-Length` equal to the `size` in the lock, and does not come from
+`files.pythonhosted.org`: some mirrors redirect every file to PyPI, and the
+daemon then keeps the PyPI URL:
+
+```sh
+curl -sIL https://pypi.tuna.tsinghua.edu.cn/packages/76/c6/c88e154df9c4e1a2a66ccf0005a88dfb2650c1dffb6f5ce603dfbd452ce3/idna-3.10-py3-none-any.whl
+```
+
+A mirror can be hours behind PyPI, and PyPI is fast from most places, so
+set a mirror only when PyPI is slow from the host.
+
 ## Extra runtime arguments
 
 You can pass additional command-line arguments directly to Apptainer or Lima using `apptainer_build_extra_args`, `apptainer_run_extra_args`, and `lima_shell_extra_args` in the `container` block inside `execution`.

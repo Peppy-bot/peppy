@@ -31,6 +31,9 @@
 //! rewritten.
 
 mod completion;
+mod packages_base_url;
+
+pub use packages_base_url::PackagesBaseUrl;
 
 use crate::atomic_write::publish_atomic;
 use crate::consts::PeppyDirs;
@@ -197,6 +200,17 @@ const LIFECYCLE_SECTION_SNIPPET: &str = const_format::concatcp!(
     "  },\n"
 );
 
+/// The `pypi_mirror` entry with its explanatory comment. Spelled out as an
+/// explicit `null` (parsed as `None`, no mirror) for the same reason as
+/// [`CORE_NODE_NAME_SECTION_SNIPPET`].
+const PYPI_MIRROR_SECTION_SNIPPET: &str = r#"  // Packages base URL of a PyPI mirror, or null. When set, Python node builds
+  // download the PyPI files that their uv.lock pins from this mirror, and a file
+  // the mirror does not have still comes from files.pythonhosted.org. uv checks
+  // every file against the sha256 in the lock. Example:
+  // "https://pypi.tuna.tsinghua.edu.cn/packages/".
+  pypi_mirror: null,
+"#;
+
 /// The `resource_servers.api` entry, indented for the `resource_servers` block.
 const API_FIELD_SNIPPET: &str = const_format::concatcp!("    api: \"", DEFAULT_API_URL, "\",\n");
 
@@ -253,6 +267,8 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     ZENOH_SECTION_SNIPPET,
     "\n",
     LIFECYCLE_SECTION_SNIPPET,
+    "\n",
+    PYPI_MIRROR_SECTION_SNIPPET,
     "\n",
     RESOURCE_SERVERS_SECTION_SNIPPET,
     "}\n"
@@ -743,6 +759,15 @@ pub struct PeppyConfig {
     pub zenoh: ZenohConfig,
     #[serde(default)]
     pub lifecycle: LifecycleConfig,
+    /// The PyPI mirror Python node builds download the PyPI files of their
+    /// `uv.lock` from; `None` (the template's explicit `null`) downloads them
+    /// from PyPI. Parsed when the file is read, so a value that is not the
+    /// packages base URL of a mirror fails the load.
+    #[serde(
+        default,
+        deserialize_with = "packages_base_url::deserialize_pypi_mirror"
+    )]
+    pub pypi_mirror: Option<PackagesBaseUrl>,
     #[serde(default)]
     pub resource_servers: ResourceServers,
 }
@@ -1225,6 +1250,7 @@ mod tests {
         assert!(message.contains("core_node_name"));
         assert!(message.contains("zenoh"));
         assert!(message.contains("lifecycle"));
+        assert!(message.contains("pypi_mirror"));
         assert!(message.contains("resource_servers"));
         assert!(message.contains("never completed with defaults"));
         assert!(message.contains("every setting must be spelled out"));
@@ -1692,6 +1718,82 @@ mod tests {
     }
 
     #[test]
+    fn template_sets_no_pypi_mirror() {
+        let cfg: PeppyConfig = serde_json5::from_str(DEFAULT_PEPPY_CONFIG_TEMPLATE).unwrap();
+        assert_eq!(cfg.pypi_mirror, None);
+        assert_eq!(PeppyConfig::default().pypi_mirror, None);
+    }
+
+    #[test]
+    fn pypi_mirror_is_read_as_a_packages_base_url() {
+        let (_tmp, peppy_dirs, path) =
+            dirs_with_config(r#"{ pypi_mirror: "https://pypi.tuna.tsinghua.edu.cn/packages/" }"#);
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+
+        let mirror = cfg.pypi_mirror.as_ref().expect("a mirror is set");
+        assert_eq!(
+            mirror.as_str(),
+            "https://pypi.tuna.tsinghua.edu.cn/packages/"
+        );
+        assert_eq!(mirror.host(), "pypi.tuna.tsinghua.edu.cn");
+        // Completion adds the other settings and keeps the user's value.
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(completed.matches("pypi_mirror:").count(), 1);
+        assert!(
+            completed.contains(r#"pypi_mirror: "https://pypi.tuna.tsinghua.edu.cn/packages/""#)
+        );
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+    }
+
+    #[test]
+    fn invalid_pypi_mirror_fails_loud_and_leaves_the_file() {
+        for (content, reason) in [
+            (
+                r#"{ pypi_mirror: "http://pypi.tuna.tsinghua.edu.cn/packages/" }"#,
+                "not https",
+            ),
+            (
+                r#"{ pypi_mirror: "https://pypi.tuna.tsinghua.edu.cn/simple/" }"#,
+                "does not end with",
+            ),
+            (r#"{ pypi_mirror: "" }"#, "not a URL"),
+            (r#"{ pypi_mirror: 7 }"#, "expected the packages base URL"),
+            (r#"{ pypi_mirror: true }"#, "expected the packages base URL"),
+            (
+                r#"{ pypi_mirror: { url: "https://pypi.tuna.tsinghua.edu.cn/packages/" } }"#,
+                "expected the packages base URL",
+            ),
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
+
+            assert!(message.contains(PEPPY_CONFIG_FILE), "{content}: {message}");
+            assert!(
+                message.contains("invalid pypi_mirror"),
+                "{content}: {message}"
+            );
+            assert!(message.contains(reason), "{content}: {message}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn pypi_mirror_completes_to_explicit_null_idempotently() {
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ core_node_name: null }"#);
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+
+        assert_eq!(cfg.pypi_mirror, None);
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert!(completed.contains("  pypi_mirror: null,\n"));
+        assert!(completed.contains("// Packages base URL of a PyPI mirror, or null."));
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+    }
+
+    #[test]
     fn resource_servers_api_is_read_and_defaults() {
         // An explicit api is honored.
         let (_tmp, peppy_dirs, _) =
@@ -1909,6 +2011,9 @@ mod tests {
                 daemon_grace_secs: 240,
                 shutdown_grace_secs: 5,
             },
+            pypi_mirror: Some(
+                PackagesBaseUrl::parse("https://pypi.tuna.tsinghua.edu.cn/packages/").unwrap(),
+            ),
             resource_servers: ResourceServers {
                 api: "http://localhost:9000".to_string(),
             },

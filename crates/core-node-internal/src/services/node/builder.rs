@@ -468,6 +468,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 env_vars: &env_vars,
                 cancel_token: cancel_token.clone(),
                 rebuild,
+                pypi_mirror: action_context.node_stack.pypi_mirror(),
             },
         )
         .await;

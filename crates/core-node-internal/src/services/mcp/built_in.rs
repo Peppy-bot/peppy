@@ -189,11 +189,7 @@ pub(crate) async fn run_built_in_add(
     };
     if let Some(warning) = executable.warning() {
         tracing::warn!("{warning}");
-        node_stack::build_io::write_feedback_log_line(&log_file, FeedbackStream::Warning, &warning);
-        let _ = feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Warning,
-            line: warning,
-        });
+        node_stack::build_io::announce_warning(&feedback_tx, &log_file, warning);
     }
 
     let plan = resolved.plan;

@@ -352,11 +352,14 @@ impl CoreNode {
         let messenger = MessengerHandle::from_shared(messenger);
         let instance_id = Name::new(get_random(rng())).unwrap();
         // The core node is the root of the node stack. Resolve the cooperative
-        // shutdown grace from config once and pin it on the stack so every stop
-        // path (teardown, node_stop, overwrite) reads the same value.
-        let node_stack = NodeStack::new(node_config.clone(), None, root_dir).with_shutdown_grace(
-            Duration::from_secs(peppy_config.lifecycle.shutdown_grace_secs),
-        );
+        // shutdown grace and the PyPI mirror from config once and pin them on
+        // the stack, so every stop path (teardown, node_stop, overwrite) reads
+        // the same grace and every build the same mirror.
+        let node_stack = NodeStack::new(node_config.clone(), None, root_dir)
+            .with_shutdown_grace(Duration::from_secs(
+                peppy_config.lifecycle.shutdown_grace_secs,
+            ))
+            .with_pypi_mirror(peppy_config.pypi_mirror.clone());
         let slice_ownership = federation::SliceOwnership::new(node_config.manifest.name.as_str());
         let clock_watches = Arc::new(clock::watch::ClockWatches::new());
 

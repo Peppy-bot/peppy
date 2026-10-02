@@ -72,8 +72,8 @@ pub mod consts {
 pub mod peppy_config {
     pub use crate::internal::peppy_config::{
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, ExternalZenohConfig, LifecycleConfig,
-        LocalNodesTopology, ManagedZenohConfig, ParsedEndpointBuf, PeppyConfig, ResourceServers,
-        ZenohConfig, load_or_create,
+        LocalNodesTopology, ManagedZenohConfig, PackagesBaseUrl, ParsedEndpointBuf, PeppyConfig,
+        ResourceServers, ZenohConfig, load_or_create,
     };
 }
 
