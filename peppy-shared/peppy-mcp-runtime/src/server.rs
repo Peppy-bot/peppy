@@ -2700,6 +2700,7 @@ mod tests {
     mod per_robot {
         use super::*;
         use crate::fleet::{FleetMember, MemberAddress};
+        use peppy_mcp_catalog::{BundleContractPin, RobotContractPin};
         use std::sync::Mutex;
 
         fn bundle() -> ExposureBundle {
@@ -2827,6 +2828,25 @@ mod tests {
                 }))
                 .expect("valid picture entry"),
             );
+            bundle
+        }
+
+        /// `bundle` with a `depth_camera` target, the depth side of an RGBD
+        /// camera: a robot fills it any number of times, and a call names
+        /// its member with `camera`, as on the `camera` target.
+        fn with_depth_camera(mut bundle: ExposureBundle) -> ExposureBundle {
+            let BundleSurface::PerRobot { contracts, .. } = &mut bundle.surface else {
+                panic!("a per-robot bundle");
+            };
+            contracts.push(RobotContractPin {
+                pin: BundleContractPin {
+                    name: "depth_camera".to_string(),
+                    tag: "v1".to_string(),
+                    sha256: "cc".to_string(),
+                    link_id: "depth_camera".to_string(),
+                },
+                argument: Some("camera".to_string()),
+            });
             bundle
         }
 
@@ -3183,6 +3203,24 @@ mod tests {
                     .contains("invalid arguments for `camera.look`"),
                 "{}",
                 error.message
+            );
+        }
+
+        #[tokio::test]
+        async fn a_picture_tool_names_the_other_targets_the_robot_fills_with_a_refused_camera() {
+            let (server, fleet) = served_bundle(with_depth_camera(picture_bundle()));
+            fleet
+                .lock()
+                .unwrap()
+                .push(member("depth_camera", "alpha", "chest"));
+            let error = look(&server, json!({ "robot": "alpha", "camera": "chest" }))
+                .await
+                .expect_err("`chest` fills `depth_camera` and not `camera`");
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+            assert_eq!(
+                error.message,
+                "robot `alpha` has no `camera` named `chest` (`camera`); it has `wrist_left`; its \
+                 `chest` fills `depth_camera`"
             );
         }
 
