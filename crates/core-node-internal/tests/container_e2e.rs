@@ -11,7 +11,7 @@ mod container_e2e_tests {
     use config::node::Toolchain;
     use config::runtime::Name as NodeName;
     use core_node_api::encoding::{NodeBuildResult, NodeInitRequest};
-    use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
+    use daemon_config::consts::{DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_PYTHON_BASE_IMAGE};
     use node_stack::NodeStack;
     use peppylib::core_node::transport::poll;
     use std::collections::HashSet;
@@ -416,6 +416,104 @@ mod container_e2e_tests {
         assert!(
             log.contains("cargo progress: always 80"),
             "the build's %post must see the cargo progress settings, got:\n{log}"
+        );
+    }
+
+    /// End-to-end test: a Python container build runs with the uv cache. The
+    /// `%post` sees the variables of the Python profile, and a file it writes
+    /// into the uv cache lands in the cache directory of the host, which
+    /// outlives the build.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn python_container_build_post_runs_with_the_uv_cache() {
+        const NODE_NAME: &str = "uv_cache_e2e_node";
+        const NODE_TAG: &str = "v1";
+
+        let started = start_core_node_with_real_messenger_and_timeouts(
+            Duration::from_secs(120),
+            Duration::from_secs(60),
+        )
+        .await;
+
+        let source_dir = tempfile::tempdir().expect("source dir");
+        write_peppy_json5(
+            source_dir.path(),
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "uv_cache_e2e_node", tag: "v1" },
+                execution: { language: "python", container: { def_file: "apptainer.def" } }
+            }"#,
+        );
+        // The def names none of the variables: a def that mentions one of
+        // the markers builds without the cache.
+        std::fs::write(
+            source_dir.path().join("apptainer.def"),
+            format!(
+                "Bootstrap: docker\nFrom: {DEFAULT_PYTHON_BASE_IMAGE}\n\n\
+                 %post\n    env | grep -E '^(UV_|PEPPY_DOWNLOAD)' | sort | sed 's/^/cache env: /'\n    \
+                 touch /peppy-cache/uv-cache/written-by-post\n"
+            ),
+        )
+        .expect("write apptainer.def");
+
+        let add = send_node_add_and_wait(
+            &started.caller_handle,
+            &started.core_node_name,
+            source_dir.path(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+            None,
+        )
+        .await
+        .expect("node_add request should complete");
+        assert!(
+            add.success,
+            "node_add should succeed, got error: {:?}",
+            add.error_message
+        );
+
+        let build = send_node_build_and_wait(
+            &started.caller_handle,
+            &started.core_node_name,
+            NODE_NAME,
+            NODE_TAG,
+            Duration::from_secs(30),
+            Duration::from_secs(600),
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("node_build request should complete");
+        assert!(
+            build.success,
+            "the container build should succeed, got error: {:?}",
+            build.error_message
+        );
+
+        let log = std::fs::read_to_string(&build.log_path).expect("read the build log");
+        assert!(
+            log.contains("Container build cache: uv packages + Python interpreters + downloads"),
+            "the build must announce the Python cache, got:\n{log}"
+        );
+        for variable in [
+            "PEPPY_DOWNLOAD_CACHE=/peppy-cache/downloads",
+            "UV_CACHE_DIR=/peppy-cache/uv-cache",
+            "UV_LINK_MODE=copy",
+            "UV_PYTHON_CACHE_DIR=/peppy-cache/uv-python",
+        ] {
+            assert!(
+                log.contains(&format!("cache env: {variable}")),
+                "the build's %post must see {variable}, got:\n{log}"
+            );
+        }
+        let written = started
+            .peppy_dirs
+            .container_build_cache_dir()
+            .join("uv-cache")
+            .join("written-by-post");
+        assert!(
+            written.is_file(),
+            "what %post writes into the uv cache must land in {}",
+            written.display()
         );
     }
 

@@ -209,9 +209,8 @@ pub(super) async fn build_container_image(
     let output_path = inputs.working_dir.join(&sif_name);
     let def_path = inputs.working_dir.join(inputs.def_file);
 
-    // Cache preparation is filesystem work (def read, layout creation, an
-    // ELF inspection, potentially a binary download), so it runs on the
-    // blocking pool like the other build I/O above. A def file that cannot
+    // Cache preparation is filesystem work (def read, layout creation), so
+    // it runs on the blocking pool like the other build I/O above. A def file that cannot
     // be read as UTF-8 skips caching outright, since the conflict scan
     // cannot see what such a build references; a missing def file surfaces
     // as an apptainer error below either way.
