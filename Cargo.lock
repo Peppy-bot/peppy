@@ -3214,6 +3214,7 @@ dependencies = [
  "containers",
  "core-node-api",
  "daemon-config",
+ "flate2",
  "names-generator2",
  "nix 0.31.3",
  "parking_lot",
