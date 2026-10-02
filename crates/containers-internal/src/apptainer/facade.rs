@@ -682,8 +682,10 @@ impl Apptainer {
     /// wrapper (see [`ApptainerCommand::cancel_pgid`]). `key` must match the one
     /// passed to `cancel_pgid` for this command; both resolve to the same
     /// guest-native pgid path via [`lima::guest_pgid_path`]. Used to cancel an
-    /// in-flight build (`--force` supersede) and to force-stop a run node's
-    /// in-VM workload on daemon teardown.
+    /// in-flight build (`--force` supersede), to stop an `exec` that runs
+    /// after a build (when the build is cancelled or the `exec` runs past its
+    /// time limit), and to force-stop a run node's in-VM workload on daemon
+    /// teardown.
     ///
     /// On the native backend (Linux) the host process-group SIGKILL already
     /// reached the whole tree (shared namespace), so this is a no-op. Under Lima
@@ -1384,7 +1386,8 @@ pub struct ApptainerCommand<'a> {
     /// records its PGID to this guest-native path, so
     /// [`Apptainer::kill_guest_process_group`] can SIGKILL the whole guest group on
     /// cancel/teardown. Resolved from a key via [`lima::guest_pgid_path`].
-    /// Meaningful for `build` (cancel an in-flight `--force` supersede) and `run`
+    /// Meaningful for `build` (cancel an in-flight `--force` supersede), an
+    /// `exec` that runs after a build (stop it with the build), and `run`
     /// (force-stop the in-VM workload on daemon teardown).
     cancel_pgid_path: Option<PathBuf>,
     /// Host-side working directory for the apptainer process. See
@@ -1464,12 +1467,13 @@ impl<'a> ApptainerCommand<'a> {
     /// guest-native file keyed by `key`, so [`Apptainer::kill_guest_process_group`]
     /// (called with the same key) can SIGKILL the whole guest group (apptainer and
     /// its children) on cancellation/teardown. `key` must be unique and
-    /// filesystem-safe: the working-dir basename for a build, the instance id for
-    /// a run.
+    /// filesystem-safe: the working-dir basename for a build (and for an `exec`
+    /// that runs after it), the instance id for a run.
     ///
     /// Only effective under the Lima backend (macOS), and used by `build` (cancel
-    /// an in-flight `--force` supersede) and `run` (force-stop the in-VM workload
-    /// on daemon teardown). On the native backend (Linux) the host process-group
+    /// an in-flight `--force` supersede), an `exec` that runs after a build (stop
+    /// it with the build), and `run` (force-stop the in-VM workload on daemon
+    /// teardown). On the native backend (Linux) the host process-group
     /// SIGKILL already covers the whole tree in the shared namespace, so this is
     /// ignored.
     pub fn cancel_pgid(mut self, key: &str) -> Self {

@@ -514,6 +514,33 @@ build's language:
 A Python def that installs rustup, to build a Rust extension for example,
 keeps its uv cache: the Python cache sets no cargo variable.
 
+After each Python container build that uses the cache and succeeds, the
+daemon prunes `uv-cache/` with `uv cache prune`, run with the uv of the
+image that the build wrote. Each build stages the local projects of the node
+again (the node itself, and `.peppy/libs/peppylib` with its native
+extension), so uv builds them again and keeps every earlier build of them,
+which no later build uses. The prune removes these. It also removes each
+file or directory at the top of `uv-cache/` that is not a cache directory of
+uv, and each archive in `archive-v0/` that no cache entry names; other files
+in the cache directories of uv stay. A line of the build output gives the
+result, for example
+`Container build cache: uv cache pruned: Removed 15 files (6.8MiB)`.
+
+A failed prune does not fail the build. A build that fails or is cancelled
+does not prune. A build prunes only when no other Python container build
+uses the cache; else a later build that succeeds prunes it. A Python build
+that starts while another build prunes waits until the prune ends, and a line
+of the build output says so:
+`Container build cache: waiting for another build to prune the uv cache`.
+
+The prune runs the first `uv` on the `PATH` of the image that is not in a
+Python virtual environment, as `%post` does not see the virtual environment
+that a `%environment` puts on `PATH`. There is no prune when the image has
+no such `uv`, and the daemon stops a prune that runs for 30 seconds. uv also
+removes the entries of a cache layout that is not its own: nodes whose
+images have uv versions with different cache layouts remove each other's
+entries.
+
 :::note
 The cache lives at `~/.peppy/cache/container_build` and is safe to delete
 at any time; the next build recreates it. `sccache-cache/` prunes itself to
@@ -521,17 +548,12 @@ sccache's size limit (10 GiB by default). `cargo-home/` grows with every
 dependency version ever built, `uv-python/` with every Python version ever
 installed, and `downloads/` with every pin ever fetched; they are only
 reclaimed by deleting them. `uv-cache/` grows with every package version
-ever installed, and also on every Python build: the build stages the local
-projects of the node (the node itself, and `.peppy/libs/peppylib` with its
-native extension) again, so uv builds them again and keeps the previous
-builds. Delete `uv-cache/` to reclaim all of it, or run
-`uv cache prune --cache-dir ~/.peppy/cache/container_build/uv-cache` with the
-uv version of `peppybot/python-uv-base` to remove the previous builds only.
-Because the directory is shared and writable, anything a `%post` writes
-there persists into later builds on the same machine, the same trust the
-build itself already runs with. On macOS, builds run inside the Lima VM:
-the cache directory is bind mounted through it and the environment rides
-the guest command, so container builds cache the same way as on Linux.
+ever installed. Because the directory is shared and writable, what a
+`%post` writes there can persist into later builds on the same machine, the
+same trust the build itself already runs with. On macOS, builds run inside
+the Lima VM: the cache directory is bind mounted through it and the
+environment rides the guest command, so container builds cache the same way
+as on Linux.
 :::
 
 ## Extra runtime arguments

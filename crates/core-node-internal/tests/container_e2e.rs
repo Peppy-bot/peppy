@@ -420,19 +420,31 @@ mod container_e2e_tests {
     }
 
     /// End-to-end test: a Python container build runs with the uv cache. The
-    /// `%post` sees the variables of the Python profile, and a file it writes
-    /// into the uv cache lands in the cache directory of the host, which
-    /// outlives the build.
+    /// `%post` sees the variables of the Python profile, sees the uv cache
+    /// directory of the host through the bind, and writes into the cache of
+    /// the host, which outlives the build. After the build, the uv of the
+    /// image prunes the uv cache: an archive that no cache entry names is gone
+    /// from the host.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn python_container_build_post_runs_with_the_uv_cache() {
         const NODE_NAME: &str = "uv_cache_e2e_node";
         const NODE_TAG: &str = "v1";
+        const ORPHAN_ARCHIVE: &str = "peppy-e2e-orphan";
 
         let started = start_core_node_with_real_messenger_and_timeouts(
             Duration::from_secs(120),
             Duration::from_secs(60),
         )
         .await;
+
+        let orphan_archive = started
+            .peppy_dirs
+            .container_build_cache_dir()
+            .join("uv-cache")
+            .join("archive-v0")
+            .join(ORPHAN_ARCHIVE);
+        std::fs::create_dir_all(&orphan_archive).expect("create the orphan archive");
+        std::fs::write(orphan_archive.join("marker"), b"").expect("write into the orphan archive");
 
         let source_dir = tempfile::tempdir().expect("source dir");
         write_peppy_json5(
@@ -450,7 +462,8 @@ mod container_e2e_tests {
             format!(
                 "Bootstrap: docker\nFrom: {DEFAULT_PYTHON_BASE_IMAGE}\n\n\
                  %post\n    env | grep -E '^(UV_|PEPPY_DOWNLOAD)' | sort | sed 's/^/cache env: /'\n    \
-                 touch /peppy-cache/uv-cache/written-by-post\n"
+                 ls /peppy-cache/uv-cache/archive-v0 | sed 's/^/cache archive: /'\n    \
+                 touch /peppy-cache/downloads/written-by-post\n"
             ),
         )
         .expect("write apptainer.def");
@@ -505,15 +518,28 @@ mod container_e2e_tests {
                 "the build's %post must see {variable}, got:\n{log}"
             );
         }
+        assert!(
+            log.contains(&format!("cache archive: {ORPHAN_ARCHIVE}")),
+            "the build's %post must see the uv cache of the host, got:\n{log}"
+        );
         let written = started
             .peppy_dirs
             .container_build_cache_dir()
-            .join("uv-cache")
+            .join("downloads")
             .join("written-by-post");
         assert!(
             written.is_file(),
-            "what %post writes into the uv cache must land in {}",
+            "what %post writes into the cache must land in {}",
             written.display()
+        );
+        assert!(
+            log.contains("Container build cache: uv cache pruned: Removed"),
+            "the build must prune the uv cache and say so, got:\n{log}"
+        );
+        assert!(
+            !orphan_archive.exists(),
+            "the prune must remove {} from the host",
+            orphan_archive.display()
         );
     }
 
