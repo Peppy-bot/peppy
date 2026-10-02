@@ -1038,6 +1038,19 @@ mod tests {
 
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let mut command = tokio::process::Command::new(cargo);
+        // How cargo prints must not depend on where the test runs: CI sets
+        // `CARGO_TERM_COLOR=always`, which wraps the status word of the
+        // repaint in escape codes, and `CARGO_TERM_QUIET` hides the progress
+        // line. Removed before `CARGO_PROGRESS_ENV` is set, as its variables
+        // share the prefix.
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("CARGO_TERM_") {
+                command.env_remove(key);
+            }
+        }
+        for proxy in PROXY_ENV_VARS {
+            command.env_remove(proxy);
+        }
         command
             .arg("fetch")
             .current_dir(project.path())
@@ -1051,9 +1064,6 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        for proxy in PROXY_ENV_VARS {
-            command.env_remove(proxy);
-        }
         let mut child = command.spawn().expect("cargo should start");
         let mut stderr = child.stderr.take().expect("cargo's stderr is piped");
 
