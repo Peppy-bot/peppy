@@ -12,7 +12,8 @@ move while the release runs.
 Two stages use the set here:
 
 - `hub-launch` dispatches launchers-hub's tests on the set and on the archive
-  of this release run, and waits for that run to succeed.
+  of this release run, and waits for the last attempt of that run to succeed:
+  an attempt that AWS interrupted is followed by the one RunsOn runs again.
 - `publish` puts the tag of the release on every hub, at the commit the set
   records, before it publishes the release.
 """
@@ -20,9 +21,10 @@ Two stages use the set here:
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeGuard, TypeVar
 
 import httpx
 
@@ -37,15 +39,32 @@ LAUNCHERS_HUB = resolve.HUBS_BY_NAME["launchers-hub"]
 LAUNCHERS_WORKFLOW = "tests.yml"
 LAUNCHERS_WORKFLOW_BRANCH = "main"
 
-# How often the wait reads the launchers-hub run. A full run takes up to about
-# 75 minutes, and the wait gives up after RUN_WAIT_TIMEOUT_SECONDS, inside the
-# 180 minutes the hub-launch job has.
+# The jobs of the launchers-hub run are on RunsOn spot instances in attempts 1
+# and 2 of the run. RunsOn marks a job whose instance AWS interrupted with an
+# annotation of this title. When such an attempt concludes `failure`, RunsOn
+# runs the failed jobs of the run again in the next attempt of the same run.
+# It does this after attempt 1 and after attempt 2, never after a later one
+# (https://runs-on.com/docs/costs/spot-pricing/).
+SPOT_INTERRUPTION_ANNOTATION_TITLE = "EC2 Spot interruption"
+LAST_ATTEMPT_RUNS_ON_RETRIES = 2
+
+# How often the wait reads the launchers-hub run. One attempt takes up to about
+# 75 minutes, and the wait gives up after RUN_WAIT_TIMEOUT_SECONDS: three
+# attempts and the start of the two retries, inside the 265 minutes the
+# hub-launch job has.
 RUN_POLL_INTERVAL_SECONDS = 60.0
-RUN_WAIT_TIMEOUT_SECONDS = 170 * 60.0
+RUN_WAIT_TIMEOUT_SECONDS = 255 * 60.0
+# RunsOn starts the next attempt a minute or two after the interrupted one
+# completes. The wait gives up when the next attempt has not started this long
+# after the wait saw the interrupted one complete.
+RETRY_START_TIMEOUT_SECONDS = 15 * 60.0
 # A read of the run that fails (a GitHub API error, a dropped connection) is
 # tried again at the next poll, so one failure does not throw away a run that
 # is well on its way. This many failures in a row end the wait.
 MAX_FAILED_RUN_READS = 5
+# The page size of the lists the wait reads (the jobs of an attempt, the
+# annotations of a job), the largest GitHub serves.
+API_PAGE_SIZE = 100
 
 
 def hub_repository(owner: str, hub: resolve.Hub) -> RepoSlug:
@@ -214,8 +233,58 @@ class DispatchedRun:
 
 @dataclass(frozen=True)
 class RunState:
+    """One read of the run. GitHub shows a run as its latest attempt: the
+    number of that attempt, and the status and conclusion of that attempt."""
+
+    attempt: int
     status: str
     conclusion: str | None
+
+
+@dataclass(frozen=True)
+class AttemptJob:
+    """A job of one attempt of the run, and the check run that holds the
+    annotations of that job."""
+
+    name: str
+    conclusion: str | None
+    check_run_id: int
+
+
+@dataclass(frozen=True)
+class SpotRetry:
+    """RunsOn runs the failed jobs of the run again after *attempt*, since AWS
+    interrupted the spot instances of *interrupted_jobs*."""
+
+    attempt: int
+    interrupted_jobs: tuple[str, ...]
+
+    @property
+    def next_attempt(self) -> int:
+        return self.attempt + 1
+
+
+@dataclass(frozen=True)
+class RunPolling:
+    """How the wait reads the run: the sleep and the clock it uses
+    (`time.sleep` and `time.monotonic` outside the tests), how often it reads,
+    when it gives up, and how many failed reads in a row it accepts."""
+
+    sleep: Callable[[float], None]
+    clock: Callable[[], float]
+    interval: float = RUN_POLL_INTERVAL_SECONDS
+    timeout: float = RUN_WAIT_TIMEOUT_SECONDS
+    retry_start_timeout: float = RETRY_START_TIMEOUT_SECONDS
+    max_failed_reads: int = MAX_FAILED_RUN_READS
+
+
+def _is_positive_int(value: object) -> TypeGuard[int]:
+    # bool is a subclass of int, and a JSON `true` is no number.
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_optional_str(value: object) -> TypeGuard[str | None]:
+    return value is None or isinstance(value, str)
 
 
 def parse_dispatch_response(response: Any, repository: RepoSlug) -> DispatchedRun:
@@ -226,7 +295,7 @@ def parse_dispatch_response(response: Any, repository: RepoSlug) -> DispatchedRu
     from the list of runs.
     """
     run_id = response.get("workflow_run_id") if isinstance(response, dict) else None
-    if not isinstance(run_id, int) or isinstance(run_id, bool):
+    if not _is_positive_int(run_id):
         raise ReleaseError(
             f"the dispatch of {LAUNCHERS_WORKFLOW} in {repository.full} answered "
             f"without a workflow_run_id, so the run it started is unknown: "
@@ -259,80 +328,323 @@ def dispatch_launchers_tests(
     return parse_dispatch_response(response, repository)
 
 
-def read_run_state(client: httpx.Client, run: DispatchedRun) -> RunState:
-    response = github_api(client, "GET", run.api_url)
-    status = response.get("status") if isinstance(response, dict) else None
-    conclusion = response.get("conclusion") if isinstance(response, dict) else None
-    if not isinstance(status, str) or not (
-        conclusion is None or isinstance(conclusion, str)
+def parse_run_state(response: Any, run: DispatchedRun) -> RunState:
+    """The state of *run* from GitHub's answer to a read of the run."""
+    fields = response if isinstance(response, dict) else {}
+    attempt = fields.get("run_attempt")
+    status = fields.get("status")
+    conclusion = fields.get("conclusion")
+    if (
+        not _is_positive_int(attempt)
+        or not isinstance(status, str)
+        or not _is_optional_str(conclusion)
     ):
         raise ReleaseError(
             f"unexpected GitHub API response for the run {run.html_url} "
-            f"(expected its status and conclusion): {json.dumps(response)[:500]}"
+            f"(expected its attempt, status and conclusion): "
+            f"{json.dumps(response)[:500]}"
         )
-    return RunState(status=status, conclusion=conclusion)
+    return RunState(attempt=attempt, status=status, conclusion=conclusion)
 
 
-def wait_for_run(
-    read_state: Callable[[], RunState],
-    run: DispatchedRun,
-    *,
-    sleep: Callable[[float], None],
-    clock: Callable[[], float],
-    poll_interval: float = RUN_POLL_INTERVAL_SECONDS,
-    timeout: float = RUN_WAIT_TIMEOUT_SECONDS,
-    max_failed_reads: int = MAX_FAILED_RUN_READS,
-) -> RunState:
-    """Read *run* every *poll_interval* seconds until it completes, and return
-    its completed state.
+def read_run_state(client: httpx.Client, run: DispatchedRun) -> RunState:
+    return parse_run_state(github_api(client, "GET", run.api_url), run)
 
-    The log names each status the run moves to. The wait stops with an error
-    once *timeout* seconds have passed, or once *max_failed_reads* reads in a
-    row failed. *sleep* and *clock* are `time.sleep` and `time.monotonic`
-    outside the tests.
+
+_Item = TypeVar("_Item")
+
+
+def _read_all_pages(
+    client: httpx.Client, url: str, parse_page: Callable[[Any], list[_Item]]
+) -> list[_Item]:
+    """Every item of the GitHub API list at *url*, read API_PAGE_SIZE at a
+    time. *parse_page* reads the items of one page."""
+    items: list[_Item] = []
+    page = 1
+    while True:
+        page_items = parse_page(
+            github_api(client, "GET", f"{url}?per_page={API_PAGE_SIZE}&page={page}")
+        )
+        items.extend(page_items)
+        if len(page_items) < API_PAGE_SIZE:
+            return items
+        page += 1
+
+
+def _check_run_id(check_run_url: Any, repository: RepoSlug) -> int | None:
+    """The id of the check run at *check_run_url*, when that is a check run of
+    *repository*."""
+    if not isinstance(check_run_url, str):
+        return None
+    found = re.fullmatch(
+        rf"{re.escape(repository.api_url)}/check-runs/([1-9][0-9]*)", check_run_url
+    )
+    return int(found.group(1)) if found else None
+
+
+def _parse_attempt_job(job: Any, run: DispatchedRun) -> AttemptJob:
+    fields = job if isinstance(job, dict) else {}
+    name = fields.get("name")
+    conclusion = fields.get("conclusion")
+    check_run_id = _check_run_id(fields.get("check_run_url"), run.repository)
+    if (
+        not isinstance(name, str)
+        or not _is_optional_str(conclusion)
+        or check_run_id is None
+    ):
+        raise ReleaseError(
+            f"unexpected GitHub API response for a job of the run {run.html_url} "
+            f"(expected its name, its conclusion and its check run in "
+            f"{run.repository.full}): {json.dumps(job)[:500]}"
+        )
+    return AttemptJob(name=name, conclusion=conclusion, check_run_id=check_run_id)
+
+
+def _parse_attempt_jobs(response: Any, run: DispatchedRun) -> list[AttemptJob]:
+    jobs = response.get("jobs") if isinstance(response, dict) else None
+    if not isinstance(jobs, list):
+        raise ReleaseError(
+            f"unexpected GitHub API response for the jobs of the run "
+            f"{run.html_url} (expected a list of jobs): {json.dumps(response)[:500]}"
+        )
+    return [_parse_attempt_job(job, run) for job in jobs]
+
+
+def _parse_annotation_titles(response: Any, check_run_url: str) -> list[str | None]:
+    """The titles of a page of annotations; None for an annotation without
+    one."""
+    if not isinstance(response, list) or not all(
+        isinstance(annotation, dict) and _is_optional_str(annotation.get("title"))
+        for annotation in response
+    ):
+        raise ReleaseError(
+            f"unexpected GitHub API response for the annotations of "
+            f"{check_run_url} (expected a list of annotations): "
+            f"{json.dumps(response)[:500]}"
+        )
+    return [annotation.get("title") for annotation in response]
+
+
+def _was_spot_interrupted(
+    client: httpx.Client, repository: RepoSlug, job: AttemptJob
+) -> bool:
+    check_run_url = f"{repository.api_url}/check-runs/{job.check_run_id}"
+    titles = _read_all_pages(
+        client,
+        f"{check_run_url}/annotations",
+        lambda page: _parse_annotation_titles(page, check_run_url),
+    )
+    return SPOT_INTERRUPTION_ANNOTATION_TITLE in titles
+
+
+def read_interrupted_jobs(
+    client: httpx.Client, run: DispatchedRun, attempt: int
+) -> tuple[str, ...]:
+    """The names of the failed jobs of attempt *attempt* of *run* whose spot
+    instance AWS interrupted: the failed jobs that RunsOn marked with an
+    annotation titled SPOT_INTERRUPTION_ANNOTATION_TITLE."""
+    jobs = _read_all_pages(
+        client,
+        f"{run.api_url}/attempts/{attempt}/jobs",
+        lambda page: _parse_attempt_jobs(page, run),
+    )
+    return tuple(
+        job.name
+        for job in jobs
+        if job.conclusion == "failure"
+        and _was_spot_interrupted(client, run.repository, job)
+    )
+
+
+_Answer = TypeVar("_Answer")
+
+
+def _read_until_it_answers(
+    read: Callable[[], _Answer], subject: str, polling: RunPolling
+) -> _Answer:
+    """The answer of *read*, which reads *subject*.
+
+    A read that fails (a GitHub API error, a dropped connection) is tried again
+    at the next poll, and polling.max_failed_reads failures in a row end the
+    wait.
     """
-    deadline = clock() + timeout
     failed_reads = 0
-    reported_status: str | None = None
     while True:
         try:
-            state = read_state()
+            return read()
         except ReleaseError as e:
             failed_reads += 1
-            if failed_reads >= max_failed_reads:
+            if failed_reads >= polling.max_failed_reads:
                 raise ReleaseError(
-                    f"reading the run {run.html_url} failed {failed_reads} times "
-                    f"in a row; the last failure: {e}"
+                    f"reading {subject} failed {failed_reads} times in a row; "
+                    f"the last failure: {e}"
                 ) from e
             console.print(
-                f"[yellow]Reading the run failed ({failed_reads} of "
-                f"{max_failed_reads} in a row); reading it again at the next "
-                f"poll.[/yellow]"
+                f"[yellow]Reading {subject} failed ({failed_reads} of "
+                f"{polling.max_failed_reads} in a row); reading it again at the "
+                f"next poll.[/yellow]",
+                soft_wrap=True,
             )
-        else:
-            failed_reads = 0
-            if state.status == "completed":
-                return state
-            if state.status != reported_status:
-                console.print(f"The run is {state.status}.")
-                reported_status = state.status
-        if clock() >= deadline:
-            raise ReleaseError(
-                f"the run {run.html_url} did not complete within "
-                f"{timeout / 60:.0f} minutes. It goes on without this release, "
-                f"which publishes nothing."
-            )
-        sleep(poll_interval)
+            polling.sleep(polling.interval)
+
+
+def _poll_run(
+    read_state: Callable[[], RunState],
+    run: DispatchedRun,
+    polling: RunPolling,
+    *,
+    until: Callable[[RunState], bool],
+    deadline: float,
+) -> RunState | None:
+    """Read *run* every polling.interval seconds until a read satisfies
+    *until*, and return that read; None when the clock passes *deadline*
+    first. The log names each attempt and status the run moves to."""
+    reported: tuple[int, str] | None = None
+    while True:
+        state = _read_until_it_answers(read_state, f"the run {run.html_url}", polling)
+        if until(state):
+            return state
+        if (state.attempt, state.status) != reported:
+            console.print(f"Attempt {state.attempt} of the run is {state.status}.")
+            reported = (state.attempt, state.status)
+        if polling.clock() >= deadline:
+            return None
+        polling.sleep(polling.interval)
+
+
+def _wait_timeout_error(run: DispatchedRun, polling: RunPolling) -> ReleaseError:
+    return ReleaseError(
+        f"the run {run.html_url} did not complete within "
+        f"{polling.timeout / 60:.0f} minutes. It goes on without this release, "
+        f"which publishes nothing."
+    )
+
+
+def _wait_for_attempt_to_complete(
+    read_state: Callable[[], RunState],
+    run: DispatchedRun,
+    polling: RunPolling,
+    *,
+    attempt: int,
+    deadline: float,
+) -> RunState:
+    """The completed state of attempt *attempt* of *run*, or of a later
+    attempt that started before the wait saw *attempt* complete."""
+    state = _poll_run(
+        read_state,
+        run,
+        polling,
+        until=lambda state: state.attempt >= attempt and state.status == "completed",
+        deadline=deadline,
+    )
+    if state is None:
+        raise _wait_timeout_error(run, polling)
+    return state
+
+
+def _wait_for_attempt_to_start(
+    read_state: Callable[[], RunState],
+    run: DispatchedRun,
+    polling: RunPolling,
+    *,
+    attempt: int,
+    deadline: float,
+) -> None:
+    """Wait for attempt *attempt* of *run*, or a later one, to start, for at
+    most polling.retry_start_timeout seconds."""
+    start_deadline = polling.clock() + polling.retry_start_timeout
+    started = _poll_run(
+        read_state,
+        run,
+        polling,
+        until=lambda state: state.attempt >= attempt,
+        deadline=min(deadline, start_deadline),
+    )
+    if started is not None:
+        return
+    if deadline < start_deadline:
+        raise _wait_timeout_error(run, polling)
+    raise ReleaseError(
+        f"RunsOn did not start attempt {attempt} of the run {run.html_url} "
+        f"within {polling.retry_start_timeout / 60:.0f} minutes of the end of "
+        f"attempt {attempt - 1}, whose spot instance AWS interrupted, so nothing "
+        f"is published. Check that RunsOn retries interrupted jobs (its `retry` "
+        f"setting) and that its control plane is up."
+    )
+
+
+def _spot_retry_after(
+    state: RunState,
+    read_interrupted_jobs: Callable[[int], tuple[str, ...]],
+    run: DispatchedRun,
+    polling: RunPolling,
+) -> SpotRetry | None:
+    """The retry RunsOn runs after the completed attempt *state*, or None when
+    that attempt is the last one of the run.
+
+    RunsOn runs the failed jobs of the run again after an attempt that
+    concluded `failure` with a job whose spot instance AWS interrupted, after
+    attempt LAST_ATTEMPT_RUNS_ON_RETRIES at the latest.
+    """
+    if state.conclusion != "failure" or state.attempt > LAST_ATTEMPT_RUNS_ON_RETRIES:
+        return None
+    interrupted_jobs = _read_until_it_answers(
+        lambda: read_interrupted_jobs(state.attempt),
+        f"the jobs of attempt {state.attempt} of the run {run.html_url}",
+        polling,
+    )
+    if not interrupted_jobs:
+        return None
+    return SpotRetry(attempt=state.attempt, interrupted_jobs=interrupted_jobs)
+
+
+def wait_for_last_attempt(
+    read_state: Callable[[], RunState],
+    read_interrupted_jobs: Callable[[int], tuple[str, ...]],
+    run: DispatchedRun,
+    polling: RunPolling,
+) -> RunState:
+    """Wait until the last attempt of *run* completes, and return its
+    completed state.
+
+    An attempt is not the last one when RunsOn runs the failed jobs of the run
+    again after it (see _spot_retry_after). The wait then waits for the next
+    attempt to start, for at most polling.retry_start_timeout seconds, and to
+    complete. When the next attempt starts between two reads, the wait never
+    sees the attempt before it complete, and follows the next one. The whole
+    wait, every attempt included, gives up after polling.timeout seconds.
+    """
+    deadline = polling.clock() + polling.timeout
+    attempt = 1
+    while True:
+        state = _wait_for_attempt_to_complete(
+            read_state, run, polling, attempt=attempt, deadline=deadline
+        )
+        retry = _spot_retry_after(state, read_interrupted_jobs, run, polling)
+        if retry is None:
+            return state
+        interrupted_jobs = ", ".join(f"`{name}`" for name in retry.interrupted_jobs)
+        console.print(
+            f"[yellow]AWS interrupted the spot instance of {interrupted_jobs} in "
+            f"attempt {retry.attempt} of the run. RunsOn runs the failed jobs of "
+            f"the run again in attempt {retry.next_attempt}, and the wait follows "
+            f"that attempt.[/yellow]",
+            soft_wrap=True,
+        )
+        _wait_for_attempt_to_start(
+            read_state, run, polling, attempt=retry.next_attempt, deadline=deadline
+        )
+        attempt = retry.next_attempt
 
 
 def require_successful_run(state: RunState, run: DispatchedRun) -> None:
     if state.conclusion == "success":
         return
     raise ReleaseError(
-        f"the launchers-hub run {run.html_url} concluded "
-        f"`{state.conclusion}`: the launchers do not all launch with the peppy "
-        f"and the hubs of this release, so nothing is published. Its summary "
-        f"names every combination that failed."
+        f"attempt {state.attempt} of the launchers-hub run {run.html_url} "
+        f"concluded `{state.conclusion}`: the launchers do not all launch with "
+        f"the peppy and the hubs of this release, so nothing is published. Its "
+        f"summary names every combination that failed."
     )
 
 
@@ -347,18 +659,23 @@ def check_launchers(
     clock: Callable[[], float],
 ) -> DispatchedRun:
     """Run launchers-hub's tests on *hub_set* and the archive of the release
-    run *peppy_run_id*, and return the run once it succeeded.
+    run *peppy_run_id*, and return the run once its last attempt succeeded.
 
-    *dispatch_client* starts the run. *read_client* reads it until it
-    completes, which takes longer than the hour a release token lasts.
+    *dispatch_client* starts the run. *read_client* reads it until its last
+    attempt completes, which takes longer than the hour a release token lasts.
+    *sleep* and *clock* are `time.sleep` and `time.monotonic` outside the
+    tests.
     """
     run = dispatch_launchers_tests(dispatch_client, owner, hub_set, peppy_run_id)
     console.print(
         f"Dispatched {LAUNCHERS_WORKFLOW} of {run.repository.full}: {run.html_url}",
         soft_wrap=True,
     )
-    state = wait_for_run(
-        lambda: read_run_state(read_client, run), run, sleep=sleep, clock=clock
+    state = wait_for_last_attempt(
+        lambda: read_run_state(read_client, run),
+        lambda attempt: read_interrupted_jobs(read_client, run, attempt),
+        run,
+        RunPolling(sleep=sleep, clock=clock),
     )
     require_successful_run(state, run)
     return run

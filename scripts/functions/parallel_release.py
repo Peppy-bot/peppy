@@ -13,8 +13,8 @@ platform, all three at once, and no stage starts a VM:
   its commit by the daemon of the host's archive, installed, and its
   repository index checked there (see release_install_check.py).
 - `hub-launch` (any host): launchers-hub's tests, dispatched on the hub set the
-  release recorded and on the x86_64 archive of the run, waited for until they
-  succeed (see release_hubs.py).
+  release recorded and on the x86_64 archive of the run, waited for until the
+  last attempt of their run succeeds (see release_hubs.py).
 - `publish` (Linux): the tag of the release on every hub of the set, a check
   that the archive of the host, installed, reads the default hubs at that
   tag, the GitHub release from the three archives, then the notes committed
@@ -1098,7 +1098,8 @@ def run_hub_launch(*, hub_set_path: Path, peppy_run_id: int) -> None:
     release run *peppy_run_id*, and wait until they succeed.
 
     The release token dispatches the run. The job's own token reads it until
-    it completes, which takes longer than the hour a release token lasts.
+    its last attempt completes, which takes longer than the hour a release
+    token lasts.
     """
     dispatch_token = require_release_token()
     read_token = require_job_token()

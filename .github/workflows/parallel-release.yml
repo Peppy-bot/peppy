@@ -26,7 +26,9 @@ name: Parallel release
 # release, publish tags each hub `peppy-release/<tag>` at its recorded commit:
 # that tag is where a peppy of this version reads its default hubs. The
 # launchers-hub run takes up to about 75 minutes and publish waits for it, so
-# publish starts about 75 to 80 minutes after the builds end.
+# publish starts about 75 to 80 minutes after the builds end. When AWS
+# interrupts a spot instance of that run, RunsOn runs its failed jobs again in
+# the next attempt of the same run, and hub-launch waits for that attempt too.
 # Nothing is published when a job before publish fails, or when publish fails
 # before its release step.
 #
@@ -401,13 +403,17 @@ jobs:
   # it is scoped to launchers-hub and to actions. The run takes up to about 75
   # minutes, longer than the hour that token lasts, so the stage reads it with
   # the job's own token, which reads the public launchers-hub for as long as
-  # the job runs. The timeout covers a full run with room to spare; the stage
-  # gives up on its own after 170 minutes, naming the run.
+  # the job runs. The jobs of the run are on spot in attempts 1 and 2 of the
+  # run. When AWS interrupts one, RunsOn runs the failed jobs again in the next
+  # attempt of the same run, and the stage waits for that attempt too (see
+  # wait_for_last_attempt in scripts/functions/release_hubs.py). The stage
+  # gives up on its own after 255 minutes, naming the run: three attempts and
+  # the start of the two retries. The timeout adds 10 minutes to that.
   hub-launch:
     needs: hub-set
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     environment: release
-    timeout-minutes: 180
+    timeout-minutes: 265
     steps:
       - name: Make the release token
         id: release-token
