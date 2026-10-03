@@ -15,7 +15,8 @@ a PEPPY_HOME, and writes the repositories.json5 the daemon reads there, before
 any daemon starts. It reports the set to the job summary and to the action's
 `set` output, and writes it to the set record the action uploads, which the
 merge-set bot (.github/merge-set/merge_set.py) reads to tell whether a run of
-a hub pull request tested the current head of every branch of its set.
+a hub pull request tested the current head of every branch of its set, or a
+commit that differs from that head by a clean merge of its base alone.
 
 With the action's `wait-only` input, the script instead waits until the peppy
 dev build that the job would install is uploaded, and installs nothing. Thus a

@@ -50,7 +50,8 @@ jobs:
     # seconds, where a RunsOn instance boots in about 40, so a merge or a
     # re-run that a user asks for starts at once. It is never a spot instance,
     # so a merge does not stop part way. Its jobs stop after 15 minutes, the
-    # timeout of this job.
+    # timeout of this job. Its git (2.40 or later) checks the merges of a
+    # base (`git merge-tree --merge-base`).
     runs-on: ubuntu-slim
     timeout-minutes: 15
     environment:
@@ -69,11 +70,12 @@ jobs:
         run: python3 .github/merge-set/merge_set.py repositories
 
       # Everything the bot reads and writes, in every repository of a set:
-      # contents to merge, pull requests for the merge-set comments and the
-      # reviews, statuses for the gate, checks for the required checks,
-      # actions for the set records and the re-runs, and workflows because
-      # GitHub refuses an App the merge of a pull request that changes
-      # .github/workflows/ without it.
+      # contents to merge, and to fetch the commits of a branch that merged
+      # its base in, whose merge git checks; pull requests for the merge-set
+      # comments and the reviews, statuses for the gate, checks for the
+      # required checks, actions for the set records and the re-runs, and
+      # workflows because GitHub refuses an App the merge of a pull request
+      # that changes .github/workflows/ without it.
       - name: Make the merge-set token
         id: token
         uses: actions/create-github-app-token@v3
