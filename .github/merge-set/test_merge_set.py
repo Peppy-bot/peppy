@@ -4,14 +4,18 @@
 The decisions run on fixed input data. The sync runs against FakeGitHub, an
 in-memory GitHub with the methods of GitHubGateway, which records what the bot
 writes; its waits are recorded, never slept. GitHubGateway runs against
-FakeApi, which answers each call from a table. Nothing touches the network.
+FakeApi, which answers each call from a table, and FakeGit. GitMerges runs the
+git of the host against GitFixture, a repository in a temporary directory
+that it fetches from as it fetches from GitHub. Nothing touches the network.
 The last cases hold the workflows of this repository to the names the script
 uses, so the changes job of tests.yml runs these cases on every change.
 """
 
+import base64
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -94,6 +98,11 @@ def set_state(*members, left_behind=()):
 
 def tested_set(hubs=None, peppy=None):
     return TestedSet(hubs=hubs or {}, peppy=peppy)
+
+
+def no_clean_base_merge(mismatch):
+    """The answer of a branch that changed on its own since the job ran."""
+    return False
 
 
 def run_url(repository, run_id):
@@ -1092,7 +1101,7 @@ class Freshness(unittest.TestCase):
 
     def stale_of(self, tested):
         run = hub_run(NODES_HUB, records=[JobRecord("check-index", tested)])
-        return merge_set.stale_jobs(self.state(), [run])
+        return merge_set.stale_jobs(self.state(), [run], no_clean_base_merge)
 
     def test_a_job_that_ran_with_every_head_of_the_set_is_fresh(self):
         self.assertEqual(self.stale_of(self.fresh_record()), [])
@@ -1107,6 +1116,32 @@ class Freshness(unittest.TestCase):
         self.assertEqual(
             stale[0].mismatches,
             (merge_set.Mismatch(CONTRACTS_HUB, old, commit(CONTRACTS_HUB)),),
+        )
+
+    def test_a_job_that_ran_a_commit_its_head_merges_its_base_into_is_fresh(self):
+        tested = self.fresh_record()
+        old = TestedRef(SET_NAME, commit(CONTRACTS_HUB, "old"))
+        run = hub_run(
+            NODES_HUB,
+            records=[
+                JobRecord(
+                    "check-index",
+                    replace(tested, hubs={**tested.hubs, "contracts-hub": old}),
+                )
+            ],
+        )
+        asked = []
+
+        def is_clean_base_merge(mismatch):
+            asked.append(mismatch)
+            return True
+
+        self.assertEqual(
+            merge_set.stale_jobs(self.state(), [run], is_clean_base_merge), []
+        )
+        # Only the branch that moved since the job ran is checked.
+        self.assertEqual(
+            asked, [merge_set.Mismatch(CONTRACTS_HUB, old, commit(CONTRACTS_HUB))]
         )
 
     def test_a_job_that_ran_before_the_branch_existed_is_stale(self):
@@ -1144,7 +1179,7 @@ class Freshness(unittest.TestCase):
             hubs={"nodes-hub": TestedRef("checkout", commit(NODES_HUB))}
         )
         run = hub_run(NODES_HUB, records=[JobRecord("check-index", tested)])
-        self.assertEqual(merge_set.stale_jobs(state, [run]), [])
+        self.assertEqual(merge_set.stale_jobs(state, [run], no_clean_base_merge), [])
 
     def test_an_expired_record_is_stale(self):
         stale = self.stale_of(None)
@@ -1164,7 +1199,10 @@ class Freshness(unittest.TestCase):
         nodes = pull_request(NODES_HUB)
         reports = {
             nodes.label: report(
-                nodes, stale=tuple(merge_set.stale_jobs(self.state(), [run]))
+                nodes,
+                stale=tuple(
+                    merge_set.stale_jobs(self.state(), [run], no_clean_base_merge)
+                ),
             )
         }
         self.assertEqual(merge_set.stale_runs(reports), [run])
@@ -1379,7 +1417,7 @@ class Dashboards(unittest.TestCase):
         )
         self.assertIn(
             f"| `{commit(NODES_HUB)[:7]}` | [passed]({run_url(NODES_HUB, 10)}) "
-            "| blocked |",
+            "| CI out of date |",
             body,
         )
         self.assertIn("| contracts-hub | no open pull request |", body)
@@ -1431,6 +1469,35 @@ class Dashboards(unittest.TestCase):
         )
         self.assertIn("| blocked |", body)
         self.assertIn("| not approved |", body)
+
+    def test_the_state_of_a_member_names_a_re_run_when_it_alone_clears_it(self):
+        stale = merge_set.StaleJob(
+            hub_run(NODES_HUB), "check-index", (), record_expired=True
+        )
+        nodes = pull_request(NODES_HUB)
+        cases = [
+            ({}, "ready"),
+            ({"review": ReviewDecision.REVIEW_REQUIRED}, "not approved"),
+            ({"stale": (stale,)}, "CI out of date"),
+            (
+                {"stale": (stale,), "review": ReviewDecision.REVIEW_REQUIRED},
+                "CI out of date",
+            ),
+            (
+                {"stale": (stale,), "checks": ((TEST_CHECK, CheckState.FAILED),)},
+                "blocked",
+            ),
+            ({"mergeable": False}, "blocked"),
+        ]
+        for changes, expected in cases:
+            with self.subTest(changes=changes):
+                blockers = merge_set.pull_request_blockers(report(nodes, **changes))
+                self.assertEqual(merge_set.member_state(NODES_HUB, blockers), expected)
+        # The blockers of another member leave this one ready.
+        peppy_blockers = merge_set.pull_request_blockers(
+            report(pull_request(PEPPY), mergeable=False)
+        )
+        self.assertEqual(merge_set.member_state(NODES_HUB, peppy_blockers), "ready")
 
     def test_the_ticked_boxes_are_read_by_their_marker(self):
         body = (
@@ -1536,6 +1603,9 @@ class FakeGitHub:
         # one repeats.
         self.merge_states = {}
         self.behind = set()
+        # The (repository name, tested commit) pairs whose branch head differs
+        # from that commit by a clean merge of its base alone.
+        self.clean_base_merges = set()
         self.runs = {}
         self.comments = []
         self.permissions = {}
@@ -1649,6 +1719,12 @@ class FakeGitHub:
 
     def is_behind(self, pr):
         return pr.label in self.behind
+
+    def is_clean_base_merge(self, mismatch):
+        return (
+            mismatch.repository.name,
+            mismatch.tested.commit,
+        ) in self.clean_base_merges
 
     def hub_runs(self, pr):
         return self.runs.get(pr.label, [])
@@ -2166,7 +2242,22 @@ class SyncRerun(unittest.TestCase):
             f"with peppy at `{SET_NAME}` `{commit(PEPPY, 'old')[:7]}`",
             body,
         )
+        self.assertIn(
+            f"| `{self.nodes.head_commit[:7]}` | [passed]({run_url(NODES_HUB, 10)}) "
+            "| CI out of date |",
+            body,
+        )
         self.assertIn("Re-run the out-of-date CI of this set (2 runs)", body)
+
+    def test_a_branch_that_merged_its_base_alone_since_the_runs_needs_no_re_run(
+        self,
+    ):
+        self.github.clean_base_merges.add(("peppy", commit(PEPPY, "old")))
+        sync(self.github)
+        body = self.github.dashboard_body(self.peppy)
+        self.assertIn("**Ready to merge.**", body)
+        self.assertIn(merge_set.CURRENT_HUB_RUNS, body)
+        self.assertNotIn("merge-set:rerun", body)
 
     def test_the_finished_stale_runs_are_re_run(self):
         self.tick_rerun()
@@ -2223,6 +2314,32 @@ class FakeApi:
         return self.downloads[url]
 
 
+class FakeGit:
+    """GitMerges with the answer of each merge from a table: (merge base,
+    ours, theirs, head) to whether it is clean, or to a GitError to raise."""
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.calls = []
+
+    def is_clean_merge(self, repository, merge_base, ours, theirs, head):
+        self.calls.append((repository, merge_base, ours, theirs, head))
+        answer = self.answers[(merge_base, ours, theirs, head)]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def gateway_of(api, git=None):
+    """A GitHubGateway on `api`, with a git that answers no merge unless the
+    case gives one."""
+    return merge_set.GitHubGateway(api, BOT, git or FakeGit({}))
+
+
+def comparison_item(merge_base, behind_by=0):
+    return {"behind_by": behind_by, "merge_base_commit": {"sha": merge_base}}
+
+
 def not_found(path):
     return ApiError(f"GET {path}", 404, "Not Found")
 
@@ -2237,7 +2354,7 @@ class Gateway(unittest.TestCase):
             ([{"ref": f"refs/heads/{SET_NAME}-2", "object": {"sha": "x"}}], None),
         ):
             with self.subTest(answer=answer):
-                gateway = merge_set.GitHubGateway(FakeApi({("GET", path): answer}), BOT)
+                gateway = gateway_of(FakeApi({("GET", path): answer}))
                 self.assertEqual(gateway.branch_head(NODES_HUB, SET_NAME), expected)
 
     def test_a_merge_github_refuses_is_checked_against_the_pull_request(self):
@@ -2251,7 +2368,7 @@ class Gateway(unittest.TestCase):
         ):
             with self.subTest(pull=pull):
                 api = FakeApi({("PUT", f"{path}/merge"): refused, ("GET", path): pull})
-                gateway = merge_set.GitHubGateway(api, BOT)
+                gateway = gateway_of(api)
                 if expected is None:
                     with self.assertRaises(MergeRefused) as refusal:
                         gateway.merge(pull_request(NODES_HUB, 88), "message")
@@ -2266,7 +2383,7 @@ class Gateway(unittest.TestCase):
     def test_a_merge_asks_for_the_head_commit_it_checked(self):
         path = "/repos/Peppy-bot/nodes-hub/pulls/88/merge"
         api = FakeApi({("PUT", path): {"sha": "m" * 40}})
-        merge_set.GitHubGateway(api, BOT).merge(pull_request(NODES_HUB, 88), "message")
+        gateway_of(api).merge(pull_request(NODES_HUB, 88), "message")
         self.assertEqual(
             api.calls[0][3],
             {
@@ -2330,7 +2447,7 @@ class Gateway(unittest.TestCase):
             },
             downloads={"a70": record_bundle(tested)},
         )
-        (run,) = merge_set.GitHubGateway(api, BOT).hub_runs(pr)
+        (run,) = gateway_of(api).hub_runs(pr)
         self.assertEqual((run.id, run.name, run.completed), (7, "Tests #4", False))
         self.assertEqual(
             run.records,
@@ -2363,7 +2480,7 @@ class Gateway(unittest.TestCase):
                 },
             }
         )
-        gateway = merge_set.GitHubGateway(api, BOT)
+        gateway = gateway_of(api)
         pr = pull_request(NODES_HUB, 88)
         self.assertEqual(gateway.ci_run(pr), merge_set.CiRun("u7", CheckState.RUNNING))
         self.assertIn(
@@ -2377,10 +2494,77 @@ class Gateway(unittest.TestCase):
             [runs_path, runs_path, workflows_path],
         )
 
+    def test_a_pull_request_is_behind_when_its_base_has_commits_it_lacks(self):
+        pr = pull_request(NODES_HUB, 88)
+        path = f"/repos/Peppy-bot/nodes-hub/compare/main...{pr.head_commit}"
+        for behind_by, expected in ((0, False), (3, True)):
+            with self.subTest(behind_by=behind_by):
+                api = FakeApi({("GET", path): comparison_item("m" * 40, behind_by)})
+                self.assertEqual(gateway_of(api).is_behind(pr), expected)
+                self.assertEqual(api.calls[0][2], {"per_page": 1})
+
+    def clean_base_merge_case(self, tested_answer=None, git_answer=True):
+        """A branch of nodes-hub that a job ran at `tested`, forked from `main`
+        at `fork`, and whose head holds `main` at `base`. GitHub answers the
+        comparison of `base` with `tested` with `tested_answer`, else with
+        `fork`, and git answers the merge with `git_answer`."""
+        self.tested, self.head = commit(NODES_HUB, "tested"), commit(NODES_HUB)
+        self.base, self.fork = commit(NODES_HUB, "main"), commit(NODES_HUB, "fork")
+        compare = "/repos/Peppy-bot/nodes-hub/compare"
+        self.api = FakeApi(
+            {
+                ("GET", f"{compare}/main...{self.head}"): comparison_item(self.base),
+                ("GET", f"{compare}/{self.base}...{self.tested}"): (
+                    tested_answer or comparison_item(self.fork)
+                ),
+            }
+        )
+        self.git = FakeGit({(self.fork, self.tested, self.base, self.head): git_answer})
+        self.mismatch = merge_set.Mismatch(
+            NODES_HUB, TestedRef(SET_NAME, self.tested), self.head
+        )
+        return gateway_of(self.api, self.git)
+
+    def test_git_merges_the_tested_commit_with_the_base_the_head_holds(self):
+        for clean in (True, False):
+            with self.subTest(clean=clean):
+                gateway = self.clean_base_merge_case(git_answer=clean)
+                self.assertEqual(gateway.is_clean_base_merge(self.mismatch), clean)
+                self.assertEqual(
+                    self.git.calls,
+                    [(NODES_HUB, self.fork, self.tested, self.base, self.head)],
+                )
+                # The jobs that ran the same commit are answered at once.
+                self.assertEqual(gateway.is_clean_base_merge(self.mismatch), clean)
+                self.assertEqual(len(self.git.calls), 1)
+                self.assertEqual(len(self.api.calls), 2)
+
+    def test_a_tested_commit_github_does_not_know_is_no_clean_base_merge(self):
+        path = f"/repos/Peppy-bot/nodes-hub/compare/{commit(NODES_HUB, 'main')}..."
+        gateway = self.clean_base_merge_case(not_found(path))
+        self.assertFalse(gateway.is_clean_base_merge(self.mismatch))
+        self.assertEqual(self.git.calls, [])
+
+    def test_another_failure_of_github_stops_the_sync(self):
+        failure = ApiError("GET compare", 502, "Bad Gateway")
+        gateway = self.clean_base_merge_case(failure)
+        with self.assertRaises(ApiError):
+            gateway.is_clean_base_merge(self.mismatch)
+
+    def test_a_merge_git_cannot_check_is_no_clean_base_merge_and_warns(self):
+        gateway = self.clean_base_merge_case(
+            git_answer=merge_set.GitError("`git fetch` failed: not our ref")
+        )
+        with patch("sys.stdout", io.StringIO()) as log:
+            self.assertFalse(gateway.is_clean_base_merge(self.mismatch))
+        self.assertTrue(log.getvalue().startswith("::warning::"))
+        self.assertIn(f"ran nodes-hub at {self.tested[:7]}", log.getvalue())
+        self.assertIn("not our ref", log.getvalue())
+
     def test_a_user_who_is_no_collaborator_has_no_permission(self):
         path = "/repos/Peppy-bot/nodes-hub/collaborators/mallory/permission"
         api = FakeApi({("GET", path): not_found(path)})
-        gateway = merge_set.GitHubGateway(api, BOT)
+        gateway = gateway_of(api)
         self.assertEqual(gateway.permission(NODES_HUB, "mallory"), "none")
         self.assertEqual(gateway.permission(NODES_HUB, "mallory"), "none")
         self.assertEqual(len(api.calls), 1)
@@ -2398,7 +2582,7 @@ class Gateway(unittest.TestCase):
                 api = FakeApi(
                     {("GET", path): {"name": "Protect main and dev", **ruleset}}
                 )
-                gateway = merge_set.GitHubGateway(api, BOT)
+                gateway = gateway_of(api)
                 expected = merge_set.RulesetBypass("Protect main and dev", bypassed)
                 self.assertEqual(
                     gateway.ruleset_bypass(NODES_HUB, APPROVAL_RULESET), expected
@@ -2427,7 +2611,7 @@ class Gateway(unittest.TestCase):
                 ]
             }
         )
-        dashboard = merge_set.GitHubGateway(api, BOT).dashboard(pr)
+        dashboard = gateway_of(api).dashboard(pr)
         self.assertEqual(
             (dashboard.id, dashboard.node_id, dashboard.url), (3, "n3", "c3")
         )
@@ -2436,7 +2620,7 @@ class Gateway(unittest.TestCase):
         pr = pull_request(NODES_HUB, 88)
         path = f"/repos/Peppy-bot/nodes-hub/statuses/{pr.head_commit}"
         api = FakeApi({("POST", path): {}})
-        gateway = merge_set.GitHubGateway(api, BOT)
+        gateway = gateway_of(api)
         gateway.post_gate(pr, merge_set.alone_gate(SET_NAME))
         gateway.post_gate(pr, merge_set.member_gate(SET_NAME, "https://c"))
         self.assertNotIn("target_url", api.calls[0][3])
@@ -2471,6 +2655,174 @@ class Gateway(unittest.TestCase):
             merge_set.GitHubApi("token").request("PUT", "/x")
         self.assertEqual(refused.exception.status, 405)
         self.assertEqual(refused.exception.message, "Pull Request is not mergeable")
+
+
+class GitFixture:
+    """A repository on disk that GitMerges fetches from as it fetches from
+    GitHub, and a work tree that makes its commits."""
+
+    LINES = "".join(f"line {number}\n" for number in range(1, 9))
+
+    def __init__(self, directory):
+        self.remote = Path(directory) / "remote.git"
+        self.work = Path(directory) / "work"
+        self.environment = {
+            **os.environ,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        }
+        self.git(directory, "init", "--quiet", "--bare", str(self.remote))
+        # GitHub serves a fetch without the files and a fetch by commit.
+        self.git(self.remote, "config", "uploadpack.allowFilter", "true")
+        self.git(self.remote, "config", "uploadpack.allowAnySHA1InWant", "true")
+        self.git(directory, "init", "--quiet", "--initial-branch=main", str(self.work))
+        self.fork = self.commit("fork", shared=self.LINES, base_only="base\n")
+        self.git(self.work, "checkout", "--quiet", "-b", SET_NAME)
+        self.tested = self.commit(
+            "the change of the branch",
+            branch_only="branch\n",
+            shared=self.LINES.replace("line 1\n", "branch 1\n"),
+        )
+        # The job ran the branch as it was pushed.
+        self.push()
+
+    def git(self, where, *arguments):
+        return subprocess.run(
+            ["git", "-C", str(where), *arguments],
+            capture_output=True,
+            text=True,
+            env=self.environment,
+            check=True,
+        ).stdout.strip()
+
+    def write(self, **files):
+        for name, content in files.items():
+            (self.work / name).write_text(content)
+
+    def commit(self, message, **files):
+        self.write(**files)
+        self.git(self.work, "add", "--all")
+        self.git(self.work, "commit", "--quiet", "--message", message)
+        return self.git(self.work, "rev-parse", "HEAD")
+
+    def commit_on_main(self, **files):
+        """A commit of `main`, made while the branch is checked out."""
+        self.git(self.work, "checkout", "--quiet", "main")
+        base = self.commit("a change of main", **files)
+        self.git(self.work, "checkout", "--quiet", SET_NAME)
+        return base
+
+    def merge_main(self, **edits):
+        """Merge `main` into the branch. `edits` are written into the merge
+        commit: the resolution of a conflict, or a change of the merge."""
+        self.git(self.work, "merge", "--quiet", "--no-commit", "main")
+        self.write(**edits)
+        self.git(self.work, "add", "--all")
+        self.git(self.work, "commit", "--quiet", "--no-edit")
+        return self.git(self.work, "rev-parse", "HEAD")
+
+    def merge_main_with_a_conflict(self, resolution):
+        merge = subprocess.run(
+            ["git", "-C", str(self.work), "merge", "--quiet", "main"],
+            capture_output=True,
+            env=self.environment,
+        )
+        if merge.returncode == 0:
+            raise AssertionError("the merge of main has no conflict")
+        self.write(shared=resolution)
+        self.git(self.work, "add", "--all")
+        self.git(self.work, "commit", "--quiet", "--no-edit")
+        return self.git(self.work, "rev-parse", "HEAD")
+
+    def push(self):
+        self.git(self.work, "push", "--quiet", "--force", str(self.remote), "--all")
+
+    def is_clean_merge(self, base, head):
+        """What GitMerges answers for `head` and the commit the job ran, at
+        the merge base GitHub would give."""
+        self.push()
+        merge_base = self.git(self.work, "merge-base", self.tested, base)
+        git = merge_set.GitMerges("token", lambda repository: self.remote.as_uri())
+        return git.is_clean_merge(NODES_HUB, merge_base, self.tested, base, head)
+
+
+class GitMergesOnDisk(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.fixture = GitFixture(directory.name)
+
+    def test_a_merge_of_the_base_that_touches_no_file_of_the_branch_is_clean(self):
+        base = self.fixture.commit_on_main(base_only="base 2\n")
+        head = self.fixture.merge_main()
+        self.assertTrue(self.fixture.is_clean_merge(base, head))
+
+    def test_a_merge_git_makes_in_a_file_both_sides_changed_is_clean(self):
+        base = self.fixture.commit_on_main(
+            shared=GitFixture.LINES.replace("line 8\n", "main 8\n")
+        )
+        head = self.fixture.merge_main()
+        self.assertTrue(self.fixture.is_clean_merge(base, head))
+
+    def test_a_conflict_resolved_by_hand_is_no_clean_merge(self):
+        base = self.fixture.commit_on_main(
+            shared=GitFixture.LINES.replace("line 1\n", "main 1\n")
+        )
+        head = self.fixture.merge_main_with_a_conflict(
+            GitFixture.LINES.replace("line 1\n", "branch and main 1\n")
+        )
+        self.assertFalse(self.fixture.is_clean_merge(base, head))
+
+    def test_a_change_made_in_the_merge_commit_is_no_clean_merge(self):
+        base = self.fixture.commit_on_main(base_only="base 2\n")
+        head = self.fixture.merge_main(branch_only="branch, changed in the merge\n")
+        self.assertFalse(self.fixture.is_clean_merge(base, head))
+
+    def test_a_commit_of_the_branch_after_the_merge_is_no_clean_merge(self):
+        base = self.fixture.commit_on_main(base_only="base 2\n")
+        self.fixture.merge_main()
+        head = self.fixture.commit("a fix", branch_only="branch fixed\n")
+        self.assertFalse(self.fixture.is_clean_merge(base, head))
+
+    def test_a_clean_rebase_onto_the_base_holds_the_same_tree_as_its_merge(self):
+        base = self.fixture.commit_on_main(base_only="base 2\n")
+        self.fixture.git(self.fixture.work, "rebase", "--quiet", "main")
+        head = self.fixture.git(self.fixture.work, "rev-parse", "HEAD")
+        self.assertTrue(self.fixture.is_clean_merge(base, head))
+
+    def test_a_commit_the_remote_does_not_hold_raises_a_git_error(self):
+        base = self.fixture.commit_on_main(base_only="base 2\n")
+        head = self.fixture.merge_main()
+        # A commit that no push carried, as a branch that was force pushed.
+        unpushed = commit(NODES_HUB, "unpushed")
+        with self.assertRaises(merge_set.GitError) as failure:
+            self.fixture.is_clean_merge(base, unpushed)
+        self.assertIn("`git fetch", str(failure.exception))
+        self.assertTrue(self.fixture.is_clean_merge(base, head))
+
+    def test_the_token_goes_to_github_alone_and_the_host_configuration_nowhere(
+        self,
+    ):
+        environment = merge_set.GitMerges("secret").environment
+        self.assertEqual(
+            environment["GIT_CONFIG_KEY_0"], "http.https://github.com/.extraHeader"
+        )
+        scheme, credentials = environment["GIT_CONFIG_VALUE_0"].split(": ")[1].split()
+        self.assertEqual(scheme, "basic")
+        self.assertEqual(
+            base64.b64decode(credentials).decode(), "x-access-token:secret"
+        )
+        self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(environment["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(
+            merge_set.github_remote(NODES_HUB),
+            "https://github.com/Peppy-bot/nodes-hub.git",
+        )
 
 
 class Commands(unittest.TestCase):

@@ -144,7 +144,8 @@ jobs:
 
       # The merge-set bot (merge-set.yml) keeps the pull requests of a set
       # together. Its cases hold the merge-set workflows to the names the bot
-      # uses, so they run on every change too.
+      # uses, so they run on every change too. Its merge checks run the git of
+      # the runner (2.40 or later) on local repositories.
       - name: Test the merge-set bot
         run: |
           python3 -m unittest discover \

@@ -34,14 +34,20 @@ App, so that pull request blocks the set for every user, before the bot merges
 any pull request of it. A review that requests changes blocks every user.
 
 A hub run is out of date when a job of it ran with another commit of a branch
-of the set than the head of that branch. Every job that runs the hub-ci-peppy
-action uploads the set it ran with, its set record, named after the check run
-of the job. A job that does not run the action reads no other repository, so
-it has no record and is never out of date; nor has the first job of each hub
-run, which runs the action with `wait-only` to wait for the peppy dev build
-of the set and installs nothing. Ticking "Re-run" re-runs every finished hub
-run that is out of date, at once: a re-run whose peppy dev build is not
-uploaded yet waits for it in that first job.
+of the set than the head of that branch, unless that head differs from the
+commit by a clean merge of its base alone. The bot does not ask a pull request
+to be up to date with its base, so a branch that merges its base in does not
+ask a re-run either: the merge of the set takes in that base all the same. The
+bot asks git to merge the commit and the base again, in a scratch repository
+(GitMerges), and compares the result with the head, so a conflict resolved by
+hand or any other change of the branch counts. Every job that runs the
+hub-ci-peppy action uploads the set it ran with, its set record, named after
+the check run of the job. A job that does not run the action reads no other
+repository, so it has no record and is never out of date; nor has the first
+job of each hub run, which runs the action with `wait-only` to wait for the
+peppy dev build of the set and installs nothing. Ticking "Re-run" re-runs
+every finished hub run that is out of date, at once: a re-run whose peppy dev
+build is not uploaded yet waits for it in that first job.
 
 GitHub sends every event of each repository of a set to the webhook of the
 merge-set App (webhook.py, in AWS Lambda), which hands it to the relay
@@ -59,18 +65,22 @@ one), so a run that GitHub drops from its queue loses nothing: the next run of
 the set finds the same ticked box.
 
 The decisions are pure functions of their inputs, tested in test_merge_set.py.
-The I/O around them is kept thin, in GitHubGateway. Standard library only: it
-runs on the runner's python3, and in the Python runtime of AWS Lambda.
+The I/O around them is kept thin, in GitHubGateway and GitMerges. Standard
+library only: the sync runs on the runner's python3 and git, and the relay in
+the Python runtime of AWS Lambda.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import io
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -905,8 +915,8 @@ def set_record_of_bundle(bundle: bytes) -> str:
 @dataclass(frozen=True)
 class Mismatch:
     """A member of the set a job ran at another commit than the head of its
-    branch. The commit alone decides: a job that ran `main` at the commit a
-    branch of the set still points at ran the same content."""
+    branch. A job that ran `main` at the commit a branch of the set still
+    points at ran the same content, so it is no mismatch."""
 
     repository: Repository
     tested: TestedRef
@@ -930,35 +940,62 @@ def tested_ref_of(tested: TestedSet, repository: Repository) -> TestedRef | None
 
 
 def mismatches_of(
-    tested: TestedSet, state: SetState, under_test: Repository
+    tested: TestedSet,
+    state: SetState,
+    under_test: Repository,
+    is_clean_base_merge: Callable[[Mismatch], bool],
 ) -> tuple[Mismatch, ...]:
     mismatches = []
     for member in state.members:
         if member.repository is under_test:
             continue
         recorded = tested_ref_of(tested, member.repository)
-        if recorded is None:
+        if recorded is None or recorded.commit == member.head:
             continue
-        if recorded.commit != member.head:
-            mismatches.append(Mismatch(member.repository, recorded, member.head))
+        mismatch = Mismatch(member.repository, recorded, member.head)
+        if not is_clean_base_merge(mismatch):
+            mismatches.append(mismatch)
     return tuple(mismatches)
 
 
-def stale_jobs(state: SetState, runs: Sequence[HubRun]) -> list[StaleJob]:
+def stale_jobs(
+    state: SetState,
+    runs: Sequence[HubRun],
+    is_clean_base_merge: Callable[[Mismatch], bool],
+) -> list[StaleJob]:
     """The jobs of the runs of a hub pull request that did not run with the
-    head of every branch of the set."""
+    head of every branch of the set. A job that ran a branch at an older
+    commit is not stale when `is_clean_base_merge` tells that the head differs
+    from that commit by a clean merge of its base alone."""
     stale = []
     for run in runs:
         for record in run.records:
             if record.tested is None:
                 stale.append(StaleJob(run, record.job, (), record_expired=True))
                 continue
-            mismatches = mismatches_of(record.tested, state, run.repository)
+            mismatches = mismatches_of(
+                record.tested, state, run.repository, is_clean_base_merge
+            )
             if mismatches:
                 stale.append(
                     StaleJob(run, record.job, mismatches, record_expired=False)
                 )
     return stale
+
+
+@dataclass(frozen=True)
+class Comparison:
+    """Two commits as `GET /repos/{repo}/compare/{base}...{head}` compares
+    them."""
+
+    # The commits of base that head does not hold.
+    behind_by: int
+    # The newest commit that both hold.
+    merge_base: str
+
+
+def parse_comparison(item: Mapping) -> Comparison:
+    return Comparison(item["behind_by"], item["merge_base_commit"]["sha"])
 
 
 # The readiness of the set ---------------------------------------------------
@@ -993,6 +1030,9 @@ class Blocker:
     # A missing approval, which an admin of every repository of the set
     # merges without.
     waived_for_admins: bool = False
+    # A hub job that ran with another commit of a branch of the set, or whose
+    # set record expired: a re-run of its run clears it.
+    out_of_date_ci: bool = False
 
 
 def short(commit: str) -> str:
@@ -1043,8 +1083,10 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     label = pull_request.label
     blockers = []
 
-    def block(text: str, waived_for_admins: bool = False) -> None:
-        blockers.append(Blocker(repository, text, waived_for_admins))
+    def block(
+        text: str, waived_for_admins: bool = False, out_of_date_ci: bool = False
+    ) -> None:
+        blockers.append(Blocker(repository, text, waived_for_admins, out_of_date_ci))
 
     if pull_request.base_branch != repository.integration_branch:
         block(
@@ -1078,7 +1120,7 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
                 f"The required check `{check.context}` of {label} {CHECK_STATE_TEXTS[state]}."
             )
     for stale in report.stale:
-        block(stale_job_text(label, stale))
+        block(stale_job_text(label, stale), out_of_date_ci=True)
     return blockers
 
 
@@ -1198,8 +1240,6 @@ def render_set_dashboard(
     """The dashboard of a set. Reports are keyed by pull request label."""
     blockers = set_blockers(state, reports)
     stale_run_count = len(stale_runs(reports))
-    blocked = {blocker.repository for blocker in blockers_for(blockers, admin=True)}
-    unapproved = {blocker.repository for blocker in blockers} - blocked
     lines = [
         DASHBOARD_MARKER,
         f"### Set `{state.name}`",
@@ -1215,7 +1255,7 @@ def render_set_dashboard(
     lines.extend(
         f"| {member.repository.name} | {pull_request_cell(member)} "
         f"| `{short(member.head)}` | {ci_cell(member, reports)} "
-        f"| {member_state(member.repository, blocked, unapproved)} |"
+        f"| {member_state(member.repository, blockers)} |"
         for member in state.members
     )
     if state.left_behind:
@@ -1244,18 +1284,28 @@ def render_set_dashboard(
     return "\n".join(lines) + "\n"
 
 
-def member_state(
-    repository: Repository, blocked: set[Repository], unapproved: set[Repository]
-) -> str:
-    if repository in blocked:
-        return "blocked"
-    if repository in unapproved:
+def member_state(repository: Repository, blockers: Sequence[Blocker]) -> str:
+    """The State cell of a member: what its own blockers leave it, with the
+    cause when a re-run alone clears them."""
+    own = [blocker for blocker in blockers if blocker.repository is repository]
+    if not own:
+        return "ready"
+    hard = blockers_for(own, admin=True)
+    if not hard:
         return "not approved"
-    return "ready"
+    if all(blocker.out_of_date_ci for blocker in hard):
+        return "CI out of date"
+    return "blocked"
 
 
 ADMIN_WAIVER = (
     "An admin of every repository of the set merges it without the approvals."
+)
+# What makes the hub runs of a set current, as the dashboard and the reports
+# word it.
+CURRENT_HUB_RUNS = (
+    "each hub run ran with the head of every branch of the set, or with a "
+    "commit that differs from that head by a clean merge of its base alone"
 )
 
 
@@ -1265,15 +1315,13 @@ def readiness_lines(blockers: Sequence[Blocker]) -> list[str]:
     if not blockers:
         return [
             "**Ready to merge.** Each pull request is approved, its required "
-            "checks passed, and each hub run ran with the head of every branch "
-            "of the set."
+            f"checks passed, and {CURRENT_HUB_RUNS}."
         ]
     hard = blockers_for(blockers, admin=True)
     if not hard:
         return [
             "**Ready to merge for an admin.** Each required check passed and "
-            "each hub run ran with the head of every branch of the set, but "
-            f"approvals are missing. {ADMIN_WAIVER}",
+            f"{CURRENT_HUB_RUNS}, but approvals are missing. {ADMIN_WAIVER}",
             "",
             *(f"- {blocker.text}" for blocker in blockers),
         ]
@@ -1499,7 +1547,7 @@ def render_rerun_report(
 def render_nothing_to_rerun(requesters: Sequence[str], set_name: str) -> str:
     return (
         f"{mention(requesters)}, no CI of the set `{set_name}` is out of date: "
-        "each hub run ran with the head of every branch of the set.\n"
+        f"{CURRENT_HUB_RUNS}.\n"
     )
 
 
@@ -1631,9 +1679,11 @@ def issue_comments_path(pull_request: PullRequest) -> str:
 class GitHubGateway:
     """Everything the sync reads from and writes to GitHub."""
 
-    def __init__(self, api: GitHubApi, bot_login: str):
+    def __init__(self, api: GitHubApi, bot_login: str, git: GitMerges):
         self.api = api
         self.bot_login = bot_login
+        self.git = git
+        self.clean_base_merges: dict[tuple[str, str, str], bool] = {}
         self.rules: dict[str, BranchRules] = {}
         self.bypasses: dict[tuple[str, int], RulesetBypass] = {}
         self.permissions: dict[tuple[str, str], str] = {}
@@ -1739,13 +1789,60 @@ class GitHubGateway:
             self.ci_workflows_of(pull_request.repository),
         )
 
-    def is_behind(self, pull_request: PullRequest) -> bool:
-        comparison = self.api.request(
-            "GET",
-            f"/repos/{pull_request.repository.full_name}/compare/"
-            f"{quoted(pull_request.base_branch)}...{pull_request.head_commit}",
+    def compare(self, repository: Repository, base: str, head: str) -> Comparison:
+        """The comparison of `base`, a branch or a commit, with the commit
+        `head`. It asks for one commit a page: the bot reads none of the
+        commits of the comparison."""
+        return parse_comparison(
+            self.api.request(
+                "GET",
+                f"/repos/{repository.full_name}/compare/{quoted(base)}...{head}",
+                {"per_page": 1},
+            )
         )
-        return comparison["behind_by"] > 0
+
+    def is_behind(self, pull_request: PullRequest) -> bool:
+        comparison = self.compare(
+            pull_request.repository, pull_request.base_branch, pull_request.head_commit
+        )
+        return comparison.behind_by > 0
+
+    def is_clean_base_merge(self, mismatch: Mismatch) -> bool:
+        """Whether the head of the branch differs from the commit the job ran
+        with by a clean merge of its base alone. Each mismatch is checked
+        once a sync: the jobs of a run share the commits they ran with."""
+        key = (mismatch.repository.name, mismatch.tested.commit, mismatch.current)
+        if key not in self.clean_base_merges:
+            self.clean_base_merges[key] = self.check_clean_base_merge(mismatch)
+        return self.clean_base_merges[key]
+
+    def check_clean_base_merge(self, mismatch: Mismatch) -> bool:
+        """Whether git merges the commit the job ran with and the newest
+        commit of the base that the head holds, without a conflict, into the
+        tree of the head. A merge that the bot cannot check counts as no
+        clean merge, so the job stays out of date."""
+        repository = mismatch.repository
+        tested, head = mismatch.tested.commit, mismatch.current
+        try:
+            base = self.compare(repository, repository.integration_branch, head)
+            merge_base = self.compare(repository, base.merge_base, tested)
+        except ApiError as error:
+            # GitHub knows no such commit, or no history that the two share.
+            if error.status == 404:
+                return False
+            raise
+        try:
+            return self.git.is_clean_merge(
+                repository, merge_base.merge_base, tested, base.merge_base, head
+            )
+        except GitError as error:
+            warn(
+                f"The bot counts the jobs that ran {repository.name} at "
+                f"{short(tested)} as out of date: it did not check whether "
+                f"{short(head)} differs from it by a clean merge of "
+                f"`{repository.integration_branch}` alone. {error}"
+            )
+            return False
 
     def pull_request_runs(self, pull_request: PullRequest) -> list[Mapping]:
         """Every workflow run of the head commit of the pull request, for the
@@ -1896,6 +1993,121 @@ class GitHubGateway:
         time.sleep(seconds)
 
 
+def warn(text: str) -> None:
+    """A warning on the run of the sync, which goes on."""
+    print(f"::warning::{resolve.escape_workflow_command(text)}")
+
+
+# The merges git checks -------------------------------------------------------
+
+# The exit code of `git merge-tree` for a merge with conflicts.
+MERGE_TREE_CONFLICTS = 1
+# A git command that runs longer fails, well within the 15 minutes of the
+# sync job.
+GIT_TIMEOUT_SECONDS = 120
+
+
+class GitError(MergeSetError):
+    """A git command that failed."""
+
+
+def github_remote(repository: Repository) -> str:
+    return f"https://github.com/{repository.full_name}.git"
+
+
+class GitMerges:
+    """The merges the sync asks git for. Each one runs in a scratch
+    repository that fetches the commits it merges from GitHub, with their
+    trees and without their files: git fetches the files the merge reads,
+    those that both sides changed, as it reads them."""
+
+    def __init__(
+        self, token: str, remote_of: Callable[[Repository], str] = github_remote
+    ):
+        self.remote_of = remote_of
+        credentials = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        self.environment = {
+            **resolve.git_environment(),
+            # The git configuration of the host changes no merge, and the
+            # token of the App is the one credential that goes to GitHub.
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
+            "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {credentials}",
+        }
+
+    def is_clean_merge(
+        self,
+        repository: Repository,
+        merge_base: str,
+        ours: str,
+        theirs: str,
+        head: str,
+    ) -> bool:
+        """Whether `head` holds the merge of `ours` and `theirs` from
+        `merge_base` and nothing else: git merges the two without a
+        conflict, into the tree of `head`."""
+        with tempfile.TemporaryDirectory(prefix="merge-set-") as scratch:
+            self.git(scratch, "init", "--quiet", "--bare")
+            self.git(scratch, "remote", "add", "origin", self.remote_of(repository))
+            self.git(scratch, "config", "remote.origin.promisor", "true")
+            self.git(scratch, "config", "remote.origin.partialCloneFilter", "blob:none")
+            self.git(
+                scratch,
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--depth=1",
+                "--filter=blob:none",
+                "origin",
+                *dict.fromkeys((merge_base, ours, theirs, head)),
+            )
+            merge = (
+                "merge-tree",
+                "--write-tree",
+                f"--merge-base={merge_base}",
+                ours,
+                theirs,
+            )
+            merged = self.run(scratch, *merge)
+            if merged.returncode == MERGE_TREE_CONFLICTS:
+                return False
+            if merged.returncode != 0:
+                raise git_failure(merge, merged)
+            head_tree = self.git(scratch, "rev-parse", f"{head}^{{tree}}")
+            return merged.stdout.splitlines()[0] == head_tree.strip()
+
+    def git(self, scratch: str, *arguments: str) -> str:
+        """What git prints; a git that fails raises a GitError."""
+        result = self.run(scratch, *arguments)
+        if result.returncode != 0:
+            raise git_failure(arguments, result)
+        return result.stdout
+
+    def run(self, scratch: str, *arguments: str) -> subprocess.CompletedProcess:
+        command = ["git", "-C", scratch, *arguments]
+        try:
+            return subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                env=self.environment,
+                timeout=GIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise GitError(
+                f"`git {' '.join(arguments)}` did not end within "
+                f"{GIT_TIMEOUT_SECONDS} seconds"
+            ) from error
+
+
+def git_failure(
+    arguments: Sequence[str], result: subprocess.CompletedProcess
+) -> GitError:
+    return GitError(f"`git {' '.join(arguments)}` failed: {result.stderr.strip()}")
+
+
 # The sync --------------------------------------------------------------------
 
 
@@ -1939,7 +2151,11 @@ def read_report(
         ci=gateway.ci_run(pull_request),
         behind=rules.strict and gateway.is_behind(pull_request),
         stale=(
-            tuple(stale_jobs(state, gateway.hub_runs(pull_request)))
+            tuple(
+                stale_jobs(
+                    state, gateway.hub_runs(pull_request), gateway.is_clean_base_merge
+                )
+            )
             if repository.hub is not None
             else ()
         ),
@@ -2485,9 +2701,8 @@ def run_sync(environment: Mapping[str, str]) -> None:
             f"{required(environment, 'GITHUB_RUN_ID')}"
         ),
     )
-    gateway = GitHubGateway(
-        GitHubApi(required(environment, "MERGE_SET_TOKEN")), context.bot_login
-    )
+    token = required(environment, "MERGE_SET_TOKEN")
+    gateway = GitHubGateway(GitHubApi(token), context.bot_login, GitMerges(token))
     sync(gateway, event, context)
 
 
