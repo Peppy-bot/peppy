@@ -543,7 +543,10 @@ mod exposures {
                 "declare `max_result_bytes` and `on_oversize`",
             ),
             ("bad_representation:v1", "has no root member `pixels`"),
-            ("sha_mismatch:v1", "not in contract cache"),
+            (
+                "sha_mismatch:v1",
+                "contract `rgb_camera:v1` is pinned to sha256",
+            ),
             ("unresolvable:v1", "contract `ghost:v1`"),
             ("unconvertible:v1", "reserved"),
             // A document naming one public name twice does not parse, so it
