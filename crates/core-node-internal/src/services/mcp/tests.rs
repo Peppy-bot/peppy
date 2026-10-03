@@ -358,7 +358,11 @@ fn the_hub_check_reports_every_problem_of_every_exposure_and_passes_the_valid_on
     };
     assert!(by_id("missing:v1").problems[0].contains("declares no such service"));
     assert!(by_id("unpinned:v1").problems[0].contains("contract `ghost:v1`"));
-    assert!(by_id("mispinned:v1").problems[0].contains("not in contract cache"));
+    assert!(
+        by_id("mispinned:v1").problems[0].contains("contract `rgb_camera:v1` is pinned to sha256"),
+        "{:?}",
+        by_id("mispinned:v1").problems
+    );
     assert_eq!(by_id("missing:v1").path, "exposures/missing.json5");
     let rendered = by_id("unpinned:v1").to_string();
     assert!(

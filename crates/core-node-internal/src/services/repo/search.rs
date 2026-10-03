@@ -169,7 +169,7 @@ pub enum PinStatus {
         repo_label: String,
         path: String,
     },
-    /// No cached copy carries the pin; a sync fails with "not in cache".
+    /// No cached copy carries the pin; a sync refuses it.
     Unresolvable,
     /// The pin is not a fingerprint; a sync refuses it by name.
     Unusable { reason: String },

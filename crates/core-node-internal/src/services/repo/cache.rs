@@ -848,16 +848,8 @@ pub(crate) fn resolve_cached_doc_entry<'a, E: RepoCacheEntry>(
         None => lookup_repo_entry(entries, name, tag).map_err(|ambiguity| ambiguity.to_string())?,
     };
 
-    let entry = found.ok_or_else(|| {
-        let hint = excluded_repositories_hint(peppy_dirs);
-        match sha256_pin {
-            Some(sha) => format!(
-                "{kind} `{id}` (sha256 `{sha}`) not in {kind} cache; \
-                 run `peppy repo refresh`{hint}"
-            ),
-            None => format!("{kind} `{id}` not in {kind} cache; run `peppy repo refresh`{hint}"),
-        }
-    })?;
+    let entry =
+        found.ok_or_else(|| cache_miss_message(peppy_dirs, entries, name, tag, sha256_pin))?;
 
     let resolved_path = resolve_cached_artifact_path(peppy_dirs, entry.origin(), on_feedback)
         .map_err(|e| format!("{kind} `{id}`: {e}"))?;
@@ -877,6 +869,58 @@ pub(crate) fn resolve_cached_doc_entry<'a, E: RepoCacheEntry>(
         ));
     }
     Ok((entry, bytes))
+}
+
+/// The refusal for a reference that no cache entry answers.
+///
+/// A pin that misses while the cache holds the identity at other bytes
+/// points at the pin, not only at the cache: the repositories served other
+/// bytes at their last refresh. So that message names each cached copy,
+/// its fingerprint and where it was read, and says what to change when a
+/// refresh does not bring the pinned bytes.
+fn cache_miss_message<E: RepoCacheEntry>(
+    peppy_dirs: &PeppyDirs,
+    entries: &[E],
+    name: &str,
+    tag: &str,
+    sha256_pin: Option<&str>,
+) -> String {
+    let kind = E::KIND;
+    let id = format!("{name}:{tag}");
+    let hint = excluded_repositories_hint(peppy_dirs);
+    let Some(sha) = sha256_pin else {
+        return format!("{kind} `{id}` not in {kind} cache; run `peppy repo refresh`{hint}");
+    };
+    let cached_copies: Vec<String> = entries
+        .iter()
+        .filter(|e| e.name() == name && e.tag() == tag)
+        .map(describe_cached_copy)
+        .collect();
+    if cached_copies.is_empty() {
+        return format!(
+            "{kind} `{id}` (sha256 `{sha}`) not in {kind} cache; run `peppy repo refresh`{hint}"
+        );
+    }
+    format!(
+        "{kind} `{id}` is pinned to sha256 `{sha}`, but the {kind} cache holds `{id}` only at {}. \
+         Run `peppy repo refresh` to read the repositories again; if the cache then still \
+         holds other bytes, the pin names bytes that no registered repository serves: change \
+         the pin, or register the repository that serves those bytes{hint}",
+        cached_copies.join(", ")
+    )
+}
+
+/// One cached copy of an identity as a cache-miss message names it: its
+/// fingerprint, the file it was read from and, for a git origin, the
+/// repository and the commit.
+fn describe_cached_copy<E: RepoCacheEntry>(entry: &E) -> String {
+    let origin = entry.origin();
+    let path = origin.path_str();
+    let location = match origin.checkout() {
+        Some((repo_url, commit)) => format!("{path} in {repo_url} at commit {commit}"),
+        None => path.to_owned(),
+    };
+    format!("sha256 `{}` ({location})", entry.sha256())
 }
 
 /// Materializes a launch pin's bytes from its own origin: the fetch half of
@@ -2058,6 +2102,82 @@ mod tests {
         assert!(
             lookup_repo_entry_by_sha256(&entries, "uvc_camera", "v1", &fingerprint("absent"))
                 .is_none()
+        );
+    }
+
+    // -- cache miss tests --
+
+    /// The refusal of `resolve_cached_doc_entry` for `scene:v1` pinned to
+    /// `pin`, against `entries`.
+    fn refusal_of_pin(entries: &[ContractCacheEntry], pin: &ManifestFingerprint) -> String {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        resolve_cached_doc_entry(
+            &peppy_dirs,
+            entries,
+            "scene",
+            "v1",
+            Some(pin.as_str()),
+            &|_| {},
+        )
+        .map(|_| ())
+        .expect_err("no entry carries the pin")
+    }
+
+    /// A pin that misses while the cache holds the identity at other bytes
+    /// names every cached copy, with its fingerprint and where it was read,
+    /// rather than calling the identity absent.
+    #[test]
+    fn a_pin_that_misses_a_cached_identity_names_each_cached_copy() {
+        let mut from_git = contract_entry(
+            "scene",
+            "v1",
+            git_origin(
+                "https://example.invalid/contracts-hub.git",
+                "main",
+                "served commit",
+                "simulation/scene.json5",
+            ),
+        );
+        from_git.sha256 = fingerprint("served by git");
+        let mut from_fs = contract_entry("scene", "v1", fs_origin("/hubs/contracts/scene.json5"));
+        from_fs.sha256 = fingerprint("served by fs");
+        let other_identity = contract_entry("scene", "v2", fs_origin("/hubs/contracts/v2.json5"));
+        let pin = fingerprint("written against");
+
+        let message = refusal_of_pin(&[from_git, from_fs, other_identity], &pin);
+
+        assert!(
+            message.starts_with(&format!(
+                "contract `scene:v1` is pinned to sha256 `{pin}`, but the contract cache \
+                 holds `scene:v1` only at sha256 `{}` (simulation/scene.json5 in \
+                 https://example.invalid/contracts-hub.git at commit {}), sha256 `{}` \
+                 (/hubs/contracts/scene.json5). ",
+                fingerprint("served by git"),
+                commit("served commit"),
+                fingerprint("served by fs"),
+            )),
+            "{message}"
+        );
+        assert!(message.contains("change the pin"), "{message}");
+        assert!(!message.contains("v2.json5"), "{message}");
+        assert!(!message.contains("not in contract cache"), "{message}");
+    }
+
+    /// A pin on an identity the cache does not hold at all is a plain miss.
+    #[test]
+    fn a_pin_on_an_identity_absent_from_the_cache_is_not_in_cache() {
+        let other_identity = contract_entry("scene", "v2", fs_origin("/hubs/contracts/v2.json5"));
+        let pin = fingerprint("written against");
+
+        let message = refusal_of_pin(&[other_identity], &pin);
+
+        assert_eq!(
+            message,
+            format!(
+                "contract `scene:v1` (sha256 `{pin}`) not in contract cache; \
+                 run `peppy repo refresh`"
+            )
         );
     }
 }
