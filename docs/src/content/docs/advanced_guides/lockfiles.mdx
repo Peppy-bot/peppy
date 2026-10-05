@@ -26,8 +26,10 @@ depends_on: {
 
 An unpinned reference resolves to whatever the repository caches hold for
 that `name:tag`; a pinned one resolves only to the exact stated content.
-When the caches hold different bytes, `node add` and `node sync` report a
-cache miss naming the pinned fingerprint, and a launch refuses the
+When the caches hold different bytes, `node add` and `node sync` name each
+cached copy of that `name:tag`, with its fingerprint and where it was read,
+and advise running `peppy repo refresh`, then changing the pin or
+registering the repository that serves those bytes; a launch refuses the
 resolution naming both fingerprints. Pin when a node's
 correctness depends on a specific revision of a document that a tag alone
 does not identify; leave unpinned to follow the document as its repository
