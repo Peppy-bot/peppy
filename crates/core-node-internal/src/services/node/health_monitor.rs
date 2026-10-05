@@ -9,9 +9,8 @@
 //! node, its container, or the messaging path stalling for a moment) leaves the
 //! flag untouched and is visible only at debug level.
 
-use super::append_stack_log;
+use super::stack_log::{StackLog, StackLogEvent};
 use config::runtime::Name;
-use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::messaging::{NODE_HEALTH_SERVICE, ProducerRef, SenderTarget, ServiceTarget};
@@ -100,7 +99,7 @@ pub(crate) struct HealthMonitorParams {
     pub(crate) target_instance_id: Name,
     pub(crate) node_tag: String,
     pub(crate) node_stack: Arc<NodeStack>,
-    pub(crate) peppy_dirs: PeppyDirs,
+    pub(crate) stack_log: StackLog,
     pub(crate) policy: HealthMonitorPolicy,
     pub(crate) shutdown_token: CancellationToken,
     /// Cancelled by the instance's exit watcher once its process exits on its
@@ -228,18 +227,10 @@ pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
                         tracker.consecutive_misses(),
                         reason
                     );
-                    append_stack_log(
-                        &p.peppy_dirs,
-                        &format!(
-                            "Instance '{}' of node '{}:{}' became unhealthy: {} consecutive \
-                             health checks failed, last: {}",
-                            instance_id_str,
-                            p.to_node_name,
-                            p.node_tag,
-                            tracker.consecutive_misses(),
-                            reason,
-                        ),
-                    );
+                    p.stack_log.record(&StackLogEvent::Unhealthy {
+                        misses: tracker.consecutive_misses(),
+                        reason,
+                    });
                 }
                 Some(HealthEdge::Up) => {
                     tracing::info!(
@@ -250,13 +241,9 @@ pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
                         p.node_tag,
                         misses_before_probe
                     );
-                    append_stack_log(
-                        &p.peppy_dirs,
-                        &format!(
-                            "Instance '{}' of node '{}:{}' recovered after {} missed health checks",
-                            instance_id_str, p.to_node_name, p.node_tag, misses_before_probe,
-                        ),
-                    );
+                    p.stack_log.record(&StackLogEvent::Recovered {
+                        misses: misses_before_probe,
+                    });
                 }
                 // No edge. A miss below the threshold, or one more miss of an
                 // instance already `unhealthy`, is a low-noise debug heartbeat;

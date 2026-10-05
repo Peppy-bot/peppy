@@ -1,6 +1,5 @@
 //! Real-lifecycle test helpers.
 
-use parking_lot::Mutex as StdMutex;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -9,8 +8,10 @@ use config::node::NodeConfig;
 use config::runtime::Name;
 use core_node_api::NodeStage as SerializedNodeStage;
 use daemon_config::consts::PeppyDirs;
+use log_export::{LogExporter, LogKind};
 use node_stack::{
-    BuildContext, EntityHandle, NodeEntity, NodeStack, OutputSinks, StartContext,
+    ActionLog, Announcer, BuildContext, EntityHandle, NodeEntity, NodeStack, OutputSinks,
+    StartContext,
     build_io::{FeedbackLine, OutputReaderHooks},
 };
 use tokio::sync::mpsc;
@@ -42,7 +43,7 @@ pub struct LifecycleHarness {
     pub peppy_root: tempfile::TempDir,
     pub peppy_dirs: PeppyDirs,
     pub working_dir: tempfile::TempDir,
-    pub log_file: Arc<StdMutex<std::fs::File>>,
+    pub log: ActionLog,
     pub feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     pub publish_enabled: Arc<AtomicBool>,
     pub hooks: Arc<dyn OutputReaderHooks>,
@@ -60,8 +61,7 @@ impl Drop for LifecycleHarness {
 impl LifecycleHarness {
     pub fn output_sinks(&self) -> OutputSinks {
         OutputSinks {
-            feedback_tx: self.feedback_tx.clone(),
-            log_file: Arc::clone(&self.log_file),
+            announcer: Announcer::new(self.log.clone(), self.feedback_tx.clone()),
             publish_enabled: Arc::clone(&self.publish_enabled),
             hooks: Arc::clone(&self.hooks),
         }
@@ -74,17 +74,20 @@ pub fn lifecycle_harness() -> LifecycleHarness {
     let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
     let peppy_dirs = PeppyDirs::new(peppy_root.path().to_path_buf());
     let working_dir = tempfile::tempdir().expect("working_dir tempdir");
-    let log_path = peppy_root.path().join("test.log");
-    let log_file = Arc::new(StdMutex::new(
-        std::fs::File::create(&log_path).expect("create log"),
-    ));
+    let log = ActionLog::create(
+        peppy_root.path(),
+        "test.log",
+        LogKind::Build,
+        LogExporter::disabled(),
+    )
+    .expect("create log");
     let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
     let feedback_drain = tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
     LifecycleHarness {
         peppy_root,
         peppy_dirs,
         working_dir,
-        log_file,
+        log,
         feedback_tx,
         publish_enabled: Arc::new(AtomicBool::new(true)),
         hooks: Arc::new(NoOpHooks),
@@ -136,8 +139,7 @@ pub async fn build_ready(
         BuildContext {
             working_dir: harness.working_dir.path(),
             peppy_dirs: &harness.peppy_dirs,
-            feedback_tx: &harness.feedback_tx,
-            log_file: Arc::clone(&harness.log_file),
+            announcer: Announcer::new(harness.log.clone(), harness.feedback_tx.clone()),
             env_vars: &[],
             cancel_token: tokio_util::sync::CancellationToken::new(),
             rebuild: false,

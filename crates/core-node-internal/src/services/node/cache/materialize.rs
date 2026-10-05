@@ -10,6 +10,7 @@
 //! (`materialize_repo_deps`). Feedback flows through a callback so each
 //! caller can fan it into its own channel / log sink.
 
+use crate::services::node::Report;
 use crate::services::repo::cache::{NodeCacheEntry, resolve_cached_artifact_path};
 use config::node::{NodeConfig, NodeConfigParser};
 use daemon_config::consts::PeppyDirs;
@@ -18,7 +19,7 @@ use std::sync::Arc;
 
 /// Type alias for a feedback callback that's safe to share across the
 /// blocking thread the checkout runs on.
-pub(crate) type MaterializeFeedback = Arc<dyn Fn(&str) + Send + Sync + 'static>;
+pub(crate) type MaterializeFeedback = Arc<dyn Fn(Report<'_>) + Send + Sync + 'static>;
 
 /// Returns a no-op feedback sink for callers that don't need progress
 /// streaming (e.g. `node sync`, where progress is reported as response
@@ -47,12 +48,12 @@ pub(crate) async fn materialize_entry(
         let dirs = peppy_dirs.clone();
         let origin = entry.origin.clone();
         tokio::task::spawn_blocking(move || {
-            resolve_cached_artifact_path(&dirs, &origin, &|line| on_feedback(line))
+            resolve_cached_artifact_path(&dirs, &origin, &|report| on_feedback(report))
         })
         .await
         .map_err(|e| format!("materialization task for `{id}` failed: {e}"))?
     } else {
-        resolve_cached_artifact_path(peppy_dirs, &entry.origin, &|line| on_feedback(line))
+        resolve_cached_artifact_path(peppy_dirs, &entry.origin, &|report| on_feedback(report))
     }
     .map_err(|e| format!("node `{id}`: {e}"))?;
 

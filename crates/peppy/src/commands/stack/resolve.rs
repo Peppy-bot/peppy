@@ -9,7 +9,6 @@ use daemon_config::launcher::{
     PreparedLauncher, resolve_clocks, validate_link_plan,
 };
 use daemon_config::repository::EntryOrigin;
-use tracing::info;
 
 use super::launch::{infer_launcher_origin, parse_launcher_file};
 use crate::error::{Error, Result};
@@ -69,7 +68,7 @@ pub fn resolve_rendered(
     let path = match infer_launcher_origin(launcher_config_path)? {
         LauncherOrigin::Fs(path) => path,
         LauncherOrigin::Repository { name } => {
-            core_node::resolve_repo_launcher_path(&name, dirs, &|message: &str| info!("{message}"))
+            core_node::resolve_repo_launcher_path(&name, dirs, &crate::commands::report_as_info)
                 .map_err(Error::ExecutionFailed)?
         }
     };
@@ -152,9 +151,11 @@ fn check_link_plan(
                 // The built-in server's manifest is derived from the
                 // exposures and their contracts, through the same caches
                 // and the same derivation a launch uses.
-                match core_node::resolve_exposure_plan(dirs, exposures, &|message: &str| {
-                    info!("{message}")
-                }) {
+                match core_node::resolve_exposure_plan(
+                    dirs,
+                    exposures,
+                    &crate::commands::report_as_info,
+                ) {
                     Ok(plan) => {
                         manifests.push(CheckedManifest {
                             name: plan.name.as_str().to_owned(),

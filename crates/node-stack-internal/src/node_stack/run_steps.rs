@@ -6,7 +6,6 @@
 
 use parking_lot::Mutex as StdMutex;
 use std::collections::VecDeque;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -19,10 +18,8 @@ use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use tokio::sync::mpsc;
-
+use crate::action_log::{ActionLog, Announcer, STDERR_TAIL_HEADER};
 use crate::archive::extract_tar_zst;
-use crate::build_io::{FeedbackLine, announce_warning};
 
 /// Per-process counter used to name temporary runtime config files uniquely.
 ///
@@ -160,7 +157,7 @@ pub(super) fn build_process_command(
     working_dir: &Path,
     runtime_config_json5: &str,
     env_vars: &[(String, String)],
-    log_file: &Arc<StdMutex<File>>,
+    log: &ActionLog,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<SpawnCommand> {
     let manifest = &config.manifest;
@@ -203,7 +200,7 @@ pub(super) fn build_process_command(
         working_dir,
         runtime_config_json5,
         env_vars,
-        log_file,
+        log,
         peppy_dirs,
     )
 }
@@ -218,7 +215,7 @@ pub(super) fn build_built_in_command(
     working_dir: &Path,
     runtime_config_json5: &str,
     env_vars: &[(String, String)],
-    log_file: &Arc<StdMutex<File>>,
+    log: &ActionLog,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<SpawnCommand> {
     let manifest = &config.manifest;
@@ -244,7 +241,7 @@ pub(super) fn build_built_in_command(
         working_dir,
         runtime_config_json5,
         env_vars,
-        log_file,
+        log,
         peppy_dirs,
     )
 }
@@ -271,10 +268,10 @@ fn assemble_command(
     working_dir: &Path,
     runtime_config_json5: &str,
     env_vars: &[(String, String)],
-    log_file: &Arc<StdMutex<File>>,
+    log: &ActionLog,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<SpawnCommand> {
-    crate::build_io::log_cmd_header(log_file, spec.log_tag, &spec.description, working_dir, &[]);
+    log.command(spec.log_tag, &spec.description, working_dir, &[]);
 
     let runtime_config_path = write_runtime_config_temp(peppy_dirs, runtime_config_json5)?;
 
@@ -369,8 +366,8 @@ pub(super) struct SpawnContainerInputs<'a> {
     pub mount_paths: &'a [String],
     pub apptainer_run_extra_args: &'a [String],
     pub lima_shell_extra_args: &'a [String],
-    pub log_file: &'a Arc<StdMutex<File>>,
-    pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
+    /// The run log and the feedback channel of the run.
+    pub announcer: &'a Announcer,
     pub peppy_dirs: &'a PeppyDirs,
 }
 
@@ -395,8 +392,7 @@ pub(super) async fn build_container_command(
         mount_paths,
         apptainer_run_extra_args,
         lima_shell_extra_args,
-        log_file,
-        feedback_tx,
+        announcer,
         peppy_dirs,
     } = inputs;
     // Apptainer initialization is expensive (it may bootstrap a Lima VM on
@@ -436,7 +432,7 @@ pub(super) async fn build_container_command(
     //     bind typos by turning them into empty directories. We now emit a
     //     loud warning to the per-instance start log for every auto-create
     //     so an unintended mkdir is still visible to the operator.
-    ensure_bind_sources(&binds[1..], log_file, feedback_tx)?;
+    ensure_bind_sources(&binds[1..], announcer)?;
 
     // Ensure host paths outside $HOME are accessible in the Lima VM. The
     // peppy data root is always included: the SIF image, the instance
@@ -525,8 +521,7 @@ pub(super) async fn build_container_command(
     }
 
     let bind_mounts_str = format!("[{}]", mount_paths.join(", "));
-    crate::build_io::log_cmd_header(
-        log_file,
+    announcer.log().command(
         "apptainer run",
         &sif_path.display().to_string(),
         working_dir,
@@ -567,18 +562,16 @@ pub(super) async fn build_container_command(
 /// the ones it had to create.
 ///
 /// [`containers::ensure_bind_source`] decides what to touch; this adds the
-/// reporting. An auto-create goes to the daemon `tracing` log, to the
-/// per-instance start log via `feedback_sink`, and onto `feedback_tx` as a
-/// Warning-stream line, because it is the only line of defence against a typo'd
-/// file bind being silently turned into an empty directory. Callers MUST
-/// therefore pass the per-instance log sink.
+/// reporting. An auto-create goes to the daemon `tracing` log and, through
+/// `announcer`, to the run log of the instance and onto its feedback channel
+/// as a Warning-stream line, so an auto-created directory stays visible to
+/// the operator.
 ///
 /// Returns the underlying `io::Error` (with the offending path embedded in
 /// the message) if a source is missing and cannot be created.
 pub(super) fn ensure_bind_sources(
     binds: &[ContainerBind],
-    feedback_sink: &Arc<StdMutex<File>>,
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+    announcer: &Announcer,
 ) -> std::io::Result<()> {
     for bind in binds {
         if !containers::ensure_bind_source(Path::new(&bind.src))? {
@@ -586,7 +579,7 @@ pub(super) fn ensure_bind_sources(
         }
         let warning = containers::auto_created_warning(&bind.src);
         warn!("{}", warning);
-        announce_warning(feedback_tx, feedback_sink, warning);
+        announcer.warning(warning);
     }
     Ok(())
 }
@@ -620,17 +613,15 @@ impl Drop for TempFileGuard {
 /// Kills a child process, drains its output readers (so the stderr buffer
 /// flushes), and returns a formatted error string with a stderr tail.
 ///
-/// Used by [`super::entity::NodeEntity::abort_started`]. Joining the reader
-/// handles is critical for stable error reporting; without it, the stderr
-/// buffer can be empty due to async scheduling timing even though the lines
-/// were already written to the log file.
+/// Used by [`super::entity::NodeEntity::abort_started`]. The reader handles
+/// are joined first, so the stderr buffer holds every line the child wrote
+/// before it was killed.
 pub(super) async fn kill_and_collect_error(
     mut child: Child,
     instance_id_str: &str,
     error: &str,
     stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
     output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
-    log_file: Arc<StdMutex<File>>,
 ) -> String {
     if let Err(kill_err) = child.kill().await {
         debug!(
@@ -647,18 +638,12 @@ pub(super) async fn kill_and_collect_error(
         let _ = handle.await;
     }
 
-    let stderr_output = {
-        let guard = stderr_buffer.lock();
-        let buffer_lines: Vec<String> = guard.iter().cloned().collect();
-        if !buffer_lines.is_empty() {
-            buffer_lines.join("\n")
-        } else {
-            // Fall back to the log file for stderr lines; the log write is unconditional
-            // and may have captured output that the stderr_buffer missed due to timing
-            // (e.g. the async reader hadn't processed the line before we read the buffer).
-            extract_stderr_from_log(&log_file)
-        }
-    };
+    let stderr_output = stderr_buffer
+        .lock()
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
 
     if !stderr_output.is_empty() {
         debug!(
@@ -670,91 +655,40 @@ pub(super) async fn kill_and_collect_error(
     if stderr_output.is_empty() {
         error.to_string()
     } else {
-        format!(
-            "{}\n\n--- stderr (last lines) ---\n{}",
-            error, stderr_output
-        )
+        format!("{error}{STDERR_TAIL_HEADER}{stderr_output}")
     }
-}
-
-/// Extracts stderr lines from the log file.
-///
-/// The log file captures all output unconditionally (before any async processing),
-/// so it serves as a reliable fallback when the stderr_buffer is empty due to
-/// async scheduling timing (e.g., the reader task hadn't processed the line before
-/// the buffer was read).
-pub(super) fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String {
-    use std::io::{Read, Seek, SeekFrom};
-
-    // Read only the tail of the log: chatty nodes can produce many MB and we
-    // only need the last `STDERR_TAIL_LINES` `[stderr]` lines anyway.
-    const TAIL_BYTES: u64 = 64 * 1024;
-
-    let content = {
-        let mut f = log_file.lock();
-        let end = match f.seek(SeekFrom::End(0)) {
-            Ok(p) => p,
-            Err(_) => return String::new(),
-        };
-        let start = end.saturating_sub(TAIL_BYTES);
-        if f.seek(SeekFrom::Start(start)).is_err() {
-            return String::new();
-        }
-        let mut bytes = Vec::new();
-        if f.read_to_end(&mut bytes).is_err() {
-            return String::new();
-        }
-        let mut buf = String::from_utf8_lossy(&bytes).into_owned();
-        // If we seeked into the middle of the file, the first "line" may be a
-        // partial (sliced mid-codepoint or mid-line). Drop it so we only
-        // process complete lines.
-        if start > 0
-            && let Some(pos) = buf.find('\n')
-        {
-            buf.drain(..=pos);
-        }
-        buf
-    };
-
-    content
-        .lines()
-        .filter(|l| l.contains("[stderr]"))
-        .filter_map(|l| l.split_once("[stderr] ").map(|(_, rest)| rest))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::build_io::FeedbackLine;
     use crate::build_io::FeedbackStream;
+    use log_export::{LogExporter, LogKind};
+    use tokio::sync::mpsc;
 
-    fn make_log_sink() -> (Arc<StdMutex<File>>, tempfile::NamedTempFile) {
-        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
-        let file = tmp.reopen().expect("reopen tempfile");
-        (Arc::new(StdMutex::new(file)), tmp)
-    }
-
-    fn make_feedback_channel() -> (
-        mpsc::UnboundedSender<FeedbackLine>,
-        mpsc::UnboundedReceiver<FeedbackLine>,
-    ) {
-        mpsc::unbounded_channel()
+    /// An announcer whose run log is in `dir`, with the receiving end of its
+    /// feedback channel.
+    fn announcer_in(dir: &Path) -> (Announcer, mpsc::UnboundedReceiver<FeedbackLine>) {
+        let log = ActionLog::create(dir, "run.log", LogKind::Run, LogExporter::disabled())
+            .expect("create the run log");
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Announcer::new(log, tx), rx)
     }
 
     #[test]
     fn ensure_bind_sources_leaves_existing_paths_alone() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (sink, log_file) = make_log_sink();
+        let log_dir = tempfile::tempdir().expect("log dir");
+        let (announcer, mut rx) = announcer_in(log_dir.path());
         let binds = vec![ContainerBind {
             src: tmp.path().to_string_lossy().into_owned(),
             dest: None,
             opts: None,
         }];
-        let (tx, mut rx) = make_feedback_channel();
-        ensure_bind_sources(&binds, &sink, &tx).expect("existing dir should be accepted");
+        ensure_bind_sources(&binds, &announcer).expect("existing dir should be accepted");
         assert!(rx.try_recv().is_err(), "no warning should be sent");
-        let log_contents = std::fs::read_to_string(log_file.path()).unwrap_or_default();
+        let log_contents = std::fs::read_to_string(announcer.log().path()).expect("read log");
         assert!(
             !log_contents.contains("auto-created"),
             "no warning expected on happy path, got: {log_contents}"
@@ -766,20 +700,18 @@ mod tests {
         let parent = tempfile::tempdir().expect("tempdir");
         let target = parent.path().join("scratch").join("nested");
         assert!(!target.exists());
-        let (sink, log_file) = make_log_sink();
+        let log_dir = tempfile::tempdir().expect("log dir");
+        let (announcer, mut rx) = announcer_in(log_dir.path());
         let binds = vec![ContainerBind {
             src: target.to_string_lossy().into_owned(),
             dest: None,
             opts: None,
         }];
 
-        let (tx, mut rx) = make_feedback_channel();
-        ensure_bind_sources(&binds, &sink, &tx).expect("missing dir should be auto-created");
+        ensure_bind_sources(&binds, &announcer).expect("missing dir should be auto-created");
 
         assert!(target.is_dir(), "target dir must have been created");
-        // Drop the sink mutex's writer view so the warning bytes are flushed.
-        drop(sink);
-        let log_contents = std::fs::read_to_string(log_file.path()).expect("read log");
+        let log_contents = std::fs::read_to_string(announcer.log().path()).expect("read log");
         assert!(
             log_contents.contains("auto-created missing bind mount source:"),
             "warning line missing from feedback log, got: {log_contents}"
@@ -816,15 +748,15 @@ mod tests {
         std::os::unix::fs::symlink(parent.path().join("no_such_target"), &target)
             .expect("plant a dangling symlink");
 
-        let (sink, _log) = make_log_sink();
+        let log_dir = tempfile::tempdir().expect("log dir");
+        let (announcer, mut rx) = announcer_in(log_dir.path());
         let binds = vec![ContainerBind {
             src: target.to_string_lossy().into_owned(),
             dest: None,
             opts: None,
         }];
 
-        let (tx, mut rx) = make_feedback_channel();
-        let error = ensure_bind_sources(&binds, &sink, &tx)
+        let error = ensure_bind_sources(&binds, &announcer)
             .expect_err("an uncreatable source must fail the start");
         assert!(
             error

@@ -6,7 +6,7 @@
 //! their machine is live, and tells the operator which sets stayed behind.
 
 use super::super::action::StackChangeContext;
-use super::super::launch::feedback::publish_stderr;
+use super::super::launch::feedback::publish_warning;
 use super::super::launch::{HostedNode, NodeKey, PlannedDeployment, federated};
 use super::super::state::ActiveLaunch;
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
@@ -286,7 +286,7 @@ pub(super) async fn report_offline_sets(
             .push(slot.field());
     }
     for (host, fields) in by_host {
-        publish_stderr(
+        publish_warning(
             ctx,
             format!(
                 "`{host}` is not live on the federation, so removing copy `{copy}` did not \

@@ -53,7 +53,7 @@ pub fn check_index(root: &Path, scope: CheckScope, peppy_dirs: &PeppyDirs) -> Re
     let findings = match scope {
         CheckScope::Index => Vec::new(),
         CheckScope::IndexAndMcpExposures => {
-            check_repository_exposures(root, peppy_dirs, &|message: &str| info!("{message}"))
+            check_repository_exposures(root, peppy_dirs, &crate::commands::report_as_info)
                 .map_err(index_failure)?
         }
     };

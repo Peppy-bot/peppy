@@ -4,7 +4,7 @@
 //! leaves the launcher active and every other copy running.
 
 use super::super::action::StackChangeContext;
-use super::super::launch::feedback::{publish_stderr, publish_stdout};
+use super::super::launch::feedback::{publish_stdout, publish_warning};
 use super::super::launch::orchestrate::validate_and_order_dependencies;
 use super::super::launch::preflight::preflight_change;
 use super::super::launch::watchers::{LifecycleWatchers, lifecycle_watchers, watchers_replacing};
@@ -146,7 +146,7 @@ async fn remove_inner(
         if host_live {
             stop_copy(ctx, &active.launch_id, &copy).await?;
         } else {
-            publish_stderr(
+            publish_warning(
                 ctx,
                 format!(
                     "`{}` is not live on the federation, so the copy's instances there are not \
@@ -175,7 +175,7 @@ async fn remove_inner(
         if let Err(failure) =
             deliver_sets(ctx, &active.launch_id, &active.placements, shrunk_sets).await
         {
-            publish_stderr(
+            publish_warning(
                 ctx,
                 format!("{failure}\n{UNDELIVERED_REMEDY}"),
                 LaunchFeedbackStep::LauncherStep,

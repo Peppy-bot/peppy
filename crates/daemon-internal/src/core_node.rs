@@ -1,4 +1,5 @@
 use crate::error::Error;
+use crate::log_export::LogExport;
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy};
 use daemon_config::consts::PeppyDirs;
@@ -69,6 +70,9 @@ pub struct CoreNodeRunner {
     /// messaging router to close the session. The startup `messaging_ready`
     /// watch's shutdown-side counterpart.
     core_node_done: watch::Sender<bool>,
+    /// The export of the core node's log files, started with the core node
+    /// and stopped once its teardown has written its last lines.
+    log_export: LogExport,
 }
 
 impl CoreNodeRunner {
@@ -86,6 +90,7 @@ impl CoreNodeRunner {
         name_claim_settle: Duration,
         serve_teardown_token: CancellationToken,
         core_node_done: watch::Sender<bool>,
+        log_export: LogExport,
     ) -> Self {
         let node_arguments = CoreNodeArguments {
             node_startup_timeout,
@@ -117,6 +122,7 @@ impl CoreNodeRunner {
             peppy_config,
             namespace,
             shutdown_token: shutdown_token.clone(),
+            log_exporter: log_export.exporter(),
         });
         Self {
             core_node,
@@ -125,6 +131,7 @@ impl CoreNodeRunner {
             shutdown_token,
             serve_teardown_token,
             core_node_done,
+            log_export,
         }
     }
 
@@ -142,6 +149,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
         let shutdown_token = self.shutdown_token;
         let serve_teardown_token = self.serve_teardown_token;
         let core_node_done = self.core_node_done;
+        let log_export = self.log_export;
         let future = Box::pin(async move {
             // Tear down on a real OS shutdown signal OR an in-process restart
             // (the shared serve coordinator token).
@@ -186,6 +194,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
                 }
             }
 
+            let log_export = log_export.start(core_node.node_name());
             let core_node_future = core_node.start_with_ready(Some(ready_tx));
             tokio::pin!(core_node_future);
 
@@ -243,6 +252,8 @@ impl ServeAsyncCommand for CoreNodeRunner {
                 core_node.release_presence();
                 let _ = core_node_done.send(true);
             }
+            // The teardown has written its last lines by now.
+            log_export.stop().await;
 
             result
         });

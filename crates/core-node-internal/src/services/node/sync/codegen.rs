@@ -1,4 +1,5 @@
 use super::interfaces::{collect_all_deployment_interfaces, stack_resolver};
+use crate::services::node::Report;
 use daemon_config::consts::PeppyDirs;
 use generator::DeploymentInterface;
 use node_stack::NodeStack;
@@ -132,7 +133,7 @@ pub struct AutoSyncParams<'a> {
     pub git_hash: &'a str,
     /// Receives progress lines emitted by `ensure_checkout` when a
     /// git-sourced contract document needs to be materialized.
-    pub on_feedback: &'a dyn Fn(&str),
+    pub on_feedback: &'a dyn Fn(Report<'_>),
 }
 
 /// Auto-generates the `.peppy` directory for a node that has never been synced.

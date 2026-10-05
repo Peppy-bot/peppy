@@ -1,7 +1,7 @@
 //! Tests focused on the `NodeStage` lifecycle transitions managed by
 //! `NodeEntity`.
 
-use parking_lot::{Mutex as StdMutex, RwLock};
+use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -9,9 +9,10 @@ use config::runtime::Name;
 use daemon_config::peppy_config::PackagesBaseUrl;
 use httpmock::Method::HEAD;
 use httpmock::MockServer;
+use log_export::{LogExporter, LogKind};
 use node_stack::{
-    Artifact, BuildContext, CACHED_BUILD_REUSE_PREFIX, InstanceState, NodeEntity, NodeStack,
-    NodeStackError, NodeStage, WorkingDirGuard,
+    ActionLog, Announcer, Artifact, BuildContext, CACHED_BUILD_REUSE_PREFIX, InstanceState,
+    NodeEntity, NodeStack, NodeStackError, NodeStage, WorkingDirGuard,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -422,10 +423,13 @@ async fn concurrent_builds_are_rejected_immediately() {
     let working_dir = tempfile::tempdir().expect("tempdir working_dir");
     std::fs::write(working_dir.path().join("hello.txt"), b"hi").unwrap();
 
-    let log_path = peppy_root.path().join("build.log");
-    let log_file = Arc::new(StdMutex::new(
-        std::fs::File::create(&log_path).expect("create log"),
-    ));
+    let log = ActionLog::create(
+        peppy_root.path(),
+        "build.log",
+        LogKind::Build,
+        LogExporter::disabled(),
+    )
+    .expect("create log");
     let (feedback_tx, _feedback_rx) =
         tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
 
@@ -436,15 +440,14 @@ async fn concurrent_builds_are_rejected_immediately() {
         let working_dir = working_dir.path().to_path_buf();
         let peppy_dirs = peppy_dirs.clone();
         let feedback_tx = feedback_tx.clone();
-        let log_file = Arc::clone(&log_file);
+        let log = log.clone();
         tokio::spawn(async move {
             NodeEntity::build(
                 &handle,
                 BuildContext {
                     working_dir: &working_dir,
                     peppy_dirs: &peppy_dirs,
-                    feedback_tx: &feedback_tx,
-                    log_file,
+                    announcer: Announcer::new(log, feedback_tx),
                     env_vars: &[],
                     cancel_token: CancellationToken::new(),
                     rebuild: false,
@@ -467,8 +470,7 @@ async fn concurrent_builds_are_rejected_immediately() {
         BuildContext {
             working_dir: working_dir.path(),
             peppy_dirs: &peppy_dirs,
-            feedback_tx: &feedback_tx,
-            log_file: Arc::clone(&log_file),
+            announcer: Announcer::new(log.clone(), feedback_tx.clone()),
             env_vars: &[],
             cancel_token: CancellationToken::new(),
             rebuild: false,
@@ -553,7 +555,7 @@ struct BuildHarness {
     working_dir: tempfile::TempDir,
     peppy_root: tempfile::TempDir,
     peppy_dirs: daemon_config::consts::PeppyDirs,
-    log_file: Arc<StdMutex<std::fs::File>>,
+    log: ActionLog,
     feedback_tx: tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
     feedback_rx: tokio::sync::mpsc::UnboundedReceiver<node_stack::build_io::FeedbackLine>,
 }
@@ -584,17 +586,20 @@ fn build_harness() -> BuildHarness {
     let working_dir = tempfile::tempdir().expect("tempdir working_dir");
     let peppy_root = tempfile::tempdir().expect("tempdir peppy_root");
     let peppy_dirs = daemon_config::consts::PeppyDirs::new(peppy_root.path().to_path_buf());
-    let log_path = peppy_root.path().join("build.log");
-    let log_file = Arc::new(StdMutex::new(
-        std::fs::File::create(&log_path).expect("create log"),
-    ));
+    let log = ActionLog::create(
+        peppy_root.path(),
+        "build.log",
+        LogKind::Build,
+        LogExporter::disabled(),
+    )
+    .expect("create log");
     let (feedback_tx, feedback_rx) =
         tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
     BuildHarness {
         working_dir,
         peppy_root,
         peppy_dirs,
-        log_file,
+        log,
         feedback_tx,
         feedback_rx,
     }
@@ -659,8 +664,7 @@ async fn try_build_sensor_from(
         BuildContext {
             working_dir: h.working_dir.path(),
             peppy_dirs: &h.peppy_dirs,
-            feedback_tx: &h.feedback_tx,
-            log_file: Arc::clone(&h.log_file),
+            announcer: Announcer::new(h.log.clone(), h.feedback_tx.clone()),
             env_vars: &[],
             cancel_token,
             rebuild,
@@ -734,8 +738,7 @@ async fn build_runs_add_cmd_for_process_node() {
         BuildContext {
             working_dir: h.working_dir.path(),
             peppy_dirs: &h.peppy_dirs,
-            feedback_tx: &h.feedback_tx,
-            log_file: Arc::clone(&h.log_file),
+            announcer: Announcer::new(h.log.clone(), h.feedback_tx.clone()),
             env_vars: &[],
             cancel_token: CancellationToken::new(),
             rebuild: false,
@@ -868,8 +871,7 @@ async fn a_missing_working_dir_fails_the_build_at_fingerprinting() {
         BuildContext {
             working_dir: std::path::Path::new("/nonexistent-peppy-staged-tree"),
             peppy_dirs: &h.peppy_dirs,
-            feedback_tx: &h.feedback_tx,
-            log_file: Arc::clone(&h.log_file),
+            announcer: Announcer::new(h.log.clone(), h.feedback_tx.clone()),
             env_vars: &[],
             cancel_token: CancellationToken::new(),
             rebuild: false,
@@ -1256,7 +1258,7 @@ async fn push_built_long_running_sensor(
 }
 
 /// Sets up a start-test harness: a `real_lifecycle::LifecycleHarness` plus a
-/// pre-baked instance id. The lifecycle harness provides peppy_dirs, log_file,
+/// pre-baked instance id. The lifecycle harness provides peppy_dirs, log,
 /// feedback_tx + drain task, publish_enabled, and output_sinks().
 fn start_harness(instance_id_str: &str) -> (Name, real_lifecycle::LifecycleHarness) {
     (
@@ -1742,7 +1744,7 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
     let working_path = working_dir.path().to_path_buf();
     let peppy_dirs_clone = harness.peppy_dirs.clone();
     let feedback_tx_clone = harness.feedback_tx.clone();
-    let log_file_clone = Arc::clone(&harness.log_file);
+    let log_clone = harness.log.clone();
     let build_handle_clone = Arc::clone(&handle);
     let build_task = tokio::spawn(async move {
         NodeEntity::build(
@@ -1750,8 +1752,7 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
             BuildContext {
                 working_dir: &working_path,
                 peppy_dirs: &peppy_dirs_clone,
-                feedback_tx: &feedback_tx_clone,
-                log_file: log_file_clone,
+                announcer: Announcer::new(log_clone, feedback_tx_clone),
                 env_vars: &[],
                 cancel_token: CancellationToken::new(),
                 rebuild: false,

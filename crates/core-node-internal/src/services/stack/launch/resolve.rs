@@ -1,7 +1,7 @@
-use super::feedback::{publish_stderr, publish_stdout, spawn_feedback_forwarder};
+use super::feedback::{publish_error, publish_stdout, spawn_feedback_forwarder};
 use super::{NodeKey, PlannedDeployment};
 use crate::services::node::pins;
-use crate::services::node::{FeedbackLine, stdout_line_sender};
+use crate::services::node::{FeedbackLine, Report, unlogged_step_sink};
 use crate::services::repo::cache as repo_cache;
 use crate::services::stack::action::StackChangeContext;
 use config::runtime::CoreNodeName;
@@ -51,20 +51,20 @@ pub(in crate::services::stack) async fn parse_launcher_config(
     let launch_file = match resolve_launcher_origin(ctx, &goal.launcher_origin).await {
         Ok(path) => path,
         Err(msg) => {
-            publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
             return Err(msg);
         }
     };
 
     if !launch_file.exists() {
         let msg = format!("launch file does not exist: {}", launch_file.display());
-        publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+        publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
         return Err(msg);
     }
 
     if !launch_file.is_file() {
         let msg = format!("launch file path must be a file: {}", launch_file.display());
-        publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+        publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
         return Err(msg);
     }
 
@@ -72,7 +72,7 @@ pub(in crate::services::stack) async fn parse_launcher_config(
         Ok(cfg) => cfg,
         Err(e) => {
             let msg = format!("Invalid launcher config: {e}");
-            publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
             return Err(msg);
         }
     };
@@ -96,7 +96,7 @@ pub(in crate::services::stack) async fn parse_launcher_config(
             // composition errors themselves name the axis and its options,
             // so the prefix only says which step refused.
             let msg = format!("Cannot resolve the launcher's components: {e}");
-            publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
             return Err(msg);
         }
     };
@@ -114,7 +114,7 @@ pub(in crate::services::stack) async fn parse_launcher_config(
     ) {
         Ok(placements) => placements,
         Err(msg) => {
-            publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
             return Err(msg);
         }
     };
@@ -293,7 +293,7 @@ async fn resolve_launcher_origin(
             let (feedback_tx, forwarder) = spawn_feedback_forwarder(
                 &ctx.feedback_publisher,
                 LaunchFeedbackStep::LauncherStep,
-                &ctx.log_file,
+                &ctx.log,
                 None,
             );
 
@@ -303,7 +303,7 @@ async fn resolve_launcher_origin(
                 crate::services::repo::cache::resolve_repo_launcher_path(
                     &name_for_blocking,
                     &peppy_dirs,
-                    &stdout_line_sender(feedback_tx),
+                    &unlogged_step_sink(feedback_tx),
                 )
             })
             .await
@@ -351,7 +351,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
         Ok(entries) => Arc::new(entries),
         Err(e) => {
             let msg = format!("failed to load nodes cache: {e}");
-            publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+            publish_error(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
             return Err(msg);
         }
     };
@@ -379,7 +379,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
         let (feedback_tx, forwarder) = spawn_feedback_forwarder(
             &ctx.feedback_publisher,
             LaunchFeedbackStep::LauncherStep,
-            &ctx.log_file,
+            &ctx.log,
             None,
         );
         let resolved = resolve_one(ctx, &deployment, placements, &node_entries, &feedback_tx).await;
@@ -453,7 +453,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
 
     if !planning_errors.is_empty() {
         let msg = daemon_config::format_bulleted(&planning_errors);
-        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        publish_error(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(msg);
     }
 
@@ -514,7 +514,7 @@ async fn resolve_one(
     let label = deployment_label(deployment);
     let remote = has_remote_instances(deployment, placements);
     let feedback: crate::services::node::cache::MaterializeFeedback =
-        Arc::new(stdout_line_sender(feedback_tx.clone()));
+        Arc::new(unlogged_step_sink(feedback_tx.clone()));
 
     let (name, tag) = match &deployment.source {
         DeploymentSource::Node { name, tag } => (name, tag),
@@ -610,7 +610,11 @@ pub(in crate::services::stack) async fn mint_doc_pins(
         .collect();
     let minted = pins::doc_pins_for_manifest_sets_async(&ctx.peppy_dirs, sets, {
         let sink = Arc::clone(&collected);
-        Arc::new(move |line: &str| sink.lock().push(line.to_owned()))
+        Arc::new(move |report: Report<'_>| {
+            if let Report::Step(line) = report {
+                sink.lock().push(line.to_owned());
+            }
+        })
     })
     .await;
     let captured: Vec<String> = std::mem::take(&mut *collected.lock());
@@ -621,7 +625,7 @@ pub(in crate::services::stack) async fn mint_doc_pins(
     let minted = match minted {
         Ok(minted) => minted,
         Err(reason) => {
-            publish_stderr(ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            publish_error(ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
             return Err(reason);
         }
     };
@@ -644,7 +648,7 @@ pub(in crate::services::stack) async fn mint_doc_pins(
     }
     if !problems.is_empty() {
         let msg = daemon_config::format_bulleted(&problems);
-        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        publish_error(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(msg);
     }
     Ok(())

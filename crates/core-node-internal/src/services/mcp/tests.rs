@@ -153,7 +153,7 @@ fn references(names: &[&str]) -> Vec<ExposureRef> {
         .collect()
 }
 
-fn quiet(_: &str) {}
+fn quiet(_: crate::services::node::Report<'_>) {}
 
 #[test]
 fn a_launch_resolves_exposures_and_their_contracts_through_the_caches() {

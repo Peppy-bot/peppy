@@ -1,6 +1,7 @@
 //! The actions that change a stack: the goal a caller sends, the admission it
 //! passes through, and the context the change it asked for runs under.
 
+use super::ActiveLaunch;
 use super::copies::join::join;
 use super::copies::remove::remove;
 use super::launch::process_launch;
@@ -9,7 +10,6 @@ use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_ac
 use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, ConcurrencyGate, finish_on_reset};
 use crate::services::node::{DaemonDefaults, HealthMonitorPolicy, RelationshipCoordinators};
-use chrono::Local;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
     LaunchGoal, LaunchGoalResponse, LaunchResult, StackBudgets, StackBuildGoal, StackJoinGoal,
@@ -18,15 +18,13 @@ use core_node_api::encoding::{
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
-use node_stack::NodeStack;
-use parking_lot::Mutex as StdMutex;
+use node_stack::{ActionLog, NodeStack};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ActionFeedbackPublisher, ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
-use std::fs::File;
 use std::panic::AssertUnwindSafe;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -67,14 +65,19 @@ impl StackAction {
         }
     }
 
+    /// The action as its launch log records it.
+    fn logged_as(self) -> log_export::StackAction {
+        match self {
+            Self::Launch => log_export::StackAction::Launch,
+            Self::Build => log_export::StackAction::Build,
+            Self::Join => log_export::StackAction::Join,
+            Self::Remove => log_export::StackAction::Remove,
+        }
+    }
+
     /// How the operator's feedback and the daemon's log name the action.
     pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Launch => "launch",
-            Self::Build => "build",
-            Self::Join => "join",
-            Self::Remove => "remove",
-        }
+        self.logged_as().name()
     }
 }
 
@@ -116,6 +119,16 @@ impl StackRequest {
             Self::Build(goal) => goal.launch().budgets.clone(),
             Self::Join(goal) => goal.budgets.clone(),
             Self::Remove(_) => StackBudgets::default(),
+        }
+    }
+
+    /// The launch the request belongs to: the one a launch or a build starts,
+    /// or the active one a join or a removal changes.
+    fn launch_id(&self, active: Option<&ActiveLaunch>) -> Option<String> {
+        match self {
+            Self::Launch(goal) => Some(goal.launch_id.clone()),
+            Self::Build(goal) => Some(goal.launch().launch_id.clone()),
+            Self::Join(_) | Self::Remove(_) => active.map(|active| active.launch_id.clone()),
         }
     }
 
@@ -302,8 +315,7 @@ pub(super) struct StackChangeContext {
     pub(super) node_stack: Arc<NodeStack>,
     pub(super) peppy_dirs: PeppyDirs,
     pub(super) feedback_publisher: ActionFeedbackPublisher,
-    pub(super) log_file: Arc<StdMutex<File>>,
-    pub(super) log_path: PathBuf,
+    pub(super) log: ActionLog,
     /// The caller's forwarded environment. It describes the machine the change
     /// was typed on, so it reaches goals executed on this daemon and stays off
     /// every goal dispatched to a peer.
@@ -398,29 +410,22 @@ async fn handle_stack_request(
         action.id().name()
     );
 
-    // Create log file with timestamp-based filename
-    let log_dir = action_context.peppy_dirs.logs_dir_launch();
-    if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        let error_msg = format!("Failed to create logs directory: {e}");
-        debug!("Failed to create logs directory {:?}: {}", log_dir, e);
-        gate.clear_running();
-        reject_goal(pending, encode_rejected(action, &error_msg)).await;
-        return;
-    }
-
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
-    let log_filename = format!("{}_{}.log", action.label(), timestamp);
-    let log_path = log_dir.join(&log_filename);
-    let log_file = match File::create(&log_path) {
-        Ok(file) => Arc::new(StdMutex::new(file)),
-        Err(e) => {
-            let error_msg = format!("Failed to create log file: {e}");
-            debug!("Failed to create log file {:?}: {}", log_path, e);
+    let launch_id = goal.launch_id(action_context.slice_ownership.active.lock().as_ref());
+    let log = match ActionLog::for_stack_action(
+        &action_context.peppy_dirs,
+        action_context.node_stack.log_exporter().clone(),
+        action.logged_as(),
+        launch_id.as_deref(),
+    ) {
+        Ok(log) => log,
+        Err(error_msg) => {
+            debug!("{error_msg}");
             gate.clear_running();
             reject_goal(pending, encode_rejected(action, &error_msg)).await;
             return;
         }
     };
+    let log_path = log.path();
 
     debug!(
         "Created log file for stack {}: {}",
@@ -438,7 +443,7 @@ async fn handle_stack_request(
     let feedback_publisher = goal_ctx
         .feedback_publisher()
         .expect("every stack action declares a feedback topic");
-    let log_path_clone = log_path.clone();
+    let log_for_task = log.clone();
     let gate_for_task = gate.clone();
     let cancellation = action_context.slice_ownership.stack.cancellation();
     tokio::spawn(async move {
@@ -474,8 +479,7 @@ async fn handle_stack_request(
             node_stack,
             peppy_dirs,
             feedback_publisher,
-            log_file,
-            log_path: log_path_clone.clone(),
+            log,
             env_vars: budgets.env_vars,
             timeouts,
             change_deadline,
@@ -492,7 +496,10 @@ async fn handle_stack_request(
         // gate on panic is handled by `slot` above. Mirrors the panic handling
         // in `run_node_run` / `run_node_add` / `run_node_build`.
         let work = finish_on_reset(goal.process(ctx), &cancellation, || {
-            LaunchResult::failure(&log_path_clone, "stack operation cancelled by stack reset")
+            LaunchResult::failure(
+                log_for_task.path(),
+                "stack operation cancelled by stack reset",
+            )
         });
         let result = match AssertUnwindSafe(work).catch_unwind().await {
             Ok(result) => result,
@@ -503,7 +510,7 @@ async fn handle_stack_request(
                     panic_message(&*panic_payload)
                 );
                 tracing::error!("{}", msg);
-                LaunchResult::failure(&log_path_clone, msg)
+                LaunchResult::failure(log_for_task.path(), msg)
             }
         };
         drop(_mutation);

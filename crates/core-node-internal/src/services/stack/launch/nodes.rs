@@ -210,6 +210,7 @@ async fn add_and_build_group(
         let node_add_goal = match encoded {
             Ok((source, pins)) => {
                 NodeAddGoal::for_internal_execution(source, STACK_LAUNCH_GIT_HASH)
+                    .with_launch_id(&phase.launch_id)
                     .with_env_vars(ctx.env_vars.clone())
                     .with_pins(pins)
             }
@@ -264,6 +265,7 @@ async fn add_and_build_group(
         // perspective until `node build` has run.
         let (build_result, build_log_path) = build_node_directly(
             ctx,
+            &phase.launch_id,
             node_name,
             node_tag,
             ctx.env_vars.clone(),

@@ -10,6 +10,11 @@ pub const CREDENTIALS_FILE: &str = "credentials.json5";
 /// default target of the `peppy platform` commands.
 pub const PLATFORM_SELECTION_FILE: &str = "platform_selection.json5";
 
+/// Filename of the request headers of the log export, stored under
+/// `~/.peppy/conf`: a JSON5 object of header name to value, such as an API
+/// key. The daemon sets it to `0600` when it reads it.
+const OTLP_HEADERS_FILE: &str = "otlp_headers.json5";
+
 /// Filename of a repository's index, at the root of the tree peppy is
 /// configured to scan. A repository states there what it publishes and where
 /// each item is declared; without it the repository does not resolve.
@@ -185,11 +190,9 @@ impl PeppyDirs {
         self.root.join("bin")
     }
 
-    /// Path to the stack operations log file.
-    ///
-    /// Records daemon-initiated lifecycle events (e.g. automatic instance
-    /// removal after health-check failures) so users can audit what happened
-    /// without digging through debug logs.
+    /// Path to the stack log: each instance that ends as `finished` or
+    /// `failed`, each change between `healthy` and `unhealthy`, and each
+    /// report of records the log export discarded.
     pub fn stack_log_path(&self) -> PathBuf {
         self.root.join("stack_log.log")
     }
@@ -215,6 +218,11 @@ impl PeppyDirs {
     /// Configuration directory for user-editable config files (e.g. repositories.json5).
     pub fn conf_dir(&self) -> PathBuf {
         self.root.join("conf")
+    }
+
+    /// The request headers file of the log export.
+    pub fn otlp_headers_path(&self) -> PathBuf {
+        self.conf_dir().join(OTLP_HEADERS_FILE)
     }
 
     /// Cache directory for repo refresh results and other cached data.

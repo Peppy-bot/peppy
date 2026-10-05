@@ -52,7 +52,6 @@ pub mod discovery;
 mod document;
 pub mod enrollment;
 mod error;
-mod fs_perms;
 pub mod http;
 pub mod profile;
 pub mod refresh;

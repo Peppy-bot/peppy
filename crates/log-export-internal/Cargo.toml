@@ -1,0 +1,45 @@
+[package]
+name = "log-export"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+# Export of the daemon's log lines as OpenTelemetry log records: the record
+# model, the handle log writers hand their lines to, the queue behind it, and
+# the worker that posts the queue to an OTLP/HTTP endpoint.
+[dependencies]
+# `Severity` and `OtlpEndpoint`, the types of the export settings, and the
+# owner-only file mode of the headers file.
+daemon-config = { workspace = true }
+# Removes terminal escape sequences from an exported line.
+anstream = { version = "1", default-features = false }
+regex = { workspace = true }
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+tokio-util = "0.7"
+# The OTLP messages are protobuf.
+prost = "0.14"
+bytes = "1"
+# OTLP over HTTP. The same TLS setup as the other HTTP clients of the daemon.
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+# The headers file is JSON5, like the other files under `conf/`, read entry
+# by entry.
+serde = "1"
+serde_json5 = "0.2"
+# Jitter of the retry waits.
+rand = "0.10"
+tracing = "0.1"
+# The OTLP receiver of `test_support`.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"], optional = true }
+
+[features]
+# `test_support::OtlpReceiver`, an OTLP/HTTP server for the tests of this
+# crate and of downstream crates.
+test-support = ["dep:axum", "tokio/net", "tokio/rt"]
+
+[dev-dependencies]
+log-export = { path = ".", features = ["test-support"] }
+tokio = { version = "1", features = ["macros", "rt", "test-util"] }
+tempfile = "3"
+# The official OTLP messages, to prove the local ones encode the same wire
+# format.
+opentelemetry-proto = { version = "0.31", default-features = false, features = ["gen-tonic-messages", "logs"] }

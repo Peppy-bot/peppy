@@ -9,7 +9,7 @@ use std::path::Path;
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::error::{Error, Result};
-use crate::fs_perms::restrict_file;
+use daemon_config::fs_perms::restrict_file;
 
 /// A document with a schema version.
 pub(crate) trait Versioned {

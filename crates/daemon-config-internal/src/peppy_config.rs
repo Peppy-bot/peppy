@@ -31,9 +31,14 @@
 //! rewritten.
 
 mod completion;
+mod otlp_endpoint;
 mod packages_base_url;
+mod setting;
+mod severity;
 
+pub use otlp_endpoint::OtlpEndpoint;
 pub use packages_base_url::PackagesBaseUrl;
+pub use severity::{OtlpMinSeverity, Severity};
 
 use crate::atomic_write::publish_atomic;
 use crate::consts::PeppyDirs;
@@ -211,6 +216,26 @@ const PYPI_MIRROR_SECTION_SNIPPET: &str = r#"  // Packages base URL of a PyPI mi
   pypi_mirror: null,
 "#;
 
+/// The `otlp_endpoint` entry with its explanatory comment. Spelled out as an
+/// explicit `null` (parsed as `None`, no export) for the same reason as
+/// [`CORE_NODE_NAME_SECTION_SNIPPET`].
+const OTLP_ENDPOINT_SECTION_SNIPPET: &str = r#"  // OTLP/HTTP URL of an OpenTelemetry collector or an intake, or null. When set,
+  // the daemon exports the launch, add, build, run and stack logs to
+  // <otlp_endpoint>/v1/logs, or to the URL as written when its path already
+  // ends in /v1/logs. Request headers, such as an API key, go in
+  // ~/.peppy/conf/otlp_headers.json5. Example: "http://localhost:4318".
+  otlp_endpoint: null,
+"#;
+
+/// The `otlp_min_severity` entry with its explanatory comment. Spelled out as
+/// an explicit `null` (parsed as `None`, every line) for the same reason as
+/// [`CORE_NODE_NAME_SECTION_SNIPPET`].
+const OTLP_MIN_SEVERITY_SECTION_SNIPPET: &str = r#"  // Lowest severity the daemon exports, or null to export every line. One of
+  // "trace", "debug", "info", "warn". A line below it stays in its log file
+  // only. A line that prints no level is always exported.
+  otlp_min_severity: null,
+"#;
+
 /// The `resource_servers.api` entry, indented for the `resource_servers` block.
 const API_FIELD_SNIPPET: &str = const_format::concatcp!("    api: \"", DEFAULT_API_URL, "\",\n");
 
@@ -269,6 +294,10 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     LIFECYCLE_SECTION_SNIPPET,
     "\n",
     PYPI_MIRROR_SECTION_SNIPPET,
+    "\n",
+    OTLP_ENDPOINT_SECTION_SNIPPET,
+    "\n",
+    OTLP_MIN_SEVERITY_SECTION_SNIPPET,
     "\n",
     RESOURCE_SERVERS_SECTION_SNIPPET,
     "}\n"
@@ -768,6 +797,15 @@ pub struct PeppyConfig {
         deserialize_with = "packages_base_url::deserialize_pypi_mirror"
     )]
     pub pypi_mirror: Option<PackagesBaseUrl>,
+    /// The OTLP/HTTP endpoint the daemon exports its log files to; `None`
+    /// (the template's explicit `null`) exports nothing. Parsed when the file
+    /// is read, so a value that is not an OTLP/HTTP URL fails the load.
+    #[serde(default, deserialize_with = "otlp_endpoint::deserialize_otlp_endpoint")]
+    pub otlp_endpoint: Option<OtlpEndpoint>,
+    /// The lowest severity the daemon exports; `None` (the template's
+    /// explicit `null`) exports every line.
+    #[serde(default, deserialize_with = "severity::deserialize_otlp_min_severity")]
+    pub otlp_min_severity: Option<OtlpMinSeverity>,
     #[serde(default)]
     pub resource_servers: ResourceServers,
 }
@@ -1251,6 +1289,8 @@ mod tests {
         assert!(message.contains("zenoh"));
         assert!(message.contains("lifecycle"));
         assert!(message.contains("pypi_mirror"));
+        assert!(message.contains("otlp_endpoint"));
+        assert!(message.contains("otlp_min_severity"));
         assert!(message.contains("resource_servers"));
         assert!(message.contains("never completed with defaults"));
         assert!(message.contains("every setting must be spelled out"));
@@ -1758,8 +1798,14 @@ mod tests {
                 "does not end with",
             ),
             (r#"{ pypi_mirror: "" }"#, "not a URL"),
-            (r#"{ pypi_mirror: 7 }"#, "expected the packages base URL"),
-            (r#"{ pypi_mirror: true }"#, "expected the packages base URL"),
+            (
+                r#"{ pypi_mirror: 7 }"#,
+                "it is not a string; expected the packages base URL",
+            ),
+            (
+                r#"{ pypi_mirror: true }"#,
+                "it is not a string; expected the packages base URL",
+            ),
             (
                 r#"{ pypi_mirror: { url: "https://pypi.tuna.tsinghua.edu.cn/packages/" } }"#,
                 "expected the packages base URL",
@@ -1777,6 +1823,151 @@ mod tests {
             assert!(message.contains(reason), "{content}: {message}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
         }
+    }
+
+    #[test]
+    fn template_exports_no_logs() {
+        let cfg: PeppyConfig = serde_json5::from_str(DEFAULT_PEPPY_CONFIG_TEMPLATE).unwrap();
+        assert_eq!(cfg.otlp_endpoint, None);
+        assert_eq!(cfg.otlp_min_severity, None);
+        assert_eq!(PeppyConfig::default().otlp_endpoint, None);
+        assert_eq!(PeppyConfig::default().otlp_min_severity, None);
+    }
+
+    #[test]
+    fn otlp_settings_are_read_and_kept_by_completion() {
+        let (_tmp, peppy_dirs, path) = dirs_with_config(
+            r#"{ otlp_endpoint: "http://localhost:4318", otlp_min_severity: "warn" }"#,
+        );
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+
+        let endpoint = cfg.otlp_endpoint.as_ref().expect("an endpoint is set");
+        assert_eq!(endpoint.logs_url(), "http://localhost:4318/v1/logs");
+        assert_eq!(cfg.otlp_min_severity, Some(OtlpMinSeverity::Warn));
+        // Completion adds the other settings and keeps the user's values.
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(completed.matches("otlp_endpoint:").count(), 1);
+        assert_eq!(completed.matches("otlp_min_severity:").count(), 1);
+        assert!(completed.contains(r#"otlp_endpoint: "http://localhost:4318""#));
+        assert!(completed.contains(r#"otlp_min_severity: "warn""#));
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+    }
+
+    #[test]
+    fn each_value_of_the_minimum_severity_loads() {
+        for minimum in OtlpMinSeverity::ALL {
+            let (_tmp, peppy_dirs, _) =
+                dirs_with_config(&format!(r#"{{ otlp_min_severity: "{}" }}"#, minimum.name()));
+            let cfg = load_or_create(&peppy_dirs).unwrap();
+            assert_eq!(cfg.otlp_min_severity, Some(minimum));
+        }
+    }
+
+    #[test]
+    fn invalid_otlp_settings_fail_loud_and_leave_the_file() {
+        const ENDPOINT_EXPECTED: &str =
+            r#"expected an OTLP/HTTP URL, such as "http://localhost:4318", or null"#;
+        const SEVERITY_EXPECTED: &str =
+            r#"expected one of "trace", "debug", "info", "warn", or null"#;
+        for (content, reasons) in [
+            (
+                r#"{ otlp_endpoint: "grpc://localhost:4317" }"#,
+                [
+                    "invalid otlp_endpoint: it starts with grpc:",
+                    ENDPOINT_EXPECTED,
+                ],
+            ),
+            (
+                r#"{ otlp_endpoint: "https://user:key@otlp.example.com" }"#,
+                [
+                    "it has credentials, which go in otlp_headers.json5",
+                    ENDPOINT_EXPECTED,
+                ],
+            ),
+            (
+                r#"{ pypi_mirror: "https://user:key@pypi.example/packages/" }"#,
+                [
+                    "invalid pypi_mirror: it has credentials, which every rewritten uv.lock \
+                     copies",
+                    "expected the packages base URL",
+                ],
+            ),
+            (
+                r#"{ otlp_endpoint: "https://otlp.example.com/?key=1" }"#,
+                [
+                    "invalid otlp_endpoint: it has a query or a fragment",
+                    ENDPOINT_EXPECTED,
+                ],
+            ),
+            (
+                r#"{ otlp_endpoint: "" }"#,
+                ["it is not a URL", ENDPOINT_EXPECTED],
+            ),
+            (
+                r#"{ otlp_endpoint: 4318 }"#,
+                [
+                    "invalid otlp_endpoint: it is not a string",
+                    ENDPOINT_EXPECTED,
+                ],
+            ),
+            (
+                r#"{ otlp_min_severity: "error" }"#,
+                [
+                    r#"invalid otlp_min_severity: it is above "warn""#,
+                    SEVERITY_EXPECTED,
+                ],
+            ),
+            (
+                r#"{ otlp_min_severity: "warning" }"#,
+                [
+                    "invalid otlp_min_severity: it is not one of the lowercase names",
+                    SEVERITY_EXPECTED,
+                ],
+            ),
+            (
+                r#"{ otlp_min_severity: "WARN" }"#,
+                [
+                    "invalid otlp_min_severity: it is not one of the lowercase names",
+                    SEVERITY_EXPECTED,
+                ],
+            ),
+            (
+                r#"{ otlp_min_severity: 13 }"#,
+                [
+                    "invalid otlp_min_severity: it is not a string",
+                    SEVERITY_EXPECTED,
+                ],
+            ),
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
+
+            assert!(message.contains(PEPPY_CONFIG_FILE), "{content}: {message}");
+            for reason in reasons {
+                assert!(message.contains(reason), "{content}: {message}");
+            }
+            assert!(!message.contains("user:key"), "{content}: {message}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn otlp_settings_complete_to_explicit_null_idempotently() {
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ core_node_name: null }"#);
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+
+        assert_eq!(cfg.otlp_endpoint, None);
+        assert_eq!(cfg.otlp_min_severity, None);
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert!(completed.contains("  otlp_endpoint: null,\n"));
+        assert!(completed.contains("  otlp_min_severity: null,\n"));
+        assert!(completed.contains("// OTLP/HTTP URL of an OpenTelemetry collector"));
+        assert!(completed.contains("// Lowest severity the daemon exports"));
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
     }
 
     #[test]
@@ -2014,6 +2205,8 @@ mod tests {
             pypi_mirror: Some(
                 PackagesBaseUrl::parse("https://pypi.tuna.tsinghua.edu.cn/packages/").unwrap(),
             ),
+            otlp_endpoint: Some(OtlpEndpoint::parse("https://otlp.example.com/otlp").unwrap()),
+            otlp_min_severity: Some(OtlpMinSeverity::Info),
             resource_servers: ResourceServers {
                 api: "http://localhost:9000".to_string(),
             },

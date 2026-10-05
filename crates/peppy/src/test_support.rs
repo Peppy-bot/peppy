@@ -389,6 +389,7 @@ impl ServeCommandEmulation {
             peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
             namespace: config::namespace::Namespace::local(),
             shutdown_token: shutdown_token.clone(),
+            log_exporter: log_export::LogExporter::disabled(),
         });
         let core_node_name = core_node.node_name().to_string();
 

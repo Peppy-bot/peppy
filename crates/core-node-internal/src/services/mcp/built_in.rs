@@ -9,17 +9,14 @@
 //! fetched for a node, generated or built.
 
 use super::materialize_exposure_deployment;
-use crate::services::node::{FeedbackLine, FeedbackStream, NodeAddActionContext, pins};
+use crate::services::node::{NodeAddActionContext, pins};
 use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::mcp_deployment::{RUN_COMMAND, SPEC_ENV_VAR};
 use daemon_config::repository::{DeploymentPins, DeploymentRoot, PinKind};
-use node_stack::BuiltInLaunch;
-use parking_lot::Mutex as StdMutex;
-use std::fs::File;
+use node_stack::{Announcer, BuiltInLaunch};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 /// The manifest file of a built-in node, beside its serve spec.
 const MANIFEST_FILE: &str = config::consts::NODE_CONFIG_FILE;
@@ -128,13 +125,11 @@ fn built_in_launch(executable: PathBuf, peppy_dirs: &PeppyDirs, spec_path: &Path
 pub(crate) async fn run_built_in_add(
     goal: NodeAddGoal,
     action_context: NodeAddActionContext,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
-    log_path: PathBuf,
+    announcer: Announcer,
 ) -> NodeAddResult {
     let fail = |msg: String| {
-        crate::services::node::write_error_to_log(&log_file, &msg);
-        NodeAddResult::failure(&log_path, msg)
+        announcer.log().error(&msg);
+        NodeAddResult::failure(announcer.log().path(), msg)
     };
     let NodeSource::Exposures { pins_json5 } = &goal.source else {
         return fail("internal error: run_built_in_add called with another source".to_owned());
@@ -158,18 +153,14 @@ pub(crate) async fn run_built_in_add(
         Err(e) => return fail(e),
     };
 
-    let _ = feedback_tx.send(FeedbackLine {
-        stream: FeedbackStream::Stdout,
-        line: format!(
-            "Registering the built-in MCP server for {}",
-            pins.root.label()
-        ),
-    });
+    announcer.line(format!(
+        "Registering the built-in MCP server for {}",
+        pins.root.label()
+    ));
 
     let peppy_dirs = action_context.peppy_dirs.clone();
-    let on_feedback: crate::services::node::cache::MaterializeFeedback = Arc::new(
-        crate::services::node::stdout_line_sender(feedback_tx.clone()),
-    );
+    let on_feedback: crate::services::node::cache::MaterializeFeedback =
+        Arc::new(crate::services::node::step_sink(announcer.clone()));
     let resolved = {
         let dirs = peppy_dirs.clone();
         match tokio::task::spawn_blocking(move || {
@@ -189,7 +180,7 @@ pub(crate) async fn run_built_in_add(
     };
     if let Some(warning) = executable.warning() {
         tracing::warn!("{warning}");
-        node_stack::build_io::announce_warning(&feedback_tx, &log_file, warning);
+        announcer.warning(warning);
     }
 
     let plan = resolved.plan;
@@ -231,14 +222,11 @@ pub(crate) async fn run_built_in_add(
             "cannot register `{name}:{tag}` in the node stack: {e}"
         ));
     }
-    let _ = feedback_tx.send(FeedbackLine {
-        stream: FeedbackStream::Stdout,
-        line: format!(
-            "Registered `{name}:{tag}`, serving {}",
-            http_paths.join(", ")
-        ),
-    });
-    NodeAddResult::success(log_path, name, tag)
+    announcer.line(format!(
+        "Registered `{name}:{tag}`, serving {}",
+        http_paths.join(", ")
+    ));
+    NodeAddResult::success(announcer.log().path(), name, tag)
 }
 
 #[cfg(test)]

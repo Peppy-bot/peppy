@@ -27,6 +27,7 @@ mod core_node;
 mod daemon_lock;
 mod error;
 mod federation_control;
+mod log_export;
 mod messaging_router;
 mod router_federation;
 mod serve;

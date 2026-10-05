@@ -29,6 +29,7 @@ use core_node_api::{
     InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph, SerializedPairingSlot,
 };
 use daemon_config::peppy_config::PackagesBaseUrl;
+use log_export::LogExporter;
 use names_generator2::get_random;
 use parking_lot::RwLock;
 use petgraph::{
@@ -1027,6 +1028,10 @@ pub struct NodeStack {
     /// PyPI itself. Daemon-only state resolved once at startup, like
     /// `shutdown_grace`; the build paths read it into their `BuildContext`.
     pypi_mirror: Option<PackagesBaseUrl>,
+    /// Where the log files of the stack's actions send their lines. Daemon-only
+    /// state made once at startup, like `shutdown_grace`; the handlers that
+    /// create a log file read it. The default exports nothing.
+    log_exporter: LogExporter,
 }
 
 impl NodeStack {
@@ -1062,6 +1067,7 @@ impl NodeStack {
             add_log_paths: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             shutdown_grace: Duration::from_secs(config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS),
             pypi_mirror: None,
+            log_exporter: LogExporter::disabled(),
         }
     }
 
@@ -1092,6 +1098,18 @@ impl NodeStack {
     /// `uv.lock` from, or `None` for PyPI itself.
     pub fn pypi_mirror(&self) -> Option<&PackagesBaseUrl> {
         self.pypi_mirror.as_ref()
+    }
+
+    /// Sets the exporter of the stack's log files. Builder form, like
+    /// [`NodeStack::with_shutdown_grace`].
+    pub fn with_log_exporter(mut self, log_exporter: LogExporter) -> Self {
+        self.log_exporter = log_exporter;
+        self
+    }
+
+    /// The exporter a log file of this stack sends its lines to.
+    pub fn log_exporter(&self) -> &LogExporter {
+        &self.log_exporter
     }
 
     /// Records the add-log path for a `(name, tag)` key. Called by the

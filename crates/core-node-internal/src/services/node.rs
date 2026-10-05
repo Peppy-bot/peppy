@@ -13,7 +13,6 @@ mod git_utils;
 mod health_monitor;
 mod info;
 mod init;
-mod logging;
 pub(crate) mod observation;
 pub(crate) mod pairing;
 pub(crate) mod pins;
@@ -21,6 +20,7 @@ mod relationship_notify;
 mod remove;
 mod run;
 mod sets;
+mod stack_log;
 mod stop;
 mod sync;
 #[cfg(test)]
@@ -43,20 +43,24 @@ pub use pairing::PairingCoordinator;
 pub(crate) use relationship_notify::RelationshipNotifier;
 pub use remove::listen_for_node_remove;
 pub use run::{DaemonDefaults, NodeRunServiceConfig, listen_for_node_run};
+pub use stack_log::ExportDiscardLog;
 pub use stop::{
     TEARDOWN_REAP_BUDGET, force_kill_deadline, listen_for_node_stop, teardown_all_instances,
 };
 pub(crate) use stop::{stop_named_instances, teardown_timeout};
 pub use sync::listen_for_node_sync;
 
-pub(crate) use add::{NodeAddActionContext, dispatch_node_add, log_label_from_source};
+pub(crate) use add::{NodeAddActionContext, create_add_log, dispatch_node_add};
 pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
-pub(crate) use feedback::{FeedbackLine, FeedbackStream, stdout_line_sender};
+pub use feedback::Report;
+pub(crate) use feedback::{
+    FeedbackLine, FeedbackStream, interface_step_sink, step_sink, trace_interface_step,
+    unlogged_step_sink,
+};
 pub(crate) use git_utils::{
     checkout_read_ref, checkout_repo_ref, clone_repo_shallow, clone_with_progress, format_bytes,
     head_commit,
 };
-pub(crate) use logging::{create_action_log_file, write_error_to_log};
 pub(crate) use run::{
     NodeRunActionContext, assemble_runtime_config, resolve_mount_path_parameters, run_node_run,
 };
@@ -73,7 +77,6 @@ use common::{encode_response_or_err, generate_random_id, panic_message};
 use env::{inject_node_runtime_env, inject_rust_build_env, validate_goal_env_vars};
 use feedback::spawn_feedback_forwarder;
 use git_utils::sanitize_repo_path;
-use logging::append_stack_log;
 
 // Test-only re-imports (referenced exclusively from the `tests` module below).
 #[cfg(test)]

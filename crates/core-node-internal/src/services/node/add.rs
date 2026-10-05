@@ -14,7 +14,7 @@ use super::sync::{
 use super::{
     clone_with_progress, extract_tar_zst, format_bytes, generate_random_id,
     is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
-    resolve_local_archive_source, sanitize_repo_path, write_error_to_log,
+    resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
 use crate::source_url::SourceUrl;
@@ -30,8 +30,7 @@ use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
-use node_stack::{InstanceState, NodeStack, WorkingDirGuard};
-use parking_lot::Mutex as StdMutex;
+use node_stack::{ActionLog, Announcer, InstanceState, NodeStack, WorkingDirGuard};
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
@@ -46,7 +45,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 use ureq::Error as HttpError;
 
-use super::{FeedbackLine, FeedbackStream, create_action_log_file};
+use super::{FeedbackLine, interface_step_sink};
 use peppylib::messaging::SenderTarget;
 
 #[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
@@ -276,16 +275,14 @@ pub(crate) struct NodeAddActionContext {
 
 struct ProcessNodeAddContext {
     action: NodeAddActionContext,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
-    log_path: PathBuf,
+    announcer: Announcer,
 }
 
 async fn resolve_git_source(
     repo_url: &gix_url::Url,
     repo_path: &str,
     repo_ref: Option<&str>,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    announcer: Announcer,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let repo_relative_path = sanitize_repo_path(repo_path)?;
 
@@ -294,9 +291,9 @@ async fn resolve_git_source(
         .map_err(|_| "repo_url must be valid UTF-8".to_string())?
         .to_owned();
 
-    shallow_probe_config(&repo_url_str, &repo_relative_path, repo_ref, &feedback_tx).await?;
-    let checkout_dir = clone_repo_to_temp(&repo_url_str, repo_ref, &feedback_tx).await?;
-    parse_config_from_checkout(checkout_dir, &repo_relative_path, &feedback_tx)
+    shallow_probe_config(&repo_url_str, &repo_relative_path, repo_ref, &announcer).await?;
+    let checkout_dir = clone_repo_to_temp(&repo_url_str, repo_ref, &announcer).await?;
+    parse_config_from_checkout(checkout_dir, &repo_relative_path)
 }
 
 /// Phase 1 of [`resolve_git_source`]: shallow probe to validate peppy.json5
@@ -307,12 +304,9 @@ async fn shallow_probe_config(
     repo_url: &str,
     repo_relative_path: &Path,
     repo_ref: Option<&str>,
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+    announcer: &Announcer,
 ) -> std::result::Result<(), String> {
-    let _ = feedback_tx.send(FeedbackLine {
-        stream: FeedbackStream::Stdout,
-        line: "Checking node config...".to_string(),
-    });
+    announcer.line("Checking node config...");
 
     let probe_url = repo_url.to_owned();
     let probe_path = repo_relative_path.to_owned();
@@ -332,13 +326,10 @@ async fn shallow_probe_config(
         Ok(_) => Ok(()),
         Err(ShallowCheckError::InvalidConfig(msg)) => Err(msg),
         Err(ShallowCheckError::ShallowFetchFailed(reason)) => {
-            let _ = feedback_tx.send(FeedbackLine {
-                stream: FeedbackStream::Stdout,
-                line: format!(
-                    "Shallow probe unavailable ({}), proceeding with full clone",
-                    reason
-                ),
-            });
+            announcer.line(format!(
+                "Shallow probe unavailable ({}), proceeding with full clone",
+                reason
+            ));
             Ok(())
         }
     }
@@ -350,7 +341,7 @@ async fn shallow_probe_config(
 async fn clone_repo_to_temp(
     repo_url: &str,
     repo_ref: Option<&str>,
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+    announcer: &Announcer,
 ) -> std::result::Result<PathBuf, String> {
     let checkout_dir = tempfile::tempdir()
         .map_err(|e| format!("Failed to create temporary directory: {}", e))?
@@ -359,7 +350,7 @@ async fn clone_repo_to_temp(
     let clone_checkout_dir = checkout_dir.clone();
     let clone_repo_url = repo_url.to_owned();
     let clone_repo_ref = repo_ref.map(str::to_owned);
-    let clone_feedback_tx = feedback_tx.clone();
+    let clone_announcer = announcer.clone();
     if let Err(err) = tokio::task::spawn_blocking(move || {
         clone_with_progress(
             &clone_repo_url,
@@ -367,10 +358,7 @@ async fn clone_repo_to_temp(
             &clone_checkout_dir,
             false,
             &mut |line| {
-                let _ = clone_feedback_tx.send(FeedbackLine {
-                    stream: FeedbackStream::Stdout,
-                    line: line.to_owned(),
-                });
+                clone_announcer.progress(line);
             },
         )
         .map(|_| ())
@@ -388,11 +376,10 @@ async fn clone_repo_to_temp(
 /// Phase 3 of [`resolve_git_source`]: locate and parse the node config inside
 /// the cloned checkout (a `.json5` repo_path points at the file itself,
 /// anything else is a directory containing the default config file). On parse
-/// failure the error is surfaced via feedback and the checkout is removed.
+/// failure the checkout is removed.
 fn parse_config_from_checkout(
     checkout_dir: PathBuf,
     repo_relative_path: &Path,
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let candidate_path = checkout_dir.join(repo_relative_path);
 
@@ -423,10 +410,6 @@ fn parse_config_from_checkout(
                 config_path.display(),
                 e
             );
-            let _ = feedback_tx.send(FeedbackLine {
-                stream: FeedbackStream::Stderr,
-                line: msg.clone(),
-            });
             std::fs::remove_dir_all(&checkout_dir).ok();
             return Err(msg);
         }
@@ -503,12 +486,12 @@ fn download_http_bundle(
     url: &url::Url,
     destination: &Path,
     expected_sha256: Option<&str>,
-    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
+    announcer: Option<&Announcer>,
 ) -> std::result::Result<(), String> {
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let err = match download_http_bundle_once(url, destination, expected_sha256, feedback_tx) {
+        let err = match download_http_bundle_once(url, destination, expected_sha256, announcer) {
             Ok(()) => return Ok(()),
             Err(DownloadAttemptError::Fatal(msg)) => return Err(msg),
             Err(DownloadAttemptError::Transient(msg)) if attempt >= DOWNLOAD_ATTEMPTS => {
@@ -517,13 +500,10 @@ fn download_http_bundle(
             Err(DownloadAttemptError::Transient(msg)) => msg,
         };
         let delay = DOWNLOAD_RETRY_DELAYS[attempt - 1];
-        if let Some(tx) = feedback_tx {
-            let _ = tx.send(FeedbackLine {
-                stream: FeedbackStream::Stdout,
-                line: format!(
+        if let Some(announcer) = announcer {
+            announcer.line(format!(
                     "Download attempt {attempt} of {DOWNLOAD_ATTEMPTS} failed ({err}); retrying in {delay:?}"
-                ),
-            });
+                ));
         }
         std::thread::sleep(delay);
     }
@@ -536,7 +516,7 @@ fn download_http_bundle_once(
     url: &url::Url,
     destination: &Path,
     expected_sha256: Option<&str>,
-    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
+    announcer: Option<&Announcer>,
 ) -> std::result::Result<(), DownloadAttemptError> {
     use sha2::{Digest, Sha256};
 
@@ -605,7 +585,7 @@ fn download_http_bundle_once(
         if let Some(ref mut h) = hasher {
             h.update(&buffer[..read]);
         }
-        if let Some(tx) = feedback_tx
+        if let Some(announcer) = announcer
             && last_report.elapsed() >= Duration::from_millis(500)
         {
             last_report = Instant::now();
@@ -624,10 +604,7 @@ fn download_http_bundle_once(
             } else {
                 format!("Downloading: {}", format_bytes(bytes_downloaded as usize))
             };
-            let _ = tx.send(FeedbackLine {
-                stream: FeedbackStream::Stdout,
-                line: progress_msg,
-            });
+            announcer.progress(progress_msg);
         }
     }
     file.flush().map_err(|e| {
@@ -689,11 +666,11 @@ async fn resolve_http_source_with_feedback(
     url: &url::Url,
     peppy_dirs: PeppyDirs,
     expected_sha256: Option<String>,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    announcer: Announcer,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let url = url.clone();
     tokio::task::spawn_blocking(move || {
-        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256, Some(&feedback_tx))
+        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256, Some(&announcer))
     })
     .await
     .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
@@ -703,7 +680,7 @@ fn resolve_http_source_download_and_extract(
     url: url::Url,
     peppy_dirs: &PeppyDirs,
     expected_sha256: Option<String>,
-    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
+    announcer: Option<&Announcer>,
 ) -> std::result::Result<ExtractedHttpSource, String> {
     match url.scheme() {
         "http" | "https" => {}
@@ -739,7 +716,7 @@ fn resolve_http_source_download_and_extract(
     std::fs::create_dir_all(&extract_dir)
         .map_err(|e| format!("Failed to create bundle extract directory: {}", e))?;
 
-    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref(), feedback_tx)?;
+    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref(), announcer)?;
     extract_http_bundle(&bundle_path, &extract_dir, &url)?;
     std::fs::remove_file(&bundle_path).ok();
 
@@ -757,10 +734,10 @@ fn resolve_http_source_blocking(
     url: url::Url,
     peppy_dirs: &PeppyDirs,
     expected_sha256: Option<String>,
-    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
+    announcer: Option<&Announcer>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let extracted =
-        resolve_http_source_download_and_extract(url, peppy_dirs, expected_sha256, feedback_tx)?;
+        resolve_http_source_download_and_extract(url, peppy_dirs, expected_sha256, announcer)?;
     let config_path = extracted.source_path.join(NODE_CONFIG_FILE);
     let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
         format!(
@@ -777,66 +754,78 @@ fn resolve_http_source_blocking(
     })
 }
 
-/// Derives a label for the log filename from the NodeSource without network I/O.
-/// For Fs sources, reads the local config to get `{name}_{tag}` (fast, local I/O only).
-/// For Git/Http sources, returns a UUID since the node name/tag are unknown before cloning.
-pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
+/// Creates the add log of `goal`, before its source is resolved, so the steps
+/// of a clone or a download land in it. The file is named after the node when
+/// the source names it without network I/O, and after a random id for a git
+/// or an HTTP source.
+pub(crate) fn create_add_log(
+    peppy_dirs: &PeppyDirs,
+    node_stack: &NodeStack,
+    goal: &NodeAddGoal,
+) -> std::result::Result<ActionLog, String> {
+    let node = node_named_by(&goal.source);
+    let label = match (&node, &goal.source) {
+        (Some((name, tag)), _) => format!("{name}_{tag}"),
+        (None, NodeSource::Fs(path)) => path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        (None, _) => generate_random_id(),
+    };
+    ActionLog::for_add(
+        peppy_dirs,
+        node_stack.log_exporter().clone(),
+        &label,
+        node.as_ref()
+            .map(|(name, tag)| (name.as_str(), tag.as_str())),
+        goal.launch_id.as_deref(),
+    )
+}
+
+/// The `(name, tag)` of the node `source` names, when it names one without
+/// network I/O. A source that does not decode names none: the add reports
+/// what is wrong with it.
+fn node_named_by(source: &NodeSource) -> Option<(String, String)> {
     match source {
         NodeSource::Fs(path) => {
-            if is_supported_fs_archive(path)
-                && let Ok(resolved) = resolve_local_archive_source(path)
-            {
-                let label = format!(
-                    "{}_{}",
-                    resolved.node_config.manifest.name.as_str(),
-                    resolved.node_config.manifest.tag
-                );
-                return label;
-            }
-
-            let config_path = path.join(NODE_CONFIG_FILE);
-            if let Ok(config) = NodeConfigParser::from_path(&config_path) {
-                return format!("{}_{}", config.manifest.name.as_str(), config.manifest.tag);
-            }
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string()
+            let config = if is_supported_fs_archive(path) {
+                resolve_local_archive_source(path).ok()?.node_config
+            } else {
+                NodeConfigParser::from_path(path.join(NODE_CONFIG_FILE)).ok()?
+            };
+            Some((
+                config.manifest.name.as_str().to_owned(),
+                config.manifest.tag.to_string(),
+            ))
         }
-        NodeSource::Git { .. } | NodeSource::Http { .. } => generate_random_id(),
-        // The pin embeds the identity; decoding it here only to label a log
-        // file would fail the whole goal on a malformed pin before the
-        // executor can report it properly, so a cheap identity probe is
-        // enough and falls back to a generic label.
+        NodeSource::Git { .. } | NodeSource::Http { .. } => None,
         NodeSource::Pinned { pin_json5 } => {
             serde_json5::from_str::<daemon_config::repository::PinnedItem>(pin_json5)
-                .map(|pin| format!("{}_{}", pin.name, pin.tag))
-                .unwrap_or_else(|_| generate_random_id())
+                .ok()
+                .map(|pin| (pin.name.to_string(), pin.tag.to_string()))
         }
-        NodeSource::ResolveRef { name, tag } => format!("{name}_{tag}"),
-        // The identity is derived from the pinned exposures; as with a pin,
-        // decoding them here only to label a log file must not fail the
-        // goal, so a generic label stands in when they do not decode.
+        NodeSource::ResolveRef { name, tag } => Some((name.clone(), tag.clone())),
         NodeSource::Exposures { pins_json5 } => super::pins::decode_pins(pins_json5)
             .ok()
             .filter(|pins| !pins.is_empty())
             .map(|pins| {
                 let references: Vec<daemon_config::source::ExposureRef> =
                     pins.iter().map(Into::into).collect();
-                format!(
-                    "{}_{}",
-                    daemon_config::mcp_deployment::built_in_identity(&references).as_str(),
-                    daemon_config::mcp_deployment::BUILT_IN_TAG
+                (
+                    daemon_config::mcp_deployment::built_in_identity(&references)
+                        .as_str()
+                        .to_owned(),
+                    daemon_config::mcp_deployment::BUILT_IN_TAG.to_owned(),
                 )
-            })
-            .unwrap_or_else(generate_random_id),
+            }),
     }
 }
 
 async fn resolve_node_add_source(
     goal: &NodeAddGoal,
     peppy_dirs: &PeppyDirs,
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+    announcer: &Announcer,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     match &goal.source {
         NodeSource::Fs(path) => {
@@ -876,34 +865,22 @@ async fn resolve_node_add_source(
             repo_path,
             repo_ref,
         } => {
-            let _ = feedback_tx.send(FeedbackLine {
-                stream: FeedbackStream::Stdout,
-                line: format!(
-                    "Cloning repository {}...",
-                    SourceUrl::new(&repo_url.to_bstring().to_string())
-                ),
-            });
-            resolve_git_source(
-                repo_url,
-                repo_path,
-                repo_ref.as_deref(),
-                feedback_tx.clone(),
-            )
-            .await
+            announcer.line(format!(
+                "Cloning repository {}...",
+                SourceUrl::new(&repo_url.to_bstring().to_string())
+            ));
+            resolve_git_source(repo_url, repo_path, repo_ref.as_deref(), announcer.clone()).await
         }
         NodeSource::Http { url, sha256 } => {
-            let _ = feedback_tx.send(FeedbackLine {
-                stream: FeedbackStream::Stdout,
-                line: format!(
-                    "Downloading bundle from {}...",
-                    SourceUrl::new(url.as_str())
-                ),
-            });
+            announcer.line(format!(
+                "Downloading bundle from {}...",
+                SourceUrl::new(url.as_str())
+            ));
             resolve_http_source_with_feedback(
                 url,
                 peppy_dirs.clone(),
                 sha256.clone(),
-                feedback_tx.clone(),
+                announcer.clone(),
             )
             .await
         }
@@ -939,36 +916,17 @@ fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
 pub(crate) async fn dispatch_node_add(
     goal: NodeAddGoal,
     action_context: NodeAddActionContext,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
-    log_path: PathBuf,
-    timestamp: String,
+    announcer: Announcer,
 ) -> NodeAddResult {
     if matches!(goal.source, NodeSource::Exposures { .. }) {
-        crate::services::mcp::built_in::run_built_in_add(
-            goal,
-            action_context,
-            feedback_tx,
-            log_file,
-            log_path,
-        )
-        .await
+        crate::services::mcp::built_in::run_built_in_add(goal, action_context, announcer).await
     } else if matches!(
         goal.source,
         NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. }
     ) {
-        super::add_batch::run_pinned_add(goal, action_context, feedback_tx, log_file, log_path)
-            .await
+        super::add_batch::run_pinned_add(goal, action_context, announcer).await
     } else {
-        run_node_add(
-            goal,
-            action_context,
-            feedback_tx,
-            log_file,
-            log_path,
-            timestamp,
-        )
-        .await
+        run_node_add(goal, action_context, announcer).await
     }
 }
 
@@ -984,24 +942,19 @@ pub(crate) async fn dispatch_node_add(
 pub(crate) async fn run_node_add(
     goal: NodeAddGoal,
     action_context: NodeAddActionContext,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
-    log_path: PathBuf,
-    timestamp: String,
+    announcer: Announcer,
 ) -> NodeAddResult {
-    let log_dir = action_context.peppy_dirs.logs_dir_add();
-
-    let log_file_for_panic = log_file.clone();
-    let log_path_for_panic = log_path.clone();
+    let log = announcer.log().clone();
+    let log_for_panic = log.clone();
 
     match AssertUnwindSafe(async {
         // Resolve source (git clone, HTTP download, or local config check).
         let mut resolved =
-            match resolve_node_add_source(&goal, &action_context.peppy_dirs, &feedback_tx).await {
+            match resolve_node_add_source(&goal, &action_context.peppy_dirs, &announcer).await {
                 Ok(r) => r,
                 Err(error_msg) => {
-                    write_error_to_log(&log_file, &error_msg);
-                    return NodeAddResult::failure(&log_path, error_msg);
+                    log.error(&error_msg);
+                    return NodeAddResult::failure(log.path(), error_msg);
                 }
             };
 
@@ -1029,16 +982,10 @@ pub(crate) async fn run_node_add(
             let sync_git_hash = goal.git_hash.clone();
             let sync_node_stack = action_context.node_stack.clone();
             let sync_peppy_dirs = action_context.peppy_dirs.clone();
-            let sync_feedback_tx = feedback_tx.clone();
+            let sync_announcer = announcer.clone();
 
             let sync_result = tokio::task::spawn_blocking(move || {
-                let on_feedback = |line: &str| {
-                    tracing::info!(target: "peppy::interface", "{line}");
-                    let _ = sync_feedback_tx.send(FeedbackLine {
-                        stream: FeedbackStream::Stdout,
-                        line: line.to_string(),
-                    });
-                };
+                let on_feedback = interface_step_sink(sync_announcer);
                 sync::auto_sync_if_missing(
                     AutoSyncParams {
                         node_dir: &sync_node_dir,
@@ -1058,13 +1005,13 @@ pub(crate) async fn run_node_add(
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     let msg = format!("Auto-sync failed: {}", e);
-                    write_error_to_log(&log_file, &msg);
-                    return NodeAddResult::failure(&log_path, msg);
+                    log.error(&msg);
+                    return NodeAddResult::failure(log.path(), msg);
                 }
                 Err(e) => {
                     let msg = format!("Auto-sync task failed: {}", e);
-                    write_error_to_log(&log_file, &msg);
-                    return NodeAddResult::failure(&log_path, msg);
+                    log.error(&msg);
+                    return NodeAddResult::failure(log.path(), msg);
                 }
             }
         }
@@ -1078,8 +1025,8 @@ pub(crate) async fn run_node_add(
             && !is_supported_fs_archive(original_path)
             && let Err(error_msg) = verify_git_hash(&root_source_path, &goal.git_hash)
         {
-            write_error_to_log(&log_file, &error_msg);
-            return NodeAddResult::failure(&log_path, error_msg);
+            log.error(&error_msg);
+            return NodeAddResult::failure(log.path(), error_msg);
         }
 
         let cleanup_dir = resolved_cleanup_guard.take();
@@ -1090,23 +1037,16 @@ pub(crate) async fn run_node_add(
         let verify_codegen_fingerprint =
             matches!(&goal.source, NodeSource::Fs(_)) && goal.git_hash != STACK_LAUNCH_GIT_HASH;
 
-        // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
-        // now that we know the node name and tag from the resolved config.
-        let node_name = node_config.manifest.name.as_str();
-        let node_tag = &node_config.manifest.tag;
-        let canonical_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
-        let canonical_log_path = log_dir.join(&canonical_filename);
-        let log_path = if std::fs::rename(&log_path, &canonical_log_path).is_ok() {
-            canonical_log_path
-        } else {
-            log_path
-        };
+        // The resolved config names the node: the log takes its canonical
+        // {name}_{tag}_{timestamp}.log name.
+        log.rename_for_node(
+            node_config.manifest.name.as_str(),
+            &node_config.manifest.tag,
+        );
 
         let ctx = ProcessNodeAddContext {
             action: action_context,
-            feedback_tx,
-            log_file,
-            log_path,
+            announcer,
         };
         process_node_add(
             goal,
@@ -1128,8 +1068,8 @@ pub(crate) async fn run_node_add(
                 super::panic_message(&*panic_payload)
             );
             tracing::error!("{}", msg);
-            write_error_to_log(&log_file_for_panic, &msg);
-            NodeAddResult::failure(log_path_for_panic, msg)
+            log_for_panic.error(&msg);
+            NodeAddResult::failure(log_for_panic.path(), msg)
         }
     }
 }
@@ -1238,14 +1178,12 @@ async fn handle_goal_request(
         ),
     }
 
-    // Create the log file *before* source resolution so that clone/download
-    // progress and any errors are captured in the log from the very start.
-    let log_label = log_label_from_source(&goal.source);
-    let log_dir = action_context.peppy_dirs.logs_dir_add();
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-    let log_filename = format!("{}_{}.log", log_label, timestamp);
-    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
-        Ok(result) => result,
+    let log = match create_add_log(
+        &action_context.peppy_dirs,
+        &action_context.node_stack,
+        &goal,
+    ) {
+        Ok(log) => log,
         Err(error_msg) => {
             debug!("{}", error_msg);
             gate.clear_running();
@@ -1254,6 +1192,7 @@ async fn handle_goal_request(
         }
     };
 
+    let log_path = log.path();
     debug!("Created log file for node add: {}", log_path.display());
 
     // `accept` registers the per-goal context before replying accepted, so a
@@ -1274,13 +1213,12 @@ async fn handle_goal_request(
     let feedback_publisher = goal_ctx
         .feedback_publisher()
         .expect("node_add declares a feedback topic");
-    let log_path_clone = log_path.clone();
     let cancel_token = slice_ownership.stack.cancellation();
     let cancel_token_clone = cancel_token.clone();
     // A forced node add and the goal's caller cancel this goal's own token; a
     // stack reset cancels the stack's, which every goal token descends from.
     let reset_token = slice_ownership.stack.cancellation();
-    let log_path_for_cancel = log_path.clone();
+    let log_for_cancel = log.clone();
     let gate_for_task = gate.clone();
     let task_handle = tokio::spawn(async move {
         // Frees the gate slot on every exit: explicitly before completion on the
@@ -1299,10 +1237,7 @@ async fn handle_goal_request(
                 result = dispatch_node_add(
                     goal,
                     action_context,
-                    feedback_tx,
-                    log_file,
-                    log_path_clone,
-                    timestamp,
+                    Announcer::new(log, feedback_tx),
                 ) => result,
                 _ = cancel_token_clone.cancelled() => {
                     let reason = if reset_token.is_cancelled() {
@@ -1312,7 +1247,7 @@ async fn handle_goal_request(
                     } else {
                         "node add superseded by a forced node add"
                     };
-                    NodeAddResult::failure(&log_path_for_cancel, reason.to_string())
+                    NodeAddResult::failure(log_for_cancel.path(), reason.to_string())
                 }
             }
         };
@@ -1400,10 +1335,8 @@ async fn shutdown_existing_instances(
             .relationships
             .tear_down_instance(instance_id.as_str())
             .await;
-        let _ = ctx.feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Stdout,
-            line: format!("{} has been stopped", instance_id.as_str()),
-        });
+        ctx.announcer
+            .line(format!("{} has been stopped", instance_id.as_str()));
     }
 
     Ok(())
@@ -1429,8 +1362,8 @@ async fn process_node_add(
     {
         Ok(result) => result,
         Err(msg) => {
-            write_error_to_log(&ctx.log_file, &msg);
-            NodeAddResult::failure(&ctx.log_path, msg)
+            ctx.announcer.log().error(&msg);
+            NodeAddResult::failure(ctx.announcer.log().path(), msg)
         }
     }
 }
@@ -1473,13 +1406,10 @@ async fn process_node_add_inner(
     let staging = Arc::new(WorkingDirGuard::new(working_dir));
 
     if !excluded_dirs.is_empty() {
-        let _ = ctx.feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Stdout,
-            line: format!(
-                "Excluded directories from copy: {}",
-                excluded_dirs.join(", ")
-            ),
-        });
+        ctx.announcer.line(format!(
+            "Excluded directories from copy: {}",
+            excluded_dirs.join(", ")
+        ));
     }
 
     // Presence pass, before build_cmd so a wrong stack fails fast: a
@@ -1509,15 +1439,12 @@ async fn process_node_add_inner(
     .await
     .map_err(|reason| format!("Failed to add node config: {}", reason))?;
     for entry in &repo_provenance {
-        let _ = ctx.feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Stdout,
-            line: format!(
-                "Resolved dependency `{}:{}` from the repository cache ({})",
-                entry.name,
-                entry.tag,
-                entry.source_kind.as_str()
-            ),
-        });
+        ctx.announcer.line(format!(
+            "Resolved dependency `{}:{}` from the repository cache ({})",
+            entry.name,
+            entry.tag,
+            entry.source_kind.as_str()
+        ));
     }
     let resolve_dep = stack_then_repo_resolver(&ctx.action.node_stack, &repo_resolved);
     let dep_errors = validate_dependency_specs(
@@ -1541,13 +1468,7 @@ async fn process_node_add_inner(
     } else {
         generator::CrateDeployMode::Symlink
     };
-    let interface_feedback = |line: &str| {
-        tracing::info!(target: "peppy::interface", "{line}");
-        let _ = ctx.feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Stdout,
-            line: line.to_string(),
-        });
-    };
+    let interface_feedback = interface_step_sink(ctx.announcer.clone());
     // A goal carrying pins fixes which bytes its contract and pairing
     // documents are: the launch (or the resolve-ref lowering) decided them
     // once, and this machine's own cache picks must not override that.
@@ -1573,7 +1494,7 @@ async fn process_node_add_inner(
     // add and never reuse a cached artifact.
     let generation = StagedJob {
         node_label: format!("{node_name}:{node_tag}"),
-        log_path: ctx.log_path.clone(),
+        log_path: ctx.announcer.log().path(),
         staging: Arc::clone(&staging),
     };
     let git_hash = goal.git_hash.clone();
@@ -1631,13 +1552,17 @@ async fn process_node_add_inner(
         let mut guard = entity_handle.write();
         ctx.action
             .node_stack
-            .set_add_log_path(&node_name, &node_tag, ctx.log_path.clone());
+            .set_add_log_path(&node_name, &node_tag, ctx.announcer.log().path());
         guard.set_pending_working_dir(Arc::clone(&staging));
     }
 
     debug!("Added node {}:{} (pending build)", node_name, node_tag);
 
-    Ok(NodeAddResult::success(&ctx.log_path, node_name, node_tag))
+    Ok(NodeAddResult::success(
+        ctx.announcer.log().path(),
+        node_name,
+        node_tag,
+    ))
 }
 
 #[cfg(test)]

@@ -7,7 +7,8 @@
 //! instances of a node, the concrete add/build/run I/O steps that drive an
 //! entity `Added` to `Building` to `Ready` and spawn/stop its OS child
 //! process, `.tar.zst` archive extraction, child-process output streaming,
-//! and caller-driven service/action cycle detection. The stack is the only
+//! the log file of an action and the lines written to it ([`ActionLog`],
+//! [`Announcer`]), and caller-driven service/action cycle detection. The stack is the only
 //! record of the children the daemon spawned, so dropping its last handle
 //! SIGKILLs every process group it still tracks (see `NodeStackInner`'s
 //! `Drop`); the cooperative stop paths belong to the daemon.
@@ -24,9 +25,10 @@
 //!
 //! Construction is explicit: [`NodeStack::new`] takes the root config, an
 //! optional root instance id, and the root path; [`NodeStack::with_shutdown_grace`]
-//! is the builder knob for the cooperative-shutdown grace period, and
+//! is the builder knob for the cooperative-shutdown grace period,
 //! [`NodeStack::with_pypi_mirror`] the one for the PyPI mirror of Python
-//! builds. The crate
+//! builds, and [`NodeStack::with_log_exporter`] the one for the exporter of the
+//! log files. The crate
 //! reads no environment variables and performs no lazy global init. It does
 //! keep two process-wide monotonic counters (documented at their definitions
 //! in `node_stack::entity` and `node_stack::run_steps`); both are intentional
@@ -34,6 +36,7 @@
 #![allow(clippy::result_large_err)]
 #![forbid(unsafe_code)]
 
+pub mod action_log;
 pub mod archive;
 pub mod build_io;
 mod build_progress;
@@ -45,8 +48,9 @@ mod virtual_deptree;
 
 pub use error::Error as NodeStackError;
 
+pub use action_log::{ActionLog, Announcer};
 pub use archive::extract_tar_zst;
-pub use build_io::{FeedbackLine, FeedbackStream, OutputReaderHooks, stdout_line_sender};
+pub use build_io::{FeedbackLine, FeedbackOwner, FeedbackStream, OutputReaderHooks};
 pub use core_node_api::InstanceState;
 pub use node_stack::add_steps;
 pub use node_stack::{

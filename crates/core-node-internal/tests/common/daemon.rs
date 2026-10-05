@@ -313,12 +313,52 @@ pub async fn start_core_node_with_health_monitor(
     .await
 }
 
+/// Variant of [`start_core_node_with_mock_messenger`] whose log files export
+/// their lines at `min_severity` and above. Returns the receiving end of the
+/// exporter's queue, which the daemon's export worker holds in production.
+pub async fn start_core_node_with_log_export(
+    min_severity: Option<daemon_config::peppy_config::OtlpMinSeverity>,
+) -> (StartedCoreNode, log_export::LogRecordReceiver) {
+    let (data_dir, peppy_dirs) = init_test_data_dir();
+    let shared_messenger = create_mock_messenger().await;
+    let (log_exporter, records) = log_export::LogExporter::channel(min_severity);
+    let started = start_core_node(
+        shared_messenger,
+        default_node_arguments(),
+        data_dir,
+        peppy_dirs,
+        daemon_config::peppy_config::PeppyConfig::default(),
+        log_exporter,
+    )
+    .await;
+    (started, records)
+}
+
 async fn start_core_node_with_messenger(
     shared_messenger: Arc<Mutex<Messenger>>,
     node_arguments: CoreNodeArguments,
     data_dir: Option<TempDir>,
     peppy_dirs: PeppyDirs,
     peppy_config: daemon_config::peppy_config::PeppyConfig,
+) -> StartedCoreNode {
+    start_core_node(
+        shared_messenger,
+        node_arguments,
+        data_dir,
+        peppy_dirs,
+        peppy_config,
+        log_export::LogExporter::disabled(),
+    )
+    .await
+}
+
+async fn start_core_node(
+    shared_messenger: Arc<Mutex<Messenger>>,
+    node_arguments: CoreNodeArguments,
+    data_dir: Option<TempDir>,
+    peppy_dirs: PeppyDirs,
+    peppy_config: daemon_config::peppy_config::PeppyConfig,
+    log_exporter: log_export::LogExporter,
 ) -> StartedCoreNode {
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let root_dir = std::env::current_dir().expect("failed to get current directory");
@@ -333,6 +373,7 @@ async fn start_core_node_with_messenger(
         peppy_config,
         namespace: config::namespace::Namespace::local(),
         shutdown_token: shutdown_token.clone(),
+        log_exporter,
     });
     let core_node_name = core_node.node_name().to_string();
     let core_node_tag = core_node.node_config().manifest.tag.clone();
@@ -396,21 +437,20 @@ fn make_real_output_sinks(
     tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
     tokio::task::JoinHandle<()>,
 ) {
-    use parking_lot::Mutex as StdMutex;
     use std::sync::atomic::AtomicBool;
 
-    let log_dir = peppy_dirs.logs_dir_run();
-    std::fs::create_dir_all(&log_dir).ok();
-    let log_file = Arc::new(StdMutex::new(
-        std::fs::File::create(log_dir.join(format!("{}.log", instance_id.as_str())))
-            .expect("create start log"),
-    ));
+    let log = node_stack::ActionLog::create(
+        &peppy_dirs.logs_dir_run(),
+        &format!("{}.log", instance_id.as_str()),
+        log_export::LogKind::Run,
+        log_export::LogExporter::disabled(),
+    )
+    .expect("create run log");
     let (feedback_tx, mut feedback_rx) =
         tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
     let drain = tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
     let output_sinks = node_stack::OutputSinks {
-        feedback_tx: feedback_tx.clone(),
-        log_file,
+        announcer: node_stack::Announcer::new(log, feedback_tx.clone()),
         publish_enabled: Arc::new(AtomicBool::new(true)),
         hooks: Arc::new(NoOpOutputHooks),
     };
@@ -652,20 +692,19 @@ pub async fn real_build_and_spawn_instance(
     tag: &str,
     instance_id: &config::runtime::Name,
 ) -> TestRunningInstance {
-    use parking_lot::Mutex as StdMutex;
-
     let handle = started
         .node_stack
         .find(name, tag)
         .expect("real_build_and_spawn_instance: entity should exist");
 
     let working_dir = TempDir::new().expect("working_dir tempdir");
-    let log_dir = started.peppy_dirs.logs_dir_add();
-    std::fs::create_dir_all(&log_dir).ok();
-    let build_log = Arc::new(StdMutex::new(
-        std::fs::File::create(log_dir.join(format!("{}-build.log", instance_id.as_str())))
-            .expect("create build log"),
-    ));
+    let build_log = node_stack::ActionLog::create(
+        &started.peppy_dirs.logs_dir_add(),
+        &format!("{}-build.log", instance_id.as_str()),
+        log_export::LogKind::Build,
+        log_export::LogExporter::disabled(),
+    )
+    .expect("create build log");
     let (build_feedback_tx, mut build_feedback_rx) =
         tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
     let build_drain =
@@ -676,8 +715,7 @@ pub async fn real_build_and_spawn_instance(
         node_stack::BuildContext {
             working_dir: working_dir.path(),
             peppy_dirs: &started.peppy_dirs,
-            feedback_tx: &build_feedback_tx,
-            log_file: build_log,
+            announcer: node_stack::Announcer::new(build_log, build_feedback_tx),
             env_vars: &[],
             cancel_token: tokio_util::sync::CancellationToken::new(),
             rebuild: false,

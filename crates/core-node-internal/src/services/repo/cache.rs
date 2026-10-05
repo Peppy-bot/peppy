@@ -27,8 +27,10 @@
 //! doesn't re-read and re-parse the cache file on every request.
 
 use crate::Result;
+use crate::services::node::Report;
 use crate::services::repo::RepoOwners;
 use crate::services::repo::refresh::read_or_create_repos;
+use crate::source_url::SourceUrl;
 use config::node::Cardinality;
 use core_node_api::encoding::{ReadRef, RepoItemKind};
 use daemon_config::consts::PeppyDirs;
@@ -665,10 +667,11 @@ pub(crate) fn excluded_repositories_hint(peppy_dirs: &PeppyDirs) -> String {
     if excluded.entries.is_empty() {
         return String::new();
     }
-    let mut identities: Vec<&str> = excluded
+    // The identity of a git repository starts with its URL as configured.
+    let mut identities: Vec<String> = excluded
         .entries
         .iter()
-        .map(|e| e.identity.as_str())
+        .map(|e| SourceUrl::new(&e.identity).to_string())
         .collect();
     identities.sort();
     format!(
@@ -729,7 +732,7 @@ pub fn load_pairing_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<PairingCacheEntr
 pub fn resolve_repo_launcher_path(
     name: &str,
     peppy_dirs: &PeppyDirs,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<PathBuf, String> {
     let entries: Vec<LauncherCacheEntry> =
         load_repo_cache(peppy_dirs).map_err(|e| format!("failed to load launcher cache: {e}"))?;
@@ -761,7 +764,7 @@ pub fn resolve_repo_launcher_path(
 pub(crate) fn resolve_cached_artifact_path(
     peppy_dirs: &PeppyDirs,
     origin: &EntryOrigin,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<PathBuf, String> {
     match origin {
         EntryOrigin::Fs { path } => Ok(path.clone()),
@@ -802,7 +805,7 @@ pub(crate) fn resolve_cached_doc<E: RepoCacheEntry, T>(
     tag: &str,
     sha256_pin: Option<&str>,
     parse: impl FnOnce(&str) -> std::result::Result<T, String>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<T, String> {
     let kind = E::KIND;
     let id = format!("{name}:{tag}");
@@ -826,7 +829,7 @@ pub(crate) fn resolve_cached_doc_entry<'a, E: RepoCacheEntry>(
     name: &str,
     tag: &str,
     sha256_pin: Option<&str>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<(&'a E, Vec<u8>), String> {
     let kind = E::KIND;
     let id = format!("{name}:{tag}");
@@ -941,7 +944,7 @@ fn describe_cached_copy<E: RepoCacheEntry>(entry: &E) -> String {
 pub(crate) fn resolve_pinned_bytes(
     peppy_dirs: &PeppyDirs,
     pin: &PinnedItem,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<(PathBuf, Vec<u8>), String> {
     let label = pin.label();
     let resolved_path = match &pin.origin {
@@ -1024,7 +1027,7 @@ pub(crate) fn resolve_pin_to_bytes<E: RepoCacheEntry>(
     peppy_dirs: &PeppyDirs,
     entries: &[E],
     pin: &PinnedItem,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<(PathBuf, Vec<u8>), String> {
     if let Some(entry) = lookup_by_content(entries, pin) {
         match resolve_cached_artifact_path(peppy_dirs, entry.origin(), on_feedback).and_then(
@@ -1036,14 +1039,14 @@ pub(crate) fn resolve_pin_to_bytes<E: RepoCacheEntry>(
             Ok((path, bytes)) if ManifestFingerprint::of_bytes(&bytes) == pin.sha256 => {
                 return Ok((path, bytes));
             }
-            Ok(_) => on_feedback(&format!(
+            Ok(_) => on_feedback(Report::Step(&format!(
                 "Local copy of {} drifted from its fingerprint; fetching the pin",
                 pin.label()
-            )),
-            Err(reason) => on_feedback(&format!(
+            ))),
+            Err(reason) => on_feedback(Report::Step(&format!(
                 "Local copy of {} is unusable ({reason}); fetching the pin",
                 pin.label()
-            )),
+            ))),
         }
     }
     resolve_pinned_bytes(peppy_dirs, pin, on_feedback)
@@ -1059,7 +1062,7 @@ pub(crate) fn resolve_pinned_doc<E: RepoCacheEntry, T>(
     entries: &[E],
     pin: &PinnedItem,
     parse: impl FnOnce(&str) -> std::result::Result<T, String>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<T, String> {
     let (path, bytes) = resolve_pin_to_bytes(peppy_dirs, entries, pin, on_feedback)?;
     let content = std::str::from_utf8(&bytes).map_err(|e| {

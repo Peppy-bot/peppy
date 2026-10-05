@@ -795,7 +795,7 @@ async fn listen_for_node_git_add_missing_config_fails() {
 async fn listen_for_node_git_add_failure_shows_the_url_without_its_credentials() {
     const SHOWN_URL: &str = "https://127.0.0.1:1/org/repo.git";
 
-    let started_core_node = start_core_node_with_mock_messenger().await;
+    let (started_core_node, mut exported) = common::start_core_node_with_log_export(None).await;
     let repo_url = GitUrl::try_from("https://user:secret@127.0.0.1:1/org/repo.git")
         .expect("the URL should parse");
 
@@ -834,11 +834,21 @@ async fn listen_for_node_git_add_failure_shows_the_url_without_its_credentials()
         log.contains(SHOWN_URL),
         "the add log should name the repository, got: {log}"
     );
+    let exported: Vec<String> = log_export::test_support::drain_records(&mut exported)
+        .into_iter()
+        .map(|record| record.body)
+        .collect();
+    assert!(
+        exported.iter().any(|body| body.contains(SHOWN_URL)),
+        "the exported records should name the repository, got: {exported:?}"
+    );
     let feedback = feedback.join("\n");
+    let exported = exported.join("\n");
     for (what, text) in [
         ("error", error.as_str()),
         ("feedback", feedback.as_str()),
         ("add log", log.as_str()),
+        ("exported records", exported.as_str()),
     ] {
         assert!(
             !text.contains("secret") && !text.contains("user@"),

@@ -16,7 +16,8 @@ use clock::{ClockSource, WallClockSource};
 pub use node::cache::git::{checkout_dir_for, materialized_checkout};
 pub use node::endpoints::{HostAddressSource, test_host_addresses};
 pub use node::{
-    HealthMonitorPolicy, TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances,
+    ExportDiscardLog, HealthMonitorPolicy, Report, TEARDOWN_REAP_BUDGET, force_kill_deadline,
+    teardown_all_instances,
 };
 pub use presence::NAME_CLAIM_LINKED_SETTLE;
 pub use stack::{
@@ -75,7 +76,7 @@ fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
 /// by the core-node name. Keeping the fallback here makes `info` and
 /// `stack list` report the same value when the OS hostname is unavailable or
 /// not valid Unicode.
-pub(crate) fn current_host_name() -> String {
+pub fn current_host_name() -> String {
     hostname::get()
         .ok()
         .and_then(|host| host.into_string().ok())
@@ -157,6 +158,8 @@ pub struct CoreNodeConfig {
     /// endpoints of every instance it starts expand against: the system's
     /// interfaces in production, a fixed list under test.
     pub host_addresses: node::endpoints::HostAddressSource,
+    /// Where the log files of the node stack send their lines.
+    pub log_exporter: log_export::LogExporter,
 }
 
 pub struct CoreNode {
@@ -315,6 +318,7 @@ impl CoreNode {
             namespace,
             shutdown_token,
             host_addresses,
+            log_exporter,
         } = config;
 
         let manifest_name = match node_name {
@@ -353,13 +357,15 @@ impl CoreNode {
         let instance_id = Name::new(get_random(rng())).unwrap();
         // The core node is the root of the node stack. Resolve the cooperative
         // shutdown grace and the PyPI mirror from config once and pin them on
-        // the stack, so every stop path (teardown, node_stop, overwrite) reads
-        // the same grace and every build the same mirror.
+        // the stack, with the log exporter, so every stop path (teardown,
+        // node_stop, overwrite) reads the same grace, every build the same
+        // mirror, and every log file sends its lines to the same exporter.
         let node_stack = NodeStack::new(node_config.clone(), None, root_dir)
             .with_shutdown_grace(Duration::from_secs(
                 peppy_config.lifecycle.shutdown_grace_secs,
             ))
-            .with_pypi_mirror(peppy_config.pypi_mirror.clone());
+            .with_pypi_mirror(peppy_config.pypi_mirror.clone())
+            .with_log_exporter(log_exporter);
         let slice_ownership = federation::SliceOwnership::new(node_config.manifest.name.as_str());
         let clock_watches = Arc::new(clock::watch::ClockWatches::new());
 

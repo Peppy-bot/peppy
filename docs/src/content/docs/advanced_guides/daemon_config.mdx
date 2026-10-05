@@ -1,14 +1,14 @@
 ---
 title: Daemon configuration
-description: Configure a Peppy-managed or operator-run Zenoh router, messaging behavior, node lifecycle grace periods, and the PyPI mirror of Python builds through peppy_config.json5
+description: Configure a Peppy-managed or operator-run Zenoh router, messaging behavior, node lifecycle grace periods, the PyPI mirror of Python builds, and the OpenTelemetry log export through peppy_config.json5
 sidebar:
   order: 10
 ---
 
-By default, the Peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, selects either a Peppy-managed or operator-run Zenoh router, controls the managed router's messaging behavior, defines the grace periods that govern node lifecycle, and can name a PyPI mirror for Python builds. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy platform` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
+By default, the Peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, selects either a Peppy-managed or operator-run Zenoh router, controls the managed router's messaging behavior, defines the grace periods that govern node lifecycle, can name a PyPI mirror for Python builds, and can name an OpenTelemetry endpoint the daemon exports its log files to. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy platform` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
 
 :::note
-The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`, `pypi_mirror`) from the active source **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block in the active source is read fresh by each `peppy platform` command, so an edit there takes effect on the next one without a daemon restart.
+The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`, `pypi_mirror`, `otlp_endpoint`, `otlp_min_severity`) from the active source **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block in the active source is read fresh by each `peppy platform` command, so an edit there takes effect on the next one without a daemon restart.
 :::
 
 ## How the file is managed
@@ -110,6 +110,18 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
   // every file against the sha256 in the lock. Example:
   // "https://pypi.tuna.tsinghua.edu.cn/packages/".
   pypi_mirror: null,
+
+  // OTLP/HTTP URL of an OpenTelemetry collector or an intake, or null. When set,
+  // the daemon exports the launch, add, build, run and stack logs to
+  // <otlp_endpoint>/v1/logs, or to the URL as written when its path already
+  // ends in /v1/logs. Request headers, such as an API key, go in
+  // ~/.peppy/conf/otlp_headers.json5. Example: "http://localhost:4318".
+  otlp_endpoint: null,
+
+  // Lowest severity the daemon exports, or null to export every line. One of
+  // "trace", "debug", "info", "warn". A line below it stays in its log file
+  // only. A line that prints no level is always exported.
+  otlp_min_severity: null,
 
   // Backend resource-server URL the `peppy platform` commands talk to. Baked in
   // at compile time (the dev backend in debug builds, prod in release);
@@ -229,6 +241,20 @@ With a mirror set, each Python build that does not reuse a cached artifact asks 
 
 The value must be the **packages base URL** of the mirror: an `https` URL under which the mirror keeps the files of PyPI with the path layout of `https://files.pythonhosted.org/packages/`, so its path ends with `packages/`. The index URL of a mirror (ending with `/simple/`) is not a packages base URL. The URL must not hold credentials, a query, or a fragment. Any other value stops the daemon at startup with an error that names `pypi_mirror`.
 
+## `otlp_endpoint`: export the log files
+
+`otlp_endpoint` names the OTLP/HTTP endpoint the daemon exports its launch, add, build, run and stack logs to, as OpenTelemetry log records. Leave it `null` (the default) and the daemon exports nothing; set the URL of an OpenTelemetry collector or of an intake to turn the export on:
+
+```json5
+otlp_endpoint: "http://localhost:4318",
+```
+
+The value is the base URL of the collector or intake, and the daemon posts to `<otlp_endpoint>/v1/logs`; a URL whose path already ends with `/v1/logs` is the URL the daemon posts to. It must be an `http` or `https` URL with no credentials, query, or fragment. Any other value stops the daemon at startup with an error that names `otlp_endpoint`. Request headers, such as an API key, go in `~/.peppy/conf/otlp_headers.json5`, never in the URL. See [OpenTelemetry log export](/advanced_guides/opentelemetry/) for what is exported, the fields of a record, the headers file, and what happens while the endpoint is unreachable.
+
+## `otlp_min_severity`: lowest exported severity
+
+`otlp_min_severity` holds the lowest severity the daemon exports: one of `"trace"`, `"debug"`, `"info"`, `"warn"`. Leave it `null` (the default) to export every line. A line below it stays in its log file only, and a line that prints no level is always exported. The setting goes up to `"warn"`: the stack log line that reports records the export discarded is a warning, and every setting exports it. The setting has no effect while `otlp_endpoint` is `null`. Any other value stops the daemon at startup with an error that names `otlp_min_severity` and lists the four names. See [Severity](/advanced_guides/opentelemetry/#severity) for how the daemon reads the severity of a line.
+
 ## `resource_servers`: backend URL
 
 This block holds the platform-backend base URL the CLI platform commands talk to. The daemon ignores it; the `peppy platform` commands read it. See [Platform](/advanced_guides/platform/) for the sign-in and enrollment flows.
@@ -249,6 +275,8 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 | `pypi_mirror` | `null` (PyPI) | `null`, or an `https` URL whose path ends with `packages/`, with no credentials, query, or fragment | Packages base URL of the PyPI mirror Python builds download the PyPI files of their `uv.lock` from; a file the mirror does not have comes from PyPI. |
+| `otlp_endpoint` | `null` (no export) | `null`, or an `http` or `https` URL with no credentials, query, or fragment | OTLP/HTTP endpoint the daemon exports its log files to, as OpenTelemetry log records. |
+| `otlp_min_severity` | `null` (every line) | `null`, or one of `"trace"`, `"debug"`, `"info"`, `"warn"` | Lowest severity the daemon exports; a line that prints no level is always exported. |
 | `resource_servers.api` | `https://api.peppy.bot` (release), `https://api.dev.peppy.bot` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
 
 Both Zenoh variants at once, a value outside its constraint, an unsupported `zenoh.external.endpoint`, an unknown `zenoh.managed.local_nodes_topology` value, an unknown key inside `zenoh` or either variant, or a syntax error all stop the operation that loaded the configuration with an error pointing at the problem. An out-of-range value names the offending field, and a parse error reports the bad value or its position, so a typo can never silently revert your stack to defaults. Unknown top-level keys remain accepted and preserved.

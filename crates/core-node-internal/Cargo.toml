@@ -8,6 +8,7 @@ edition.workspace = true
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
 config = { workspace = true }
 daemon-config = { workspace = true }
+log-export = { workspace = true }
 node-stack = { workspace = true }
 peppylib = { workspace = true }
 core-node-api = { workspace = true }
@@ -65,7 +66,9 @@ tracing-subscriber = { version = "0.3", optional = true }
 build-helpers = { workspace = true }
 
 [dev-dependencies]
-node-stack = { workspace = true }
+# The readers of the log file format, and the records a test exporter queued.
+node-stack = { workspace = true, features = ["test-support"] }
+log-export = { workspace = true, features = ["test-support"] }
 config = { workspace = true, features = ["fingerprint_test_helpers"] }
 # git_fixtures: this crate's tests use the libgit2-backed `create_nodes_git_repo`.
 config-test-support = { workspace = true, features = ["git_fixtures"] }

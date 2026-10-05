@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::client::{Project, Workspace};
 use crate::document::{self, Versioned};
 use crate::error::Result;
-use crate::fs_perms::restrict_dir;
+use daemon_config::fs_perms::restrict_dir;
 
 /// On-disk schema version of `platform_selection.json5`. There is no reader
 /// for another version: a file of another version is rejected by [`load`], and
