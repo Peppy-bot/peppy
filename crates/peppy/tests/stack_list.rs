@@ -291,7 +291,7 @@ async fn node_list_command_succeeds() {
     // text regardless of whether the test runs attached to a terminal.
     let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, false, None)
         .await
-        .expect("node list command should succeed")
+        .expect("stack list command should succeed")
         .output;
 
     let provider_label = format!("{provider_name}:v1");

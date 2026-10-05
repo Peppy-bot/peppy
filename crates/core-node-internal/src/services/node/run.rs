@@ -864,10 +864,9 @@ async fn process_node_run(
         Some(entity) => entity,
         None => {
             let msg = format!(
-                "Node '{}:{}' not found in node stack. \
-                 Run `peppy node list` to see currently-loaded nodes, or `peppy node add {}:{}` to add it \
-                 (the daemon does not persist added nodes across restarts).",
-                node_name, tag, node_name, tag
+                "Node '{node_name}:{tag}' not found in node stack. \
+                 Run `peppy stack list` to see the nodes in the stack, or `peppy node add <dir>` \
+                 to add it from its directory."
             );
             ctx.announcer.log().error(&msg);
             return NodeRunResult::failure(msg);

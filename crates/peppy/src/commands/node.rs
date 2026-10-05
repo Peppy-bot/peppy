@@ -419,7 +419,7 @@ pub enum NodeCommands {
         publish_clock: Option<Name>,
         /// Link a `link_id` from this node's `depends_on` to a target:
         /// `KEY@TARGET`. One flag for every link kind. For a producer binding,
-        /// TARGET is the producer's `instance_id` (see `peppy node list`),
+        /// TARGET is the producer's `instance_id` (see `peppy stack list --json`),
         /// repeatable across slots (`--link a@p1 --link b@p2`) or
         /// comma-separated (`--link a@p1,b@p2`); repeating a KEY accumulates a
         /// multi-cardinality slot's set in flag order and is rejected on a
