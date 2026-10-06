@@ -124,7 +124,7 @@ jobs:
           # reasoning from a single shallow snapshot.
           fetch-depth: 0
 
-      - uses: anthropics/claude-code-action@9cdae7f0d995e3ba7c33f226087fdf82a59cd520 # v1.0.223
+      - uses: anthropics/claude-code-action@86d88e619d8e6caf07b5c3944dd14f441c533718 # v1.0.243
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The job-level `actions: read` above scopes GITHUB_TOKEN, which this
