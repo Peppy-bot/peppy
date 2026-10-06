@@ -324,8 +324,9 @@ def _draft_release_content(
     Collects everything merged between the previous published release and the
     release commit (the commit subjects, the code diff, and the user
     documentation diff) and asks Claude to draft the title, description and
-    notes as a self-contained list of user-facing changes. Nobody reviews the
-    draft, so it is printed for the log.
+    notes as a self-contained list of user-facing changes. A release with no
+    user-facing change in peppy itself gets content that says it only pins
+    newer hub commits. Nobody reviews the draft, so it is printed for the log.
     """
     previous_tag = latest_release_tag(client, slug)
     if previous_tag:
@@ -337,7 +338,6 @@ def _draft_release_content(
         )
 
     changes = collect_release_changes(previous_tag, release_commit, repo_root)
-    console.print("Asking Claude to write the release notes...")
     content = generate_release_content(changes, tag, repo_root)
     _print_release_content(content)
     return content

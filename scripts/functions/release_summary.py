@@ -13,6 +13,12 @@ projects or the test harness their tests call can hide behind subjects such as
 "testing:" or "generator:". Truncation is applied to each diff separately so a
 large code diff never crowds out the documentation diff, the strongest signal
 that a change is user-facing.
+
+A release can be cut only to pin newer commits of the default hubs, with no
+user-facing change in peppy itself. Such a release gets fixed content that
+says so (`hub_pins_only_content`): without asking Claude when neither the code
+diff nor the user documentation diff has a path, and when Claude reports that
+no change is user-facing.
 """
 
 from __future__ import annotations
@@ -21,23 +27,29 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .claude import run_claude
-from .cli import ReleaseError
+from .cli import ReleaseError, console
 from .docs import get_code_diff, get_docs_diff, truncate_diff
+from .hub_ci import resolve
 from .repo import get_commit_subjects
 
 _FIELDS: tuple[str, ...] = ("title", "description", "notes")
 
-# Enforced CLI-side via --json-schema. minLength keeps a blank field from
-# passing validation, but whitespace-only strings still need the Python-side
-# check in _parse_release_content.
+_VERDICT_FIELD = "has_user_facing_changes"
+
+# Enforced CLI-side via --json-schema. The text fields have no minLength: they
+# are empty when Claude reports no user-facing change. _parse_release_content
+# requires them non-empty, whitespace aside, in the other case, and empty in
+# that one. The verdict comes last, as the prompt asks for it last: with the
+# verdict first, Claude can write its reasoning about it into the notes.
 _CONTENT_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "title": {"type": "string", "minLength": 1},
-        "description": {"type": "string", "minLength": 1},
-        "notes": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "notes": {"type": "string"},
+        _VERDICT_FIELD: {"type": "boolean"},
     },
-    "required": ["title", "description", "notes"],
+    "required": [*_FIELDS, _VERDICT_FIELD],
     "additionalProperties": False,
 }
 
@@ -137,6 +149,14 @@ test suite (the tests, golden files, and test helpers in this repository that
 verify peppy itself). Also omit version bumps, release commits, and merge
 commits.
 
+Every peppy release also pins newer commits of peppy's default hubs, the
+repositories that publish the nodes, contracts, and launchers users run, so a
+release can be cut for those pins alone. Also respond with the field
+"has_user_facing_changes": true when the notes list at least one change, and
+false when no change above is user-facing. When it is false, leave "title",
+"description", and "notes" as empty strings: the release then gets fixed notes
+that say it only pins newer hub commits.
+
 Commit subjects since the previous release:
 {changes}
 
@@ -191,6 +211,35 @@ class ReleaseChanges:
 
     commit_subjects: tuple[str, ...]
     diffs: ReleaseDiffs | None
+
+    @property
+    def has_code_or_docs_changes(self) -> bool:
+        """Whether the code diff or the user documentation diff has a path.
+
+        Without a previous release there is no diff, and the full history
+        counts as changed.
+        """
+        if self.diffs is None:
+            return True
+        return bool(self.diffs.code.paths or self.diffs.docs.paths)
+
+
+def hub_pins_only_content(tag: str) -> ReleaseContent:
+    """The content of release *tag* when it has no user-facing change in peppy
+    itself, and only pins newer commits of the default hubs."""
+    return ReleaseContent(
+        title="Newer content from the default hubs",
+        description=(
+            "This release only pins newer commits of the default hubs; Peppy "
+            "itself has no user-facing changes."
+        ),
+        notes=(
+            "- This release only pins newer commits of the default hubs: Peppy "
+            "itself has no user-facing changes.\n"
+            '- Once you install it, every default hub on `ref: "@{peppy-release}"` '
+            f"reads the tag `{resolve.hub_release_tag(tag)}`."
+        ),
+    )
 
 
 def collect_release_changes(
@@ -256,12 +305,23 @@ def generate_release_content(
     tag: str,
     repo_root: Path,
 ) -> ReleaseContent:
-    """Ask Claude to draft the release title, description, and notes.
+    """Draft the release title, description, and notes.
 
-    Claude runs with no tools (a pure transformation of ``changes``) and is
-    instructed to emit a self-contained list of user-facing changes only, with
-    no links, pull-request numbers, or author mentions.
+    When neither the code nor the user documentation changed, the release only
+    pins newer hub commits, and its content says so without asking Claude.
+    Otherwise Claude runs with no tools (a pure transformation of ``changes``)
+    and is instructed to emit a self-contained list of user-facing changes
+    only, with no links, pull-request numbers, or author mentions, or to report
+    that no change is user-facing.
     """
+    if not changes.has_code_or_docs_changes:
+        console.print(
+            "Neither the code nor the user documentation changed since the "
+            "previous release: the release only pins newer hub commits."
+        )
+        return hub_pins_only_content(tag)
+
+    console.print("Asking Claude to write the release notes...")
     prompt = _render_prompt(changes, tag)
     # No tools: the prompt already carries the commit subjects and both diffs.
     # Giving Claude repository access leads it to explore git history and answer
@@ -276,11 +336,25 @@ def generate_release_content(
         tools="",
         effort="xhigh",
     )
-    return _parse_release_content(payload)
+    return _parse_release_content(payload, tag)
 
 
-def _parse_release_content(payload: dict) -> ReleaseContent:
-    """Validate Claude's structured output into a ReleaseContent."""
+def _parse_release_content(payload: dict, tag: str) -> ReleaseContent:
+    """Parse Claude's structured output into the content of release *tag*.
+
+    A report of no user-facing change gives the hub-pins-only content, and
+    is refused when Claude also wrote a text field: the notes are published
+    unreviewed, so a contradictory answer must not decide what they say.
+    """
+    has_user_facing_changes = payload.get(_VERDICT_FIELD)
+    if not isinstance(has_user_facing_changes, bool):
+        raise ReleaseError(
+            f"claude release notes missing boolean '{_VERDICT_FIELD}': {payload!r}"
+        )
+    if not has_user_facing_changes:
+        _require_no_text_fields(payload)
+        return hub_pins_only_content(tag)
+
     values: dict[str, str] = {}
     for field in _FIELDS:
         value = payload.get(field)
@@ -290,3 +364,14 @@ def _parse_release_content(payload: dict) -> ReleaseContent:
             )
         values[field] = value.strip()
     return ReleaseContent(**values)
+
+
+def _require_no_text_fields(payload: dict) -> None:
+    """Refuse a report of no user-facing change that also writes a text field."""
+    for field in _FIELDS:
+        value = payload.get(field)
+        if not isinstance(value, str) or value.strip():
+            raise ReleaseError(
+                f"claude reported no user-facing change but did not leave "
+                f"'{field}' empty: {payload!r}"
+            )
