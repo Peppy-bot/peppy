@@ -30,4 +30,4 @@ thiserror = "2.0"
 serde_json5 = "0.2"
 # The derived schemas are checked as real JSON Schemas against instances.
 # Default features are dropped so no HTTP resolver or TLS stack rides along.
-jsonschema = { version = "0.56", default-features = false }
+jsonschema = { version = "0.58", default-features = false }

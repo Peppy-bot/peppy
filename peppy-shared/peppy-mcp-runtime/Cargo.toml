@@ -11,7 +11,7 @@ peppy-mcp-catalog = { path = "../peppy-mcp-catalog" }
 # Streamable HTTP server transport. Default features are dropped to leave the
 # proc macros out; tools and resources here are built dynamically from the
 # exposure bundle.
-rmcp = { version = "3.1.2", default-features = false, features = [
+rmcp = { version = "3.5.1", default-features = false, features = [
     "server",
     "transport-streamable-http-server",
 ] }
@@ -28,7 +28,7 @@ indexmap = "2.2"
 # Validates tool inputs against the bundle's derived schemas before anything
 # touches the Peppy graph. Default features are dropped so no HTTP resolver or
 # TLS stack rides along; bundle schemas are self-contained.
-jsonschema = { version = "0.56", default-features = false }
+jsonschema = { version = "0.58", default-features = false }
 # JPEG and 16-bit PNG transcoding for image-representation topic snapshots,
 # the two codecs the representation policy emits.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
@@ -36,7 +36,7 @@ base64 = "0.23"
 tracing = "0.1"
 
 [dev-dependencies]
-rmcp = { version = "3.1.2", default-features = false, features = [
+rmcp = { version = "3.5.1", default-features = false, features = [
     "client",
     "transport-streamable-http-client-reqwest",
     "reqwest",

@@ -17,7 +17,7 @@ use peppy_mcp_runtime::{
     ToolCall,
 };
 use rmcp::model::{
-    ClientCapabilities, ClientInfo, DetailedTask, GetTaskParams, ProgressNotificationParam,
+    ClientCapabilities, ClientConfig, DetailedTask, GetTaskParams, ProgressNotificationParam,
     ProtocolVersion, TaskStatus, UpdateTaskParams,
 };
 use rmcp::service::{NotificationContext, RunningService, ServiceError};
@@ -37,7 +37,7 @@ pub const FRAME_URI: &str = "peppy://resource/front_camera.latest_frame";
 /// it only fires when something is genuinely broken.
 pub const GUARD: Duration = Duration::from_secs(30);
 
-pub type Client = RunningService<RoleClient, ClientInfo>;
+pub type Client = RunningService<RoleClient, ClientConfig>;
 
 /// What a test expects one endpoint of the fixture set to advertise and
 /// answer, so a suite can run the same assertions against each endpoint.
@@ -478,13 +478,13 @@ pub async fn serve_set(servers: Vec<(Expected, ExposureServer, Arc<AtomicU64>)>)
 }
 
 pub async fn connect(url: &str) -> Client {
-    connect_as(url, ClientInfo::default()).await
+    connect_as(url, ClientConfig::default()).await
 }
 
 /// Connects a client that names itself `name` at `version`, the identity
 /// the call record keeps.
 pub async fn connect_named(url: &str, name: &str, version: &str) -> Client {
-    let mut info = ClientInfo::default();
+    let mut info = ClientConfig::default();
     info.client_info = rmcp::model::Implementation::new(name, version);
     connect_as(url, info).await
 }
@@ -492,7 +492,7 @@ pub async fn connect_named(url: &str, name: &str, version: &str) -> Client {
 /// Connects a client that declares the SEP-2663 tasks extension capability;
 /// in discover mode the SDK attaches it to every request's `_meta`.
 pub async fn connect_with_tasks(url: &str) -> Client {
-    let mut info = ClientInfo::default();
+    let mut info = ClientConfig::default();
     info.capabilities = ClientCapabilities::builder().enable_tasks().build();
     connect_as(url, info).await
 }
@@ -505,8 +505,8 @@ pub struct ProgressLog {
 }
 
 impl ClientHandler for ProgressLog {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::default()
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::default()
     }
 
     async fn on_progress(

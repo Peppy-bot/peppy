@@ -12,7 +12,8 @@ use config::consts::PEPPYGEN_OUTPUT_PATH;
 use daemon_config::contract::PeppyContract;
 use generator::{ContractOrigin, LanguageGenerator};
 use rmcp::model::{
-    ClientCapabilities, ClientInfo, DetailedTask, GetTaskParams, ProtocolVersion, UpdateTaskParams,
+    ClientCapabilities, ClientConfig, DetailedTask, GetTaskParams, ProtocolVersion,
+    UpdateTaskParams,
 };
 use rmcp::service::ServiceError;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -24,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The MCP client handle the e2e helpers operate on.
-pub type Client = rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>;
+pub type Client = rmcp::service::RunningService<rmcp::RoleClient, ClientConfig>;
 
 /// Compiles a generated node crate offline in the shared test target dir.
 ///
@@ -118,7 +119,7 @@ async fn connect_as(endpoint_url: &str, capabilities: ClientCapabilities) -> Cli
     let transport = StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(endpoint_url.to_owned()),
     );
-    let mut info = ClientInfo::default();
+    let mut info = ClientConfig::default();
     info.capabilities = capabilities;
     info.serve_with_lifecycle(
         transport,

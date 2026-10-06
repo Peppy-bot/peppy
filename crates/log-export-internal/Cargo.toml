@@ -42,4 +42,4 @@ tokio = { version = "1", features = ["macros", "rt", "test-util"] }
 tempfile = "3"
 # The official OTLP messages, to prove the local ones encode the same wire
 # format.
-opentelemetry-proto = { version = "0.31", default-features = false, features = ["gen-tonic-messages", "logs"] }
+opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "logs"] }
