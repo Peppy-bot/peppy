@@ -1,0 +1,23 @@
+<entry>
+  <title>v0.31.10</title>
+  <id>https://docs.peppy.bot/releases/v0-31-10/</id>
+  <updated>2026-10-06T00:00:00Z</updated>
+
+  <summary>Export the daemon's log files to an OpenTelemetry endpoint, and keep credentials out of the source URLs it logs.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.31.10&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Export the daemon's log files to an OpenTelemetry endpoint, and keep credentials out of the source URLs it logs.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on October 6, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;ul&gt;
+&lt;li&gt;Set &lt;code&gt;otlp_endpoint&lt;/code&gt; in the daemon configuration to export the launch, add, build, run and stack logs to an OpenTelemetry collector or intake over OTLP/HTTP, and &lt;code&gt;otlp_min_severity&lt;/code&gt; to limit the severity sent.&lt;/li&gt;
+&lt;li&gt;Put export request headers, such as an API key, in the new &lt;code&gt;~/.peppy/conf/otlp_headers.json5&lt;/code&gt; file.&lt;/li&gt;
+&lt;li&gt;Git and HTTP source URLs that the daemon writes to log lines and error messages no longer carry their credentials.&lt;/li&gt;
+&lt;li&gt;The "node not found" error now points at &lt;code&gt;peppy stack list&lt;/code&gt; and &lt;code&gt;peppy node add &amp;lt;dir&amp;gt;&lt;/code&gt; instead of a command that does not exist.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
