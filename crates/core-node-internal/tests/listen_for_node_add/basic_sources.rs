@@ -434,3 +434,69 @@ async fn listen_for_node_http_add_emits_download_feedback() {
 
     drop(server);
 }
+
+/// An add writes each step it reports to its log, and exports one record for
+/// each line of the log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_add_log_holds_each_reported_step_and_exports_each_of_its_lines() {
+    const TARGET_NODE_NAME: &str = "logged_add_node";
+    const TARGET_NODE_TAG: &str = "v1";
+
+    let (started_core_node, mut exported) = common::start_core_node_with_log_export(None).await;
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    // An excluded directory gives the add a step to report.
+    std::fs::create_dir(source_dir.path().join("target")).expect("failed to create target dir");
+    write_peppy_json5(
+        source_dir.path(),
+        &minimal_node_config(TARGET_NODE_NAME, TARGET_NODE_TAG, &[]),
+    );
+
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_add request should succeed");
+    assert!(add_result.success, "{:?}", add_result.error_message);
+
+    let steps: Vec<String> = std::iter::from_fn(|| feedback_rx.try_recv().ok())
+        .filter(NodeAddFeedback::is_stdout)
+        .map(|feedback| feedback.line)
+        .collect();
+    assert!(
+        steps
+            .iter()
+            .any(|step| step.starts_with("Excluded directories from copy:")),
+        "the add should report its steps: {steps:?}"
+    );
+
+    let log = std::fs::read_to_string(&add_result.log_path).expect("the add log should exist");
+    let lines = node_stack::action_log::test_support::log_entries(&log);
+    assert_eq!(lines, steps, "the log holds the steps the add reported");
+
+    let records = log_export::test_support::drain_records(&mut exported);
+    let bodies: Vec<&str> = records.iter().map(|record| record.body.as_str()).collect();
+    assert_eq!(bodies, lines, "each line of the log is one record");
+    for record in &records {
+        assert_eq!(record.identity.kind, log_export::LogKind::Add);
+        assert_eq!(record.identity.file_path, add_result.log_path);
+        assert_eq!(
+            record.severity,
+            Some(daemon_config::peppy_config::Severity::Info)
+        );
+        let node = record
+            .identity
+            .node
+            .as_ref()
+            .expect("the log names its node");
+        assert_eq!(
+            (node.name.as_str(), node.tag.as_str()),
+            (TARGET_NODE_NAME, TARGET_NODE_TAG)
+        );
+    }
+}

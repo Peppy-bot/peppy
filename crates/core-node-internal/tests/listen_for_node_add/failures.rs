@@ -787,3 +787,72 @@ async fn listen_for_node_git_add_missing_config_fails() {
         add_result.error_message
     );
 }
+
+/// A git source whose URL holds credentials, on a loopback port that refuses
+/// the connection: the add fails, and the feedback, the error and the add log
+/// name the repository without the credentials.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_failure_shows_the_url_without_its_credentials() {
+    const SHOWN_URL: &str = "https://127.0.0.1:1/org/repo.git";
+
+    let (started_core_node, mut exported) = common::start_core_node_with_log_export(None).await;
+    let repo_url = GitUrl::try_from("https://user:secret@127.0.0.1:1/org/repo.git")
+        .expect("the URL should parse");
+
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Git {
+            repo_url,
+            repo_path: "nodes/any_node",
+            repo_ref: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(!add_result.success, "the clone cannot succeed");
+    let error = add_result.error_message.unwrap_or_default();
+    let feedback: Vec<String> = std::iter::from_fn(|| feedback_rx.try_recv().ok())
+        .map(|entry| entry.line)
+        .collect();
+    let log = std::fs::read_to_string(&add_result.log_path).expect("the add log should exist");
+
+    assert!(
+        error.contains(SHOWN_URL),
+        "the error should name the repository, got: {error}"
+    );
+    assert!(
+        feedback.iter().any(|line| line.contains(SHOWN_URL)),
+        "the feedback should name the repository, got: {feedback:?}"
+    );
+    assert!(
+        log.contains(SHOWN_URL),
+        "the add log should name the repository, got: {log}"
+    );
+    let exported: Vec<String> = log_export::test_support::drain_records(&mut exported)
+        .into_iter()
+        .map(|record| record.body)
+        .collect();
+    assert!(
+        exported.iter().any(|body| body.contains(SHOWN_URL)),
+        "the exported records should name the repository, got: {exported:?}"
+    );
+    let feedback = feedback.join("\n");
+    let exported = exported.join("\n");
+    for (what, text) in [
+        ("error", error.as_str()),
+        ("feedback", feedback.as_str()),
+        ("add log", log.as_str()),
+        ("exported records", exported.as_str()),
+    ] {
+        assert!(
+            !text.contains("secret") && !text.contains("user@"),
+            "the {what} should hold no credentials, got: {text}"
+        );
+    }
+}

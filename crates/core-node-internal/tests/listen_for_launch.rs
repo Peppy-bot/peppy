@@ -2419,3 +2419,325 @@ async fn waldo_generation_launch() {
     // The daemon is still answering after the failed launch.
     common::assert_clock_round_trip(&started_core_node).await;
 }
+
+/// Launches one node whose `build_cmd` and `run_cmd` are the given shell
+/// scripts, on a core node that exports its logs. Returns the result of the
+/// launch, every record exported by the time it arrived, and the core node,
+/// whose data root holds the log files.
+async fn launch_scripted_node(
+    build_script: &str,
+    run_script: &str,
+) -> (LaunchResult, Vec<log_export::LogRecord>, StartedCoreNode) {
+    launch_scripted_node_above(None, build_script, run_script).await
+}
+
+/// [`launch_scripted_node`] on a core node that exports the lines at
+/// `min_severity` and above.
+async fn launch_scripted_node_above(
+    min_severity: Option<daemon_config::peppy_config::OtlpMinSeverity>,
+    build_script: &str,
+    run_script: &str,
+) -> (LaunchResult, Vec<log_export::LogRecord>, StartedCoreNode) {
+    let (started_core_node, mut exported) =
+        common::start_core_node_with_log_export(min_severity).await;
+    let nodes_dir = tempdir().expect("failed to create nodes dir");
+    let node_path = write_node_config_with_options(
+        nodes_dir.path(),
+        "scripted_node",
+        "v1",
+        "test-hash",
+        NodeConfigOptions {
+            build_cmd: &["sh", "-c", build_script],
+            run_cmd: &["sh", "-c", run_script],
+            ..Default::default()
+        },
+    );
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
+    fs::write(
+        &launch_file_path,
+        r#"{ peppy_schema: "launcher/v1", deployments: [ { source: { name: "scripted_node:v1" }, instances: [ { instance_id: "s1" } ] } ] }"#,
+    )
+    .expect("failed to write launch file");
+    TestPackagesCache::new()
+        .fs_entry("scripted_node", "v1", &node_path)
+        .write(&started_core_node.peppy_dirs);
+
+    let (_goal_response, result) = send_node_launch_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        &launch_file_path,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+    )
+    .await
+    .expect("launch should complete");
+    let records = log_export::test_support::drain_records(&mut exported);
+    // The launch log gets the output of a node from a task of its own, which
+    // may still be writing when the result arrives.
+    let output: Vec<&str> = records
+        .iter()
+        .filter(|record| matches!(record.origin, log_export::LineOrigin::Captured(_)))
+        .map(|record| record.body.as_str())
+        .collect();
+    common::poll_until(
+        Duration::from_secs(10),
+        "the launch log should hold the output it relays",
+        || {
+            let launch_log = fs::read_to_string(&result.log_path).ok()?;
+            output
+                .iter()
+                .all(|line| launch_log.contains(line))
+                .then_some(())
+        },
+    )
+    .await;
+    (result, records, started_core_node)
+}
+
+/// The launch id `send_node_launch_and_wait` launches under.
+const TEST_LAUNCH_ID: &str = "launch-test-fixture";
+/// A line a scripted node prints. The script that prints it does not hold it,
+/// so an error that quotes the script does not hold it either.
+const SCRIPT_OUTPUT: &str = "the-node-printed-this-line";
+const PRINT_OUTPUT_AND_FAIL: &str = "printf 'the-node-%s\\n' printed-this-line; exit 1";
+
+/// The launch log holds `SCRIPT_OUTPUT`, which it relayed, and exports none
+/// of it; the log of kind `owner` exports it once, for the node and the launch.
+fn assert_output_is_exported_by_its_own_log(
+    result: &LaunchResult,
+    records: &[log_export::LogRecord],
+    owner: log_export::LogKind,
+) {
+    let launch_log = fs::read_to_string(&result.log_path).expect("the launch log should exist");
+    assert!(
+        launch_log.contains(SCRIPT_OUTPUT),
+        "the launch log should hold the relayed output: {launch_log}"
+    );
+    let exporters: Vec<&log_export::LogRecord> = records
+        .iter()
+        .filter(|record| record.body.contains(SCRIPT_OUTPUT))
+        .collect();
+    assert_eq!(
+        exporters.len(),
+        1,
+        "the output should be exported once: {exporters:?}"
+    );
+    let identity = &exporters[0].identity;
+    assert_eq!(identity.kind, owner);
+    let node = identity.node.as_ref().expect("the log names its node");
+    assert_eq!(
+        (node.name.as_str(), node.tag.as_str()),
+        ("scripted_node", "v1")
+    );
+    assert_eq!(identity.launch_id.as_deref(), Some(TEST_LAUNCH_ID));
+}
+
+/// A launch whose build fails. The launch log exports its own narration and
+/// the error that ended the launch. The build output it relays is in its file
+/// and is exported by the build log alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launch_exports_its_own_lines_and_relays_build_output_to_its_file() {
+    use daemon_config::peppy_config::Severity;
+    use log_export::{LogKind, LogRecord};
+
+    let (result, records, _core_node) =
+        launch_scripted_node(PRINT_OUTPUT_AND_FAIL, "sleep 60").await;
+    assert!(!result.success, "the build fails, so the launch fails");
+    assert_output_is_exported_by_its_own_log(&result, &records, LogKind::Build);
+
+    let launch_records: Vec<&LogRecord> = records
+        .iter()
+        .filter(|record| {
+            record.identity.kind
+                == LogKind::Launch {
+                    action: log_export::StackAction::Launch,
+                }
+        })
+        .collect();
+    assert!(
+        launch_records
+            .iter()
+            .all(
+                |record| record.identity.launch_id.as_deref() == Some(TEST_LAUNCH_ID)
+                    && record.identity.file_path == result.log_path
+            ),
+        "every launch record names its launch and its file: {launch_records:?}"
+    );
+    assert!(
+        launch_records
+            .iter()
+            .any(|record| record.severity == Some(Severity::Info)),
+        "the narration is exported as info: {launch_records:?}"
+    );
+    assert!(
+        launch_records
+            .iter()
+            .any(|record| record.severity == Some(Severity::Error)
+                && record.body.contains("scripted_node:v1")),
+        "the error that ended the launch is exported: {launch_records:?}"
+    );
+}
+
+/// A launch whose node prints a line and exits while it starts. The output
+/// the launch log relays is exported by the run log alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launch_relays_run_output_to_its_file() {
+    let (result, records, _core_node) = launch_scripted_node("true", PRINT_OUTPUT_AND_FAIL).await;
+    assert!(!result.success, "the node exits, so the launch fails");
+    assert_output_is_exported_by_its_own_log(&result, &records, log_export::LogKind::Run);
+    let run_record = records
+        .iter()
+        .find(|record| record.body.contains(SCRIPT_OUTPUT))
+        .expect("checked above");
+    assert_eq!(run_record.identity.instance_id.as_deref(), Some("s1"));
+}
+
+/// The entries of the log at `path`.
+fn log_entries(path: &std::path::Path) -> Vec<String> {
+    let content = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("{} should be readable: {error}", path.display()));
+    node_stack::action_log::test_support::log_entries(&content)
+}
+
+/// One launch, four logs. The add, build and run logs each export one record
+/// per entry. The launch log exports its own entries, and the entries it
+/// relays from the three node logs are exported by those logs alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_log_of_a_launch_exports_its_own_entries_once() {
+    use log_export::LogKind;
+    use std::collections::BTreeMap;
+
+    let (result, records, _core_node) = launch_scripted_node(
+        "printf 'build-%s\\n' line-one; printf 'warning: build-%s\\n' line-two",
+        "printf 'run-%s\\n' line-one; printf 'ERROR run-%s\\n' line-two; exit 3",
+    )
+    .await;
+    assert!(!result.success, "the node exits, so the launch fails");
+
+    let mut bodies_by_file: BTreeMap<&std::path::Path, Vec<&str>> = BTreeMap::new();
+    for record in &records {
+        bodies_by_file
+            .entry(record.identity.file_path.as_path())
+            .or_default()
+            .push(record.body.as_str());
+    }
+    let kinds: Vec<LogKind> =
+        records
+            .iter()
+            .map(|record| record.identity.kind)
+            .fold(Vec::new(), |mut kinds, kind| {
+                if !kinds.contains(&kind) {
+                    kinds.push(kind);
+                }
+                kinds
+            });
+    for kind in [
+        LogKind::Launch {
+            action: log_export::StackAction::Launch,
+        },
+        LogKind::Add,
+        LogKind::Build,
+        LogKind::Run,
+    ] {
+        assert!(
+            kinds.contains(&kind),
+            "a {kind:?} log is exported: {kinds:?}"
+        );
+    }
+
+    // Each node log: one record per entry, in the order of the file.
+    let node_bodies: Vec<&str> = records
+        .iter()
+        .filter(|record| !matches!(record.identity.kind, LogKind::Launch { .. }))
+        .map(|record| record.body.as_str())
+        .collect();
+    for (file, bodies) in &bodies_by_file {
+        if *file == result.log_path.as_path() {
+            continue;
+        }
+        assert_eq!(&log_entries(file), bodies, "{}", file.display());
+    }
+    let outputs = [
+        "build-line-one",
+        "warning: build-line-two",
+        "run-line-one",
+        "ERROR run-line-two",
+    ];
+    for output in outputs {
+        assert_eq!(
+            node_bodies.iter().filter(|body| **body == output).count(),
+            1,
+            "`{output}` is exported once, by its node log: {node_bodies:#?}"
+        );
+    }
+
+    // The launch log: each entry is its own, exported by it, or one a node
+    // log holds and exports.
+    let launch_bodies = &bodies_by_file[result.log_path.as_path()];
+    let launch_entries = log_entries(&result.log_path);
+    let own: Vec<&str> = launch_entries
+        .iter()
+        .map(String::as_str)
+        .filter(|entry| !node_bodies.contains(entry))
+        .collect();
+    assert_eq!(
+        &own, launch_bodies,
+        "the launch log exports its own entries"
+    );
+    for output in outputs {
+        assert!(
+            launch_entries.iter().any(|entry| entry == output),
+            "the launch log holds `{output}`, which it relays: {launch_entries:#?}"
+        );
+    }
+    for body in launch_bodies {
+        assert!(
+            !node_bodies.contains(body),
+            "`{body}` is exported by the launch log and by a node log"
+        );
+    }
+}
+
+/// With the minimum severity at info, the run log holds each line its node printed, and
+/// exports the ones at info and above and the one that prints no level.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_below_the_minimum_severity_stays_in_the_run_log() {
+    use daemon_config::peppy_config::{OtlpMinSeverity, Severity};
+    use log_export::{LineOrigin, LogKind};
+
+    let (_result, records, _core_node) = launch_scripted_node_above(
+        Some(OtlpMinSeverity::Info),
+        "true",
+        "printf 'DEBUG %s\\n' tick; printf 'INFO %s\\n' ready; printf 'ERROR %s\\n' stopped; \
+         printf 'plain %s\\n' line; exit 3",
+    )
+    .await;
+
+    let run_records: Vec<&log_export::LogRecord> = records
+        .iter()
+        .filter(|record| record.identity.kind == LogKind::Run)
+        .collect();
+    let run_log = &run_records
+        .first()
+        .expect("the run log is exported")
+        .identity
+        .file_path;
+    let printed = ["DEBUG tick", "INFO ready", "ERROR stopped", "plain line"];
+    let entries = log_entries(run_log);
+    for line in printed {
+        assert!(entries.iter().any(|entry| entry == line), "{entries:#?}");
+    }
+    let exported: Vec<(&str, Option<Severity>)> = run_records
+        .iter()
+        .filter(|record| matches!(record.origin, LineOrigin::Captured(_)))
+        .map(|record| (record.body.as_str(), record.severity))
+        .collect();
+    assert_eq!(
+        exported,
+        [
+            ("INFO ready", Some(Severity::Info)),
+            ("ERROR stopped", Some(Severity::Error)),
+            ("plain line", None),
+        ]
+    );
+}

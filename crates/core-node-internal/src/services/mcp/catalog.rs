@@ -2,6 +2,7 @@
 //! exposure, printed on demand.
 
 use super::resolve_exposure_deployment;
+use crate::services::node::Report;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::source::ExposureRef;
 use peppy_mcp_catalog::ExposureBundle;
@@ -13,7 +14,7 @@ pub fn derive_exposure_catalog(
     peppy_dirs: &PeppyDirs,
     name: &str,
     tag: &str,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> Result<ExposureBundle, String> {
     let reference = ExposureRef {
         name: name.to_owned(),

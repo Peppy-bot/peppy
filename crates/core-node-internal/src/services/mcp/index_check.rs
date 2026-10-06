@@ -1,6 +1,7 @@
 //! Exposure validation for `peppy repo index --check --validate-mcp-exposures`.
 
 use super::resolve::resolve_cached_document;
+use crate::services::node::Report;
 use crate::services::repo::cache::{self as repo_cache, ContractCacheEntry};
 use crate::services::repo::index::{
     IndexError, read_repository_index, resolve_declared_item, walk_directory,
@@ -50,7 +51,7 @@ impl std::fmt::Display for ExposureFinding {
 pub fn check_repository_exposures(
     root: &Path,
     peppy_dirs: &PeppyDirs,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> Result<Vec<ExposureFinding>, IndexError> {
     let root = std::fs::canonicalize(root).map_err(|source| IndexError::Io {
         path: root.display().to_string(),
@@ -115,7 +116,7 @@ type ContractKey = (String, String, Option<String>);
 struct Contracts<'a> {
     peppy_dirs: &'a PeppyDirs,
     entries: &'a [ContractCacheEntry],
-    on_feedback: &'a dyn Fn(&str),
+    on_feedback: &'a dyn Fn(Report<'_>),
     resolved: BTreeMap<ContractKey, Result<PinnedContract, String>>,
 }
 

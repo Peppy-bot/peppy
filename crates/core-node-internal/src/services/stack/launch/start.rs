@@ -5,12 +5,12 @@ use super::feedback::publish_stdout;
 use super::orchestrate::start_node_directly;
 use super::watchers::LifecycleWatchers;
 use super::{NodeKey, PhaseChange, PhaseGoal, PlannedDeployment, federated};
-use crate::services::node::create_action_log_file;
 use crate::services::stack::action::StackChangeContext;
 use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, NodeRunGoal, NodeRunLogEntry, NodeRunResult,
     ObservationTarget, ObservationTargets, PairTarget, RemotePeerPairing,
 };
+use node_stack::ActionLog;
 use std::collections::{BTreeMap, HashMap};
 
 /// The environment one launched instance is started with: the forwarded
@@ -347,11 +347,15 @@ async fn start_locally(
     node_run_goal: NodeRunGoal,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
 ) -> std::result::Result<NodeRunResult, String> {
-    let log_dir = ctx.peppy_dirs.logs_dir_run();
-    let log_filename = format!("{}.log", instance_id);
-    let (log_file, log_path) = create_action_log_file(&log_dir, &log_filename)?;
-
-    let (result, log_path) = start_node_directly(ctx, node_run_goal, log_path, log_file).await;
+    let log = ActionLog::for_run(
+        &ctx.peppy_dirs,
+        ctx.node_stack.log_exporter().clone(),
+        &node_run_goal.node_name,
+        &node_run_goal.tag,
+        instance_id,
+        node_run_goal.launch_id.as_deref(),
+    )?;
+    let (result, log_path) = start_node_directly(ctx, node_run_goal, log).await;
 
     let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
     if let Some(path) = log_path {

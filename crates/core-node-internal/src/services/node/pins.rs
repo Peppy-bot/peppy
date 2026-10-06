@@ -16,6 +16,7 @@
 //! run exactly the same code.
 
 use super::cache as node_cache;
+use crate::services::node::Report;
 use crate::services::repo::cache::{
     self as repo_cache, ContractCacheEntry, EntryOrigin, NodeCacheEntry, PairingCacheEntry,
     PinnableCacheEntry, RepoCacheEntry,
@@ -105,12 +106,12 @@ pub(crate) async fn materialize_pinned_node(
         let entries = Arc::clone(entries);
         let pin = pin.clone();
         tokio::task::spawn_blocking(move || {
-            repo_cache::resolve_pin_to_bytes(&dirs, &entries, &pin, &|line| on_feedback(line))
+            repo_cache::resolve_pin_to_bytes(&dirs, &entries, &pin, &|report| on_feedback(report))
         })
         .await
         .map_err(|e| format!("materialization task for {label} failed: {e}"))?
     } else {
-        repo_cache::resolve_pin_to_bytes(peppy_dirs, entries, pin, &|line| on_feedback(line))
+        repo_cache::resolve_pin_to_bytes(peppy_dirs, entries, pin, &|report| on_feedback(report))
     }?;
 
     let content = std::str::from_utf8(&bytes)
@@ -413,7 +414,7 @@ impl DocPinMinter {
         manifest: &Manifest,
         contracts: &[ContractCacheEntry],
         pairings: &[PairingCacheEntry],
-        on_feedback: &dyn Fn(&str),
+        on_feedback: &dyn Fn(Report<'_>),
     ) -> std::result::Result<(), String> {
         let depends_on = manifest.depends_on.as_ref();
         let contract_refs = manifest
@@ -463,7 +464,7 @@ impl DocPinMinter {
         entries: &[E],
         kind: PinKind,
         (name, tag, author_sha256): DocRef<'_>,
-        on_feedback: &dyn Fn(&str),
+        on_feedback: &dyn Fn(Report<'_>),
     ) -> std::result::Result<(), String> {
         let (entry, _bytes) = repo_cache::resolve_cached_doc_entry(
             peppy_dirs,
@@ -516,7 +517,7 @@ impl DocPinMinter {
 pub(crate) fn doc_pins_for_manifest_sets(
     peppy_dirs: &PeppyDirs,
     sets: &[Vec<Manifest>],
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<Vec<std::result::Result<Vec<PinnedItem>, String>>, String> {
     let contracts = repo_cache::load_contract_cache(peppy_dirs)
         .map_err(|e| format!("failed to load contract cache: {e}"))?;
@@ -550,7 +551,7 @@ pub(crate) async fn doc_pins_for_manifest_sets_async(
 ) -> std::result::Result<Vec<std::result::Result<Vec<PinnedItem>, String>>, String> {
     let dirs = peppy_dirs.clone();
     tokio::task::spawn_blocking(move || {
-        doc_pins_for_manifest_sets(&dirs, &sets, &|line| on_feedback(line))
+        doc_pins_for_manifest_sets(&dirs, &sets, &|report| on_feedback(report))
     })
     .await
     .map_err(|e| format!("doc pin minting task failed: {e}"))?

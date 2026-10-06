@@ -19,7 +19,7 @@
 //! absolute paths — before anything is created or registered.
 
 use super::action::StackChangeContext;
-use super::launch::feedback::{publish_stderr, publish_stdout};
+use super::launch::feedback::{publish_stdout, publish_warning};
 use super::launch::{NodeKey, PlannedDeployment};
 use crate::services::node::resolve_mount_path_parameters;
 use config::apply_parameter_defaults;
@@ -206,7 +206,7 @@ pub(in crate::services::stack) async fn prepare_local_container_mounts(
         }
     };
     for src in auto_created {
-        publish_stderr(
+        publish_warning(
             ctx,
             containers::auto_created_warning(&src),
             LaunchFeedbackStep::LauncherStep,

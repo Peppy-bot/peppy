@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::client::RouterPeerEnrolled;
 use crate::document::{self, Versioned};
 use crate::error::{Error, Result};
-use crate::fs_perms::restrict_dir;
+use daemon_config::fs_perms::restrict_dir;
 
 /// On-disk schema version of `enrollment.json5`. There is one reader, for
 /// this version. A file of another version is rejected by [`load`], and the

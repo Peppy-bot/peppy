@@ -32,18 +32,14 @@ mod presence;
 mod test_support;
 
 use std::collections::{BTreeSet, HashSet};
-use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use daemon_config::peppy_config::PackagesBaseUrl;
-use parking_lot::Mutex as StdMutex;
-use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::build_io::{FeedbackLine, announce, announce_warning};
+use crate::action_log::Announcer;
 use crate::build_progress::BUILD_PROGRESS_SAMPLE_INTERVAL;
 use lock::{PYPI_FILES_HOST, PypiFile, UvLock};
 
@@ -62,26 +58,21 @@ const PROGRESS_LINE_INTERVAL: Duration = BUILD_PROGRESS_SAMPLE_INTERVAL;
 
 /// Where the lines of the mirror step go: the build log and the build
 /// feedback channel, each line after [`LINE_PREFIX`].
-pub(super) struct BuildFeedback<'a> {
-    pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
-    pub log_file: &'a Arc<StdMutex<File>>,
+pub(super) struct BuildFeedback {
+    announcer: Announcer,
 }
 
-impl BuildFeedback<'_> {
+impl BuildFeedback {
+    pub(super) fn new(announcer: Announcer) -> Self {
+        Self { announcer }
+    }
+
     fn line(&self, line: String) {
-        announce(
-            self.feedback_tx,
-            self.log_file,
-            format!("{LINE_PREFIX}{line}"),
-        );
+        self.announcer.line(format!("{LINE_PREFIX}{line}"));
     }
 
     fn warning(&self, line: String) {
-        announce_warning(
-            self.feedback_tx,
-            self.log_file,
-            format!("{LINE_PREFIX}{line}"),
-        );
+        self.announcer.warning(format!("{LINE_PREFIX}{line}"));
     }
 }
 
@@ -108,7 +99,7 @@ fn its_files_from_pypi(problem: String) -> String {
 pub(super) async fn apply(
     working_dir: &Path,
     mirror: &PackagesBaseUrl,
-    feedback: &BuildFeedback<'_>,
+    feedback: &BuildFeedback,
     cancel_token: &CancellationToken,
 ) -> RewrittenLocks {
     let read = {
@@ -224,7 +215,7 @@ impl RewrittenLocks {
 
     /// Puts back the text each rewritten lock had when it was staged.
     /// A failure is a warning line.
-    pub(super) async fn restore(self, feedback: &BuildFeedback<'_>) {
+    pub(super) async fn restore(self, feedback: &BuildFeedback) {
         if self.originals.is_empty() {
             return;
         }
@@ -349,7 +340,7 @@ fn find_uv_locks(working_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 async fn files_on_mirror(
     locks: &[StagedLock],
     mirror: &PackagesBaseUrl,
-    feedback: &BuildFeedback<'_>,
+    feedback: &BuildFeedback,
     cancel_token: &CancellationToken,
 ) -> Option<HashSet<PypiFile>> {
     // Two locks can pin the same file; the mirror is asked once for it.
@@ -481,37 +472,30 @@ fn replace_file(path: &Path, text: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build_io::FeedbackStream;
+    use crate::action_log::test_support::scratch_log;
+    use crate::build_io::{FeedbackLine, FeedbackStream};
     use httpmock::Method::HEAD;
     use httpmock::MockServer;
     use test_support::{closing_mirror, lock_with_wheels, mirror_of, silent_mirror, wheel_paths};
+    use tokio::sync::mpsc;
 
     /// The feedback of one run of the step: each line with its stream.
     struct CapturedFeedback {
-        feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+        announcer: Announcer,
         feedback_rx: mpsc::UnboundedReceiver<FeedbackLine>,
-        log_file: Arc<StdMutex<File>>,
-        _log: tempfile::NamedTempFile,
     }
 
     impl CapturedFeedback {
         fn new() -> Self {
             let (feedback_tx, feedback_rx) = mpsc::unbounded_channel();
-            let log = tempfile::NamedTempFile::new().unwrap();
-            let log_file = Arc::new(StdMutex::new(log.reopen().unwrap()));
             Self {
-                feedback_tx,
+                announcer: Announcer::new(scratch_log(), feedback_tx),
                 feedback_rx,
-                log_file,
-                _log: log,
             }
         }
 
-        fn feedback(&self) -> BuildFeedback<'_> {
-            BuildFeedback {
-                feedback_tx: &self.feedback_tx,
-                log_file: &self.log_file,
-            }
+        fn feedback(&self) -> BuildFeedback {
+            BuildFeedback::new(self.announcer.clone())
         }
 
         /// Every line sent since the last call: the warnings, then the other

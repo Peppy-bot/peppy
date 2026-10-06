@@ -8,8 +8,9 @@
 use std::sync::Once;
 
 use crate::error::{Error, Result};
+use daemon_config::local_host::is_local;
 use daemon_config::peppy_config::ResourceServers;
-use url::{Host, Url};
+use url::Url;
 
 /// Transport policy for server-supplied control-plane URLs, fixed by the build
 /// profile via [`build_transport_policy`].
@@ -168,18 +169,6 @@ pub fn normalize_api_origin(api_url: &str) -> Result<String> {
     Ok(validate_https_or_local(api_url, "platform API")?
         .origin()
         .ascii_serialization())
-}
-
-/// Whether a parsed host is local enough to permit cleartext development
-/// traffic. Matching on [`Host`] avoids the string-prefix pitfall that let a
-/// domain such as `127.example.com` pass for a loopback address.
-fn is_local(url: &Url) -> bool {
-    match url.host() {
-        Some(Host::Domain(host)) => host == "localhost" || host.ends_with(".localhost"),
-        Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
-        None => false,
-    }
 }
 
 #[cfg(test)]

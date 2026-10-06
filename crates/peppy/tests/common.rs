@@ -45,8 +45,18 @@ pub fn spawn_daemon(
     home: &std::path::Path,
     engine: MessagingEngine,
 ) -> (DaemonGuard, Arc<Mutex<String>>) {
+    spawn_daemon_with_env(home, engine, &[])
+}
+
+/// [`spawn_daemon`] with `envs` added to the daemon's environment.
+pub fn spawn_daemon_with_env(
+    home: &std::path::Path,
+    engine: MessagingEngine,
+    envs: &[(&str, &str)],
+) -> (DaemonGuard, Arc<Mutex<String>>) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_peppy"));
     command
+        .envs(envs.iter().copied())
         .args(["service", "serve", "--messaging-engine"])
         .arg(match engine {
             MessagingEngine::Mock => "mock",
@@ -93,6 +103,47 @@ pub fn spawn_daemon(
     }
 
     (DaemonGuard(child), logs)
+}
+
+/// The line a daemon prints once its serve loop is up.
+pub const SERVE_INITIALIZED: &str = "Serve command initialized!";
+/// The daemon's refusal of a taken zenoh port, and zenohd's own bind failure
+/// quoted from its log. The zenoh boot helpers below serve the Linux e2e in
+/// `daemon_lifecycle_e2e` and every `log_export_e2e` test.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const PORT_IN_USE: [&str; 2] = ["Zenoh router port already in use", "Address already in use"];
+/// How many times a test boots a zenoh daemon again on a new port. The port
+/// comes from the ephemeral range other tests' zenoh sessions draw from.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const PORT_ATTEMPTS: usize = 3;
+
+/// A port that was free a moment ago.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn free_port() -> u16 {
+    std::net::TcpListener::bind("0.0.0.0:0")
+        .expect("bind an ephemeral port")
+        .local_addr()
+        .expect("local address")
+        .port()
+}
+
+/// How the boot of a zenoh daemon went.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub enum Boot {
+    Ready,
+    /// Another process took the zenoh port first.
+    PortCollision,
+}
+
+/// Waits for `ready` in the daemon's logs, or a port collision.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn wait_for_boot(daemon: &mut DaemonGuard, logs: &Arc<Mutex<String>>, ready: &str) -> Boot {
+    wait_for_daemon(daemon, logs, DAEMON_BOOT, ready, |snapshot| {
+        if PORT_IN_USE.iter().any(|needle| snapshot.contains(needle)) {
+            return Some(Boot::PortCollision);
+        }
+        snapshot.contains(ready).then_some(Boot::Ready)
+    })
 }
 
 /// Polls `probe` until it yields a value, or panics after `bound` naming `what`.

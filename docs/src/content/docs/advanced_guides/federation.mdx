@@ -168,7 +168,9 @@ Launch configuration applied successfully
 ```
 
 (The `Node log files:` listing, elided here, names every machine's per-node add,
-build, and run logs, one `node:tag@core-node: path` line each.)
+build, and run logs, one `node:tag@core-node: path` line each. Each daemon
+[exports](/advanced_guides/opentelemetry/) the log files it writes, when its own
+`otlp_endpoint` is set.)
 
 Two things in that output are worth pointing at. The first line: a launch is
 destructive on every machine it touches, and you typed one command, so Peppy

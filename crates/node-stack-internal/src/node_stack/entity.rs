@@ -1,6 +1,5 @@
 use parking_lot::{Mutex as StdMutex, RwLock};
 use std::collections::VecDeque;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -14,14 +13,14 @@ use core_node_api::{
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::PackagesBaseUrl;
+use log_export::Iostream;
 use tokio::process::Child;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::build_io::{
-    FeedbackLine, FeedbackStream, OutputReaderHooks, announce, spawn_output_reader_async,
-};
+use crate::action_log::Announcer;
+use crate::build_io::{OutputReaderHooks, spawn_output_reader_async};
 use crate::error::{Error, Result};
 
 use super::build_artifact_cache::{ArtifactKind, prune_siblings, resolve_slot, reuse_line};
@@ -209,11 +208,10 @@ pub struct BuildContext<'a> {
     /// inside `peppy_dirs.built_node_dir(name, tag)`, named after the
     /// fingerprint of the staged tree.
     pub peppy_dirs: &'a PeppyDirs,
-    /// Channel that streams stdout/stderr lines from the build child process
-    /// (and from `build_cmd`, for process nodes) back to the caller.
-    pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
-    /// Log file the build output is also written to.
-    pub log_file: Arc<StdMutex<File>>,
+    /// The build log and the channel that streams stdout/stderr lines from
+    /// the build child process (and from `build_cmd`, for process nodes)
+    /// back to the caller.
+    pub announcer: Announcer,
     /// Environment variables passed to `build_cmd` (process nodes only). The
     /// daemon prepares this list via `validate_goal_env_vars`,
     /// `inject_rust_build_env`, and `inject_node_runtime_env`. Container
@@ -313,11 +311,10 @@ pub struct StartContext<'a> {
 /// entity's `StartContext` surface only carries fields the entity actually
 /// reasons about.
 pub struct OutputSinks {
-    /// Channel that receives stdout/stderr lines from the running child. The
-    /// reader tasks remain alive past `prepare_and_spawn`'s return.
-    pub feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    /// Log file the start output is also written to.
-    pub log_file: Arc<StdMutex<File>>,
+    /// The run log and the channel that receives stdout/stderr lines from
+    /// the running child. The reader tasks remain alive past
+    /// `prepare_and_spawn`'s return.
+    pub announcer: Announcer,
     /// Gate that the daemon flips to `false` after `commit_started` /
     /// `abort_started` returns, so that further reader-task lines stop being
     /// forwarded onto the daemon's external feedback topic. The reader tasks
@@ -338,7 +335,6 @@ pub struct StartedInstanceCtx {
     pub(crate) runtime_config_path: PathBuf,
     pub(crate) stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
     pub(crate) output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
-    pub(crate) log_file: Arc<StdMutex<File>>,
     /// Snapshot of the entity's `generation` taken at `prepare_and_spawn`
     /// time. `commit_started`/`abort_started` compare this against the
     /// current entity generation and refuse to mutate the replacement entity
@@ -708,16 +704,12 @@ impl NodeEntity {
         };
 
         if slot.cached && !ctx.rebuild {
-            announce(
-                ctx.feedback_tx,
-                &ctx.log_file,
-                reuse_line(
-                    &snapshot.node_name,
-                    &snapshot.node_tag,
-                    &slot.fingerprint,
-                    &slot.path,
-                ),
-            );
+            ctx.announcer.line(reuse_line(
+                &snapshot.node_name,
+                &snapshot.node_tag,
+                &slot.fingerprint,
+                &slot.path,
+            ));
             return Ok(slot.path);
         }
         let line = if slot.cached {
@@ -734,16 +726,13 @@ impl NodeEntity {
                 snapshot.node_name, snapshot.node_tag, slot.fingerprint
             )
         };
-        announce(ctx.feedback_tx, &ctx.log_file, line);
+        ctx.announcer.line(line);
 
         // The staged locks are rewritten after the fingerprint was taken, so
         // a build reuses or replaces the same artifact with and without a
         // mirror. Container and process nodes both build from the staged
         // tree, so both download from the mirror.
-        let mirror_feedback = pypi_mirror::BuildFeedback {
-            feedback_tx: ctx.feedback_tx,
-            log_file: &ctx.log_file,
-        };
+        let mirror_feedback = pypi_mirror::BuildFeedback::new(ctx.announcer.clone());
         let rewritten_locks = match ctx.pypi_mirror {
             Some(mirror) if snapshot.language == PeppygenLanguage::Python => {
                 pypi_mirror::apply(ctx.working_dir, mirror, &mirror_feedback, &ctx.cancel_token)
@@ -799,8 +788,7 @@ impl NodeEntity {
                     apptainer_build_extra_args,
                     lima_shell_extra_args,
                     language: snapshot.language,
-                    feedback_tx: ctx.feedback_tx,
-                    log_file: Arc::clone(&ctx.log_file),
+                    announcer: &ctx.announcer,
                     peppy_dirs: ctx.peppy_dirs,
                     cancel_token: &ctx.cancel_token,
                 })
@@ -814,8 +802,7 @@ impl NodeEntity {
                     snapshot.build_cmd.as_ref(),
                     ctx.working_dir,
                     ctx.env_vars,
-                    ctx.feedback_tx,
-                    Arc::clone(&ctx.log_file),
+                    &ctx.announcer,
                     &ctx.cancel_token,
                 )
                 .await
@@ -1015,7 +1002,7 @@ impl NodeEntity {
                 &instance_dir,
                 ctx.runtime_config_json5,
                 ctx.env_vars,
-                &ctx.output_sinks.log_file,
+                ctx.output_sinks.announcer.log(),
                 ctx.peppy_dirs,
             ),
             (Artifact::Built(sif_path), Some(container)) => {
@@ -1036,8 +1023,7 @@ impl NodeEntity {
                     mount_paths: ctx.mount_paths_resolved,
                     apptainer_run_extra_args,
                     lima_shell_extra_args,
-                    log_file: &ctx.output_sinks.log_file,
-                    feedback_tx: &ctx.output_sinks.feedback_tx,
+                    announcer: &ctx.output_sinks.announcer,
                     peppy_dirs: ctx.peppy_dirs,
                 })
                 .await
@@ -1047,7 +1033,7 @@ impl NodeEntity {
                 &instance_dir,
                 ctx.runtime_config_json5,
                 ctx.env_vars,
-                &ctx.output_sinks.log_file,
+                ctx.output_sinks.announcer.log(),
                 ctx.peppy_dirs,
             ),
         }
@@ -1105,12 +1091,12 @@ impl NodeEntity {
             sinks.hooks.on_reader_registered();
             output_reader_handles.push(spawn_output_reader_async(
                 stdout,
-                sinks.feedback_tx.clone(),
+                sinks.announcer.feedback_tx().clone(),
                 Arc::clone(&sinks.publish_enabled),
                 Arc::clone(&sinks.hooks),
-                FeedbackStream::Stdout,
+                Iostream::Stdout,
                 None,
-                Arc::clone(&sinks.log_file),
+                sinks.announcer.log().clone(),
             ));
         }
 
@@ -1118,12 +1104,12 @@ impl NodeEntity {
             sinks.hooks.on_reader_registered();
             output_reader_handles.push(spawn_output_reader_async(
                 stderr,
-                sinks.feedback_tx.clone(),
+                sinks.announcer.feedback_tx().clone(),
                 Arc::clone(&sinks.publish_enabled),
                 Arc::clone(&sinks.hooks),
-                FeedbackStream::Stderr,
+                Iostream::Stderr,
                 Some(Arc::clone(&stderr_buffer)),
-                Arc::clone(&sinks.log_file),
+                sinks.announcer.log().clone(),
             ));
         }
 
@@ -1134,7 +1120,6 @@ impl NodeEntity {
                 runtime_config_path,
                 stderr_buffer,
                 output_reader_handles,
-                log_file: ctx.output_sinks.log_file,
                 generation: start_generation,
             },
         ))
@@ -1282,7 +1267,6 @@ impl NodeEntity {
             runtime_config_path,
             stderr_buffer,
             output_reader_handles,
-            log_file,
             generation: start_generation,
         } = started_ctx;
 
@@ -1292,7 +1276,6 @@ impl NodeEntity {
             &error,
             stderr_buffer,
             output_reader_handles,
-            log_file,
         )
         .await;
 
@@ -1708,7 +1691,9 @@ impl TrackedNodeInstance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action_log::test_support::scratch_log;
     use std::collections::BTreeMap;
+    use tokio::sync::mpsc;
 
     fn sensor_config() -> NodeConfig {
         serde_json5::from_str::<NodeConfig>(
@@ -1775,9 +1760,6 @@ mod tests {
             container_sensor_config(),
             "/tmp/sensor/peppy.json5",
         )));
-        let log_file = Arc::new(StdMutex::new(
-            tempfile::tempfile().expect("tempfile should succeed"),
-        ));
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel();
 
         let built = NodeEntity::build(
@@ -1785,8 +1767,7 @@ mod tests {
             BuildContext {
                 working_dir: working_dir.path(),
                 peppy_dirs: &peppy_dirs,
-                feedback_tx: &feedback_tx,
-                log_file,
+                announcer: Announcer::new(scratch_log(), feedback_tx),
                 env_vars: &[],
                 cancel_token: CancellationToken::new(),
                 rebuild: false,
@@ -1883,9 +1864,6 @@ mod tests {
                     runtime_config_path: instance_dir.join("peppy_runtime.json5"),
                     stderr_buffer: Arc::new(StdMutex::new(VecDeque::new())),
                     output_reader_handles: Vec::new(),
-                    log_file: Arc::new(StdMutex::new(
-                        tempfile::tempfile().expect("tempfile should succeed"),
-                    )),
                     generation,
                 },
             )

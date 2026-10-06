@@ -1,18 +1,16 @@
-use super::feedback::{publish_stderr, publish_stdout, spawn_feedback_forwarder};
+use super::feedback::{publish_error, publish_stdout, spawn_feedback_forwarder};
 use super::phases::run_phase;
 use super::{NodeKey, PlannedDeployment};
 use crate::services::node::{
-    NodeAddActionContext, NodeBuildActionContext, NodeRunActionContext, create_action_log_file,
-    dispatch_node_add, log_label_from_source, run_node_build_for_entity, run_node_run,
+    NodeAddActionContext, NodeBuildActionContext, NodeRunActionContext, create_add_log,
+    dispatch_node_add, run_node_build_for_entity, run_node_run,
 };
 use crate::services::stack::action::StackChangeContext;
-use chrono::Local;
 use core_node_api::encoding::{
     LaunchFeedbackStep, NodeAddGoal, NodeAddResult, NodeRunGoal, NodeRunResult,
 };
-use parking_lot::Mutex as StdMutex;
+use node_stack::{ActionLog, Announcer};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -21,13 +19,8 @@ pub(in crate::services::stack) async fn add_node_directly(
     ctx: &StackChangeContext,
     node_add_goal: NodeAddGoal,
 ) -> (std::result::Result<NodeAddResult, String>, Option<PathBuf>) {
-    // Create log file before source resolution so clone/download output is captured.
-    let log_label = log_label_from_source(&node_add_goal.source);
-    let log_dir = ctx.peppy_dirs.logs_dir_add();
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-    let log_filename = format!("{}_{}.log", log_label, timestamp);
-    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
-        Ok(r) => r,
+    let log = match create_add_log(&ctx.peppy_dirs, &ctx.node_stack, &node_add_goal) {
+        Ok(log) => log,
         Err(e) => return (Err(e), None),
     };
 
@@ -35,7 +28,7 @@ pub(in crate::services::stack) async fn add_node_directly(
     let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
         LaunchFeedbackStep::AddingNode,
-        &ctx.log_file,
+        &ctx.log,
         Some(Arc::clone(&activity_notify)),
     );
 
@@ -48,8 +41,7 @@ pub(in crate::services::stack) async fn add_node_directly(
         relationships: ctx.relationships.clone(),
     };
 
-    let log_file_for_timeout = log_file.clone();
-    let log_path_for_timeout = log_path.clone();
+    let log_for_timeout = log.clone();
 
     // Pinned here, at the one place the add's future is produced, so the
     // whole add pipeline lives on the heap and the phase wrappers below (and
@@ -59,18 +51,15 @@ pub(in crate::services::stack) async fn add_node_directly(
         Box::pin(dispatch_node_add(
             node_add_goal,
             action_context,
-            feedback_tx,
-            log_file,
-            log_path,
-            timestamp,
+            Announcer::new(log, feedback_tx),
         )),
         activity_notify,
         ctx.idle_timeouts.add,
         ctx.change_deadline,
         &ctx.cancellation,
-        &log_file_for_timeout,
+        &log_for_timeout,
         LaunchFeedbackStep::AddingNode,
-        |reason| NodeAddResult::failure(&log_path_for_timeout, reason),
+        |reason| NodeAddResult::failure(log_for_timeout.path(), reason),
         None,
     )
     .await;
@@ -78,40 +67,43 @@ pub(in crate::services::stack) async fn add_node_directly(
     // Wait for feedback forwarder to drain.
     let _ = forwarder_handle.await;
 
-    let final_log_path = Some(result.log_path.clone());
+    let log_path = Some(result.log_path.clone());
     if result.success {
-        (Ok(result), final_log_path)
+        (Ok(result), log_path)
     } else {
         let err = result
             .error_message
             .clone()
             .unwrap_or_else(|| "node_add failed".to_string());
-        (Err(err), final_log_path)
+        (Err(err), log_path)
     }
 }
 
 pub(in crate::services::stack) async fn build_node_directly(
     ctx: &StackChangeContext,
+    launch_id: &str,
     node_name: String,
     node_tag: String,
     env_vars: Vec<(String, String)>,
     rebuild: bool,
 ) -> (std::result::Result<(), String>, Option<PathBuf>) {
-    let log_dir = ctx.peppy_dirs.logs_dir_build();
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-    let log_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
-    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
-        Ok(pair) => pair,
-        Err(e) => return (Err(e.to_string()), None),
+    let log = match ActionLog::for_build(
+        &ctx.peppy_dirs,
+        ctx.node_stack.log_exporter().clone(),
+        &node_name,
+        &node_tag,
+        Some(launch_id),
+    ) {
+        Ok(log) => log,
+        Err(e) => return (Err(e), None),
     };
-
-    let final_log_path = log_path.clone();
+    let log_path = log.path();
 
     let activity_notify = Arc::new(Notify::new());
     let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
         LaunchFeedbackStep::BuildingNode,
-        &ctx.log_file,
+        &ctx.log,
         Some(Arc::clone(&activity_notify)),
     );
 
@@ -120,8 +112,7 @@ pub(in crate::services::stack) async fn build_node_directly(
         peppy_dirs: ctx.peppy_dirs.clone(),
     };
 
-    let log_file_for_timeout = log_file.clone();
-    let log_path_for_timeout = log_path.clone();
+    let log_for_timeout = log.clone();
 
     let result = run_phase(
         Box::pin(run_node_build_for_entity(
@@ -130,17 +121,15 @@ pub(in crate::services::stack) async fn build_node_directly(
             env_vars,
             rebuild,
             action_context,
-            feedback_tx,
-            log_file,
-            log_path,
+            Announcer::new(log, feedback_tx),
         )),
         activity_notify,
         ctx.idle_timeouts.build,
         ctx.change_deadline,
         &ctx.cancellation,
-        &log_file_for_timeout,
+        &log_for_timeout,
         LaunchFeedbackStep::BuildingNode,
-        |reason| core_node_api::encoding::NodeBuildResult::failure(&log_path_for_timeout, reason),
+        |reason| core_node_api::encoding::NodeBuildResult::failure(&log_path, reason),
         None,
     )
     .await;
@@ -148,13 +137,13 @@ pub(in crate::services::stack) async fn build_node_directly(
     let _ = forwarder_handle.await;
 
     if result.success {
-        (Ok(()), Some(final_log_path))
+        (Ok(()), Some(log_path))
     } else {
         (
             Err(result
                 .error_message
                 .unwrap_or_else(|| "node_build failed".to_string())),
-            Some(final_log_path),
+            Some(log_path),
         )
     }
 }
@@ -162,14 +151,14 @@ pub(in crate::services::stack) async fn build_node_directly(
 pub(in crate::services::stack) async fn start_node_directly(
     ctx: &StackChangeContext,
     node_run_goal: NodeRunGoal,
-    log_path: PathBuf,
-    log_file: Arc<StdMutex<File>>,
+    log: ActionLog,
 ) -> (std::result::Result<NodeRunResult, String>, Option<PathBuf>) {
+    let log_path = log.path();
     let activity_notify = Arc::new(Notify::new());
     let (feedback_tx, _forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
         LaunchFeedbackStep::RunningNode,
-        &ctx.log_file,
+        &ctx.log,
         Some(Arc::clone(&activity_notify)),
     );
 
@@ -188,7 +177,7 @@ pub(in crate::services::stack) async fn start_node_directly(
         slice_ownership: Arc::clone(&ctx.slice_ownership),
     };
 
-    let log_file_for_timeout = log_file.clone();
+    let log_for_timeout = log.clone();
 
     // Token triggered by `run_phase_with_timeouts` on idle/max timeout; observed
     // inside `run_node_run` to abort a half-spawned node instance (SIGKILL the
@@ -210,7 +199,7 @@ pub(in crate::services::stack) async fn start_node_directly(
             runtime_config,
             action_context,
             feedback_tx,
-            log_file,
+            log,
             ctx.core_instance_id.clone(),
             run_cancel_token.clone(),
         )),
@@ -218,7 +207,7 @@ pub(in crate::services::stack) async fn start_node_directly(
         ctx.idle_timeouts.run,
         ctx.change_deadline,
         &ctx.cancellation,
-        &log_file_for_timeout,
+        &log_for_timeout,
         LaunchFeedbackStep::RunningNode,
         NodeRunResult::failure,
         Some(run_cancel_token),
@@ -250,7 +239,7 @@ pub(in crate::services::stack) async fn fail_and_clear_stack(
     reason: String,
     participants: &[String],
 ) -> String {
-    publish_stderr(
+    publish_error(
         ctx,
         format!("{} failed: {reason}", ctx.action),
         LaunchFeedbackStep::LauncherStep,
@@ -339,7 +328,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
 
     if !dependency_errors.is_empty() {
         let msg = daemon_config::format_bulleted(&dependency_errors);
-        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        publish_error(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(msg);
     }
 
@@ -430,7 +419,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     if !validated.errors.is_empty() {
         let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
         let msg = daemon_config::format_bulleted(&errors);
-        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        publish_error(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(msg);
     }
     let resolved_slot_bindings = validated.slot_bindings;

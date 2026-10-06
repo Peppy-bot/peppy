@@ -37,7 +37,7 @@ use peppylib::ActionMessenger;
 use peppylib::core_node::transport::{poll, send_goal};
 use peppylib::messaging::ActionGoalHandle;
 
-use super::super::feedback::{publish_stderr, publish_stdout};
+use super::super::feedback::{publish_relayed, publish_warning};
 use super::super::watchers::{LifecycleWatchers, set_local_watchers};
 use crate::services::stack::action::StackChangeContext;
 
@@ -239,7 +239,7 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
                 Ok(Ok(message)) => {
                     last_activity = tokio::time::Instant::now();
                     if let Some(line) = G::decode_feedback_line(message.payload_bytes().as_ref()) {
-                        publish_stdout(ctx, format!("[{core_node}] {line}"), G::STEP).await;
+                        publish_relayed(ctx, format!("[{core_node}] {line}"), G::STEP).await;
                     }
                 }
                 // End of stream: the peer completed the goal.
@@ -307,7 +307,7 @@ async fn cancel_remote_goal<G: RemoteGoal>(
             }
             Err(error) => format!("`{core_node}` could not be told to cancel the {label}: {error}"),
         };
-    publish_stderr(ctx, line, LaunchFeedbackStep::LauncherStep).await;
+    publish_warning(ctx, line, LaunchFeedbackStep::LauncherStep).await;
 }
 
 /// A slice-begin some participants did not take: the machines that refused
@@ -397,7 +397,7 @@ pub(in crate::services::stack) async fn set_participant_watchers(
     else {
         return;
     };
-    publish_stderr(
+    publish_warning(
         ctx,
         format!(
             "could not point the sources on every machine at their watchers; the sources \
@@ -463,7 +463,7 @@ async fn ask_participant_slices(
         match outcome {
             Ok(response) if response.ok => {
                 for src in response.auto_created_mount_sources {
-                    publish_stderr(
+                    publish_warning(
                         ctx,
                         format!("[{core_node}] {}", containers::auto_created_warning(&src)),
                         LaunchFeedbackStep::LauncherStep,
@@ -503,7 +503,7 @@ pub(in crate::services::stack) async fn clear_participant_slices(
     if participants.is_empty() {
         return;
     }
-    publish_stderr(
+    publish_warning(
         ctx,
         format!(
             "Clearing the slice this {} started on: {}",
@@ -538,7 +538,7 @@ pub(in crate::services::stack) async fn clear_participant_slices(
     .await;
 
     for failure in failures.into_iter().flatten() {
-        publish_stderr(
+        publish_warning(
             ctx,
             format!(
                 "could not clear {failure}. That machine may still be running part of this \

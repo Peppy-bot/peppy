@@ -1,6 +1,7 @@
 //! The `pypi_mirror` setting: the packages base URL of a PyPI mirror.
 
-use serde::{Deserialize, Deserializer, Serialize};
+use super::setting::{host_of_plain_url, null_or_string};
+use serde::{Deserializer, Serialize};
 
 /// The path a packages base URL ends with. PyPI keeps its files under
 /// `https://files.pythonhosted.org/packages/`, and each mirror under a
@@ -58,27 +59,13 @@ impl PackagesBaseUrl {
     }
 
     fn from_url(url: url::Url) -> Result<Self, String> {
-        // A URL with credentials would write them into every uv.lock it
-        // rewrites, and so into the image of each build.
-        if !url.username().is_empty() || url.password().is_some() {
-            return Err("has credentials, which the rewritten uv.lock files would hold".into());
-        }
-        if url.query().is_some() || url.fragment().is_some() {
-            return Err("has a query or a fragment".into());
-        }
+        let host = host_of_plain_url(&url, "every rewritten uv.lock copies")?;
         if !url.path().ends_with(PACKAGES_PATH_SUFFIX) {
             return Err(format!(
                 "has a path that does not end with {PACKAGES_PATH_SUFFIX:?}, so it is not the \
                  packages base URL of a mirror (the index URL of a mirror ends with /simple/)"
             ));
         }
-        let Some(host) = url.host_str() else {
-            return Err("has no host".into());
-        };
-        let host = match url.port() {
-            Some(port) => format!("{host}:{port}"),
-            None => host.to_string(),
-        };
         Ok(Self {
             url: url.into(),
             host,
@@ -109,29 +96,20 @@ impl Serialize for PackagesBaseUrl {
 }
 
 /// Deserializes the `pypi_mirror` setting: `null` or the packages base URL
-/// of a PyPI mirror. Every error names the setting, as the parse error of
-/// the file gives no path.
+/// of a PyPI mirror.
 pub(super) fn deserialize_pypi_mirror<'de, D>(
     deserializer: D,
 ) -> Result<Option<PackagesBaseUrl>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    const EXPECTED: &str = "the packages base URL of a PyPI mirror, such as \
-                            \"https://pypi.tuna.tsinghua.edu.cn/packages/\", or null";
-    match Option::<serde_json::Value>::deserialize(deserializer)? {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(serde_json::Value::String(value)) => {
-            PackagesBaseUrl::parse(&value).map(Some).map_err(|reason| {
-                serde::de::Error::custom(format!(
-                    "invalid pypi_mirror {value:?}: it {reason}; expected {EXPECTED}"
-                ))
-            })
-        }
-        Some(other) => Err(serde::de::Error::custom(format!(
-            "invalid pypi_mirror {other}: expected {EXPECTED}"
-        ))),
-    }
+    null_or_string(
+        deserializer,
+        "pypi_mirror",
+        "the packages base URL of a PyPI mirror, such as \
+         \"https://pypi.tuna.tsinghua.edu.cn/packages/\", or null",
+        PackagesBaseUrl::parse,
+    )
 }
 
 #[cfg(test)]

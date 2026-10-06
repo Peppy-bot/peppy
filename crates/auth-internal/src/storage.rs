@@ -20,7 +20,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::document::{self, Versioned};
 use crate::error::Result;
-use crate::fs_perms::restrict_dir;
+use daemon_config::fs_perms::restrict_dir;
 
 /// On-disk schema version of `credentials.json5`. There is one reader, for
 /// this version. A file of any other version (including an unversioned one,

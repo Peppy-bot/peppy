@@ -133,6 +133,7 @@ fn test_core_node_config(
         peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
         namespace: config::namespace::Namespace::local(),
         shutdown_token: tokio_util::sync::CancellationToken::new(),
+        log_exporter: log_export::LogExporter::disabled(),
     }
 }
 

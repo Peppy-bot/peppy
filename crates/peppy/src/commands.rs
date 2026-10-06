@@ -297,6 +297,11 @@ where
     }
 }
 
+/// Shows a step a repository resolution reports.
+pub(crate) fn report_as_info(report: core_node::Report<'_>) {
+    tracing::info!("{}", report.text());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

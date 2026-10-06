@@ -10,7 +10,7 @@ pub(super) mod start;
 pub(super) mod watchers;
 
 use self::clock::{announce_clock_domains, plan_clocks};
-use self::feedback::{publish_stderr, publish_stdout};
+use self::feedback::{publish_error, publish_stdout};
 use self::nodes::add_nodes_to_stack;
 use self::orchestrate::{
     fail_and_clear_stack, teardown_and_reset_stack, validate_and_order_dependencies,
@@ -195,7 +195,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         placements,
     } = match parse_launcher_config(&ctx, &goal).await {
         Ok(result) => result,
-        Err(reason) => return LaunchResult::failure(&ctx.log_path, reason),
+        Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
     };
 
     let copies = composed.copies().to_vec();
@@ -212,7 +212,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // reservations below need the pins to carry.
     let mut planned = match resolve_deployments(&ctx, flat.deployments.clone(), &placements).await {
         Ok(result) => result,
-        Err(reason) => return LaunchResult::failure(&ctx.log_path, reason),
+        Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
     };
 
     // Step 2b: The clock every instance reads, with a fresh lifetime minted
@@ -222,8 +222,8 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     let (clocks, incarnations) = match plan_clocks(&flat, &placements, &ClockIncarnations::new()) {
         Ok(resolved) => resolved,
         Err(reason) => {
-            publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return LaunchResult::failure(&ctx.log_path, reason);
+            publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            return LaunchResult::failure(ctx.log.path(), reason);
         }
     };
 
@@ -238,7 +238,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
                 LaunchFeedbackStep::LauncherStep,
             )
             .await;
-            return LaunchResult::success(&ctx.log_path);
+            return LaunchResult::success(ctx.log.path());
         }
         ctx.slice_ownership
             .record_slice(LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node));
@@ -259,7 +259,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             LaunchFeedbackStep::LauncherStep,
         )
         .await;
-        return LaunchResult::success(&ctx.log_path);
+        return LaunchResult::success(ctx.log.path());
     }
 
     // Step 3: Validate dependencies and compute one global topological order,
@@ -280,14 +280,14 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         .await
         {
             Ok(result) => result,
-            Err(reason) => return LaunchResult::failure(&ctx.log_path, reason),
+            Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
         };
 
     // Step 3b: Pin the contract and pairing documents every manifest in the
     // launch names. Still before any reservation, so a document this
     // machine cannot pin refuses the launch while it has cost nothing.
     if let Err(reason) = resolve::mint_doc_pins(&ctx, &mut planned, &placements).await {
-        return LaunchResult::failure(&ctx.log_path, reason);
+        return LaunchResult::failure(ctx.log.path(), reason);
     }
 
     // Step 4: The clock the launch runs on, and the federated preflight:
@@ -298,8 +298,8 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     let change = match preflight_change(&ctx, &goal.launch_id, &planned, &placements, None).await {
         Ok(change) => change,
         Err(reason) => {
-            publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return LaunchResult::failure(&ctx.log_path, reason);
+            publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            return LaunchResult::failure(ctx.log.path(), reason);
         }
     };
     if !builds_only {
@@ -308,10 +308,10 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     let watchers = match lifecycle_watchers(&planned_observations, &placements) {
         Ok(watchers) => watchers,
         Err(reason) => {
-            publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
             return release_and_fail(
                 change.reserved,
-                LaunchResult::failure(&ctx.log_path, reason),
+                LaunchResult::failure(ctx.log.path(), reason),
             )
             .await;
         }
@@ -329,8 +329,8 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     );
     if !refusals.is_empty() {
         let msg = daemon_config::format_bulleted(&refusals);
-        publish_stderr(&ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return release_and_fail(change.reserved, LaunchResult::failure(&ctx.log_path, msg)).await;
+        publish_error(&ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return release_and_fail(change.reserved, LaunchResult::failure(ctx.log.path(), msg)).await;
     }
 
     // Step 5: The commit point. Every participant is reserved and the whole
@@ -358,7 +358,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     )
     .await
     {
-        publish_stderr(
+        publish_error(
             &ctx,
             refusal.reason.clone(),
             LaunchFeedbackStep::LauncherStep,
@@ -367,7 +367,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         federated::clear_participant_slices(&ctx, &refusal.holders_among(&participants)).await;
         return release_and_fail(
             change.reserved,
-            LaunchResult::failure(&ctx.log_path, refusal.reason),
+            LaunchResult::failure(ctx.log.path(), refusal.reason),
         )
         .await;
     }
@@ -478,7 +478,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
 
     if let Err(reason) = outcome {
         let reason = fail_and_clear_stack(&ctx, reason, &participants).await;
-        let launch_result = LaunchResult::failure(&ctx.log_path, reason)
+        let launch_result = LaunchResult::failure(ctx.log.path(), reason)
             .with_node_logs(add_log_paths, build_log_paths, run_log_paths)
             .with_instance_endpoints(instance_endpoints);
         return release_and_fail(change.reserved, launch_result).await;
@@ -497,7 +497,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // stays: the reservation guards the launch, the slice describes its result,
     // and rediscovery needs the latter long after the former is gone.
     change.reserved.release().await;
-    LaunchResult::success(&ctx.log_path)
+    LaunchResult::success(ctx.log.path())
         .with_node_logs(add_log_paths, build_log_paths, run_log_paths)
         .with_instance_endpoints(instance_endpoints)
 }

@@ -1,7 +1,6 @@
 use crate::error::{Error, Result};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::source::ExposureRef;
-use tracing::info;
 
 /// `peppy mcp catalog <name:tag>`: prints the derived catalog as JSON.
 pub(super) fn mcp_catalog(exposure: &str) -> Result<()> {
@@ -18,7 +17,7 @@ pub fn mcp_catalog_rendered(peppy_dirs: &PeppyDirs, exposure: &str) -> Result<St
         peppy_dirs,
         &reference.name,
         &reference.tag,
-        &|message: &str| info!("{message}"),
+        &crate::commands::report_as_info,
     )
     .map_err(Error::ExecutionFailed)?;
     Ok(bundle.to_json_string())

@@ -1,11 +1,9 @@
 use super::super::action_loop::{
     GoalHandler, accept_goal, reject_goal, run_action_loop, under_goal_cancel,
 };
+use super::FeedbackLine;
 use super::gate::{COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
-use super::write_error_to_log;
-use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use crate::Result;
-use chrono::Local;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
@@ -13,15 +11,12 @@ use core_node_api::encoding::{
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
-use node_stack::{BuildContext, NodeStack};
-use parking_lot::Mutex as StdMutex;
+use node_stack::{ActionLog, Announcer, BuildContext, NodeStack};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
-use std::fs::File;
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -69,9 +64,7 @@ struct NodeBuildRun {
     working_dir_guard: Arc<node_stack::WorkingDirGuard>,
     captured_generation: u64,
     action_context: NodeBuildActionContext,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
-    log_path: PathBuf,
+    announcer: Announcer,
     /// Signaled when a `--force` build supersedes this one. Threaded into the
     /// build I/O so the subprocess is SIGKILL'd + reaped, and consulted after
     /// the build to roll the entity back to `Added` (re-attaching the working
@@ -91,15 +84,15 @@ pub(crate) async fn run_node_build_for_entity(
     env_vars: Vec<(String, String)>,
     rebuild: bool,
     action_context: NodeBuildActionContext,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
-    log_path: PathBuf,
+    announcer: Announcer,
 ) -> NodeBuildResult {
+    let log = announcer.log().clone();
+    let log_path = log.path();
     let entity_handle = match action_context.node_stack.find(&node_name, &node_tag) {
         Some(handle) => handle,
         None => {
             let msg = format!("node `{}:{}` is not in the node stack", node_name, node_tag);
-            write_error_to_log(&log_file, &msg);
+            log.error(&msg);
             return NodeBuildResult::failure(&log_path, msg);
         }
     };
@@ -111,7 +104,7 @@ pub(crate) async fn run_node_build_for_entity(
                 "node `{}:{}` is in stage `{}`; cannot build",
                 node_name, node_tag, stage
             );
-            write_error_to_log(&log_file, &msg);
+            log.error(&msg);
             return NodeBuildResult::failure(&log_path, msg);
         }
         match guard.pending_working_dir() {
@@ -121,7 +114,7 @@ pub(crate) async fn run_node_build_for_entity(
                     "node `{}:{}` has no staged working directory",
                     node_name, node_tag
                 );
-                write_error_to_log(&log_file, &msg);
+                log.error(&msg);
                 return NodeBuildResult::failure(&log_path, msg);
             }
         }
@@ -135,9 +128,7 @@ pub(crate) async fn run_node_build_for_entity(
         working_dir_guard,
         captured_generation,
         action_context,
-        feedback_tx,
-        log_file,
-        log_path,
+        announcer,
         // This helper drives a fresh build that nothing supersedes.
         cancel_token: CancellationToken::new(),
         rebuild,
@@ -292,11 +283,14 @@ impl NodeBuildGoalHandler {
             Ok((Some(g), generation)) => (g, generation),
         };
 
-        let log_dir = self.context.peppy_dirs.logs_dir_build();
-        let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-        let log_filename = format!("{}_{}_{}.log", goal.node_name, goal.node_tag, timestamp);
-        let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
-            Ok(result) => result,
+        let log = match ActionLog::for_build(
+            &self.context.peppy_dirs,
+            self.context.node_stack.log_exporter().clone(),
+            &goal.node_name,
+            &goal.node_tag,
+            goal.launch_id.as_deref(),
+        ) {
+            Ok(log) => log,
             Err(error_msg) => {
                 debug!("{}", error_msg);
                 self.gate.clear_running();
@@ -304,6 +298,7 @@ impl NodeBuildGoalHandler {
                 return;
             }
         };
+        let log_path = log.path();
         debug!("Build log file: {}", log_path.display());
 
         // `accept` registers the per-goal context before replying accepted.
@@ -354,9 +349,7 @@ impl NodeBuildGoalHandler {
                 working_dir_guard,
                 captured_generation,
                 action_context,
-                feedback_tx,
-                log_file,
-                log_path: log_path_clone.clone(),
+                announcer: Announcer::new(log, feedback_tx),
                 cancel_token: cancel_token_for_task.clone(),
                 rebuild: goal.rebuild,
             });
@@ -390,15 +383,14 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         working_dir_guard,
         captured_generation,
         action_context,
-        feedback_tx,
-        log_file,
-        log_path,
+        announcer,
         cancel_token,
         rebuild,
     } = run;
 
-    let log_file_for_panic = log_file.clone();
-    let log_path_for_panic = log_path.clone();
+    let log = announcer.log().clone();
+    let log_path = log.path();
+    let log_for_panic = log.clone();
 
     // Clones for panic-handler entity cleanup. After
     // `take_pending_working_dir_if_generation` succeeds the entity is in
@@ -417,7 +409,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
             Ok(v) => v,
             Err(e) => {
                 let msg = e.to_string();
-                write_error_to_log(&log_file, &msg);
+                log.error(&msg);
                 return NodeBuildResult::failure(&log_path, msg);
             }
         };
@@ -425,10 +417,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         let language = entity_handle.read().config().execution.language;
         let sccache_injected = super::inject_rust_build_env(&mut env_vars, language);
         if sccache_injected {
-            let _ = feedback_tx.send(FeedbackLine {
-                stream: FeedbackStream::Stdout,
-                line: "Using sccache for Rust compilation".to_string(),
-            });
+            announcer.line("Using sccache for Rust compilation");
         }
         super::inject_node_runtime_env(&mut env_vars, &node_name, &node_tag);
 
@@ -449,7 +438,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                          (generation {} -> {}); aborting build",
                         node_name, node_tag, captured_generation, current_gen
                     );
-                    write_error_to_log(&log_file, &msg);
+                    log.error(&msg);
                     return NodeBuildResult::failure(&log_path, msg);
                 }
             }
@@ -463,8 +452,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
             BuildContext {
                 working_dir: &working_dir_path,
                 peppy_dirs: &action_context.peppy_dirs,
-                feedback_tx: &feedback_tx,
-                log_file: Arc::clone(&log_file),
+                announcer: announcer.clone(),
                 env_vars: &env_vars,
                 cancel_token: cancel_token.clone(),
                 rebuild,
@@ -509,7 +497,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     expected_generation,
                 );
                 let msg = format!("Failed to build node: {}", e);
-                write_error_to_log(&log_file, &msg);
+                log.error(&msg);
                 NodeBuildResult::failure(&log_path, msg)
             }
         }
@@ -524,7 +512,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 super::panic_message(&*panic_payload)
             );
             tracing::error!("{}", msg);
-            write_error_to_log(&log_file_for_panic, &msg);
+            log_for_panic.error(&msg);
             // If the working dir was already detached the entity is in
             // `Building` state; roll it out so it doesn't stay stuck.
             if working_dir_detached_for_panic.load(std::sync::atomic::Ordering::Acquire) {
@@ -535,7 +523,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     generation_for_panic,
                 );
             }
-            NodeBuildResult::failure(log_path_for_panic, msg)
+            NodeBuildResult::failure(log_for_panic.path(), msg)
         }
     }
 }

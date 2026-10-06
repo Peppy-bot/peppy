@@ -229,12 +229,12 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 
     let node_name = add_result.node_name.as_deref().ok_or_else(|| {
         Error::ExecutionFailed(
-            "Failed to determine node name after adding. Try running `peppy node list`.".into(),
+            "Failed to determine node name after adding. Try running `peppy stack list`.".into(),
         )
     })?;
     let node_tag = add_result.node_tag.as_deref().ok_or_else(|| {
         Error::ExecutionFailed(
-            "Failed to determine node tag after adding. Try running `peppy node list`.".into(),
+            "Failed to determine node tag after adding. Try running `peppy stack list`.".into(),
         )
     })?;
 

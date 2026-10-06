@@ -1,8 +1,6 @@
 use crate::services::node::gate::COOPERATIVE_TEARDOWN_BUDGET;
-use crate::services::node::write_error_to_log;
 use core_node_api::encoding::LaunchFeedbackStep;
-use parking_lot::Mutex as StdMutex;
-use std::fs::File;
+use node_stack::ActionLog;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -182,7 +180,7 @@ where
 }
 
 /// Runs a phase future under idle + (optional) deadline bounds and, on timeout, writes the
-/// reason to `log_file` and builds a caller-specified failure result. `build_failure`
+/// reason to `log` and builds a caller-specified failure result. `build_failure`
 /// receives the same string that was logged so phase-specific failure types (differing in
 /// whether they carry a `log_path`) can embed it verbatim.
 ///
@@ -195,7 +193,7 @@ pub(super) async fn run_phase<F, T>(
     idle_timeout: Duration,
     change_deadline: Option<Instant>,
     reset: &CancellationToken,
-    log_file: &Arc<StdMutex<File>>,
+    log: &ActionLog,
     step: LaunchFeedbackStep,
     build_failure: impl FnOnce(String) -> T,
     cancel_and_drain: Option<CancellationToken>,
@@ -220,7 +218,7 @@ where
                 let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, phase.as_mut()).await;
             }
             let reason = "stack operation cancelled by stack reset".to_owned();
-            write_error_to_log(log_file, &reason);
+            log.error(&reason);
             return build_failure(reason);
         }
         outcome = phase.as_mut() => outcome,
@@ -236,12 +234,12 @@ where
             if let Some(flag) = idle_timeout_flag(step) {
                 reason = format!("{reason}; {}", slow_connection_hint(flag));
             }
-            write_error_to_log(log_file, &reason);
+            log.error(&reason);
             build_failure(reason)
         }
         PhaseOutcome::MaxTimeout => {
             let reason = "timeout: max timeout exceeded".to_string();
-            write_error_to_log(log_file, &reason);
+            log.error(&reason);
             build_failure(reason)
         }
     }
@@ -257,6 +255,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log_export::{LogExporter, LogKind};
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::mpsc;
 
@@ -295,10 +294,14 @@ mod tests {
         unreachable!("a pending phase never completes")
     }
 
+    /// A log in `dir` that exports nothing.
+    fn log_in(dir: &std::path::Path, filename: &str, kind: LogKind) -> ActionLog {
+        ActionLog::create(dir, filename, kind, LogExporter::disabled()).expect("log file")
+    }
+
     /// Reads the log file a wrapper wrote its timeout reason to.
-    fn log_contents(log_file: &Arc<StdMutex<File>>, path: &std::path::Path) -> String {
-        log_file.lock().sync_all().expect("flush log file");
-        std::fs::read_to_string(path).expect("read log file")
+    fn log_contents(log: &ActionLog) -> String {
+        std::fs::read_to_string(log.path()).expect("read log file")
     }
 
     #[tokio::test(start_paused = true)]
@@ -543,8 +546,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn run_phase_logs_an_idle_timeout_and_builds_the_failure() {
         let log_dir = tempfile::tempdir().expect("log dir");
-        let log_path = log_dir.path().join("add.log");
-        let log_file = Arc::new(StdMutex::new(File::create(&log_path).expect("log file")));
+        let log = log_in(log_dir.path(), "add.log", LogKind::Add);
         let notify = Arc::new(Notify::new());
 
         let failure = run_phase(
@@ -553,7 +555,7 @@ mod tests {
             Duration::from_secs(5),
             None,
             &CancellationToken::new(),
-            &log_file,
+            &log,
             LaunchFeedbackStep::AddingNode,
             |reason| format!("failed: {reason}"),
             None,
@@ -568,7 +570,7 @@ mod tests {
             failure.contains("--node-add-idle-timeout-secs"),
             "the failure points at the flag that raises the budget: {failure}"
         );
-        let logged = log_contents(&log_file, &log_path);
+        let logged = log_contents(&log);
         assert!(
             logged.contains("[error] timeout: add idle timeout exceeded"),
             "the reason is written to the action log: {logged}"
@@ -578,8 +580,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn run_phase_logs_a_max_timeout_and_builds_the_failure() {
         let log_dir = tempfile::tempdir().expect("log dir");
-        let log_path = log_dir.path().join("build.log");
-        let log_file = Arc::new(StdMutex::new(File::create(&log_path).expect("log file")));
+        let log = log_in(log_dir.path(), "build.log", LogKind::Build);
         let notify = Arc::new(Notify::new());
 
         let failure = run_phase(
@@ -588,7 +589,7 @@ mod tests {
             Duration::from_secs(600),
             Some(Instant::now() + Duration::from_millis(50)),
             &CancellationToken::new(),
-            &log_file,
+            &log,
             LaunchFeedbackStep::BuildingNode,
             |reason| format!("failed: {reason}"),
             None,
@@ -596,7 +597,7 @@ mod tests {
         .await;
 
         assert_eq!(failure, "failed: timeout: max timeout exceeded");
-        let logged = log_contents(&log_file, &log_path);
+        let logged = log_contents(&log);
         assert!(
             logged.contains("[error] timeout: max timeout exceeded"),
             "the reason is written to the action log: {logged}"

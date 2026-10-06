@@ -14,6 +14,7 @@ containers = { workspace = true }
 peppylib = { workspace = true }
 core-node = { workspace = true }
 core-node-api = { workspace = true }
+log-export = { workspace = true, optional = true }
 node-stack = { workspace = true }
 latency-report = { workspace = true }
 # `peppy mcp serve`, the built-in MCP server.
@@ -71,6 +72,7 @@ default = []
 # feature so a release build doesn't carry them.
 test-support = [
     "dep:tempfile",
+    "dep:log-export",
     "config/fingerprint_test_helpers",
     "core-node/test-support",
     "auth/test-support",
@@ -94,6 +96,10 @@ git2 = "0.21"
 # Self-reference so `cargo test` builds this crate with the test-only helpers
 # enabled, without making `test-support` a default feature of the shipped CLI.
 peppy = { path = ".", features = ["test-support"] }
+# The OTLP receiver the log export e2e tests point a daemon at.
+log-export = { workspace = true, features = ["test-support"] }
+# The readers of the log file format, for the same tests.
+node-stack = { workspace = true, features = ["test-support"] }
 # The full-stack MCP e2e generates the exposure node's peppygen out-of-band
 # (the same entry points the daemon's sync uses) and drives the launched
 # stack with the real MCP client. `config-test-support` roots the shared
@@ -116,6 +122,10 @@ base64 = "0.23"
 [[test]]
 name = "integration"
 path = "tests/main.rs"
+
+[[test]]
+name = "log_export_e2e"
+path = "tests/log_export_e2e.rs"
 
 [[test]]
 name = "multi_daemon_e2e"

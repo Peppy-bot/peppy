@@ -70,6 +70,7 @@ mcp-test-support = { path = "crates/mcp-test-support" }
 message-codec = { path = "crates/message-codec-internal" }
 mcp-server = { path = "crates/mcp-server-internal" }
 latency-report = { path = "crates/latency-report" }
+log-export = { path = "crates/log-export-internal" }
 node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
 

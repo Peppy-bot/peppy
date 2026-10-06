@@ -21,15 +21,13 @@
 //!   `prepare_and_spawn` call; they remain alive as long as the spawned
 //!   node is running so its stdout/stderr keeps streaming.
 
-use chrono::Local;
+use crate::action_log::ActionLog;
 use containers::BuildActivity;
+use log_export::Iostream;
 use parking_lot::Mutex as StdMutex;
 use std::collections::VecDeque;
-use std::fs::File;
-use std::io::Write;
 #[cfg(test)]
 use std::io::{BufRead, BufReader, Read};
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
@@ -46,94 +44,64 @@ pub const STDERR_TAIL_LINES: usize = 20;
 
 pub use core_node_api::encoding::FeedbackStream;
 
-/// Writes a single feedback line to the log file in the canonical
-/// `[timestamp] [stream] line` format. Errors are swallowed; log writes are
-/// best-effort.
-pub fn write_feedback_log_line(log_file: &Arc<StdMutex<File>>, stream: FeedbackStream, line: &str) {
-    let mut file = log_file.lock();
-    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-    let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream.as_str(), line);
+/// Which log file holds a feedback line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedbackOwner {
+    /// The log of the action the line belongs to, which exports it.
+    ActionLog,
+    /// No log: a step reported to the feedback channel alone.
+    NoLog,
+    /// No log: a progress sample, which repeats while a transfer or a build
+    /// goes on.
+    Progress,
 }
 
-/// Announces a daemon-side build event: the line lands in the build log and
-/// on the feedback channel as stdout, the same two places a build
-/// subprocess's own output goes. A closed channel is ignored, as everywhere
-/// else on the feedback path.
-pub fn announce(
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
-    log_file: &Arc<StdMutex<File>>,
-    line: String,
-) {
-    announce_on(FeedbackStream::Stdout, feedback_tx, log_file, line);
-}
-
-/// Announces a daemon-side warning: the line lands in the log and on the
-/// feedback channel as a warning, which the launch output keeps in view
-/// after the lines of the step scroll past.
-pub fn announce_warning(
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
-    log_file: &Arc<StdMutex<File>>,
-    line: String,
-) {
-    announce_on(FeedbackStream::Warning, feedback_tx, log_file, line);
-}
-
-fn announce_on(
-    stream: FeedbackStream,
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
-    log_file: &Arc<StdMutex<File>>,
-    line: String,
-) {
-    write_feedback_log_line(log_file, stream, &line);
-    let _ = feedback_tx.send(FeedbackLine { stream, line });
-}
-
-/// Writes the canonical "executing a command" header to a log file in the
-/// `[timestamp] Executing {label}: {cmd} (working_dir: {dir}[, k: v...])`
-/// format used by every spawn-and-stream step. `extras` is appended as
-/// comma-separated `key: value` pairs inside the trailing parenthesis. Errors
-/// are swallowed; log writes are best-effort.
-pub fn log_cmd_header(
-    log_file: &Arc<StdMutex<File>>,
-    label: &str,
-    cmd: &str,
-    working_dir: &Path,
-    extras: &[(&str, &str)],
-) {
-    let mut file = log_file.lock();
-    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-    let mut line = format!(
-        "[{}] Executing {}: {} (working_dir: {}",
-        timestamp,
-        label,
-        cmd,
-        working_dir.display()
-    );
-    for (k, v) in extras {
-        line.push_str(&format!(", {}: {}", k, v));
-    }
-    line.push(')');
-    let _ = writeln!(file, "{}", line);
-    let _ = file.flush();
-}
-
+/// One line of an action's feedback.
+#[derive(Debug)]
 pub struct FeedbackLine {
     pub stream: FeedbackStream,
     pub line: String,
+    owner: FeedbackOwner,
 }
 
-/// Wraps `tx` as a `&str` line sink that forwards each line as a stdout
-/// [`FeedbackLine`], the adapter shape blocking checkout/materialize progress
-/// callbacks expect. Send errors are ignored: a closed channel means the
-/// consumer is gone and the lines have nowhere to go.
-pub fn stdout_line_sender(
-    tx: mpsc::UnboundedSender<FeedbackLine>,
-) -> impl Fn(&str) + Send + Sync + 'static {
-    move |line: &str| {
-        let _ = tx.send(FeedbackLine {
+impl FeedbackLine {
+    /// A line that the log of its action holds.
+    pub(crate) fn logged(stream: FeedbackStream, line: String) -> Self {
+        Self {
+            stream,
+            line,
+            owner: FeedbackOwner::ActionLog,
+        }
+    }
+
+    /// A step that no log holds, on stdout.
+    pub fn unlogged(line: impl Into<String>) -> Self {
+        Self {
             stream: FeedbackStream::Stdout,
-            line: line.to_owned(),
-        });
+            line: line.into(),
+            owner: FeedbackOwner::NoLog,
+        }
+    }
+
+    /// A progress sample, on stdout.
+    pub fn progress(line: impl Into<String>) -> Self {
+        Self {
+            stream: FeedbackStream::Stdout,
+            line: line.into(),
+            owner: FeedbackOwner::Progress,
+        }
+    }
+
+    pub fn owner(&self) -> FeedbackOwner {
+        self.owner
+    }
+}
+
+/// The feedback stream that carries the lines of a captured output stream.
+fn feedback_stream(stream: Iostream) -> FeedbackStream {
+    match stream {
+        Iostream::Stdout => FeedbackStream::Stdout,
+        Iostream::Stderr => FeedbackStream::Stderr,
     }
 }
 
@@ -249,7 +217,7 @@ pub async fn stream_child_output(
     mut child: Box<dyn ChildWrapper>,
     activity_sampler: impl Fn() -> BuildActivity + Send + Sync + 'static,
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
+    log: ActionLog,
     collect_stderr_tail: bool,
     cancel_token: &CancellationToken,
 ) -> std::result::Result<(std::process::ExitStatus, Vec<String>), String> {
@@ -283,9 +251,9 @@ pub async fn stream_child_output(
             feedback_tx.clone(),
             Arc::clone(&publish_enabled),
             Arc::clone(&hooks),
-            FeedbackStream::Stdout,
+            Iostream::Stdout,
             None,
-            Arc::clone(&log_file),
+            log.clone(),
         ));
     }
 
@@ -295,9 +263,9 @@ pub async fn stream_child_output(
             feedback_tx.clone(),
             Arc::clone(&publish_enabled),
             Arc::clone(&hooks),
-            FeedbackStream::Stderr,
+            Iostream::Stderr,
             stderr_tail.clone(),
-            Arc::clone(&log_file),
+            log,
         ));
     }
 
@@ -373,19 +341,19 @@ pub async fn stream_child_output(
 fn spawn_output_reader<R: Read + Send + 'static>(
     reader: R,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    stream: FeedbackStream,
-    log_file: Arc<StdMutex<File>>,
+    stream: Iostream,
+    log: ActionLog,
     stderr_tail: Option<Arc<StdMutex<VecDeque<String>>>>,
 ) -> JoinHandle<std::io::Result<()>> {
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         let reader = BufReader::new(reader);
         for line in reader.lines() {
             let line = line?;
-            write_feedback_log_line(&log_file, stream, &line);
+            log.output(stream, &line);
             if let Some(ref buffer) = stderr_tail {
                 push_stderr_line(buffer, &line);
             }
-            let _ = feedback_tx.send(FeedbackLine { stream, line });
+            let _ = feedback_tx.send(FeedbackLine::logged(feedback_stream(stream), line));
         }
         Ok(())
     })
@@ -519,8 +487,9 @@ impl RepaintCoalescer {
 /// optional `stderr_buffer`, and forwards each over `feedback_tx` (gated by
 /// `publish_enabled`). Real lines always forward; bare-`\r` repaint
 /// fragments are coalesced (see [`RepaintCoalescer`]) and suppressed ones skip
-/// the log file and stderr tail too. The final fragment before EOF always
-/// forwards so a progress stream's last repaint lands.
+/// the log file and stderr tail too. A forwarded repaint is written to the
+/// log file and stays there; a real line is also exported. The final fragment
+/// before EOF always forwards so a progress stream's last repaint lands.
 ///
 /// The reader task is spawned via `tokio::spawn` and remains alive as long as
 /// the underlying reader yields data. On the start path, this means the reader
@@ -532,9 +501,9 @@ pub fn spawn_output_reader_async<R>(
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     publish_enabled: Arc<AtomicBool>,
     hooks: Arc<dyn OutputReaderHooks>,
-    stream: FeedbackStream,
+    stream: Iostream,
     stderr_buffer: Option<Arc<StdMutex<VecDeque<String>>>>,
-    log_file: Arc<StdMutex<File>>,
+    log: ActionLog,
 ) -> JoinHandle<std::io::Result<()>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -555,17 +524,20 @@ where
         // failure, and a progress bar that repaints between a tool's error
         // lines (cargo's, while its other jobs finish) would push them out.
         let forward_line = |line: String, terminator: LineTerminator| {
-            write_feedback_log_line(&log_file, stream, &line);
+            match terminator {
+                LineTerminator::CarriageReturn => log.repaint(stream, &line),
+                LineTerminator::Newline | LineTerminator::EndOfStream => log.output(stream, &line),
+            }
             hooks.on_line(&line);
 
             // Signal when the first stdout line arrives so container drains can
             // wait for the runscript to actually produce output.
-            if matches!(stream, FeedbackStream::Stdout) {
+            if matches!(stream, Iostream::Stdout) {
                 hooks.on_first_stdout_line();
             }
 
             // Always capture stderr for error diagnostics, regardless of publish state
-            if matches!(stream, FeedbackStream::Stderr)
+            if matches!(stream, Iostream::Stderr)
                 && terminator != LineTerminator::CarriageReturn
                 && let Some(buffer) = &stderr_buffer
             {
@@ -576,7 +548,8 @@ where
                 return;
             }
 
-            if feedback_tx.send(FeedbackLine { stream, line }).is_ok() {
+            let line = FeedbackLine::logged(feedback_stream(stream), line);
+            if feedback_tx.send(line).is_ok() {
                 hooks.on_line_read();
             }
         };
@@ -637,8 +610,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action_log::test_support::scratch_log;
     use std::io;
-    use tempfile::NamedTempFile;
 
     /// Reader that yields `prefix` then errors. Used to verify that
     /// `spawn_output_reader` propagates I/O errors instead of swallowing them.
@@ -676,17 +649,12 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_output_reader_propagates_io_error() {
-        let log_file = Arc::new(StdMutex::new(
-            NamedTempFile::new()
-                .expect("temp log")
-                .reopen()
-                .expect("reopen"),
-        ));
+        let log = scratch_log();
         let (tx, _rx) = mpsc::unbounded_channel();
         // No newline at the end of the prefix → BufRead::lines yields the
         // partial line *and then* surfaces the next read error.
         let reader = ErroringReader::new(b"first line\npartial");
-        let handle = spawn_output_reader(reader, tx, FeedbackStream::Stdout, log_file, None);
+        let handle = spawn_output_reader(reader, tx, Iostream::Stdout, log, None);
         let result = handle.await.expect("join should succeed");
         assert!(
             result.is_err(),
@@ -826,12 +794,7 @@ mod tests {
     /// publish gate held at `publish`, and returns the lines that reached the
     /// feedback channel and the lines the `on_line` hook received.
     async fn read_lines(input: Vec<u8>, publish: bool) -> (Vec<String>, Vec<String>) {
-        let log_file = Arc::new(StdMutex::new(
-            NamedTempFile::new()
-                .expect("temp log")
-                .reopen()
-                .expect("reopen"),
-        ));
+        let log = scratch_log();
         let hooks = Arc::new(LineRecordingHooks::default());
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
@@ -839,9 +802,9 @@ mod tests {
             tx,
             Arc::new(AtomicBool::new(publish)),
             Arc::clone(&hooks) as Arc<dyn OutputReaderHooks>,
-            FeedbackStream::Stdout,
+            Iostream::Stdout,
             None,
-            log_file,
+            log,
         );
         handle
             .await
@@ -900,12 +863,7 @@ mod tests {
     /// [`spawn_output_reader_async`], and returns the lines that reached the
     /// feedback channel and the stderr tail it collected.
     async fn read_stderr(input: &[u8]) -> (Vec<String>, Vec<String>) {
-        let log_file = Arc::new(StdMutex::new(
-            NamedTempFile::new()
-                .expect("temp log")
-                .reopen()
-                .expect("reopen"),
-        ));
+        let log = scratch_log();
         let tail = Arc::new(StdMutex::new(VecDeque::new()));
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
@@ -913,9 +871,9 @@ mod tests {
             tx,
             Arc::new(AtomicBool::new(true)),
             Arc::new(LineRecordingHooks::default()) as Arc<dyn OutputReaderHooks>,
-            FeedbackStream::Stderr,
+            Iostream::Stderr,
             Some(Arc::clone(&tail)),
-            log_file,
+            log,
         );
         handle
             .await

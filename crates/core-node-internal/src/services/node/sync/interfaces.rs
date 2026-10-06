@@ -2,6 +2,7 @@ use super::deps::{
     DependencyKind, DependencyLookupEntry, DependencyOfferings, build_dependency_lookup,
     build_dependency_offerings,
 };
+use crate::services::node::Report;
 use crate::services::repo::cache as repo_cache;
 use config::node::{InterfaceKind, LinkedMember, RefinementProblem, refined_ref};
 use config::{ContractCoverageMismatch, RefinementMismatch};
@@ -33,7 +34,7 @@ pub fn collect_all_deployment_interfaces(
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
     peppy_dirs: &PeppyDirs,
     doc_pins: Option<&crate::services::node::pins::DocPins>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = collect_consumed_interfaces(
         manifest,
@@ -98,7 +99,7 @@ pub fn collect_consumed_interfaces(
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
     peppy_dirs: &PeppyDirs,
     doc_pins: Option<&crate::services::node::pins::DocPins>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
     let mut deps = ResolvedDependencies {
@@ -406,7 +407,7 @@ pub(crate) fn resolve_contract_doc(
     tag: &str,
     sha256_pin: Option<&str>,
     doc_pins: Option<&crate::services::node::pins::DocPins>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<daemon_config::contract::PeppyContract, String> {
     let cache = repo_cache::load_contract_cache(peppy_dirs)
         .map_err(|e| format!("failed to load contract cache: {e}"))?;
@@ -508,7 +509,7 @@ pub fn resolve_implements(
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
     doc_pins: Option<&crate::services::node::pins::DocPins>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<Vec<DeploymentInterface>, ImplementsError> {
     if manifest.implements.is_empty() {
         return Ok(Vec::new());

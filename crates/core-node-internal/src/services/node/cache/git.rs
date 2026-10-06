@@ -21,6 +21,8 @@ use super::super::checkout_repo_ref;
 use super::super::git_utils::{clone_repo_shallow, fetch_with_progress, head_commit};
 use super::key;
 use super::keyed_lock::KeyedLocks;
+use crate::services::node::Report;
+use crate::source_url::SourceUrl;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::repository::GitCommit;
 use parking_lot::Mutex;
@@ -74,7 +76,10 @@ const PRUNE_GRACE: Duration = Duration::from_secs(60 * 60);
 /// Path where the checkout for `(repo_url, commit)` lives (whether or not
 /// it has been populated yet). Exposed for tests and diagnostics.
 pub fn checkout_dir_for(peppy_dirs: &PeppyDirs, repo_url: &str, commit: &GitCommit) -> PathBuf {
-    let slug = key::slug(repo_url);
+    // The directory is named in the lines the daemon writes, so its readable
+    // part comes from the URL as shown. The hash tells apart two URLs that
+    // differ in their credentials alone.
+    let slug = key::slug(&SourceUrl::new(repo_url).to_string());
     let hash = key::short_hash(repo_url, commit.as_str());
     peppy_dirs
         .git_checkouts_dir()
@@ -193,8 +198,9 @@ pub fn ensure_checkout_at_commit(
     repo_url: &str,
     read_ref: Option<&str>,
     commit: &GitCommit,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<PathBuf, String> {
+    let shown_url = SourceUrl::new(repo_url);
     let dir = checkout_dir_for(peppy_dirs, repo_url, commit);
     let lock_key = dir.to_string_lossy().into_owned();
     let lock = LOCKS.lock_for(&lock_key);
@@ -202,10 +208,10 @@ pub fn ensure_checkout_at_commit(
 
     if is_checked_out_at(&dir, commit) {
         if mark_reuse_announced(&dir) {
-            on_feedback(&format!(
+            on_feedback(Report::Step(&format!(
                 "Reusing cached checkout of {commit} at {}",
                 dir.display()
-            ));
+            )));
         }
         touch_last_used(&dir);
         return Ok(dir);
@@ -213,11 +219,13 @@ pub fn ensure_checkout_at_commit(
 
     clear_dir(&dir)?;
 
-    on_feedback(&format!(
-        "Cloning {repo_url} at {commit} into cache at {}",
+    on_feedback(Report::Step(&format!(
+        "Cloning {shown_url} at {commit} into cache at {}",
         dir.display()
-    ));
-    let repo = clone_repo_shallow(repo_url, &dir, &mut |line| on_feedback(line))?;
+    )));
+    let repo = clone_repo_shallow(repo_url, &dir, &mut |line| {
+        on_feedback(Report::Progress(line))
+    })?;
 
     // Positioned on the pinned commit rather than on `read_ref`: an entry
     // pins bytes, and the clone above is the same one `repo refresh` makes,
@@ -226,7 +234,7 @@ pub fn ensure_checkout_at_commit(
     if checkout_repo_ref(&repo, commit.as_str()).is_err() {
         fetch_commit(&repo, repo_url, read_ref, commit, on_feedback)?;
         checkout_repo_ref(&repo, commit.as_str()).map_err(|e| {
-            format!("Failed to check out commit {commit} of {repo_url} after fetching it: {e}")
+            format!("Failed to check out commit {commit} of {shown_url} after fetching it: {e}")
         })?;
     }
     touch_last_used(&dir);
@@ -250,6 +258,7 @@ pub fn ensure_checkout_at_commit(
 /// Best-effort, and infallible from the caller's side: whatever goes wrong,
 /// the cache is left as it was and the checkout is cloned again on demand.
 pub fn adopt_checkout(peppy_dirs: &PeppyDirs, repo_url: &str, commit: &GitCommit, dir: PathBuf) {
+    let shown_url = SourceUrl::new(repo_url);
     let dst = checkout_dir_for(peppy_dirs, repo_url, commit);
     let lock = LOCKS.lock_for(&dst.to_string_lossy());
     let _guard = lock.lock();
@@ -262,20 +271,20 @@ pub fn adopt_checkout(peppy_dirs: &PeppyDirs, repo_url: &str, commit: &GitCommit
         return;
     }
     if let Err(e) = clear_dir(&dst) {
-        debug!("Keeping the clone of {repo_url} out of the checkout cache: {e}");
+        debug!("Keeping the clone of {shown_url} out of the checkout cache: {e}");
         discard(&dir);
         return;
     }
     match std::fs::rename(&dir, &dst) {
         Ok(()) => {
             debug!(
-                "Adopted the clone of {repo_url} at {commit} as {}",
+                "Adopted the clone of {shown_url} at {commit} as {}",
                 dst.display()
             );
             touch_last_used(&dst);
         }
         Err(e) => {
-            debug!("Keeping the clone of {repo_url} out of the checkout cache: {e}");
+            debug!("Keeping the clone of {shown_url} out of the checkout cache: {e}");
             discard(&dir);
         }
     }
@@ -350,15 +359,16 @@ fn fetch_commit(
     repo_url: &str,
     read_ref: Option<&str>,
     commit: &GitCommit,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<(), String> {
-    on_feedback(&format!(
-        "Commit {commit} is not in the shallow clone of {repo_url}; fetching it"
-    ));
+    let shown_url = SourceUrl::new(repo_url);
+    on_feedback(Report::Step(&format!(
+        "Commit {commit} is not in the shallow clone of {shown_url}; fetching it"
+    )));
 
     let by_hash = repo.find_remote("origin").and_then(|mut remote| {
         fetch_with_progress(&mut remote, repo_url, commit.as_str(), true, &mut |line| {
-            on_feedback(line)
+            on_feedback(Report::Progress(line))
         })
     });
     if by_hash.is_ok() && has_commit(repo, commit) {
@@ -366,22 +376,25 @@ fn fetch_commit(
     }
 
     let refspec = read_ref.unwrap_or("HEAD");
-    on_feedback(&format!(
-        "{repo_url} does not serve commits by hash; fetching the full history of {refspec}"
-    ));
+    on_feedback(Report::Step(&format!(
+        "{shown_url} does not serve commits by hash; fetching the full history of {refspec}"
+    )));
     repo.find_remote("origin")
         .and_then(|mut remote| {
             fetch_with_progress(&mut remote, repo_url, refspec, false, &mut |line| {
-                on_feedback(line)
+                on_feedback(Report::Progress(line))
             })
         })
-        .map_err(|e| format!("Failed to fetch {refspec} from {repo_url}: {e}"))?;
+        .map_err(|e| {
+            let error = shown_url.redact_in(&e.to_string());
+            format!("Failed to fetch {refspec} from {shown_url}: {error}")
+        })?;
 
     if has_commit(repo, commit) {
         return Ok(());
     }
     Err(format!(
-        "commit {commit} is not reachable at {repo_url}. The pin names bytes this remote no \
+        "commit {commit} is not reachable at {shown_url}. The pin names bytes this remote no \
          longer serves, which means the repository was rewritten or the commit was never pushed"
     ))
 }
@@ -449,6 +462,29 @@ mod tests {
     }
 
     #[test]
+    fn a_checkout_dir_is_named_after_the_url_as_shown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let commit = GitCommit::parse(&"a".repeat(40)).unwrap();
+        let with_token = "https://oauth2:glpat-secret-token@gitlab.example/acme/nodes.git";
+        let with_other_token = "https://oauth2:glpat-other-token@gitlab.example/acme/nodes.git";
+
+        let dir = checkout_dir_for(&peppy_dirs, with_token, &commit);
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.starts_with("https___gitlab.example_acme_nodes.git-"),
+            "{name}"
+        );
+        assert!(!name.contains("secret"), "{name}");
+        // Two URLs that differ in their credentials alone keep their own
+        // checkouts.
+        assert_ne!(
+            dir,
+            checkout_dir_for(&peppy_dirs, with_other_token, &commit)
+        );
+    }
+
+    #[test]
     fn checkout_dir_for_distinct_commits_distinct_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
@@ -489,7 +525,7 @@ mod tests {
         let lines = std::cell::RefCell::new(Vec::new());
         let reused =
             ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-                lines.borrow_mut().push(l.to_owned())
+                lines.borrow_mut().push(l.text().to_owned())
             })
             .expect("a populated checkout needs no remote");
         assert_eq!(checkout, reused);
@@ -508,7 +544,7 @@ mod tests {
         let lines = std::cell::RefCell::new(Vec::new());
         let again =
             ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-                lines.borrow_mut().push(l.to_owned())
+                lines.borrow_mut().push(l.text().to_owned())
             })
             .expect("a populated checkout needs no remote");
         assert_eq!(reused, again);
@@ -537,7 +573,7 @@ mod tests {
                 .expect("initial checkout");
         let lines = std::cell::RefCell::new(Vec::new());
         ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-            lines.borrow_mut().push(l.to_owned())
+            lines.borrow_mut().push(l.text().to_owned())
         })
         .expect("first reuse");
         assert_eq!(lines.into_inner().len(), 1);
@@ -552,7 +588,7 @@ mod tests {
 
         let lines = std::cell::RefCell::new(Vec::new());
         ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-            lines.borrow_mut().push(l.to_owned())
+            lines.borrow_mut().push(l.text().to_owned())
         })
         .expect("reuse of the new population");
         assert_eq!(
@@ -580,7 +616,7 @@ mod tests {
                 .expect("initial checkout");
         let lines = std::cell::RefCell::new(Vec::new());
         ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-            lines.borrow_mut().push(l.to_owned())
+            lines.borrow_mut().push(l.text().to_owned())
         })
         .expect("first reuse");
         assert_eq!(lines.into_inner().len(), 1);
@@ -595,7 +631,7 @@ mod tests {
 
         let lines = std::cell::RefCell::new(Vec::new());
         ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-            lines.borrow_mut().push(l.to_owned())
+            lines.borrow_mut().push(l.text().to_owned())
         })
         .expect("reuse of the new population");
         assert_eq!(
@@ -676,7 +712,7 @@ mod tests {
         std::fs::remove_dir_all(&source_dir).expect("remove source repo");
         let lines = std::cell::RefCell::new(Vec::new());
         let checkout = ensure_checkout_at_commit(&peppy_dirs, &url, None, &commits[0], &|l| {
-            lines.borrow_mut().push(l.to_owned())
+            lines.borrow_mut().push(l.text().to_owned())
         })
         .expect("the donated clone needs no remote");
 

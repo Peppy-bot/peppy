@@ -13,7 +13,7 @@
 //! binary by `core-node`'s `teardown_all_instances` test, and the watchdog
 //! timing by `peppylib`'s `daemon_watchdog` tests.
 
-use crate::common::{MessagingEngine, spawn_daemon, wait_for_exit};
+use crate::common::{MessagingEngine, SERVE_INITIALIZED, spawn_daemon, wait_for_exit};
 use peppy::test_support::wait_for_log;
 use std::time::Duration;
 
@@ -24,7 +24,7 @@ fn run_shutdown_signal_case(signal: rustix::process::Signal) {
     // Wait until the serve loop is fully up before signaling.
     wait_for_log(
         || logs.lock().unwrap().clone(),
-        "Serve command initialized!",
+        SERVE_INITIALIZED,
         Duration::from_secs(60),
     );
 
@@ -56,24 +56,17 @@ fn serve_shuts_down_on_sigterm() {
 #[cfg(target_os = "linux")]
 mod zenohd_dies_with_the_daemon {
     use crate::common::{
-        DAEMON_BOOT, DaemonGuard, MessagingEngine, poll_for, spawn_daemon, wait_for_daemon,
+        Boot, MessagingEngine, PORT_ATTEMPTS, SERVE_INITIALIZED, free_port, poll_for, spawn_daemon,
+        wait_for_boot,
     };
     use std::net::TcpListener;
     use std::path::Path;
-    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     /// How long a process change (a spawn, a death, a port release) gets to
     /// show in `/proc` and on the port.
     const PROCESS_CHANGE: Duration = Duration::from_secs(5);
-    /// The port comes from the ephemeral range other tests' zenoh sessions draw
-    /// from, so a collision retries the whole case on a new port.
-    const PORT_ATTEMPTS: usize = 3;
-
     const ROUTER_STARTED: &str = "Zenoh router started";
-    const SERVE_INITIALIZED: &str = "Serve command initialized!";
-    /// The daemon's refusal, and zenohd's own bind failure quoted from its log.
-    const PORT_IN_USE: [&str; 2] = ["Zenoh router port already in use", "Address already in use"];
 
     /// A process identified beyond pid reuse.
     #[derive(Clone, Copy)]
@@ -87,19 +80,6 @@ mod zenohd_dies_with_the_daemon {
         state: char,
         ppid: u32,
         start_time: u64,
-    }
-
-    enum Outcome {
-        Ready,
-        PortCollision,
-    }
-
-    fn free_port() -> u16 {
-        TcpListener::bind("0.0.0.0:0")
-            .expect("bind an ephemeral port")
-            .local_addr()
-            .expect("local address")
-            .port()
     }
 
     /// `None` once the process is gone.
@@ -164,21 +144,11 @@ mod zenohd_dies_with_the_daemon {
         }
     }
 
-    /// Waits for `ready` in the daemon's logs, or a port collision.
-    fn wait_for_boot(daemon: &mut DaemonGuard, logs: &Arc<Mutex<String>>, ready: &str) -> Outcome {
-        wait_for_daemon(daemon, logs, DAEMON_BOOT, ready, |snapshot| {
-            if PORT_IN_USE.iter().any(|needle| snapshot.contains(needle)) {
-                return Some(Outcome::PortCollision);
-            }
-            snapshot.contains(ready).then_some(Outcome::Ready)
-        })
-    }
-
-    fn attempt(home: &Path) -> Outcome {
+    fn attempt(home: &Path) -> Boot {
         let port = free_port();
         let (mut daemon, logs) = spawn_daemon(home, MessagingEngine::Zenoh { port });
-        if let Outcome::PortCollision = wait_for_boot(&mut daemon, &logs, ROUTER_STARTED) {
-            return Outcome::PortCollision;
+        if let Boot::PortCollision = wait_for_boot(&mut daemon, &logs, ROUTER_STARTED) {
+            return Boot::PortCollision;
         }
         let daemon_pid = daemon.0.id();
         let zenohd = poll_for(PROCESS_CHANGE, "the daemon's zenohd under /proc", || {
@@ -192,7 +162,7 @@ mod zenohd_dies_with_the_daemon {
             is_gone(zenohd).then_some(())
         });
         if !port_frees_within(port, PROCESS_CHANGE) {
-            return Outcome::PortCollision;
+            return Boot::PortCollision;
         }
 
         let (mut second, second_logs) = spawn_daemon(home, MessagingEngine::Zenoh { port });
@@ -203,7 +173,7 @@ mod zenohd_dies_with_the_daemon {
     fn a_sigkilled_daemon_takes_its_zenohd_with_it() {
         for _ in 0..PORT_ATTEMPTS {
             let home = tempfile::tempdir().expect("temp home");
-            if let Outcome::Ready = attempt(home.path()) {
+            if let Boot::Ready = attempt(home.path()) {
                 return;
             }
         }

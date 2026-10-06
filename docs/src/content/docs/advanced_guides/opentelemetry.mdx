@@ -1,0 +1,221 @@
+---
+title: OpenTelemetry log export
+description: Export the launch, add, build, run and stack logs of a daemon as OpenTelemetry log records over OTLP/HTTP
+sidebar:
+  order: 19
+---
+
+The daemon writes log files on its own machine: a launch log for each `peppy stack launch`, `build`, `join` and `remove`, an add log and a build log for each node, a run log for each instance, and the stack log. With `otlp_endpoint` set, the daemon also exports each line it writes to these files as an [OpenTelemetry](https://opentelemetry.io/) log record, over standard OTLP/HTTP, so the logs of every machine reach one place where they filter by node and by machine.
+
+The export is off by default. `otlp_endpoint` is the only setting that turns it on, and records go to that URL and nowhere else: the daemon reads no `OTEL_*` environment variable, follows no redirect, and uses no proxy of its environment.
+
+## Turning it on
+
+Set `otlp_endpoint` in the [daemon configuration](/advanced_guides/daemon_config/#otlp_endpoint-export-the-log-files) to the OTLP/HTTP URL of an OpenTelemetry collector or of an intake, and restart the daemon:
+
+```json5
+otlp_endpoint: "http://localhost:4318",
+```
+
+The value is the base URL of the collector or intake, and the daemon posts to `<otlp_endpoint>/v1/logs`. A URL whose path already ends with `/v1/logs` is the URL the daemon posts to, without a trailing slash. Requests carry a protobuf body (`Content-Type: application/x-protobuf`).
+
+When the export is on, `peppy service serve` prints one line at startup, prefixed like every line of its output:
+
+```
+Exporting the log files to localhost:4318 over OTLP/HTTP
+```
+
+### An OpenTelemetry Collector on the same machine
+
+A collector on the robot is the usual endpoint: it takes the records over loopback, and forwards them to wherever the logs are kept. This configuration prints each record it receives, which is enough to see the export work:
+
+```yaml
+# collector.yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [debug]
+```
+
+```sh
+docker run --rm --network host \
+  -v "$PWD/collector.yaml:/etc/otelcol-contrib/config.yaml" \
+  otel/opentelemetry-collector-contrib:latest
+```
+
+To forward the records, give the collector the exporter of your backend. With the `file_storage` extension the collector keeps the records it has not delivered on disk, so they survive an outage of the backend and a restart of the collector. A collector that runs in a container needs that directory mounted from the host:
+
+```yaml
+# collector.yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol/storage
+    create_directory: true
+
+exporters:
+  otlphttp:
+    endpoint: https://otlp.example.com
+    headers:
+      x-api-key: ${env:OTLP_API_KEY}
+    sending_queue:
+      storage: file_storage
+
+service:
+  extensions: [file_storage]
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [otlphttp]
+```
+
+A collector is also the place to drop or sample records, to add attributes such as an environment name, to redact node output before it leaves the machine, and to reach a backend through a proxy.
+
+## What is exported
+
+One entry of a log file is one record. An entry is one line, except for an error the daemon writes after a command failed: that entry quotes the last lines the command printed on stderr, under a `--- stderr (last lines) ---` heading, and its record holds the error without the quoted lines, since each of them is already a record of the log that captured it.
+
+| Log | File | What its records hold |
+|---|---|---|
+| Launch | `~/.peppy/logs/launch/` | The steps, warnings and errors of a `peppy stack launch`, `build`, `join` or `remove` |
+| Add | `~/.peppy/logs/add/` | Each step `peppy node add` prints, and its error when it fails |
+| Build | `~/.peppy/logs/build/` | The build commands and their output |
+| Run | `~/.peppy/logs/run/` | The run command and the output of the instance |
+| Stack | `~/.peppy/stack_log.log` | Each instance that ends as `finished` or `failed`, each change between `healthy` and `unhealthy`, and each report of records the export discarded |
+
+The log files keep their paths and their line format, and they hold every line whether the export is on or off. A few lines stay in the files only:
+
+- **A line a launch log repeats from a node's log.** A launch log holds the add, build and run output of the nodes it starts. Each such line is exported once, as the record of the node's own log.
+- **A line relayed from another machine.** In a [federated launch](/advanced_guides/federation/) the launch log of the coordinator holds lines of the other daemons. Each daemon exports the log files it writes, so those lines are exported by the daemon that wrote them, when its own `otlp_endpoint` is set.
+- **Repaints and empty lines.** The fragments a progress bar repaints, and lines of node or build output that hold only white space once their terminal escape sequences are removed.
+- **A line below `otlp_min_severity`**, when that setting holds a severity.
+
+Progress samples that repeat while a transfer or a build goes on, such as `received 120/480 objects` and `Build progress: 463.6 MB written`, reach the terminal only. They are in no log file and in no record.
+
+The diagnostic output of the daemon process itself, which `peppy service serve` prints, and the log of the zenoh router are not exported.
+
+## The fields of a record
+
+Each record belongs to a resource. Every record of one daemon has the same resource attributes except `service.name`:
+
+| Resource attribute | Value |
+|---|---|
+| `service.name` | The name of the node the line belongs to, or `peppy` for a line that belongs to no node |
+| `service.namespace` | The core node name of the daemon |
+| `host.name` | The host name of the machine, or `unknown` when the daemon cannot read it |
+| `peppy.core_node.name` | The core node name of the daemon |
+| `peppy.version` | The version of peppy |
+
+A line belongs to a node when its log does: every line of a build log and of a run log, each line of the stack log about an instance, and the lines of an add log once the daemon knows the node. An add from a directory, from a repository entry or from a launcher knows its node from the first line, and the add log of a node with dependencies belongs to that node, including the lines about its dependencies. An add from a git or HTTP URL learns its node when it has read the node's config: the steps before that carry `service.name` `peppy` and the path the log file had at the time.
+
+| Record field | Value |
+|---|---|
+| Body | The text of the line, without the timestamp and the marker of the file and without terminal escape sequences. A body is cut at 16 KiB |
+| Severity number, severity text | See [Severity](#severity) |
+| Observed time | The daemon's clock, in UTC, when it wrote or read the line |
+| Time | The same instant for a line the daemon wrote itself. Unset for node and build output, whose own clock the daemon does not know |
+| `peppy.log` | `launch`, `add`, `build`, `run` or `stack` |
+| `peppy.stack.action` | `launch`, `build`, `join` or `remove`, on the records of a launch log |
+| `peppy.node.name`, `peppy.node.tag` | The node the log belongs to, when it belongs to one |
+| `peppy.instance.id` | The instance, on the records of a run log and on the records of the stack log about an instance |
+| `peppy.launch.id` | The launch the log was written for, when there is one |
+| `log.iostream` | `stdout` or `stderr`, on node and build output |
+| `log.file.path` | The log file |
+| `peppy.body.truncated` | `true` on a record whose body was cut |
+
+### Filtering by node and by machine
+
+`service.name` is the node, on every record about that node: its add, its build, the output of its instances and what became of them. `service.namespace` is the machine. A query for one `service.name` across every namespace follows a node over the fleet, and one `service.namespace` shows everything a machine logged.
+
+### Severity
+
+A line the daemon writes itself has a fixed severity: an error or a `failed` instance is `ERROR`, a warning or an `unhealthy` instance is `WARN`, and every other such line is `INFO`.
+
+For node and build output, the daemon reads the level the line prints. The level is the first word of the line, after an optional timestamp:
+
+| Line | Severity |
+|---|---|
+| `2026-09-21T23:33:54.318976Z  WARN node::control: scouting delay elapsed` (Rust `tracing`) | `WARN` |
+| `2026-09-21 16:33:46,774 - ERROR - the arm stopped` (Python `logging`) | `ERROR` |
+| `WARNING:root:battery low` (Python `logging`, default format) | `WARN` |
+| `error[E0308]: mismatched types` and `warning: unused variable` (cargo) | `ERROR` and `WARN` |
+| `FATAL:   could not open image` (Apptainer) | `FATAL` |
+| `hello world count 3` | none |
+
+A word that ends at `:` or `[` is read in any letter case. A word that ends at a space or at `]` is read in uppercase only, so a sentence that starts with a level word, such as `Error handling is on`, has no severity. `WARNING` is `WARN` and `CRITICAL` is `FATAL`. The severity text of the record is the word as printed. A line that prints no level has no severity: the record leaves the severity number unset.
+
+## `otlp_min_severity`: the lowest severity exported
+
+`otlp_min_severity` in the [daemon configuration](/advanced_guides/daemon_config/#otlp_min_severity-lowest-exported-severity) holds the lowest severity the daemon exports: one of `"trace"`, `"debug"`, `"info"`, `"warn"`, or `null` (the default) to export every line.
+
+```json5
+otlp_min_severity: "info",
+```
+
+A line below `otlp_min_severity` stays in its log file only, whether a node printed it or the daemon wrote it. A line that prints no level is always exported. Set it when a node logs at debug level in a fast loop, so those lines leave room in the queue of the export for the others.
+
+## Request headers
+
+An intake that needs an API key, or a tenant, takes it as a request header. Headers go in `~/.peppy/conf/otlp_headers.json5`, a JSON5 object of header name to value:
+
+```json5
+{
+  "x-api-key": "<key>",
+}
+```
+
+Create the file readable by its owner alone. The daemon sets it to owner-only (`0600`) each time it reads it, like `credentials.json5`, and it reads the file only while `otlp_endpoint` is set. Header values appear in no log file, in no error, and not in the output of `peppy service serve`. A file that does not parse stops the daemon at startup with an error that names the file and what is wrong with it: the line and column of a syntax fault, a name that is no header name, a value a header cannot carry, or one header named twice.
+
+When the endpoint answers `401` or `403`, the daemon reads the file again. If the headers changed, it sends the request again with the new ones, so a key rotates without a daemon restart: write the new key to the file, and the first request the old key is refused for is the one that picks it up.
+
+Send headers over `https`. When `otlp_endpoint` is plain `http` on another machine and the headers file holds headers, `peppy service serve` prints a warning at startup. Plain `http` to a collector on the same machine stays on loopback.
+
+## When the endpoint is unreachable
+
+`peppy node add`, `build`, `run` and `peppy stack launch` take their usual course whatever the endpoint does. The log files are written first and never wait for the export.
+
+- **Retries.** A request that gets no answer, or the answer `429`, `502`, `503` or `504`, is sent again after a wait. The first wait is between half a second and a second, and each later one is up to twice as long, up to 30 seconds. A `Retry-After` header that holds a number of seconds lengthens the wait, up to 30 seconds. Because a request with no answer is sent again, the collector or intake can get the same records twice after a network fault.
+- **The queue.** Records that are not sent yet wait in memory, up to 16 MiB. The stack log has room of its own on top, so the output of a build or of a node never crowds out the `failed` record of an instance.
+- **Discards.** A record that arrives while the queue is full is discarded. So are the records of a request the endpoint refuses for good: a `401` or `403` when the headers file has not changed or cannot be read again, and every other answer that is not a success, such as `400`, `404` or a redirect. When a request is next delivered or refused, the daemon writes one line to the stack log, and exports it:
+
+  ```
+  [2026-10-02T14:03:11.209] Log export discarded 4096 records while the queue was full or the endpoint refused requests
+  ```
+
+  The daemon writes such a line at most once a minute, and once more when it stops, for every record discarded since the previous line; that last line reaches the stack log file alone. The line is a warning, and `otlp_min_severity` goes up to `"warn"`, so every setting exports it.
+- **Daemon stop.** When the daemon stops or restarts, it sends what is queued for up to 3 seconds, one attempt per request, and discards the rest.
+
+Records that were discarded are not exported later, and neither are lines written while the export was off. The log files hold them.
+
+`peppy service serve` prints what the export runs into, once per failure until a request is delivered again:
+
+```
+OTLP log export to collector.lan:4318: cannot connect (Connection refused (os error 111)); retrying
+OTLP log export to collector.lan:4318 recovered
+OTLP log export to otlp.example.com: the endpoint refused the request (401) and its records are discarded; check /home/ubuntu/.peppy/conf/otlp_headers.json5
+OTLP log export to otlp.example.com: the endpoint refused the request (404) and its records are discarded; check otlp_endpoint
+```
+
+## What leaves the machine
+
+Node and build output is exported as printed. A node that prints a secret exports it, and a build that prints a token exports it too. Redact in a collector on the machine when that matters.
+
+The lines the daemon writes itself hold no credentials of a git or HTTP source: the daemon writes such a URL without its password and its query string, and without its user name unless the URL is an `ssh` one, in the log files and in the records alike. The commands of a node's `build_cmd` and `run_cmd` are written as the node's config spells them.
+
+A build log is the largest log by far: a container build prints tens of thousands of lines in a few seconds, and most of them print no level. Filter on `peppy.log` in a collector when build output is not worth keeping remotely.

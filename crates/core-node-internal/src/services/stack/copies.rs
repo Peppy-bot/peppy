@@ -24,13 +24,13 @@ async fn change_active_launch(
 ) -> LaunchResult {
     let mut active = match active_launch(ctx) {
         Ok(active) => active,
-        Err(reason) => return LaunchResult::failure(&ctx.log_path, reason),
+        Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
     };
     let outcome = change(&mut active).await;
     *ctx.slice_ownership.active.lock() = Some(active);
     match outcome {
-        Ok(()) => LaunchResult::success(&ctx.log_path),
-        Err(reason) => LaunchResult::failure(&ctx.log_path, reason),
+        Ok(()) => LaunchResult::success(ctx.log.path()),
+        Err(reason) => LaunchResult::failure(ctx.log.path(), reason),
     }
 }
 

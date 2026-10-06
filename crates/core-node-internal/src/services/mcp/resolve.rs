@@ -1,5 +1,6 @@
 //! From exposure references or pins to a planned built-in deployment.
 
+use crate::services::node::Report;
 use crate::services::repo::cache::{
     self as repo_cache, ContractCacheEntry, McpExposureCacheEntry, PinnableCacheEntry,
     RepoCacheEntry,
@@ -47,7 +48,7 @@ pub(super) fn resolve_cached_document<E: PinnableCacheEntry>(
     name: &str,
     tag: &str,
     sha256_pin: Option<&str>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> Result<PinnedDocument, String> {
     let (entry, bytes) = repo_cache::resolve_cached_doc_entry(
         peppy_dirs,
@@ -72,7 +73,7 @@ pub(super) fn resolve_cached_document<E: PinnableCacheEntry>(
 pub(crate) fn resolve_exposure_deployment(
     peppy_dirs: &PeppyDirs,
     references: &[ExposureRef],
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> Result<ResolvedMcpDeployment, String> {
     let exposure_entries = repo_cache::load_repo_cache::<McpExposureCacheEntry>(peppy_dirs)
         .map_err(|e| format!("failed to load the exposure cache: {e}"))?;
@@ -145,7 +146,7 @@ pub(crate) fn resolve_exposure_deployment(
 pub fn resolve_exposure_plan(
     peppy_dirs: &PeppyDirs,
     references: &[ExposureRef],
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> Result<McpDeploymentPlan, String> {
     resolve_exposure_deployment(peppy_dirs, references, on_feedback).map(|resolved| resolved.plan)
 }
@@ -156,7 +157,7 @@ pub fn resolve_exposure_plan(
 pub(crate) fn materialize_exposure_deployment(
     peppy_dirs: &PeppyDirs,
     pins: &DeploymentPins,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> Result<ResolvedMcpDeployment, String> {
     let DeploymentRoot::Exposures(exposure_pins) = &pins.root else {
         return Err(format!(
@@ -180,7 +181,7 @@ fn materialize_pinned<E: RepoCacheEntry>(
     peppy_dirs: &PeppyDirs,
     entries: &[E],
     pins: &[PinnedItem],
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> Result<Vec<PinnedDocument>, String> {
     pins.iter()
         .map(|pin| {

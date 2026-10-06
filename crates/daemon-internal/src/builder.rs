@@ -5,6 +5,7 @@ use super::messaging_router::{MessagingRouter, teardown_budget_for};
 use super::router_federation::RouterFederation;
 use super::serve::{CompositeCommand, Serve};
 use crate::error::{Error, Result};
+use crate::log_export::LogExport;
 use crate::state::DaemonState;
 use auth::{Enrollment, FederationIdentity};
 use config::namespace::Namespace;
@@ -295,6 +296,7 @@ impl ServeCommandBuilder {
                 } else {
                     Duration::ZERO
                 };
+                let log_export = LogExport::from_config(&self.peppy_config, &self.peppy_dirs)?;
                 let core_node = CoreNodeRunner::new(
                     Arc::clone(messenger),
                     resolved_core_node_name,
@@ -308,6 +310,7 @@ impl ServeCommandBuilder {
                     name_claim_settle,
                     self.teardown_token.clone(),
                     core_node_done_tx,
+                    log_export,
                 );
 
                 // Write the daemon state file with the core node name. The

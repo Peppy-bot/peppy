@@ -24,7 +24,8 @@ use std::collections::HashMap;
 use super::{
     API_FIELD_SNIPPET, CORE_NODE_NAME_SECTION_SNIPPET, DAEMON_GRACE_FIELD_SNIPPET,
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET,
-    LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, MANAGED_SECTION_SNIPPET, PYPI_MIRROR_SECTION_SNIPPET,
+    LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, MANAGED_SECTION_SNIPPET, OTLP_ENDPOINT_SECTION_SNIPPET,
+    OTLP_MIN_SEVERITY_SECTION_SNIPPET, PYPI_MIRROR_SECTION_SNIPPET,
     RESOURCE_SERVERS_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET, STANDARD_BUFFER_FIELD_SNIPPET,
     SUBSCRIBER_BUFFERS_SECTION_SNIPPET, ZENOH_SECTION_SNIPPET,
 };
@@ -119,6 +120,19 @@ const SECTIONS: &[EntrySpec] = &[
     EntrySpec {
         key: "pypi_mirror",
         snippet: PYPI_MIRROR_SECTION_SNIPPET,
+        alternatives: &[],
+        children: &[],
+    },
+    // Each spelled as an explicit `null` in the template, like `pypi_mirror`.
+    EntrySpec {
+        key: "otlp_endpoint",
+        snippet: OTLP_ENDPOINT_SECTION_SNIPPET,
+        alternatives: &[],
+        children: &[],
+    },
+    EntrySpec {
+        key: "otlp_min_severity",
+        snippet: OTLP_MIN_SEVERITY_SECTION_SNIPPET,
         alternatives: &[],
         children: &[],
     },
@@ -830,6 +844,8 @@ mod tests {
             [
                 "core_node_name",
                 "pypi_mirror",
+                "otlp_endpoint",
+                "otlp_min_severity",
                 "resource_servers",
                 "zenoh.managed.subscriber_buffers",
                 "lifecycle.shutdown_grace_secs",
@@ -1011,12 +1027,14 @@ mod tests {
         // byte of the user's file untouched.
         let close = content.rfind('}').unwrap();
         let expected = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}{}",
             &content[..close],
             super::super::CORE_NODE_NAME_SECTION_SNIPPET,
             super::super::ZENOH_SECTION_SNIPPET,
             super::super::LIFECYCLE_SECTION_SNIPPET,
             PYPI_MIRROR_SECTION_SNIPPET,
+            OTLP_ENDPOINT_SECTION_SNIPPET,
+            OTLP_MIN_SEVERITY_SECTION_SNIPPET,
             super::super::RESOURCE_SERVERS_SECTION_SNIPPET,
             &content[close..]
         );
@@ -1045,6 +1063,39 @@ mod tests {
                 "{}\n{}{}",
                 &content[..close],
                 PYPI_MIRROR_SECTION_SNIPPET,
+                &content[close..]
+            )
+        );
+        assert_eq!(parse(&completion.content), PeppyConfig::default());
+        assert!(complete_config_content(&completion.content).is_none());
+    }
+
+    /// A file that holds neither key of the log export gains both, with
+    /// their comments, in front of the root's closing brace, and every other
+    /// byte stays where it was.
+    #[test]
+    fn missing_otlp_settings_are_added_with_their_comments() {
+        let content = DEFAULT_PEPPY_CONFIG_TEMPLATE.replacen(
+            &format!("{OTLP_ENDPOINT_SECTION_SNIPPET}\n{OTLP_MIN_SEVERITY_SECTION_SNIPPET}\n"),
+            "",
+            1,
+        );
+        assert!(!content.contains("otlp"));
+
+        let completion = complete_config_content(&content).expect("the otlp settings are missing");
+
+        assert_eq!(
+            completion.added_paths,
+            ["otlp_endpoint", "otlp_min_severity"]
+        );
+        let close = content.rfind('}').unwrap();
+        assert_eq!(
+            completion.content,
+            format!(
+                "{}\n{}\n{}{}",
+                &content[..close],
+                OTLP_ENDPOINT_SECTION_SNIPPET,
+                OTLP_MIN_SEVERITY_SECTION_SNIPPET,
                 &content[close..]
             )
         );

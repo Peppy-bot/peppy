@@ -9,6 +9,7 @@ auth = { workspace = true }
 config = { workspace = true }
 core-node = { workspace = true }
 daemon-config = { workspace = true }
+log-export = { workspace = true }
 json5-pretty = { workspace = true }
 chrono = "0.4"
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
@@ -29,3 +30,5 @@ tempfile = "3.8"
 # Self-reference so this crate's tests see auth's fixtures without making
 # `test-support` a feature of the shipped daemon.
 auth = { workspace = true, features = ["test-support"] }
+# The OTLP receiver the log export tests point the worker at.
+log-export = { workspace = true, features = ["test-support"] }

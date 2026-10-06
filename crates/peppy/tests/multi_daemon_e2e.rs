@@ -8,8 +8,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use config::consts::{PEPPY_CONFIG_ENV, PEPPY_HOME_ENV};
 use core_node::{TEARDOWN_REAP_BUDGET, force_kill_deadline};
 use daemon_config::peppy_config::{
-    ExternalZenohConfig, ManagedZenohConfig, PeppyConfig, ZenohConfig,
+    ExternalZenohConfig, ManagedZenohConfig, OtlpEndpoint, PeppyConfig, ZenohConfig,
 };
+use log_export::test_support::{OtlpReceiver, ReceivedRecord};
 use peppy::test_support::CACHED_BUILD_REUSE_PREFIX;
 use pmi::{RouterId, ZenohAdapter, ZenohNetProtocol, render_router_config};
 use testcontainers::core::client::docker_client_instance;
@@ -39,10 +40,15 @@ const CONTAINER_PEPPY_HOME: &str = "/data";
 /// through, so what its container still has to unwind depends on where the
 /// teardown had reached. Derived from the daemon's own deadline the way the
 /// messaging router sizes its teardown budget, plus the same second of margin
-/// so the kill cannot land exactly as the teardown ends.
+/// so the kill cannot land exactly as the teardown ends. A daemon that exports
+/// its log files then sends what is queued for up to
+/// [`log_export::SHUTDOWN_FLUSH`].
 fn stop_grace_secs() -> i32 {
     let grace = Duration::from_secs(PeppyConfig::default().lifecycle.shutdown_grace_secs);
-    let budget = force_kill_deadline(grace) + TEARDOWN_REAP_BUDGET + Duration::from_secs(1);
+    let budget = force_kill_deadline(grace)
+        + TEARDOWN_REAP_BUDGET
+        + log_export::SHUTDOWN_FLUSH
+        + Duration::from_secs(1);
     i32::try_from(budget.as_secs()).expect("the daemon's teardown budget fits a stop timeout")
 }
 
@@ -51,7 +57,7 @@ fn stop_grace_secs() -> i32 {
 #[test]
 fn the_stop_grace_outlasts_the_daemons_own_teardown() {
     let grace = Duration::from_secs(PeppyConfig::default().lifecycle.shutdown_grace_secs);
-    let teardown = force_kill_deadline(grace) + TEARDOWN_REAP_BUDGET;
+    let teardown = force_kill_deadline(grace) + TEARDOWN_REAP_BUDGET + log_export::SHUTDOWN_FLUSH;
     let engine = Duration::from_secs(stop_grace_secs().try_into().expect("a positive grace"));
     assert!(
         engine > teardown,
@@ -114,9 +120,15 @@ fn require_success(output: ExecOutput, operation: &str) -> String {
     output.text
 }
 
-fn external_daemon_config(core_node: &str, router_port: u16) -> String {
+fn external_daemon_config(
+    core_node: &str,
+    router_port: u16,
+    otlp_endpoint: Option<&str>,
+) -> String {
     let mut config = PeppyConfig {
         core_node_name: Some(core_node.to_string()),
+        otlp_endpoint: otlp_endpoint
+            .map(|url| OtlpEndpoint::parse(url).expect("a test endpoint is an OTLP/HTTP URL")),
         ..PeppyConfig::default()
     };
     config.zenoh = ZenohConfig::External(ExternalZenohConfig {
@@ -794,10 +806,10 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
     let substrate = Substrate::create().await;
 
     let daemon_a = substrate
-        .start_daemon("peppy-md", "a", "robo-a", "daemon-a")
+        .start_daemon("peppy-md", "a", "robo-a", "daemon-a", None)
         .await;
     let daemon_b = substrate
-        .start_daemon("peppy-md", "b", "robo-b", "daemon-b")
+        .start_daemon("peppy-md", "b", "robo-b", "daemon-b", None)
         .await;
 
     let both = daemon_a
@@ -834,7 +846,7 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
     );
 
     let collision = substrate
-        .start_daemon("peppy-md", "c", "robo-c", "daemon-a")
+        .start_daemon("peppy-md", "c", "robo-c", "daemon-a", None)
         .await;
     let collision_status = collision.wait_for_exit().await;
     assert_ne!(collision_status, 0, "colliding daemon must fail startup");
@@ -1644,13 +1656,15 @@ impl Substrate {
     }
 
     /// Starts one daemon container against this substrate's router, launcher
-    /// mount, and fixture repository.
+    /// mount, and fixture repository. The daemon exports its log files to
+    /// `otlp_endpoint` when there is one.
     async fn start_daemon(
         &self,
         prefix: &str,
         role: &str,
         hostname: &str,
         core_node: &str,
+        otlp_endpoint: Option<&str>,
     ) -> Daemon {
         let launch = DaemonLaunch {
             image_name: &self.image_name,
@@ -1664,7 +1678,7 @@ impl Substrate {
             &launch,
             &format!("{prefix}-{role}-{}", self.suffix),
             hostname,
-            &external_daemon_config(core_node, self.router.port),
+            &external_daemon_config(core_node, self.router.port, otlp_endpoint),
             None,
             Some((self.launcher_dir.path(), CONTAINER_LAUNCHER_DIR)),
         )
@@ -1683,8 +1697,14 @@ impl Substrate {
         let mut daemons = Vec::with_capacity(specs.len());
         for spec in specs {
             daemons.push(
-                self.start_daemon(prefix, spec.role, spec.hostname, spec.core_node)
-                    .await,
+                self.start_daemon(
+                    prefix,
+                    spec.role,
+                    spec.hostname,
+                    spec.core_node,
+                    spec.otlp_endpoint,
+                )
+                .await,
             );
         }
         for (index, daemon) in daemons.iter().enumerate() {
@@ -1698,12 +1718,17 @@ impl Substrate {
 }
 
 /// One daemon of a coordinated set: its container-name role, hostname, and
-/// wired core-node name.
+/// wired core-node name, and the endpoint it exports its log files to when it
+/// exports them.
 struct DaemonSpec<'a> {
     role: &'a str,
     hostname: &'a str,
     core_node: &'a str,
+    otlp_endpoint: Option<&'a str>,
 }
+
+const ROBOT_HOSTNAME: &str = "robo-robot";
+const CLOUD_HOSTNAME: &str = "robo-cloud";
 
 /// Two daemons on a shared router in one namespace, plus the launcher mounted
 /// into the coordinator. The shape every two-machine federated test needs.
@@ -1716,6 +1741,16 @@ struct Federation {
 }
 
 async fn start_federation(prefix: &str) -> Federation {
+    start_federation_exporting_to(prefix, None, None).await
+}
+
+/// [`start_federation`], with each daemon exporting its log files to the
+/// endpoint given for it.
+async fn start_federation_exporting_to(
+    prefix: &str,
+    robot_endpoint: Option<&str>,
+    cloud_endpoint: Option<&str>,
+) -> Federation {
     let substrate = Substrate::create().await;
     let mut daemons = substrate
         .start_coordinated(
@@ -1723,13 +1758,15 @@ async fn start_federation(prefix: &str) -> Federation {
             &[
                 DaemonSpec {
                     role: "robot",
-                    hostname: "robo-robot",
+                    hostname: ROBOT_HOSTNAME,
                     core_node: "cn-robot",
+                    otlp_endpoint: robot_endpoint,
                 },
                 DaemonSpec {
                     role: "cloud",
-                    hostname: "robo-cloud",
+                    hostname: CLOUD_HOSTNAME,
                     core_node: "cn-cloud",
+                    otlp_endpoint: cloud_endpoint,
                 },
             ],
         )
@@ -1770,16 +1807,19 @@ async fn start_fleet(prefix: &str) -> Fleet {
                     role: "coord",
                     hostname: "robo-fleet-coord",
                     core_node: FLEET_COORDINATOR_CORE_NODE,
+                    otlp_endpoint: None,
                 },
                 DaemonSpec {
                     role: "station-a",
                     hostname: "robo-station-a",
                     core_node: FLEET_STATION_A_CORE_NODE,
+                    otlp_endpoint: None,
                 },
                 DaemonSpec {
                     role: "station-b",
                     hostname: "robo-station-b",
                     core_node: FLEET_STATION_B_CORE_NODE,
+                    otlp_endpoint: None,
                 },
             ],
         )
@@ -2120,6 +2160,197 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
             .wait_for_stack(|text| instances.iter().all(|id| !holds_instance(text, id)))
             .await;
     }
+}
+
+/// The nodes the split-compute launcher runs on the robot and on the cloud
+/// machine.
+const ROBOT_NODES: [&str; 3] = [
+    "uvc_camera_python_mock",
+    "my_python_robot_arm",
+    "reactive_policy",
+];
+const CLOUD_NODES: [&str; 2] = ["deliberative_planner", "episode_recorder"];
+
+/// An OTLP receiver on the host that a daemon container reaches, and the
+/// `otlp_endpoint` that names it from inside the container.
+async fn host_receiver() -> (OtlpReceiver, String) {
+    let receiver = OtlpReceiver::start("0.0.0.0:0").await;
+    let endpoint = format!("http://host.docker.internal:{}", receiver.port());
+    (receiver, endpoint)
+}
+
+impl Federation {
+    /// Launches the split-compute launcher, waits until both halves run and
+    /// the planner has logged a frame from the robot, then stops both daemons,
+    /// which is when each has exported what it is going to export. Returns
+    /// the coordinator's launch log.
+    async fn launch_split_and_stop(&self) -> String {
+        let launch = self.launch_split().await;
+        assert!(
+            launch.success(),
+            "the federated launch must succeed:\n{}",
+            launch.text
+        );
+        self.robot
+            .wait_for_stack(|text| ROBOT_INSTANCES.iter().all(|id| holds_instance(text, id)))
+            .await;
+        self.cloud
+            .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
+            .await;
+        self.cloud
+            .wait_for_node_log("planner_inst", "first frame received across the boundary")
+            .await;
+        let launch_log = require_success(
+            self.robot
+                .exec(vec![
+                    "sh",
+                    "-c",
+                    &format!("cat {CONTAINER_PEPPY_HOME}/logs/launch/*.log"),
+                ])
+                .await,
+            "reading the coordinator's launch log",
+        );
+        self.cloud.stop().await;
+        self.robot.stop().await;
+        launch_log
+    }
+}
+
+/// The values `key` takes over `records`.
+fn attribute_values<'a>(records: &'a [ReceivedRecord], key: &str) -> BTreeSet<&'a str> {
+    records
+        .iter()
+        .filter_map(|record| record.attributes.get(key))
+        .map(String::as_str)
+        .collect()
+}
+
+/// Asserts that `records` are what the daemon `core_node` on `hostname`
+/// exports of the split-compute launch: lines of its own log files, about
+/// `nodes` and `instances` alone.
+fn assert_exported_by(
+    records: &[ReceivedRecord],
+    core_node: &str,
+    hostname: &str,
+    nodes: &[&str],
+    instances: &[&str],
+) {
+    assert!(!records.is_empty(), "{core_node} exported records");
+    for record in records {
+        assert_eq!(
+            record.resource["service.namespace"], core_node,
+            "{record:#?}"
+        );
+        assert_eq!(
+            record.resource["peppy.core_node.name"], core_node,
+            "{record:#?}"
+        );
+        assert_eq!(record.resource["host.name"], hostname, "{record:#?}");
+    }
+    let services: BTreeSet<&str> = records
+        .iter()
+        .map(|record| record.resource["service.name"].as_str())
+        .filter(|service| *service != "peppy")
+        .collect();
+    assert_eq!(
+        services,
+        nodes.iter().copied().collect::<BTreeSet<_>>(),
+        "{core_node} exports the lines of its own nodes"
+    );
+    assert_eq!(
+        attribute_values(records, "peppy.instance.id"),
+        instances.iter().copied().collect::<BTreeSet<_>>(),
+        "{core_node} exports the lines of its own instances"
+    );
+    for kind in ["add", "build", "run"] {
+        assert!(
+            attribute_values(records, "peppy.log").contains(kind),
+            "{core_node} exports its {kind} logs"
+        );
+    }
+}
+
+/// Asserts that the coordinator's launch log holds lines its peer relayed,
+/// and that `records`, which the coordinator exported, hold none of them.
+fn assert_relayed_lines_stay_in_the_file(
+    launch_log: &str,
+    records: &[ReceivedRecord],
+    peer_core_node: &str,
+) {
+    let relayed = format!("[{peer_core_node}] ");
+    assert!(
+        launch_log.contains(&relayed),
+        "the launch log holds the peer's relayed lines:\n{launch_log}"
+    );
+    let exported: Vec<&ReceivedRecord> = records
+        .iter()
+        .filter(|record| record.body.starts_with(&relayed))
+        .collect();
+    assert!(
+        exported.is_empty(),
+        "a relayed line is exported by the daemon that wrote it: {exported:#?}"
+    );
+}
+
+/// Each daemon exports the log files it writes. With one receiver per machine,
+/// every record at a receiver comes from that machine, and the lines the peer
+/// relays into the coordinator's launch log are exported by the peer alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_daemon_of_a_federated_launch_exports_the_log_files_it_writes() {
+    let (mut robot_receiver, robot_endpoint) = host_receiver().await;
+    let (mut cloud_receiver, cloud_endpoint) = host_receiver().await;
+    let federation = start_federation_exporting_to(
+        "peppy-fed-export",
+        Some(&robot_endpoint),
+        Some(&cloud_endpoint),
+    )
+    .await;
+
+    let launch_log = federation.launch_split_and_stop().await;
+
+    let robot_records = robot_receiver.take_records();
+    assert_exported_by(
+        &robot_records,
+        &federation.robot_core_node,
+        ROBOT_HOSTNAME,
+        &ROBOT_NODES,
+        &ROBOT_INSTANCES,
+    );
+    assert!(
+        attribute_values(&robot_records, "peppy.log").contains("launch"),
+        "the coordinator exports its launch log"
+    );
+    assert_relayed_lines_stay_in_the_file(&launch_log, &robot_records, &federation.cloud_core_node);
+
+    assert_exported_by(
+        &cloud_receiver.take_records(),
+        &federation.cloud_core_node,
+        CLOUD_HOSTNAME,
+        &CLOUD_NODES,
+        &CLOUD_INSTANCES,
+    );
+}
+
+/// With `otlp_endpoint` set on the coordinator alone, nothing a node on the
+/// other machine printed is exported: the coordinator exports its own log
+/// files, and the lines its peer relays stay in the launch log file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coordinator_exports_no_output_of_a_node_on_another_machine() {
+    let (mut robot_receiver, robot_endpoint) = host_receiver().await;
+    let federation =
+        start_federation_exporting_to("peppy-fed-export-coord", Some(&robot_endpoint), None).await;
+
+    let launch_log = federation.launch_split_and_stop().await;
+
+    let robot_records = robot_receiver.take_records();
+    assert_exported_by(
+        &robot_records,
+        &federation.robot_core_node,
+        ROBOT_HOSTNAME,
+        &ROBOT_NODES,
+        &ROBOT_INSTANCES,
+    );
+    assert_relayed_lines_stay_in_the_file(&launch_log, &robot_records, &federation.cloud_core_node);
 }
 
 /// A second launch of the same launcher must work: the first one released every

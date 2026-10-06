@@ -1,10 +1,8 @@
 //! Concrete build I/O steps invoked from [`super::entity::NodeEntity::build`].
 
-use parking_lot::Mutex as StdMutex;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Duration;
 
 use daemon_config::consts::PeppyDirs;
@@ -13,10 +11,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
-use crate::build_io::{
-    ChildWrapper, FeedbackLine, FeedbackStream, announce, spawn_in_process_group,
-    stream_child_output,
-};
+use crate::action_log::{ActionLog, Announcer, STDERR_TAIL_HEADER};
+use crate::build_io::{ChildWrapper, spawn_in_process_group, stream_child_output};
 use crate::node_stack::container_build_cache::{
     self, SoleUvCacheUse, UvCachePruneOutcome, UvCacheUse,
 };
@@ -112,8 +108,8 @@ pub(super) struct ContainerBuildInputs<'a> {
     pub apptainer_build_extra_args: &'a [String],
     pub lima_shell_extra_args: &'a [String],
     pub language: PeppygenLanguage,
-    pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
-    pub log_file: Arc<StdMutex<File>>,
+    /// The build log and the feedback channel of the build.
+    pub announcer: &'a Announcer,
     /// Needed to register the peppy data root as a Lima mount: `working_dir`
     /// lives under `tmp_dir()`, which sits outside `$HOME` whenever the root
     /// does (dev builds root at `$TMPDIR/.peppy`), and the guest VM cannot
@@ -176,11 +172,9 @@ pub(super) async fn build_container_image(
     validate_node_tag(inputs.node_tag).map_err(|e| format!("invalid node tag: {}", e))?;
 
     if !containers::Apptainer::is_lima_ready() {
-        let _ = inputs.feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Stdout,
-            line: "Initializing Lima VM for container build (first run may take a few minutes)..."
-                .to_string(),
-        });
+        inputs
+            .announcer
+            .line("Initializing Lima VM for container build (first run may take a few minutes)...");
     }
 
     let mut apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
@@ -231,7 +225,7 @@ pub(super) async fn build_container_image(
         .map_err(|e| format!("Build cache preparation task failed: {}", e))?
     };
     if let Some(cache) = &build_cache {
-        announce(inputs.feedback_tx, &inputs.log_file, cache.summary.clone());
+        inputs.announcer.line(cache.summary.clone());
     }
     // A Python build uses `uv-cache/` from here until it ends.
     let uv_cache_use = match &build_cache {
@@ -318,8 +312,8 @@ pub(super) async fn build_container_image(
         let stream_result = stream_child_output(
             child,
             move || activity_probe.sample(),
-            inputs.feedback_tx,
-            Arc::clone(&inputs.log_file),
+            inputs.announcer.feedback_tx(),
+            inputs.announcer.log().clone(),
             true,
             inputs.cancel_token,
         )
@@ -349,21 +343,17 @@ pub(super) async fn build_container_image(
             && failed_fetching_base_image(&stderr_tail)
         {
             let delay = CONTAINER_BUILD_RETRY_DELAYS[attempt - 1];
-            announce(
-                inputs.feedback_tx,
-                &inputs.log_file,
-                format!(
-                    "Base image fetch failed; retrying apptainer build in {delay:?} \
-                     (attempt {attempt} of {CONTAINER_BUILD_ATTEMPTS})"
-                ),
-            );
+            inputs.announcer.line(format!(
+                "Base image fetch failed; retrying apptainer build in {delay:?} \
+                 (attempt {attempt} of {CONTAINER_BUILD_ATTEMPTS})"
+            ));
             tokio::time::sleep(delay).await;
             continue;
         }
 
         let mut msg = format!("apptainer build failed with status {}", status);
         if !stderr_tail.is_empty() {
-            msg.push_str("\n\n--- stderr (last lines) ---\n");
+            msg.push_str(STDERR_TAIL_HEADER);
             msg.push_str(&stderr_tail.join("\n"));
         }
         return Err(msg);
@@ -422,11 +412,9 @@ async fn begin_uv_cache_use(
     if let Some(uv_cache_use) = UvCacheUse::try_begin(cache_root) {
         return Ok(uv_cache_use);
     }
-    announce(
-        inputs.feedback_tx,
-        &inputs.log_file,
-        container_build_cache::prune_wait_line(),
-    );
+    inputs
+        .announcer
+        .line(container_build_cache::prune_wait_line());
     tokio::select! {
         uv_cache_use = UvCacheUse::begin(cache_root) => Ok(uv_cache_use),
         _ = inputs.cancel_token.cancelled() => Err("build cancelled".to_string()),
@@ -465,16 +453,14 @@ async fn prune_uv_cache(
 ) -> std::result::Result<(), String> {
     let outcome = match uv_cache_use.end() {
         Some(sole_use) => {
-            announce(
-                inputs.feedback_tx,
-                &inputs.log_file,
-                container_build_cache::prune_start_line(),
-            );
+            inputs
+                .announcer
+                .line(container_build_cache::prune_start_line());
             run_uv_cache_prune(&sole_use, apptainer, image, inputs, build_key).await?
         }
         None => UvCachePruneOutcome::InUseByAnotherBuild,
     };
-    announce(inputs.feedback_tx, &inputs.log_file, outcome.line());
+    inputs.announcer.line(outcome.line());
     Ok(())
 }
 
@@ -513,7 +499,7 @@ async fn run_uv_cache_prune(
         std_cmd,
         tokio::time::sleep(container_build_cache::UV_CACHE_PRUNE_TIMEOUT),
         container_build_cache::UV_CACHE_PRUNE_STOP_GRACE,
-        Arc::clone(&inputs.log_file),
+        inputs.announcer.log().clone(),
         inputs.cancel_token,
     )
     .await;
@@ -528,7 +514,7 @@ async fn run_uv_cache_prune(
 }
 
 /// Runs the prune process `std_cmd` until it ends or `deadline` comes. Its
-/// lines go to `log_file` only. Returns `Err` when `cancel_token` fires.
+/// lines go to `log` only. Returns `Err` when `cancel_token` fires.
 ///
 /// At `deadline`, the process group of the prune gets a SIGTERM and
 /// `stop_grace` to stop, and then a SIGKILL. On a SIGTERM, apptainer stops
@@ -538,7 +524,7 @@ async fn run_uv_cache_prune_child(
     std_cmd: std::process::Command,
     deadline: impl Future<Output = ()>,
     stop_grace: Duration,
-    log_file: Arc<StdMutex<File>>,
+    log: ActionLog,
     cancel_token: &CancellationToken,
 ) -> std::result::Result<UvCachePruneOutcome, String> {
     let child = match spawn_piped(std_cmd) {
@@ -557,7 +543,7 @@ async fn run_uv_cache_prune_child(
         child,
         BuildActivity::default,
         &output_tx,
-        log_file,
+        log,
         true,
         cancel_token,
     ));
@@ -628,8 +614,7 @@ pub(super) async fn run_build_cmd(
     build_cmd: Option<&Vec<String>>,
     working_dir: &Path,
     env_vars: &[(String, String)],
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
+    announcer: &Announcer,
     cancel_token: &CancellationToken,
 ) -> std::result::Result<(), String> {
     let Some(cmd) = build_cmd else {
@@ -683,7 +668,9 @@ pub(super) async fn run_build_cmd(
         .collect::<Vec<_>>()
         .join(" ");
 
-    crate::build_io::log_cmd_header(&log_file, "build_cmd", &full_cmd_display, working_dir, &[]);
+    announcer
+        .log()
+        .command("build_cmd", &full_cmd_display, working_dir, &[]);
 
     let mut command = tokio::process::Command::new(&program);
     command.args(&args);
@@ -713,8 +700,8 @@ pub(super) async fn run_build_cmd(
     let (status, _) = stream_child_output(
         child,
         move || activity_probe.sample(),
-        feedback_tx,
-        log_file,
+        announcer.feedback_tx(),
+        announcer.log().clone(),
         false,
         cancel_token,
     )
@@ -761,6 +748,9 @@ fn spawn_failure_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action_log::test_support::scratch_log;
+    use log_export::{LogExporter, LogKind};
+    use std::sync::Arc;
 
     #[test]
     fn validate_node_tag_accepts_safe_tags() {
@@ -783,9 +773,6 @@ mod tests {
         // up-front validation rejects with the "invalid node tag" prefix.
         let working_dir = std::path::Path::new("/nonexistent-peppy-test-dir");
         let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
-        let log_file = Arc::new(StdMutex::new(
-            tempfile::tempfile().expect("tempfile should succeed"),
-        ));
         let cancel_token = CancellationToken::new();
         let peppy_dirs = PeppyDirs::new("/nonexistent-peppy-test-root");
         let err = build_container_image(ContainerBuildInputs {
@@ -796,8 +783,7 @@ mod tests {
             apptainer_build_extra_args: &[],
             lima_shell_extra_args: &[],
             language: PeppygenLanguage::Rust,
-            feedback_tx: &feedback_tx,
-            log_file,
+            announcer: &Announcer::new(scratch_log(), feedback_tx),
             peppy_dirs: &peppy_dirs,
             cancel_token: &cancel_token,
         })
@@ -824,12 +810,6 @@ mod tests {
         }
     }
 
-    fn test_log_file() -> Arc<StdMutex<File>> {
-        Arc::new(StdMutex::new(
-            tempfile::tempfile().expect("tempfile should succeed"),
-        ))
-    }
-
     /// A `sh -c` command that stands in for the prune process.
     fn shell(script: &str) -> std::process::Command {
         let mut command = std::process::Command::new("sh");
@@ -845,11 +825,18 @@ mod tests {
         stop_grace: Duration,
         cancel_token: &CancellationToken,
     ) -> (std::result::Result<UvCachePruneOutcome, String>, String) {
-        let log = tempfile::NamedTempFile::new().expect("create the build log");
-        let log_file = Arc::new(StdMutex::new(log.reopen().expect("open the build log")));
+        let log_dir = tempfile::tempdir().expect("create the build log directory");
+        let log = ActionLog::create(
+            log_dir.path(),
+            "build.log",
+            LogKind::Build,
+            LogExporter::disabled(),
+        )
+        .expect("create the build log");
+        let log_path = log.path();
         let result =
-            run_uv_cache_prune_child(std_cmd, deadline, stop_grace, log_file, cancel_token).await;
-        let log_text = std::fs::read_to_string(log.path()).expect("read the build log");
+            run_uv_cache_prune_child(std_cmd, deadline, stop_grace, log, cancel_token).await;
+        let log_text = std::fs::read_to_string(log_path).expect("read the build log");
         (result, log_text)
     }
 
@@ -990,8 +977,7 @@ mod tests {
             Some(&cmd),
             working_dir.path(),
             &[],
-            &feedback_tx,
-            test_log_file(),
+            &Announcer::new(scratch_log(), feedback_tx),
             &CancellationToken::new(),
         )
         .await
@@ -1011,8 +997,7 @@ mod tests {
             Some(&cmd),
             working_dir,
             &[],
-            &feedback_tx,
-            test_log_file(),
+            &Announcer::new(scratch_log(), feedback_tx),
             &CancellationToken::new(),
         )
         .await
@@ -1081,8 +1066,7 @@ mod tests {
             Some(&cmd),
             working_dir.path(),
             &env_vars,
-            &feedback_tx,
-            test_log_file(),
+            &Announcer::new(scratch_log(), feedback_tx),
             &CancellationToken::new(),
         )
         .await
@@ -1105,8 +1089,7 @@ mod tests {
             Some(&vec![script.to_string()]),
             working_dir.path(),
             env_vars,
-            &feedback_tx,
-            test_log_file(),
+            &Announcer::new(scratch_log(), feedback_tx),
             &CancellationToken::new(),
         )
         .await

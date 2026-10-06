@@ -9,6 +9,7 @@ pub(crate) use self::interfaces::{resolve_contract_doc, stack_then_repo_resolver
 
 use self::codegen::remove_previous_peppy_dir;
 pub(crate) use self::deps::{DepClosure, materialize_repo_deps};
+use super::trace_interface_step;
 use crate::Result;
 use crate::services::response::into_service_response;
 use config::ParsingError;
@@ -236,9 +237,7 @@ async fn handle_node_sync_request_inner(
                 }
 
                 // Collect consumed interfaces with resolved message formats
-                let interface_feedback = |line: &str| {
-                    tracing::info!(target: "peppy::interface", "{line}");
-                };
+                let interface_feedback = trace_interface_step;
                 let interfaces = match interfaces::collect_all_deployment_interfaces(
                     &node_config.manifest,
                     &node_config.interfaces,

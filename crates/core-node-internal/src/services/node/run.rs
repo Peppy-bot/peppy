@@ -5,10 +5,8 @@ use super::endpoints::{HostAddressSource, expand_announcements, host_addresses};
 use super::gate::ConcurrencyGate;
 use super::health_monitor::{HealthMonitorParams, HealthMonitorPolicy, spawn_health_monitor};
 use super::pairing::plan_requested_pairs;
-use super::{
-    FeedbackLine, FeedbackStream, RelationshipCoordinators, create_action_log_file,
-    write_error_to_log,
-};
+use super::stack_log::{StackLog, StackLogEvent};
+use super::{FeedbackLine, RelationshipCoordinators};
 use crate::Result;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::peppy_config::SubscriberBufferConfig;
@@ -23,8 +21,7 @@ use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::VacantReason;
 use daemon_config::peppy_config::PeppyConfig;
 use futures::FutureExt;
-use node_stack::{self, EntityHandle, NodeEntity, NodeStack};
-use parking_lot::Mutex as StdMutex;
+use node_stack::{self, ActionLog, Announcer, EntityHandle, NodeEntity, NodeStack};
 use peppylib::encoding::endpoints::{NodeEndpointsRequest, NodeEndpointsResponse};
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
@@ -36,7 +33,6 @@ use peppylib::messaging::{
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::net::IpAddr;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -208,8 +204,7 @@ fn apply_daemon_defaults(
 
 struct ProcessNodeRunContext {
     action: NodeRunActionContext,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
+    announcer: Announcer,
     sender_instance_id: String,
 }
 
@@ -497,16 +492,15 @@ pub(crate) async fn run_node_run(
     runtime_config: RuntimeConfig,
     action_context: NodeRunActionContext,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
+    log: ActionLog,
     sender_instance_id: String,
     cancel_token: CancellationToken,
 ) -> NodeRunResult {
-    let log_file_for_panic = log_file.clone();
+    let log_for_panic = log.clone();
 
     let process_context = ProcessNodeRunContext {
         action: action_context,
-        feedback_tx,
-        log_file,
+        announcer: Announcer::new(log, feedback_tx),
         sender_instance_id,
     };
     match AssertUnwindSafe(process_node_run(
@@ -525,7 +519,7 @@ pub(crate) async fn run_node_run(
                 super::panic_message(&*panic_payload)
             );
             tracing::error!("{}", msg);
-            write_error_to_log(&log_file_for_panic, &msg);
+            log_for_panic.error(&msg);
             NodeRunResult::failure(msg)
         }
     }
@@ -600,11 +594,15 @@ async fn handle_goal_request(
         goal.node_name, goal.tag, instance_id_str,
     );
 
-    // Create log file for stdout/stderr
-    let log_dir = action_context.peppy_dirs.logs_dir_run();
-    let log_filename = format!("{}.log", instance_id_str);
-    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
-        Ok(result) => result,
+    let log = match ActionLog::for_run(
+        &action_context.peppy_dirs,
+        action_context.node_stack.log_exporter().clone(),
+        &goal.node_name,
+        &goal.tag,
+        instance_id_str,
+        goal.launch_id.as_deref(),
+    ) {
+        Ok(log) => log,
         Err(error_msg) => {
             debug!("{}", error_msg);
             gate.clear_running();
@@ -613,6 +611,7 @@ async fn handle_goal_request(
         }
     };
 
+    let log_path = log.path();
     debug!("Created log file for node run: {}", log_path.display());
 
     // `accept` registers the per-goal context before replying accepted.
@@ -655,7 +654,7 @@ async fn handle_goal_request(
             runtime_config,
             action_context,
             feedback_tx,
-            log_file,
+            log,
             sender_instance_id,
             cancellation.clone(),
         );
@@ -841,7 +840,7 @@ async fn process_node_run(
         Ok(vars) => vars,
         Err(e) => {
             let msg = e.to_string();
-            write_error_to_log(&ctx.log_file, &msg);
+            ctx.announcer.log().error(&msg);
             return NodeRunResult::failure(msg);
         }
     };
@@ -851,7 +850,7 @@ async fn process_node_run(
         Ok(name) => name,
         Err(e) => {
             let msg = format!("Invalid instance_id: {}", e);
-            write_error_to_log(&ctx.log_file, &msg);
+            ctx.announcer.log().error(&msg);
             return NodeRunResult::failure(msg);
         }
     };
@@ -865,12 +864,11 @@ async fn process_node_run(
         Some(entity) => entity,
         None => {
             let msg = format!(
-                "Node '{}:{}' not found in node stack. \
-                 Run `peppy node list` to see currently-loaded nodes, or `peppy node add {}:{}` to add it \
-                 (the daemon does not persist added nodes across restarts).",
-                node_name, tag, node_name, tag
+                "Node '{node_name}:{tag}' not found in node stack. \
+                 Run `peppy stack list` to see the nodes in the stack, or `peppy node add <dir>` \
+                 to add it from its directory."
             );
-            write_error_to_log(&ctx.log_file, &msg);
+            ctx.announcer.log().error(&msg);
             return NodeRunResult::failure(msg);
         }
     };
@@ -893,7 +891,7 @@ async fn process_node_run(
             existing_name,
             existing_tag,
         );
-        write_error_to_log(&ctx.log_file, &msg);
+        ctx.announcer.log().error(&msg);
         return NodeRunResult::failure(msg);
     }
 
@@ -910,7 +908,7 @@ async fn process_node_run(
                  start its publisher on `{}`",
                 domain.name, domain.core_node, ctx.action.core_node_name, domain.core_node,
             );
-            write_error_to_log(&ctx.log_file, &msg);
+            ctx.announcer.log().error(&msg);
             return NodeRunResult::failure(msg);
         }
         if let Some(owner) = ctx.action.node_stack.clock_domain_publisher(&domain.name)
@@ -924,7 +922,7 @@ async fn process_node_run(
                 ctx.action.core_node_name,
                 owner.as_str(),
             );
-            write_error_to_log(&ctx.log_file, &msg);
+            ctx.announcer.log().error(&msg);
             return NodeRunResult::failure(msg);
         }
     }
@@ -942,7 +940,7 @@ async fn process_node_run(
                  on `{}`; `peppy clock list` shows each domain and the machine hosting it",
                 domain.core_node, publisher.core_node,
             );
-            write_error_to_log(&ctx.log_file, &msg);
+            ctx.announcer.log().error(&msg);
             return NodeRunResult::failure(msg);
         }
         if domain.core_node.as_str() == ctx.action.core_node_name {
@@ -954,7 +952,7 @@ async fn process_node_run(
                          `peppy node run --publish-clock {}`",
                         ctx.action.core_node_name, domain.name,
                     );
-                    write_error_to_log(&ctx.log_file, &msg);
+                    ctx.announcer.log().error(&msg);
                     return NodeRunResult::failure(msg);
                 }
                 Some(owner) if owner.as_str() != publisher.instance_id => {
@@ -965,7 +963,7 @@ async fn process_node_run(
                         owner.as_str(),
                         publisher.instance_id,
                     );
-                    write_error_to_log(&ctx.log_file, &msg);
+                    ctx.announcer.log().error(&msg);
                     return NodeRunResult::failure(msg);
                 }
                 Some(_) => {}
@@ -981,7 +979,7 @@ async fn process_node_run(
                 node_name, tag, node_name, tag
             );
             drop(guard);
-            write_error_to_log(&ctx.log_file, &msg);
+            ctx.announcer.log().error(&msg);
             return NodeRunResult::failure(msg);
         }
         guard.config().clone()
@@ -990,7 +988,7 @@ async fn process_node_run(
     if let Err(msg) =
         refuse_stale_manifest(&node_name, &tag, manifest_sha256.as_deref(), &node_config)
     {
-        write_error_to_log(&ctx.log_file, &msg);
+        ctx.announcer.log().error(&msg);
         return NodeRunResult::failure(msg);
     }
 
@@ -1019,7 +1017,7 @@ async fn process_node_run(
     {
         Ok(reasons) => reasons,
         Err(msg) => {
-            write_error_to_log(&ctx.log_file, &msg);
+            ctx.announcer.log().error(&msg);
             return NodeRunResult::failure(msg);
         }
     };
@@ -1068,37 +1066,29 @@ async fn process_node_run(
         ) {
             Ok(p) => p,
             Err(msg) => {
-                write_error_to_log(&ctx.log_file, &msg);
+                ctx.announcer.log().error(&msg);
                 return NodeRunResult::failure(msg);
             }
         }
     };
     for (link_id, reason) in &vacant_reasons {
-        let _ = ctx.feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Stdout,
-            line: vacant_slot_feedback(instance_id_str, link_id, reason),
-        });
+        ctx.announcer
+            .line(vacant_slot_feedback(instance_id_str, link_id, reason));
     }
     for (link_id, peer) in covered_pairs
         .iter()
         .flat_map(|(link_id, targets)| targets.iter().map(move |target| (link_id, target)))
     {
-        let _ = ctx.feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Stdout,
-            line: format!(
-                "pairing slot `{link_id}` starts unpaired; it will be paired automatically \
+        ctx.announcer.line(format!(
+            "pairing slot `{link_id}` starts unpaired; it will be paired automatically \
                  when planned peer instance `{peer}` starts"
-            ),
-        });
+        ));
     }
 
     let sccache_injected =
         super::inject_rust_build_env(&mut env_vars, node_config.execution.language);
     if sccache_injected {
-        let _ = ctx.feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Stdout,
-            line: "Using sccache for Rust compilation".to_string(),
-        });
+        ctx.announcer.line("Using sccache for Rust compilation");
     }
     super::inject_node_runtime_env(
         &mut env_vars,
@@ -1117,7 +1107,7 @@ async fn process_node_run(
     );
     if !missing.is_empty() {
         let msg = format!("Missing required parameters: {}", missing.join(", "));
-        write_error_to_log(&ctx.log_file, &msg);
+        ctx.announcer.log().error(&msg);
         return NodeRunResult::failure(msg);
     }
 
@@ -1140,7 +1130,7 @@ async fn process_node_run(
     {
         Ok(paths) => paths,
         Err(msg) => {
-            write_error_to_log(&ctx.log_file, &msg);
+            ctx.announcer.log().error(&msg);
             return NodeRunResult::failure(msg);
         }
     };
@@ -1191,12 +1181,12 @@ async fn process_node_run(
         {
             Ok(Ok(apptainer)) => apptainer,
             Ok(Err(msg)) => {
-                write_error_to_log(&ctx.log_file, &msg);
+                ctx.announcer.log().error(&msg);
                 return NodeRunResult::failure(msg);
             }
             Err(e) => {
                 let msg = format!("Apptainer initialization task failed: {}", e);
-                write_error_to_log(&ctx.log_file, &msg);
+                ctx.announcer.log().error(&msg);
                 return NodeRunResult::failure(msg);
             }
         };
@@ -1249,7 +1239,7 @@ async fn process_node_run(
         Ok(json) => json,
         Err(e) => {
             let msg = format!("Failed to serialize runtime config: {}", e);
-            write_error_to_log(&ctx.log_file, &msg);
+            ctx.announcer.log().error(&msg);
             return NodeRunResult::failure(msg);
         }
     };
@@ -1263,14 +1253,11 @@ async fn process_node_run(
 
     let (internal_feedback_tx, mut internal_feedback_rx) =
         mpsc::unbounded_channel::<FeedbackLine>();
-    let external_feedback_tx = ctx.feedback_tx.clone();
+    let external_feedback_tx = ctx.announcer.feedback_tx().clone();
     let feedback_sync_publisher = feedback_sync.clone();
     tokio::spawn(async move {
         while let Some(line) = internal_feedback_rx.recv().await {
-            let _ = external_feedback_tx.send(FeedbackLine {
-                stream: line.stream,
-                line: line.line,
-            });
+            let _ = external_feedback_tx.send(line);
             feedback_sync_publisher.increment_published();
         }
     });
@@ -1293,8 +1280,7 @@ async fn process_node_run(
         mount_paths_resolved: &resolved_mount_paths,
         peppy_dirs: &ctx.action.peppy_dirs,
         output_sinks: node_stack::OutputSinks {
-            feedback_tx: internal_feedback_tx.clone(),
-            log_file: Arc::clone(&ctx.log_file),
+            announcer: Announcer::new(ctx.announcer.log().clone(), internal_feedback_tx.clone()),
             publish_enabled: Arc::clone(&publish_enabled),
             hooks: Arc::new(feedback_sync.clone()),
         },
@@ -1303,7 +1289,7 @@ async fn process_node_run(
     // spawning a child process we're only going to tear down on the next line.
     if cancel_token.is_cancelled() {
         let msg = "cancelled before node process spawn".to_string();
-        write_error_to_log(&ctx.log_file, &msg);
+        ctx.announcer.log().error(&msg);
         feedback_sync
             .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
             .await;
@@ -1316,7 +1302,7 @@ async fn process_node_run(
             Ok(t) => t,
             Err(e) => {
                 let msg = e.to_string();
-                write_error_to_log(&ctx.log_file, &msg);
+                ctx.announcer.log().error(&msg);
                 feedback_sync
                     .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
                     .await;
@@ -1351,7 +1337,7 @@ async fn process_node_run(
             &instance_id,
         )
         .await;
-        write_error_to_log(&ctx.log_file, &msg);
+        ctx.announcer.log().error(&msg);
         feedback_sync
             .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
             .await;
@@ -1515,6 +1501,14 @@ async fn process_node_run(
                     // now-terminal instance instead of logging a spurious
                     // "became unhealthy" on the way out.
                     let instance_done = CancellationToken::new();
+                    let stack_log = StackLog::for_instance(
+                        &ctx.action.peppy_dirs,
+                        ctx.action.node_stack.log_exporter().clone(),
+                        instance_id.as_str(),
+                        runtime_config.node_name.as_str(),
+                        &tag,
+                        launch_id.as_deref(),
+                    );
 
                     spawn_exit_watcher(ExitWatcherParams {
                         child: committed_child,
@@ -1522,7 +1516,7 @@ async fn process_node_run(
                         to_node_name: runtime_config.node_name.as_str().to_owned(),
                         node_tag: tag.clone(),
                         target_instance_id: instance_id.clone(),
-                        peppy_dirs: ctx.action.peppy_dirs.clone(),
+                        stack_log: stack_log.clone(),
                         relationships: ctx.action.relationships.clone(),
                         instance_done: instance_done.clone(),
                         shutdown_token: ctx.action.shutdown_token.clone(),
@@ -1537,7 +1531,7 @@ async fn process_node_run(
                         target_instance_id: instance_id.clone(),
                         node_tag: tag.clone(),
                         node_stack: Arc::clone(&ctx.action.node_stack),
-                        peppy_dirs: ctx.action.peppy_dirs.clone(),
+                        stack_log,
                         policy: ctx.action.health_monitor,
                         shutdown_token: ctx.action.shutdown_token.clone(),
                         instance_done,
@@ -1609,7 +1603,7 @@ async fn process_node_run(
                                  with its pairing slots unpaired; stop it with \
                                  `peppy node stop {instance_id_str}`"
                             );
-                            write_error_to_log(&ctx.log_file, &msg);
+                            ctx.announcer.log().error(&msg);
                             feedback_sync
                                 .drain_or_warn(
                                     instance_id_str,
@@ -1621,10 +1615,8 @@ async fn process_node_run(
                             return NodeRunResult::failure(msg);
                         }
                         for pair in &planned_pairs {
-                            let _ = ctx.feedback_tx.send(FeedbackLine {
-                                stream: FeedbackStream::Stdout,
-                                line: format!("paired: {} ⇌ {}", pair.own, pair.peer),
-                            });
+                            ctx.announcer
+                                .line(format!("paired: {} ⇌ {}", pair.own, pair.peer));
                         }
                     }
 
@@ -1652,7 +1644,7 @@ async fn process_node_run(
                         .pairing()
                         .dissolve_for_instance(instance_id_str)
                         .await;
-                    write_error_to_log(&ctx.log_file, &msg);
+                    ctx.announcer.log().error(&msg);
                     feedback_sync
                         .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
                         .await;
@@ -1686,7 +1678,7 @@ async fn process_node_run(
             .await;
             // The run log is where an operator reads why an instance never
             // started; the reason travels on the result too.
-            write_error_to_log(&ctx.log_file, &msg);
+            ctx.announcer.log().error(&msg);
             feedback_sync
                 .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
                 .await;
@@ -1942,7 +1934,7 @@ struct ExitWatcherParams {
     to_node_name: String,
     node_tag: String,
     target_instance_id: Name,
-    peppy_dirs: PeppyDirs,
+    stack_log: StackLog,
     /// Relationship authorities used to clear pairing and observation state
     /// when the process exits on its own.
     relationships: RelationshipCoordinators,
@@ -1973,7 +1965,7 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         to_node_name,
         node_tag,
         target_instance_id,
-        peppy_dirs,
+        stack_log,
         relationships,
         instance_done,
         shutdown_token,
@@ -2038,13 +2030,7 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
                     to_node_name,
                     node_tag
                 );
-                super::append_stack_log(
-                    &peppy_dirs,
-                    &format!(
-                        "Instance '{}' of node '{}:{}' finished: process exited cleanly",
-                        instance_id_str, to_node_name, node_tag,
-                    ),
-                );
+                stack_log.record(&StackLogEvent::Finished);
             }
             InstanceState::Failed => {
                 let detail = match &status {
@@ -2058,13 +2044,7 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
                     node_tag,
                     detail
                 );
-                super::append_stack_log(
-                    &peppy_dirs,
-                    &format!(
-                        "Instance '{}' of node '{}:{}' failed: process {}",
-                        instance_id_str, to_node_name, node_tag, detail,
-                    ),
-                );
+                stack_log.record(&StackLogEvent::Failed { detail });
             }
             // `mark_instance_exited` only ever returns a terminal state.
             InstanceState::Starting | InstanceState::Running => {}

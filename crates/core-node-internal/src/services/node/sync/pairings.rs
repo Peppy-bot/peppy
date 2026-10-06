@@ -3,6 +3,7 @@
 //! `pairing/v1` doc from the repo cache (sha-pinned, drift-checked) and
 //! validating each manifest entry's role against the doc's two roles.
 
+use crate::services::node::Report;
 use crate::services::repo::cache as repo_cache;
 use config::PairingCoverageMismatch;
 use daemon_config::consts::PeppyDirs;
@@ -20,7 +21,7 @@ fn resolve_pairing_doc(
     name: &str,
     tag: &str,
     sha256_pin: Option<&str>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<PeppyPairing, String> {
     let cache = repo_cache::load_pairing_cache(peppy_dirs)
         .map_err(|e| format!("failed to load pairing cache: {e}"))?;
@@ -41,7 +42,7 @@ fn resolve_pairing_doc_cached(
     tag: &str,
     sha256_pin: Option<&str>,
     doc_pins: Option<&crate::services::node::pins::DocPins>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<PeppyPairing, String> {
     let parse = |content: &str| {
         daemon_config::pairing::PeppyPairingParser::from_content(content).map_err(|e| e.to_string())
@@ -75,7 +76,7 @@ pub(crate) fn validate_pairing_specs(
     manifest: &config::node::Manifest,
     peppy_dirs: &PeppyDirs,
     doc_pins: Option<&crate::services::node::pins::DocPins>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<HashMap<String, PeppyPairing>, String> {
     let slots = pairing_slots(manifest);
     if slots.is_empty() {
@@ -217,7 +218,7 @@ pub fn collect_pairing_interfaces(
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
     doc_pins: Option<&crate::services::node::pins::DocPins>,
-    on_feedback: &dyn Fn(&str),
+    on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<Vec<generator::DeploymentInterface>, PairingError> {
     let Some(depends_on) = manifest.depends_on.as_ref() else {
         return Ok(Vec::new());

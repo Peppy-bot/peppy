@@ -35,7 +35,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use crate::build_io::{FeedbackLine, FeedbackStream, OutputReaderHooks, format_bytes};
+use crate::build_io::{FeedbackLine, OutputReaderHooks, format_bytes};
 
 /// Cadence of activity samples. Each tick is one blocking probe (filesystem
 /// walks and a `/proc` scan or a `ps` listing; a `limactl shell` subprocess
@@ -166,11 +166,7 @@ impl BuildProgressMonitor {
                 let Some(line) = tracker.observe(activity, quiet_output.as_ref()) else {
                     continue;
                 };
-                let line = FeedbackLine {
-                    stream: FeedbackStream::Stdout,
-                    line,
-                };
-                if feedback_tx.send(line).is_err() {
+                if feedback_tx.send(FeedbackLine::progress(line)).is_err() {
                     // Channel closed: the build is over; stop sampling.
                     return;
                 }
@@ -286,6 +282,7 @@ fn format_duration(time: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::build_io::FeedbackStream;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const MB: u64 = 1024 * 1024;

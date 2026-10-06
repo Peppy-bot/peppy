@@ -2746,3 +2746,147 @@ async fn listen_for_node_run_refuses_an_announced_label_the_manifest_does_not_de
         "the refusal names both sets: {error}"
     );
 }
+
+/// An instance whose process exits with a failure: the stack log exports an
+/// error record that names the node and the instance and states the exit
+/// status, and the run log exported the lines before it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
+    use daemon_config::peppy_config::Severity;
+    use log_export::{LogKind, LogRecord};
+
+    const TARGET_NODE_NAME: &str = "failing_exit_node";
+    const TARGET_NODE_TAG: &str = "v1";
+    const TARGET_INSTANCE_ID: &str = "failing_exit_instance";
+    /// Bounds a hang only: the outcome never depends on how fast the host is.
+    const HANG_GUARD: Duration = Duration::from_secs(60);
+
+    let (started, mut exported) = common::start_core_node_with_log_export(None).await;
+
+    // The node runs until the test creates `exit_flag`, then exits with 3, so
+    // the exit comes after the start has committed.
+    let flag_dir = TempDir::new().expect("failed to create flag directory");
+    let exit_flag = flag_dir.path().join("exit");
+    let run_script = format!(
+        "echo started; while [ ! -e '{}' ]; do sleep 0.05; done; exit 3",
+        exit_flag.display()
+    );
+    let peppy_json5 = serde_json::json!({
+        "peppy_schema": "node/v1",
+        "manifest": { "name": TARGET_NODE_NAME, "tag": TARGET_NODE_TAG },
+        "execution": { "language": "rust", "run_cmd": ["sh", "-c", run_script] },
+    })
+    .to_string();
+    let temp_dir = create_node_config_dir(&peppy_json5);
+
+    let add_response = send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        temp_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let _health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node health service should start"),
+    );
+
+    let start_response = send_node_run_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        common::default_instance_plan(TARGET_INSTANCE_ID),
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(10),
+            result: Duration::from_secs(30),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete");
+    assert!(
+        start_response.result.success,
+        "node_run should succeed, got error: {:?}",
+        start_response.result.error_message
+    );
+
+    std::fs::write(&exit_flag, b"").expect("failed to create the exit flag");
+
+    let mut records: Vec<LogRecord> = Vec::new();
+    let failed = tokio::time::timeout(HANG_GUARD, async {
+        loop {
+            let queued = exported.recv().await.expect("the exporter is alive");
+            let record = queued.record().clone();
+            if record.identity.kind == LogKind::Stack {
+                break record;
+            }
+            records.push(record);
+        }
+    })
+    .await
+    .expect("the stack log record of the failed instance should arrive");
+
+    assert_eq!(failed.severity, Some(Severity::Error));
+    assert!(
+        failed.body.contains("failed") && failed.body.contains("exit status: 3"),
+        "the record should state the exit status: {}",
+        failed.body
+    );
+    let node = failed
+        .identity
+        .node
+        .as_ref()
+        .expect("the record names its node");
+    assert_eq!(
+        (node.name.as_str(), node.tag.as_str()),
+        (TARGET_NODE_NAME, TARGET_NODE_TAG)
+    );
+    assert_eq!(
+        failed.identity.instance_id.as_deref(),
+        Some(TARGET_INSTANCE_ID)
+    );
+    assert_eq!(
+        failed.identity.file_path,
+        started.peppy_dirs.stack_log_path()
+    );
+
+    let run_output: Vec<&LogRecord> = records
+        .iter()
+        .filter(|record| record.identity.kind == LogKind::Run && record.body == "started")
+        .collect();
+    assert_eq!(
+        run_output.len(),
+        1,
+        "the run log should export the node's output once: {records:?}"
+    );
+    assert_eq!(
+        run_output[0].identity.instance_id.as_deref(),
+        Some(TARGET_INSTANCE_ID)
+    );
+}
