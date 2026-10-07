@@ -118,6 +118,9 @@ rmcp = { workspace = true, features = [
     "reqwest",
 ] }
 base64 = "0.23"
+# `test-util`: the multi-daemon e2e proves its Docker client waits for a late
+# engine answer on a paused clock, so the late answer costs no real time.
+tokio = { version = "1", features = ["test-util"] }
 
 [[test]]
 name = "integration"
