@@ -107,6 +107,44 @@ pub fn should_embed_so(recorded_source_hash: Option<&str>, current_source_hash: 
     recorded_source_hash == Some(current_source_hash)
 }
 
+/// Why a cached platform `.so` cannot be embedded as it is, which a build
+/// without pixi reports because it cannot build a new one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UnusableSo {
+    /// The cache holds no `.so` for the platform: no build on this machine
+    /// made one yet, or the cache was deleted.
+    Missing,
+    /// The `.so` was built from other sources than the ones of this build, or
+    /// its build state is not recorded (see [`should_embed_so`]).
+    BuiltFromOtherSources,
+}
+
+impl std::fmt::Display for UnusableSo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Missing => "missing",
+            Self::BuiltFromOtherSources => "built from other sources",
+        })
+    }
+}
+
+/// Why the cached `.so` of a platform cannot be embedded, or `None` when it
+/// can. `present` is whether the cache holds the `.so`, and
+/// `recorded_source_hash` is the source hash its build state records.
+pub fn unusable_so(
+    present: bool,
+    recorded_source_hash: Option<&str>,
+    current_source_hash: &str,
+) -> Option<UnusableSo> {
+    if !present {
+        return Some(UnusableSo::Missing);
+    }
+    if should_embed_so(recorded_source_hash, current_source_hash) {
+        return None;
+    }
+    Some(UnusableSo::BuiltFromOtherSources)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +237,46 @@ mod tests {
     #[test]
     fn so_without_recorded_state_is_never_embedded() {
         assert!(!should_embed_so(None, "abc"));
+    }
+
+    #[test]
+    fn so_built_from_current_sources_is_usable() {
+        assert_eq!(unusable_so(true, Some("abc"), "abc"), None);
+    }
+
+    // A deleted cache keeps no build state either, so a missing `.so` must be
+    // reported as missing, not as built from other sources.
+    #[test]
+    fn absent_so_is_missing_whatever_its_recorded_state() {
+        assert_eq!(unusable_so(false, None, "abc"), Some(UnusableSo::Missing));
+        assert_eq!(
+            unusable_so(false, Some("abc"), "abc"),
+            Some(UnusableSo::Missing)
+        );
+        assert_eq!(
+            unusable_so(false, Some("old"), "abc"),
+            Some(UnusableSo::Missing)
+        );
+    }
+
+    #[test]
+    fn present_so_from_other_or_unrecorded_sources_is_unusable() {
+        assert_eq!(
+            unusable_so(true, Some("old"), "abc"),
+            Some(UnusableSo::BuiltFromOtherSources)
+        );
+        assert_eq!(
+            unusable_so(true, None, "abc"),
+            Some(UnusableSo::BuiltFromOtherSources)
+        );
+    }
+
+    #[test]
+    fn unusable_reasons_read_as_the_build_error_states_them() {
+        assert_eq!(UnusableSo::Missing.to_string(), "missing");
+        assert_eq!(
+            UnusableSo::BuiltFromOtherSources.to_string(),
+            "built from other sources"
+        );
     }
 }
