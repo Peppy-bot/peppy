@@ -993,19 +993,27 @@ mod peppylib_build {
         let so_path = peppylib_dir.join("_peppylib.abi3.so");
 
         // When pixi is unavailable we cannot rebuild, so fail only if an artifact
-        // is actually missing or built from stale sources; otherwise serve what
-        // exists.
+        // is missing or built from other sources, and name each one; otherwise
+        // serve what exists.
         if !is_pixi_available() {
             let state = read_build_state(&so_dir);
-            let needs_rebuild = platforms.iter().any(|p| {
-                let so = so_dir.join(format!("_peppylib.abi3.{p}.so"));
-                !so.exists() || state.get(p).map(|(h, _)| h.as_str()) != Some(current_hash.as_str())
-            });
+            let unusable: Vec<String> = platforms
+                .iter()
+                .filter_map(|p| {
+                    let so = so_dir.join(format!("_peppylib.abi3.{p}.so"));
+                    let recorded = state.get(p).map(|(h, _)| h.as_str());
+                    peppylib_build_policy::unusable_so(so.exists(), recorded, &current_hash)
+                        .map(|reason| format!("  {}: {reason}", so.display()))
+                })
+                .collect();
             assert!(
-                !needs_rebuild,
-                "Stale peppylib-py .so files: sources have changed since last build \
-                 but pixi is not available to rebuild. Run \
-                 `cargo build -p generator` on a machine with pixi first."
+                unusable.is_empty(),
+                "pixi is not available (`pixi --version` failed), and this build \
+                 needs it to build the peppylib-py bindings it embeds:\n{}\n\
+                 Install pixi, or put the directory that holds it on the PATH of \
+                 the shell that runs cargo (the pixi installer puts it in \
+                 ~/.pixi/bin), then build again.",
+                unusable.join("\n")
             );
             println!(
                 "cargo:warning=Skipping peppylib-py build (pixi not available). \

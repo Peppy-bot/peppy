@@ -11,6 +11,6 @@
 mod so_build;
 
 pub use so_build::{
-    BuildProfile, cross_build_enabled, cross_build_requested, should_build_host,
-    should_cross_compile, should_embed_so,
+    BuildProfile, UnusableSo, cross_build_enabled, cross_build_requested, should_build_host,
+    should_cross_compile, should_embed_so, unusable_so,
 };
