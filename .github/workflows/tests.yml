@@ -214,6 +214,10 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=100gb:gp3:500mbs:6000iops/sticky=multi-daemon-e2e:40gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
+    # The suite waits for every answer of the Docker engine (engine_client in
+    # crates/peppy/tests/multi_daemon_e2e.rs), so this limit is what ends a
+    # run whose engine stops answering. A run takes about 10 minutes.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v7

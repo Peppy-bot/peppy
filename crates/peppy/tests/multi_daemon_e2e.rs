@@ -1,7 +1,7 @@
 #![cfg(feature = "multi_daemon_e2e")]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -10,13 +10,22 @@ use core_node::{TEARDOWN_REAP_BUDGET, force_kill_deadline};
 use daemon_config::peppy_config::{
     ExternalZenohConfig, ManagedZenohConfig, OtlpEndpoint, PeppyConfig, ZenohConfig,
 };
+use futures::{Stream, StreamExt};
 use log_export::test_support::{OtlpReceiver, ReceivedRecord};
 use peppy::test_support::CACHED_BUILD_REUSE_PREFIX;
 use pmi::{RouterId, ZenohAdapter, ZenohNetProtocol, render_router_config};
+use testcontainers::GenericBuildableImage;
+use testcontainers::bollard::Docker;
+use testcontainers::bollard::container::LogOutput;
+use testcontainers::bollard::errors::Error as EngineError;
+use testcontainers::bollard::exec::{CreateExecOptions, StartExecResults};
+use testcontainers::bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType};
+use testcontainers::bollard::query_parameters::{
+    CreateContainerOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
+    StopContainerOptionsBuilder,
+};
 use testcontainers::core::client::docker_client_instance;
-use testcontainers::core::{AccessMode, CmdWaitFor, ExecCommand, Host, Mount};
-use testcontainers::runners::{AsyncBuilder, AsyncRunner};
-use testcontainers::{ContainerAsync, GenericBuildableImage, GenericImage, ImageExt};
+use testcontainers::runners::AsyncBuilder;
 use tokio::sync::OnceCell;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -76,25 +85,119 @@ const UV_VERSION: &str = "0.12.13";
 /// ">=3.13,<3.14"`). Baked into the image so no node build has to fetch one.
 const NODE_PYTHON_VERSION: &str = "3.13";
 
-async fn require_docker() {
-    let client = docker_client_instance()
+/// The Docker client every request of this suite goes through: the engine
+/// testcontainers resolves, with a client that waits for every answer.
+///
+/// The client testcontainers builds gives up on a request after
+/// [`TESTCONTAINERS_REQUEST_TIMEOUT`], and it does not let a caller change
+/// that. On a CI runner, this suite's load makes the engine answer some
+/// requests later than that, and the engine goes on creating, stopping or
+/// removing the container after the client stops waiting. No test here
+/// asserts how fast the engine answers, so this client waits for each answer.
+/// A run whose engine never answers ends at the time limit of its CI job.
+async fn engine_client() -> Docker {
+    waiting_for_every_answer(
+        docker_client_instance()
+            .await
+            .expect("a Docker client must be constructible on the test host"),
+    )
+}
+
+/// How long the client testcontainers builds waits for an answer of the
+/// engine.
+const TESTCONTAINERS_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// `client`, made to wait for every answer of its engine however late it
+/// comes.
+fn waiting_for_every_answer(client: Docker) -> Docker {
+    client.with_timeout(Duration::MAX)
+}
+
+/// A stand-in Docker engine on `listener`. It answers every request with a
+/// `200 OK` whose body is `OK`, `delay` after the request arrived.
+async fn answer_late(listener: tokio::net::UnixListener, delay: Duration) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .expect("accept a connection to the stand-in engine");
+        tokio::spawn(async move {
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream
+                    .read(&mut chunk)
+                    .await
+                    .expect("read a request to the stand-in engine");
+                if read == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..read]);
+            }
+            tokio::time::sleep(delay).await;
+            // The client that gave up has closed its end, so a failed write
+            // is that client's request, which nobody reads any more.
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK",
+                )
+                .await;
+        });
+    }
+}
+
+/// The suite's client gets an answer the engine gives long after the client
+/// testcontainers builds has given up on it. On a paused clock, so the late
+/// answer costs no real time; the testcontainers client against the same
+/// engine is what shows the answer comes too late for it.
+#[tokio::test(start_paused = true)]
+async fn the_suite_waits_for_an_engine_answer_that_testcontainers_gives_up_on() {
+    let socket_dir = tempfile::tempdir().expect("create the stand-in engine directory");
+    let socket = socket_dir.path().join("docker.sock");
+    let listener =
+        tokio::net::UnixListener::bind(&socket).expect("bind the stand-in engine socket");
+    tokio::spawn(answer_late(listener, 5 * TESTCONTAINERS_REQUEST_TIMEOUT));
+    let connect = |timeout: Duration| {
+        Docker::connect_with_unix(
+            socket.to_str().expect("a UTF-8 socket path"),
+            timeout.as_secs(),
+            testcontainers::bollard::API_DEFAULT_VERSION,
+        )
+        .expect("connect to the stand-in engine")
+    };
+
+    let gave_up = connect(TESTCONTAINERS_REQUEST_TIMEOUT).ping().await;
+    assert!(
+        matches!(gave_up, Err(EngineError::RequestTimeoutError)),
+        "the testcontainers client must give up on the late answer, got {gave_up:?}"
+    );
+
+    let answer = waiting_for_every_answer(connect(TESTCONTAINERS_REQUEST_TIMEOUT))
+        .ping()
         .await
-        .expect("a Docker client must be constructible on the test host");
-    client
+        .expect("the suite's client must wait for the late answer");
+    assert_eq!(answer, "OK");
+}
+
+async fn require_docker() {
+    engine_client()
+        .await
         .ping()
         .await
         .expect("the Docker daemon must be reachable on the test host");
 }
 
 struct ExecOutput {
-    exit_code: Option<i64>,
+    exit_code: i64,
     /// Stdout followed by stderr, both lossily decoded.
     text: String,
 }
 
 impl ExecOutput {
     fn success(&self) -> bool {
-        self.exit_code == Some(0)
+        self.exit_code == 0
     }
 }
 
@@ -113,7 +216,7 @@ fn require_delivered(output: ExecOutput, operation: &str) -> String {
 fn require_success(output: ExecOutput, operation: &str) -> String {
     if !output.success() {
         panic!(
-            "{operation} failed (exit code {:?}):\n{}",
+            "{operation} failed (exit code {}):\n{}",
             output.exit_code, output.text
         );
     }
@@ -274,25 +377,39 @@ fn e2e_dockerfile(ubuntu_release: &str) -> String {
 /// building it per container would serialize seven redundant Docker builds
 /// behind each other. `PEPPY_MULTI_DAEMON_E2E_IMAGE` bypasses the build
 /// entirely for runs that supply a prepared image.
-async fn e2e_image() -> (String, String) {
-    static IMAGE: OnceCell<(String, String)> = OnceCell::const_new();
+async fn e2e_image() -> String {
+    static IMAGE: OnceCell<String> = OnceCell::const_new();
     IMAGE
         .get_or_init(|| async {
             if let Ok(image) = std::env::var(IMAGE_OVERRIDE_ENV)
                 && !image.trim().is_empty()
             {
-                return split_image_reference(image.trim());
+                let image = image.trim().to_owned();
+                require_local_image(&image).await;
+                return image;
             }
 
             let release = host_ubuntu_release();
             // The build leaves the image tagged `E2E_IMAGE_NAME:release` in
-            // the local daemon, which is the part every container needs;
-            // `start_daemon` builds its own request per container anyway.
+            // the local engine, which is where every container is created
+            // from.
             build_e2e_daemon_image(&release).await;
-            (String::from(E2E_IMAGE_NAME), release)
+            format!("{E2E_IMAGE_NAME}:{release}")
         })
         .await
         .clone()
+}
+
+/// Fails unless the local engine holds `image`. The engine creates a container
+/// from a local image only, so a prepared image has to be pulled or built
+/// before the run.
+async fn require_local_image(image: &str) {
+    if let Err(error) = engine_client().await.inspect_image(image).await {
+        panic!(
+            "{IMAGE_OVERRIDE_ENV} names {image}, which the local Docker engine does not hold \
+             ({error}); pull or build it before the run"
+        );
+    }
 }
 
 /// Builds the daemon image into the local Docker daemon.
@@ -393,16 +510,6 @@ async fn buildx_available() -> bool {
     })
     .await
     .unwrap_or(false)
-}
-
-/// `GenericImage` wants the name and tag separately and joins them back with a
-/// colon. Splitting at the last colon (unless it belongs to a registry port)
-/// reproduces the original reference, `name@sha256` digests included.
-fn split_image_reference(reference: &str) -> (String, String) {
-    match reference.rsplit_once(':') {
-        Some((name, tag)) if !tag.contains('/') => (name.to_string(), tag.to_string()),
-        _ => (reference.to_string(), String::from("latest")),
-    }
 }
 
 /// Where every daemon container reads the fixture repository, and so the
@@ -526,8 +633,7 @@ fn commit_worktree(dir: &Path) {
 }
 
 struct DaemonLaunch<'a> {
-    image_name: &'a str,
-    image_tag: &'a str,
+    image: &'a str,
     peppy_binary: &'a Path,
     apptainer_dir: &'a Path,
     newuidmap: &'a Path,
@@ -540,9 +646,41 @@ struct ManagedRouterMount<'a> {
     config: &'a Path,
 }
 
+/// The Docker network every daemon container joins, and so the one its
+/// address is read from.
+const BRIDGE_NETWORK: &str = "bridge";
+
 fn read_only_bind(host_path: &Path, container_path: &str) -> Mount {
-    Mount::bind_mount(host_path.display().to_string(), container_path)
-        .with_access_mode(AccessMode::ReadOnly)
+    Mount {
+        typ: Some(MountType::BIND),
+        source: Some(host_path.display().to_string()),
+        target: Some(container_path.to_owned()),
+        read_only: Some(true),
+        ..Default::default()
+    }
+}
+
+/// Drains a stream of container output into its stdout followed by its
+/// stderr, both lossily decoded. `source` names the stream in a failure.
+async fn collect_output(
+    output: impl Stream<Item = Result<LogOutput, EngineError>>,
+    source: &str,
+) -> String {
+    let mut output = std::pin::pin!(output);
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    while let Some(chunk) = output.next().await {
+        match chunk.unwrap_or_else(|error| panic!("reading {source}: {error}")) {
+            LogOutput::StdOut { message } => stdout.extend_from_slice(&message),
+            LogOutput::StdErr { message } => stderr.extend_from_slice(&message),
+            LogOutput::StdIn { .. } | LogOutput::Console { .. } => {}
+        }
+    }
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    )
 }
 
 /// A running daemon container. The guard owns cleanup: dropping it removes the
@@ -550,7 +688,7 @@ fn read_only_bind(host_path: &Path, container_path: &str) -> Mount {
 /// containers.
 struct Daemon {
     name: String,
-    container: ContainerAsync<GenericImage>,
+    engine: Docker,
 }
 
 impl Daemon {
@@ -570,32 +708,51 @@ impl Daemon {
         self.exec(cmd).await
     }
 
-    /// Runs one command inside this container and returns its combined output.
+    /// Runs one command inside this container and returns its combined output
+    /// once the command has exited.
     async fn exec(&self, cmd: Vec<&str>) -> ExecOutput {
-        let mut result = self
-            .container
-            .exec(ExecCommand::new(cmd).with_cmd_ready_condition(CmdWaitFor::exit()))
+        let exec = self
+            .engine
+            .create_exec(
+                &self.name,
+                CreateExecOptions {
+                    cmd: Some(cmd),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap_or_else(|error| panic!("failed to exec in {}: {error}", self.name));
-        let exit_code = result
-            .exit_code()
+        let started = self
+            .engine
+            .start_exec(&exec.id, None)
             .await
-            .unwrap_or_else(|error| panic!("exec exit code in {}: {error}", self.name));
-        let stdout = result
-            .stdout_to_vec()
-            .await
-            .unwrap_or_else(|error| panic!("exec stdout in {}: {error}", self.name));
-        let stderr = result
-            .stderr_to_vec()
-            .await
-            .unwrap_or_else(|error| panic!("exec stderr in {}: {error}", self.name));
+            .unwrap_or_else(|error| panic!("failed to exec in {}: {error}", self.name));
+        let StartExecResults::Attached { output, .. } = started else {
+            panic!("the exec in {} started detached", self.name);
+        };
+        let text = collect_output(output, &format!("the exec output in {}", self.name)).await;
         ExecOutput {
-            exit_code,
-            text: format!(
-                "{}{}",
-                String::from_utf8_lossy(&stdout),
-                String::from_utf8_lossy(&stderr)
-            ),
+            exit_code: self.exec_exit_code(&exec.id).await,
+            text,
+        }
+    }
+
+    /// The exit code of an exec whose output has ended. The output ends when
+    /// the command closes its streams, which can come before the engine
+    /// records its exit, so this asks again until the engine has.
+    async fn exec_exit_code(&self, exec_id: &str) -> i64 {
+        loop {
+            let inspected = self
+                .engine
+                .inspect_exec(exec_id)
+                .await
+                .unwrap_or_else(|error| panic!("inspecting an exec in {}: {error}", self.name));
+            if let Some(exit_code) = inspected.exit_code {
+                return exit_code;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -612,8 +769,9 @@ impl Daemon {
         let mut last = String::new();
         while started.elapsed() < TIMEOUT {
             let output = self.stack_list(None).await;
+            let listed = output.success();
             last = output.text;
-            if output.exit_code == Some(0) && predicate(&last) {
+            if listed && predicate(&last) {
                 return last;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -625,14 +783,26 @@ impl Daemon {
         );
     }
 
+    /// The exit code of this container's daemon once it has exited, and
+    /// `None` while it runs.
+    async fn exit_code(&self) -> Option<i64> {
+        let state = self
+            .engine
+            .inspect_container(&self.name, None)
+            .await
+            .unwrap_or_else(|error| panic!("inspecting exit state of {}: {error}", self.name))
+            .state
+            .unwrap_or_else(|| panic!("the engine reports no state for {}", self.name));
+        if state.running == Some(true) {
+            return None;
+        }
+        state.exit_code
+    }
+
     async fn wait_for_exit(&self) -> i64 {
         let started = Instant::now();
         while started.elapsed() < TIMEOUT {
-            let exit =
-                self.container.exit_code().await.unwrap_or_else(|error| {
-                    panic!("inspecting exit state of {}: {error}", self.name)
-                });
-            if let Some(code) = exit {
+            if let Some(code) = self.exit_code().await {
                 return code;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -645,56 +815,49 @@ impl Daemon {
     }
 
     async fn logs(&self) -> String {
-        let stdout = self
-            .container
-            .stdout_to_vec()
-            .await
-            .unwrap_or_else(|error| panic!("reading stdout logs of {}: {error}", self.name));
-        let stderr = self
-            .container
-            .stderr_to_vec()
-            .await
-            .unwrap_or_else(|error| panic!("reading stderr logs of {}: {error}", self.name));
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&stdout),
-            String::from_utf8_lossy(&stderr)
+        let options = LogsOptionsBuilder::new().stdout(true).stderr(true).build();
+        collect_output(
+            self.engine.logs(&self.name, Some(options)),
+            &format!("the logs of {}", self.name),
         )
+        .await
     }
 
     async fn bridge_ip(&self) -> Ipv4Addr {
-        match self.container.get_bridge_ip_address().await {
-            Ok(IpAddr::V4(ip)) => ip,
-            Ok(IpAddr::V6(ip)) => panic!(
-                "container {} has IPv6 bridge address {ip}, expected IPv4",
+        let address = self
+            .engine
+            .inspect_container(&self.name, None)
+            .await
+            .unwrap_or_else(|error| panic!("inspecting bridge IP for {}: {error}", self.name))
+            .network_settings
+            .and_then(|settings| settings.networks)
+            .and_then(|mut networks| networks.remove(BRIDGE_NETWORK))
+            .and_then(|network| network.ip_address)
+            .unwrap_or_else(|| {
+                panic!(
+                    "container {} has no address on the {BRIDGE_NETWORK} network",
+                    self.name
+                )
+            });
+        address.parse().unwrap_or_else(|error| {
+            panic!(
+                "container {} has bridge address {address}, expected IPv4: {error}",
                 self.name
-            ),
-            Err(error) => panic!("inspecting bridge IP for {}: {error}", self.name),
-        }
+            )
+        })
     }
 
-    /// Stops the daemon and settles once its container has exited.
-    ///
-    /// The request runs under a client timeout of the Docker client
-    /// testcontainers builds, two minutes that nothing here can configure,
-    /// and an engine that answers late is not the same fact as a container
-    /// that would not stop: the engine goes on stopping it after the client
-    /// has given up waiting for the answer. The exit is the fact this waits
-    /// on, so an unanswered request is carried into that wait instead of
-    /// failing here. A container that really does not stop still fails, in
-    /// [`Daemon::wait_for_exit`], with its logs attached.
+    /// Stops the daemon. The engine answers once the container has exited:
+    /// after the daemon's own teardown, or after the kill that ends a daemon
+    /// still running when [`stop_grace_secs`] is over.
     async fn stop(&self) {
-        if let Err(error) = self
-            .container
-            .stop_with_timeout(Some(stop_grace_secs()))
+        let options = StopContainerOptionsBuilder::new()
+            .t(stop_grace_secs())
+            .build();
+        self.engine
+            .stop_container(&self.name, Some(options))
             .await
-        {
-            eprintln!(
-                "the stop request for {} went unanswered ({error}); waiting for its container to exit",
-                self.name
-            );
-        }
-        self.wait_for_exit().await;
+            .unwrap_or_else(|error| panic!("stopping {}: {error}", self.name));
     }
 
     /// Populates this daemon's node cache from the fixture repository.
@@ -727,10 +890,27 @@ impl Daemon {
     /// image does not run.
     async fn restart(&self) {
         self.stop().await;
-        self.container
-            .start()
+        self.engine
+            .start_container(&self.name, None)
             .await
             .unwrap_or_else(|error| panic!("restarting {}: {error}", self.name));
+    }
+}
+
+impl Drop for Daemon {
+    /// Removes the container and blocks until the engine answers, so a test
+    /// ends with its containers gone. Every test that starts a daemon runs on
+    /// a multi-thread runtime, which is what lets a drop block on the removal.
+    fn drop(&mut self) {
+        let options = RemoveContainerOptionsBuilder::new()
+            .force(true)
+            .v(true)
+            .build();
+        let removal = self.engine.remove_container(&self.name, Some(options));
+        let runtime = tokio::runtime::Handle::current();
+        if let Err(error) = tokio::task::block_in_place(|| runtime.block_on(removal)) {
+            eprintln!("removing container {}: {error}", self.name);
+        }
     }
 }
 
@@ -745,58 +925,83 @@ async fn start_daemon(
     extra_mount: Option<(&Path, &str)>,
 ) -> Daemon {
     let repositories_config = launch.fixture.repositories_config();
-    let mut request = GenericImage::new(launch.image_name, launch.image_tag)
-        .with_container_name(name)
-        .with_hostname(hostname)
-        // Apptainer builds and runs every container node through a user
-        // namespace and a pile of mounts. Under Docker's default profile that
-        // is blocked twice over: no CAP_SYS_ADMIN, and `docker-default`
-        // AppArmor denies unprivileged userns on Ubuntu 24.04+ (the same
-        // restriction `containers::apptainer` disables in peppy's Lima guest).
-        // A test-only container on a CI runner is the one place where
-        // buying both with `privileged` is the proportionate answer; the
-        // alternative is three security-opt knobs that each drift with the
-        // host's kernel and AppArmor configuration.
-        .with_privileged(true)
-        .with_host("host.docker.internal", Host::HostGateway)
-        .with_mount(read_only_bind(launch.peppy_binary, CONTAINER_PEPPY_BINARY))
-        .with_mount(read_only_bind(launch.apptainer_dir, "/opt/peppy-apptainer"))
-        .with_mount(read_only_bind(launch.newuidmap, "/usr/local/bin/newuidmap"))
+    let mut mounts = vec![
+        read_only_bind(launch.peppy_binary, CONTAINER_PEPPY_BINARY),
+        read_only_bind(launch.apptainer_dir, "/opt/peppy-apptainer"),
+        read_only_bind(launch.newuidmap, "/usr/local/bin/newuidmap"),
         // Every daemon, not only the ones that refresh: mounting the config in
         // ahead of startup is what keeps the bundled defaults from ever being
         // written, so no daemon in this suite has a network repository to read.
-        .with_mount(read_only_bind(
-            launch.fixture.repo.path(),
-            CONTAINER_FIXTURE_REPO,
-        ))
-        .with_mount(read_only_bind(
+        read_only_bind(launch.fixture.repo.path(), CONTAINER_FIXTURE_REPO),
+        read_only_bind(
             &repositories_config,
             &format!("{CONTAINER_PEPPY_HOME}/conf/repositories.json5"),
-        ))
-        .with_env_var(PEPPY_HOME_ENV, CONTAINER_PEPPY_HOME)
-        .with_env_var("PEPPY_APPTAINER_DIR", "/opt/peppy-apptainer")
-        .with_env_var(PEPPY_CONFIG_ENV, config)
-        .with_cmd([CONTAINER_PEPPY_BINARY, "service", "serve"]);
+        ),
+    ];
+    let mut env = vec![
+        format!("{PEPPY_HOME_ENV}={CONTAINER_PEPPY_HOME}"),
+        String::from("PEPPY_APPTAINER_DIR=/opt/peppy-apptainer"),
+        format!("{PEPPY_CONFIG_ENV}={config}"),
+    ];
     if let Some((host_path, container_path)) = extra_mount {
-        request = request.with_mount(read_only_bind(host_path, container_path));
+        mounts.push(read_only_bind(host_path, container_path));
     }
     if let Some(router) = managed_router {
-        request = request
-            .with_mount(read_only_bind(
-                router.zenohd_binary,
-                "/usr/local/bin/zenohd",
-            ))
-            .with_mount(read_only_bind(router.config, CONTAINER_ROUTER_CONFIG))
-            .with_env_var("ZENOH_CONFIG", CONTAINER_ROUTER_CONFIG);
+        mounts.push(read_only_bind(
+            router.zenohd_binary,
+            "/usr/local/bin/zenohd",
+        ));
+        mounts.push(read_only_bind(router.config, CONTAINER_ROUTER_CONFIG));
+        env.push(format!("ZENOH_CONFIG={CONTAINER_ROUTER_CONFIG}"));
     }
-    let container = request
-        .start()
+    let container = ContainerCreateBody {
+        image: Some(launch.image.to_owned()),
+        hostname: Some(hostname.to_owned()),
+        env: Some(env),
+        cmd: Some(
+            [CONTAINER_PEPPY_BINARY, "service", "serve"]
+                .map(String::from)
+                .to_vec(),
+        ),
+        host_config: Some(HostConfig {
+            // Apptainer builds and runs every container node through a user
+            // namespace and a pile of mounts. Under Docker's default profile
+            // that is blocked twice over: no CAP_SYS_ADMIN, and
+            // `docker-default` AppArmor denies unprivileged userns on Ubuntu
+            // 24.04+ (the same restriction `containers::apptainer` disables in
+            // peppy's Lima guest). A test-only container on a CI runner is the
+            // one place where buying both with `privileged` is the
+            // proportionate answer; the alternative is three security-opt
+            // knobs that each drift with the host's kernel and AppArmor
+            // configuration.
+            privileged: Some(true),
+            extra_hosts: Some(vec![String::from("host.docker.internal:host-gateway")]),
+            network_mode: Some(String::from(BRIDGE_NETWORK)),
+            mounts: Some(mounts),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let engine = engine_client().await;
+    engine
+        .create_container(
+            Some(CreateContainerOptionsBuilder::new().name(name).build()),
+            container,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("creating container {name} failed: {error}"));
+    // The guard exists from the moment the container does, so a container
+    // whose start fails is removed all the same.
+    let daemon = Daemon {
+        name: name.to_owned(),
+        engine,
+    };
+    daemon
+        .engine
+        .start_container(name, None)
         .await
         .unwrap_or_else(|error| panic!("starting container {name} failed: {error}"));
-    Daemon {
-        name: name.to_string(),
-        container,
-    }
+    daemon
 }
 
 /// External mode is the shared-router architecture: both container daemons dial
@@ -882,7 +1087,7 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_are_refused() {
     require_docker().await;
-    let (image_name, image_tag) = e2e_image().await;
+    let image = e2e_image().await;
 
     let peppy_binary = Path::new(env!("CARGO_BIN_EXE_peppy"));
     let zenohd_binary = bundled_zenohd_binary();
@@ -891,8 +1096,7 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
     let newuidmap = executable_on_path("newuidmap");
     let fixture = FixtureRepository::create();
     let launch = DaemonLaunch {
-        image_name: &image_name,
-        image_tag: &image_tag,
+        image: &image,
         peppy_binary,
         apptainer_dir: &apptainer_dir,
         newuidmap: &newuidmap,
@@ -1548,8 +1752,7 @@ fn assert_holds_exactly(stack: &str, daemon: &str, expected: &[&str], forbidden:
 /// lifetime because the containers read the mounted directories off the host
 /// while they run.
 struct Substrate {
-    image_name: String,
-    image_tag: String,
+    image: String,
     router: pmi::ZenohdInstance,
     apptainer_dir: PathBuf,
     newuidmap: PathBuf,
@@ -1562,7 +1765,7 @@ struct Substrate {
 impl Substrate {
     async fn create() -> Self {
         require_docker().await;
-        let (image_name, image_tag) = e2e_image().await;
+        let image = e2e_image().await;
 
         let router = ZenohAdapter::start_router_ephemeral_in_mode(
             "0.0.0.0",
@@ -1644,8 +1847,7 @@ impl Substrate {
         }
 
         Self {
-            image_name,
-            image_tag,
+            image,
             router,
             apptainer_dir,
             newuidmap,
@@ -1667,8 +1869,7 @@ impl Substrate {
         otlp_endpoint: Option<&str>,
     ) -> Daemon {
         let launch = DaemonLaunch {
-            image_name: &self.image_name,
-            image_tag: &self.image_tag,
+            image: &self.image,
             peppy_binary: Path::new(env!("CARGO_BIN_EXE_peppy")),
             apptainer_dir: &self.apptainer_dir,
             newuidmap: &self.newuidmap,
