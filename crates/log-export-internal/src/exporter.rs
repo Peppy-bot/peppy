@@ -257,7 +257,7 @@ impl Budget {
     fn reserve(budget: &Arc<Self>, cost: usize) -> Option<Reservation> {
         budget
             .used
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(cost)
                     .filter(|total| *total <= budget.capacity)
             })

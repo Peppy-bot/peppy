@@ -36,7 +36,7 @@ rstest = "0.27"
 # the one `peppy-mcp-runtime` builds its server side against; each use site
 # adds its own features (the `server` feature only where the client
 # capability builder is needed).
-rmcp = { version = "3.1.2", default-features = false }
+rmcp = { version = "3.5.1", default-features = false }
 
 # Shared, public-facing crates from the sealed `peppy-shared` tree, consumed by
 # path. The dependency runs one way only: these crates know nothing of

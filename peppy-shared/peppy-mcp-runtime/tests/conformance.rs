@@ -10,7 +10,7 @@
 mod support;
 
 use rmcp::model::{
-    CacheScope, ClientInfo, ErrorCode, GetTaskParams, ProtocolVersion, RequestMetaObject,
+    CacheScope, ClientConfig, ErrorCode, GetTaskParams, ProtocolVersion, RequestMetaObject,
     ServerNotification, SubscriptionFilter,
 };
 use rmcp::service::ClientInitializeError;
@@ -151,7 +151,7 @@ async fn an_initialize_client_is_refused_with_the_supported_versions_listed() {
         let transport = StreamableHttpClientTransport::from_config(
             StreamableHttpClientTransportConfig::with_uri(endpoint.url.clone()),
         );
-        ClientInfo::default()
+        ClientConfig::default()
             .serve_with_lifecycle(transport, ClientLifecycleMode::Initialize)
             .await
             .expect_err("no legacy session exists to initialize");
@@ -166,7 +166,7 @@ async fn a_client_preferring_only_older_versions_cannot_connect() {
         let transport = StreamableHttpClientTransport::from_config(
             StreamableHttpClientTransportConfig::with_uri(endpoint.url.clone()),
         );
-        let refused = ClientInfo::default()
+        let refused = ClientConfig::default()
             .serve_with_lifecycle(
                 transport,
                 ClientLifecycleMode::Discover {

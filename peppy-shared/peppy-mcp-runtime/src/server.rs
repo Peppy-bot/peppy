@@ -26,7 +26,7 @@ use rmcp::model::{
     GetTaskParams, GetTaskResult, Implementation, InputRequest, JsonObject, ListResourcesResult,
     ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProgressToken,
     ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    ResourceContents, ServerCapabilities, ServerInfo, SubscriptionFilter, Tool, ToolAnnotations,
+    ResourceContents, ServerCapabilities, ServerConfig, SubscriptionFilter, Tool, ToolAnnotations,
     UpdateTaskParams,
 };
 use rmcp::service::{RequestContext, SubscriptionContext, SubscriptionSendError};
@@ -1632,13 +1632,13 @@ impl ServerHandler for ExposureServer {
         Cow::Borrowed(&[ProtocolVersion::V_2026_07_28])
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let implementation = Implementation::new(
             self.state.exposure.name.clone(),
             self.state.exposure.tag.clone(),
         )
         .with_title(self.state.server.title.clone());
-        let mut info = ServerInfo::new(self.capabilities())
+        let mut info = ServerConfig::new(self.capabilities())
             .with_server_info(implementation)
             .with_protocol_version(ProtocolVersion::V_2026_07_28);
         if let Some(instructions) = &self.state.server.instructions {
