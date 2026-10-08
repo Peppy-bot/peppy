@@ -13,6 +13,7 @@
 #![deny(unsafe_code)]
 
 mod adapters;
+mod declared;
 mod error;
 mod probe;
 mod router_id;

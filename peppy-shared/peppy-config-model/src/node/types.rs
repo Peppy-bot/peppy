@@ -2,6 +2,7 @@ use super::refine::{
     ActionRefinement, FieldRefinement, FormatRefinement, ResultServiceRefinement,
     ServiceRefinement, TopicRefinement,
 };
+use super::retention::TopicRetention;
 use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
@@ -450,9 +451,10 @@ pub enum QoSProfile {
 
 /// A document-backed produced-interface entry: `{link_id, name}` where
 /// `link_id` names a slot and `name` selects one member of the document that
-/// slot resolves to (byte-equal), plus an optional `refine` block. Shape and
-/// QoS come from that document, so inline `message_format` / `qos_profile` /
-/// endpoint fields are rejected at parse time; `refine` declares no shape, it
+/// slot resolves to (byte-equal), plus an optional `refine` block. Shape, QoS
+/// and retention come from that document, so inline `message_format` /
+/// `qos_profile` / `retention` / endpoint fields are rejected at parse time;
+/// `refine` declares no shape, it
 /// pins the length of arrays the document leaves generic (see
 /// [`FormatRefinement`]). The refinement type `R` is the kind-specific block
 /// of the section the entry lives in.
@@ -528,6 +530,8 @@ pub struct NativeEmittedTopic {
     pub name: String,
     #[serde(default)]
     pub qos_profile: QoSProfile,
+    #[serde(default, skip_serializing_if = "TopicRetention::is_live_only")]
+    pub retention: TopicRetention,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_format: Option<MessageFormat>,
 }
@@ -725,6 +729,7 @@ macro_rules! impl_produced_entry {
 
 impl_produced_entry!(EmittedTopic, plain NativeEmittedTopic, Box<TopicRefinement>, "topics.emits", {
     qos_profile: Option<QoSProfile> => default,
+    retention: Option<TopicRetention> => default,
     message_format: Option<MessageFormat> => keep,
 });
 impl_produced_entry!(ExposedService, plain NativeExposedService, Box<ServiceRefinement>, "services.exposes", {
@@ -773,8 +778,8 @@ fn require_interface_name<E: de::Error>(
     })
 }
 
-/// Rejects inline shape/QoS fields on a document-backed entry: the shape
-/// comes from the referenced document, never from the manifest. `fields` pairs
+/// Rejects inline shape, QoS and retention fields on a document-backed entry:
+/// they come from the referenced document, never from the manifest. `fields` pairs
 /// each field name with whether it was present in the raw entry.
 fn reject_inline_shape<E: de::Error>(
     section: &'static str,
@@ -804,14 +809,56 @@ fn reject_inline_shape<E: de::Error>(
 /// it is rejected when the slot names a `depends_on.nodes` producer, whose
 /// native shape is taken as is.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawConsumedTopic")]
 pub struct ConsumedTopic {
-    #[serde(deserialize_with = "deserialize_consumed_topic_link_id")]
     pub link_id: String,
-    #[serde(deserialize_with = "deserialize_consumed_topic_name")]
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub refine: Option<Box<TopicRefinement>>,
+}
+
+/// A `topics.consumes` entry as written. `retention` is read only to refuse
+/// it by name.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConsumedTopic {
+    #[serde(deserialize_with = "deserialize_consumed_topic_link_id")]
+    link_id: String,
+    #[serde(deserialize_with = "deserialize_consumed_topic_name")]
+    name: String,
+    #[serde(default)]
+    refine: Option<Box<TopicRefinement>>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    retention: Option<()>,
+}
+
+/// Reads a key as present, whatever its value, `null` included. For a key a
+/// document refuses by name.
+pub fn deserialize_present<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<()>, D::Error> {
+    de::IgnoredAny::deserialize(deserializer)?;
+    Ok(Some(()))
+}
+
+impl TryFrom<RawConsumedTopic> for ConsumedTopic {
+    type Error = String;
+
+    fn try_from(raw: RawConsumedTopic) -> Result<Self, String> {
+        if raw.retention.is_some() {
+            return Err(format!(
+                "consumed topic `{}` (link_id `{}`) must not carry `retention`: the topic's \
+                 producer declares it, in its `topics.emits` entry or its contract, and a \
+                 pairing topic is live only",
+                raw.name, raw.link_id
+            ));
+        }
+        Ok(Self {
+            link_id: raw.link_id,
+            name: raw.name,
+            refine: raw.refine,
+        })
+    }
 }
 
 /// A consumed service; `refine` follows the [`ConsumedTopic`] rule.
@@ -948,15 +995,48 @@ fn validate_non_empty_identifier(raw: &str, label: &'static str) -> Result<Strin
 /// framework's per-goal end-of-stream signal. An action that streams no
 /// progress omits `feedback_topic` entirely.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawActionTopicEndpoint")]
 pub struct ActionTopicEndpoint {
     #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
     pub topic_type: Option<String>,
-    #[serde(default)]
     pub qos_profile: QoSProfile,
     pub message_format: MessageFormat,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+/// A `feedback_topic` block as written. `retention` is read only to refuse it
+/// by name.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawActionTopicEndpoint {
+    #[serde(default, rename = "type")]
+    topic_type: Option<String>,
+    #[serde(default)]
+    qos_profile: QoSProfile,
+    message_format: MessageFormat,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    retention: Option<()>,
+}
+
+impl TryFrom<RawActionTopicEndpoint> for ActionTopicEndpoint {
+    type Error = &'static str;
+
+    fn try_from(raw: RawActionTopicEndpoint) -> Result<Self, &'static str> {
+        if raw.retention.is_some() {
+            return Err(
+                "`feedback_topic` must not carry `retention`: action feedback is live only",
+            );
+        }
+        Ok(Self {
+            topic_type: raw.topic_type,
+            qos_profile: raw.qos_profile,
+            message_format: raw.message_format,
+            name: raw.name,
+        })
+    }
 }
 
 /// How many sources a slot takes: bound producers for
@@ -2196,6 +2276,26 @@ mod tests {
     }
 
     #[test]
+    fn consumed_topic_refuses_retention() {
+        let error = serde_json5::from_str::<ConsumedTopic>(
+            r#"{ link_id: "camera", name: "video_stream", retention: { latest: 1 } }"#,
+        )
+        .expect_err("a topic's producer declares its retention");
+        serde_json5::from_str::<ConsumedTopic>(
+            r#"{ link_id: "camera", name: "video_stream", retention: null }"#,
+        )
+        .expect_err("a null is a present key");
+        assert!(
+            error.to_string().contains(
+                "consumed topic `video_stream` (link_id `camera`) must not carry `retention`: \
+                 the topic's producer declares it, in its `topics.emits` entry or its contract, \
+                 and a pairing topic is live only"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn consumed_service_link_id_is_required() {
         let with_link_id = r#"{ link_id: "uvc_camera", name: "enable_camera" }"#;
         let service: ConsumedService =
@@ -2678,6 +2778,27 @@ mod tests {
         assert!(
             serde_json5::from_str::<ExposedAction>(json5).is_err(),
             "a declared feedback_topic must carry a message_format"
+        );
+    }
+
+    #[test]
+    fn feedback_topic_refuses_retention() {
+        let error = serde_json5::from_str::<ExposedAction>(
+            r#"{
+                name: "move_arm",
+                feedback_topic: { retention: { latest: 1 }, message_format: { progress: "f64" } }
+            }"#,
+        )
+        .expect_err("action feedback is live only");
+        serde_json5::from_str::<ExposedAction>(
+            r#"{ name: "move_arm", feedback_topic: { retention: null, message_format: { progress: "f64" } } }"#,
+        )
+        .expect_err("a null is a present key");
+        assert!(
+            error.to_string().contains(
+                "`feedback_topic` must not carry `retention`: action feedback is live only"
+            ),
+            "{error}"
         );
     }
 
@@ -3388,10 +3509,61 @@ mod tests {
     }
 
     #[test]
+    fn native_emit_states_its_retention() {
+        let retention_of = |entry: &str| {
+            serde_json5::from_str::<EmittedTopic>(entry)
+                .expect("native emit should parse")
+                .as_native()
+                .expect("an entry with no link_id is native")
+                .retention
+        };
+        let latest = |depth| TopicRetention::latest(depth).expect("a depth in range");
+
+        assert_eq!(
+            retention_of(r#"{ name: "robot_mode" }"#),
+            TopicRetention::LiveOnly
+        );
+        assert_eq!(
+            retention_of(r#"{ name: "robot_mode", retention: { latest: 0 } }"#),
+            TopicRetention::LiveOnly
+        );
+        assert_eq!(
+            retention_of(r#"{ name: "robot_mode", retention: { latest: 1 } }"#),
+            latest(1)
+        );
+        assert_eq!(
+            retention_of(r#"{ name: "robot_mode", retention: { latest: 5 } }"#),
+            latest(5)
+        );
+    }
+
+    /// Equal policies serialize to equal bytes, so the manifest fingerprint
+    /// does not depend on which form the author wrote.
+    #[test]
+    fn equal_retention_policies_serialize_to_equal_entries() {
+        let serialized = |entry: &str| {
+            let parsed: EmittedTopic = serde_json5::from_str(entry).expect("should parse");
+            serde_json5::to_string(&parsed).expect("should serialize")
+        };
+
+        let live_only = serialized(r#"{ name: "robot_mode" }"#);
+        assert!(!live_only.contains("retention"), "{live_only}");
+        assert_eq!(
+            serialized(r#"{ name: "robot_mode", retention: { latest: 0 } }"#),
+            live_only
+        );
+        assert!(
+            serialized(r#"{ name: "robot_mode", retention: { latest: 1 } }"#)
+                .contains(r#""retention":{"latest":1}"#)
+        );
+    }
+
+    #[test]
     fn contract_backed_emit_rejects_inline_shape() {
         for entry in [
             r#"{ link_id: "cam", name: "video_stream", message_format: { x: "f64" } }"#,
             r#"{ link_id: "cam", name: "video_stream", qos_profile: "sensor_data" }"#,
+            r#"{ link_id: "cam", name: "video_stream", retention: { latest: 1 } }"#,
         ] {
             assert!(
                 serde_json5::from_str::<EmittedTopic>(entry).is_err(),
@@ -3430,6 +3602,8 @@ mod tests {
         for source in [
             r#"{ link_id: "cam", name: "video_stream" }"#,
             r#"{ name: "debug_stream", qos_profile: "sensor_data", message_format: { x: "f64" } }"#,
+            r#"{ name: "robot_mode", retention: { latest: 1 }, message_format: { mode: "string" } }"#,
+            r#"{ name: "calibration", retention: { latest: 5 }, message_format: { x: "f64" } }"#,
         ] {
             let parsed: EmittedTopic = serde_json5::from_str(source).expect("should parse");
             let serialized = serde_json5::to_string(&parsed).expect("should serialize");

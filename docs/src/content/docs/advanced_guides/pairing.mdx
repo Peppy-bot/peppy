@@ -59,6 +59,7 @@ The rules:
 - `roles` declares **exactly two** distinct roles.
 - `topics` is one flat list; every topic's `emitted_by` must name one of the two roles, and topic names must be unique across the whole list.
 - Pairings declare **topics only**: no services, no actions.
+- A pairing topic is **live only**: it takes no `retention`.
 
 After `peppy repo refresh`, the pairing is cached and addressable by `(name, tag)`. `peppy repo show <name>:<tag>` lists the indexed nodes that play its roles and the ones that observe them, and `peppy repo show <node>:<tag>` answers the same question from a node's side, one section per pairing slot it declares (see [Show what a query matches](/advanced_guides/repositories/#show-what-a-query-matches)).
 
@@ -66,7 +67,7 @@ After `peppy repo refresh`, the pairing is cached and addressable by `(name, tag
 
 Each node declares a **pairing slot** under `depends_on.pairings`: the contract, the role this node plays, and a `link_id` naming the slot. The `link_id` is how the node's own code and the pairing commands refer to *the other end*; while paired, one peer instance sits behind each pair the slot holds. A slot holds one pair unless its `cardinality` says otherwise (see [Pairing with several peers through one slot](#pairing-with-several-peers-through-one-slot)); the rest of this page describes that default.
 
-The slot says *which* conversation the node joins. `interfaces.topics` says *what the node uses through it*, exactly like a contract implementer and a contract consumer. A pairing-backed entry is `{ link_id, name }`, plus an optional `refine` block (see [below](#refining-the-pairings-generic-arrays)): the pairing document remains the single source of shape and QoS, so an inline `message_format` or `qos_profile` on one of these entries is rejected.
+The slot says *which* conversation the node joins. `interfaces.topics` says *what the node uses through it*, exactly like a contract implementer and a contract consumer. A pairing-backed entry is `{ link_id, name }`, plus an optional `refine` block (see [below](#refining-the-pairings-generic-arrays)): the pairing document remains the single source of shape and QoS, so an inline `message_format`, `qos_profile` or `retention` on one of these entries is rejected.
 
 <Tabs>
   <TabItem label="Python">
@@ -529,7 +530,7 @@ Pairing and [contract implementation](/advanced_guides/contract_implementation/)
 
 | | Pairing | Contract |
 |---|---|---|
-| Declaration model | The node enumerates what it uses in `interfaces.topics`; the document owns shape and QoS | The node enumerates what it uses in `interfaces`; the document owns shape and QoS |
+| Declaration model | The node enumerates what it uses in `interfaces.topics`; the document owns shape and QoS | The node enumerates what it uses in `interfaces`; the document owns shape, QoS and retention |
 | Coverage | Produced side (`emits`) exact per slot, consumed side free | Produced side (`implements`) exact per slot, consumed side free |
 | Cardinality | Declared per slot, in pairs: exactly one by default, at most one for `zero_or_one`, a live set for `one_or_more` / `zero_or_more`; each pair exclusive between its two instances | Declared per slot: exactly one by default, at most one for `zero_or_one`, an application-selected set for `one_or_more` / `zero_or_more` |
 | Directionality | Both directions in one contract (two roles) | One direction per contract |

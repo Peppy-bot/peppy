@@ -32,6 +32,10 @@ rand = "0.10"
 # Exact-pinned; peppylib pins the same `=1.10.1` in its [dev-dependencies] so
 # its test binaries share this build — bump the two together.
 zenoh = { version = "=1.10.1", optional = true }
+# The publisher and subscriber of a retaining topic. Its `unstable` feature
+# also enables `zenoh/unstable` and `zenoh/internal` for the whole build. It
+# requires the exact `zenoh` version above, so bump the two together.
+zenoh-ext = { version = "=1.10.1", features = ["unstable"], optional = true }
 # Raw-TLS reachability probe (`probe_tls_reachable`): a real rustls handshake to
 # verify a federation link validates (zenoh client-mode `open` is not a usable
 # signal). Versions match what zenoh 1.10 already resolves (rustls 0.23.44,
@@ -81,6 +85,7 @@ default = ["zenoh", "router"]
 # for the bounded TCP connect + handshake) used by `probe_tls_reachable`.
 zenoh = [
     "dep:zenoh",
+    "dep:zenoh-ext",
     "tokio/net",
     "tokio/time",
     "dep:tokio-rustls",

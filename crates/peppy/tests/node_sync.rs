@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::node::{EmittedTopic, MessageFormat, NodeConfigParser, QoSProfile, Toolchain};
+use config::node::{
+    EmittedTopic, MessageFormat, NodeConfigParser, QoSProfile, Toolchain, TopicRetention,
+};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName};
 use peppy::context::AppContext;
@@ -21,6 +23,7 @@ fn add_emitted_topic(peppy_json5: &Path) {
     topics.push(EmittedTopic::Native(config::node::NativeEmittedTopic {
         name: "goodbye_world".to_string(),
         qos_profile: QoSProfile::Standard,
+        retention: TopicRetention::LiveOnly,
         message_format: Some(message_format),
     }));
 

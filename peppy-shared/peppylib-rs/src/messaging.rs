@@ -67,7 +67,7 @@ pub use pmi::{
 
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use pmi::{
     ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
     Namespace, PresenceScope, PublisherQoS, Segment, ServiceQueryKind, ServiceReplyKind,
@@ -382,10 +382,11 @@ impl MessengerHandle {
         &self,
         sender: &TopicWireSender,
         qos: PublisherQoS,
+        retention: TopicRetention,
     ) -> Result<MessengerPublisher> {
         let messenger = self.messenger.lock().await;
         messenger
-            .declare_topic_publisher(sender, qos)
+            .declare_topic_publisher(sender, qos, retention)
             .map_err(Error::PeppyMessagingInterface)
     }
 
@@ -461,10 +462,11 @@ impl MessengerHandle {
         &self,
         recv: &TopicWireReceiver,
         qos: QoSProfile,
+        retention: TopicRetention,
     ) -> Result<PmiSubscription> {
         let messenger = self.messenger.lock().await;
         messenger
-            .subscribe_topic(recv, qos.into())
+            .subscribe_topic(recv, qos.into(), retention)
             .await
             .map_err(Error::PeppyMessagingInterface)
     }

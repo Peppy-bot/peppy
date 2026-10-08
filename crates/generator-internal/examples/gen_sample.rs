@@ -8,7 +8,7 @@
 
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService,
+    NativeExposedAction, NativeExposedService, TopicRetention,
 };
 use generator::{ConsumedActionMessage, DependencyContext, LanguageGenerator, PeerContext};
 use std::fs;
@@ -87,6 +87,7 @@ fn populate<G: LanguageGenerator>(generator: &mut G) {
         .add_consumed_topic(
             &ctopic,
             cformat,
+            TopicRetention::LiveOnly,
             &DependencyContext::native("uvc_camera", "v1", "camera", Cardinality::One),
         )
         .unwrap();

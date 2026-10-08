@@ -19,10 +19,11 @@ mod zenoh_tls_tests {
         RECV_TIMEOUT, ZENOH_SERIAL, receiver, sender, wait_for_subscriber_discovery,
     };
     use bytes::Bytes;
+    use config::node::TopicRetention;
     use pmi::{
-        ConnectIdentity, Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS,
-        RouterId, SubscriberBufferSizes, SubscriberQoS, TlsConfig, ZenohAdapter, ZenohNetProtocol,
-        probe_tls_reachable,
+        ConnectIdentity, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
+        Payload, PublisherQoS, RouterId, SubscriberBufferSizes, SubscriberQoS, Subscription,
+        TlsConfig, ZenohAdapter, ZenohNetProtocol, probe_tls_reachable,
     };
     use std::io::Write;
     use std::path::PathBuf;
@@ -210,7 +211,11 @@ mod zenoh_tls_tests {
 
         let subscriber = open_tls_client(port, &client_tls).await;
         let subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver(TOPIC),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("subscribe over tls");
 
@@ -226,11 +231,10 @@ mod zenoh_tls_tests {
             .await
             .expect("publish over tls");
 
-        let msg = tokio::time::timeout(RECV_TIMEOUT, subscription.rx.recv_async())
-            .await
-            .expect("timed out waiting for tls message")
-            .expect("tls subscription channel closed");
-        assert_eq!(msg.payload(), &Bytes::from_static(b"tls-hello"));
+        assert_eq!(
+            next_payload(&subscription, "the tls message").await,
+            Bytes::from_static(b"tls-hello")
+        );
 
         drop(_router); // stop zenohd
     }
@@ -272,7 +276,11 @@ mod zenoh_tls_tests {
             return;
         }
         let subscription = subscriber
-            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver(TOPIC),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("subscribe (local declare succeeds even with a dead link)");
 
@@ -300,6 +308,16 @@ mod zenoh_tls_tests {
         );
 
         drop(_router);
+    }
+
+    /// The payload `subscription` reads next, within [`RECV_TIMEOUT`].
+    async fn next_payload(subscription: &Subscription, label: &str) -> Bytes {
+        tokio::time::timeout(RECV_TIMEOUT, subscription.rx.recv_async())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {label}"))
+            .expect("subscription channel open")
+            .payload()
+            .to_bytes()
     }
 
     /// How long the inter-router link gets to come up. A link that comes up
@@ -345,10 +363,14 @@ mod zenoh_tls_tests {
         publisher_tls: &TlsConfig,
         topic: &str,
         payload: &'static [u8],
-    ) -> Option<Bytes> {
+    ) -> Bytes {
         let subscriber = open_plaintext_client(federation.local_port).await;
         let subscription = subscriber
-            .subscribe_topic(&receiver(topic), SubscriberQoS::Standard)
+            .subscribe_topic(
+                &receiver(topic),
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+            )
             .await
             .expect("subscribe on the local router");
 
@@ -368,15 +390,7 @@ mod zenoh_tls_tests {
             .await
             .expect("publish on the remote router");
 
-        tokio::time::timeout(RECV_TIMEOUT, subscription.rx.recv_async())
-            .await
-            .ok()
-            .map(|received| {
-                received
-                    .expect("subscription channel open")
-                    .payload()
-                    .to_bytes()
-            })
+        next_payload(&subscription, "the relayed message").await
     }
 
     /// The federated topology end-to-end: a *local* router (plaintext for its
@@ -408,7 +422,69 @@ mod zenoh_tls_tests {
             b"across-the-federation",
         )
         .await;
-        assert_eq!(received, Some(Bytes::from_static(b"across-the-federation")));
+        assert_eq!(received, Bytes::from_static(b"across-the-federation"));
+    }
+
+    /// Across the federation: a publisher on the REMOTE router retains a
+    /// message, and a subscriber that joins on the LOCAL router afterwards
+    /// reads it, then a live one. A first subscription on the local router
+    /// reads the retained message before the one under test joins, so the
+    /// message is not in transit when it does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn federated_routers_relay_a_retained_message_to_a_late_subscriber() {
+        let _lock = ZENOH_SERIAL.lock().await;
+        let certs = write_certs();
+        let federation = federate(
+            TlsConfig::server(certs.cert.clone(), certs.key.clone()),
+            trusting_client_tls(&certs),
+        )
+        .await;
+        assert!(
+            federation.linked,
+            "the local router linked to the remote one"
+        );
+        let retains_latest = TopicRetention::latest(1).expect("1 is in range");
+        let topic = "federated_retention";
+
+        let publisher_session =
+            open_tls_client(federation.remote_port, &trusting_client_tls(&certs)).await;
+        let publisher = MessengerPublisher::Zenoh(
+            publisher_session
+                .declare_topic_publisher(&sender(topic), PublisherQoS::Standard, retains_latest)
+                .expect("declare the retaining publisher"),
+        );
+        publisher
+            .publish(Bytes::from_static(b"retained"))
+            .await
+            .expect("publish on the remote router");
+
+        let settling = open_plaintext_client(federation.local_port).await;
+        let settled = settling
+            .subscribe_topic(&receiver(topic), SubscriberQoS::Standard, retains_latest)
+            .await
+            .expect("subscribe on the local router");
+        assert_eq!(
+            next_payload(&settled, "the retained message, across the link").await,
+            Bytes::from_static(b"retained")
+        );
+
+        let subscriber = open_plaintext_client(federation.local_port).await;
+        let subscription = subscriber
+            .subscribe_topic(&receiver(topic), SubscriberQoS::Standard, retains_latest)
+            .await
+            .expect("subscribe on the local router");
+        assert_eq!(
+            next_payload(&subscription, "the retained message").await,
+            Bytes::from_static(b"retained")
+        );
+        publisher
+            .publish(Bytes::from_static(b"live"))
+            .await
+            .expect("publish on the remote router");
+        assert_eq!(
+            next_payload(&subscription, "the live message").await,
+            Bytes::from_static(b"live")
+        );
     }
 
     /// The platform shape end-to-end: the remote router requires client
@@ -435,7 +511,7 @@ mod zenoh_tls_tests {
             b"across-mtls",
         )
         .await;
-        assert_eq!(received, Some(Bytes::from_static(b"across-mtls")));
+        assert_eq!(received, Bytes::from_static(b"across-mtls"));
     }
 
     /// Negative path for mutual TLS: a local router that trusts the remote CA

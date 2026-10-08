@@ -429,7 +429,7 @@ pub enum ParsingError {
 
     // -- manifest.implements + produced-interface entries
     #[error(
-        "Document-backed entry `{name}` (link_id `{link_id}`) in `{section}` must not carry `{field}`: shape and QoS come from the contract or pairing document the slot resolves to; a document-backed entry carries `link_id`, `name`, and at most a `refine` block pinning the length of arrays the document leaves generic"
+        "Document-backed entry `{name}` (link_id `{link_id}`) in `{section}` must not carry `{field}`: the contract or pairing document the slot resolves to declares the shape and QoS, and a contract declares the retention; a document-backed entry carries `link_id`, `name`, and at most a `refine` block pinning the length of arrays the document leaves generic"
     )]
     LinkedEntryWithInlineShape {
         section: String,

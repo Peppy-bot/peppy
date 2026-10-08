@@ -28,7 +28,7 @@ use crate::generator::naming::{
 };
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService,
+    NativeExposedAction, NativeExposedService, TopicRetention,
 };
 use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use indexmap::IndexMap;
@@ -1204,10 +1204,11 @@ impl LanguageGenerator for RustGenerator {
         &mut self,
         topic: &ConsumedTopic,
         arguments: MessageFormat,
+        retention: TopicRetention,
         dependency: &DependencyContext,
     ) -> Result<()> {
         self.testgen
-            .record_consumed_topic(topic, &arguments, dependency);
+            .record_consumed_topic(topic, &arguments, retention, dependency);
         let node_name = topic.link_id.as_str();
 
         let node_component = sanitize_component(node_name);
@@ -1270,6 +1271,7 @@ impl LanguageGenerator for RustGenerator {
             artifacts: &format_artifacts,
             encoding: &encoding,
             topic,
+            retention,
             struct_prefix: &message_struct_name,
             dependency,
         })?;

@@ -15,7 +15,7 @@ use super::super::testgen::{
     reserved_member_owners,
 };
 use super::scaffold::sanitize_rust_module_name;
-use super::topics::qos_profile_tokens;
+use super::topics::{qos_profile_tokens, retention_tokens};
 use super::{
     GenerationContext, RustGenerator, build_deserialize_fn, build_serialize_payload,
     collect_function_params, deserialize_format_fields, generate_assignments_from_struct,
@@ -430,6 +430,7 @@ fn render_dep_topic(
         &quote!(Message),
     )?;
 
+    let retention = retention_tokens(spec.retention);
     let doc = format!(
         "Typed mock publisher for the consumed topic `{topic_name}`: publishes over the \
          real wire as this mock's identity; the first publish waits for the node's \
@@ -460,6 +461,7 @@ fn render_dep_topic(
                         None,
                         #topic_name,
                         peppylib::config::QoSProfile::Standard,
+                        #retention,
                     )
                     .await?;
                     Ok(Self { core })

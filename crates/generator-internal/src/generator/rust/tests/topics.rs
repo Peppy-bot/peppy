@@ -2,6 +2,7 @@ use super::*;
 use crate::error::Error;
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    TopicRetention,
 };
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
@@ -205,6 +206,69 @@ fn emitted_topic_via_contract_origin_targets_contract() {
     );
 }
 
+/// The retention a topic's producer declares reaches both generated call
+/// sites: the publisher of the emitted topic and the subscription of the
+/// consumed one.
+#[test]
+fn a_topics_retention_reaches_its_publisher_and_its_subscription() {
+    // One line per artifact, so an assertion spans the generated layout.
+    let rendered_on_one_line = |generator: RustGenerator| {
+        render_artifacts(generator.into_artifacts())
+            .into_iter()
+            .next()
+            .expect("artifact is present")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let live_only = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
+    let retains_three = NativeEmittedTopic {
+        retention: TopicRetention::latest(3).expect("3 is in range"),
+        ..live_only.clone()
+    };
+    let retains_three_doc = crate::generator::types::retention_doc(retains_three.retention)
+        .expect("a retaining topic has a doc sentence");
+    for (topic, stated, documented) in [
+        (
+            &live_only,
+            "let retention = peppylib::config::TopicRetention::LiveOnly;",
+            false,
+        ),
+        (
+            &retains_three,
+            "match peppylib::config::TopicRetention::latest( 3, ) {",
+            true,
+        ),
+    ] {
+        let mut generator = RustGenerator::new();
+        generator.add_emitted_topic(topic, None).unwrap();
+        let emitted = rendered_on_one_line(generator);
+        assert_contains_all(&emitted, &[stated, "as_topic, qos, retention, )"]);
+        assert_eq!(
+            emitted.contains(&retains_three_doc),
+            documented,
+            "{emitted}"
+        );
+
+        let mut generator = RustGenerator::new();
+        generator
+            .add_consumed_topic(
+                &parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1),
+                parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1),
+                topic.retention,
+                &native_dep("uvc_camera", "v1", "cam_left"),
+            )
+            .unwrap();
+        let consumed = rendered_on_one_line(generator);
+        assert_contains_all(&consumed, &[stated, "topic_name, qos, retention, )"]);
+        assert_eq!(
+            consumed.contains(&retains_three_doc),
+            documented,
+            "{consumed}"
+        );
+    }
+}
+
 /// A consumed topic pulled via a `depends_on.contracts` dependency addresses
 /// the producer as a contract: the generated subscribe call passes
 /// `SenderTarget::contract(contract_name, contract_tag)` instead of
@@ -219,6 +283,7 @@ fn consumed_topic_via_contract_origin_targets_contract() {
         .add_consumed_topic(
             &topic,
             format,
+            TopicRetention::LiveOnly,
             &contract_dep("camera_contract", "v2", "uvc_camera"),
         )
         .unwrap();
@@ -441,7 +506,12 @@ fn consumed_topic_with_link_id_splices_runtime_bound_producer() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_topic(&topic, format, &native_dep("uvc_camera", "v1", "cam_left"))
+        .add_consumed_topic(
+            &topic,
+            format,
+            TopicRetention::LiveOnly,
+            &native_dep("uvc_camera", "v1", "cam_left"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
@@ -526,6 +596,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             .add_consumed_topic(
                 &topic,
                 format,
+                TopicRetention::LiveOnly,
                 &crate::DependencyContext::native("uvc_camera", "v1", "cam_left", cardinality),
             )
             .unwrap();
@@ -569,6 +640,7 @@ fn consumed_topic() {
         .add_consumed_topic(
             &topic,
             format,
+            TopicRetention::LiveOnly,
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
@@ -705,6 +777,7 @@ fn consumed_topic_escapes_rust_keyword_fields() {
         .add_consumed_topic(
             &topic,
             format,
+            TopicRetention::LiveOnly,
             &native_dep("keyword_source", "v1", "keyword_source"),
         )
         .unwrap();
@@ -738,6 +811,7 @@ fn consumed_two_topics_same_node() {
         .add_consumed_topic(
             &video_topic,
             video_format,
+            TopicRetention::LiveOnly,
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
@@ -745,6 +819,7 @@ fn consumed_two_topics_same_node() {
         .add_consumed_topic(
             &sound_topic,
             sound_format,
+            TopicRetention::LiveOnly,
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
@@ -863,6 +938,7 @@ fn compile_lib_with_emitted_and_consumed_topics() {
         .add_consumed_topic(
             &consumed_topic1,
             subscribed_format1,
+            TopicRetention::LiveOnly,
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
@@ -870,6 +946,7 @@ fn compile_lib_with_emitted_and_consumed_topics() {
         .add_consumed_topic(
             &consumed_topic2,
             subscribed_format2,
+            TopicRetention::LiveOnly,
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
@@ -968,6 +1045,7 @@ fn no_user_facing_producer_identity_params() {
         .add_consumed_topic(
             &topic,
             topic_format,
+            TopicRetention::LiveOnly,
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();

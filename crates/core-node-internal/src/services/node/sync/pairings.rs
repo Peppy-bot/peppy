@@ -478,6 +478,7 @@ fn native_topic(
         config::node::NativeEmittedTopic {
             name: topic.name.clone(),
             qos_profile: topic.qos_profile.clone(),
+            retention: config::node::TopicRetention::LiveOnly,
             message_format: topic.message_format.clone(),
         },
     )

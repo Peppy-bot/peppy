@@ -1,7 +1,7 @@
 use super::{MessengerHandle, PeerInfo, ProducerRef};
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use pmi::{
     MessengerPublisher, PairingRecipient, SenderTarget, TopicWireReceiver, TopicWireSender,
     WirePeer,
@@ -59,6 +59,11 @@ impl TopicMessenger {
     /// consumed topics never splice this: they go through
     /// [`crate::runtime::subscribe_bound_set`], which follows the slot's
     /// complete bound set for every cardinality.
+    ///
+    /// `retention` is the topic's declared policy. With
+    /// [`TopicRetention::Latest`] the subscription also yields the messages
+    /// the producer retains, in the order it published them.
+    #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -67,6 +72,7 @@ impl TopicMessenger {
         to_topic: &str,
         from_producer: &ProducerRef,
         qos: QoSProfile,
+        retention: TopicRetention,
     ) -> Result<Subscription> {
         let recv = TopicWireReceiver::new(
             as_core_node,
@@ -77,7 +83,7 @@ impl TopicMessenger {
             None,
             to_topic,
         )?;
-        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
+        let subscription = messenger.subscribe_to_topic(&recv, qos, retention).await?;
         Ok(Subscription::new(subscription))
     }
 
@@ -140,7 +146,9 @@ impl TopicMessenger {
             from_link_id,
             to_topic,
         )?;
-        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
+        let subscription = messenger
+            .subscribe_to_topic(&recv, qos, TopicRetention::LiveOnly)
+            .await?;
         Ok(Subscription::new(subscription))
     }
 
@@ -196,7 +204,9 @@ impl TopicMessenger {
                 to_topic,
             )?,
         };
-        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
+        let subscription = messenger
+            .subscribe_to_topic(&recv, qos, TopicRetention::LiveOnly)
+            .await?;
         Ok(Subscription::new(subscription))
     }
 
@@ -237,7 +247,9 @@ impl TopicMessenger {
             Some(from_link_id),
             to_topic,
         )?;
-        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
+        let subscription = messenger
+            .subscribe_to_topic(&recv, qos, TopicRetention::LiveOnly)
+            .await?;
         Ok(Subscription::new(subscription))
     }
 
@@ -261,7 +273,7 @@ impl TopicMessenger {
             as_topic_name,
         )?;
         let inner = messenger
-            .declare_topic_publisher(&sender, qos.into())
+            .declare_topic_publisher(&sender, qos.into(), TopicRetention::LiveOnly)
             .await?;
         Ok(TopicPublisher::new(Arc::new(inner)))
     }
@@ -315,7 +327,7 @@ impl TopicMessenger {
             peer,
         )?;
         let inner = messenger
-            .declare_topic_publisher(&sender, qos.into())
+            .declare_topic_publisher(&sender, qos.into(), TopicRetention::LiveOnly)
             .await?;
         Ok(TopicPublisher::new(Arc::new(inner)))
     }
@@ -381,6 +393,11 @@ impl TopicMessenger {
     /// This is the only topic-publish path: declare a publisher once, then
     /// call [`TopicPublisher::publish`] per message. The publisher always tags
     /// its publishes as primary on the wire.
+    ///
+    /// `retention` is the topic's declared policy. With
+    /// [`TopicRetention::Latest`] the node's session keeps the topic's newest
+    /// messages until the node stops, for subscribers that join later, and
+    /// every declaration of the topic states the same retention and QoS.
     #[allow(clippy::too_many_arguments)]
     pub async fn declare_publisher(
         messenger: &MessengerHandle,
@@ -390,6 +407,7 @@ impl TopicMessenger {
         link_id: Option<&str>,
         as_topic_name: &str,
         qos: QoSProfile,
+        retention: TopicRetention,
     ) -> Result<TopicPublisher> {
         let sender = TopicWireSender::new(
             as_core_node,
@@ -399,7 +417,7 @@ impl TopicMessenger {
             as_topic_name,
         )?;
         let inner = messenger
-            .declare_topic_publisher(&sender, qos.into())
+            .declare_topic_publisher(&sender, qos.into(), retention)
             .await?;
         Ok(TopicPublisher::new(Arc::new(inner)))
     }

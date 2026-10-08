@@ -20,7 +20,7 @@ use super::*;
 use crate::generator::types::{ConsumedActionMessage, ContractOrigin, PeerContext};
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService,
+    NativeExposedAction, NativeExposedService, TopicRetention,
 };
 use std::fmt::Write as _;
 use tempfile::TempDir;
@@ -303,6 +303,7 @@ fn render_everything(node_dir: &Path) -> Vec<InterfaceArtifact> {
             .add_consumed_topic(
                 &topic,
                 parse(CONSUMED_TOPIC_FORMAT),
+                TopicRetention::LiveOnly,
                 &DependencyContext::native("uvc_camera", "v1", link_id, cardinality),
             )
             .unwrap();

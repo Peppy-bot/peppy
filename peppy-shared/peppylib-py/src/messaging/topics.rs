@@ -1,6 +1,7 @@
 use super::target::{PyProducerRef, PySenderTarget};
 use super::{PyMessengerHandle, duration_from_secs_f64, future_into_py_unit, to_py_err};
-use crate::config::PyQoSProfile;
+use crate::config::{PyQoSProfile, PyTopicRetention};
+use config::node::TopicRetention;
 use peppylib::messaging::{Subscription, TopicMessenger, TopicPublisher};
 use peppylib::runtime::BoundSetSubscription;
 use peppylib::types::{Message, Payload};
@@ -134,8 +135,10 @@ impl PyTopicMessenger {
     /// subscription. Generated consumed topics never splice this: they go
     /// through `node_runner.subscribe_bound_set(...)`, which follows the
     /// slot's complete bound set for every cardinality.
+    ///
+    /// `retention` is the topic's declared policy.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producer, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producer, qos, retention))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -146,9 +149,11 @@ impl PyTopicMessenger {
         to_topic: String,
         from_producer: PyProducerRef,
         qos: PyQoSProfile,
+        retention: PyTopicRetention,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let from_target = from_target.into_inner();
+        let retention = TopicRetention::from(retention);
         crate::py_future::future_into_py(py, async move {
             let subscription = TopicMessenger::subscribe(
                 &handle,
@@ -158,6 +163,7 @@ impl PyTopicMessenger {
                 &to_topic,
                 &from_producer.into_inner(),
                 qos.into(),
+                retention,
             )
             .await
             .map_err(to_py_err)?;
@@ -366,8 +372,13 @@ impl PyTopicMessenger {
     /// `link_id` binds the publisher under a concrete producer-side link_id
     /// wire segment (pairing slot publishers pass their own slot link_id);
     /// `None` falls back to the reserved default `_` segment.
+    ///
+    /// `retention` is the topic's declared policy.
+    /// With `TopicRetention.latest(depth)` the node's session keeps the
+    /// topic's newest messages until the node stops, for subscribers that
+    /// join later.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, link_id=None))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, retention, link_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn declare_publisher<'py>(
         py: Python<'py>,
@@ -377,10 +388,12 @@ impl PyTopicMessenger {
         as_target: PySenderTarget,
         as_topic_name: String,
         qos: PyQoSProfile,
+        retention: PyTopicRetention,
         link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_target = as_target.into_inner();
+        let retention = TopicRetention::from(retention);
         crate::py_future::future_into_py(py, async move {
             let publisher = TopicMessenger::declare_publisher(
                 &handle,
@@ -390,6 +403,7 @@ impl PyTopicMessenger {
                 link_id.as_deref(),
                 &as_topic_name,
                 qos.into(),
+                retention,
             )
             .await
             .map_err(to_py_err)?;

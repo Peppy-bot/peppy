@@ -6,7 +6,7 @@
 // regression net for those helpers.
 
 use crate::types::Payload;
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
@@ -48,6 +48,7 @@ async fn publish_once(
         None,
         as_topic_name,
         qos,
+        TopicRetention::LiveOnly,
     )
     .await?;
     publisher.publish(payload).await
@@ -226,6 +227,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         topic,
         &producer1,
         qos.clone(),
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("Should subscribe to the topic");
@@ -241,6 +243,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         topic,
         &producer2,
         qos.clone(),
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("Should subscribe to the topic");
@@ -325,6 +328,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
         topic,
         &producer_core1,
         qos.clone(),
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("Should subscribe to the topic");
@@ -340,6 +344,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
         topic,
         &producer_core2,
         qos.clone(),
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("Should subscribe to the topic");
@@ -422,6 +427,7 @@ async fn per_slot_pinned_subscriptions_isolate_producers() {
         topic,
         &producer1,
         qos.clone(),
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("subscribe should succeed");
@@ -434,6 +440,7 @@ async fn per_slot_pinned_subscriptions_isolate_producers() {
         topic,
         &producer2,
         qos.clone(),
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("subscribe should succeed");
@@ -547,6 +554,7 @@ async fn bound_set_subscription_merges_bound_producers_and_excludes_unbound() {
         test_node_target(node_name),
         topic.to_string(),
         qos.clone(),
+        TopicRetention::LiveOnly,
         shutdown.clone(),
     )
     .await
@@ -645,6 +653,7 @@ async fn bound_set_subscription_preserves_per_producer_order_and_is_fair() {
         test_node_target(node_name),
         topic.to_string(),
         qos.clone(),
+        TopicRetention::LiveOnly,
         shutdown.clone(),
     )
     .await
@@ -677,6 +686,7 @@ async fn bound_set_subscription_preserves_per_producer_order_and_is_fair() {
         None,
         topic,
         qos.clone(),
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("declare busy publisher");
@@ -758,6 +768,7 @@ async fn bound_set_subscription_empty_set_pends_until_shutdown_and_drains_before
         test_node_target(node_name),
         topic.to_string(),
         qos.clone(),
+        TopicRetention::LiveOnly,
         shutdown.clone(),
     )
     .await
@@ -791,6 +802,7 @@ async fn bound_set_subscription_empty_set_pends_until_shutdown_and_drains_before
         test_node_target(node_name),
         topic.to_string(),
         qos.clone(),
+        TopicRetention::LiveOnly,
         shutdown.clone(),
     )
     .await
@@ -864,6 +876,7 @@ async fn topic_publish_reliable_5000hz_messages() {
         topic,
         &producer,
         qos.clone(),
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("Should subscribe to the topic");
@@ -4534,6 +4547,7 @@ async fn topic_pinned_subscription_compares_full_pairs() {
         topic,
         &pin_producer,
         qos.clone(),
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("pin subscribe should succeed");

@@ -9,6 +9,7 @@ from ._peppylib.config import (  # type: ignore[import-not-found]
     RUNTIME_CONFIG_VAR_NAME,
     SHUTDOWN_SERVICE,
     QoSProfile,
+    TopicRetention,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "RUNTIME_CONFIG_VAR_NAME",
     "SHUTDOWN_SERVICE",
     "QoSProfile",
+    "TopicRetention",
 ]

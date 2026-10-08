@@ -6,7 +6,7 @@ use super::wire::{
     ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use config::namespace::Namespace;
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::future::Future;
@@ -210,17 +210,20 @@ pub trait MessengerBackend {
 
     // ─── Topics ───────────────────────────────────────────────────────────
 
-    /// Subscribe to a topic.
+    /// Subscribe to a topic. With [`TopicRetention::Latest`] the subscription
+    /// also receives the messages each publisher retains, oldest first.
     fn subscribe_topic(
         &self,
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
+        retention: TopicRetention,
     ) -> impl Future<Output = Result<Subscription>> + Send;
 
     /// Publish a one-shot topic message. `is_primary` rides on a wire
     /// attachment so subscribers can disambiguate the N publishes a
     /// multi-link_id `emit` produces — see the topic-attachment section
-    /// in [`crate::wire::zenoh_format`] for the dedup contract.
+    /// in [`crate::wire::zenoh_format`] for the dedup contract. Refused on a
+    /// topic the session retains.
     fn publish_topic(
         &mut self,
         sender: &TopicWireSender,
@@ -1105,18 +1108,23 @@ impl Messenger {
     /// for the same `sender`, but skips the central `Arc<Mutex<Messenger>>`
     /// lock that all other operations contend on — useful for periodic /
     /// per-frame publish loops.
+    ///
+    /// With [`TopicRetention::Latest`] the session keeps the topic's newest
+    /// messages until it stops, for subscribers that join later. Once a topic
+    /// retains, a declaration with another retention or QoS is refused.
     pub fn declare_topic_publisher(
         &self,
         sender: &TopicWireSender,
         qos: PublisherQoS,
+        retention: TopicRetention,
     ) -> Result<MessengerPublisher> {
         match &self.adapter {
             #[cfg(feature = "zenoh")]
             MessengerAdapter::Zenoh(adapter) => Ok(MessengerPublisher::Zenoh(
-                adapter.declare_topic_publisher(sender, qos)?,
+                adapter.declare_topic_publisher(sender, qos, retention)?,
             )),
             MessengerAdapter::Mock(adapter) => Ok(MessengerPublisher::Mock(
-                adapter.declare_topic_publisher(sender, qos),
+                adapter.declare_topic_publisher(sender, qos, retention)?,
             )),
         }
     }
@@ -1140,7 +1148,7 @@ impl Messenger {
                 adapter.declare_action_feedback_publisher(recv, link_id, goal_id, qos)?,
             )),
             MessengerAdapter::Mock(adapter) => Ok(MessengerPublisher::Mock(
-                adapter.declare_action_feedback_publisher(recv, link_id, goal_id, qos),
+                adapter.declare_action_feedback_publisher(recv, link_id, goal_id, qos)?,
             )),
         }
     }
@@ -1198,8 +1206,9 @@ impl MessengerBackend for Messenger {
         &self,
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
+        retention: TopicRetention,
     ) -> Result<Subscription> {
-        dispatch!(&self.adapter, subscribe_topic, recv, qos)
+        dispatch!(&self.adapter, subscribe_topic, recv, qos, retention)
     }
 
     async fn publish_topic(

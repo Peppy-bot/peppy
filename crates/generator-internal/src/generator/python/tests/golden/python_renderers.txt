@@ -19,6 +19,7 @@ class MessageHeader:
 
 TOPIC_NAME = "video_stream"
 QOS = peppylib.QoSProfile.SensorData
+RETENTION = peppylib.TopicRetention.live_only()
 
 def build_message(header: MessageHeader, encoding: str, width: int, frame: bytes) -> bytes:
     capnp_msg = _video_stream_message_capnp().VideoStreamMessage.new_message()
@@ -41,6 +42,7 @@ async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicP
         peppylib.SenderTarget.node(node_runner.node_name(), node_runner.node_tag()),
         TOPIC_NAME,
         QOS,
+        retention=RETENTION,
     )
 
 ================================================================
@@ -64,6 +66,7 @@ class MessageHeader:
 
 TOPIC_NAME = "video_stream"
 QOS = peppylib.QoSProfile.SensorData
+RETENTION = peppylib.TopicRetention.live_only()
 
 def build_message(header: MessageHeader, encoding: str, width: int, frame: bytes) -> bytes:
     capnp_msg = _camera_feed_v1_video_stream_message_capnp().CameraFeedV1VideoStreamMessage.new_message()
@@ -86,6 +89,7 @@ async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicP
         peppylib.SenderTarget.contract("camera_feed", "v1"),
         TOPIC_NAME,
         QOS,
+        retention=RETENTION,
     )
 
 ================================================================
@@ -95,6 +99,7 @@ import peppylib
 
 TOPIC_NAME = "heartbeat"
 QOS = peppylib.QoSProfile.Reliable
+RETENTION = peppylib.TopicRetention.live_only()
 
 def build_message() -> bytes:
     return b""
@@ -107,6 +112,7 @@ async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicP
         peppylib.SenderTarget.node(node_runner.node_name(), node_runner.node_tag()),
         TOPIC_NAME,
         QOS,
+        retention=RETENTION,
     )
 
 ================================================================
@@ -999,6 +1005,7 @@ async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:
         peppylib.SenderTarget.node("uvc_camera", "v1"),
         topic_name,
         peppylib.QoSProfile.Standard,
+        retention=peppylib.TopicRetention.live_only(),
     )
     return Subscription(inner)
 
@@ -1168,6 +1175,7 @@ async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:
         peppylib.SenderTarget.node("uvc_camera", "v1"),
         topic_name,
         peppylib.QoSProfile.Standard,
+        retention=peppylib.TopicRetention.live_only(),
     )
     return Subscription(inner)
 
@@ -1350,6 +1358,7 @@ async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:
         peppylib.SenderTarget.node("uvc_camera", "v1"),
         topic_name,
         peppylib.QoSProfile.Standard,
+        retention=peppylib.TopicRetention.live_only(),
     )
     return Subscription(inner)
 
@@ -1544,6 +1553,7 @@ async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:
         peppylib.SenderTarget.node("uvc_camera", "v1"),
         topic_name,
         peppylib.QoSProfile.Standard,
+        retention=peppylib.TopicRetention.live_only(),
     )
     return Subscription(inner)
 
@@ -2394,6 +2404,7 @@ class VideoStreamPublisher:
             peppylib.SenderTarget.node("uvc_camera", "v1"),
             "video_stream",
             peppylib.QoSProfile.Standard,
+            retention=peppylib.TopicRetention.live_only(),
         )
         return cls(core)
 
@@ -2572,6 +2583,7 @@ class VideoStreamPublisher:
             peppylib.SenderTarget.node("uvc_camera", "v1"),
             "video_stream",
             peppylib.QoSProfile.Standard,
+            retention=peppylib.TopicRetention.live_only(),
         )
         return cls(core)
 
@@ -2750,6 +2762,7 @@ class VideoStreamPublisher:
             peppylib.SenderTarget.node("uvc_camera", "v1"),
             "video_stream",
             peppylib.QoSProfile.Standard,
+            retention=peppylib.TopicRetention.live_only(),
         )
         return cls(core)
 
@@ -2928,6 +2941,7 @@ class VideoStreamPublisher:
             peppylib.SenderTarget.node("uvc_camera", "v1"),
             "video_stream",
             peppylib.QoSProfile.Standard,
+            retention=peppylib.TopicRetention.live_only(),
         )
         return cls(core)
 
@@ -4090,6 +4104,7 @@ async def subscribe(session, node_instance_id: str) -> Subscription:
         TOPIC_NAME,
         producer,
         peppylib.QoSProfile.SensorData,
+        retention=peppylib.TopicRetention.live_only(),
     )
     return Subscription(inner)
 
@@ -4163,6 +4178,7 @@ async def subscribe(session, node_instance_id: str) -> Subscription:
         TOPIC_NAME,
         producer,
         peppylib.QoSProfile.SensorData,
+        retention=peppylib.TopicRetention.live_only(),
     )
     return Subscription(inner)
 
@@ -4220,6 +4236,7 @@ async def subscribe(session, node_instance_id: str) -> Subscription:
         TOPIC_NAME,
         producer,
         peppylib.QoSProfile.Reliable,
+        retention=peppylib.TopicRetention.live_only(),
     )
     return Subscription(inner)
 

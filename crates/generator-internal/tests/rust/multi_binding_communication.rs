@@ -16,6 +16,8 @@
 //! - a producer outside the bound set is rejected before anything
 //!   reaches the wire.
 
+use config::node::TopicRetention;
+
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, EMITTED_TOPIC_EXAMPLE, EXPOSED_SERVICE_EXAMPLE, STUB_NODE_CONFIG,
     SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, WaitContext, bind_slot_many, compile_project,
@@ -97,7 +99,12 @@ async fn one_or_more_slot_fans_in_topics_and_directs_services(
         config::node::Cardinality::OneOrMore,
     );
     generator
-        .add_consumed_topic(&consumed_topic, topic_format, &dependency)
+        .add_consumed_topic(
+            &consumed_topic,
+            topic_format,
+            TopicRetention::LiveOnly,
+            &dependency,
+        )
         .unwrap();
     generator
         .add_consumed_service(

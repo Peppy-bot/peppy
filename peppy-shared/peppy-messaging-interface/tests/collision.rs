@@ -17,6 +17,7 @@ mod common;
 use common::{RECV_TIMEOUT, ZENOH_SERIAL, test_node_target, wait_for_subscriber_discovery};
 
 use bytes::Bytes;
+use config::node::TopicRetention;
 use pmi::{
     MessengerBackend, Payload, PublisherQoS, SenderTarget, ServiceKind, ServiceQueryKind,
     ServiceQueryable, ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription,
@@ -108,12 +109,20 @@ async fn topic_node_vs_contract_no_collision() {
 
     let mut node_sub = instance
         .messenger()
-        .subscribe_topic(&node_receiver, SubscriberQoS::Standard)
+        .subscribe_topic(
+            &node_receiver,
+            SubscriberQoS::Standard,
+            TopicRetention::LiveOnly,
+        )
         .await
         .unwrap();
     let mut contract_sub = instance
         .messenger()
-        .subscribe_topic(&contract_receiver, SubscriberQoS::Standard)
+        .subscribe_topic(
+            &contract_receiver,
+            SubscriberQoS::Standard,
+            TopicRetention::LiveOnly,
+        )
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;
@@ -196,7 +205,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_contract() {
 
     let sub = instance
         .messenger()
-        .subscribe_topic(&receiver, SubscriberQoS::Standard)
+        .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;

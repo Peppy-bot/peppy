@@ -50,6 +50,7 @@ from peppylib import (
     ServiceMessenger,
     StandaloneConfig,
     TopicMessenger,
+    TopicRetention,
     TopicPublisher,
     ZenohdInstance,
 )
@@ -372,11 +373,12 @@ class TestTopicPublisher:
         as_target: SenderTarget,
         topic: str,
         qos: QoSProfile,
+        retention: TopicRetention,
         link_id: str | None = None,
         readiness_timeout: float = READINESS_TIMEOUT,
     ) -> "TestTopicPublisher":
         publisher = await TopicMessenger.declare_publisher(
-            messenger, as_core_node, as_instance_id, as_target, topic, qos, link_id
+            messenger, as_core_node, as_instance_id, as_target, topic, qos, retention, link_id
         )
         return cls(
             publisher,
@@ -840,6 +842,7 @@ class MockClock:
                 SenderTarget.node(core_node, _CORE_NODE_TAG),
                 _CLOCK_TOPIC,
                 QoSProfile.SensorData,
+                TopicRetention.live_only(),
             )
             self._ticker = asyncio.create_task(self._run_ticker(publisher))
         elif clock == "consumer":
@@ -850,6 +853,7 @@ class MockClock:
                 SenderTarget.node(core_node, _CORE_NODE_TAG),
                 _CLOCK_TOPIC,
                 QoSProfile.SensorData,
+                TopicRetention.live_only(),
                 link_id=self.binding().link_id,
             )
         return self

@@ -141,7 +141,9 @@ pub(crate) fn validate_named_items<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::node::{ArrayKind, MessageFormat, QoSProfile, SchemaType, TypeToken};
+    use config::node::{
+        ArrayKind, MessageFormat, QoSProfile, SchemaType, TopicRetention, TypeToken,
+    };
 
     /// The depth-camera example from the schema doc parses end-to-end and
     /// exposes every field the way the user wrote it.
@@ -234,6 +236,38 @@ mod tests {
         assert!(set_contrast.response_message_format.is_some());
 
         assert!(parsed.interfaces.actions.is_empty());
+    }
+
+    #[test]
+    fn a_contract_topic_states_its_retention() {
+        let json5 = r#"{
+            peppy_schema: "contract/v1",
+            manifest: { name: "robot_state", tag: "v1" },
+            interfaces: {
+                topics: [
+                    { name: "joint_state", message_format: { position: "f64" } },
+                    { name: "robot_mode", retention: { latest: 1 }, message_format: { mode: "string" } },
+                    { name: "calibration", retention: { latest: 5 }, message_format: { offset: "f64" } },
+                ]
+            }
+        }"#;
+
+        let parsed: PeppyContract = serde_json5::from_str(json5).expect("should parse");
+
+        let latest = |depth| TopicRetention::latest(depth).unwrap();
+        assert_eq!(
+            parsed
+                .interfaces
+                .topics
+                .iter()
+                .map(|topic| (topic.name.as_str(), topic.retention))
+                .collect::<Vec<_>>(),
+            [
+                ("joint_state", TopicRetention::LiveOnly),
+                ("robot_mode", latest(1)),
+                ("calibration", latest(5)),
+            ]
+        );
     }
 
     #[test]
@@ -513,6 +547,7 @@ mod tests {
                 topics: vec![NativeEmittedTopic {
                     name: "stream".to_string(),
                     qos_profile: QoSProfile::SensorData,
+                    retention: TopicRetention::latest(5).unwrap(),
                     message_format: Some(MessageFormat(
                         [("width".to_string(), SchemaType::Type(TypeToken::U32))]
                             .into_iter()

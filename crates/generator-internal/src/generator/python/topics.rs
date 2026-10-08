@@ -3,10 +3,12 @@ use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
 use super::services::sender_target_python_expr;
-use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
+use super::type_mapping::{
+    collect_fields_from_format, qos_profile_python, retention_python, uses_optional,
+};
 use crate::error::Result;
-use crate::generator::types::{PairTopicConsumerKind, SubscriptionTag};
-use config::node::{Cardinality, ConsumedTopic, MessageFormat, NativeEmittedTopic};
+use crate::generator::types::{PairTopicConsumerKind, SubscriptionTag, retention_doc};
+use config::node::{Cardinality, ConsumedTopic, MessageFormat, NativeEmittedTopic, TopicRetention};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
@@ -188,6 +190,8 @@ pub fn build_emitted_topic(
     builder.add_import("import peppylib");
 
     let qos = qos_profile_python(&topic.qos_profile);
+    let retention = retention_python(topic.retention);
+    let retention_doc = retention_doc(topic.retention);
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
 
@@ -195,6 +199,7 @@ pub fn build_emitted_topic(
     // declare_publisher.
     builder.line(&format!("TOPIC_NAME = \"{}\"", topic.name));
     builder.line(&format!("QOS = {qos}"));
+    builder.line(&format!("RETENTION = {retention}"));
     builder.blank_line();
 
     emit_build_message_fn(
@@ -211,6 +216,9 @@ pub fn build_emitted_topic(
     builder.block(
         "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:",
         |builder| {
+            if let Some(sentence) = &retention_doc {
+                builder.docstring(sentence);
+            }
             builder.call(
                 "return await peppylib.TopicMessenger.declare_publisher(",
                 &[
@@ -220,6 +228,7 @@ pub fn build_emitted_topic(
                     &format!("{target_expr},"),
                     "TOPIC_NAME,",
                     "QOS,",
+                    "retention=RETENTION,",
                 ],
                 ")",
             );
@@ -540,6 +549,7 @@ pub fn build_pair_topic_consumer(
 pub fn build_consumed_topic(
     topic: &ConsumedTopic,
     arguments: &MessageFormat,
+    retention: TopicRetention,
     schema_info: &PythonSchemaInfo,
     dependency: &crate::generator::types::DependencyContext,
 ) -> Result<String> {
@@ -611,6 +621,9 @@ member.{follows_the_set}"
     builder.block(
         "async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:",
         |builder| {
+            if let Some(sentence) = retention_doc(retention) {
+                builder.docstring(&sentence);
+            }
             builder.line(&format!("topic_name = \"{topic_name}\""));
             builder.call(
                 "inner = await node_runner.subscribe_bound_set(",
@@ -623,6 +636,7 @@ member.{follows_the_set}"
                     &format!("{from_target},"),
                     "topic_name,",
                     "peppylib.QoSProfile.Standard,",
+                    &format!("retention={},", retention_python(retention)),
                 ],
                 ")",
             );

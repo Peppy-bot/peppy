@@ -1,7 +1,7 @@
 //! Configuration utilities and re-exports from the config crate.
 
 use config::NodeArguments;
-pub use config::node::QoSProfile;
+pub use config::node::{QoSProfile, TopicRetention};
 
 /// Format a JSON schema validation error into a human-readable message.
 fn format_validation_error(error: &jsonschema::ValidationError) -> String {

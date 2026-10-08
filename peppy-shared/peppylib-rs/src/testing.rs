@@ -35,7 +35,7 @@ use crate::runtime::{
     CancellationToken, NodeBuilder, NodeRunner, StandaloneConfig, TaskHandle, spawn,
 };
 use crate::types::{Message, Payload};
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use core_node_api::encoding::ClockTick;
 use core_node_api::{ServiceId, TopicId, names};
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
@@ -287,6 +287,7 @@ impl TestTopicPublisher {
         link_id: Option<&str>,
         topic: &str,
         qos: QoSProfile,
+        retention: TopicRetention,
     ) -> Result<Self> {
         let publisher = TopicMessenger::declare_publisher(
             messenger,
@@ -296,6 +297,7 @@ impl TestTopicPublisher {
             link_id,
             topic,
             qos,
+            retention,
         )
         .await?;
         Ok(Self {
@@ -957,6 +959,7 @@ impl MockClock {
                     None,
                     TopicId::Clock.name(),
                     QoSProfile::SensorData,
+                    TopicRetention::LiveOnly,
                 )
                 .await?;
                 // Same loop shape as the daemon's wall-mode publisher:
@@ -1000,6 +1003,7 @@ impl MockClock {
                     Some(&link_id),
                     TopicId::Clock.name(),
                     QoSProfile::SensorData,
+                    TopicRetention::LiveOnly,
                 )
                 .await?;
                 MockClockDriver::Domain {

@@ -20,7 +20,7 @@ use super::mock::{
     build_struct_serializer, production_module, target_expr,
 };
 use super::scaffold::sanitize_rust_module_name;
-use super::topics::qos_profile_tokens;
+use super::topics::{qos_profile_tokens, retention_tokens};
 use super::{
     GenerationContext, RustGenerator, build_deserialize_fn, collect_function_params,
     deserialize_format_fields, map_message_format, prefixed_ident, render_tokens,
@@ -116,6 +116,7 @@ fn render_emitted_topic(
     let schema_prefix = to_camel_case(&fn_name);
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
     let qos = qos_profile_tokens(&spec.qos);
+    let retention = retention_tokens(spec.retention);
 
     let deserialize_ident = Ident::new("deserialize_message", Span::call_site());
     // The emitted direction has no production consumer struct (the node-side
@@ -160,6 +161,7 @@ fn render_emitted_topic(
                 #topic_name,
                 &producer,
                 #qos,
+                #retention,
             )
             .await?;
             Ok(Subscription { inner })

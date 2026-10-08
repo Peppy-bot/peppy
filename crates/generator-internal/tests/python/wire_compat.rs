@@ -37,6 +37,7 @@ use crate::helpers::{
 use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, NodeConfigParser, PeppygenLanguage,
+    TopicRetention,
 };
 use config::runtime::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
@@ -1017,6 +1018,7 @@ if __name__ == "__main__":
             .message_format
             .clone()
             .expect("emitted topic has a message format"),
+        retention: TopicRetention::LiveOnly,
         dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
 

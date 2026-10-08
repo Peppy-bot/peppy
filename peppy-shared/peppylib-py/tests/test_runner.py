@@ -22,6 +22,7 @@ from peppylib import (
     SenderTarget,
     ServiceMessenger,
     TopicMessenger,
+    TopicRetention,
     ZenohdInstance,
 )
 
@@ -1089,6 +1090,7 @@ async def test_shutdown_joins_event_loop_thread(monkeypatch):
                                     SenderTarget.node(node_name, node_tag),
                                     "regression_topic",
                                     QoSProfile.Reliable,
+                                    TopicRetention.live_only(),
                                 )
                                 while not token.is_cancelled():
                                     await publisher.publish(b"frame")

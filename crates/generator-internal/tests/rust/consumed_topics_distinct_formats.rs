@@ -16,7 +16,7 @@
 //! This is the Rust counterpart of `tests/python/consumed_topics_distinct_formats.rs`.
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage};
+use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage, TopicRetention};
 use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
 use std::fs;
 use std::path::Path;
@@ -132,6 +132,7 @@ fn consumed_topic(slot: Slot) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
         topic,
         message_format,
+        retention: TopicRetention::LiveOnly,
         dependency,
     })
 }

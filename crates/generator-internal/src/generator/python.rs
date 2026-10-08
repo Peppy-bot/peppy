@@ -25,7 +25,7 @@ use super::types::{
 use crate::error::Result;
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService,
+    NativeExposedAction, NativeExposedService, TopicRetention,
 };
 use encoding::MessageFormatMapper;
 use std::collections::HashMap;
@@ -326,16 +326,18 @@ impl LanguageGenerator for PythonGenerator {
         &mut self,
         topic: &ConsumedTopic,
         arguments: MessageFormat,
+        retention: TopicRetention,
         dependency: &DependencyContext,
     ) -> Result<()> {
         self.testgen
-            .record_consumed_topic(topic, &arguments, dependency);
+            .record_consumed_topic(topic, &arguments, retention, dependency);
         let schema_key = crate::generator::naming::consumed_topic_schema_key(
             topic.link_id.as_str(),
             topic.name.as_str(),
         );
         let schema_info = self.register_schema(&schema_key, &arguments)?;
-        let code = topics::build_consumed_topic(topic, &arguments, &schema_info, dependency)?;
+        let code =
+            topics::build_consumed_topic(topic, &arguments, retention, &schema_info, dependency)?;
         self.push_section(InterfaceArtifact {
             module_path: vec![topic.link_id.clone(), topic.name.clone()],
             kind: InterfaceKind::ConsumedTopic,

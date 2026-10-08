@@ -3,6 +3,7 @@ mod message_size;
 mod mount_policy;
 mod parse;
 mod refine;
+mod retention;
 mod types;
 mod validation;
 
@@ -14,6 +15,9 @@ pub use refine::{
     ActionRefinement, FieldRefinement, FormatRefinement, RefinementProblem, RefinementProblemKind,
     Refines, ResultServiceRefinement, ServiceRefinement, TopicRefinement, refined, refined_ref,
 };
+pub use retention::{
+    MAX_RETENTION_DEPTH, RetentionDepth, RetentionDepthOutOfRange, TopicRetention,
+};
 pub use types::{
     ActionInterfaces, ActionTopicEndpoint, ArrayKind, ArraySchema, Cardinality, ConsumedAction,
     ConsumedService, ConsumedTopic, ContainerConfig, DependsOn, EmittedTopic, EndpointDeclaration,
@@ -23,7 +27,7 @@ pub use types::{
     NativeExposedAction, NativeExposedService, NodeConfig, NodeDependency, ObjectKind,
     ObjectSchema, PairingObserverDependency, PairingParticipantDependency, PeppygenLanguage,
     PrimitiveSchema, QoSProfile, ResultServiceEndpoint, SchemaType, ServiceInterfaces, Toolchain,
-    TopicInterfaces, TypeToken, is_blocked_mount_source,
+    TopicInterfaces, TypeToken, deserialize_present, is_blocked_mount_source,
 };
 pub use validation::{
     ContractImplementationEdge, DependencySpec, MissingDependencyPolicy,

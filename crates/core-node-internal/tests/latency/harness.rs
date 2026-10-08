@@ -622,7 +622,7 @@ pub async fn run_once(lang: Lang, transport: Transport, warmup: u64, iters: u64)
 
 const DRIVER_MAIN_RS: &str = r####"
 use peppygen::{NodeBuilder, Result};
-use peppylib::config::QoSProfile;
+use peppylib::config::{QoSProfile, TopicRetention};
 use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, Subscription, TopicMessenger};
 use peppylib::types::Payload;
 use std::sync::{Arc, Mutex};
@@ -718,6 +718,7 @@ async fn run_topic(
         None,
         "ping",
         QoSProfile::Reliable,
+        TopicRetention::LiveOnly,
     )
     .await?;
     let mut samples = Vec::with_capacity(iters as usize);
@@ -766,6 +767,7 @@ fn main() -> Result<()> {
             "pong",
             &ProducerRef::new(CORE, RESPONDER_INST),
             QoSProfile::Reliable,
+            TopicRetention::LiveOnly,
         )
         .await?;
         let pong_slot: Arc<Mutex<Option<Subscription>>> = Arc::new(Mutex::new(Some(pong_sub)));
@@ -821,7 +823,7 @@ fn main() -> Result<()> {
 
 const RESPONDER_MAIN_RS: &str = r####"
 use peppygen::{NodeBuilder, Result};
-use peppylib::config::QoSProfile;
+use peppylib::config::{QoSProfile, TopicRetention};
 use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, TopicMessenger};
 
 const TAG: &str = "v1";
@@ -884,6 +886,7 @@ fn main() -> Result<()> {
                     "ping",
                     &ProducerRef::new(CORE, DRIVER_INST),
                     QoSProfile::Reliable,
+                    TopicRetention::LiveOnly,
                 )
                 .await
                 .expect("subscribe ping");
@@ -895,6 +898,7 @@ fn main() -> Result<()> {
                     None,
                     "pong",
                     QoSProfile::Reliable,
+                    TopicRetention::LiveOnly,
                 )
                 .await
                 .expect("declare pong publisher");
@@ -918,7 +922,7 @@ import sys
 import traceback
 
 from peppygen import NodeBuilder
-from peppylib import ProducerRef, QoSProfile, SenderTarget, ServiceMessenger, TopicMessenger
+from peppylib import ProducerRef, QoSProfile, SenderTarget, ServiceMessenger, TopicMessenger, TopicRetention
 
 TAG = "v1"
 CORE = "bench_core"
@@ -952,6 +956,7 @@ async def echo_topic(node_runner):
         "ping",
         ProducerRef(CORE, DRIVER_INST),
         QoSProfile.Reliable,
+        TopicRetention.live_only(),
     )
     pong = await TopicMessenger.declare_publisher(
         handle,
@@ -960,6 +965,7 @@ async def echo_topic(node_runner):
         SenderTarget.node(RESPONDER_NODE, TAG),
         "pong",
         QoSProfile.Reliable,
+        TopicRetention.live_only(),
     )
     while True:
         message = await subscription.on_next_message()

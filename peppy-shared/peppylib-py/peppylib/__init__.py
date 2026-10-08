@@ -38,7 +38,7 @@ messaging = _peppylib.messaging
 
 # Re-export the Rust-implemented functions/types from the native module
 from ._peppylib.messaging import SenderTarget, ProducerRef, MessengerHandle, TopicMessenger, TopicPublisher, BoundSetSubscription, BoundMember, CopyTag, ZenohdInstance, PeerInfo, PeerMember, PeerSlot, PeerSlotSet, PeerSubscription, PeerPublisher, ObservedSource, ObservationSlot, ObservationSlotSet, ObservedSubscription  # noqa: E402  # type: ignore[import-not-found]
-from ._peppylib.config import QoSProfile  # noqa: E402  # type: ignore[import-not-found]
+from ._peppylib.config import QoSProfile, TopicRetention  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.messaging.services import ServiceMessenger  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.messaging.actions import (  # noqa: E402  # type: ignore[import-not-found]
     ActionMessenger,
@@ -87,6 +87,7 @@ __all__ = [
     "ObservationSlotSet",
     "ObservedSubscription",
     "QoSProfile",
+    "TopicRetention",
     "ServiceMessenger",
     "ActionMessenger",
     "ConcurrentAction",

@@ -14,6 +14,7 @@
 //!   waits for.
 
 use crate::types::{FeedbackBuffer, TopicMessage};
+use config::node::TopicRetention;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -25,6 +26,16 @@ pub(crate) enum Buffering {
     Backpressure,
     /// A goal's feedback stream, held as the goal's caller asked.
     Feedback(FeedbackBuffer),
+}
+
+/// A topic subscription's queue capacity: its QoS tier's size, raised to the
+/// topic's retention depth so one publisher's messages replayed at a join fit
+/// before the reader takes one.
+pub(crate) fn queue_capacity(tier_size: usize, retention: TopicRetention) -> usize {
+    match retention {
+        TopicRetention::LiveOnly => tier_size,
+        TopicRetention::Latest { depth } => tier_size.max(depth.get()),
+    }
 }
 
 /// Opens a subscription's buffer: the sink the transport fills and the
@@ -236,6 +247,24 @@ mod tests {
             .into_iter()
             .map(|index| format!("feedback-{index}"))
             .collect()
+    }
+
+    #[test]
+    fn a_retaining_subscription_queue_fits_the_retention_depth() {
+        use crate::declared::test_support::latest;
+        assert_eq!(queue_capacity(128, TopicRetention::LiveOnly), 128);
+        assert_eq!(queue_capacity(128, latest(1)), 128);
+        assert_eq!(queue_capacity(128, latest(300)), 300);
+    }
+
+    /// The deepest retention fits the largest default queue, so a retaining
+    /// subscription's queue stays within the default sizes.
+    #[test]
+    fn the_largest_default_queue_holds_the_deepest_retention() {
+        assert!(
+            crate::SubscriberBufferSizes::default().high_throughput
+                >= config::node::MAX_RETENTION_DEPTH
+        );
     }
 
     #[test]

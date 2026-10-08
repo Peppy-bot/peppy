@@ -19,6 +19,7 @@ from peppylib import (
     ServiceMessenger,
     StandaloneConfig,
     TopicMessenger,
+    TopicRetention,
 )
 from peppylib.testing import (
     MOCK_CLOCK_INSTANCE_ID,
@@ -207,6 +208,7 @@ async def test_topic_publisher_first_publish_is_delivered():
             "video_stream",
             producer,
             QoSProfile.Reliable,
+            TopicRetention.live_only(),
         )
 
         publisher = await TestTopicPublisher.declare(
@@ -216,6 +218,7 @@ async def test_topic_publisher_first_publish_is_delivered():
             _node_target("camera"),
             "video_stream",
             QoSProfile.Reliable,
+            TopicRetention.live_only(),
         )
         await publisher.publish(b"frame-1")
 
@@ -230,10 +233,51 @@ async def test_topic_publisher_first_publish_is_delivered():
             _node_target("camera"),
             "nobody_listens",
             QoSProfile.Reliable,
+            TopicRetention.live_only(),
             readiness_timeout=0.25,
         )
         with pytest.raises(RuntimeError, match="nobody_listens"):
             await orphan.publish(b"lost")
+
+
+@pytest.mark.asyncio
+async def test_topic_publisher_on_a_retaining_topic_serves_a_late_subscription():
+    """A test publisher declares its topic's retention: a subscription opened
+    after its publish reads the retained message."""
+    retention = TopicRetention.latest()
+    async with await EphemeralRouter.start() as router:
+        sub_handle = await router.connect()
+        pub_handle = await router.connect()
+
+        async def subscribe():
+            return await TopicMessenger.subscribe(
+                sub_handle,
+                CALLER_CORE,
+                CALLER_INSTANCE,
+                _node_target("arm"),
+                "robot_mode",
+                ProducerRef(MOCK_CORE, MOCK_INSTANCE),
+                QoSProfile.Reliable,
+                retention,
+            )
+
+        first_subscription = await subscribe()
+        publisher = await TestTopicPublisher.declare(
+            pub_handle,
+            MOCK_CORE,
+            MOCK_INSTANCE,
+            _node_target("arm"),
+            "robot_mode",
+            QoSProfile.Reliable,
+            retention,
+        )
+        await publisher.publish(b"ready")
+
+        late_subscription = await subscribe()
+        for subscription in (first_subscription, late_subscription):
+            received = await asyncio.wait_for(subscription.on_next_message(), timeout=5.0)
+            assert received is not None
+            assert received.payload == b"ready"
 
 
 @pytest.mark.asyncio
@@ -297,6 +341,7 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
             "status",
             ProducerRef("standalone-core", instance_id),
             QoSProfile.Reliable,
+            TopicRetention.live_only(),
         )
 
         standalone_config = (
@@ -318,6 +363,7 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
                 SenderTarget.node(node_runner.node_name(), node_runner.node_tag()),
                 "status",
                 QoSProfile.Reliable,
+                TopicRetention.live_only(),
             )
             # First publish, immediately: only the pre-setup barrier makes
             # this deliverable.

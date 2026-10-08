@@ -1254,7 +1254,8 @@ impl PyNodeRunner {
     /// the node or contract target the producers serve the topic under.
     /// Messages from every producer currently bound to the slot fan into one
     /// stream, each yielded as a `(producer, message)` tuple, and the stream
-    /// follows the set as the daemon grows or shrinks it.
+    /// follows the set as the daemon grows or shrinks it. `retention` is the
+    /// topic's declared policy.
     fn subscribe_bound_set<'py>(
         &self,
         py: Python<'py>,
@@ -1262,9 +1263,11 @@ impl PyNodeRunner {
         from_target: crate::messaging::PySenderTarget,
         topic: String,
         qos: crate::config::PyQoSProfile,
+        retention: crate::config::PyTopicRetention,
     ) -> PyResult<Bound<'py, PyAny>> {
         let node_runner = Arc::clone(&self.inner);
         let from_target = from_target.into_inner();
+        let retention = config::node::TopicRetention::from(retention);
         crate::py_future::future_into_py(py, async move {
             let subscription = peppylib::runtime::subscribe_bound_set(
                 &node_runner,
@@ -1272,6 +1275,7 @@ impl PyNodeRunner {
                 from_target,
                 &topic,
                 qos.into(),
+                retention,
             )
             .await
             .map_err(crate::messaging::to_py_err)?;

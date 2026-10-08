@@ -20,11 +20,12 @@ The choice comes down to two independent questions:
 | [Services](/advanced_guides/services/) | One request, one response | The consumer | One bounded exchange per call | Queries, toggles, quick one-shot computations |
 | [Actions](/advanced_guides/actions/) | Goal in, feedback stream out, result on completion | The consumer fires a goal; the producer drives it to an end | A discrete job with an explicit start, end, and cancel | Navigation, arm movements, calibration runs |
 | [Pairing](/advanced_guides/pairing/) | Two independent one-way streams under one two-role contract | Either side, whenever it has data | Continuous while both instances live; dissolves when either dies | Inner control loops between two specific instances |
-| [Datastore](/advanced_guides/datastore/) | Write a small value, read it back later | Writer and reader, at independent times | The value persists on the core node until overwritten or removed | Calibration results, mode flags, last-known values |
+| [Datastore](/advanced_guides/datastore/) | Write a small value, read it back later | Writer and reader, at independent times | The value persists on the core node until overwritten or removed | Calibration results and other values that outlive the node that wrote them |
 
 The same choices, phrased the way the requirement usually sounds:
 
 - "The camera publishes frames and whoever cares can watch." A **topic**: one producer, any number of consumers, no coordination between them.
+- "The dashboard starts after the robot and still shows its current mode." A **topic that retains** its latest value: a consumer that subscribes later reads it at once. See [Retaining the latest value](/advanced_guides/topics/#retaining-the-latest-value).
 - "Is the gripper open right now?" A **service**: you need an answer, you wait briefly for it, and the exchange is over.
 - "Move the arm to this pose, stream progress, tell me when it is done." An **action**: the job has a defined end, reports feedback along the way, and can be cancelled mid-flight.
 - "The controller streams setpoints at 100 Hz and the arm streams joint states back at 1 kHz." A **pairing**: both directions belong to one continuous conversation between two specific instances.
@@ -63,7 +64,7 @@ A few system-wide rules reject otherwise-plausible wirings. Check your plan agai
 
 - **Only caller-driven cycles are cycles.** Topic subscriptions are passive, so two nodes may consume each other's topics; pairing is built on exactly this property. Mutual service or action relationships deadlock, so the daemon rejects them however they are wired, directly or through contracts; see [Caller-driven cycles are rejected](/advanced_guides/contract_implementation/#caller-driven-cycles-are-rejected). When two nodes need both directions, make at least one direction a topic (or model both directions as a pairing), or model the bounded direction as an action from client to server.
 - **Pairings carry topics only.** No services or actions inside a pairing contract. Keep the continuous streams in the pairing and expose the bounded jobs as ordinary actions alongside it; the reasoning is in [Why topics only?](/advanced_guides/pairing/#why-topics-only).
-- **Streams are live, not replayed.** A subscriber receives messages from the moment it attaches; earlier messages are not redelivered, and a pairing slot delivers nothing while unpaired. When the reader must see the latest value regardless of timing, put that value in the [datastore](/advanced_guides/datastore/).
+- **A stream is live unless its topic retains.** A subscriber of a live-only topic receives messages from the moment it attaches, and a pairing slot delivers nothing while unpaired. When a new subscriber must see the latest value of a state a node publishes, that node declares [`retention`](/advanced_guides/topics/#retaining-the-latest-value) on the topic. When the value must outlive the node that produced it, put it in the [datastore](/advanced_guides/datastore/).
 - **The datastore is a blackboard, not a database.** It lives in the core node's memory: it survives node restarts but not a daemon restart, and it holds small values, not history. See [When to use this](/advanced_guides/datastore/#when-to-use-this).
 
 ## Worked example: one arm, every mechanism

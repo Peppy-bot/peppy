@@ -8,12 +8,13 @@ mod common;
 use common::{
     get_client_server, test_node_target, wait_for_topic_subscriber, wait_for_topic_subscriber_gone,
 };
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use config::runtime::BoundProducers;
 use peppylib::messaging::{
     BoundSetState, MessengerHandle, ProducerRef, TopicMessenger, TopicPublisher,
 };
 use peppylib::runtime::{BoundSetSubscription, CancellationToken, subscribe_bound_set_with_watch};
+use peppylib::testing::EphemeralRouter;
 use peppylib::types::Payload;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -40,7 +41,22 @@ fn state(sequence: u64, instance_ids: &[&str]) -> BoundSetState {
     }
 }
 
+/// The policy of the retaining-topic cases: each producer keeps its newest
+/// message.
+const RETAINS_LATEST: TopicRetention = match TopicRetention::latest(1) {
+    Ok(retention) => retention,
+    Err(_) => panic!("1 is in range"),
+};
+
 async fn declare_producer_publisher(handle: &MessengerHandle, instance_id: &str) -> TopicPublisher {
+    declare_producer_publisher_with(handle, instance_id, TopicRetention::LiveOnly).await
+}
+
+async fn declare_producer_publisher_with(
+    handle: &MessengerHandle,
+    instance_id: &str,
+    retention: TopicRetention,
+) -> TopicPublisher {
     TopicMessenger::declare_publisher(
         handle,
         CORE,
@@ -49,6 +65,7 @@ async fn declare_producer_publisher(handle: &MessengerHandle, instance_id: &str)
         None,
         TOPIC,
         QoSProfile::Reliable,
+        retention,
     )
     .await
     .expect("declare producer publisher")
@@ -60,6 +77,14 @@ async fn subscribe(
     handle: &MessengerHandle,
     watch_rx: watch::Receiver<BoundSetState>,
 ) -> BoundSetSubscription {
+    subscribe_with(handle, watch_rx, TopicRetention::LiveOnly).await
+}
+
+async fn subscribe_with(
+    handle: &MessengerHandle,
+    watch_rx: watch::Receiver<BoundSetState>,
+    retention: TopicRetention,
+) -> BoundSetSubscription {
     subscribe_bound_set_with_watch(
         handle.clone(),
         CORE.to_string(),
@@ -68,6 +93,7 @@ async fn subscribe(
         test_node_target(PRODUCER_NODE),
         TOPIC.to_string(),
         QoSProfile::Reliable,
+        retention,
         CancellationToken::new(),
     )
     .await
@@ -205,6 +231,115 @@ async fn a_producer_rejoining_the_set_is_heard_again() {
     wait_for_consumer(&producer_handle, "arm_1").await;
     publish(&arm_1, b"back again").await;
     expect_message(&mut subscription, "arm_1", b"back again").await;
+}
+
+/// On a retaining topic, each producer's retained value reaches the consumer
+/// when that producer enters the set, and a producer already bound replays
+/// nothing: the next message from it is the live one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_producer_entering_the_set_delivers_its_retained_value() {
+    let (client, shared) = get_client_server().await;
+    let producer_handle = MessengerHandle::from_shared(shared);
+    let arm_1 = declare_producer_publisher_with(&producer_handle, "arm_1", RETAINS_LATEST).await;
+    let arm_2 = declare_producer_publisher_with(&producer_handle, "arm_2", RETAINS_LATEST).await;
+    publish(&arm_1, b"arm_1 ready").await;
+    publish(&arm_2, b"arm_2 ready").await;
+
+    let (tx, watch_rx) = watch::channel(BoundSetState::seeded(producers(&["arm_1"])));
+    let mut subscription = subscribe_with(&client.caller_handle, watch_rx, RETAINS_LATEST).await;
+    expect_message(&mut subscription, "arm_1", b"arm_1 ready").await;
+
+    tx.send(state(1, &["arm_1", "arm_2"])).expect("watch send");
+    expect_message(&mut subscription, "arm_2", b"arm_2 ready").await;
+    publish(&arm_1, b"arm_1 moving").await;
+    expect_message(&mut subscription, "arm_1", b"arm_1 moving").await;
+}
+
+/// The slot switches to another producer: the first value read after the
+/// switch is the new producer's retained one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_of_producer_starts_from_the_new_producers_retained_value() {
+    let (client, shared) = get_client_server().await;
+    let producer_handle = MessengerHandle::from_shared(shared);
+    let arm_1 = declare_producer_publisher_with(&producer_handle, "arm_1", RETAINS_LATEST).await;
+    let arm_2 = declare_producer_publisher_with(&producer_handle, "arm_2", RETAINS_LATEST).await;
+    publish(&arm_1, b"arm_1 ready").await;
+    publish(&arm_2, b"arm_2 ready").await;
+
+    let (tx, watch_rx) = watch::channel(BoundSetState::seeded(producers(&["arm_1"])));
+    let mut subscription = subscribe_with(&client.caller_handle, watch_rx, RETAINS_LATEST).await;
+    expect_message(&mut subscription, "arm_1", b"arm_1 ready").await;
+
+    tx.send(state(1, &["arm_2"])).expect("watch send");
+    expect_message(&mut subscription, "arm_2", b"arm_2 ready").await;
+}
+
+/// A producer that leaves the set and enters it again delivers its retained
+/// value again, to a consumer that already read it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_producer_entering_the_set_again_delivers_its_retained_value_again() {
+    let (client, shared) = get_client_server().await;
+    let producer_handle = MessengerHandle::from_shared(shared);
+    let arm_1 = declare_producer_publisher_with(&producer_handle, "arm_1", RETAINS_LATEST).await;
+    publish(&arm_1, b"arm_1 ready").await;
+
+    let (tx, watch_rx) = watch::channel(BoundSetState::seeded(producers(&["arm_1"])));
+    let mut subscription = subscribe_with(&client.caller_handle, watch_rx, RETAINS_LATEST).await;
+    expect_message(&mut subscription, "arm_1", b"arm_1 ready").await;
+
+    tx.send(state(1, &[])).expect("watch send");
+    wait_for_consumer_gone(&producer_handle, "arm_1").await;
+    tx.send(state(2, &["arm_1"])).expect("watch send");
+    expect_message(&mut subscription, "arm_1", b"arm_1 ready").await;
+}
+
+/// Over the real transport: the slot switches producer, and the first value
+/// read after the switch is the new producer's retained one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_of_producer_over_zenoh_starts_from_the_new_producers_retained_value() {
+    let router = EphemeralRouter::start().await.expect("start router");
+    let producer_handle = router.connect().await.expect("producer session");
+    let arm_1 = declare_producer_publisher_with(&producer_handle, "arm_1", RETAINS_LATEST).await;
+    let arm_2 = declare_producer_publisher_with(&producer_handle, "arm_2", RETAINS_LATEST).await;
+    publish(&arm_1, b"arm_1 ready").await;
+    publish(&arm_2, b"arm_2 ready").await;
+
+    let consumer_handle = router.connect().await.expect("consumer session");
+    let (tx, watch_rx) = watch::channel(BoundSetState::seeded(producers(&["arm_1"])));
+    let mut subscription = subscribe_with(&consumer_handle, watch_rx, RETAINS_LATEST).await;
+    expect_message(&mut subscription, "arm_1", b"arm_1 ready").await;
+
+    tx.send(state(1, &["arm_2"])).expect("watch send");
+    expect_message(&mut subscription, "arm_2", b"arm_2 ready").await;
+    router.shutdown().await.expect("router shutdown");
+}
+
+/// The slot leaves its producer and enters it again before the stream takes
+/// either change, and the consumer reads in between: the retained value is
+/// delivered once the slot follows the producer again.
+#[tokio::test(flavor = "current_thread")]
+async fn a_retained_value_read_while_its_producer_is_out_of_the_set_is_delivered_on_reentry() {
+    let (client, shared) = get_client_server().await;
+    let producer_handle = MessengerHandle::from_shared(shared);
+    let arm_1 = declare_producer_publisher_with(&producer_handle, "arm_1", RETAINS_LATEST).await;
+    publish(&arm_1, b"arm_1 ready").await;
+
+    let (tx, watch_rx) = watch::channel(BoundSetState::seeded(producers(&["arm_1"])));
+    let mut subscription = subscribe_with(&client.caller_handle, watch_rx, RETAINS_LATEST).await;
+
+    tx.send(state(1, &[])).expect("watch send");
+    {
+        // One poll on this task: the stream's own task has not run since the
+        // producer left the set.
+        let mut read = std::pin::pin!(subscription.on_next_message());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            read.as_mut().poll(&mut context).is_pending(),
+            "the retained value is stale while its producer is out of the set"
+        );
+    }
+    tx.send(state(2, &["arm_1"])).expect("watch send");
+    expect_message(&mut subscription, "arm_1", b"arm_1 ready").await;
 }
 
 /// The node side of `binding_update` over the wire: a delivery from the

@@ -1,6 +1,6 @@
 use super::deps::{
-    DependencyKind, DependencyLookupEntry, DependencyOfferings, build_dependency_lookup,
-    build_dependency_offerings,
+    DependencyKind, DependencyLookupEntry, DependencyOfferings, OfferedTopic,
+    build_dependency_lookup, build_dependency_offerings,
 };
 use crate::services::node::Report;
 use crate::services::repo::cache as repo_cache;
@@ -151,7 +151,7 @@ pub fn collect_consumed_interfaces(
             if pairing_slots.contains(consumed_topic.link_id.as_str()) {
                 continue;
             }
-            let Some((message_format, dependency)) = deps.resolve_consumed_offering(
+            let Some((offered, dependency)) = deps.resolve_consumed_offering(
                 config::node::InterfaceKind::Topic.consumed_section(),
                 &consumed_topic.link_id,
                 consumed_topic.name.trim(),
@@ -168,7 +168,7 @@ pub fn collect_consumed_interfaces(
                         .find(|t| t.name.trim() == name)?;
                     Some(
                         refined_ref(consumed_topic.refine.as_deref(), emitted)
-                            .map(|emitted| emitted.message_format.clone().unwrap_or_default()),
+                            .map(|emitted| OfferedTopic::of(&emitted)),
                     )
                 },
             )?
@@ -177,7 +177,8 @@ pub fn collect_consumed_interfaces(
             };
             interfaces.push(DeploymentInterface::consumed_topic(
                 consumed_topic.clone(),
-                message_format,
+                offered.message_format,
+                offered.retention,
                 dependency,
             ));
         }
@@ -825,6 +826,46 @@ mod implements_tests {
         let out = resolve_implements(&manifest, &Interfaces::default(), &dirs, None, &|_| {})
             .expect("ok");
         assert!(out.is_empty());
+    }
+
+    /// A producer that implements a contract publishes the contract topic
+    /// with the retention the contract declares.
+    #[test]
+    fn a_contract_backed_emit_takes_the_retention_its_contract_declares() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(
+            tmp.path(),
+            "robot_state",
+            "v1",
+            r#"{
+                peppy_schema: "contract/v1",
+                manifest: { name: "robot_state", tag: "v1" },
+                interfaces: {
+                    topics: [
+                        { name: "robot_mode", retention: { latest: 3 }, message_format: { mode: "string" } },
+                    ]
+                }
+            }"#,
+        );
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let manifest =
+            manifest_with_implements(r#"{ name: "robot_state", tag: "v1", link_id: "robot" }"#);
+        let interfaces =
+            interfaces_from(r#"{ topics: { emits: [{ link_id: "robot", name: "robot_mode" }] } }"#);
+
+        let out = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
+            .expect("the contract-backed emit resolves");
+
+        let [emitted] = out.as_slice() else {
+            panic!("expected the one robot_mode topic, got {out:?}");
+        };
+        let InterfaceVariant::EmittedTopic { topic, .. } = emitted.interface() else {
+            panic!("expected EmittedTopic, got {:?}", emitted.interface());
+        };
+        assert_eq!(
+            topic.retention,
+            config::node::TopicRetention::latest(3).expect("a depth in range")
+        );
     }
 
     /// Happy path: a full-coverage manifest yields one DeploymentInterface
@@ -1720,6 +1761,91 @@ mod implements_tests {
                 "error must name the entry, the slot and the document, missing {needle}: {err}"
             );
         }
+    }
+
+    /// The retention a producer declares reaches the consumer's generated
+    /// subscription, through a contract and through a node dependency.
+    #[test]
+    fn a_consumed_topic_takes_the_retention_its_producer_declares() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(
+            tmp.path(),
+            "robot_state",
+            "v1",
+            r#"{
+                peppy_schema: "contract/v1",
+                manifest: { name: "robot_state", tag: "v1" },
+                interfaces: {
+                    topics: [
+                        { name: "robot_mode", retention: { latest: 3 }, message_format: { mode: "string" } },
+                        { name: "joint_state", message_format: { position: "f64" } },
+                    ]
+                }
+            }"#,
+        );
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let arm: config::node::NodeConfig = config::node::NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "arm", tag: "v1" },
+                interfaces: {
+                    topics: { emits: [
+                        { name: "calibration", retention: { latest: 1 }, message_format: { offset: "f64" } },
+                        { name: "telemetry", message_format: { load: "f64" } },
+                    ] },
+                },
+                execution: { language: "rust", run_cmd: ["./bin"] },
+            }"#,
+        )
+        .expect("producer parses");
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{
+                name: "panel", tag: "v1",
+                depends_on: {
+                    nodes: [{ name: "arm", tag: "v1", link_id: "arm" }],
+                    contracts: [{ name: "robot_state", tag: "v1", link_id: "robot" }]
+                }
+            }"#,
+        )
+        .expect("manifest parses");
+        let cfg = interfaces_from(
+            r#"{ topics: { consumes: [
+                { link_id: "robot", name: "robot_mode" },
+                { link_id: "robot", name: "joint_state" },
+                { link_id: "arm", name: "calibration" },
+                { link_id: "arm", name: "telemetry" },
+            ] } }"#,
+        );
+
+        let out = collect_consumed_interfaces(
+            &manifest,
+            &cfg,
+            |name, _| (name == "arm").then(|| arm.clone()),
+            &dirs,
+            None,
+            &|_| {},
+        )
+        .expect("every consumed topic resolves");
+
+        let retentions: Vec<(&str, config::node::TopicRetention)> = out
+            .iter()
+            .map(|interface| match interface.interface() {
+                InterfaceVariant::ConsumedTopic {
+                    topic, retention, ..
+                } => (topic.name.as_str(), *retention),
+                other => panic!("expected ConsumedTopic, got {other:?}"),
+            })
+            .collect();
+        let latest = |depth| config::node::TopicRetention::latest(depth).expect("a depth in range");
+        assert_eq!(
+            retentions,
+            [
+                ("robot_mode", latest(3)),
+                ("joint_state", config::node::TopicRetention::LiveOnly),
+                ("calibration", latest(1)),
+                ("telemetry", config::node::TopicRetention::LiveOnly),
+            ]
+        );
     }
 
     /// Contract fixture for the consumed-action tests: one full member

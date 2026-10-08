@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use config::node::QoSProfile;
+use config::node::{QoSProfile, TopicRetention};
 use peppylib::PeppyError;
 use peppylib::messaging::{
     ActionMessenger, FeedbackBuffer, NonEmptyPayload, ProducerRef, SenderTarget, ServiceMessenger,
@@ -270,6 +270,7 @@ async fn test_topic_publisher_first_publish_is_delivered() {
         "video_stream",
         &producer,
         QoSProfile::Reliable,
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("subscribe should succeed");
@@ -282,6 +283,7 @@ async fn test_topic_publisher_first_publish_is_delivered() {
         None,
         "video_stream",
         QoSProfile::Reliable,
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("declare should succeed");
@@ -307,6 +309,7 @@ async fn test_topic_publisher_first_publish_is_delivered() {
         None,
         "nobody_listens",
         QoSProfile::Reliable,
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("declare should succeed")
@@ -319,6 +322,58 @@ async fn test_topic_publisher_first_publish_is_delivered() {
         err.to_string().contains("nobody_listens"),
         "error should name the topic, got: {err}"
     );
+
+    router.shutdown().await.expect("router shutdown");
+}
+
+/// A test publisher declares its topic's retention: a subscription opened
+/// after its publish reads the retained message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_topic_publisher_on_a_retaining_topic_serves_a_late_subscription() {
+    let retains_latest = TopicRetention::latest(1).expect("1 is in range");
+    let router = EphemeralRouter::start().await.expect("start router");
+    let pub_handle = router.connect().await.expect("publisher session");
+    let sub_handle = router.connect().await.expect("subscriber session");
+    let producer = ProducerRef::new(MOCK_CORE, MOCK_INSTANCE);
+    let subscribe = || {
+        TopicMessenger::subscribe(
+            &sub_handle,
+            CALLER_CORE,
+            CALLER_INSTANCE,
+            node_target("arm"),
+            "robot_mode",
+            &producer,
+            QoSProfile::Reliable,
+            retains_latest,
+        )
+    };
+    let mut first_subscription = subscribe().await.expect("subscribe should succeed");
+
+    let publisher = TestTopicPublisher::declare(
+        &pub_handle,
+        MOCK_CORE,
+        MOCK_INSTANCE,
+        node_target("arm"),
+        None,
+        "robot_mode",
+        QoSProfile::Reliable,
+        retains_latest,
+    )
+    .await
+    .expect("declare should succeed");
+    publisher
+        .publish(Payload::from_static(b"ready"))
+        .await
+        .expect("publish should succeed");
+
+    let mut late_subscription = subscribe().await.expect("subscribe should succeed");
+    for subscription in [&mut first_subscription, &mut late_subscription] {
+        let received = tokio::time::timeout(Duration::from_secs(5), subscription.on_next_message())
+            .await
+            .expect("the message must be delivered")
+            .expect("subscription should be open");
+        assert_eq!(received.payload().as_ref(), b"ready");
+    }
 
     router.shutdown().await.expect("router shutdown");
 }
@@ -347,6 +402,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
         "status",
         &node_producer,
         QoSProfile::Reliable,
+        TopicRetention::LiveOnly,
     )
     .await
     .expect("observation subscribe should succeed");
@@ -397,6 +453,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
                 None,
                 "status",
                 QoSProfile::Reliable,
+                TopicRetention::LiveOnly,
             )
             .await?;
             // First publish, immediately: only the pre-setup barrier makes

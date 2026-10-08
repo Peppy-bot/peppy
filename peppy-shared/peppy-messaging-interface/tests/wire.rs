@@ -11,6 +11,7 @@ mod common;
 use common::{RECV_TIMEOUT, ZENOH_SERIAL, test_node_target, wait_for_subscriber_discovery};
 
 use bytes::Bytes;
+use config::node::TopicRetention;
 use pmi::{
     ActionWireReceiver, ActionWireSender, FeedbackBuffer, IncomingRequest, MessengerBackend,
     Payload, ProducerRef, PublisherQoS, ReplyStream, SenderTarget, ServiceKind, ServiceQueryKind,
@@ -80,7 +81,7 @@ async fn topic_native_roundtrip() {
 
     let mut sub = instance
         .messenger()
-        .subscribe_topic(&receiver, SubscriberQoS::Standard)
+        .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;
@@ -127,7 +128,7 @@ async fn topic_contract_roundtrip() {
 
     let mut sub = instance
         .messenger()
-        .subscribe_topic(&receiver, SubscriberQoS::Standard)
+        .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;
@@ -178,7 +179,7 @@ async fn topic_wildcard_subscriber() {
 
     let mut sub = instance
         .messenger()
-        .subscribe_topic(&receiver, SubscriberQoS::Standard)
+        .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;

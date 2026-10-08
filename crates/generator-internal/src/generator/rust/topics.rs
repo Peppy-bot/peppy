@@ -2,8 +2,8 @@ use super::deserialization::build_deserialize_fn;
 use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::deserialize_fields_from_format;
 use crate::error::Result;
-use crate::generator::types::SubscriptionTag;
-use config::node::{Cardinality, ConsumedTopic, NativeEmittedTopic, QoSProfile};
+use crate::generator::types::{SubscriptionTag, retention_doc};
+use config::node::{Cardinality, ConsumedTopic, NativeEmittedTopic, QoSProfile, TopicRetention};
 use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
@@ -15,6 +15,8 @@ pub struct ConsumedTopicSubscriptionSpec<'a> {
     pub artifacts: &'a CapnpSchemaArtifacts,
     pub encoding: &'a MessageEncodingSpec,
     pub topic: &'a ConsumedTopic,
+    /// The retention the topic's producer declares.
+    pub retention: TopicRetention,
     pub struct_prefix: &'a str,
     pub dependency: &'a crate::generator::types::DependencyContext,
 }
@@ -98,6 +100,8 @@ pub fn build_topic_publisher(
 ) -> TokenStream {
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
+    let retention_tokens = retention_tokens(topic.retention);
+    let retention_doc = retention_doc_lines(topic.retention);
     let label_literal = Literal::string(label);
     let target_expr = sender_target_expression(origin);
 
@@ -109,10 +113,12 @@ pub fn build_topic_publisher(
         /// Declares the topic publisher: takes the central messenger lock once
         /// and returns a lock-free `peppylib::TopicPublisher`. Declare once,
         /// then call `publisher.publish(build_message(...)?)` per message.
+        #(#[doc = #retention_doc])*
         pub async fn declare_publisher(
             node_runner: &crate::NodeRunner,
         ) -> crate::Result<peppylib::TopicPublisher> {
             let qos = #qos_tokens;
+            let retention = #retention_tokens;
             let as_topic = #topic_literal;
             let as_instance_id = node_runner.processor().bound_instance_id();
             let with_core_node = node_runner.processor().bound_core_node();
@@ -126,6 +132,7 @@ pub fn build_topic_publisher(
                 None,
                 as_topic,
                 qos,
+                retention,
             )
             .await?;
             Ok(publisher)
@@ -636,10 +643,13 @@ pub fn build_consumed_topic_subscription(
         artifacts,
         encoding,
         topic,
+        retention,
         struct_prefix,
         dependency,
     } = spec;
     let topic_literal = Literal::string(&topic.name);
+    let retention_tokens = retention_tokens(retention);
+    let retention_doc = retention_doc_lines(retention);
     let node_name_literal = Literal::string(&dependency.producer_name);
     let helper_fn_tokens = build_topic_deserialize_helper(
         helper_fn_ident,
@@ -697,12 +707,14 @@ pub fn build_consumed_topic_subscription(
         /// bound set changes. Call this once, then loop on `Subscription::next`;
         /// each underlying subscription's buffer retains messages published
         /// between calls, so nothing is lost to a re-subscribe gap.
+        #(#[doc = #retention_doc])*
         pub async fn subscribe(
             node_runner: &crate::NodeRunner,
         ) -> crate::Result<Subscription> {
             let topic_name = #topic_literal;
             let node_name = #node_name_literal;
             let qos = peppylib::config::QoSProfile::Standard;
+            let retention = #retention_tokens;
 
             let inner = peppylib::runtime::subscribe_bound_set(
                 node_runner,
@@ -710,6 +722,7 @@ pub fn build_consumed_topic_subscription(
                 #from_target_expr,
                 topic_name,
                 qos,
+                retention,
             )
             .await
             .map_err(|source| crate::Error::TopicSubscribe {
@@ -935,4 +948,29 @@ pub fn qos_profile_variant(profile: &QoSProfile) -> Ident {
 pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
     let variant_ident = qos_profile_variant(profile);
     quote!(peppylib::config::QoSProfile::#variant_ident)
+}
+
+/// The doc lines a retaining topic's generated API adds: a paragraph break and
+/// the sentence of [`retention_doc`].
+fn retention_doc_lines(retention: TopicRetention) -> Vec<String> {
+    retention_doc(retention).map_or_else(Vec::new, |sentence| vec![String::new(), sentence])
+}
+
+/// The `TopicRetention` value generated code states for a topic. A retaining
+/// topic's depth is checked when the generated crate compiles.
+pub fn retention_tokens(retention: TopicRetention) -> TokenStream {
+    let TopicRetention::Latest { depth } = retention else {
+        return quote!(peppylib::config::TopicRetention::LiveOnly);
+    };
+    let depth = Literal::usize_unsuffixed(depth.get());
+    quote! {
+        {
+            const RETENTION: peppylib::config::TopicRetention =
+                match peppylib::config::TopicRetention::latest(#depth) {
+                    Ok(retention) => retention,
+                    Err(_) => panic!("the topic's manifest states a retention depth in range"),
+                };
+            RETENTION
+        }
+    }
 }
