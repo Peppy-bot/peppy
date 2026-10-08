@@ -65,8 +65,8 @@ enum Step {
 /// for the life of a generation. See the module docs.
 pub(crate) struct CertificateRenewal {
     deps: RenewalDeps,
-    /// Shared coordinator token: the task tears down when it is cancelled (an
-    /// in-process restart) or on a real OS shutdown signal.
+    /// Shared coordinator token: the task tears down when it is cancelled. The
+    /// coordinator cancels it when the generation stops for any reason.
     teardown_token: CancellationToken,
 }
 
@@ -96,7 +96,7 @@ impl ServeAsyncCommand for CertificateRenewal {
         let future = Box::pin(async move {
             tokio::select! {
                 _ = keep_certificate_valid(&deps) => {}
-                _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
+                _ = teardown_token.cancelled() => {}
             }
             Ok(())
         });

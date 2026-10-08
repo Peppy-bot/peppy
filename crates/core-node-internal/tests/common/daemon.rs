@@ -98,8 +98,8 @@ pub fn new_test_data_dir() -> TempDir {
 }
 
 /// Boots the core node with its peppy data root at a stable path under the
-/// system temp dir — i.e. outside `$HOME`, mirroring where dev binaries root
-/// their data (`$TMPDIR/.peppy`, see `daemon_config::consts::resolve_root`).
+/// system temp dir, i.e. outside `$HOME`, mirroring a `PEPPY_HOME` outside
+/// `$HOME` (see `daemon_config::consts::resolve_root`).
 ///
 /// Regression harness for container builds/runs from an outside-`$HOME` root:
 /// on macOS the Lima guest VM only auto-mounts `$HOME`, so container

@@ -10,7 +10,8 @@
 //! the [`atomic_write::publish_atomic`] staging helper, the owner-only file
 //! modes of [`fs_perms`], the [`local_host::is_local`] test, and the
 //! [`consts::PeppyDirs`] filesystem-layout helper with the process-global
-//! [`consts::set_app_env`] dev/prod root switch (a set-once `OnceLock`).
+//! [`consts::set_app_env`] dev/prod root switch (a set-once `OnceLock`), and
+//! the [`per_boot_root`] clears of the dev root.
 //!
 //! It builds on the shared `config` crate (`peppy-config-model`), which keeps
 //! the wire-facing tier consumed by nodes and `peppylib`: the `peppy.json5`
@@ -39,6 +40,7 @@ mod internal {
     pub mod mcp_exposure;
     pub mod pairing;
     pub mod peppy_config;
+    pub mod per_boot_root;
     pub mod repository;
     pub mod source;
 }
@@ -76,8 +78,16 @@ pub mod consts {
     pub use crate::internal::consts::{
         AppEnv, CREDENTIALS_FILE, DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_PYTHON_BASE_IMAGE,
         DEFAULT_RUST_BASE_IMAGE, PEPPY_GIT_TAG, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
-        PEPPY_VERSION, PEPPYLIB_OUTPUT_PATH, PLATFORM_SELECTION_FILE, PeppyDirs,
-        REPOSITORY_INDEX_FILE, non_empty_env_path, peppy_build, peppy_root_dir, set_app_env,
+        PEPPY_VERSION, PEPPYLIB_OUTPUT_PATH, PLATFORM_SELECTION_FILE, PeppyDirs, PeppyRoot,
+        REPOSITORY_INDEX_FILE, RootLifetime, non_empty_env_path, peppy_build, peppy_root,
+        peppy_root_dir, set_app_env,
+    };
+}
+
+// -- per_boot_root --
+pub mod per_boot_root {
+    pub use crate::internal::per_boot_root::{
+        BootId, ClearOutcome, clear_if_new_boot, current_boot_id,
     };
 }
 

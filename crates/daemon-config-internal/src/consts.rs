@@ -22,6 +22,15 @@ pub const REPOSITORY_INDEX_FILE: &str = "peppy_repository.json5";
 
 pub const PEPPY_MESSAGING_PORT_VAR_NAME: &str = "PEPPY_MESSAGING_PORT";
 
+/// Filename of the daemon singleton lock under [`PeppyDirs::runtime_config_dir`].
+const DAEMON_LOCK_FILE: &str = "daemon.lock";
+/// Filename of the lock that serializes the clears of a per-boot data root,
+/// under [`PeppyDirs::runtime_config_dir`].
+const ROOT_CLEAR_LOCK_FILE: &str = "root_clear.lock";
+/// Filename of the record of the boot that last used a per-boot data root,
+/// under [`PeppyDirs::runtime_config_dir`].
+const ROOT_BOOT_ID_FILE: &str = "boot_id";
+
 /// Release tag the binary was built from, read at compile time from the
 /// `PEPPY_GIT_TAG` environment variable the release build sets. A plain
 /// `cargo build` has none.
@@ -71,8 +80,8 @@ static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
 /// defaults to [`AppEnv::Dev`].
 ///
 /// The only thing it influences is the *default* peppy data root: it shifts
-/// [`peppy_root_dir`] (and therefore [`PeppyDirs::default`]) between
-/// `~/.peppy` (prod) and `/tmp/.peppy` (dev). It has no effect on parsing,
+/// [`peppy_root`] (and therefore [`PeppyDirs::default`]) between
+/// `~/.peppy` (prod) and `~/.cache/peppy-dev` (dev). It has no effect on parsing,
 /// validation, or any [`PeppyDirs`] constructed explicitly via
 /// [`PeppyDirs::new`]. Code that wants a deterministic root, including tests,
 /// should construct [`PeppyDirs::new`] directly rather than rely on this
@@ -153,6 +162,24 @@ impl PeppyDirs {
         self.root.join("runtime")
     }
 
+    /// The daemon singleton lock file. Nothing ever unlinks it: two daemons
+    /// that raced on an unlinked and recreated lock file would lock two
+    /// different inodes behind the same path.
+    pub fn daemon_lock_path(&self) -> PathBuf {
+        self.runtime_config_dir().join(DAEMON_LOCK_FILE)
+    }
+
+    /// The lock that serializes the clears of a per-boot data root. Like
+    /// [`Self::daemon_lock_path`], nothing ever unlinks it.
+    pub fn root_clear_lock_path(&self) -> PathBuf {
+        self.runtime_config_dir().join(ROOT_CLEAR_LOCK_FILE)
+    }
+
+    /// The record of the boot that last used a per-boot data root.
+    pub fn root_boot_id_path(&self) -> PathBuf {
+        self.runtime_config_dir().join(ROOT_BOOT_ID_FILE)
+    }
+
     /// Directory holding the manifests and serve specs of built-in nodes,
     /// one subdirectory per node identity. A built-in node is registered in
     /// the stack from documents the daemon derives at add time rather than
@@ -173,7 +200,8 @@ impl PeppyDirs {
     ///
     /// In production this resolves to `~/.peppy/tmp`, which doubles as the
     /// persistent build cache root used by `build_helpers::cache_dir`; never
-    /// bulk-clean this directory.
+    /// bulk-clean this directory. The per-boot dev root is the one exception:
+    /// [`crate::per_boot_root`] clears it, this directory with it.
     pub fn tmp_dir(&self) -> PathBuf {
         self.root.join("tmp")
     }
@@ -246,18 +274,52 @@ impl PeppyDirs {
     }
 }
 
-/// Resolves the peppy data root (the `.peppy` directory).
+/// How long the content of a peppy data root lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootLifetime {
+    /// Peppy never clears the root: a `PEPPY_HOME` root and the production
+    /// root `~/.peppy`.
+    Persistent,
+    /// Peppy clears the root, except its configuration, at the first peppy
+    /// process of each boot of the machine: the default root of a dev build,
+    /// `~/.cache/peppy-dev`. See [`crate::per_boot_root`].
+    PerBoot,
+}
+
+/// A resolved peppy data root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeppyRoot {
+    pub path: PathBuf,
+    pub lifetime: RootLifetime,
+}
+
+/// Resolves the peppy data root.
 ///
 /// Precedence:
 /// 1. `PEPPY_HOME` if set and non-empty, used verbatim as the root.
-/// 2. Otherwise the standard application data directory:
+/// 2. Otherwise the default root of the build:
 ///    - Production: `~/.peppy`
-///    - Development: `/tmp/.peppy`
+///    - Development: `~/.cache/peppy-dev`, a [`RootLifetime::PerBoot`] root
+///
+/// The dev root sits on disk under `$HOME`: a tmpfs `/tmp` is often limited
+/// by a per-user quota that one container build fills, and on macOS the Lima
+/// guest sees only paths under `$HOME`. It does not follow `XDG_CACHE_HOME`,
+/// because the daemon a service manager starts does not get that variable
+/// and must resolve the same root as the CLI.
 ///
 /// `var_os` plus [`non_empty_env_path`] means `PEPPY_HOME=` is treated as
 /// unset rather than rooting at the empty path.
+pub fn peppy_root() -> PeppyRoot {
+    resolve_root(
+        std::env::var_os(config::consts::PEPPY_HOME_ENV),
+        app_env(),
+        dirs::home_dir(),
+    )
+}
+
+/// The path of [`peppy_root`].
 pub fn peppy_root_dir() -> PathBuf {
-    resolve_root(std::env::var_os(config::consts::PEPPY_HOME_ENV))
+    peppy_root().path
 }
 
 /// Interprets an env var value as a path override. An empty value is
@@ -268,17 +330,30 @@ pub fn non_empty_env_path(value: Option<std::ffi::OsString>) -> Option<PathBuf> 
     value.filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
-/// Implementation of [`peppy_root_dir`] with the `PEPPY_HOME` value made
-/// explicit, so the precedence can be tested without mutating process env.
-fn resolve_root(home_override: Option<std::ffi::OsString>) -> PathBuf {
-    if let Some(home) = non_empty_env_path(home_override) {
-        return home;
+/// Implementation of [`peppy_root`] with the `PEPPY_HOME` value, the build
+/// and the home directory made explicit, so the precedence can be tested
+/// without mutating process state.
+fn resolve_root(
+    home_override: Option<std::ffi::OsString>,
+    env: AppEnv,
+    user_home: Option<PathBuf>,
+) -> PeppyRoot {
+    if let Some(path) = non_empty_env_path(home_override) {
+        return PeppyRoot {
+            path,
+            lifetime: RootLifetime::Persistent,
+        };
     }
-    match app_env() {
-        AppEnv::Prod => dirs::home_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join(".peppy"),
-        AppEnv::Dev => std::env::temp_dir().join(".peppy"),
+    let user_home = user_home.unwrap_or_else(std::env::temp_dir);
+    match env {
+        AppEnv::Prod => PeppyRoot {
+            path: user_home.join(".peppy"),
+            lifetime: RootLifetime::Persistent,
+        },
+        AppEnv::Dev => PeppyRoot {
+            path: user_home.join(".cache").join("peppy-dev"),
+            lifetime: RootLifetime::PerBoot,
+        },
     }
 }
 
@@ -293,23 +368,62 @@ impl Default for PeppyDirs {
 mod tests {
     use super::*;
 
+    fn user_home() -> Option<PathBuf> {
+        Some(PathBuf::from("/home/u"))
+    }
+
     #[test]
-    fn resolve_root_uses_peppy_home_override_verbatim() {
-        let root = resolve_root(Some("/custom/run-home".into()));
-        assert_eq!(root, PathBuf::from("/custom/run-home"));
+    fn resolve_root_uses_peppy_home_override_verbatim_and_never_clears_it() {
+        for env in [AppEnv::Dev, AppEnv::Prod] {
+            let root = resolve_root(Some("/custom/run-home".into()), env, user_home());
+            assert_eq!(
+                root,
+                PeppyRoot {
+                    path: PathBuf::from("/custom/run-home"),
+                    lifetime: RootLifetime::Persistent,
+                }
+            );
+        }
     }
 
     #[test]
     fn resolve_root_ignores_empty_override_and_falls_back_to_default() {
         // Empty PEPPY_HOME is treated as unset, not as the empty path.
-        let with_empty = resolve_root(Some(std::ffi::OsString::new()));
-        let unset = resolve_root(None);
-        assert_eq!(with_empty, unset);
-        // The fallback still ends in `.peppy` (Dev or Prod root).
-        assert!(
-            unset.ends_with(".peppy"),
-            "fallback root: {}",
-            unset.display()
+        for env in [AppEnv::Dev, AppEnv::Prod] {
+            let with_empty = resolve_root(Some(std::ffi::OsString::new()), env, user_home());
+            let unset = resolve_root(None, env, user_home());
+            assert_eq!(with_empty, unset);
+        }
+    }
+
+    #[test]
+    fn resolve_root_roots_prod_at_a_persistent_home_peppy() {
+        assert_eq!(
+            resolve_root(None, AppEnv::Prod, user_home()),
+            PeppyRoot {
+                path: PathBuf::from("/home/u/.peppy"),
+                lifetime: RootLifetime::Persistent,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_root_roots_dev_at_a_per_boot_root_in_the_home_cache() {
+        assert_eq!(
+            resolve_root(None, AppEnv::Dev, user_home()),
+            PeppyRoot {
+                path: PathBuf::from("/home/u/.cache/peppy-dev"),
+                lifetime: RootLifetime::PerBoot,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_root_without_a_home_falls_back_to_the_temp_dir() {
+        let root = resolve_root(None, AppEnv::Dev, None);
+        assert_eq!(
+            root.path,
+            std::env::temp_dir().join(".cache").join("peppy-dev")
         );
     }
 

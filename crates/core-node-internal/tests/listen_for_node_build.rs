@@ -1168,8 +1168,8 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 }
 
 /// Regression test: container builds must succeed when the daemon's peppy
-/// data root sits OUTSIDE `$HOME` — which is exactly where dev binaries root
-/// it (`$TMPDIR/.peppy`; on macOS `/var/folders/…`).
+/// data root sits OUTSIDE `$HOME`, as a `PEPPY_HOME` outside `$HOME` puts it
+/// (on macOS, for example, under `/var/folders/…`).
 ///
 /// On macOS the Lima guest VM only auto-mounts `$HOME`, so the build's
 /// working dir (under `<root>/tmp`) is invisible to the guest unless the

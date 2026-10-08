@@ -112,8 +112,8 @@ pub(super) struct ContainerBuildInputs<'a> {
     pub announcer: &'a Announcer,
     /// Needed to register the peppy data root as a Lima mount: `working_dir`
     /// lives under `tmp_dir()`, which sits outside `$HOME` whenever the root
-    /// does (dev builds root at `$TMPDIR/.peppy`), and the guest VM cannot
-    /// see it otherwise.
+    /// does (a `PEPPY_HOME` outside `$HOME`), and the guest VM cannot see it
+    /// otherwise.
     pub peppy_dirs: &'a PeppyDirs,
     /// Fired when a `--force` build supersedes this one. On Linux the
     /// host process-group SIGKILL is enough; on macOS the guest-side apptainer
@@ -183,8 +183,8 @@ pub(super) async fn build_container_image(
         .map_err(|e| format!("Failed to initialize Apptainer runtime: {}", e))?;
 
     // The build's working dir (def file, `%files` sources, output .sif) lives
-    // under the peppy data root. When that root is outside `$HOME` (dev roots
-    // at `$TMPDIR/.peppy`), the Lima guest cannot see it unless it is
+    // under the peppy data root. When that root is outside `$HOME` (a
+    // `PEPPY_HOME` outside it), the Lima guest cannot see it unless it is
     // registered as an explicit mount; `ensure_host_mounts` is a no-op for
     // home-relative roots and on the native (Linux) backend. Runs on the
     // blocking pool because a first-time mount registration restarts the VM.

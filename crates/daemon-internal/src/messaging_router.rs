@@ -59,8 +59,8 @@ pub struct MessagingRouter {
     /// duration: `force_kill_deadline(grace)` (hook grace + event-loop join +
     /// interpreter finalize) plus the reap budget and a small margin.
     teardown_budget: Duration,
-    /// Shared coordinator token: the task tears down when it is cancelled (an
-    /// in-process restart) or on a real OS shutdown signal.
+    /// Shared coordinator token: the task tears down when it is cancelled. The
+    /// coordinator cancels it when the generation stops for any reason.
     teardown_token: CancellationToken,
 }
 
@@ -112,24 +112,23 @@ impl ServeAsyncCommand for MessagingRouter {
             // Router watchdog: probe the router's liveness and respawn managed
             // zenohd if it wedges. An adopted router is observed but never
             // restarted. Backends without a router (the mock) return `None` and
-            // just wait for ctrl-c. Either way, ctrl-c ends the wait.
+            // just wait for the shared token. Either way, the token ends the wait.
             let health_checker = { messenger.lock().await.router_health_checker() };
             match health_checker {
                 Some(checker) => {
                     tokio::select! {
                         // The watchdog loops for the daemon's lifetime; in
-                        // practice only shutdown (a real signal or an in-process
-                        // restart via the shared token) resolves this select.
+                        // practice only the shared token resolves this select.
                         _ = run_router_watchdog(&messenger, &checker) => {}
-                        _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
+                        _ = teardown_token.cancelled() => {}
                     }
                 }
                 None => {
-                    crate::shutdown_signal::shutdown_or_token(&teardown_token).await;
+                    teardown_token.cancelled().await;
                 }
             }
 
-            // Catchable shutdown fired. The core node still needs the session to
+            // The generation is stopping. The core node still needs the session to
             // stop its nodes cooperatively (it sends SHUTDOWN_SERVICE over the
             // session), so wait for it to finish tearing down before closing the
             // session. Bounded by `teardown_budget` so a hung teardown cannot

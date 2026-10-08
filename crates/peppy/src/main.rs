@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use tracing::error;
+use tracing::{error, warn};
 
-use daemon_config::consts::{AppEnv, PEPPY_VERSION};
+use daemon_config::consts::{AppEnv, PEPPY_VERSION, PeppyDirs, RootLifetime};
 use peppy::{
     commands::{Command, clock, container, info, mcp, node, platform, repo, service, stack},
     context::AppContext,
@@ -116,6 +116,7 @@ fn main() {
         LogStyle::Compact
     };
     init_tracing(log_style);
+    clear_dev_root_of_earlier_boot();
 
     let app_ctx = match AppContext::from_current_dir() {
         Ok(ctx) => Arc::new(ctx.with_core_node_override(cli.core_node)),
@@ -144,6 +145,23 @@ fn main() {
     if let Err(e) = result {
         error!("Error: {}", e);
         std::process::exit(1);
+    }
+}
+
+/// Clears the per-boot dev data root when an earlier boot of the machine used
+/// it, before the command reads or writes the root. A root that cannot be
+/// cleared stays as it is: the command still runs.
+fn clear_dev_root_of_earlier_boot() {
+    let root = daemon_config::consts::peppy_root();
+    if root.lifetime != RootLifetime::PerBoot {
+        return;
+    }
+    let peppy_dirs = PeppyDirs::new(root.path);
+    if let Err(e) = daemon_config::per_boot_root::clear_if_new_boot(&peppy_dirs) {
+        warn!(
+            "Cannot clear the dev data root {} of an earlier boot: {e}",
+            peppy_dirs.root().display()
+        );
     }
 }
 

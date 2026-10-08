@@ -708,9 +708,9 @@ pub fn wait_for_child(
 /// reuse the same dir across runs.
 ///
 /// Rooted at [`config_test_support::test_data_root`] (the disk-backed test root),
-/// NOT `PeppyDirs::default()`: the latter resolves to `/tmp/.peppy` in dev, and a
-/// tens-of-GB cargo target dir on `/tmp` tmpfs exhausts it and makes `ld` SIGBUS
-/// mid-link.
+/// NOT `PeppyDirs::default()`: in dev the latter is the data root of the dev
+/// daemon, which peppy clears at each boot, so the compiled dependencies would
+/// not be reused across boots.
 fn stable_test_target_dir() -> std::path::PathBuf {
     config_test_support::test_data_root().join("cache/rust/test-targets")
 }
