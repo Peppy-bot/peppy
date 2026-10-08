@@ -120,8 +120,8 @@ pub(crate) struct RouterFederation {
     generation: FederationIdentity,
     /// Whether the router runs an operator-pinned `ZENOH_CONFIG`.
     pinned: bool,
-    /// Shared coordinator token: the task tears down when it is cancelled (an
-    /// in-process restart) or on a real OS shutdown signal.
+    /// Shared coordinator token: the task tears down when it is cancelled. The
+    /// coordinator cancels it when the generation stops for any reason.
     teardown_token: CancellationToken,
 }
 
@@ -157,12 +157,11 @@ impl ServeAsyncCommand for RouterFederation {
             teardown_token,
         } = *self;
         let future = Box::pin(async move {
-            // Race the poke loop against shutdown (a real signal or an
-            // in-process restart via the shared token) so the daemon can exit
-            // promptly (the loop is otherwise infinite).
+            // Race the poke loop against the shared token so the daemon can
+            // exit promptly (the loop is otherwise infinite).
             tokio::select! {
                 _ = serve_pokes(&deps, trigger_rx, &generation, pinned) => {}
-                _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
+                _ = teardown_token.cancelled() => {}
             }
             Ok(())
         });

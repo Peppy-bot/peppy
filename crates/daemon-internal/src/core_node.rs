@@ -62,9 +62,9 @@ pub struct CoreNodeRunner {
     /// core node's OWN internal token (publisher-stop), distinct from the shared
     /// serve coordinator token below.
     shutdown_token: CancellationToken,
-    /// Shared serve coordinator token: the runner observes it to begin teardown
-    /// on either a real OS shutdown signal or an in-process restart. Distinct
-    /// from `shutdown_token`, which only stops the publishers.
+    /// Shared serve coordinator token: the runner begins teardown when it is
+    /// cancelled. The coordinator cancels it when the generation stops for any
+    /// reason. Distinct from `shutdown_token`, which only stops the publishers.
     serve_teardown_token: CancellationToken,
     /// Signaled (`true`) once node teardown has finished, releasing the
     /// messaging router to close the session. The startup `messaging_ready`
@@ -151,9 +151,8 @@ impl ServeAsyncCommand for CoreNodeRunner {
         let core_node_done = self.core_node_done;
         let log_export = self.log_export;
         let future = Box::pin(async move {
-            // Tear down on a real OS shutdown signal OR an in-process restart
-            // (the shared serve coordinator token).
-            let teardown = crate::shutdown_signal::shutdown_or_token(&serve_teardown_token);
+            // Tear down when the serve coordinator stops the generation.
+            let teardown = serve_teardown_token.cancelled();
             tokio::pin!(teardown);
 
             if let Some(mut ready_rx) = messaging_ready.take() {
@@ -220,10 +219,11 @@ impl ServeAsyncCommand for CoreNodeRunner {
                 // they don't spin against the session once the messaging router
                 // closes it (logging a failed publish on every tick).
                 shutdown_token.cancel();
-                // Catchable shutdown (ctrl+C / SIGTERM): the daemon is exiting,
-                // so tear down every spawned node now (cooperatively, then
-                // force-kill any straggler's process group) so none is left
-                // orphaned. `&mut core_node_future` still holds a shared borrow
+                // The generation is stopping (a shutdown signal, an in-process
+                // restart, or a failed sibling handler), so tear down every
+                // spawned node now (cooperatively, then force-kill any
+                // straggler's process group) so none is left orphaned.
+                // `&mut core_node_future` still holds a shared borrow
                 // of `core_node`; `teardown_node_stack` also takes `&self`, so
                 // this second shared borrow is fine. Runs before this handler
                 // returns, so the kills complete before the daemon process exits.
@@ -244,7 +244,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
             } else if result.is_err() {
                 // The core node failed while running (a listener task died
                 // with an error) and the daemon is about to exit on it. Same
-                // offboarding as the signal path above: stop the publishers,
+                // offboarding as the teardown path above: stop the publishers,
                 // tear down any node spawned in the meantime, and release the
                 // messaging router.
                 shutdown_token.cancel();

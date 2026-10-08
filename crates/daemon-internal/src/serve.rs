@@ -9,6 +9,7 @@ use tracing::{error, info};
 
 use crate::builder::ServeCommandBuilder;
 use crate::error::{Error, Result};
+use crate::shutdown_signal::ShutdownSignal;
 use daemon_config::consts::PeppyDirs;
 use tokio_util::sync::CancellationToken;
 
@@ -22,6 +23,16 @@ pub(crate) enum ServeOutcome {
     /// A namespace change requested an in-process restart: tear the generation
     /// down and rebuild a fresh one under the same PID.
     Restart,
+}
+
+/// How the startup of a serve generation ended.
+enum Startup {
+    /// Every readiness gate fired.
+    Ready,
+    /// A shutdown signal arrived before every readiness gate fired.
+    ShutdownSignal,
+    /// A readiness gate dropped without firing: the handler behind it failed.
+    HandlerFailed(Error),
 }
 
 /// Non-zero exit code used ONLY for the port-stuck / flap-cap fallback, so a
@@ -151,10 +162,18 @@ impl Serve {
         let handles = self.composite_command.execute()?;
         let external_shutdown = self.shutdown_token;
         let teardown_token = self.teardown_token;
-        let mut restart_rx = self.restart_rx;
+        let restart_rx = self.restart_rx;
 
         info!("Running serve command...");
         let outcome = runtime.block_on(async move {
+            // The coordinator is the one observer of the OS shutdown signals,
+            // and a signal reaches only the listeners that exist when it
+            // arrives. So the coordinator listens before any handler runs, and
+            // a signal at any point of the run stops it, the startup included.
+            let mut shutdown_signal = ShutdownSignal::listen().map_err(|e| {
+                Error::ExecutionFailed(format!("Failed to listen for shutdown signal: {e}"))
+            })?;
+
             let mut join_set = JoinSet::new();
             let mut readiness = Vec::new();
             for handle in handles {
@@ -165,105 +184,24 @@ impl Serve {
                 join_set.spawn(future);
             }
 
-            for ready in readiness {
-                if ready.await.is_err() {
-                    let join_result = join_set.join_next().await;
-                    let err = match join_result {
-                        Some(Ok(Ok(()))) => Error::ExecutionFailed(
-                            "Serve handler exited before signaling readiness".into(),
-                        ),
-                        Some(Ok(Err(e))) => e,
-                        Some(Err(join_err)) => Error::ExecutionFailed(format!(
-                            "Serve handler panicked before signaling readiness: {}",
-                            join_err
-                        )),
-                        None => Error::ExecutionFailed(
-                            "Serve handler dropped before signaling readiness".into(),
-                        ),
-                    };
-                    // Same graceful exit as the coordinator's teardown below:
-                    // unpark the handlers that DID start so they run their real
-                    // teardown (stop_session, stop_router, unlink the control
-                    // socket) instead of being force-dropped when the runtime
-                    // exits with the startup error.
-                    teardown_token.cancel();
-                    while let Some(result) = join_set.join_next().await {
-                        Self::log_task_result(result);
-                    }
-                    return Err(err);
+            let startup =
+                Self::wait_for_startup(readiness, &mut join_set, &mut shutdown_signal).await;
+            let reason = match startup {
+                Startup::Ready => {
+                    info!("Serve command initialized!");
+                    Self::run_until_stop(
+                        &mut join_set,
+                        &mut shutdown_signal,
+                        external_shutdown,
+                        restart_rx,
+                    )
+                    .await
                 }
-            }
-
-            info!("Serve command initialized!");
-            // The coordinator: the authoritative observer of the OS shutdown
-            // signal, the external injection, and the in-process restart channel.
-            // On any of them it records the reason and breaks; tasks observe only
-            // the shared `teardown_token`, which the coordinator cancels below so
-            // each runs its real graceful teardown (no force-abort).
-            //
-            // The signal future is created ONCE, outside the loop: signal streams
-            // are edge-triggered, so a listener recreated per iteration loses a
-            // SIGINT that raced a task completion. The other branches are
-            // state-based (JoinSet, cancellation token, watch channel) and safe to
-            // recreate. Never re-polled after completion: its branch always breaks.
-            let shutdown = crate::shutdown_signal::shutdown_signal();
-            tokio::pin!(shutdown);
-            let reason = loop {
-                tokio::select! {
-                    result = join_set.join_next() => {
-                        match result {
-                            // A handler that returns an error mid-run is a
-                            // broken daemon: tear the generation down and exit
-                            // non-zero so the supervisor sees it, instead of
-                            // logging once and running on half-alive.
-                            Some(Ok(Err(e))) => break Err(e),
-                            Some(result) => Self::log_task_result(result),
-                            None => {
-                                info!("All serve handlers completed. Exiting...");
-                                break Ok(ServeOutcome::Stop);
-                            }
-                        }
-                    }
-                    _ = async {
-                        match &external_shutdown {
-                            Some(token) => token.cancelled().await,
-                            None => std::future::pending::<()>().await,
-                        }
-                    } => {
-                        info!("External shutdown requested");
-                        break Ok(ServeOutcome::Stop);
-                    }
-                    signal = &mut shutdown => {
-                        match signal {
-                            Ok(_) => {
-                                info!("Shutdown signal received");
-                                break Ok(ServeOutcome::Stop);
-                            }
-                            Err(e) => {
-                                return Err(Error::ExecutionFailed(format!(
-                                    "Failed to listen for shutdown signal: {}", e
-                                )));
-                            }
-                        }
-                    }
-                    _ = async {
-                        match &mut restart_rx {
-                            Some(rx) => {
-                                // Only an explicit `true` is a restart request. A
-                                // closed channel (the federation control task drops
-                                // its sender during a signal-driven teardown) must
-                                // NOT be read as one, or ctrl+C turns into a restart.
-                                if rx.wait_for(|restart| *restart).await.is_err() {
-                                    std::future::pending::<()>().await;
-                                }
-                            }
-                            None => std::future::pending::<()>().await,
-                        }
-                    } => {
-                        info!("In-process restart signal received (namespace change)");
-                        break Ok(ServeOutcome::Restart);
-                    }
+                Startup::ShutdownSignal => {
+                    info!("Shutdown signal received during startup");
+                    Ok(ServeOutcome::Stop)
                 }
+                Startup::HandlerFailed(error) => Err(error),
             };
 
             match &reason {
@@ -271,8 +209,9 @@ impl Serve {
                 Err(error) => error!("Tearing down serve handlers after a handler failed: {error}"),
             }
             // Unpark every task that observes the shared token so they run their
-            // real graceful teardown rather than waiting on a signal that (for a
-            // restart) will never arrive. Idempotent if already cancelled.
+            // real graceful teardown (stop_session, stop_router, unlink the
+            // control socket) rather than being force-dropped when the runtime
+            // exits. Idempotent if already cancelled.
             teardown_token.cancel();
             while let Some(result) = join_set.join_next().await {
                 Self::log_task_result(result);
@@ -281,6 +220,106 @@ impl Serve {
             reason
         })?;
         Ok(outcome)
+    }
+
+    /// Waits until every readiness gate fires, a gate drops without firing,
+    /// or a shutdown signal arrives.
+    async fn wait_for_startup(
+        readiness: Vec<oneshot::Receiver<()>>,
+        join_set: &mut JoinSet<Result<()>>,
+        shutdown_signal: &mut ShutdownSignal,
+    ) -> Startup {
+        for ready in readiness {
+            let gate = tokio::select! {
+                gate = ready => gate,
+                _ = shutdown_signal.recv() => return Startup::ShutdownSignal,
+            };
+            if gate.is_ok() {
+                continue;
+            }
+            let error = match join_set.join_next().await {
+                Some(Ok(Ok(()))) => {
+                    Error::ExecutionFailed("Serve handler exited before signaling readiness".into())
+                }
+                Some(Ok(Err(e))) => e,
+                Some(Err(join_err)) => Error::ExecutionFailed(format!(
+                    "Serve handler panicked before signaling readiness: {}",
+                    join_err
+                )),
+                None => Error::ExecutionFailed(
+                    "Serve handler dropped before signaling readiness".into(),
+                ),
+            };
+            return Startup::HandlerFailed(error);
+        }
+        Startup::Ready
+    }
+
+    /// The coordinator after startup: the authoritative observer of the OS
+    /// shutdown signal, the external injection, and the in-process restart
+    /// channel. Returns the reason of the first of them, or the error of a
+    /// handler that fails mid-run. Tasks observe only the shared
+    /// `teardown_token`, which the caller cancels next so each runs its real
+    /// graceful teardown (no force-abort).
+    ///
+    /// Every branch is safe to recreate on each iteration: the JoinSet, the
+    /// cancellation token and the watch channel hold state, and
+    /// [`ShutdownSignal::recv`] is cancel-safe, so a signal that raced a task
+    /// completion waits for the next iteration.
+    async fn run_until_stop(
+        join_set: &mut JoinSet<Result<()>>,
+        shutdown_signal: &mut ShutdownSignal,
+        external_shutdown: Option<CancellationToken>,
+        mut restart_rx: Option<watch::Receiver<bool>>,
+    ) -> Result<ServeOutcome> {
+        loop {
+            tokio::select! {
+                result = join_set.join_next() => {
+                    match result {
+                        // A handler that returns an error mid-run is a
+                        // broken daemon: tear the generation down and exit
+                        // non-zero so the supervisor sees it, instead of
+                        // logging once and running on half-alive.
+                        Some(Ok(Err(e))) => return Err(e),
+                        Some(result) => Self::log_task_result(result),
+                        None => {
+                            info!("All serve handlers completed. Exiting...");
+                            return Ok(ServeOutcome::Stop);
+                        }
+                    }
+                }
+                _ = async {
+                    match &external_shutdown {
+                        Some(token) => token.cancelled().await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    info!("External shutdown requested");
+                    return Ok(ServeOutcome::Stop);
+                }
+                _ = shutdown_signal.recv() => {
+                    info!("Shutdown signal received");
+                    return Ok(ServeOutcome::Stop);
+                }
+                _ = async {
+                    match &mut restart_rx {
+                        Some(rx) => {
+                            // Only an explicit `true` is a restart request. A
+                            // closed channel (the federation control task drops
+                            // its sender during a signal-driven teardown) must
+                            // NOT be read as one, or ctrl+C turns into a restart.
+                            if rx.wait_for(|restart| *restart).await.is_err() {
+                                std::future::pending::<()>().await;
+                            }
+                        }
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    info!("In-process restart signal received (namespace change)");
+                    return Ok(ServeOutcome::Restart);
+                }
+            }
+        }
     }
 }
 
@@ -491,6 +530,19 @@ fn wait_port_free(port: u16, deadline: Duration) -> bool {
 mod tests {
     use super::*;
 
+    /// Every coordinator of this test process sees a shutdown signal that any
+    /// test delivers to the process, so the tests that run a coordinator take
+    /// turns.
+    static COORDINATOR_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Runs `serve` while no other test of this process runs a coordinator.
+    fn execute_alone(serve: Serve) -> Result<ServeOutcome> {
+        let _turn = COORDINATOR_TURN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        serve.execute()
+    }
+
     /// A test async command that fires (or drops) its readiness gate then exits.
     struct FakeReady {
         fire: bool,
@@ -534,9 +586,7 @@ mod tests {
         let (restart_tx, restart_rx) = watch::channel(false);
         drop(restart_tx);
         let composite = CompositeCommand::default().add_async_command(Box::new(FakeWork));
-        let outcome = Serve::new(composite)
-            .with_restart_rx(restart_rx)
-            .execute()
+        let outcome = execute_alone(Serve::new(composite).with_restart_rx(restart_rx))
             .expect("serve run failed");
         assert_eq!(outcome, ServeOutcome::Stop);
     }
@@ -547,9 +597,7 @@ mod tests {
         let (restart_tx, restart_rx) = watch::channel(false);
         let _ = restart_tx.send(true);
         let composite = CompositeCommand::default().add_async_command(Box::new(FakeWork));
-        let outcome = Serve::new(composite)
-            .with_restart_rx(restart_rx)
-            .execute()
+        let outcome = execute_alone(Serve::new(composite).with_restart_rx(restart_rx))
             .expect("serve run failed");
         assert_eq!(outcome, ServeOutcome::Restart);
     }
@@ -601,9 +649,7 @@ mod tests {
             .add_async_command(Box::new(RunsUntilTeardown {
                 token: teardown.clone(),
             }));
-        let err = Serve::new(composite)
-            .with_teardown_token(teardown)
-            .execute()
+        let err = execute_alone(Serve::new(composite).with_teardown_token(teardown))
             .expect_err("a handler failing mid-run must fail the serve run");
         assert!(
             err.to_string().contains("post-readiness failure"),
@@ -617,8 +663,71 @@ mod tests {
         let composite =
             CompositeCommand::default().add_async_command(Box::new(FakeReady { fire: false }));
         assert!(
-            Serve::new(composite).execute().is_err(),
+            execute_alone(Serve::new(composite)).is_err(),
             "a dropped required gate must fail startup"
         );
+    }
+
+    /// A handler that delivers `signal` to this process as soon as it starts,
+    /// fires its readiness gate when `fires_its_gate` is set, and runs until
+    /// the shared teardown token fires.
+    struct SignalsThisProcess {
+        signal: rustix::process::Signal,
+        fires_its_gate: bool,
+        token: CancellationToken,
+    }
+
+    impl ServeAsyncCommand for SignalsThisProcess {
+        fn run(self: Box<Self>) -> ServeAsyncHandle {
+            let (ready_tx, ready_rx) = oneshot::channel();
+            let future: ServeFuture = Box::pin(async move {
+                rustix::process::kill_process(rustix::process::getpid(), self.signal)
+                    .expect("deliver the signal to this process");
+                // A gate that does not fire stays open until the teardown, so
+                // only the signal can end the startup.
+                let _unfired_gate = if self.fires_its_gate {
+                    let _ = ready_tx.send(());
+                    None
+                } else {
+                    Some(ready_tx)
+                };
+                self.token.cancelled().await;
+                Ok(())
+            });
+            ServeAsyncHandle::new(future, Some(ready_rx))
+        }
+    }
+
+    /// A shutdown signal that arrives while the handlers start stops the run,
+    /// also when every readiness gate fires right after it. A supervisor that
+    /// stops the daemon as soon as it reports ready sends its signal while the
+    /// coordinator still finishes its startup.
+    #[test]
+    fn a_shutdown_signal_before_readiness_stops_the_run() {
+        let teardown = CancellationToken::new();
+        let composite =
+            CompositeCommand::default().add_async_command(Box::new(SignalsThisProcess {
+                signal: rustix::process::Signal::TERM,
+                fires_its_gate: true,
+                token: teardown.clone(),
+            }));
+        let outcome = execute_alone(Serve::new(composite).with_teardown_token(teardown))
+            .expect("serve run failed");
+        assert_eq!(outcome, ServeOutcome::Stop);
+    }
+
+    /// A shutdown signal stops a run whose startup never ends.
+    #[test]
+    fn a_shutdown_signal_during_startup_stops_the_run() {
+        let teardown = CancellationToken::new();
+        let composite =
+            CompositeCommand::default().add_async_command(Box::new(SignalsThisProcess {
+                signal: rustix::process::Signal::INT,
+                fires_its_gate: false,
+                token: teardown.clone(),
+            }));
+        let outcome = execute_alone(Serve::new(composite).with_teardown_token(teardown))
+            .expect("serve run failed");
+        assert_eq!(outcome, ServeOutcome::Stop);
     }
 }
