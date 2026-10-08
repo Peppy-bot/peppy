@@ -41,17 +41,11 @@ impl Command for ServiceCommand {
                 core_node_name,
             } => {
                 ssh_agent::bind_ssh_agent_from_config();
-                let root = daemon_config::consts::peppy_root();
-                let root_size_limit = daemon_config::per_boot_root::root_size_limit(
-                    root.lifetime,
-                    std::env::var_os(daemon_config::consts::PEPPY_DEV_ROOT_MAX_SIZE_ENV),
-                )?;
                 serve::ServeCommand {
                     messaging_engine,
                     core_node_name,
                     shutdown_token: None,
-                    peppy_dirs: daemon_config::consts::PeppyDirs::new(root.path),
-                    root_size_limit,
+                    peppy_dirs: daemon_config::consts::PeppyDirs::default(),
                 }
                 .execute(app_ctx)
             }

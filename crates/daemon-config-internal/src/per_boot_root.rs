@@ -1,20 +1,13 @@
-//! Clears of a [`RootLifetime::PerBoot`] data root, the default root of a dev
-//! build (`~/.cache/peppy-dev`).
+//! Clears of a [`RootLifetime::PerBoot`](crate::consts::RootLifetime::PerBoot)
+//! data root, the default root of a dev build (`~/.cache/peppy-dev`).
 //!
 //! The root sits on disk, so no tmpfs quota limits it, and peppy clears it
-//! itself, much as the OS clears `/tmp`:
+//! itself at each boot, much as the OS clears `/tmp`.
 //!
-//! - [`clear_if_new_boot`]: the first peppy process of each boot of the
-//!   machine clears the root, before it reads or writes it. A record of the
-//!   boot that last used the root ([`PeppyDirs::root_boot_id_path`]) tells
-//!   which boot that was. A root without that record counts as the root of an
-//!   earlier boot.
-//! - [`clear_if_over_size_limit`]: the daemon clears the root when it starts
-//!   with the root larger than the limit of
-//!   [`PEPPY_DEV_ROOT_MAX_SIZE_ENV`](crate::consts::PEPPY_DEV_ROOT_MAX_SIZE_ENV).
-//!   The daemon calls it while it holds its singleton lock, so no other daemon
-//!   uses the root. A peppy command that runs at the same time can lose the
-//!   files it writes.
+//! With [`clear_if_new_boot`], the first peppy process of each boot of the
+//! machine clears the root, before it reads or writes it. A record of the boot that
+//! last used the root ([`PeppyDirs::root_boot_id_path`]) tells which boot that
+//! was. A root without that record counts as the root of an earlier boot.
 //!
 //! A clear removes every entry of the root except:
 //!
@@ -26,19 +19,18 @@
 //!   processes lock two different inodes behind the same path.
 //! - the boot record.
 //!
-//! The clears run under [`PeppyDirs::root_clear_lock_path`], so two processes
-//! that start together after a reboot clear the root once. A clear continues past an entry that it
-//! cannot remove, and logs a warning that names the entry.
+//! The clear runs under [`PeppyDirs::root_clear_lock_path`], so two processes
+//! that start together after a reboot clear the root once. A clear continues
+//! past an entry that it cannot remove, and logs a warning that names the
+//! entry.
 
 use std::fs::File;
 use std::io;
-use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 use tracing::{info, warn};
 
-use crate::internal::consts::{PeppyDirs, RootLifetime};
+use crate::internal::consts::PeppyDirs;
 
 /// The identity of one boot of the machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,68 +85,6 @@ pub fn current_boot_id() -> io::Result<BootId> {
     ))
 }
 
-/// A size limit of a data root: a number of bytes greater than zero.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RootSizeLimit(NonZeroU64);
-
-impl RootSizeLimit {
-    pub fn bytes(self) -> u64 {
-        self.0.get()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum InvalidRootSizeLimit {
-    #[error(
-        "`{0}` is not a size: give a whole number with an optional unit B, K, M, G or T \
-         (powers of 1024), for example `20G`"
-    )]
-    NotASize(String),
-    #[error("`{0}` is zero: give a size greater than zero")]
-    Zero(String),
-    #[error("`{0}` is more than {max} bytes", max = u64::MAX)]
-    TooLarge(String),
-}
-
-impl FromStr for RootSizeLimit {
-    type Err = InvalidRootSizeLimit;
-
-    /// Parses a whole number with an optional unit, case-insensitive: `B`
-    /// (the default), `K`, `M`, `G` or `T`, each a power of 1024.
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        let text = raw.trim();
-        let unit_start = text
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(text.len());
-        let (digits, unit) = text.split_at(unit_start);
-        if digits.is_empty() {
-            return Err(InvalidRootSizeLimit::NotASize(raw.to_owned()));
-        }
-        let unit_bytes =
-            unit_bytes(unit).ok_or_else(|| InvalidRootSizeLimit::NotASize(raw.to_owned()))?;
-        // `digits` holds ASCII digits only, so a parse failure is an overflow.
-        let bytes = digits
-            .parse::<u64>()
-            .ok()
-            .and_then(|count| count.checked_mul(unit_bytes))
-            .ok_or_else(|| InvalidRootSizeLimit::TooLarge(raw.to_owned()))?;
-        NonZeroU64::new(bytes)
-            .map(Self)
-            .ok_or_else(|| InvalidRootSizeLimit::Zero(raw.to_owned()))
-    }
-}
-
-fn unit_bytes(unit: &str) -> Option<u64> {
-    match unit.to_ascii_uppercase().as_str() {
-        "" | "B" => Some(1),
-        "K" => Some(1 << 10),
-        "M" => Some(1 << 20),
-        "G" => Some(1 << 30),
-        "T" => Some(1 << 40),
-        _ => None,
-    }
-}
-
 /// What a clear check did to the root.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ClearOutcome {
@@ -189,53 +119,6 @@ fn clear_if_boot_changed(
         peppy_dirs.root().display()
     );
     Ok(ClearOutcome::Cleared { not_removed })
-}
-
-/// Clears the root when the size of the files a clear removes is more than
-/// `limit`. The size is the sum of the lengths of the files, so a file with
-/// two hard links counts twice. The files a clear keeps do not count, so a
-/// limit smaller than them does not clear the root at each start.
-pub fn clear_if_over_size_limit(
-    peppy_dirs: &PeppyDirs,
-    limit: RootSizeLimit,
-) -> io::Result<ClearOutcome> {
-    let _clear_lock = lock_root_clear(peppy_dirs)?;
-    let size = tree_size_bytes(peppy_dirs.root(), &kept_paths(peppy_dirs));
-    if size <= limit.bytes() {
-        return Ok(ClearOutcome::Kept);
-    }
-    let not_removed = clear_root(peppy_dirs);
-    info!(
-        "Cleared the dev data root {}: it held {size} bytes, more than the limit of {} bytes",
-        peppy_dirs.root().display(),
-        limit.bytes()
-    );
-    Ok(ClearOutcome::Cleared { not_removed })
-}
-
-/// The size limit of a data root from the raw value of
-/// [`PEPPY_DEV_ROOT_MAX_SIZE_ENV`](crate::consts::PEPPY_DEV_ROOT_MAX_SIZE_ENV).
-/// An unset or empty value gives no limit. Only a per-boot root takes a limit:
-/// for a persistent root, a value gives no limit and a warning.
-pub fn root_size_limit(
-    lifetime: RootLifetime,
-    raw: Option<std::ffi::OsString>,
-) -> Result<Option<RootSizeLimit>, InvalidRootSizeLimit> {
-    let Some(raw) = raw.filter(|value| !value.is_empty()) else {
-        return Ok(None);
-    };
-    let raw = raw
-        .into_string()
-        .map_err(|value| InvalidRootSizeLimit::NotASize(value.to_string_lossy().into_owned()))?;
-    if lifetime == RootLifetime::Persistent {
-        warn!(
-            "{} applies only to the default data root of a dev build; \
-             this data root keeps all of its content",
-            crate::consts::PEPPY_DEV_ROOT_MAX_SIZE_ENV
-        );
-        return Ok(None);
-    }
-    raw.parse().map(Some)
 }
 
 /// Takes the lock that serializes the clears of the root, and waits while
@@ -331,35 +214,6 @@ fn remove_entry(path: &Path) -> io::Result<()> {
     }
 }
 
-/// The sum of the lengths of the files under `root`, except the paths in
-/// `excluded` and the files under them. Symlinks count with their own length,
-/// not the length of their target, and an entry that cannot be read counts as
-/// zero.
-fn tree_size_bytes(root: &Path, excluded: &[PathBuf]) -> u64 {
-    let mut total = 0u64;
-    let mut pending_dirs = vec![root.to_path_buf()];
-    while let Some(dir) = pending_dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if excluded.contains(&entry.path()) {
-                continue;
-            }
-            // `DirEntry::metadata` does not follow symlinks.
-            let Ok(metadata) = entry.metadata() else {
-                continue;
-            };
-            if metadata.is_dir() {
-                pending_dirs.push(entry.path());
-                continue;
-            }
-            total = total.saturating_add(metadata.len());
-        }
-    }
-    total
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,75 +282,6 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn current_boot_id_reads_the_same_identity_twice() {
         assert_eq!(current_boot_id().unwrap(), current_boot_id().unwrap());
-    }
-
-    #[test]
-    fn root_size_limit_parses_units_as_powers_of_1024() {
-        let parse = |raw: &str| raw.parse::<RootSizeLimit>().unwrap().bytes();
-        assert_eq!(parse("512"), 512);
-        assert_eq!(parse("512B"), 512);
-        assert_eq!(parse("4k"), 4 << 10);
-        assert_eq!(parse("3M"), 3 << 20);
-        assert_eq!(parse("20G"), 20 << 30);
-        assert_eq!(parse(" 2t "), 2 << 40);
-    }
-
-    #[test]
-    fn root_size_limit_rejects_what_is_not_a_whole_size() {
-        for raw in ["", "G", "1.5G", "-1G", "20GB", "20 G", "twenty"] {
-            assert_eq!(
-                raw.parse::<RootSizeLimit>(),
-                Err(InvalidRootSizeLimit::NotASize(raw.to_owned())),
-                "{raw:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn root_size_limit_rejects_zero_and_overflow() {
-        assert_eq!(
-            "0G".parse::<RootSizeLimit>(),
-            Err(InvalidRootSizeLimit::Zero("0G".to_owned()))
-        );
-        assert_eq!(
-            "16777216T".parse::<RootSizeLimit>(),
-            Err(InvalidRootSizeLimit::TooLarge("16777216T".to_owned()))
-        );
-        assert_eq!(
-            "99999999999999999999".parse::<RootSizeLimit>(),
-            Err(InvalidRootSizeLimit::TooLarge(
-                "99999999999999999999".to_owned()
-            ))
-        );
-    }
-
-    #[test]
-    fn root_size_limit_from_env_is_none_when_unset_or_empty() {
-        assert_eq!(root_size_limit(RootLifetime::PerBoot, None), Ok(None));
-        assert_eq!(
-            root_size_limit(RootLifetime::PerBoot, Some("".into())),
-            Ok(None)
-        );
-    }
-
-    #[test]
-    fn root_size_limit_from_env_applies_to_a_per_boot_root_only() {
-        assert_eq!(
-            root_size_limit(RootLifetime::PerBoot, Some("1K".into())),
-            Ok(Some("1K".parse().unwrap()))
-        );
-        assert_eq!(
-            root_size_limit(RootLifetime::Persistent, Some("1K".into())),
-            Ok(None)
-        );
-    }
-
-    #[test]
-    fn root_size_limit_from_env_reports_an_invalid_value() {
-        assert_eq!(
-            root_size_limit(RootLifetime::PerBoot, Some("lots".into())),
-            Err(InvalidRootSizeLimit::NotASize("lots".to_owned()))
-        );
     }
 
     #[test]
@@ -614,83 +399,5 @@ mod tests {
         );
         assert!(!peppy_dirs.root().join("daemon_state.json5").exists());
         assert!(!peppy_dirs.container_build_cache_dir().exists());
-    }
-
-    #[test]
-    fn a_root_over_the_size_limit_is_cleared_and_keeps_its_boot_record() {
-        let (_tmp, peppy_dirs) = populated_root();
-        clear_if_boot_changed(&peppy_dirs, &boot("boot-1")).unwrap();
-        write_file(&peppy_dirs.container_build_cache_dir().join("big"), 2048);
-
-        let outcome = clear_if_over_size_limit(&peppy_dirs, "1K".parse().unwrap()).unwrap();
-
-        assert_eq!(
-            outcome,
-            ClearOutcome::Cleared {
-                not_removed: vec![]
-            }
-        );
-        assert_cleared_to_the_kept_files(&peppy_dirs);
-        assert_eq!(recorded_boot_id(&peppy_dirs).unwrap(), Some(boot("boot-1")));
-    }
-
-    #[test]
-    fn a_root_at_or_under_the_size_limit_is_kept() {
-        let (_tmp, peppy_dirs) = populated_root();
-        let size = tree_size_bytes(peppy_dirs.root(), &kept_paths(&peppy_dirs));
-
-        let outcome =
-            clear_if_over_size_limit(&peppy_dirs, size.to_string().parse().unwrap()).unwrap();
-
-        assert_eq!(outcome, ClearOutcome::Kept);
-        assert!(peppy_dirs.root().join("daemon_state.json5").exists());
-    }
-
-    #[test]
-    fn the_size_limit_does_not_count_the_kept_configuration() {
-        let (_tmp, peppy_dirs) = populated_root();
-        clear_if_boot_changed(&peppy_dirs, &boot("boot-1")).unwrap();
-        write_file(&peppy_dirs.conf_dir().join("peppy_config.json5"), 4096);
-        write_file(&peppy_dirs.root().join("daemon_state.json5"), 10);
-
-        let outcome = clear_if_over_size_limit(&peppy_dirs, "1K".parse().unwrap()).unwrap();
-
-        assert_eq!(outcome, ClearOutcome::Kept);
-        assert!(peppy_dirs.root().join("daemon_state.json5").exists());
-    }
-
-    #[test]
-    fn tree_size_skips_the_excluded_paths() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("root");
-        write_file(&root.join("counted"), 7);
-        write_file(&root.join("excluded_dir/file"), 100);
-        write_file(&root.join("excluded_file"), 100);
-
-        let size = tree_size_bytes(
-            &root,
-            &[root.join("excluded_dir"), root.join("excluded_file")],
-        );
-
-        assert_eq!(size, 7);
-    }
-
-    #[test]
-    fn tree_size_sums_the_file_lengths_without_following_symlinks() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("root");
-        write_file(&root.join("a"), 100);
-        write_file(&root.join("nested/deeper/b"), 23);
-        let outside = tmp.path().join("outside");
-        write_file(&outside.join("big"), 10_000);
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
-
-        let size = tree_size_bytes(&root, &[]);
-
-        let link_length = std::fs::symlink_metadata(root.join("link"))
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-        assert_eq!(size, 123 + link_length);
     }
 }

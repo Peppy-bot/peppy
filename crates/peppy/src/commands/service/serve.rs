@@ -10,7 +10,6 @@ use super::Command;
 use crate::context::AppContext;
 use crate::error::Result;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::per_boot_root::RootSizeLimit;
 
 pub use tokio_util::sync::CancellationToken;
 
@@ -24,12 +23,10 @@ pub struct ServeCommand {
     pub core_node_name: Option<String>,
     pub shutdown_token: Option<CancellationToken>,
     /// The peppy data root the daemon runs under (config, state, singleton
-    /// lock). The CLI passes the root of [`daemon_config::consts::peppy_root`];
-    /// the serve integration test passes a per-test temp root so it never
-    /// reads the machine's real peppy home.
+    /// lock). The CLI passes [`PeppyDirs::default`]; the serve integration
+    /// test passes a per-test temp root so it never reads the machine's real
+    /// peppy home.
     pub peppy_dirs: PeppyDirs,
-    /// See [`daemon::ServeOptions::root_size_limit`].
-    pub root_size_limit: Option<RootSizeLimit>,
 }
 
 impl Command for ServeCommand {
@@ -40,7 +37,6 @@ impl Command for ServeCommand {
             core_node_name: self.core_node_name,
             git_hash: GIT_HASH.to_string(),
             peppy_dirs: self.peppy_dirs,
-            root_size_limit: self.root_size_limit,
             shutdown_token: self.shutdown_token,
         })?;
         Ok(())

@@ -22,11 +22,6 @@ pub const REPOSITORY_INDEX_FILE: &str = "peppy_repository.json5";
 
 pub const PEPPY_MESSAGING_PORT_VAR_NAME: &str = "PEPPY_MESSAGING_PORT";
 
-/// Environment variable that sets the size limit of the dev data root (see
-/// [`RootLifetime::PerBoot`]), for example `20G`. Unset, the dev data root has
-/// no size limit.
-pub const PEPPY_DEV_ROOT_MAX_SIZE_ENV: &str = "PEPPY_DEV_ROOT_MAX_SIZE";
-
 /// Filename of the daemon singleton lock under [`PeppyDirs::runtime_config_dir`].
 const DAEMON_LOCK_FILE: &str = "daemon.lock";
 /// Filename of the lock that serializes the clears of a per-boot data root,
@@ -286,10 +281,8 @@ pub enum RootLifetime {
     /// root `~/.peppy`.
     Persistent,
     /// Peppy clears the root, except its configuration, at the first peppy
-    /// process of each boot of the machine, and when the daemon starts with
-    /// the root over the size limit of [`PEPPY_DEV_ROOT_MAX_SIZE_ENV`]: the
-    /// default root of a dev build, `~/.cache/peppy-dev`. See
-    /// [`crate::per_boot_root`].
+    /// process of each boot of the machine: the default root of a dev build,
+    /// `~/.cache/peppy-dev`. See [`crate::per_boot_root`].
     PerBoot,
 }
 

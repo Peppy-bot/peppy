@@ -31,9 +31,6 @@ pub enum Error {
     PeppyConfig(config::ConfigError),
     // -- config: daemon-side documents (launcher files, peppy_config.json5)
     DaemonConfig(daemon_config::DaemonConfigError),
-    // -- config: the value of PEPPY_DEV_ROOT_MAX_SIZE
-    #[from]
-    InvalidRootSizeLimit(daemon_config::per_boot_root::InvalidRootSizeLimit),
 
     // -- auth: CLI-side OAuth / identity failures with a user-actionable message
     Auth(String),
@@ -62,11 +59,6 @@ impl Display for Error {
             Error::PeppyMessagingInterface(e) => write!(fmt, "Messaging interface error: {e}"),
             Error::PeppyConfig(e) => write!(fmt, "Config error: {e}"),
             Error::DaemonConfig(e) => write!(fmt, "Config error: {e}"),
-            Error::InvalidRootSizeLimit(e) => write!(
-                fmt,
-                "Invalid {}: {e}",
-                daemon_config::consts::PEPPY_DEV_ROOT_MAX_SIZE_ENV
-            ),
             Error::Auth(msg) => write!(fmt, "{msg}"),
             Error::AuthEngine(e) => write!(fmt, "{e}"),
             Error::Peppy(e) => write!(fmt, "{e}"),
@@ -108,13 +100,6 @@ mod tests {
         assert_eq!(
             Error::NodeWatcher("x".to_string()).to_string(),
             "Node watcher error: x"
-        );
-        assert_eq!(
-            Error::InvalidRootSizeLimit(daemon_config::per_boot_root::InvalidRootSizeLimit::Zero(
-                "0".to_string()
-            ))
-            .to_string(),
-            "Invalid PEPPY_DEV_ROOT_MAX_SIZE: `0` is zero: give a size greater than zero"
         );
     }
 }
