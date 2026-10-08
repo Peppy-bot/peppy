@@ -174,11 +174,11 @@ pub(in crate::services::stack) async fn prepare_local_container_mounts(
 ) -> std::result::Result<(), String> {
     // The peppy data root hosts the container build working dirs (`tmp/`),
     // built images (`built_nodes/`), and instance dirs. When it sits outside
-    // `$HOME` (dev roots at `$TMPDIR/.peppy`) the Lima guest cannot see it,
-    // so register it here whenever the stack has container nodes. It always
+    // `$HOME` (a `PEPPY_HOME` outside it) the Lima guest cannot see it, so
+    // register it here whenever the stack has container nodes. It always
     // exists, so it never reaches the auto-create warning path, and
     // `external_lima_mount_sources` filters it out on Linux and for
-    // home-relative roots (prod).
+    // home-relative roots (the default roots of prod and dev).
     if has_container_nodes {
         let root = ctx
             .peppy_dirs

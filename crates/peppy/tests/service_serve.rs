@@ -48,6 +48,7 @@ fn serve_command() {
         core_node_name: Some("core-node".to_string()),
         shutdown_token: Some(shutdown_token),
         peppy_dirs: peppy_dirs.clone(),
+        root_size_limit: None,
     }
     .execute(&ctx)
     .expect("serve command executes with mock messaging engine");

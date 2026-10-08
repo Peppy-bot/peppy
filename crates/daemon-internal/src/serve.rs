@@ -5,11 +5,12 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{oneshot, watch};
 use tokio::task::{JoinError, JoinSet};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::builder::ServeCommandBuilder;
 use crate::error::{Error, Result};
 use daemon_config::consts::PeppyDirs;
+use daemon_config::per_boot_root::RootSizeLimit;
 use tokio_util::sync::CancellationToken;
 
 /// Why a serve generation stopped running, threaded up to the in-process
@@ -304,6 +305,11 @@ pub struct ServeOptions {
     /// pass a per-test temp root so a daemon under test never reads (or
     /// mutates) the machine's real peppy home.
     pub peppy_dirs: PeppyDirs,
+    /// The size limit of the data root: when the daemon starts with the root
+    /// larger than it, the daemon clears the root (see
+    /// [`daemon_config::per_boot_root::clear_if_over_size_limit`]). The CLI
+    /// sets it only for the per-boot dev root; `None` keeps the root as it is.
+    pub root_size_limit: Option<RootSizeLimit>,
     /// External shutdown injection (tests / embedders): when `Some` and
     /// cancelled, the run stops cleanly. `None` in production (the CLI path).
     pub shutdown_token: Option<CancellationToken>,
@@ -334,6 +340,10 @@ pub fn serve(options: ServeOptions) -> Result<()> {
     // for a second daemon. Every exit path releases it (kernel flock),
     // including SIGKILL and the process::exit calls below.
     let _singleton_lock = crate::daemon_lock::acquire_daemon_singleton_lock(&options.peppy_dirs)?;
+    // Under the singleton lock, so no other daemon uses the root it clears.
+    if let Some(limit) = options.root_size_limit {
+        clear_root_over_size_limit(&options.peppy_dirs, limit);
+    }
     let mut flap = FlapWindow::new();
     loop {
         let (outcome, router_adopted) = run_one_generation(&options)?;
@@ -352,6 +362,17 @@ pub fn serve(options: ServeOptions) -> Result<()> {
                 info!("Rebuilding the daemon generation under the new namespace...");
             }
         }
+    }
+}
+
+/// Clears the data root when it is larger than `limit`. A root that cannot be
+/// measured or cleared stays as it is: the daemon still starts.
+fn clear_root_over_size_limit(peppy_dirs: &PeppyDirs, limit: RootSizeLimit) {
+    if let Err(e) = daemon_config::per_boot_root::clear_if_over_size_limit(peppy_dirs, limit) {
+        warn!(
+            "Cannot apply the size limit of the data root {}: {e}",
+            peppy_dirs.root().display()
+        );
     }
 }
 

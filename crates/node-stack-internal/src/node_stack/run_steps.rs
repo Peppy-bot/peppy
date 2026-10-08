@@ -437,7 +437,7 @@ pub(super) async fn build_container_command(
     // Ensure host paths outside $HOME are accessible in the Lima VM. The
     // peppy data root is always included: the SIF image, the instance
     // working dir, and the runtime config (binds[0]) all live under it, and
-    // it sits outside `$HOME` in dev (rooted at `$TMPDIR/.peppy`).
+    // it sits outside `$HOME` when `PEPPY_HOME` puts it there.
     // `ensure_host_mounts` filters home-relative paths and is a no-op on the
     // native (Linux) backend. Runs on the blocking pool because a first-time
     // mount registration restarts the Lima VM.

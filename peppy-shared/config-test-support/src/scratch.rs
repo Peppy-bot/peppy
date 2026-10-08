@@ -15,8 +15,9 @@ use std::time::Duration;
 ///    a SIGBUS in `ld` mid-link rather than a clean `ENOSPC`. `$HOME` lives on
 ///    the roomy backing disk instead.
 ///
-/// This is intentionally NOT keyed off `app_env()`/`temp_dir()` (which resolve
-/// to `/tmp/.peppy` in dev), so test data never lands on `/tmp` tmpfs. Both the
+/// This is intentionally NOT keyed off `app_env()` (which resolves to the dev
+/// data root `~/.cache/peppy-dev` in dev, cleared at each boot), so test data
+/// never lands in the root of the dev daemon. Both the
 /// per-test scratch dirs ([`test_tmp_root`]) and the shared cargo target dir
 /// used by the build/clippy test helpers hang off this root. Only CI, which sets
 /// `PEPPY_HOME` on a roomy disk, redirects it.

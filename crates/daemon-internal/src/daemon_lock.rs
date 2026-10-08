@@ -1,5 +1,5 @@
 //! Per-data-root daemon singleton: an exclusive advisory lock on
-//! `<peppy root>/runtime/daemon.lock`, held for the whole daemon process
+//! [`PeppyDirs::daemon_lock_path`] (`<peppy root>/runtime/daemon.lock`), held for the whole daemon process
 //! lifetime. flock-based via [`std::fs::File::try_lock`], so the kernel
 //! releases the lock on any process exit, including SIGKILL, and acquisition
 //! is atomic under racing boots. The lock file is deliberately never
@@ -13,21 +13,18 @@ use daemon_config::consts::PeppyDirs;
 
 use crate::error::{Error, Result};
 
-const DAEMON_LOCK_FILENAME: &str = "daemon.lock";
-
 /// Acquires the daemon singleton lock without blocking. The returned [`File`]
 /// IS the lock: the caller must keep it alive for the whole daemon run,
 /// spanning in-process restarts. A lock held by another process maps to
 /// [`Error::AlreadyRunning`]; any other failure surfaces as an IO error.
 pub(crate) fn acquire_daemon_singleton_lock(peppy_dirs: &PeppyDirs) -> Result<File> {
-    let runtime_dir = peppy_dirs.runtime_config_dir();
-    std::fs::create_dir_all(&runtime_dir)?;
+    std::fs::create_dir_all(peppy_dirs.runtime_config_dir())?;
     let lock_file = File::options()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(runtime_dir.join(DAEMON_LOCK_FILENAME))?;
+        .open(peppy_dirs.daemon_lock_path())?;
     match lock_file.try_lock() {
         Ok(()) => Ok(lock_file),
         Err(TryLockError::WouldBlock) => Err(Error::AlreadyRunning),
