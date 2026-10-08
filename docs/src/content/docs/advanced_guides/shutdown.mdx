@@ -48,12 +48,10 @@ Register hooks during setup, as soon as the resource they release exists. A hook
 
     ```python
     async def setup(params, node_runner: NodeRunner):
-        await store(node_runner, LOCK_KEY, b"locked", Encoding.TEXT_PLAIN, 3.0)
+        async def clear_latest():
+            await remove(node_runner, LATEST_KEY, response_timeout_secs=2.0)
 
-        async def release_lock():
-            await remove(node_runner, LOCK_KEY, response_timeout_secs=2.0)
-
-        node_runner.on_shutdown(release_lock)
+        node_runner.on_shutdown(clear_latest)
     ```
   </TabItem>
   <TabItem label="Rust">
@@ -61,12 +59,10 @@ Register hooks during setup, as soon as the resource they release exists. A hook
 
     ```rust
     NodeBuilder::new().run(|params: Parameters, node_runner| async move {
-        datastore::store(&node_runner, LOCK_KEY, b"locked".to_vec(), Encoding::TEXT_PLAIN, TIMEOUT).await?;
-
         let runner = node_runner.clone();
         node_runner.on_shutdown(async move {
-            if let Err(e) = datastore::remove(&runner, LOCK_KEY, TIMEOUT).await {
-                tracing::warn!("failed to release lock: {e}");
+            if let Err(e) = datastore::remove(&runner, LATEST_KEY, TIMEOUT).await {
+                tracing::warn!("failed to clear the latest value: {e}");
             }
         });
 
@@ -130,6 +126,7 @@ Python nodes get the same sequence with a few extra mechanics:
 Cooperative shutdown is bounded at every level, so a misbehaving node can always be removed:
 
 - **Daemon force-kill**: any daemon-driven stop path `SIGKILL`s the node's whole process group once the force-kill deadline (the grace window plus the runtime-teardown allowance, see [Grace windows](#grace-windows)) elapses. `peppy node stop` reports whether the instance exited gracefully or had to be force-killed.
+- **What a killed node leaves**: a `SIGKILL` runs no hook. Neither does an abort, the OOM killer or a power cut. The operating system closes the process's files, sockets and file locks. Nothing else is cleaned up: actuators stay energized, and a datastore key the node wrote stays. The datastore is the daemon's memory, and no instance's exit clears it, so that key is there until the daemon restarts. Therefore hold an exclusive claim on a device with something the kernel releases, such as a file lock. Keep a hook for the work only the node can do, such as parking an actuator.
 - **Second signal**: while a signal-initiated shutdown is in flight, a second `SIGINT`/`SIGTERM` makes the node exit immediately with the conventional `128 + signo` code (130 or 143), skipping the remaining cleanup. Pressing `Ctrl+C` twice always works.
 
 ## What a node never needs

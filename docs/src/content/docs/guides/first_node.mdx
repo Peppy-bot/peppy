@@ -189,7 +189,7 @@ Additionally, the tag and name assigned to your node provide contract isolation.
 A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides/node_stack/#stopping-your-node) stops it on demand, `peppy node add` stops running instances when it replaces a node, the daemon tears every node down when it shuts down cleanly, and a plain `SIGINT`/`SIGTERM` works too. Every one of these paths gives your node the same two things:
 
 - The **cancellation token** (`node_runner.cancellation_token()`) fires. This is the signal to *stop working*: have long-running tasks watch it and break out of their loops.
-- **Shutdown hooks** registered with `node_runner.on_shutdown(...)` then run to completion, with messaging still connected. This is where *cleanup* belongs (parking actuators, releasing hardware or locks, flushing state): unlike a task watching the token, a hook is guaranteed to be awaited before the node exits.
+- **Shutdown hooks** registered with `node_runner.on_shutdown(...)` then run to completion, with messaging still connected. This is where *cleanup* belongs (parking actuators, releasing hardware, flushing state): unlike a task watching the token, a hook is awaited before the node exits on every path above. A node that ends any other way runs no hook: a `SIGKILL`, an abort, the OOM killer and a power cut end the process where it stands. So a hook carries the work only the node can do. An exclusive claim on a device belongs on something the kernel releases when the process dies, such as a file lock. The [shutdown lifecycle guide](/advanced_guides/shutdown/) says what a killed node leaves behind.
 
 <Tabs>
   <TabItem label="Python">
@@ -197,11 +197,11 @@ A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides
 
     ```python
     async def setup(params, node_runner: NodeRunner):
-        async def release_lock():
-            # runs on every stop path, before the node's tasks are torn down
-            await datastore.remove(node_runner, "my_lock", response_timeout_secs=2.0)
+        async def clear_latest():
+            # runs on the stop paths above, before the node's tasks are torn down
+            await datastore.remove(node_runner, "hello_world_latest", response_timeout_secs=2.0)
 
-        node_runner.on_shutdown(release_lock)
+        node_runner.on_shutdown(clear_latest)
     ```
 
     The background tasks returned from `setup` are cancelled automatically after the hooks: their pending `await` raises `asyncio.CancelledError`, and the node exits once they finish. Keep `try`/`finally` for last-moment tidy-up; cleanup that must be guaranteed belongs in `on_shutdown`.
@@ -212,9 +212,9 @@ A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides
     ```rust
     let runner = node_runner.clone();
     node_runner.on_shutdown(async move {
-        // runs on every stop path, after the token fires, before run() returns
-        if let Err(e) = datastore::remove(&runner, "my_lock", TIMEOUT).await {
-            tracing::warn!("failed to release lock: {e}");
+        // runs on the stop paths above, after the token fires, before run() returns
+        if let Err(e) = datastore::remove(&runner, "hello_world_latest", TIMEOUT).await {
+            tracing::warn!("failed to clear the latest message: {e}");
         }
     });
     ```
