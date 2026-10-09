@@ -349,6 +349,7 @@ impl CoreNode {
                 run_cmd: None,
                 container: None,
                 endpoints: Default::default(),
+                setup_timeout_secs: None,
             },
             interfaces: Default::default(),
         };

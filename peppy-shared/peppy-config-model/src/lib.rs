@@ -87,11 +87,11 @@ pub mod node {
         ObjectSchema, PairingObserverDependency, PairingParticipantDependency, PeppygenLanguage,
         PrimitiveSchema, QoSProfile, RefinementProblem, RefinementProblemKind, Refines,
         ResultServiceEndpoint, ResultServiceRefinement, RetentionDepth, RetentionDepthOutOfRange,
-        SchemaType, ServiceInterfaces, ServiceRefinement, Toolchain, TopicInterfaces,
-        TopicRefinement, TopicRetention, TypeToken, collect_contract_implementation_edges,
-        collect_dependency_specs, deserialize_present, estimate_serialized_size,
-        is_blocked_mount_source, load_standalone_node_config, node_implements, refined,
-        refined_ref, validate_dependency_specs,
+        SchemaType, ServiceInterfaces, ServiceRefinement, SetupTimeout, SetupTimeoutOutOfRange,
+        Toolchain, TopicInterfaces, TopicRefinement, TopicRetention, TypeToken,
+        collect_contract_implementation_edges, collect_dependency_specs, deserialize_present,
+        estimate_serialized_size, is_blocked_mount_source, load_standalone_node_config,
+        node_implements, refined, refined_ref, validate_dependency_specs,
     };
 }
 

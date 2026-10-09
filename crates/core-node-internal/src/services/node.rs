@@ -236,6 +236,19 @@ mod tests {
         encoder.finish().unwrap();
     }
 
+    /// A manifest without `execution.setup_timeout_secs` keeps the
+    /// fingerprint it has in every peppy release, so a federated launch
+    /// between daemons of two releases agrees on it. The value is pinned.
+    #[test]
+    fn a_manifest_without_a_setup_budget_keeps_its_fingerprint() {
+        let config = config::node::NodeConfigParser::from_content(TEST_NODE_CONFIG)
+            .expect("the test manifest parses");
+        assert_eq!(
+            manifest_fingerprint(&config).expect("the manifest serializes"),
+            "e370133366998fc3a940b41c5443d797728a4e1456be7fc5246acd92e00e027f"
+        );
+    }
+
     #[test]
     fn inject_rust_build_env_skips_python_nodes() {
         let mut env_vars = vec![("FOO".to_string(), "bar".to_string())];
