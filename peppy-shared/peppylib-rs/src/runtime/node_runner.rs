@@ -120,6 +120,15 @@ impl NodeRunner {
         &self.processor
     }
 
+    /// The setup budget of this instance: how long the daemon waits for
+    /// `setup_fn` to return once the node answers ready, before it stops the
+    /// instance. A setup that waits for something outside the node can give
+    /// up with its own reason before this budget runs out. See
+    /// [`Processor::setup_timeout`].
+    pub fn setup_timeout(&self) -> Duration {
+        self.processor.setup_timeout()
+    }
+
     /// Handle onto the scalar pairing slot declared at `link_id` in
     /// `depends_on.pairings` (a `one` or `zero_or_one` slot). Exposes the
     /// slot's live pair: `peer(link_id)?.paired()` returns the current peer

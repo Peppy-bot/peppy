@@ -669,6 +669,77 @@ async def test_node_ready_but_not_healthy(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_daemon_node_reads_the_setup_budget_of_its_runtime_config(monkeypatch):
+    """A node under a daemon reads the setup budget the daemon wrote into its
+    runtime config, in whole seconds."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
+            peppy_config_path.write_text(PEPPY_CONFIG)
+            create_codegen_fingerprint(str(peppy_config_path), PEPPYGEN_OUTPUT_PATH)
+
+            runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
+            create_runtime_config(
+                runtime_config_path,
+                router.host,
+                router.port,
+                TEST_NODE_NAME,
+                TEST_CORE_NODE,
+                TEST_INSTANCE_ID,
+                {"frequency_hz": TEST_FREQUENCY_HZ},
+                setup_timeout_secs=180,
+            )
+
+            monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
+            monkeypatch.chdir(temp_dir)
+
+            budget_queue: queue.Queue = queue.Queue()
+            error_queue: queue.Queue = queue.Queue()
+
+            def run_node():
+                try:
+
+                    def setup_fn(_params, node_runner):
+                        budget_queue.put(node_runner.setup_timeout_secs())
+
+                    NodeBuilder().run(setup_fn)
+                except Exception as e:
+                    error_queue.put(e)
+
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+
+            budget = await asyncio.to_thread(budget_queue.get, timeout=5.0)
+            assert budget == 180
+            assert isinstance(budget, int)
+
+            # The runner opens its session under the `local` workspace namespace; this
+            # control messenger must too, or its probes never route to it.
+            messenger = await MessengerHandle.from_host_port_with_namespace(
+                router.host, router.port
+            )
+            await _wait_for_service(
+                messenger,
+                SHUTDOWN_SERVICE,
+                runner_thread,
+                error_queue,
+            )
+            await ServiceMessenger.poll(
+                messenger,
+                TEST_CORE_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
+                SHUTDOWN_SERVICE,
+                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                b"shutdown",
+                2.0,)
+            runner_thread.join(timeout=10.0)
+
+    assert not runner_thread.is_alive(), "Runner should have exited"
+    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
+
+
+@pytest.mark.asyncio
 async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
     """Shutdown causes the cancellation token to be cancelled."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:

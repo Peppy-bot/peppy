@@ -1390,6 +1390,19 @@ struct DaemonStack {
 /// `lifecycle.shutdown_grace_secs` override in the launch config (mirroring
 /// what the daemon ships to spawned nodes).
 async fn start_daemon_stack(shutdown_grace_secs: Option<u64>) -> DaemonStack {
+    start_daemon_stack_with_lifecycle(|lifecycle| {
+        if let Some(grace) = shutdown_grace_secs {
+            lifecycle.shutdown_grace_secs = grace;
+        }
+    })
+    .await
+}
+
+/// [`start_daemon_stack`] with the `lifecycle` block of the launch config
+/// set by `configure`, as the daemon resolves it for a spawned node.
+async fn start_daemon_stack_with_lifecycle(
+    configure: impl FnOnce(&mut config::runtime::LifecycleRuntimeConfig),
+) -> DaemonStack {
     let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -1432,9 +1445,7 @@ async fn start_daemon_stack(shutdown_grace_secs: Option<u64>) -> DaemonStack {
         TEST_CORE_NODE,
     )
     .expect("runtime config should build");
-    if let Some(grace) = shutdown_grace_secs {
-        runtime_config.lifecycle.shutdown_grace_secs = grace;
-    }
+    configure(&mut runtime_config.lifecycle);
     let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
     runtime_config
         .save_json5_launch_config(&runtime_config_path)
@@ -1865,4 +1876,118 @@ fn init_parses_parameters_eagerly() {
 
     let params = ctx.take_parameters().expect("should take parameters");
     assert_eq!(params.value, 99);
+}
+
+/// A node under a daemon reads the setup budget the daemon wrote into its
+/// launch config.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_node_reads_the_setup_budget_of_its_launch_config() {
+    let stack = start_daemon_stack_with_lifecycle(|lifecycle| {
+        lifecycle.setup_timeout_secs =
+            config::node::SetupTimeout::from_secs(180).expect("in range");
+    })
+    .await;
+
+    let (budget_tx, budget_rx) = tokio::sync::oneshot::channel::<Duration>();
+    let mut runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+            let _ = budget_tx.send(node_runner.setup_timeout());
+            Ok(())
+        })
+    });
+
+    let budget = tokio::time::timeout(Duration::from_secs(5), budget_rx)
+        .await
+        .expect("runner setup should run")
+        .expect("the setup budget should be sent");
+    assert_eq!(budget, Duration::from_secs(180));
+
+    send_shutdown_when_reachable(&stack.router_host, stack.router_port, &mut runner_task).await;
+    tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+}
+
+/// The node serves the shutdown request before it answers ready: once the
+/// ready signal answers, a single probe finds the shutdown service, and the
+/// shutdown it answers ends a setup that waits forever, with its hook run.
+/// This is how the daemon stops a starting instance that answered ready.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_node_that_answers_ready_answers_the_shutdown_request() {
+    let stack = start_daemon_stack(None).await;
+
+    let (hook_tx, hook_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+            node_runner.on_shutdown(async move {
+                let _ = hook_tx.send(());
+            });
+            std::future::pending::<()>().await;
+            Ok(())
+        })
+    });
+
+    let messenger = peppylib::MessengerHandle::connect(&stack.router_host, stack.router_port)
+        .await
+        .expect("failed to create messenger");
+    let node = ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID);
+
+    // The daemon's ready wait: poll until the node answers.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(!runner_task.is_finished(), "runner exited before ready");
+        let ready = peppylib::ServiceMessenger::poll(
+            &messenger,
+            TEST_CORE_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            test_node_target(TEST_NODE_NAME),
+            NODE_READY_SERVICE,
+            ServiceTarget::Producer(&node),
+            Payload::from_static(b"ready"),
+            Duration::from_millis(500),
+        )
+        .await;
+        if ready.is_ok() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the node never answered ready");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    assert!(
+        peppylib::ServiceMessenger::is_reachable(
+            &messenger,
+            TEST_CORE_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            test_node_target(TEST_NODE_NAME),
+            SHUTDOWN_SERVICE,
+            ServiceTarget::Producer(&node),
+        )
+        .await
+        .expect("the probe should run"),
+        "a node that answered ready must already serve the shutdown request"
+    );
+    peppylib::ServiceMessenger::poll(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        test_node_target(TEST_NODE_NAME),
+        SHUTDOWN_SERVICE,
+        ServiceTarget::Producer(&node),
+        Payload::from_static(b"shutdown"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("the shutdown request should be answered");
+
+    tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
+        .await
+        .expect("runner should exit while its setup still waits")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+    hook_rx
+        .await
+        .expect("the shutdown hook registered during setup should have run");
 }

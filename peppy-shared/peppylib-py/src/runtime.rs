@@ -885,6 +885,15 @@ impl PyNodeRunner {
         self.inner.processor().shutdown_grace().as_secs_f64()
     }
 
+    /// The setup budget of this instance, in whole seconds: how long the
+    /// daemon waits for `setup` to return once the node answers ready, before
+    /// it stops the instance. The daemon resolves it from the manifest's
+    /// `execution.setup_timeout_secs`, else its default setup budget; a
+    /// standalone node and the test harness read the budget of the manifest.
+    fn setup_timeout_secs(&self) -> u64 {
+        self.inner.setup_timeout().as_secs()
+    }
+
     /// Run the registered shutdown hooks, bounded collectively by
     /// `grace_secs`. `NodeBuilder().run(...)` does this itself on every exit
     /// path; a caller that owns the runner's lifecycle directly (the

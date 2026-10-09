@@ -820,7 +820,10 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
     let as_identity =
         crate::messaging::SenderTarget::node(processor.node_name(), processor.node_tag())?;
 
-    let ready_handle = listen_for_node_ready(
+    // The shutdown request is served before the ready signal: the daemon stops
+    // a starting instance that answered ready through this request, so a node
+    // that answered ready always answers it.
+    let (shutdown_handle, shutdown_rx) = listen_for_shutdown(
         node_runner.messenger(),
         processor.bound_core_node(),
         processor.bound_instance_id(),
@@ -863,7 +866,8 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
     )
     .await?;
 
-    let (shutdown_handle, shutdown_rx) = listen_for_shutdown(
+    // Ready is answered last, once every pre-setup service listens.
+    let ready_handle = listen_for_node_ready(
         node_runner.messenger(),
         processor.bound_core_node(),
         processor.bound_instance_id(),
