@@ -1,0 +1,65 @@
+// The peppy framework that runs the robots, as one MCP surface: the calls
+// that change the stack of nodes, not the world and not the motion of a
+// robot. Its one target names a daemon interface, stack_copies:v1: the peppy
+// daemon that started the server serves it, and no node implements it. The
+// launcher scopes the target: the robot options a client may add, the
+// description of each, and the most robots of these options the stack
+// holds. So the document names no robot model and no option. A robot added
+// here is a copy of its option, as `peppy stack join OPTION:NAME` makes it;
+// a simulated robot's robot_initializer ends its start only once the
+// simulation stands it.
+//
+// The launchers hub serves this document through the `robot_control` option
+// of its `simulation_mcp` launcher, on port 8903, beside the robots'
+// endpoint on port 8900, which drives the robots added here. The title, the
+// opening of the instructions and every description say that the calls go
+// to the framework's stack.
+{
+  peppy_schema: "mcp_exposure/v1",
+  manifest: { name: "framework_controls", tag: "v1" },
+
+  server: {
+    title: "Robot stack (peppy framework)",
+    instructions: "This endpoint controls the peppy framework that runs the robots: the stack of nodes, not the world and not the motion of a robot. Its tools add robots to the stack and remove them: stack.list reports the robot options this stack offers and the robots it can remove, stack.join adds one and stack.remove removes one. A robot added here runs the same software as a robot of the same option added at launch, and the robots' endpoint drives it under its name; a simulated robot also stands in the simulated world. Change rule: the stack runs one change at a time, so a call is refused while another addition, removal or other change of the stack runs; call again when it has ended. Wait rule: a call that ends before its work is done, by a cancel or a lost connection, does not stop the work, and stack.recent_calls records that call as cancelled. While the work runs, the change rule refuses another addition or removal. stack.list lists an added robot under copies once its addition has succeeded.",
+  },
+
+  call_record: {
+    tool: "stack.recent_calls",
+    description: "List the last calls of this endpoint that could change the stack, newest first, up to 200: every mutating tool and every action, with started_at, the client that made the call (its declared name and version, or null), the tool, its arguments as sent (null when larger than 1 kB, with arguments_bytes), outcome (running, completed, failed, cancelled or refused), success, message and duration_ms. Read outcome and success together: a completed call with success false ran to its end and reports a failure, a call refused by the change rule, by a name in use or by the limit of stack.join has outcome failed, and arguments outside the schema give outcome refused. The record holds the calls of MCP clients on this endpoint only; a robot added to or removed from the stack with peppy on the command line is not in it. Takes no arguments and changes nothing.",
+    keep: 200,
+  },
+
+  targets: {
+    // The copies of the launch, served by the peppy daemon. The launcher's
+    // scope names the robot options a client may add, with the description
+    // of each, and the most robots of these options the stack holds.
+    stack: {
+      daemon: { name: "stack_copies", tag: "v1" },
+      services: [
+        {
+          member: "list",
+          tool: "stack.list",
+          description: "Report what this stack can add and remove. options lists each robot option the stack can add: option, the value stack.join takes, and description, one line that says what a robot of that option is and how it stands; robot.list on the robots' endpoint reports its model under identity once it is added. copies lists each robot of these options on the stack, which stack.remove can remove: name, the robot's name, and option. A robot whose software stopped, for example one that a simulation took out, stays listed until stack.remove removes it. max_copies is the most robots of these options on the stack: stack.join refuses when the stack holds that many. Takes no arguments and changes nothing.",
+          operation: "read_only",
+          deadline_ms: 5000,
+        },
+      ],
+      actions: [
+        {
+          member: "join",
+          tool: "stack.join",
+          description: "Add a robot of option to the stack under name, and wait until its software runs. option is one of the options stack.list reports. name is 1 to 63 letters, digits, '_' or '-', not self, and not the name of a robot on the stack. A simulation can refuse a name by a rule of its own: Waldo refuses two names where one, followed by '_', begins the other, so bravo_2 and bravo cannot stand together. Progress messages report each step; building the robot's software, and fetching its files into a simulation, can take minutes the first time. After the call, with success true, the robot's software runs on the stack and robot.list on the robots' endpoint lists it; a simulated robot stands in the simulation, where the simulation puts a robot that names no placement, and scene.get_robots_list on the simulated world's endpoint lists it with attached true. With success false, the addition is undone, and message says why and names the log files; when message says that the copy remains listed, stack.remove removes it. Refused when the stack holds max_copies robots of the listed options, when a robot on the stack has the name, and by the change rule. It does not stand a simulated robot at a work surface: workspace.stand_at on the simulated world's endpoint does, and workspace.describe there says whether the robot can work it. See the wait rule.",
+          operation: "long_running",
+          progress_timeout_ms: 660000,
+        },
+        {
+          member: "remove",
+          tool: "stack.remove",
+          description: "Remove a robot from the stack, and wait until its software has stopped. name is one of the copies stack.list reports. Progress messages report each part of the robot's software that stops. After the call, with success true, the robot's software has stopped on the stack, robot.list on the robots' endpoint no longer lists it, and a call in progress on it has ended with an error. A simulation then takes the robot out of its world: scene.get_robots_list stops listing it once the world is rebuilt without it, and until then the simulation holds the name, so stack.join under the same name can end with success false; call it again. Refused for a name stack.list does not report, and by the change rule. See the wait rule.",
+          operation: "long_running",
+          progress_timeout_ms: 660000,
+        },
+      ],
+    },
+  },
+}

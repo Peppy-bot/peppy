@@ -13,7 +13,7 @@ use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::repository::ManifestFingerprint;
 use message_codec::MessageCodec;
-use peppy_mcp_catalog::{ResolvedContract, build_exposure_bundle};
+use peppy_mcp_catalog::{DeclaredMembers, ResolvedContract, build_exposure_bundle};
 use peppy_mcp_runtime::{ActionContext, ExposureServer, ExposureSet, ToolCall};
 use peppylib::testing::READINESS_TIMEOUT;
 use serde_json::{Value, json};
@@ -78,12 +78,15 @@ fn prepared_exposure() -> PreparedExposure {
         name: "limb_motion",
         tag: "v1",
         sha256: &fingerprint,
-        topics: &contract.interfaces.topics,
-        services: &contract.interfaces.services,
-        actions: &contract.interfaces.actions,
+        members: DeclaredMembers {
+            topics: &contract.interfaces.topics,
+            services: &contract.interfaces.services,
+            actions: &contract.interfaces.actions,
+        },
     };
     let exposure = PeppyMcpExposureParser::from_content(EXPOSURE).expect("the exposure parses");
-    let validated = build_exposure_bundle(&exposure, &[resolved]).expect("the exposure validates");
+    let validated =
+        build_exposure_bundle(&exposure, &[resolved], &[]).expect("the exposure validates");
     let mut prepared = prepare(vec![validated]).expect("the exposure lays out");
     assert_eq!(prepared.len(), 1, "one exposure, one prepared exposure");
     prepared.remove(0)

@@ -1137,6 +1137,7 @@ dependencies = [
  "const_format",
  "core-node-api",
  "dirs 7.0.0",
+ "jsonschema",
  "peppy-config-model",
  "peppy-mcp-catalog",
  "serde",

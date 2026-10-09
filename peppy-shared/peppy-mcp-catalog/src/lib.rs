@@ -2,20 +2,22 @@
 //! validation against the contracts it names, and the versioned catalog
 //! (bundle) that validation derives.
 //!
-//! An exposure document selects members of contracts and gives them stable
-//! public names, MCP-facing prose, and operational policies. Validating it
-//! against the resolved contracts yields the bundle: the public catalog
-//! (stable names, prose, policies, derived JSON Schemas) plus the identity
-//! and contract slots of the process serving it. The `peppy` binary derives
+//! An exposure document selects members of contracts and of daemon
+//! interfaces and gives them stable public names, MCP-facing prose, and
+//! operational policies. Validating it against the resolved contracts and
+//! interfaces yields the bundle: the public catalog (stable names, prose,
+//! policies, derived JSON Schemas) plus the identity, the contract slots and
+//! the daemon targets of the process serving it. The `peppy` binary derives
 //! bundles when it checks a hub and when it serves exposures; the MCP server
 //! runtime serves exactly what a bundle declares.
 //!
 //! Entry points:
 //!
 //! - [`McpExposure`], the parsed document, coherent on its own.
-//! - [`build_exposure_bundle`] with [`ResolvedContract`], the validation and
-//!   derivation, reporting every violation at once; its [`ValidatedExposure`]
-//!   carries the bundle beside the contract member behind each entry.
+//! - [`build_exposure_bundle`] with [`ResolvedContract`] and
+//!   [`ResolvedInterface`], the validation and derivation, reporting every
+//!   violation at once; its [`ValidatedExposure`] carries the bundle beside
+//!   the member behind each entry and the source it comes from.
 //! - [`message_format_to_json_schema`], the canonical mapping from
 //!   `message_format` definitions to the published JSON Schemas.
 //! - [`ExposureBundle`] with [`ExposureBundle::from_json_str`] and
@@ -35,16 +37,17 @@ pub mod schema;
 pub mod validate;
 
 pub use bundle::{
-    BundleContractPin, BundleIdentity, BundleServer, BundleSurface, CallRecordEntry, DescribeEntry,
-    EXPOSURE_BUNDLE_FORMAT, ExposureBundle, I64_DECIMAL_PATTERN, ListEntry, PictureEntry,
-    ResourceEntry, ResourcePolicies, RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION,
-    TaskEntry, ToolEntry, U64_DECIMAL_PATTERN, is_canonical_i64_decimal, is_canonical_u64_decimal,
+    BundleContractPin, BundleDaemonTarget, BundleIdentity, BundleServer, BundleSurface,
+    CallRecordEntry, DescribeEntry, EXPOSURE_BUNDLE_FORMAT, ExposureBundle, I64_DECIMAL_PATTERN,
+    ListEntry, PictureEntry, ResourceEntry, ResourcePolicies, RobotCatalog, RobotContractPin,
+    SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry, U64_DECIMAL_PATTERN, is_canonical_i64_decimal,
+    is_canonical_u64_decimal,
 };
 pub use document::{
-    ActionExposure, ArgumentName, CALL_RECORD_MAX_KEEP, CallRecord, ExposureManifest,
-    ExposureSurface, ExposureTarget, McpExposure, PictureTool, PinnedContractRef, PublicName,
-    ROBOT_ARGUMENT, RestrictBounds, RobotSurface, RobotTarget, ServerIdentity, ServiceExposure,
-    TopicExposure,
+    ActionExposure, ArgumentName, CALL_RECORD_MAX_KEEP, CallRecord, DaemonInterfaceRef,
+    ExposureManifest, ExposureSurface, ExposureTarget, McpExposure, PictureTool, PinnedContractRef,
+    PublicName, ROBOT_ARGUMENT, RestrictBounds, RobotSurface, RobotTarget, ServerIdentity,
+    ServiceExposure, TargetSource, TopicExposure,
 };
 pub use policy::{
     ActionOperation, ContentPolicies, DepthRange, FreshnessPolicy, GoalBound, ImageCodec,
@@ -53,6 +56,6 @@ pub use policy::{
 };
 pub use schema::{MaxSerializedSize, max_serialized_json_bytes, message_format_to_json_schema};
 pub use validate::{
-    BoundMember, ExposureValidationError, ResolvedContract, ValidatedExposure,
-    build_exposure_bundle,
+    BoundMember, DeclaredMembers, ExposureValidationError, MemberSource, ResolvedContract,
+    ResolvedInterface, ValidatedExposure, build_exposure_bundle,
 };

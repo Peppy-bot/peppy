@@ -5,13 +5,13 @@
 //! This crate owns the config formats only the peppy daemon and CLI read or
 //! write: launcher documents (`peppy_schema: "launcher/v1"`) and their
 //! deployment sources, contract documents (`contract/v1`), MCP exposure
-//! documents (`mcp_exposure/v1`), the global
-//! daemon config `peppy_config.json5` with its comment-preserving completion,
-//! the [`atomic_write::publish_atomic`] staging helper, the owner-only file
-//! modes of [`fs_perms`], the [`local_host::is_local`] test, and the
-//! [`consts::PeppyDirs`] filesystem-layout helper with the process-global
-//! [`consts::set_app_env`] dev/prod root switch (a set-once `OnceLock`), and
-//! the [`per_boot_root`] clears of the dev root.
+//! documents (`mcp_exposure/v1`) and the daemon interfaces they can name, the
+//! global daemon config `peppy_config.json5` with its comment-preserving
+//! completion, the [`atomic_write::publish_atomic`] staging helper, the
+//! owner-only file modes of [`fs_perms`], the [`local_host::is_local`] test,
+//! and the [`consts::PeppyDirs`] filesystem-layout helper with the
+//! process-global [`consts::set_app_env`] dev/prod root switch (a set-once
+//! `OnceLock`), and the [`per_boot_root`] clears of the dev root.
 //!
 //! It builds on the shared `config` crate (`peppy-config-model`), which keeps
 //! the wire-facing tier consumed by nodes and `peppylib`: the `peppy.json5`
@@ -32,6 +32,7 @@ mod internal {
     pub mod atomic_write;
     pub mod consts;
     pub mod contract;
+    pub mod daemon_interface;
     pub mod env;
     pub mod fs_perms;
     pub mod launcher;
@@ -122,27 +123,40 @@ pub mod contract {
     pub use crate::internal::contract::{Interfaces, Manifest, PeppyContract, PeppyContractParser};
 }
 
+// -- daemon_interface --
+//
+// The daemon interfaces this peppy serves: each one's compiled-in document,
+// scope type, schema narrowing and launch checks.
+pub mod daemon_interface {
+    pub use crate::internal::daemon_interface::{
+        DaemonInterface, DaemonScope, MAX_DESCRIPTION_CHARS, ScopedOption, StackCopiesScope,
+        UnservedInterface, served_interfaces,
+    };
+}
+
 // -- mcp_exposure --
 pub mod mcp_exposure {
     pub use crate::internal::mcp_exposure::{
-        ActionExposure, ActionOperation, ExposureManifest, ExposureTarget, FreshnessPolicy,
-        GoalBound, ImageCodec, ImageFieldMap, ImageRepresentation, JpegQuality, MaxHz, McpExposure,
-        OversizePolicy, PeppyMcpExposureParser, PinnedContractRef, PublicName, RestrictBounds,
-        ServerIdentity, ServiceExposure, ServiceOperation, TopicExposure, UpdatePolicy,
+        ActionExposure, ActionOperation, DaemonInterfaceRef, ExposureManifest, ExposureTarget,
+        FreshnessPolicy, GoalBound, ImageCodec, ImageFieldMap, ImageRepresentation, JpegQuality,
+        MaxHz, McpExposure, OversizePolicy, PeppyMcpExposureParser, PinnedContractRef, PublicName,
+        RestrictBounds, ServerIdentity, ServiceExposure, ServiceOperation, TargetSource,
+        TopicExposure, UpdatePolicy,
     };
 }
 
 // -- mcp_deployment --
 //
 // The built-in MCP server as a deployment: the identity and manifest the
-// daemon synthesizes from a set of exposures, the slot-merging rules, and
-// the spec file the daemon hands `peppy mcp serve`.
+// daemon synthesizes from a set of exposures, the slot-merging rules, the
+// targets the launcher fills or scopes, and the spec file the daemon hands
+// `peppy mcp serve`.
 pub mod mcp_deployment {
     pub use crate::internal::mcp_deployment::{
-        BUILT_IN_TAG, DEFAULT_PORT, ExposureViolations, McpDeploymentError, McpDeploymentPlan,
-        McpServeSpec, PORT_PARAMETER, Pinned, PinnedContract, PinnedDocument, PinnedExposure,
-        RUN_COMMAND, SPEC_ENV_VAR, SlotConflict, built_in_identity, endpoint_label,
-        plan_deployment,
+        BUILT_IN_TAG, DEFAULT_PORT, DeploymentTargets, ExposureViolations, McpDeploymentError,
+        McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, Pinned, PinnedContract, PinnedDocument,
+        PinnedExposure, RUN_COMMAND, SPEC_ENV_VAR, SourceConflict, built_in_identity,
+        endpoint_label, plan_deployment,
     };
 }
 

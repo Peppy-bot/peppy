@@ -246,6 +246,74 @@ fn a_launch_resolves_exposures_and_their_contracts_through_the_caches() {
     );
 }
 
+/// The design's `framework/framework_controls.json5`: one daemon target,
+/// `stack`, that names `stack_copies:v1`.
+const FRAMEWORK_CONTROLS: &str = include_str!(
+    "../../../../daemon-config-internal/src/daemon_interface/fixtures/framework_controls.json5"
+);
+
+/// A daemon target references no contract: the launch resolves the
+/// contracts of the contract targets alone, and a deployment of daemon
+/// targets alone has an empty closure, which a peer materializes as the
+/// daemon that registers the server does.
+#[test]
+fn a_daemon_target_resolves_no_contract() {
+    let home = SeededHome::new(
+        &[CAMERA_CONTRACT],
+        &[
+            ("framework_controls", FRAMEWORK_CONTROLS),
+            (
+                "cam",
+                &exposure(
+                    "cam",
+                    "front_camera",
+                    "rgb_camera",
+                    None,
+                    "video_stream_info",
+                ),
+            ),
+        ],
+    );
+
+    let mixed = resolve_exposure_deployment(
+        &home.dirs,
+        &references(&["cam", "framework_controls"]),
+        &quiet,
+    )
+    .expect("resolves");
+    let contract_pins: Vec<String> = mixed.contract_pins().iter().map(|p| p.label()).collect();
+    assert_eq!(contract_pins, ["contract `rgb_camera:v1`"]);
+    assert_eq!(
+        mixed.plan.targets.daemon.keys().collect::<Vec<_>>(),
+        ["stack"]
+    );
+    assert_eq!(
+        mixed.plan.targets.contract.iter().collect::<Vec<_>>(),
+        ["front_camera"]
+    );
+
+    let alone =
+        resolve_exposure_deployment(&home.dirs, &references(&["framework_controls"]), &quiet)
+            .expect("a deployment of daemon targets alone resolves");
+    assert!(alone.contract_pins().is_empty());
+    let pins = DeploymentPins::new(DeploymentRoot::Exposures(alone.exposure_pins()), Vec::new())
+        .expect("an empty closure forms a deployment");
+    let materialized =
+        materialize_exposure_deployment(&home.dirs, &pins, &quiet).expect("materializes");
+    assert_eq!(materialized.spec, alone.spec);
+    assert_eq!(materialized.plan.targets, alone.plan.targets);
+
+    // The targets of the documents alone, as `peppy stack resolve` reads
+    // them with no contract at hand.
+    let documents =
+        resolve_exposure_documents(&home.dirs, &references(&["framework_controls"]), &quiet)
+            .expect("the document resolves");
+    assert_eq!(
+        daemon_config::mcp_deployment::DeploymentTargets::of(&documents).expect("served"),
+        alone.plan.targets
+    );
+}
+
 #[test]
 fn two_exposures_pinning_one_contract_at_different_bytes_are_refused_by_name() {
     let first = ManifestFingerprint::of_bytes(CAMERA_CONTRACT.as_bytes()).to_string();

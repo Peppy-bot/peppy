@@ -2,21 +2,24 @@
 //!
 //! A launcher lists exposures; the daemon runs one `peppy mcp serve` process
 //! for the list. Everything that process is, from the planner's point of
-//! view, derives from the exposure documents and the contracts they pin:
-//! its node identity, the manifest whose contract slots the launcher's
-//! `links` fill, the catalogs it serves. This module holds those
-//! derivations, so the coordinator that plans a launch, the daemon that
-//! registers the server and the server itself compute one answer from one
-//! set of pinned bytes.
+//! view, derives from the exposure documents, the contracts they pin and
+//! the daemon interfaces this peppy serves: its node identity, the manifest
+//! whose contract slots the launcher's `links` fill, the daemon targets the
+//! launcher's `daemon_scopes` scope, the catalogs it serves. This module
+//! holds those derivations, so the coordinator that plans a launch, the
+//! daemon that registers the server and the server itself compute one answer
+//! from one set of pinned bytes.
 
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
+use crate::internal::daemon_interface::{DaemonInterface, served_interfaces};
 use crate::internal::launcher::MemberAddressing;
 use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedItem};
 use crate::internal::source::ExposureRef;
 use config::node::{NodeConfig, NodeConfigParser};
 use config::runtime::Name;
 use peppy_mcp_catalog::{
-    ExposureSurface, McpExposure, ResolvedContract, ValidatedExposure, build_exposure_bundle,
+    ExposureSurface, McpExposure, ResolvedContract, ResolvedInterface, TargetSource,
+    ValidatedExposure, build_exposure_bundle,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -94,24 +97,30 @@ impl PinnedContract {
             name: self.pin.name.as_str(),
             tag: self.pin.tag.as_str(),
             sha256: &self.pin.sha256,
-            topics: &self.document.interfaces.topics,
-            services: &self.document.interfaces.services,
-            actions: &self.document.interfaces.actions,
+            members: peppy_mcp_catalog::DeclaredMembers {
+                topics: &self.document.interfaces.topics,
+                services: &self.document.interfaces.services,
+                actions: &self.document.interfaces.actions,
+            },
         }
     }
 }
 
-/// Two exposures binding one target name to different contracts.
+/// Two exposures naming one target name with different sources: two
+/// contracts, a contract and a daemon interface, or two daemon interfaces.
+/// Each source is written as messages name it, ``contract `name:tag` `` or
+/// ``daemon interface `name:tag` ``.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SlotConflict {
+pub struct SourceConflict {
     pub target: String,
     pub first_exposure: String,
-    pub first_contract: String,
+    pub first_source: String,
     pub second_exposure: String,
-    pub second_contract: String,
+    pub second_source: String,
 }
 
-/// One exposure's validation verdict against the pinned contracts.
+/// One exposure's validation verdict against the pinned contracts and the
+/// daemon interfaces this peppy serves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExposureViolations {
     pub exposure: String,
@@ -139,11 +148,11 @@ pub enum McpDeploymentError {
         pinned: ManifestFingerprint,
     },
     #[error(
-        "target `{}` is bound to contract `{}` by exposure `{}` and to contract `{}` by exposure \
-         `{}`; two exposures sharing a target name must pin the same contract",
-        .0.target, .0.first_contract, .0.first_exposure, .0.second_contract, .0.second_exposure
+        "target `{}` is bound to {} by exposure `{}` and to {} by exposure `{}`; two exposures \
+         sharing a target name must name the same source",
+        .0.target, .0.first_source, .0.first_exposure, .0.second_source, .0.second_exposure
     )]
-    SlotConflict(SlotConflict),
+    SourceConflict(SourceConflict),
     #[error(transparent)]
     ArgumentConflict(Box<ArgumentConflict>),
     #[error(
@@ -187,7 +196,8 @@ fn format_violations(reports: &[ExposureViolations]) -> String {
         .iter()
         .map(|report| {
             format!(
-                "exposure `{}` does not validate against its contracts:\n{}",
+                "exposure `{}` does not validate against its contracts and daemon \
+                 interfaces:\n{}",
                 report.exposure,
                 crate::error::format_bulleted(&report.violations)
             )
@@ -197,9 +207,10 @@ fn format_violations(reports: &[ExposureViolations]) -> String {
 }
 
 /// The planned deployment: its identity, the manifest the planner binds
-/// and pins, and every exposure validated against the pinned contracts, in
-/// identity order: the catalog each advertises, and behind each entry the
-/// contract member the server's bridges bind to.
+/// and pins, every exposure validated against the pinned contracts and the
+/// daemon interfaces, in identity order (the catalog each advertises, and
+/// behind each entry the member the server's bridges bind to), and the
+/// targets the launcher fills or scopes.
 #[derive(Debug, Clone)]
 pub struct McpDeploymentPlan {
     pub name: Name,
@@ -209,6 +220,80 @@ pub struct McpDeploymentPlan {
     /// How the server reads the sets its contract slots hold, which the
     /// binding validator holds the launcher to.
     pub addressing: MemberAddressing,
+    /// The targets of the exposures, which the launch checks of daemon
+    /// scopes read.
+    pub targets: DeploymentTargets,
+}
+
+/// The targets the exposures of one deployment serve, by name: each
+/// contract target, which a slot of the derived node holds and the
+/// launcher's `links` fill, and each daemon target with the interface this
+/// peppy serves for it, which takes no slot and which the launcher scopes
+/// with `daemon_scopes`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeploymentTargets {
+    pub contract: BTreeSet<String>,
+    pub daemon: BTreeMap<String, DaemonInterface>,
+}
+
+impl DeploymentTargets {
+    /// The targets of `exposures`, read from the documents alone. Two
+    /// exposures sharing a target name must name the same source, and every
+    /// daemon target must name an interface this peppy serves at the tag it
+    /// names; every target that does not is reported at once.
+    pub fn of(exposures: &[PinnedExposure]) -> Result<Self, McpDeploymentError> {
+        let mut ordered: Vec<&PinnedExposure> = exposures.iter().collect();
+        ordered.sort_by_key(|exposure| exposure.reference());
+        let mut named: BTreeMap<&str, (&TargetSource, String)> = BTreeMap::new();
+        let mut targets = Self::default();
+        let mut unserved: Vec<ExposureViolations> = Vec::new();
+        for exposure in ordered {
+            let label = exposure.reference().to_string();
+            for (target, selection, _) in exposure.document.surface.targets() {
+                match named.get(target.as_str()) {
+                    Some((first, first_exposure)) if !same_source(first, &selection.source) => {
+                        return Err(McpDeploymentError::SourceConflict(SourceConflict {
+                            target: target.clone(),
+                            first_exposure: first_exposure.clone(),
+                            first_source: first.to_string(),
+                            second_exposure: label,
+                            second_source: selection.source.to_string(),
+                        }));
+                    }
+                    Some(_) => {}
+                    None => {
+                        named.insert(target, (&selection.source, label.clone()));
+                    }
+                }
+                if selection.source.contract().is_some() {
+                    targets.contract.insert(target.clone());
+                }
+            }
+            match served_interfaces(&exposure.document) {
+                Ok(served) => targets.daemon.extend(served),
+                Err(violations) => unserved.push(ExposureViolations {
+                    exposure: label,
+                    violations,
+                }),
+            }
+        }
+        if !unserved.is_empty() {
+            return Err(McpDeploymentError::Invalid(unserved));
+        }
+        Ok(targets)
+    }
+}
+
+/// Whether two targets of one name draw from one source: one contract by
+/// identity, whatever pin each reference states, or one daemon interface.
+fn same_source(first: &TargetSource, second: &TargetSource) -> bool {
+    match (first, second) {
+        (TargetSource::Contract(first), TargetSource::Contract(second)) => {
+            first.name == second.name && first.tag == second.tag
+        }
+        (TargetSource::Daemon(first), TargetSource::Daemon(second)) => first == second,
+        _ => false,
+    }
 }
 
 /// One contract slot of the synthesized manifest and who filled it.
@@ -222,13 +307,16 @@ struct Slot<'a> {
 
 /// Derives the built-in server's deployment from its pinned documents.
 ///
-/// Every exposure is validated against the contracts it references, all
-/// violations reported at once. The manifest declares one contract slot per
-/// target name: two exposures naming the same target with the same contract
-/// share the slot, the same target name with a different contract is a
-/// [`McpDeploymentError::SlotConflict`]. An exposure's own `sha256` pin, when
-/// present, must agree with the deployment's contract pin; absent, the
-/// deployment's pin fixes the bytes.
+/// Every exposure is validated against the contracts and the daemon
+/// interfaces it references, all violations reported at once. The manifest
+/// declares one contract slot per contract target name: two exposures naming
+/// the same target with the same contract share the slot, the same target
+/// name with another source is a [`McpDeploymentError::SourceConflict`]. A
+/// daemon target takes no slot, consumes nothing and adds nothing to
+/// `depends_on`, so a deployment of daemon targets alone is valid; each one
+/// must name an interface this peppy serves at the tag it names. An
+/// exposure's own `sha256` pin, when present, must agree with the
+/// deployment's contract pin; absent, the deployment's pin fixes the bytes.
 pub fn plan_deployment(
     exposures: &[PinnedExposure],
     contracts: &[PinnedContract],
@@ -268,6 +356,7 @@ pub fn plan_deployment(
         });
     }
     let per_robot = per_robot.is_some();
+    let targets = DeploymentTargets::of(exposures)?;
 
     let mut slots: BTreeMap<String, Slot> = BTreeMap::new();
     let mut topics: BTreeSet<(String, String)> = BTreeSet::new();
@@ -279,8 +368,21 @@ pub fn plan_deployment(
     for exposure in &ordered {
         let label = exposure.reference().to_string();
         let mut resolved: Vec<ResolvedContract<'_>> = Vec::new();
+        let mut interfaces: Vec<ResolvedInterface<'_>> = Vec::new();
         for (target, spec, spec_argument) in exposure.document.surface.targets() {
-            let reference = &spec.contract;
+            let reference = match &spec.source {
+                TargetSource::Contract(reference) => reference,
+                TargetSource::Daemon(_) => {
+                    let interface = targets.daemon[target.as_str()];
+                    if !interfaces
+                        .iter()
+                        .any(|resolved| resolved.name == interface.name())
+                    {
+                        interfaces.push(interface.resolved());
+                    }
+                    continue;
+                }
+            };
             let contract_label = format!("{}:{}", reference.name.as_str(), reference.tag);
             let pinned = contracts
                 .iter()
@@ -303,19 +405,9 @@ pub fn plan_deployment(
                 });
             }
             let argument = spec_argument.map(ToString::to_string);
+            // Two exposures naming one target with different sources were
+            // refused with the targets, so a shared slot holds one contract.
             match slots.get(target) {
-                Some(slot)
-                    if slot.contract.name != reference.name.as_str()
-                        || slot.contract.tag != reference.tag.as_str() =>
-                {
-                    return Err(McpDeploymentError::SlotConflict(SlotConflict {
-                        target: target.clone(),
-                        first_exposure: slot.exposure.clone(),
-                        first_contract: format!("{}:{}", slot.contract.name, slot.contract.tag),
-                        second_exposure: label.clone(),
-                        second_contract: contract_label.clone(),
-                    }));
-                }
                 Some(slot) if slot.argument != argument => {
                     return Err(McpDeploymentError::ArgumentConflict(Box::new(
                         ArgumentConflict {
@@ -345,15 +437,23 @@ pub fn plan_deployment(
                 resolved.push(pinned.resolved());
             }
         }
-        match build_exposure_bundle(&exposure.document, &resolved) {
+        match build_exposure_bundle(&exposure.document, &resolved, &interfaces) {
             Ok(checked) => {
-                for resource in &checked.bundle.resources {
+                // A daemon target's members reach the daemon, not a slot, so
+                // the manifest consumes the members of contract targets alone.
+                let consumed = |target: &String| targets.contract.contains(target);
+                for resource in checked
+                    .bundle
+                    .resources
+                    .iter()
+                    .filter(|r| consumed(&r.target))
+                {
                     topics.insert((resource.target.clone(), resource.member.clone()));
                 }
-                for tool in &checked.bundle.tools {
+                for tool in checked.bundle.tools.iter().filter(|t| consumed(&t.target)) {
                     services.insert((tool.target.clone(), tool.member.clone()));
                 }
-                for task in &checked.bundle.tasks {
+                for task in checked.bundle.tasks.iter().filter(|t| consumed(&t.target)) {
                     actions.insert((task.target.clone(), task.member.clone()));
                 }
                 validated.push(checked);
@@ -438,13 +538,15 @@ pub fn plan_deployment(
             )
         })
         .collect();
+    // A deployment of daemon targets alone has no slot, so its manifest
+    // declares no `depends_on`.
+    let mut manifest = serde_json::json!({ "name": name.as_str(), "tag": tag });
+    if !contract_slots.is_empty() {
+        manifest["depends_on"] = serde_json::json!({ "contracts": contract_slots });
+    }
     let document = serde_json::json!({
         "peppy_schema": "node/v1",
-        "manifest": {
-            "name": name.as_str(),
-            "tag": tag,
-            "depends_on": { "contracts": contract_slots },
-        },
+        "manifest": manifest,
         "interfaces": interfaces,
         "execution": {
             "language": "rust",
@@ -472,6 +574,7 @@ pub fn plan_deployment(
         config,
         exposures: validated,
         addressing,
+        targets,
     })
 }
 
@@ -954,19 +1057,199 @@ mod tests {
             &[contract(CAMERA_CONTRACT), contract(RECORDING_CONTRACT)],
         )
         .expect_err("one target, two contracts");
-        let McpDeploymentError::SlotConflict(conflict) = error else {
-            panic!("expected a slot conflict, got {error}");
+        let McpDeploymentError::SourceConflict(conflict) = error else {
+            panic!("expected a source conflict, got {error}");
         };
         assert_eq!(
             conflict,
-            SlotConflict {
+            SourceConflict {
                 target: "front".to_owned(),
                 first_exposure: "a:v1".to_owned(),
-                first_contract: "rgb_camera:v1".to_owned(),
+                first_source: "contract `rgb_camera:v1`".to_owned(),
                 second_exposure: "b:v1".to_owned(),
-                second_contract: "episode_recording:v1".to_owned(),
+                second_source: "contract `episode_recording:v1`".to_owned(),
             }
         );
+    }
+
+    /// The design's `framework_controls:v1`: one daemon target, `stack`.
+    fn framework_controls() -> PinnedExposure {
+        exposure(crate::internal::daemon_interface::tests::FRAMEWORK_CONTROLS)
+    }
+
+    #[test]
+    fn a_deployment_of_daemon_targets_alone_plans_with_no_slot() {
+        let plan = plan_deployment(&[framework_controls()], &[]).expect("plans with no contract");
+        assert_eq!(plan.name.as_str(), "mcp_framework_controls_v1");
+        let manifest = serde_json::to_value(&plan.config).expect("serializes");
+        assert!(
+            manifest["manifest"].get("depends_on").is_none(),
+            "no slot, so no `depends_on`: {manifest}"
+        );
+        assert_eq!(
+            manifest["interfaces"],
+            serde_json::json!({}),
+            "a daemon target consumes nothing"
+        );
+        assert_eq!(
+            manifest["execution"]["endpoints"],
+            serde_json::json!({
+                "framework_controls_v1": {
+                    "kind": "mcp",
+                    "description": "Robot stack (peppy framework)",
+                },
+            })
+        );
+        assert_eq!(plan.addressing, MemberAddressing::WholeSet);
+        assert_eq!(
+            plan.targets,
+            DeploymentTargets {
+                contract: BTreeSet::new(),
+                daemon: [(
+                    "stack".to_owned(),
+                    crate::internal::daemon_interface::DaemonInterface::StackCopies
+                )]
+                .into_iter()
+                .collect(),
+            }
+        );
+        let bundle = &plan.exposures[0].bundle;
+        assert!(bundle.surface.contracts().is_empty());
+        assert_eq!(bundle.surface.daemon_targets()[0].target, "stack");
+        let tools: Vec<&str> = bundle
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .chain(bundle.tasks.iter().map(|task| task.name.as_str()))
+            .collect();
+        assert_eq!(tools, ["stack.list", "stack.join", "stack.remove"]);
+    }
+
+    #[test]
+    fn a_fixed_deployment_mixes_daemon_and_contract_targets() {
+        let camera = exposure(&exposure_document(
+            "camera_only",
+            "v1",
+            "front_camera",
+            "rgb_camera",
+            None,
+            "video_stream_info",
+        ));
+        let plan = plan_deployment(
+            &[framework_controls(), camera],
+            &[contract(CAMERA_CONTRACT)],
+        )
+        .expect("a fixed deployment serves both kinds of target");
+        let slots = &plan.config.manifest.depends_on.as_ref().unwrap().contracts;
+        let slot_ids: Vec<&str> = slots.iter().map(|slot| slot.link_id.as_str()).collect();
+        assert_eq!(
+            slot_ids,
+            ["front_camera"],
+            "the daemon target takes no slot"
+        );
+        let manifest = serde_json::to_value(&plan.config).expect("serializes");
+        assert_eq!(
+            manifest["interfaces"]["services"]["consumes"],
+            serde_json::json!([{ "link_id": "front_camera", "name": "video_stream_info" }])
+        );
+        assert_eq!(
+            plan.targets.contract,
+            ["front_camera".to_owned()].into_iter().collect()
+        );
+        assert_eq!(plan.targets.daemon.keys().collect::<Vec<_>>(), ["stack"]);
+    }
+
+    #[test]
+    fn a_target_named_by_a_contract_and_a_daemon_interface_is_refused() {
+        let camera = exposure(&exposure_document(
+            "camera_only",
+            "v1",
+            "stack",
+            "rgb_camera",
+            None,
+            "video_stream_info",
+        ));
+        let error = plan_deployment(
+            &[camera, framework_controls()],
+            &[contract(CAMERA_CONTRACT)],
+        )
+        .expect_err("one target, two sources");
+        assert_eq!(
+            error.to_string(),
+            "target `stack` is bound to contract `rgb_camera:v1` by exposure `camera_only:v1` and \
+             to daemon interface `stack_copies:v1` by exposure `framework_controls:v1`; two \
+             exposures sharing a target name must name the same source"
+        );
+
+        // Two daemon interfaces under one name: the conflict is found from
+        // the documents, before the registry is read.
+        let other = exposure(
+            &crate::internal::daemon_interface::tests::FRAMEWORK_CONTROLS
+                .replace(r#"name: "framework_controls""#, r#"name: "other_controls""#)
+                .replace(
+                    r#"daemon: { name: "stack_copies", tag: "v1" }"#,
+                    r#"daemon: { name: "stack_copies", tag: "v2" }"#,
+                ),
+        );
+        let error = plan_deployment(&[framework_controls(), other], &[])
+            .expect_err("one target, two interfaces");
+        let McpDeploymentError::SourceConflict(conflict) = error else {
+            panic!("expected a source conflict, got {error}");
+        };
+        assert_eq!(conflict.first_source, "daemon interface `stack_copies:v1`");
+        assert_eq!(conflict.second_source, "daemon interface `stack_copies:v2`");
+    }
+
+    #[test]
+    fn a_daemon_interface_this_peppy_does_not_serve_is_refused_naming_the_served_tag() {
+        let unserved = exposure(
+            &crate::internal::daemon_interface::tests::FRAMEWORK_CONTROLS.replace(
+                r#"daemon: { name: "stack_copies", tag: "v1" }"#,
+                r#"daemon: { name: "stack_copies", tag: "v2" }"#,
+            ),
+        );
+        let error = plan_deployment(&[unserved], &[]).expect_err("v2 is not served");
+        let rendered = error.to_string();
+        assert!(
+            rendered.starts_with(
+                "exposure `framework_controls:v1` does not validate against its contracts and \
+                 daemon interfaces:"
+            ) && rendered.contains(
+                "target `stack`: daemon interface `stack_copies:v2` is not one this peppy \
+                 serves; it serves `stack_copies` at tag `v1` only"
+            ),
+            "{rendered}"
+        );
+
+        let unknown = exposure(
+            &crate::internal::daemon_interface::tests::FRAMEWORK_CONTROLS
+                .replace(r#"name: "stack_copies""#, r#"name: "node_controls""#),
+        );
+        let rendered = plan_deployment(&[unknown], &[])
+            .expect_err("no such interface")
+            .to_string();
+        assert!(
+            rendered.contains(
+                "daemon interface `node_controls:v1` is not one this peppy serves; it serves \
+                 `stack_copies:v1`"
+            ),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_serve_spec_of_daemon_targets_alone_carries_no_contract() {
+        let text = crate::internal::daemon_interface::tests::FRAMEWORK_CONTROLS;
+        let spec = McpServeSpec {
+            exposures: vec![PinnedDocument::new(
+                pin(PinKind::McpExposure, "framework_controls", "v1", text),
+                text.to_owned(),
+            )],
+            contracts: Vec::new(),
+        };
+        let (exposures, contracts) = spec.resolve().expect("the document verifies");
+        assert!(contracts.is_empty());
+        plan_deployment(&exposures, &contracts).expect("the spec plans");
     }
 
     #[test]

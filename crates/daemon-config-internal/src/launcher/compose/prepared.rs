@@ -272,8 +272,9 @@ impl PreparedLauncher {
     }
 
     /// The copy axis `option` belongs to, which a join and a launch-time
-    /// join copy it from.
-    fn repeatable_axis_of(&self, option: &str) -> Result<String, CompositionError> {
+    /// join copy it from. The refusal is the one a join gives, with the menu
+    /// of the options a join can add.
+    pub(crate) fn repeatable_axis_of(&self, option: &str) -> Result<String, CompositionError> {
         let mut repeatable = self.launcher.repeatable_axes().peekable();
         if repeatable.peek().is_none() {
             return Err(CompositionError::NoRepeatableAxis);

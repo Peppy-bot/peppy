@@ -11,7 +11,9 @@ use message_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding,
     ServiceClient, TopicConsumer,
 };
-use peppy_mcp_catalog::{BundleContractPin, ExposureBundle, GoalBound, ValidatedExposure};
+use peppy_mcp_catalog::{
+    BoundMember, BundleContractPin, ExposureBundle, GoalBound, MemberSource, ValidatedExposure,
+};
 use peppy_mcp_runtime::{
     ActionContext, ActionExit, CancelledGoal, Recipient, ResourceIngest, ToolCall, ToolCallError,
 };
@@ -183,6 +185,19 @@ fn side_key(slot: &BundleContractPin, member: &str, side: &str) -> String {
     format!("{}:{}/{member}/{side}", slot.name, slot.tag)
 }
 
+/// The contract slot behind an entry, which a node bridge reaches through
+/// the launcher's `links`. An entry of a daemon target has no slot, and this
+/// server bridges none.
+fn slot_of<M>(bound: &BoundMember<M>) -> Result<&BundleContractPin, ServeError> {
+    match &bound.source {
+        MemberSource::Slot(slot) => Ok(slot),
+        MemberSource::Daemon(daemon) => Err(ServeError::DaemonTarget {
+            target: daemon.target.clone(),
+            interface: format!("{}:{}", daemon.name, daemon.tag),
+        }),
+    }
+}
+
 /// Prepares every exposure: for each catalog entry, the codecs of the
 /// contract member validation bound it to.
 pub(crate) fn prepare(
@@ -193,17 +208,14 @@ pub(crate) fn prepare(
     for exposure in exposures {
         let mut resources = Vec::with_capacity(exposure.bundle.resources.len());
         for (entry, bound) in exposure.resources() {
+            let slot = slot_of(bound)?;
             let topic = &bound.member;
             let label = format!("{}_{}_topic", entry.target, entry.member);
             let format = topic.message_format.clone().unwrap_or_default();
-            let codec = codecs.lay_out(
-                side_key(&bound.slot, &entry.member, "topic"),
-                &label,
-                &format,
-            )?;
+            let codec = codecs.lay_out(side_key(slot, &entry.member, "topic"), &label, &format)?;
             resources.push(PreparedResource {
                 name: entry.name.clone(),
-                binding: Binding::new(&bound.slot, &entry.member)?,
+                binding: Binding::new(slot, &entry.member)?,
                 qos: topic.qos_profile.clone(),
                 codec,
             });
@@ -211,19 +223,20 @@ pub(crate) fn prepare(
 
         let mut tools = Vec::with_capacity(exposure.bundle.tools.len());
         for (entry, bound) in exposure.tools() {
+            let slot = slot_of(bound)?;
             let service = &bound.member;
             let label = format!("{}_{}", entry.target, entry.member);
             tools.push(PreparedTool {
                 name: entry.name.clone(),
-                binding: Binding::new(&bound.slot, &entry.member)?,
+                binding: Binding::new(slot, &entry.member)?,
                 client: ServiceClient::new(
                     codecs.optional(
-                        side_key(&bound.slot, &entry.member, "request"),
+                        side_key(slot, &entry.member, "request"),
                         &format!("{label}_request"),
                         service.request_message_format.as_ref(),
                     )?,
                     codecs.optional(
-                        side_key(&bound.slot, &entry.member, "response"),
+                        side_key(slot, &entry.member, "response"),
                         &format!("{label}_response"),
                         service.response_message_format.as_ref(),
                     )?,
@@ -234,10 +247,11 @@ pub(crate) fn prepare(
 
         let mut tasks = Vec::with_capacity(exposure.bundle.tasks.len());
         for (entry, bound) in exposure.tasks() {
+            let slot = slot_of(bound)?;
             let action = &bound.member;
             let label = format!("{}_{}", entry.target, entry.member);
             let feedback = codecs.optional(
-                side_key(&bound.slot, &entry.member, "feedback"),
+                side_key(slot, &entry.member, "feedback"),
                 &format!("{label}_feedback"),
                 action
                     .feedback_topic
@@ -251,10 +265,10 @@ pub(crate) fn prepare(
             })?;
             tasks.push(PreparedTask {
                 name: entry.name.clone(),
-                binding: Binding::new(&bound.slot, &entry.member)?,
+                binding: Binding::new(slot, &entry.member)?,
                 client: ActionClient::new(
                     codecs.optional(
-                        side_key(&bound.slot, &entry.member, "goal"),
+                        side_key(slot, &entry.member, "goal"),
                         &format!("{label}_goal"),
                         action
                             .goal_service
@@ -263,7 +277,7 @@ pub(crate) fn prepare(
                     )?,
                     feedback,
                     codecs.optional(
-                        side_key(&bound.slot, &entry.member, "result"),
+                        side_key(slot, &entry.member, "result"),
                         &format!("{label}_result"),
                         action
                             .result_service

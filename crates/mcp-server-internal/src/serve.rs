@@ -37,6 +37,11 @@ pub enum ServeError {
          show progress with"
     )]
     ProgressWithoutFeedback { tool: String },
+    #[error(
+        "target `{target}` names daemon interface `{interface}`, and this server bridges the \
+         members of contract targets only"
+    )]
+    DaemonTarget { target: String, interface: String },
     #[error("{0}")]
     Build(#[from] peppy_mcp_runtime::BuildError),
     #[error("cannot bind 127.0.0.1:{port}: {source}")]
