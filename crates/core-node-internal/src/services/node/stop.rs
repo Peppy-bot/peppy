@@ -498,7 +498,7 @@ async fn force_stop_instances(
 /// waits a bounded time for the killed groups to be reaped. The second half of
 /// [`force_stop_instances`], and the whole of how `node_run` ends a start it
 /// gives up before the ready signal, when the node does not listen for the
-/// shutdown request yet.
+/// shutdown request yet, or once the leader process of the node exited.
 pub(super) async fn kill_process_groups(doomed: &[DoomedInstance]) {
     // Phase 2 (force): SIGKILL each recorded process group. We deliberately do
     // not pre-check whether the leader is still alive before killing: a process
@@ -842,7 +842,8 @@ pub(crate) fn teardown_timeout(shutdown_grace: Duration) -> Duration {
 /// [`teardown_all_instances`] and [`stop_instances`] (the `node add` overwrite
 /// path), and one at a time by [`force_stop_instance`] (`peppy node stop`, and
 /// `node_run` giving up a start after the ready signal) and
-/// [`kill_process_groups`] (`node_run` giving up a start before it).
+/// [`kill_process_groups`] (`node_run` giving up a start before it, or one
+/// whose leader process exited).
 pub(super) struct DoomedInstance {
     pub(super) node_name: String,
     pub(super) node_tag: String,
