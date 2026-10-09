@@ -525,7 +525,9 @@ fn a_stack_copies_scope_names_options_of_an_axis_that_runs_as_copies() {
          `openarm_sim`, `so101_sim`"
     );
 
-    // A launcher with no axis that runs as copies takes no copy at all.
+    // A launcher with no axis that runs as copies takes no copy at all: one
+    // refusal says why, whatever the scope names, and how a flat launcher
+    // with a scope launches.
     let (prepared, launcher) = flat(&format!(
         r#"{FRAMEWORK} {{ instance_id: "mcp_inst", daemon_scopes: {{ stack: {SCOPE} }} }} ] }}"#
     ));
@@ -533,11 +535,16 @@ fn a_stack_copies_scope_names_options_of_an_axis_that_runs_as_copies() {
         .iter()
         .map(ToString::to_string)
         .collect();
-    assert_eq!(messages.len(), 2, "{messages:?}");
-    assert!(
-        messages[0]
-            .contains("option `openarm_sim`: this launcher declares no axis that runs as copies"),
-        "{messages:?}"
+    assert_eq!(
+        messages,
+        [
+            "the scope of daemon target `stack` (stack_copies:v1) on instance `mcp_inst` does not \
+          hold against the launcher: this launcher declares no axis that runs as copies \
+          (`zero_or_more` or `one_or_more`), so no option of a `stack_copies` scope can be \
+          added; a flat launcher, such as the one `peppy stack resolve` prints, declares no \
+          axis at all: launch the launcher it was resolved from, or take the instance that \
+          serves this target out of the flat file"
+        ]
     );
 }
 

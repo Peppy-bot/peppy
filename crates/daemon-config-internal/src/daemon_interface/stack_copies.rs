@@ -13,6 +13,15 @@ use std::num::NonZeroU16;
 /// The interface's document, compiled in.
 pub(super) const DOCUMENT: &str = include_str!("stack_copies.v1.json5");
 
+/// The refusal of a scope in a launcher that declares no axis that runs as
+/// copies. A flat launcher declares no axis, so the flat document `peppy
+/// stack resolve` prints for a launcher with a scope gets it too.
+const NO_AXIS_RUNS_AS_COPIES: &str = "this launcher declares no axis that runs as copies \
+     (`zero_or_more` or `one_or_more`), so no option of a `stack_copies` scope can be added; a \
+     flat launcher, such as the one `peppy stack resolve` prints, declares no axis at all: \
+     launch the launcher it was resolved from, or take the instance that serves this target \
+     out of the flat file";
+
 /// A member of `stack_copies:v1`, as an exposure entry names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StackCopiesMember {
@@ -153,19 +162,22 @@ impl StackCopiesScope {
 
     /// Every scoped option is an option of an axis that runs as copies:
     /// one refusal per option that is not, with the menu of the options a
-    /// join can add.
+    /// join can add. In a launcher with no such axis, no option can be
+    /// added, and one refusal says so.
     pub(super) fn check_launch(&self, prepared: &PreparedLauncher) -> Vec<String> {
-        self.options
+        let errors: Vec<CompositionError> = self
+            .options
             .iter()
-            .filter_map(|entry| {
-                let error = prepared.repeatable_axis_of(entry.option.as_str()).err()?;
-                Some(match error {
-                    // The join's own refusal names the option and the menu.
-                    CompositionError::JoinUnknownOption { .. } => error.to_string(),
-                    _ => format!("option `{}`: {error}", entry.option),
-                })
-            })
-            .collect()
+            .filter_map(|entry| prepared.repeatable_axis_of(entry.option.as_str()).err())
+            .collect();
+        if errors
+            .iter()
+            .any(|error| matches!(error, CompositionError::NoRepeatableAxis))
+        {
+            return vec![NO_AXIS_RUNS_AS_COPIES.to_owned()];
+        }
+        // The join's own refusal names the option and the menu.
+        errors.iter().map(ToString::to_string).collect()
     }
 
     /// `join.option` takes only the scope's options, and `join.name` and

@@ -85,7 +85,8 @@ pub enum StackCommands {
     /// Needs no running stack and touches nothing: the flattened
     /// `launcher/v1` document goes to stdout, so it doubles as the escape
     /// hatch (flatten, hand-edit, launch the flat file), while the
-    /// resolution report goes to stderr.
+    /// resolution report goes to stderr. A flat document declares no axis,
+    /// so the launch of one that keeps a `stack_copies` scope refuses it.
     Resolve {
         /// The launcher to resolve: a repository launcher's name, or a path
         /// to a `launcher/v1` file.

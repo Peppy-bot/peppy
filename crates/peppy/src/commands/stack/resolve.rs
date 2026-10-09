@@ -31,7 +31,10 @@ const PREVIEW_CORE_NODE: &str = "cn-preview";
 /// repository name resolves through this machine's launcher cache, exactly
 /// as a launch would, minus the goal. The flattened `launcher/v1` document
 /// goes to stdout, so it doubles as the escape hatch: flatten, hand-edit,
-/// launch the flat file. The resolution report goes to stderr.
+/// launch the flat file. The one exception is a launcher with a
+/// `stack_copies` scope: the flat document keeps the scope and declares no
+/// axis, so its launch refuses the scope, whose options no longer run as
+/// copies. The resolution report goes to stderr.
 ///
 /// The flat plan is then held to the launch checks of daemon scopes, which
 /// read the exposure documents alone and so run with a cold nodes cache

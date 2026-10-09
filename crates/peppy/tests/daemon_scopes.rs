@@ -140,6 +140,34 @@ fn a_scoped_daemon_target_resolves_with_a_cold_nodes_cache() {
     );
 }
 
+/// The flat launcher `peppy stack resolve` prints keeps the scope and drops
+/// the axes, so no option of a `stack_copies` scope runs as copies there: the
+/// flat file is refused, as its launch refuses it, and the refusal says why
+/// and what to launch instead.
+#[test]
+fn the_flat_launcher_of_a_scoped_launcher_is_refused_and_says_why() {
+    let (dirs, root) = cold_home();
+    let (document, _report) = resolve_rendered(
+        &dirs,
+        launcher(root.path(), ENDPOINT, &scoped(SCOPE)),
+        &[],
+        &[],
+    )
+    .expect("the scope holds");
+    let flat = root.path().join("simulation_mcp_flat.json5");
+    fs::write(&flat, document).expect("the flat launcher");
+    let error = refusal(&dirs, flat);
+    assert!(
+        error.contains("this launcher declares no axis that runs as copies")
+            && error.contains(
+                "a flat launcher, such as the one `peppy stack resolve` prints, declares no axis \
+                 at all: launch the launcher it was resolved from, or take the instance that \
+                 serves this target out of the flat file"
+            ),
+        "{error}"
+    );
+}
+
 #[test]
 fn a_daemon_target_without_a_scope_is_refused() {
     let (dirs, root) = cold_home();
