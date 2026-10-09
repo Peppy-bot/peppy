@@ -9,6 +9,7 @@ use super::{
     LINK_ID, MEMBER, Mesh, accepted_goal, bridge_identity, codec, encoded, mesh, publish_percent,
 };
 use crate::bridges::{PreparedExposure, drive_goal, prepare};
+use crate::test_support::Events;
 use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::repository::ManifestFingerprint;
@@ -204,59 +205,6 @@ impl Endpoint {
             .expect("the serve task ends once the token is cancelled")
             .expect("the serve task does not panic")
             .expect("serving the endpoint succeeds");
-    }
-}
-
-/// The response stream of a call, read one server-sent event at a time.
-struct Events {
-    response: reqwest::Response,
-    unread: String,
-}
-
-impl Events {
-    /// The stream of a call whose headers say it streams events.
-    fn of(response: reqwest::Response) -> Self {
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default();
-        assert!(
-            content_type.starts_with("text/event-stream"),
-            "the call answers with an event stream, not with {content_type:?}"
-        );
-        Self {
-            response,
-            unread: String::new(),
-        }
-    }
-
-    /// The JSON-RPC message the next event carries. An event without data
-    /// carries no message and is passed over.
-    async fn next_message(&mut self) -> Value {
-        loop {
-            if let Some(end) = self.unread.find("\n\n") {
-                let event: String = self.unread.drain(..end + 2).collect();
-                let data: Vec<&str> = event
-                    .lines()
-                    .filter_map(|line| line.strip_prefix("data:"))
-                    .map(str::trim_start)
-                    .collect();
-                if data.is_empty() {
-                    continue;
-                }
-                return serde_json::from_str(&data.join("\n"))
-                    .expect("an event carries one JSON-RPC message");
-            }
-            let chunk = tokio::time::timeout(READINESS_TIMEOUT, self.response.chunk())
-                .await
-                .expect("the next event arrives")
-                .expect("the stream is readable")
-                .expect("the stream carries another event");
-            let text = std::str::from_utf8(&chunk).expect("server-sent events are text");
-            self.unread.push_str(&text.replace("\r\n", "\n"));
-        }
     }
 }
 

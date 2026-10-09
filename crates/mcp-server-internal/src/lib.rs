@@ -16,5 +16,7 @@
 mod bridges;
 mod fleet;
 mod serve;
+#[cfg(test)]
+mod test_support;
 
 pub use serve::{ServeError, serve};
