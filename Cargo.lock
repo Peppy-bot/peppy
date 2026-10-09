@@ -3068,6 +3068,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 name = "mcp-server"
 version = "0.0.1"
 dependencies = [
+ "core-node-api",
  "daemon-config",
  "message-codec",
  "peppy-config-model",
@@ -3078,6 +3079,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "stack-goal",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",

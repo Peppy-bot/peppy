@@ -1,9 +1,11 @@
-//! The bridges between each catalog entry and the contract member behind
-//! it, the one validation bound the entry to: a codec per message side
-//! laid out when the process starts, and the type-erased clients driven at
-//! request time against the producers the launcher bound to the entry's
-//! target.
+//! The node bridges, between each catalog entry of a contract target and
+//! the contract member behind it, the one validation bound the entry to: a
+//! codec per message side laid out when the process starts, and the
+//! type-erased clients driven at request time against the producers the
+//! launcher bound to the entry's target. [`prepare`] hands the entries of a
+//! daemon target to the daemon bridge (see [`crate::daemon_bridge`]).
 
+use crate::daemon_bridge::{DaemonTask, DaemonTool};
 use crate::serve::ServeError;
 use config::node::{MessageFormat, NativeExposedAction};
 use message_codec::MessageCodec;
@@ -12,7 +14,7 @@ use message_codec::consumer::{
     ServiceClient, TopicConsumer,
 };
 use peppy_mcp_catalog::{
-    BoundMember, BundleContractPin, ExposureBundle, GoalBound, MemberSource, ValidatedExposure,
+    BundleContractPin, ExposureBundle, GoalBound, MemberSource, ValidatedExposure,
 };
 use peppy_mcp_runtime::{
     ActionContext, ActionExit, CancelledGoal, Recipient, ResourceIngest, ToolCall, ToolCallError,
@@ -32,12 +34,15 @@ use tokio::time::{Instant, Sleep};
 mod tests;
 
 /// One exposure ready to serve: its catalog and the bridge behind every
-/// entry.
+/// entry. The entries of contract targets go to the node bridges of this
+/// module, and the entries of daemon targets to the daemon bridge.
 pub(crate) struct PreparedExposure {
     pub bundle: ExposureBundle,
     pub resources: Vec<PreparedResource>,
     pub tools: Vec<PreparedTool>,
     pub tasks: Vec<PreparedTask>,
+    pub daemon_tools: Vec<DaemonTool>,
+    pub daemon_tasks: Vec<DaemonTask>,
 }
 
 /// Which member of which slot an entry reaches: the target the launcher
@@ -185,21 +190,9 @@ fn side_key(slot: &BundleContractPin, member: &str, side: &str) -> String {
     format!("{}:{}/{member}/{side}", slot.name, slot.tag)
 }
 
-/// The contract slot behind an entry, which a node bridge reaches through
-/// the launcher's `links`. An entry of a daemon target has no slot, and this
-/// server bridges none.
-fn slot_of<M>(bound: &BoundMember<M>) -> Result<&BundleContractPin, ServeError> {
-    match &bound.source {
-        MemberSource::Slot(slot) => Ok(slot),
-        MemberSource::Daemon(daemon) => Err(ServeError::DaemonTarget {
-            target: daemon.target.clone(),
-            interface: format!("{}:{}", daemon.name, daemon.tag),
-        }),
-    }
-}
-
-/// Prepares every exposure: for each catalog entry, the codecs of the
-/// contract member validation bound it to.
+/// Prepares every exposure: for each entry of a contract target, the
+/// codecs of the contract member validation bound it to; for each entry of
+/// a daemon target, the daemon function behind it.
 pub(crate) fn prepare(
     exposures: Vec<ValidatedExposure>,
 ) -> Result<Vec<PreparedExposure>, ServeError> {
@@ -208,7 +201,15 @@ pub(crate) fn prepare(
     for exposure in exposures {
         let mut resources = Vec::with_capacity(exposure.bundle.resources.len());
         for (entry, bound) in exposure.resources() {
-            let slot = slot_of(bound)?;
+            let slot = match &bound.source {
+                MemberSource::Slot(slot) => slot,
+                MemberSource::Daemon(daemon) => {
+                    return Err(ServeError::DaemonResource {
+                        resource: entry.name.clone(),
+                        target: daemon.target.clone(),
+                    });
+                }
+            };
             let topic = &bound.member;
             let label = format!("{}_{}_topic", entry.target, entry.member);
             let format = topic.message_format.clone().unwrap_or_default();
@@ -222,8 +223,15 @@ pub(crate) fn prepare(
         }
 
         let mut tools = Vec::with_capacity(exposure.bundle.tools.len());
+        let mut daemon_tools = Vec::new();
         for (entry, bound) in exposure.tools() {
-            let slot = slot_of(bound)?;
+            let slot = match &bound.source {
+                MemberSource::Slot(slot) => slot,
+                MemberSource::Daemon(daemon) => {
+                    daemon_tools.push(DaemonTool::new(entry, daemon)?);
+                    continue;
+                }
+            };
             let service = &bound.member;
             let label = format!("{}_{}", entry.target, entry.member);
             tools.push(PreparedTool {
@@ -246,8 +254,15 @@ pub(crate) fn prepare(
         }
 
         let mut tasks = Vec::with_capacity(exposure.bundle.tasks.len());
+        let mut daemon_tasks = Vec::new();
         for (entry, bound) in exposure.tasks() {
-            let slot = slot_of(bound)?;
+            let slot = match &bound.source {
+                MemberSource::Slot(slot) => slot,
+                MemberSource::Daemon(daemon) => {
+                    daemon_tasks.push(DaemonTask::new(entry, daemon)?);
+                    continue;
+                }
+            };
             let action = &bound.member;
             let label = format!("{}_{}", entry.target, entry.member);
             let feedback = codecs.optional(
@@ -295,6 +310,8 @@ pub(crate) fn prepare(
             resources,
             tools,
             tasks,
+            daemon_tools,
+            daemon_tasks,
         });
     }
     Ok(prepared)
@@ -662,15 +679,16 @@ async fn settle_on_result(
 }
 
 /// The time since a progress-bound goal last showed a sign of progress,
-/// which may last one window at most.
-struct Silence {
+/// which may last one window at most. The node bridges and the daemon
+/// bridge both keep it.
+pub(crate) struct Silence {
     window: Duration,
     expiry: Pin<Box<Sleep>>,
 }
 
 impl Silence {
     /// A silence that starts now.
-    fn new(window: Duration) -> Self {
+    pub(crate) fn new(window: Duration) -> Self {
         Self {
             window,
             expiry: Box::pin(tokio::time::sleep(window)),
@@ -678,13 +696,18 @@ impl Silence {
     }
 
     /// A sign of progress ends the silence: the next window starts now.
-    fn restart(&mut self) {
+    pub(crate) fn restart(&mut self) {
         self.expiry.as_mut().reset(Instant::now() + self.window);
     }
 
     /// Resolves once the silence has lasted a whole window.
-    async fn lasted_a_window(&mut self) {
+    pub(crate) async fn lasted_a_window(&mut self) {
         self.expiry.as_mut().await;
+    }
+
+    /// The most a silence lasts.
+    pub(crate) fn window(&self) -> Duration {
+        self.window
     }
 }
 
