@@ -373,6 +373,8 @@ The launch, each join and [`peppy stack resolve`](#auditing-a-composed-launch) p
 
 Every refusal is reported at once.
 
+The server reads its scopes from the runtime configuration of its instance when it starts. A server that starts without these checks, for example with `peppy node run` of its node, and finds a daemon target with no scope or a scope that does not parse, serves nothing and stops, and its run log says which target lacks a scope and how to give one (see [Deploy it](/advanced_guides/mcp/#deploy-it)).
+
 ## Clock domains
 
 A launcher declares the timelines its instances read in a root-level `framework` block, beside `deployments`:
@@ -445,6 +447,8 @@ A launch adds, builds and starts its nodes one phase at a time, and each phase r
 | `--node-run-idle-timeout-secs` | starting an instance, until its setup ends and the daemon records it as running | 600 |
 
 These defaults are the only ones: the daemon has no budgets of its own, and every launch, build and join carries the budgets of its caller. When no output arrives, the command waits for the largest of the three budgets plus 60 s before it stops, so the daemon's error for the silent phase comes first.
+
+A join over MCP, through the `join` tool of a [`stack_copies` daemon target](/advanced_guides/mcp/#what-the-tools-of-stack_copies-do), sends these same defaults, with no overall budget. Give such a tool a progress window of the largest of the three budgets plus the same 60 s, 660 s for the defaults, so that the daemon's error for a silent phase comes first.
 
 Every build runs with `CARGO_TERM_PROGRESS_WHEN=always` and `CARGO_TERM_PROGRESS_WIDTH=80`, in a `build_cmd` and in a container def's `%post` alike. Without them, cargo prints a line only when a crate download completes when its output is not a terminal, and until then the download writes nothing to disk and burns no CPU, so a large crate on a slow connection reads as an idle build. With these settings cargo reprints its progress line each time the bytes left to download change, and each reprint counts as output. A download that receives nothing changes nothing, so it still runs out the budget. If you set either variable yourself, a `build_cmd` gets your value; a def sets its own by exporting it in `%post`.
 
