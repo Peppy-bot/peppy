@@ -21,6 +21,15 @@ async fn participant_request<R: core_node_api::ServiceRequest>(
 }
 
 async fn execute(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoal) -> LaunchResult {
+    execute_reporting(started, goal).await.0
+}
+
+/// Runs `goal` to its result, with every feedback message the daemon sent
+/// for it, in order.
+async fn execute_reporting(
+    started: &StartedCoreNode,
+    goal: &impl core_node_api::ActionGoal,
+) -> (LaunchResult, Vec<LaunchFeedback>) {
     tokio::time::timeout(RESULT_TIMEOUT, async {
         let mut handle = send_goal(
             goal,
@@ -35,15 +44,39 @@ async fn execute(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoa
         let response = LaunchGoalResponse::decode(handle.goal_reply().body.as_ref())
             .expect("decode acceptance");
         assert!(response.accepted, "{:?}", response.rejection_reason);
-        while handle.on_next_feedback().await.is_ok() {}
+        let mut feedback = Vec::new();
+        while let Ok(message) = handle.on_next_feedback().await {
+            feedback.push(
+                LaunchFeedback::decode(message.payload_bytes().as_ref()).expect("decode feedback"),
+            );
+        }
         let body =
             ActionMessenger::request_result_body(&started.caller_handle, &handle, GOAL_TIMEOUT)
                 .await
                 .expect("fetch result");
-        LaunchResult::decode(body.as_ref()).expect("decode result")
+        (
+            LaunchResult::decode(body.as_ref()).expect("decode result"),
+            feedback,
+        )
     })
     .await
     .expect("stack operation completes within its test budget")
+}
+
+/// The lines of `feedback` that report the stop of an instance, in order,
+/// each from the launcher's step.
+fn stop_reports(feedback: &[LaunchFeedback]) -> Vec<&str> {
+    feedback
+        .iter()
+        .filter(|message| message.line.starts_with("Stopping instance "))
+        .inspect(|message| {
+            assert_eq!(
+                message.step,
+                core_node_api::encoding::LaunchFeedbackStep::LauncherStep
+            );
+        })
+        .map(|message| message.line.as_str())
+        .collect()
 }
 
 /// Sends a goal the daemon rejects at admission and returns its reason.
@@ -917,6 +950,149 @@ async fn removing_the_last_copy_leaves_the_launcher_active_on_an_empty_stack() {
         "named_robot",
         "bravo_arm_inst"
     )));
+}
+
+/// A fleet of copies only, whose `real` option deploys `robot`, the
+/// deployments of one copy: `named_robot` idles in `sleep`, and
+/// `failing_tool` exits as soon as it starts.
+fn fleet_of_robots(started: &StartedCoreNode, robot: &str) -> (tempfile::TempDir, PathBuf) {
+    let directory = tempdir().unwrap();
+    let named_robot = write_node_config(
+        directory.path(),
+        "named_robot",
+        "v1",
+        "test-hash",
+        &["sleep", "300"],
+        false,
+        false,
+    );
+    let failing_tool = write_node_config_with_options(
+        directory.path(),
+        "failing_tool",
+        "v1",
+        "test-hash",
+        NodeConfigOptions {
+            run_cmd: &["false"],
+            ..Default::default()
+        },
+    );
+    TestPackagesCache::new()
+        .fs_entry("named_robot", "v1", &named_robot)
+        .fs_entry("failing_tool", "v1", &failing_tool)
+        .write(&started.peppy_dirs);
+    let launcher = directory.path().join("fleet.json5");
+    fs::write(
+        &launcher,
+        format!(
+            r#"{{
+        peppy_schema: "launcher/v1",
+        components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
+            real: {{ deployments: [{robot}] }}
+        }} }}]
+    }}"#
+        ),
+    )
+    .unwrap();
+    (directory, launcher)
+}
+
+/// A removal reports each instance of the copy before it stops it, the last
+/// started first, then the end of the removal.
+#[tokio::test]
+async fn a_removal_reports_each_instance_it_stops_in_reverse_start_order() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, launcher) = fleet_of_robots(
+        &started,
+        r#"{ source: { name: "named_robot", tag: "v1" }, instances: [
+            { instance_id: "arm_inst" }, { instance_id: "wrist_inst" }, { instance_id: "base_inst" }
+        ] }"#,
+    );
+    let mut responders = Vec::new();
+    for instance_id in ["bravo_arm_inst", "bravo_wrist_inst", "bravo_base_inst"] {
+        responders.extend(answer_readiness(&started, "named_robot", instance_id).await);
+    }
+    let launch = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        "removal-report-test",
+        StackBudgets::new(30, 30, 30, Some(120)),
+    );
+    let result = execute(&started, &launch).await;
+    assert!(result.success, "{:?}", result.error_message);
+    let result = execute(&started, &robot_goal("bravo", "real")).await;
+    assert!(result.success, "{:?}", result.error_message);
+    let pids: Vec<u32> = ["bravo_arm_inst", "bravo_wrist_inst", "bravo_base_inst"]
+        .into_iter()
+        .map(|instance_id| instance_pid(&started, "named_robot", instance_id))
+        .collect();
+
+    let (result, feedback) =
+        execute_reporting(&started, &StackRemoveGoal::new(Name::new("bravo").unwrap())).await;
+    assert!(result.success, "{:?}", result.error_message);
+    assert_eq!(
+        stop_reports(&feedback),
+        [
+            "Stopping instance `bravo_base_inst` of copy `bravo`",
+            "Stopping instance `bravo_wrist_inst` of copy `bravo`",
+            "Stopping instance `bravo_arm_inst` of copy `bravo`",
+        ]
+    );
+    assert_eq!(
+        feedback.last().map(|message| message.line.as_str()),
+        Some("Copy `bravo` removed"),
+        "the removal ends after its stops"
+    );
+    for pid in pids {
+        assert!(!is_process_running(pid));
+    }
+}
+
+/// A join that fails at the start of a later instance undoes the copy and
+/// reports each instance it stops, the last started first.
+#[tokio::test]
+async fn the_undo_of_a_failed_join_reports_each_instance_it_stops() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, launcher) = fleet_of_robots(
+        &started,
+        r#"{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+           { source: { name: "failing_tool", tag: "v1" }, instances: [{ instance_id: "tool_inst" }] }"#,
+    );
+    let _responders = answer_readiness(&started, "named_robot", "bravo_arm_inst").await;
+    let launch = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        "undo-report-test",
+        StackBudgets::new(30, 30, 30, Some(120)),
+    );
+    let result = execute(&started, &launch).await;
+    assert!(result.success, "{:?}", result.error_message);
+
+    let (result, feedback) = execute_reporting(&started, &robot_goal("bravo", "real")).await;
+    assert!(!result.success, "the tool exits as it starts");
+    let started_instances: Vec<_> = result
+        .node_run_logs
+        .iter()
+        .map(|log| (log.instance_id.as_str(), log.failed))
+        .collect();
+    assert_eq!(
+        started_instances,
+        [("bravo_arm_inst", false), ("bravo_tool_inst", true)],
+        "the arm starts, then the tool fails its start"
+    );
+    assert_eq!(
+        stop_reports(&feedback),
+        [
+            "Stopping instance `bravo_tool_inst` of copy `bravo`",
+            "Stopping instance `bravo_arm_inst` of copy `bravo`",
+        ]
+    );
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    assert!(list.copies.is_empty(), "{:?}", list.copies);
+    assert!(
+        started
+            .node_stack
+            .find("named_robot", "v1")
+            .is_none_or(|node| node.read().instances().is_empty()),
+        "the undo stops the arm"
+    );
 }
 
 /// The robot of a fleet with a monitor: it plays the follower of `joint_link`

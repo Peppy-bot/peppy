@@ -295,7 +295,11 @@ fn removal_deployments(
     })
 }
 
-/// Stops the copy's instances on the machine that runs them.
+/// Stops the copy's instances on the machine that runs them, the last
+/// started first. On this daemon's machine each stop takes up to its teardown
+/// budget, so the change reports each instance before it stops it, and its
+/// caller hears from it at least once per stop. A host on another machine
+/// stops them in one request and reports nothing until it answers.
 pub(super) async fn stop_copy(
     ctx: &StackChangeContext,
     launch_id: &str,
@@ -303,15 +307,27 @@ pub(super) async fn stop_copy(
 ) -> ChangeResult<()> {
     let host = copy.core_node.as_str();
     if host == ctx.bound_core_node {
-        stop_named_instances(
-            &ctx.messenger,
-            &ctx.bound_core_node,
-            &ctx.core_instance_id,
-            &ctx.node_stack,
-            &ctx.relationships,
-            &copy.record.instance_ids().cloned().collect::<Vec<_>>(),
-        )
-        .await;
+        let instance_ids: Vec<Name> = copy.record.instance_ids().cloned().collect();
+        for instance_id in instance_ids.iter().rev() {
+            publish_stdout(
+                ctx,
+                format!(
+                    "Stopping instance `{instance_id}` of copy `{}`",
+                    copy.record.name
+                ),
+                LaunchFeedbackStep::LauncherStep,
+            )
+            .await;
+            stop_named_instances(
+                &ctx.messenger,
+                &ctx.bound_core_node,
+                &ctx.core_instance_id,
+                &ctx.node_stack,
+                &ctx.relationships,
+                std::slice::from_ref(instance_id),
+            )
+            .await;
+        }
         return Ok(());
     }
     let stack = stack_list_on(ctx, host).await?;
