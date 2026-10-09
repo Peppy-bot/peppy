@@ -921,6 +921,15 @@ fn refresh_pids(system: &mut sysinfo::System, pids: &[sysinfo::Pid]) {
     );
 }
 
+/// Whether the process `pid` runs: present and not a zombie. It reads the
+/// process table and reaps nothing, so a child of the daemon that exited
+/// stays a zombie, which holds its pid, until the daemon reaps it.
+pub(super) fn process_runs(pid: u32) -> bool {
+    let mut system = sysinfo::System::new();
+    refresh_pids(&mut system, &[sysinfo::Pid::from_u32(pid)]);
+    pid_running_in(&system, pid)
+}
+
 /// Whether `pid` is present and not a zombie in an already-refreshed `system`.
 fn pid_running_in(system: &sysinfo::System, pid: u32) -> bool {
     match system.process(sysinfo::Pid::from_u32(pid)) {

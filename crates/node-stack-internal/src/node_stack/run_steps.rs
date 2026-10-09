@@ -634,16 +634,18 @@ pub(super) async fn kill_and_collect_error(
     stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
     mut output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
 ) -> String {
-    // `id()` is `None` only once the child was reaped, when its group can no
-    // longer be addressed by its pid.
+    // A start reaps its leader only once the leader's group is killed, so
+    // `id()` is `None` only when the caller killed the group and reaped the
+    // leader already. The pid then no longer names the group, and no kill is
+    // sent to it.
     if let Some(pid) = child.id() {
         crate::process_group::kill_process_group(pid);
-    }
-    if let Err(kill_err) = child.kill().await {
-        debug!(
-            "Failed to kill process for node instance '{}': {}",
-            instance_id_str, kill_err
-        );
+        if let Err(kill_err) = child.kill().await {
+            debug!(
+                "Failed to kill process for node instance '{}': {}",
+                instance_id_str, kill_err
+            );
+        }
     }
 
     let _ = child.wait().await;

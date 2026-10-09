@@ -2984,3 +2984,174 @@ async fn a_start_that_fails_before_its_ready_signal_leaves_no_process_of_its_gro
         .await;
     }
 }
+
+/// The shell script of a leader process that forks a `sleep`, which stays in
+/// the leader's process group, writes the pid of that `sleep` into the file
+/// `$0` names, runs `then`, and exits with status 3.
+fn forking_leader(then: &str) -> String {
+    format!("sleep 1000 & echo $! > \"$0\"; {then} exit 3")
+}
+
+/// Reads the feedback of `goal` until a line contains `text`.
+async fn wait_for_feedback_line(goal: &mut peppylib::messaging::ActionGoalHandle, text: &str) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let message = goal
+                .on_next_feedback()
+                .await
+                .unwrap_or_else(|err| panic!("the start ended before a line with `{text}`: {err}"));
+            let feedback = NodeRunFeedback::decode(message.payload().as_ref())
+                .expect("the feedback of a start decodes");
+            if feedback.line.contains(text) {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no line with `{text}` arrived"));
+}
+
+/// Waits for the end of `goal` and answers its result.
+async fn start_result(
+    started: &common::StartedCoreNode,
+    goal: &mut peppylib::messaging::ActionGoalHandle,
+) -> core_node_api::encoding::NodeRunResult {
+    wait_until_action_completes(goal, Duration::from_secs(60)).await;
+    common::fetch_node_run_result(&started.caller_handle, goal, Duration::from_secs(5))
+        .await
+        .expect("the start answers its result")
+}
+
+/// The process whose pid [`forking_leader`] wrote into `pid_file` ends: the
+/// give-up of the start killed the leader's process group. A process that
+/// outlives the start is killed here, so a failed run leaks none.
+async fn assert_forked_process_ends(pid_file: &std::path::Path) {
+    let pid: u32 = std::fs::read_to_string(pid_file)
+        .expect("the leader wrote the pid of its fork")
+        .trim()
+        .parse()
+        .expect("a pid");
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        while common::is_process_running(pid) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .is_ok();
+    if !ended {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+    }
+    assert!(
+        ended,
+        "process {pid}, which the leader forked into its group, outlived the start"
+    );
+}
+
+/// A start whose leader process exits before the ready signal, while a
+/// process it forked lives on in its group, fails, and the daemon kills the
+/// group: no process of it outlives the start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_whose_leader_exits_before_its_ready_signal_leaves_no_process_of_its_group() {
+    const NODE_NAME: &str = "leader_exits_before_ready_node";
+    const NODE_TAG: &str = "v1";
+    const INSTANCE_ID: &str = "leader_exits_before_ready_instance";
+
+    let started = start_core_node_with_mock_messenger().await;
+    let files = tempfile::tempdir().expect("a directory for the leader's files");
+    let pid_file = files.path().join("forked.pid");
+    let leader = forking_leader("");
+    let pid_file_arg = pid_file.display().to_string();
+    let _source = common::add_and_build_process_node(
+        &started,
+        NODE_NAME,
+        NODE_TAG,
+        &["sh", "-c", &leader, &pid_file_arg],
+    )
+    .await;
+
+    let (mut goal, _accepted) = common::send_node_run_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        common::default_instance_plan(INSTANCE_ID),
+        NODE_NAME,
+        NODE_TAG,
+        Duration::from_secs(10),
+        60,
+        Vec::new(),
+    )
+    .await
+    .expect("the daemon accepts the start");
+    let result = start_result(&started, &mut goal).await;
+
+    let error = result.error_message.unwrap_or_default();
+    assert!(
+        !result.success
+            && error.contains("node process exited during startup (status=exit status: 3)"),
+        "the start fails with the leader's exit: {error}"
+    );
+    assert_forked_process_ends(&pid_file).await;
+}
+
+/// A start whose leader process exits during its setup, after the ready
+/// signal, while a process it forked lives on in its group, fails, and the
+/// daemon kills the group: no process of it outlives the start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_whose_leader_exits_during_its_setup_leaves_no_process_of_its_group() {
+    const NODE_NAME: &str = "leader_exits_in_setup_node";
+    const NODE_TAG: &str = "v1";
+    const INSTANCE_ID: &str = "leader_exits_in_setup_instance";
+
+    let started = start_core_node_with_mock_messenger().await;
+    let files = tempfile::tempdir().expect("a directory for the leader's files");
+    let pid_file = files.path().join("forked.pid");
+    // The leader exits once the test creates `forked.pid.exit`.
+    let leader = forking_leader("while [ ! -e \"$0.exit\" ]; do sleep 0.05; done;");
+    let pid_file_arg = pid_file.display().to_string();
+    let _source = common::add_and_build_process_node(
+        &started,
+        NODE_NAME,
+        NODE_TAG,
+        &["sh", "-c", &leader, &pid_file_arg],
+    )
+    .await;
+
+    // The test answers the ready signal of the instance, and nothing
+    // answers its health signal: its setup does not end.
+    let ready_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &ready_handle,
+            &started.core_node_name,
+            INSTANCE_ID,
+            common::test_node_target(NODE_NAME),
+        )
+        .await
+        .expect("the ready service listens"),
+    );
+
+    let (mut goal, _accepted) = common::send_node_run_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        common::default_instance_plan(INSTANCE_ID),
+        NODE_NAME,
+        NODE_TAG,
+        Duration::from_secs(10),
+        60,
+        Vec::new(),
+    )
+    .await
+    .expect("the daemon accepts the start");
+    wait_for_feedback_line(&mut goal, "is ready; waiting for its setup").await;
+    std::fs::write(files.path().join("forked.pid.exit"), b"").expect("tell the leader to exit");
+    let result = start_result(&started, &mut goal).await;
+
+    let error = result.error_message.unwrap_or_default();
+    assert!(
+        !result.success
+            && error.contains("node process exited before its setup ended (status=exit status: 3)"),
+        "the start fails with the leader's exit: {error}"
+    );
+    assert_forked_process_ends(&pid_file).await;
+}
