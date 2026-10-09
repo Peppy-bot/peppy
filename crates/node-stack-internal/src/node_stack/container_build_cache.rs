@@ -26,6 +26,9 @@
 //!   by their sha256, via `PEPPY_DOWNLOAD_CACHE`. No tool reads that variable
 //!   on its own: a def opts in by looking a pinned file up there before it
 //!   downloads it, and by storing what it downloads under its checksum.
+//!   `nodes/<name>_<tag>/` is the node's own directory, via
+//!   `PEPPY_NODE_BUILD_CACHE`: whatever a def keeps there for its next build,
+//!   such as a part of the image it builds again only when its inputs change.
 //!
 //! Caching is best effort and fails open: when the main directory of a
 //! profile cannot be set up, the build proceeds exactly as it would without
@@ -78,12 +81,18 @@ const SCCACHE_CACHE_SUBDIR: &str = "sccache-cache";
 const UV_CACHE_SUBDIR: &str = "uv-cache";
 const UV_PYTHON_SUBDIR: &str = "uv-python";
 const DOWNLOADS_SUBDIR: &str = "downloads";
+const NODE_CACHES_SUBDIR: &str = "nodes";
 
 /// Names the downloads directory inside the build. Its presence is what tells
 /// a `%post` that the cache is bind mounted: without the bind, `/peppy-cache`
 /// is a plain directory of the image and whatever a build writes there ships
 /// in the image.
 const DOWNLOAD_CACHE_ENV_VAR: &str = "PEPPY_DOWNLOAD_CACHE";
+
+/// Names the directory of the node being built inside the build, which no
+/// build of another node uses. Like [`DOWNLOAD_CACHE_ENV_VAR`], it is set
+/// only while the cache is bind mounted.
+const NODE_BUILD_CACHE_ENV_VAR: &str = "PEPPY_NODE_BUILD_CACHE";
 
 /// Markers showing a Rust build's own configuration would collide with its
 /// cache: a rustup install that the `CARGO_HOME` override would misplace, or
@@ -165,6 +174,7 @@ impl ContainerBuildCache {
 /// setup failure.
 pub(super) fn prepare(
     peppy_dirs: &PeppyDirs,
+    node: &NodeIdentity<'_>,
     language: PeppygenLanguage,
     def_contents: &str,
     apptainer_build_extra_args: &[String],
@@ -173,7 +183,23 @@ pub(super) fn prepare(
         return None;
     }
     let profile = cache_profile_for(language, def_contents, apptainer_build_extra_args)?;
-    prepare_in(&peppy_dirs.container_build_cache_dir(), profile)
+    prepare_in(&peppy_dirs.container_build_cache_dir(), node, profile)
+}
+
+/// The node a container build builds, which names its directory of the
+/// cache. The caller has validated the tag (see
+/// [`super::build_steps::validate_node_tag`]).
+pub(super) struct NodeIdentity<'a> {
+    pub name: &'a str,
+    pub tag: &'a str,
+}
+
+impl NodeIdentity<'_> {
+    /// `nodes/<name>_<tag>`, the node's directory under the cache root, named
+    /// like its directory of built artifacts.
+    fn cache_subdir(&self) -> String {
+        format!("{NODE_CACHES_SUBDIR}/{}_{}", self.name, self.tag)
+    }
 }
 
 /// The cache profile of a build, or `None` when the build cannot use the
@@ -230,11 +256,15 @@ fn cache_conflict_marker(
     })
 }
 
-/// Testable core of [`prepare`]: lays out `cache_root` for `profile` and
-/// derives the bind plus environment. The main directory of the profile
-/// (`cargo-home/` or `uv-cache/`) is required; each other part is optional,
-/// and a build that cannot have one gets the rest.
-fn prepare_in(cache_root: &Path, profile: CacheProfile) -> Option<ContainerBuildCache> {
+/// Testable core of [`prepare`]: lays out `cache_root` for a build of `node`
+/// with `profile` and derives the bind plus environment. The main directory
+/// of the profile (`cargo-home/` or `uv-cache/`) is required; each other part
+/// is optional, and a build that cannot have one gets the rest.
+fn prepare_in(
+    cache_root: &Path,
+    node: &NodeIdentity<'_>,
+    profile: CacheProfile,
+) -> Option<ContainerBuildCache> {
     // The path is spliced into `--bind {src}:{dest}`, whose spec grammar has
     // no escaping for its delimiters.
     let has_bind_delimiter = cache_root.to_str().is_none_or(|s| s.contains([':', ',']));
@@ -288,6 +318,12 @@ fn prepare_in(cache_root: &Path, profile: CacheProfile) -> Option<ContainerBuild
     if create_optional_part(cache_root, DOWNLOADS_SUBDIR, "download cache") {
         env.push((DOWNLOAD_CACHE_ENV_VAR, in_build(DOWNLOADS_SUBDIR)));
         parts.push("downloads");
+    }
+
+    let node_subdir = node.cache_subdir();
+    if create_optional_part(cache_root, &node_subdir, "node build cache") {
+        env.push((NODE_BUILD_CACHE_ENV_VAR, in_build(&node_subdir)));
+        parts.push("node cache");
     }
 
     Some(ContainerBuildCache {
@@ -600,6 +636,11 @@ mod tests {
     const RUST_DEF: &str = "Bootstrap: docker\nFrom: peppybot/rust-cargo-base:latest\n\
         %post\n    cargo build --release\n";
 
+    const NODE: NodeIdentity<'static> = NodeIdentity {
+        name: "node",
+        tag: "v1",
+    };
+
     fn env_keys(cache: &ContainerBuildCache) -> Vec<&'static str> {
         cache.env.iter().map(|(key, _)| *key).collect()
     }
@@ -734,8 +775,8 @@ mod tests {
 
     /// A variable a profile sets that a build could also set must be one of
     /// the profile's markers, or the build's own value and the cache would
-    /// collide. `PEPPY_DOWNLOAD_CACHE` is the exception: defs read it by
-    /// design and never set it.
+    /// collide. `PEPPY_DOWNLOAD_CACHE` and `PEPPY_NODE_BUILD_CACHE` are the
+    /// exceptions: defs read them by design and never set them.
     #[test]
     fn every_variable_a_profile_sets_is_one_of_its_markers() {
         for profile in [
@@ -745,10 +786,12 @@ mod tests {
             CacheProfile::Python,
         ] {
             let root = tempfile::tempdir().expect("create temp dir");
-            let cache = prepare_in(root.path(), profile).expect("cache prepared");
+            let cache = prepare_in(root.path(), &NODE, profile).expect("cache prepared");
             for key in env_keys(&cache) {
                 assert!(
-                    key == DOWNLOAD_CACHE_ENV_VAR || profile.conflict_markers().contains(&key),
+                    key == DOWNLOAD_CACHE_ENV_VAR
+                        || key == NODE_BUILD_CACHE_ENV_VAR
+                        || profile.conflict_markers().contains(&key),
                     "{profile:?} sets {key} but does not skip a build that sets it"
                 );
             }
@@ -760,6 +803,7 @@ mod tests {
         let root = tempfile::tempdir().expect("create temp dir");
         let cache = prepare_in(
             root.path(),
+            &NODE,
             CacheProfile::Rust {
                 sccache_in_image: true,
             },
@@ -777,16 +821,19 @@ mod tests {
                 "RUSTC_WRAPPER",
                 "SCCACHE_DIR",
                 "SCCACHE_SERVER_PORT",
-                "PEPPY_DOWNLOAD_CACHE"
+                "PEPPY_DOWNLOAD_CACHE",
+                "PEPPY_NODE_BUILD_CACHE",
             ]
         );
         assert_eq!(cache.env[0].1, "/peppy-cache/cargo-home");
         assert_eq!(cache.env[1].1, "sccache");
         assert_eq!(cache.env[2].1, "/peppy-cache/sccache-cache");
         assert_eq!(cache.env[4].1, "/peppy-cache/downloads");
+        assert_eq!(cache.env[5].1, "/peppy-cache/nodes/node_v1");
+        assert!(root.path().join("nodes/node_v1").is_dir());
         assert_eq!(
             cache.summary,
-            "Container build cache: cargo registry + sccache + downloads"
+            "Container build cache: cargo registry + sccache + downloads + node cache"
         );
     }
 
@@ -795,6 +842,7 @@ mod tests {
         let root = tempfile::tempdir().expect("create temp dir");
         let cache = prepare_in(
             root.path(),
+            &NODE,
             CacheProfile::Rust {
                 sccache_in_image: false,
             },
@@ -806,19 +854,23 @@ mod tests {
             vec![
                 ("CARGO_HOME", "/peppy-cache/cargo-home".to_string()),
                 ("PEPPY_DOWNLOAD_CACHE", "/peppy-cache/downloads".to_string()),
+                (
+                    "PEPPY_NODE_BUILD_CACHE",
+                    "/peppy-cache/nodes/node_v1".to_string()
+                ),
             ]
         );
         assert!(!root.path().join(SCCACHE_CACHE_SUBDIR).exists());
         assert_eq!(
             cache.summary,
-            "Container build cache: cargo registry + downloads"
+            "Container build cache: cargo registry + downloads + node cache"
         );
     }
 
     #[test]
     fn python_profile_gets_uv_packages_interpreters_and_downloads() {
         let root = tempfile::tempdir().expect("create temp dir");
-        let cache = prepare_in(root.path(), CacheProfile::Python).expect("cache prepared");
+        let cache = prepare_in(root.path(), &NODE, CacheProfile::Python).expect("cache prepared");
 
         assert!(root.path().join(UV_CACHE_SUBDIR).is_dir());
         assert!(root.path().join(UV_PYTHON_SUBDIR).is_dir());
@@ -833,11 +885,15 @@ mod tests {
                 ("UV_LINK_MODE", "copy".to_string()),
                 ("UV_PYTHON_CACHE_DIR", "/peppy-cache/uv-python".to_string()),
                 ("PEPPY_DOWNLOAD_CACHE", "/peppy-cache/downloads".to_string()),
+                (
+                    "PEPPY_NODE_BUILD_CACHE",
+                    "/peppy-cache/nodes/node_v1".to_string()
+                ),
             ]
         );
         assert_eq!(
             cache.summary,
-            "Container build cache: uv packages + Python interpreters + downloads"
+            "Container build cache: uv packages + Python interpreters + downloads + node cache"
         );
     }
 
@@ -849,6 +905,7 @@ mod tests {
 
         let rust = prepare_in(
             root.path(),
+            &NODE,
             CacheProfile::Rust {
                 sccache_in_image: true,
             },
@@ -860,17 +917,22 @@ mod tests {
         );
         assert_eq!(
             rust.summary,
-            "Container build cache: cargo registry + sccache"
+            "Container build cache: cargo registry + sccache + node cache"
         );
 
-        let python = prepare_in(root.path(), CacheProfile::Python).expect("cache prepared");
+        let python = prepare_in(root.path(), &NODE, CacheProfile::Python).expect("cache prepared");
         assert_eq!(
             env_keys(&python),
-            vec!["UV_CACHE_DIR", "UV_LINK_MODE", "UV_PYTHON_CACHE_DIR"]
+            vec![
+                "UV_CACHE_DIR",
+                "UV_LINK_MODE",
+                "UV_PYTHON_CACHE_DIR",
+                "PEPPY_NODE_BUILD_CACHE"
+            ]
         );
         assert_eq!(
             python.summary,
-            "Container build cache: uv packages + Python interpreters"
+            "Container build cache: uv packages + Python interpreters + node cache"
         );
     }
 
@@ -880,17 +942,73 @@ mod tests {
         std::fs::write(root.path().join(UV_PYTHON_SUBDIR), b"not a directory")
             .expect("block the uv-python dir with a file");
 
-        let cache = prepare_in(root.path(), CacheProfile::Python).expect("cache prepared");
+        let cache = prepare_in(root.path(), &NODE, CacheProfile::Python).expect("cache prepared");
 
         assert_eq!(
             env_keys(&cache),
-            vec!["UV_CACHE_DIR", "UV_LINK_MODE", "PEPPY_DOWNLOAD_CACHE"],
+            vec![
+                "UV_CACHE_DIR",
+                "UV_LINK_MODE",
+                "PEPPY_DOWNLOAD_CACHE",
+                "PEPPY_NODE_BUILD_CACHE"
+            ],
             "a build must not be told about an interpreter dir that does not exist"
         );
         assert_eq!(
             cache.summary,
-            "Container build cache: uv packages + downloads"
+            "Container build cache: uv packages + downloads + node cache"
         );
+    }
+
+    #[test]
+    fn unusable_node_dir_keeps_the_other_caches() {
+        let root = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(root.path().join(NODE_CACHES_SUBDIR), b"not a directory")
+            .expect("block the node caches dir with a file");
+
+        let cache = prepare_in(
+            root.path(),
+            &NODE,
+            CacheProfile::Rust {
+                sccache_in_image: true,
+            },
+        )
+        .expect("cache prepared");
+
+        assert!(
+            !env_keys(&cache).contains(&NODE_BUILD_CACHE_ENV_VAR),
+            "a build must not be told about a node dir that does not exist"
+        );
+        assert_eq!(
+            cache.summary,
+            "Container build cache: cargo registry + sccache + downloads"
+        );
+    }
+
+    #[test]
+    fn each_node_identity_gets_its_own_directory() {
+        let root = tempfile::tempdir().expect("create temp dir");
+        let node_dir_of = |name, tag| {
+            let cache = prepare_in(
+                root.path(),
+                &NodeIdentity { name, tag },
+                CacheProfile::Python,
+            )
+            .expect("cache prepared");
+            cache
+                .env
+                .into_iter()
+                .find(|(key, _)| *key == NODE_BUILD_CACHE_ENV_VAR)
+                .map(|(_, dir)| dir)
+                .expect("the node dir is set")
+        };
+
+        assert_eq!(node_dir_of("waldo", "v1"), "/peppy-cache/nodes/waldo_v1");
+        assert_eq!(node_dir_of("waldo", "v2"), "/peppy-cache/nodes/waldo_v2");
+        assert_eq!(node_dir_of("camera", "v1"), "/peppy-cache/nodes/camera_v1");
+        assert!(root.path().join("nodes/waldo_v1").is_dir());
+        assert!(root.path().join("nodes/waldo_v2").is_dir());
+        assert!(root.path().join("nodes/camera_v1").is_dir());
     }
 
     #[test]
@@ -908,7 +1026,7 @@ mod tests {
             std::fs::write(root.path().join(main_subdir), b"not a directory")
                 .expect("block the main dir with a file");
             assert!(
-                prepare_in(root.path(), profile).is_none(),
+                prepare_in(root.path(), &NODE, profile).is_none(),
                 "{profile:?} without {main_subdir}/ must get no cache"
             );
         }
@@ -921,13 +1039,14 @@ mod tests {
         assert!(
             prepare_in(
                 &with_colon,
+                &NODE,
                 CacheProfile::Rust {
                     sccache_in_image: true
                 }
             )
             .is_none()
         );
-        assert!(prepare_in(&with_colon, CacheProfile::Python).is_none());
+        assert!(prepare_in(&with_colon, &NODE, CacheProfile::Python).is_none());
     }
 
     #[test]
@@ -957,7 +1076,7 @@ mod tests {
             ),
         ] {
             let root = tempfile::tempdir().expect("create temp dir");
-            let cache = prepare_in(root.path(), profile).expect("cache prepared");
+            let cache = prepare_in(root.path(), &NODE, profile).expect("cache prepared");
             assert_eq!(cache.uses_uv_cache(), uses_uv_cache, "{profile:?}");
         }
     }
@@ -966,7 +1085,7 @@ mod tests {
     #[test]
     fn the_prune_command_names_the_uv_cache_of_the_build() {
         let root = tempfile::tempdir().expect("create temp dir");
-        let cache = prepare_in(root.path(), CacheProfile::Python).expect("cache prepared");
+        let cache = prepare_in(root.path(), &NODE, CacheProfile::Python).expect("cache prepared");
         let uv_cache_dir = &cache
             .env
             .iter()
