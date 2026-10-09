@@ -927,8 +927,9 @@ async def test_daemon_shutdown_interrupts_blocked_async_setup(monkeypatch):
     """A shutdown received while an async setup coroutine is still awaiting
     interrupts the runner immediately. Unlike the sync-setup case above, where
     the Python callback holds the stack, the runner waits on async setup
-    without blocking, so it observes the request, runs hooks registered before
-    the block, and exits without setup ever completing."""
+    without blocking, so it observes the request, cancels the setup at its
+    await and waits until the setup has unwound, then runs the hooks
+    registered before the stop, and exits without setup ever completing."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
             peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
@@ -966,7 +967,11 @@ async def test_daemon_shutdown_interrupts_blocked_async_setup(monkeypatch):
                         # by cancelling this await. The sentinel below must
                         # stay unreached; it trips the exact-list assertion if
                         # setup ever resumes instead of being interrupted.
-                        await asyncio.Event().wait()
+                        try:
+                            await asyncio.Event().wait()
+                        except asyncio.CancelledError:
+                            hook_markers.append("setup cancelled")
+                            raise
                         hook_markers.append("resumed")
 
                     NodeBuilder().run(setup_fn)
@@ -1011,7 +1016,10 @@ async def test_daemon_shutdown_interrupts_blocked_async_setup(monkeypatch):
     assert cancellation_token.is_cancelled(), (
         "Cancellation token should be cancelled by a shutdown received during setup"
     )
-    assert hook_markers == ["cleanup"], "Hook registered during setup should run"
+    assert hook_markers == ["setup cancelled", "cleanup"], (
+        "The setup is cancelled and unwinds before the hook registered during "
+        "setup runs"
+    )
     assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
 
 
@@ -1234,21 +1242,12 @@ async def test_failed_async_setup_does_not_leak_event_loop_thread(monkeypatch):
 
     The loop thread runs native code; left unjoined it can be killed
     mid-native-call during interpreter finalization (the same SIGSEGV
-    `test_shutdown_joins_event_loop_thread` guards on the success path). Such a
-    failure is rare in practice (e.g. resource exhaustion submitting the setup
-    coroutine or spawning the shutdown monitor), so we inject it by making
-    `asyncio.run_coroutine_threadsafe` raise, which fails the setup-coroutine
-    submission right after the loop thread is started.
+    `test_shutdown_joins_event_loop_thread` guards on the success path). The
+    setup function here returns an awaitable that is not a coroutine: the
+    runtime starts the loop thread for it, then refuses to submit it as the
+    setup task, right after the loop thread is started.
     """
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
-
-    real_run_coroutine_threadsafe = asyncio.run_coroutine_threadsafe
-
-    def boom(coro, *_args, **_kwargs):
-        # Close the setup coroutine we are refusing to schedule so it does not
-        # raise a "coroutine was never awaited" warning, then fail the submission.
-        coro.close()
-        raise RuntimeError("injected post-start setup failure")
 
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1267,10 +1266,9 @@ async def test_failed_async_setup_does_not_leak_event_loop_thread(monkeypatch):
             lingering_queue: queue.Queue = queue.Queue()
 
             def run_node():
-                async def setup_fn(_params, _node_runner):
-                    # Never runs: the patched run_coroutine_threadsafe raises
-                    # when start_async_setup submits this coroutine.
-                    return None
+                def setup_fn(_params, _node_runner):
+                    # Never awaited: the runtime refuses to submit it.
+                    return NonCoroutineAwaitable([], "setup")
 
                 try:
                     (
@@ -1292,20 +1290,14 @@ async def test_failed_async_setup_does_not_leak_event_loop_thread(monkeypatch):
                         ]
                     )
 
-            # Restore eagerly in finally so the router teardown below (which uses
-            # asyncio) does not hit the patched function.
-            asyncio.run_coroutine_threadsafe = boom
-            try:
-                runner_thread = threading.Thread(target=run_node, daemon=True)
-                runner_thread.start()
-                runner_thread.join(timeout=10.0)
-            finally:
-                asyncio.run_coroutine_threadsafe = real_run_coroutine_threadsafe
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+            runner_thread.join(timeout=10.0)
 
     assert not runner_thread.is_alive(), (
         "run() did not return after a post-start async-setup failure"
     )
-    assert not error_queue.empty(), "expected run() to raise the injected failure"
+    assert not error_queue.empty(), "expected run() to raise the refused submission"
     lingering = lingering_queue.get_nowait()
     assert lingering == [], (
         f"event-loop thread leaked after async setup failed post-start: {lingering}"
