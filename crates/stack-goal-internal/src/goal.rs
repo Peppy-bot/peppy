@@ -102,8 +102,9 @@ pub enum SendError {
         source: core_node_api::Error,
     },
     /// The daemon refused the goal; `reason` is the daemon's text, for
-    /// example "a stack or node operation is in progress on this daemon;
-    /// wait for it to finish".
+    /// example [`STACK_BUSY_REASON`].
+    ///
+    /// [`STACK_BUSY_REASON`]: core_node_api::encoding::STACK_BUSY_REASON
     #[error("{operation} goal rejected: {reason}")]
     Rejected {
         operation: &'static str,

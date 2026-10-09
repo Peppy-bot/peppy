@@ -288,9 +288,7 @@ pub(crate) struct StackBusy;
 
 impl std::fmt::Display for StackBusy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-            "a stack or node operation is in progress on this daemon; wait for it to finish",
-        )
+        f.write_str(core_node_api::encoding::STACK_BUSY_REASON)
     }
 }
 

@@ -442,7 +442,7 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
                 .and_then(|value| value.trim().parse::<u32>().ok())
         })
         .await;
-        let busy = "a stack or node operation is in progress";
+        let busy = core_node_api::encoding::STACK_BUSY_REASON;
         assert!(
             refusal(&started, &robot_goal("bravo", "simulated"))
                 .await

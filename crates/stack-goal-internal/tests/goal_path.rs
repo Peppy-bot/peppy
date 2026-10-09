@@ -15,7 +15,7 @@ use config::runtime::Name;
 use core_node_api::ActionGoal;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse, LaunchResult, NodeRunLogEntry,
-    StackJoinGoal,
+    STACK_BUSY_REASON, StackJoinGoal,
 };
 use core_node_api::names::CORE_NODE_TAG;
 use futures::FutureExt;
@@ -31,7 +31,6 @@ use stack_goal::{
 const COORDINATOR: &str = "cn-coordinator";
 const DAEMON_INSTANCE: &str = "core_root";
 const BRIDGE_INSTANCE: &str = "framework_controls_inst";
-const BUSY: &str = "a stack or node operation is in progress on this daemon; wait for it to finish";
 const LOG_PATH: &str = "/home/peppy/.peppy/logs/stack/join.log";
 /// Bounds a wait that the mock or the client ends at once.
 const STEP: Duration = Duration::from_secs(10);
@@ -238,17 +237,25 @@ async fn a_rejected_goal_gives_the_daemons_reason() {
             .next_goal(READINESS_TIMEOUT)
             .await
             .expect("the goal reaches the daemon")
-            .reject(None, LaunchGoalResponse::rejected(BUSY).encode().unwrap())
+            .reject(
+                None,
+                LaunchGoalResponse::rejected(STACK_BUSY_REASON)
+                    .encode()
+                    .unwrap(),
+            )
             .await
             .expect("the daemon rejects the goal");
     });
     match sent {
         Err(error @ SendError::Rejected { .. }) => {
-            assert_eq!(error.to_string(), format!("Join goal rejected: {BUSY}"));
+            assert_eq!(
+                error.to_string(),
+                format!("Join goal rejected: {STACK_BUSY_REASON}")
+            );
             let SendError::Rejected { reason, .. } = error else {
                 unreachable!()
             };
-            assert_eq!(reason, BUSY);
+            assert_eq!(reason, STACK_BUSY_REASON);
         }
         Err(other) => panic!("expected the daemon's rejection, got {other}"),
         Ok(_) => panic!("the daemon rejected the goal"),

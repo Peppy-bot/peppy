@@ -53,6 +53,7 @@ pub use repo::{
     RepoRefreshGoalResponse, RepoRefreshResult, RepoRemoveRequest, RepoRemoveResponse, RepoSource,
     RepoSourceKind,
 };
+pub use stack::STACK_BUSY_REASON;
 pub use stack::benchmark::{
     BenchmarkFeedbackStep, ClockConfidence, DEFAULT_SAMPLES, InterfaceKind, InterfaceLatency,
     MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse,
