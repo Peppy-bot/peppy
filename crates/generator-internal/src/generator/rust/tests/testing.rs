@@ -331,3 +331,103 @@ fn harness_of_a_node_with_retaining_topics_lints_clean() {
             .unwrap();
     });
 }
+
+/// This is a long running test that verifies the generated code passes clippy.
+/// Every name a manifest gives (interface names, link ids, message fields at
+/// any depth) can be a Rust keyword. The generated items named after them
+/// and the locals and fields derived from them stay snake case, so the
+/// `non_snake_case` lint passes.
+#[test]
+fn harness_of_a_node_with_rust_keyword_names_lints_clean() {
+    let keyword_fields: MessageFormat = serde_json5::from_str(
+        r#"{
+          type: "u32",
+          shape: {
+            $type: "object",
+            kind: "string",
+            box: { $type: "array", $items: "f64", $length: 4 },
+          },
+          in: { $type: "array", $items: "string" },
+          for: { $type: "array", $items: { $type: "object", ref: "f64" } },
+        }"#,
+    )
+    .unwrap();
+    let keyword_action: config::node::NativeExposedAction = serde_json5::from_str(
+        r#"{
+          name: "move",
+          goal_service: {
+            request_message_format: { box: { $type: "array", $items: "f64", $length: 4 } },
+            response_message_format: { match: "bool" },
+          },
+          feedback_topic: { qos_profile: "sensor_data", message_format: { loop: "f64" } },
+          result_service: { response_message_format: { yield: "u32" } },
+        }"#,
+    )
+    .unwrap();
+    let keyword_topic: NativeEmittedTopic = serde_json5::from_str(
+        r#"{ name: "box", qos_profile: "reliable", message_format: { type: "string" } }"#,
+    )
+    .unwrap();
+
+    assert_generated_node_lints_clean(|generator| {
+        let exposed_service = config::node::NativeExposedService {
+            name: "type".to_string(),
+            request_message_format: Some(keyword_fields.clone()),
+            response_message_format: Some(keyword_fields.clone()),
+        };
+        generator
+            .add_exposed_service(&exposed_service, None)
+            .unwrap();
+        generator.add_exposed_action(&keyword_action, None).unwrap();
+        generator.add_emitted_topic(&keyword_topic, None).unwrap();
+
+        let consumed_topic: config::node::ConsumedTopic =
+            serde_json5::from_str(r#"{ link_id: "ref", name: "static" }"#).unwrap();
+        generator
+            .add_consumed_topic(
+                &consumed_topic,
+                keyword_fields.clone(),
+                TopicRetention::LiveOnly,
+                &crate::DependencyContext::native("ref_node", "v1", "ref", Cardinality::ZeroOrOne),
+            )
+            .unwrap();
+        let consumed_service: config::node::ConsumedService =
+            serde_json5::from_str(r#"{ link_id: "dyn", name: "where" }"#).unwrap();
+        generator
+            .add_consumed_service(
+                &consumed_service,
+                &keyword_fields,
+                &keyword_fields,
+                &crate::DependencyContext::native("dyn_node", "v1", "dyn", Cardinality::OneOrMore),
+            )
+            .unwrap();
+        let consumed_action: config::node::ConsumedAction =
+            serde_json5::from_str(r#"{ link_id: "for", name: "move" }"#).unwrap();
+        generator
+            .add_consumed_action(
+                &consumed_action,
+                &(&keyword_action).into(),
+                &crate::DependencyContext::native("for_node", "v1", "for", Cardinality::ZeroOrMore),
+            )
+            .unwrap();
+
+        let peer = crate::generator::types::PeerContext {
+            link_id: "mod".to_string(),
+            pairing_name: "mod_link".to_string(),
+            pairing_tag: "v1".to_string(),
+            cardinality: Cardinality::ZeroOrOne,
+        };
+        generator
+            .add_peer_emitted_topic(&keyword_topic, &peer)
+            .unwrap();
+        let observer = crate::generator::types::PeerContext {
+            link_id: "trait".to_string(),
+            pairing_name: "trait_link".to_string(),
+            pairing_tag: "v1".to_string(),
+            cardinality: Cardinality::OneOrMore,
+        };
+        generator
+            .add_observed_topic(&keyword_topic, &observer, Cardinality::OneOrMore)
+            .unwrap();
+    });
+}
