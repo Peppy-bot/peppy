@@ -80,7 +80,7 @@ If a node or tag is missing from the cache, the launch fails with a "not found" 
 
 #### Serving MCP exposures
 
-A deployment whose `source` lists `exposures` runs the MCP server built into `peppy` for them instead of a node. Each entry is an [MCP exposure](/advanced_guides/mcp/) as `"<name>:<tag>"`, resolved against `~/.peppy/cache/mcp_exposures.json5`, and the contracts the exposures reference resolve through the contracts cache. The daemon derives the server's node from those documents, so the deployment behaves like any other: its instances take `arguments` (the server's single `port`), `links` for the contract slots the exposures' targets become, and `core_node` for placement. The list must not be empty or repeat an exposure, and two deployments cannot list the same set.
+A deployment whose `source` lists `exposures` runs the MCP server built into `peppy` for them instead of a node. Each entry is an [MCP exposure](/advanced_guides/mcp/) as `"<name>:<tag>"`, resolved against `~/.peppy/cache/mcp_exposures.json5`, and the contracts the exposures reference resolve through the contracts cache. The daemon derives the server's node from those documents, so the deployment behaves like any other: its instances take `arguments` (the server's single `port`), `links` for the contract slots the exposures' contract targets become, and `core_node` for placement. A [daemon target](/advanced_guides/mcp/#daemon-targets) takes no link: the instance gives it a scope in [`daemon_scopes`](#daemon_scopes-optional). The list must not be empty or repeat an exposure, and two deployments cannot list the same set.
 
 ```json5
 // Exposure source: the built-in MCP server serving two exposures on one port
@@ -334,6 +334,45 @@ instances: [
 ]
 ```
 
+### `daemon_scopes` (optional)
+
+The scope of each [daemon target](/advanced_guides/mcp/#daemon-targets) that the instance serves, keyed by the target's name: what a client of the target may do through the daemon interface it names. Only an instance of an [exposure deployment](#serving-mcp-exposures) whose exposures have a daemon target takes it. A daemon target takes a scope and no link.
+
+```json5
+{
+  source: { exposures: ["framework_controls:v1"] },
+  instances: [
+    {
+      instance_id: "framework_controls_inst",
+      arguments: { port: 8903 },
+      daemon_scopes: {
+        stack: {
+          max_copies: 4,
+          options: [
+            { option: "openarm_sim", description: "A simulated OpenArm v2 standing on the floor: two arms with grippers" },
+            { option: "so101_sim", description: "A simulated SO-101 clamped on the edge of a table: one arm with a gripper" },
+          ],
+        },
+      },
+    },
+  ],
+}
+```
+
+When the launcher is read, a scope is a free value, because only the resolution of the exposure deployments knows which targets are daemon targets. A launcher that writes its options in its own file and its endpoint in a fragment gives the scope with a top-level [`set_daemon_scopes`](#adjustments) adjustment instead. A scope belongs to the stack: a [copy](#copies) writes none.
+
+The launch, each join and [`peppy stack resolve`](#auditing-a-composed-launch) parse every scope into the type of its interface before anything starts. These checks read the launcher and the exposure documents only, so `peppy stack resolve` runs them also when the nodes cache is empty. They refuse:
+
+- `daemon_scopes` on an instance that serves no daemon target;
+- a scope key that is not a daemon target of the instance's exposures; the refusal says so when the key is a contract target, which takes `links`;
+- a daemon target with no scope;
+- a scope that does not parse into the type of its interface, for example a [`stack_copies` scope](/advanced_guides/mcp/#scopes) with no option or with `max_copies` 0;
+- a `stack_copies` scope that names an option that is not an option of an axis that runs as copies, with the menu of the options a join can add;
+- an instance that serves a daemon target and does not run on the coordinator: one that declares `core_node`, or one of a copy;
+- a `links` key that names a daemon target: the refusal says that the target takes a scope.
+
+Every refusal is reported at once.
+
 ## Clock domains
 
 A launcher declares the timelines its instances read in a root-level `framework` block, beside `deployments`:
@@ -524,6 +563,7 @@ The launcher's own top-level `adjustments` list takes the same entries, guarded 
 | `set_links` | Replaces the target's whole entry for each named slot, creating it when absent. The value uses the ordinary [links](#links-optional) grammar, including vacancies. |
 | `add_links` | Appends targets to each named slot's array binding, creating the binding when the slot has no entry. Refused when the slot holds a scalar or a vacancy: replacing is `set_links`'s job. Appending is what lets independent options each contribute bindings to one multi-cardinality slot, and what lets a [copy](#copies) that joins add its own instances to a running instance's set. |
 | `unset_links` | Drops each named slot's entry entirely, returning the slot to absent. |
+| `set_daemon_scopes` | Replaces the [scope](#daemon_scopes-optional) of each named daemon target, creating it when absent. No operation removes a scope. Refused in the composition of a copy, because a scope belongs to the stack: write it at the top level, under an option of an axis that does not run as copies, or in the instance's own `daemon_scopes`. |
 
 A fragment's own entries run first, in the order its files are read, then the launcher's: the options' entries in the order `components` declares their axes, then the top-level list. The order is what decides a field two entries both write, the later one winning, so a launcher's entry overrides the fragment's and its top-level list overrides its options'.
 
@@ -764,6 +804,8 @@ peppy stack join openarm:charlie --with xr_commander \
 
 A launch snapshots its launcher and fragment files, and every join composes against that snapshot; launch again to load edits. Constraints see the stack's selection and the copy's together, so `mcp_commander` on an `openarm_simulation` stack launched without `robot_control` is refused at join with the commander's reason. The launcher's adjustments under a copy's option may write to a stack instance, and each field they write is what the copy needs of it: the copies the file lists must agree on every field they both write, and a joined copy, whether `--join` names it at launch or `stack join` adds it later, may write to a stack instance only what already runs there, with two exceptions: its own instances may pair into the slots the instance declares vacant (the pairing instance's `links` name the slot, and the launcher's adjustments under the copied option release the vacancy with `unset_links` on the instance), and they may join the `one_or_more` or `zero_or_more` sets it declares, below. A join that would change a running instance any other way is refused, naming the instance and each field that differs. That is why the rendered camera rig, which turns the simulation's rendering on, is selected in the file at launch.
 
+A copy's composition writes no [daemon scope](#daemon_scopes-optional), on its own instances or on a stack instance: a scope written through a copy would exist only while that copy runs. A `set_daemon_scopes` that the composition of a copy applies (an adjustment under the copied option, a top-level adjustment guarded on the copy's axis, or the copy's own `adjustments`) is refused at launch, at join and by `peppy repo index --check`, naming the copy, its option, the instance and the target. A copy entry that declares `daemon_scopes` is refused when the launcher is read.
+
 A stack instance that watches or consumes every robot declares the slot as a set, and the launcher adds each robot under its option. The stack runs the monitor:
 
 ```json5
@@ -847,5 +889,7 @@ link rules hold: slot keys, vacancies, pairing coverage, observation sources and
 ```
 
 Every applied adjustment is listed with the value it replaced and where it was written, the fragment's own entries under the fragment's path and the launcher's under the option that carries them, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. A launcher that deploys copies resolves with them, one `copy NAME:` line each, and `--join OPTION:NAME` resolves one more, repeatable and comma-separated, each joined onto the plan the ones before it left, exactly as `stack launch` composes them. A copy `--join` names takes its own axes from `--with NAME.option`. The resulting flat launcher declares each copy's name in `core_nodes`; launch that file with `--place NAME@CORE_NODE` or `--local`.
+
+The report then holds the flat plan to the [checks of `daemon_scopes`](#daemon_scopes-optional). They read the exposure documents alone, so they run whatever the nodes and contracts caches hold, and a plan that breaks one fails with the launch's own refusal. The `daemon scopes hold` line says how many daemon targets were scoped. When an exposure document cannot be read locally, the report says `daemon scopes not checked` and names the deployment.
 
 The report ends by holding the flat plan to the launch-time link rules that need no daemon. `stack resolve` reads this machine's nodes cache at `~/.peppy/cache/nodes.json5`, loads each deployed node's manifest, and checks slot-key legality, vacancies, and pairing coverage across them; the `link rules hold` line names how many manifests it checked. A node published by a git repository is read out of the checkout the caches already hold, `peppy repo refresh` handing every clone it makes to the checkout cache, so the nodes and launchers a hub publishes are checked against each other without the command ever reaching the network. The contract-binding rules stay launch-only, because satisfying them can involve the root node that only a running daemon knows. When the plan breaks a rule a launch would reject, say a `zero_or_one` pairing slot left neither paired nor vacant, `stack resolve` fails with that launch's own error instead of surfacing it minutes later at launch. When a manifest cannot be read locally the check is skipped rather than run on a partial picture: the report says `link rules not checked`, names the missing manifest, and advises `peppy repo refresh`, which is what fills both the nodes cache and the checkouts the git-backed manifests are read from.
