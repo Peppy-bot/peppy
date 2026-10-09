@@ -1052,7 +1052,9 @@ async fn a_removal_reports_each_instance_it_stops_in_reverse_start_order() {
 }
 
 /// A join that fails at the start of a later instance undoes the copy and
-/// reports each instance it stops, the last started first.
+/// reports each instance it stops: the instances that started, the last
+/// started first, and not the one whose start failed, which the stack no
+/// longer holds.
 #[tokio::test]
 async fn the_undo_of_a_failed_join_reports_each_instance_it_stops() {
     let started = start_core_node_with_mock_messenger().await;
@@ -1084,10 +1086,7 @@ async fn the_undo_of_a_failed_join_reports_each_instance_it_stops() {
     );
     assert_eq!(
         stop_reports(&feedback),
-        [
-            "Stopping instance `bravo_tool_inst` of copy `bravo`",
-            "Stopping instance `bravo_arm_inst` of copy `bravo`",
-        ]
+        ["Stopping instance `bravo_arm_inst` of copy `bravo`"]
     );
     let list = participant_request(&started, &StackListRequest::new()).await;
     assert!(list.copies.is_empty(), "{:?}", list.copies);

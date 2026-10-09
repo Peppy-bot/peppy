@@ -698,27 +698,82 @@ pub(crate) async fn stop_named_instances(
     relationships: &RelationshipCoordinators,
     ids: &[Name],
 ) {
-    let graph = node_stack.to_serialized_graph();
-    for id in ids.iter().rev() {
-        let running = graph.nodes.iter().find(|node| {
-            node.instances
-                .iter()
-                .any(|instance| instance.instance_id == id.as_str())
-        });
-        if let Some(node) = running {
-            stop_instances(
-                messenger,
-                core_node,
-                root_id,
-                node_stack,
-                &node.name,
-                &node.tag,
-                std::slice::from_ref(id),
-            )
-            .await;
-        }
-        relationships.tear_down_instance(id.as_str()).await;
+    for instance in named_instances(node_stack, ids) {
+        stop_named_instance(
+            messenger,
+            core_node,
+            root_id,
+            node_stack,
+            relationships,
+            &instance,
+        )
+        .await;
     }
+}
+
+/// One id a stop of named instances takes, with the node `name:tag` of the
+/// instance the stack holds under it, when it holds one.
+pub(crate) struct NamedInstance<'a> {
+    pub(crate) id: &'a Name,
+    node: Option<(String, String)>,
+}
+
+impl NamedInstance<'_> {
+    /// Whether the stack holds the instance, so that its stop stops one.
+    pub(crate) fn is_on_stack(&self) -> bool {
+        self.node.is_some()
+    }
+}
+
+/// Each of `ids`, the last first, with the node of the instance the stack
+/// holds under it, all read from one snapshot of the stack: the order and
+/// the instances of a stop of named instances.
+pub(crate) fn named_instances<'a>(
+    node_stack: &NodeStack,
+    ids: &'a [Name],
+) -> Vec<NamedInstance<'a>> {
+    let graph = node_stack.to_serialized_graph();
+    ids.iter()
+        .rev()
+        .map(|id| NamedInstance {
+            id,
+            node: graph
+                .nodes
+                .iter()
+                .find(|node| {
+                    node.instances
+                        .iter()
+                        .any(|instance| instance.instance_id == id.as_str())
+                })
+                .map(|node| (node.name.clone(), node.tag.clone())),
+        })
+        .collect()
+}
+
+/// Stops one instance of [`named_instances`]: the instance the stack holds,
+/// then its entries in the relationship registries, where a start that never
+/// came still registered it.
+pub(crate) async fn stop_named_instance(
+    messenger: &MessengerHandle,
+    core_node: &str,
+    root_id: &str,
+    node_stack: &Arc<NodeStack>,
+    relationships: &RelationshipCoordinators,
+    instance: &NamedInstance<'_>,
+) {
+    if let Some((name, tag)) = &instance.node {
+        stop_instances(
+            messenger,
+            core_node,
+            root_id,
+            node_stack,
+            name,
+            tag,
+            std::slice::from_ref(instance.id),
+        )
+        .await;
+    }
+    relationships.tear_down_instance(instance.id.as_str()).await;
 }
 
 /// Cooperative-then-force stop of `doomed` (see [`force_stop_instances`]),

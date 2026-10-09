@@ -47,7 +47,9 @@ pub use stack_log::ExportDiscardLog;
 pub use stop::{
     TEARDOWN_REAP_BUDGET, force_kill_deadline, listen_for_node_stop, teardown_all_instances,
 };
-pub(crate) use stop::{stop_named_instances, teardown_timeout};
+pub(crate) use stop::{
+    named_instances, stop_named_instance, stop_named_instances, teardown_timeout,
+};
 pub use sync::listen_for_node_sync;
 
 pub(crate) use add::{NodeAddActionContext, create_add_log, dispatch_node_add};

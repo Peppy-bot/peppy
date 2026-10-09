@@ -17,7 +17,7 @@ use super::changed_slots::{
 };
 use super::live::{live_machines, report_offline_sets, split_by_liveness};
 use super::{change_active_launch, plan::selected_instances, stack_list_on};
-use crate::services::node::stop_named_instances;
+use crate::services::node::{named_instances, stop_named_instance};
 use config::runtime::Name;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, ParticipantInstancesRemoveRequest, StackRemoveGoal,
@@ -297,9 +297,11 @@ fn removal_deployments(
 
 /// Stops the copy's instances on the machine that runs them, the last
 /// started first. On this daemon's machine each stop takes up to its teardown
-/// budget, so the change reports each instance before it stops it, and its
-/// caller hears from it at least once per stop. A host on another machine
-/// stops them in one request and reports nothing until it answers.
+/// budget, so the change reports each instance the stack holds before it
+/// stops it, and its caller hears from it at least once per stop. An
+/// instance the stack does not hold, one that never started or whose start
+/// was given up, has nothing to stop and is not reported. A host on another
+/// machine stops them in one request and reports nothing until it answers.
 pub(super) async fn stop_copy(
     ctx: &StackChangeContext,
     launch_id: &str,
@@ -308,23 +310,25 @@ pub(super) async fn stop_copy(
     let host = copy.core_node.as_str();
     if host == ctx.bound_core_node {
         let instance_ids: Vec<Name> = copy.record.instance_ids().cloned().collect();
-        for instance_id in instance_ids.iter().rev() {
-            publish_stdout(
-                ctx,
-                format!(
-                    "Stopping instance `{instance_id}` of copy `{}`",
-                    copy.record.name
-                ),
-                LaunchFeedbackStep::LauncherStep,
-            )
-            .await;
-            stop_named_instances(
+        for instance in named_instances(&ctx.node_stack, &instance_ids) {
+            if instance.is_on_stack() {
+                publish_stdout(
+                    ctx,
+                    format!(
+                        "Stopping instance `{}` of copy `{}`",
+                        instance.id, copy.record.name
+                    ),
+                    LaunchFeedbackStep::LauncherStep,
+                )
+                .await;
+            }
+            stop_named_instance(
                 &ctx.messenger,
                 &ctx.bound_core_node,
                 &ctx.core_instance_id,
                 &ctx.node_stack,
                 &ctx.relationships,
-                std::slice::from_ref(instance_id),
+                &instance,
             )
             .await;
         }
