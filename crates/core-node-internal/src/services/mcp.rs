@@ -18,5 +18,5 @@ mod tests;
 pub use built_in::{PeppyExecutable, resolve_peppy_executable};
 pub use catalog::derive_exposure_catalog;
 pub use index_check::{ExposureFinding, check_repository_exposures};
+pub use resolve::{ExposureDocumentsError, resolve_exposure_documents, resolve_exposure_plan};
 pub(crate) use resolve::{materialize_exposure_deployment, resolve_exposure_deployment};
-pub use resolve::{resolve_exposure_documents, resolve_exposure_plan};

@@ -1,12 +1,14 @@
 use std::path::PathBuf;
 
 use config::node::{NodeConfig, NodeConfigParser};
+use core_node::ExposureDocumentsError;
 use core_node_api::encoding::{LaunchJoin, LauncherOrigin};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
-    AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, DeploymentSource,
-    ExternallyCoveredSlots, MemberAddressing, PairingValidationItem, PeppyLauncher, Placements,
-    PreparedLauncher, check_daemon_scopes, resolve_clocks, validate_link_plan,
+    AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, Deployment,
+    DeploymentSource, ExternallyCoveredSlots, MemberAddressing, PairingValidationItem,
+    PeppyLauncher, Placements, PreparedLauncher, check_daemon_scopes, resolve_clocks,
+    validate_link_plan,
 };
 use daemon_config::mcp_deployment::DeploymentTargets;
 use daemon_config::repository::EntryOrigin;
@@ -98,9 +100,11 @@ pub fn resolve_rendered(
 /// parsed into its interface's type and held against the launcher, every
 /// instance that serves a daemon target on the coordinator, and no link to a
 /// daemon target. They read the exposure documents alone, so they run
-/// whatever the nodes and contracts caches hold. When an exposure document
-/// is not readable here the report says the checks were skipped, so a clean
-/// exit is never mistaken for checked scopes.
+/// whatever the nodes and contracts caches hold. An exposure deployment whose
+/// documents this machine's caches do not hold skips its checks, and the
+/// report names it, so a clean exit is never mistaken for checked scopes; the
+/// checks of every other deployment still run. A document the launch would
+/// refuse fails the command with that refusal.
 fn check_daemon_scope_rules(
     prepared: &PreparedLauncher,
     flat: &PeppyLauncher,
@@ -108,12 +112,19 @@ fn check_daemon_scope_rules(
     dirs: &PeppyDirs,
     report: &mut Vec<String>,
 ) -> Result<()> {
-    let mut targets = Vec::with_capacity(flat.deployments.len());
-    let mut unavailable: Vec<String> = Vec::new();
+    let mut checked: Vec<(&Deployment, DeploymentTargets)> =
+        Vec::with_capacity(flat.deployments.len());
+    let mut not_cached: Vec<String> = Vec::new();
     for deployment in &flat.deployments {
         let DeploymentSource::Exposures { exposures } = &deployment.source else {
-            targets.push(DeploymentTargets::default());
+            checked.push((deployment, DeploymentTargets::default()));
             continue;
+        };
+        let refused = |reason: &dyn std::fmt::Display| {
+            Error::ExecutionFailed(format!(
+                "deployment {} would be refused at launch: {reason}",
+                deployment.source.label()
+            ))
         };
         let documents = match core_node::resolve_exposure_documents(
             dirs,
@@ -121,40 +132,40 @@ fn check_daemon_scope_rules(
             &crate::commands::report_as_info,
         ) {
             Ok(documents) => documents,
-            Err(e) => {
-                unavailable.push(format!("{} ({e})", deployment.source.label()));
-                targets.push(DeploymentTargets::default());
+            Err(ExposureDocumentsError::NotCached(reason)) => {
+                not_cached.push(format!("{} ({reason})", deployment.source.label()));
                 continue;
             }
+            Err(ExposureDocumentsError::Refused(reason)) => return Err(refused(&reason)),
         };
         // A document set the launch would refuse (two sources under one
         // target name, an interface this peppy does not serve) is refused
         // here as it would be there.
-        let served = DeploymentTargets::of(&documents).map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "deployment {} would be refused at launch: {e}",
-                deployment.source.label()
-            ))
-        })?;
-        targets.push(served);
+        let served = DeploymentTargets::of(&documents).map_err(|e| refused(&e))?;
+        checked.push((deployment, served));
     }
-    if !unavailable.is_empty() {
+    if !not_cached.is_empty() {
         report.push(format!(
-            "daemon scopes not checked, {} exposure deployment(s) unavailable: {}",
-            unavailable.len(),
-            unavailable.join(", ")
+            "daemon scopes not checked for {} exposure deployment(s) this machine's caches do \
+             not hold: {}",
+            not_cached.len(),
+            not_cached.join(", ")
         ));
-        return Ok(());
     }
-    check_daemon_scopes(prepared, flat.deployments.iter().zip(&targets), copies).map_err(
-        |refusals| {
-            Error::ExecutionFailed(format!(
-                "the flat launcher breaks daemon scope rules a launch would reject:{}",
-                daemon_config::format_bulleted(&refusals.0)
-            ))
-        },
-    )?;
-    let scoped: usize = targets.iter().map(|served| served.daemon.len()).sum();
+    check_daemon_scopes(
+        prepared,
+        checked
+            .iter()
+            .map(|(deployment, targets)| (*deployment, targets)),
+        copies,
+    )
+    .map_err(|refusals| {
+        Error::ExecutionFailed(format!(
+            "the flat launcher breaks daemon scope rules a launch would reject:{}",
+            daemon_config::format_bulleted(&refusals.0)
+        ))
+    })?;
+    let scoped: usize = checked.iter().map(|(_, served)| served.daemon.len()).sum();
     if scoped > 0 {
         report.push(format!(
             "daemon scopes hold: {scoped} daemon target(s) scoped and placed on the coordinator"

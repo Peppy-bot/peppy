@@ -23,9 +23,11 @@ const SCOPE: &str = r#"{
     ],
 }"#;
 
-/// A peppy home whose exposure cache holds `framework_controls:v1`, and
+/// A peppy home whose exposure cache holds `framework_controls:v1`,
 /// `unserved_controls:v1`, the same document naming a tag of `stack_copies`
-/// this peppy does not serve. Its nodes and contracts caches are empty.
+/// this peppy does not serve, and `pinned_controls:v1`, the same document
+/// pinning its daemon target with a `sha256`, which does not parse. Its nodes
+/// and contracts caches are empty, and it holds no `absent_controls:v1`.
 fn cold_home() -> (PeppyDirs, tempfile::TempDir) {
     let root = tempfile::tempdir().expect("temp peppy root");
     let docs = root.path().join("exposures");
@@ -46,6 +48,23 @@ fn cold_home() -> (PeppyDirs, tempfile::TempDir) {
             ),
     )
     .expect("exposure");
+    let pinned = docs.join("pinned_controls.json5");
+    fs::write(
+        &pinned,
+        FRAMEWORK_CONTROLS
+            .replace(
+                r#"name: "framework_controls""#,
+                r#"name: "pinned_controls""#,
+            )
+            .replace(
+                r#"daemon: { name: "stack_copies", tag: "v1" }"#,
+                &format!(
+                    r#"daemon: {{ name: "stack_copies", tag: "v1", sha256: "{}" }}"#,
+                    "0".repeat(64)
+                ),
+            ),
+    )
+    .expect("exposure");
     let dirs = PeppyDirs::new(root.path());
     fs::create_dir_all(dirs.cache_dir()).expect("cache dir");
     core_node::test_support::seed_exposure_cache(
@@ -53,6 +72,7 @@ fn cold_home() -> (PeppyDirs, tempfile::TempDir) {
         &[
             ("framework_controls", "v1", framework.as_path()),
             ("unserved_controls", "v1", unserved.as_path()),
+            ("pinned_controls", "v1", pinned.as_path()),
         ],
     );
     (dirs, root)
@@ -63,6 +83,17 @@ fn cold_home() -> (PeppyDirs, tempfile::TempDir) {
 /// the top-level adjustments `adjustments`. `endpoint` is the instance
 /// entry of the endpoint.
 fn launcher(root: &Path, endpoint: &str, adjustments: &str) -> PathBuf {
+    launcher_with(root, endpoint, adjustments, "")
+}
+
+/// [`launcher`] with the top-level deployments `extra_deployments` beside
+/// the endpoint's option.
+fn launcher_with(
+    root: &Path,
+    endpoint: &str,
+    adjustments: &str,
+    extra_deployments: &str,
+) -> PathBuf {
     let path = root.join("simulation_mcp.json5");
     fs::write(
         &path,
@@ -92,7 +123,7 @@ fn launcher(root: &Path, endpoint: &str, adjustments: &str) -> PathBuf {
                     ] }},
                 }} }},
             ],
-            deployments: [{{ robot_control: "robot_control" }}],
+            deployments: [{{ robot_control: "robot_control" }}, {extra_deployments}],
             adjustments: [{adjustments}],
         }}"#
         ),
@@ -312,6 +343,77 @@ fn a_daemon_interface_this_peppy_does_not_serve_is_refused_by_resolve() {
                 "target `stack`: daemon interface `stack_copies:v2` is not one this peppy \
                  serves; it serves `stack_copies` at tag `v1` only"
             ),
+        "{error}"
+    );
+}
+
+/// An exposure deployment that this machine's caches do not hold.
+const ABSENT_DEPLOYMENT: &str = r#"{ source: { exposures: ["absent_controls:v1"] }, instances: [
+    { instance_id: "absent_inst", arguments: { port: 8904 } }
+] }"#;
+
+/// An exposure that is not in the caches skips its own checks, and the
+/// report names it; the checks of every other deployment still run, so a
+/// scope another deployment breaks is still refused.
+#[test]
+fn an_exposure_not_in_the_caches_skips_its_own_checks_and_no_other() {
+    let (dirs, root) = cold_home();
+    let (_document, report) = resolve_rendered(
+        &dirs,
+        launcher_with(root.path(), ENDPOINT, &scoped(SCOPE), ABSENT_DEPLOYMENT),
+        &[],
+        &[],
+    )
+    .expect("the scope of the cached exposure holds");
+    let report = report.join("\n");
+    assert!(
+        report.contains(
+            "daemon scopes not checked for 1 exposure deployment(s) this machine's caches do not \
+             hold: exposures [absent_controls:v1]"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "daemon scopes hold: 1 daemon target(s) scoped and placed on the coordinator"
+        ),
+        "{report}"
+    );
+
+    let error = refusal(
+        &dirs,
+        launcher_with(
+            root.path(),
+            r#"{ instance_id: "framework_controls_inst", core_node: "robot_pc" }"#,
+            &scoped(SCOPE),
+            ABSENT_DEPLOYMENT,
+        ),
+    );
+    assert!(
+        error.contains(
+            "instance `framework_controls_inst` serves daemon target `stack` and declares \
+             `core_node: \"robot_pc\"`"
+        ),
+        "{error}"
+    );
+}
+
+/// A document in the caches that a launch refuses fails `stack resolve` with
+/// that refusal, and is not reported as unchecked.
+#[test]
+fn an_exposure_document_that_does_not_parse_fails_resolve() {
+    let (dirs, root) = cold_home();
+    let path = launcher(root.path(), ENDPOINT, &scoped(SCOPE));
+    let text = fs::read_to_string(&path)
+        .expect("launcher")
+        .replace("framework_controls:v1", "pinned_controls:v1");
+    fs::write(&path, text).expect("launcher");
+    let error = refusal(&dirs, path);
+    assert!(
+        error.contains("deployment exposures [pinned_controls:v1] would be refused at launch")
+            && error.contains("exposure `pinned_controls:v1` does not parse")
+            && error
+                .contains("target `stack` pins daemon interface `stack_copies:v1` with `sha256`"),
         "{error}"
     );
 }
