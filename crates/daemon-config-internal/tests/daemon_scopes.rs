@@ -284,12 +284,13 @@ fn an_adjustment_with_an_empty_set_daemon_scopes_names_no_operation() {
     );
 }
 
-/// The refusal of a scope written through a copy, which a launch-time
-/// `--join`, a later join and the repository check all compose through.
-fn assert_copy_scope_refusal(error: &CompositionError, copy: &str, instance: &str) {
+/// The refusal of a scope written through a copy of `option`, which a
+/// launch-time `--join`, a later join and the repository check all compose
+/// through.
+fn assert_copy_scope_refusal(error: &CompositionError, copy: &str, option: &str, instance: &str) {
     let CompositionError::CopySetsDaemonScope {
         copy: refused_copy,
-        option,
+        option: refused_option,
         instance: refused_instance,
         daemon_target,
         ..
@@ -298,7 +299,7 @@ fn assert_copy_scope_refusal(error: &CompositionError, copy: &str, instance: &st
         panic!("expected the copy scope refusal, got {error}");
     };
     assert_eq!(refused_copy, copy);
-    assert_eq!(option, "openarm_sim");
+    assert_eq!(refused_option, option);
     assert_eq!(refused_instance, instance);
     assert_eq!(daemon_target, "stack");
     let message = error.to_string();
@@ -325,7 +326,7 @@ fn a_scope_written_through_a_copy_is_refused() {
     let error = prepared
         .launch(&[], &[launch_join("openarm_sim", "alpha")])
         .expect_err("the copy writes a scope");
-    assert_copy_scope_refusal(&error, "alpha", "framework_controls_inst");
+    assert_copy_scope_refusal(&error, "alpha", "openarm_sim", "framework_controls_inst");
 
     let bare = prepared.launch(&[], &[]).expect("the stack alone composes");
     let error = prepared
@@ -342,9 +343,60 @@ fn a_scope_written_through_a_copy_is_refused() {
             },
         )
         .expect_err("a join that writes a scope is refused");
-    assert_copy_scope_refusal(&error, "bravo", "framework_controls_inst");
+    assert_copy_scope_refusal(&error, "bravo", "openarm_sim", "framework_controls_inst");
 
     let parsed = PeppyLauncherParser::from_content(&guarded).expect("parses");
+    let problems =
+        daemon_config::launcher::check_composition(&parsed, Path::new("simulation_mcp.json5"));
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.contains("a scope belongs to the stack")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_scope_written_under_an_option_that_runs_as_copies_is_refused() {
+    // The adjustments of an option of the copy axis run in each copy of that
+    // option, here on the stack's endpoint.
+    let document = simulation_mcp(
+        "",
+        r#"scoping_sim: {
+            deployments: [
+                { source: { name: "so101", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }
+            ],
+            adjustments: [
+                { target: "framework_controls_inst",
+                  set_daemon_scopes: { stack: { max_copies: 1, options: [
+                      { option: "scoping_sim", description: "One SO-101" } ] } } }
+            ],
+        },"#,
+    );
+    let prepared = load(&document);
+    let error = prepared
+        .launch(&[], &[launch_join("scoping_sim", "alpha")])
+        .expect_err("the copy writes a scope");
+    assert_copy_scope_refusal(&error, "alpha", "scoping_sim", "framework_controls_inst");
+
+    let bare = prepared.launch(&[], &[]).expect("the stack alone composes");
+    let error = prepared
+        .join(
+            JoinRequest {
+                option: "scoping_sim",
+                name: &name("bravo"),
+                words: &[],
+                arguments: &[],
+            },
+            RunningStack {
+                selection: &bare.selection,
+                launcher: &bare.launcher,
+            },
+        )
+        .expect_err("a join that writes a scope is refused");
+    assert_copy_scope_refusal(&error, "bravo", "scoping_sim", "framework_controls_inst");
+
+    let parsed = PeppyLauncherParser::from_content(&document).expect("parses");
     let problems =
         daemon_config::launcher::check_composition(&parsed, Path::new("simulation_mcp.json5"));
     assert!(
@@ -372,7 +424,7 @@ fn a_copy_option_that_scopes_its_own_instance_is_refused() {
     let error = prepared
         .launch(&[], &[])
         .expect_err("the copy writes a scope");
-    assert_copy_scope_refusal(&error, "alpha", "alpha_arm_inst");
+    assert_copy_scope_refusal(&error, "alpha", "openarm_sim", "alpha_arm_inst");
 }
 
 #[test]
