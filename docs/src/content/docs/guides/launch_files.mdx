@@ -405,6 +405,8 @@ A launch adds, builds and starts its nodes one phase at a time, and each phase r
 | `--node-build-idle-timeout-secs` | running its `build_cmd`, or downloading and assembling its image; bytes landing on disk and CPU time the build burns count as output too | 180 |
 | `--node-run-idle-timeout-secs` | starting an instance, until it signals ready | 600 |
 
+These defaults are the only ones: the daemon has no budgets of its own, and every launch, build and join carries the budgets of its caller. When no output arrives, the command waits for the largest of the three budgets plus 60 s before it stops, so the daemon's error for the silent phase comes first.
+
 Every build runs with `CARGO_TERM_PROGRESS_WHEN=always` and `CARGO_TERM_PROGRESS_WIDTH=80`, in a `build_cmd` and in a container def's `%post` alike. Without them, cargo prints a line only when a crate download completes when its output is not a terminal, and until then the download writes nothing to disk and burns no CPU, so a large crate on a slow connection reads as an idle build. With these settings cargo reprints its progress line each time the bytes left to download change, and each reprint counts as output. A download that receives nothing changes nothing, so it still runs out the budget. If you set either variable yourself, a `build_cmd` gets your value; a def sets its own by exporting it in `%post`.
 
 `--max-timeout-secs` adds a budget for the whole launch on top of the idle ones; without it, only the idle budgets apply.

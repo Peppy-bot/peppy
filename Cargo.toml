@@ -73,6 +73,7 @@ latency-report = { path = "crates/latency-report" }
 log-export = { path = "crates/log-export-internal" }
 node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
+stack-goal = { path = "crates/stack-goal-internal" }
 
 # Optionally define workspace-wide lints or profiles.
 # [workspace.lints.rust]

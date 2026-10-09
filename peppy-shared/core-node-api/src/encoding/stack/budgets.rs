@@ -5,7 +5,7 @@ use crate::Result;
 use crate::encoding::required_text;
 use crate::launch_capnp;
 
-/// The idle budget in seconds of the add, build and run phases when the
+/// The idle budget in seconds of adding a node and of starting one when the
 /// caller sets none.
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
 
@@ -21,18 +21,6 @@ pub struct StackBudgets {
     /// Whole-operation deadline. `None` means no overall deadline is
     /// enforced (only idle timeouts apply); the wire carries 0 for it.
     pub max_timeout_secs: Option<u64>,
-}
-
-impl Default for StackBudgets {
-    fn default() -> Self {
-        Self {
-            env_vars: Vec::new(),
-            node_add_idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
-            node_build_idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
-            node_run_idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
-            max_timeout_secs: None,
-        }
-    }
 }
 
 impl StackBudgets {

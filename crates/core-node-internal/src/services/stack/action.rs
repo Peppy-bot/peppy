@@ -12,8 +12,8 @@ use crate::services::node::gate::{Admission, ConcurrencyGate, finish_on_reset};
 use crate::services::node::{DaemonDefaults, HealthMonitorPolicy, RelationshipCoordinators};
 use core_node_api::ActionId;
 use core_node_api::encoding::{
-    LaunchGoal, LaunchGoalResponse, LaunchResult, StackBudgets, StackBuildGoal, StackJoinGoal,
-    StackRemoveGoal,
+    DEFAULT_IDLE_TIMEOUT_SECS, LaunchGoal, LaunchGoalResponse, LaunchResult, StackBudgets,
+    StackBuildGoal, StackJoinGoal, StackRemoveGoal,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -111,14 +111,14 @@ impl StackRequest {
         }
     }
 
-    /// The budgets the request runs under; a removal adds no node and runs
-    /// under the defaults.
+    /// The budgets the request runs under: the ones its goal carries, or
+    /// [`REMOVAL_BUDGETS`] for a removal, whose goal carries none.
     fn budgets(&self) -> StackBudgets {
         match self {
             Self::Launch(goal) => goal.budgets.clone(),
             Self::Build(goal) => goal.launch().budgets.clone(),
             Self::Join(goal) => goal.budgets.clone(),
-            Self::Remove(_) => StackBudgets::default(),
+            Self::Remove(_) => REMOVAL_BUDGETS,
         }
     }
 
@@ -141,6 +141,17 @@ impl StackRequest {
         }
     }
 }
+
+/// What a removal runs under. A removal adds, builds and starts no node, so
+/// it reads none of these phase budgets; it has no overall deadline and
+/// forwards no environment.
+const REMOVAL_BUDGETS: StackBudgets = StackBudgets {
+    env_vars: Vec::new(),
+    node_add_idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
+    node_build_idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
+    node_run_idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
+    max_timeout_secs: None,
+};
 
 /// Per-phase idle timeouts, sourced from the goal's budgets. Each phase's clock resets
 /// only on genuine subprocess/git/http activity (see `spawn_feedback_forwarder`).

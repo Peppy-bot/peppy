@@ -99,8 +99,13 @@ async fn refusal(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoa
         .expect("a refusal names its reason")
 }
 
+/// A join of a copy `name` of `option`, under budgets no test reaches.
 fn robot_goal(name: &str, option: &str) -> StackJoinGoal {
-    StackJoinGoal::new(Name::new(name).unwrap(), option, StackBudgets::default())
+    StackJoinGoal::new(
+        Name::new(name).unwrap(),
+        option,
+        StackBudgets::new(600, 600, 600, None),
+    )
 }
 
 fn robot_pid(started: &StartedCoreNode, name: &str) -> u32 {
