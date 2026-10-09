@@ -659,6 +659,13 @@ impl Processor {
             .map(|copy| copy.as_str())
     }
 
+    /// The scope of each daemon target this instance serves, keyed by
+    /// target name, as the launch gave it. Empty for an instance that
+    /// serves no daemon target, and for one run standalone.
+    pub fn daemon_scopes(&self) -> &config::runtime::DaemonScopes {
+        &self.runtime_config.node_instance.daemon_scopes
+    }
+
     /// Shared handle to all pairing-slot channels, handed to the pre-setup
     /// `peer_update` service listener.
     pub(crate) fn pairing_slot_channels(&self) -> PairingSlotChannels {
@@ -1531,6 +1538,50 @@ mod tests {
         assert_eq!(
             processor.sole_bound_producer("camera"),
             &config::runtime::ProducerRef::new("epic-whale-6789", "the_camera")
+        );
+        assert!(processor.daemon_scopes().is_empty());
+    }
+
+    /// The scopes the daemon writes into the runtime configuration reach the
+    /// node through the file it reads at start.
+    #[test]
+    fn daemon_mode_reads_the_daemon_scopes_of_its_instance() {
+        let scope = serde_json::json!({
+            "max_copies": 4,
+            "options": [{ "option": "so101_sim", "description": "A simulated SO-101" }],
+        });
+        let runtime_config = RuntimeConfig::new(
+            "127.0.0.1",
+            7448,
+            config::runtime::NodeInstanceConfig {
+                arguments: BTreeMap::from([("port".to_string(), AnyType::Int(8903))]),
+                slot_bindings: BTreeMap::from([(
+                    "camera".to_string(),
+                    config::runtime::ProducerRef::new("epic-whale-6789", "the_camera").into(),
+                )]),
+                daemon_scopes: BTreeMap::from([("stack".to_string(), scope.clone())]),
+                ..config::runtime::NodeInstanceConfig::new(
+                    config::runtime::Name::new("mcp").expect("valid instance id"),
+                )
+            },
+            "built_in_server",
+            "v1",
+            "epic-whale-6789",
+        )
+        .expect("runtime config builds");
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("peppy_runtime.json5");
+        runtime_config
+            .save_json5_launch_config(&path)
+            .expect("the runtime config is written");
+        let read = Processor::load_runtime_config(path.to_str().expect("a UTF-8 path"))
+            .expect("the runtime config is read back");
+
+        let processor = Processor::daemon_from_manifest(read, in_memory_manifest())
+            .expect("the manifest and the launch config agree");
+        assert_eq!(
+            processor.daemon_scopes(),
+            &BTreeMap::from([("stack".to_string(), scope)])
         );
     }
 

@@ -1049,6 +1049,17 @@ impl PyNodeRunner {
         self.inner.copy()
     }
 
+    /// The scope of each daemon target this instance serves, as a dict
+    /// keyed by target name, as the launch gave it. Empty for an instance
+    /// that serves no daemon target, and for one run standalone.
+    fn daemon_scopes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        pythonize(py, self.inner.daemon_scopes()).map_err(|e| {
+            PyRuntimeError::new_err(format!(
+                "failed to convert the daemon scopes to Python: {e}"
+            ))
+        })
+    }
+
     /// Announces the socket the node bound for the endpoint the manifest
     /// declares as `label` under `execution.endpoints`: `scheme` is the URI
     /// scheme token it serves (`http`, `https`), `host` and `port` the

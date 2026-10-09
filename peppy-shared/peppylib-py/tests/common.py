@@ -82,12 +82,15 @@ def create_runtime_config(
     arguments: dict,
     node_tag: str = TEST_NODE_TAG,
     shutdown_grace_secs: int | None = None,
+    daemon_scopes: dict | None = None,
 ) -> None:
     """Write a runtime config JSON file.
 
     `shutdown_grace_secs`, when set, pins the cooperative-shutdown grace the node
     bounds its hooks by (otherwise the daemon default applies). A test that needs
-    a long grace to observe shutdown timing sets it explicitly.
+    a long grace to observe shutdown timing sets it explicitly. `daemon_scopes`,
+    when set, gives the instance the scopes of the daemon targets it serves, as
+    the daemon writes them for an instance of the built-in MCP server.
     """
     config = {
         "messaging_host": host,
@@ -100,6 +103,8 @@ def create_runtime_config(
             "arguments": arguments,
         },
     }
+    if daemon_scopes is not None:
+        config["node_instance"]["daemon_scopes"] = daemon_scopes
     if shutdown_grace_secs is not None:
         config["lifecycle"] = {"shutdown_grace_secs": shutdown_grace_secs}
     Path(path).write_text(json.dumps(config))

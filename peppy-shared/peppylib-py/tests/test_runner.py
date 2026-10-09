@@ -98,9 +98,18 @@ class NonCoroutineAwaitable:
         return record().__await__()
 
 
+DAEMON_SCOPES = {
+    "stack": {
+        "max_copies": 4,
+        "options": [{"option": "so101_sim", "description": "A simulated SO-101"}],
+    },
+}
+
+
 @pytest.mark.asyncio
 async def test_daemon_runner_succeed(monkeypatch):
-    """Node starts in daemon mode, parameters are deserialized, services work, shutdown exits."""
+    """Node starts in daemon mode, parameters are deserialized, the daemon scopes of
+    its runtime config reach it, services work, shutdown exits."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
             peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
@@ -116,6 +125,7 @@ async def test_daemon_runner_succeed(monkeypatch):
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 {"frequency_hz": TEST_FREQUENCY_HZ},
+                daemon_scopes=DAEMON_SCOPES,
             )
 
             monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
@@ -127,8 +137,10 @@ async def test_daemon_runner_succeed(monkeypatch):
             def run_node():
                 try:
 
-                    def setup_fn(params, _node_runner):
-                        result_queue.put(params.frequency_hz)
+                    def setup_fn(params, node_runner):
+                        result_queue.put(
+                            (params.frequency_hz, node_runner.daemon_scopes())
+                        )
 
                     NodeBuilder().run(setup_fn)
                 except Exception as e:
@@ -137,8 +149,11 @@ async def test_daemon_runner_succeed(monkeypatch):
             runner_thread = threading.Thread(target=run_node, daemon=True)
             runner_thread.start()
 
-            frequency_hz = await asyncio.to_thread(result_queue.get, timeout=5.0)
+            frequency_hz, daemon_scopes = await asyncio.to_thread(
+                result_queue.get, timeout=5.0
+            )
             assert frequency_hz == TEST_FREQUENCY_HZ
+            assert daemon_scopes == DAEMON_SCOPES
 
             # The runner opens its session under the `local` workspace namespace; this
             # control messenger must too, or its probes never route to it.
@@ -210,6 +225,7 @@ async def test_standalone_runner_succeed(monkeypatch):
 
                     def setup_fn(params, node_runner):
                         assert params.frequency_hz == TEST_FREQUENCY_HZ
+                        assert node_runner.daemon_scopes() == {}
                         token_queue.put(node_runner.cancellation_token())
 
                     (

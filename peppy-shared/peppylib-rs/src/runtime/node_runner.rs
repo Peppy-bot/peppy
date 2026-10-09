@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::{MessengerHandle, SessionScope};
 
 use futures::FutureExt;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Mutex, PoisonError};
@@ -155,6 +156,15 @@ impl NodeRunner {
     /// for an instance run outside a copy.
     pub fn copy(&self) -> Option<&str> {
         self.processor.copy()
+    }
+
+    /// The scope of each daemon target this instance serves, keyed by
+    /// target name, as the launch gave it: a value of the scope type of the
+    /// target's daemon interface. Only an instance of the built-in MCP
+    /// server whose exposures name a daemon target has any; every other
+    /// instance, and one run standalone, has none.
+    pub fn daemon_scopes(&self) -> &BTreeMap<String, serde_json::Value> {
+        self.processor.daemon_scopes()
     }
 
     fn pairing_slot_cardinality(

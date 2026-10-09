@@ -450,7 +450,15 @@ pub struct NodeInstanceConfig {
     /// left with nothing to observe.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub observation_seeds: ObservationSeeds,
+    /// See [`NodeInstancePlan::daemon_scopes`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub daemon_scopes: DaemonScopes,
 }
+
+/// The scope of each daemon target an instance of the built-in MCP server
+/// serves, keyed by target name, as the launcher gives it: a value the
+/// server parses into the scope type of the target's daemon interface.
+pub type DaemonScopes = BTreeMap<String, serde_json::Value>;
 
 impl NodeInstanceConfig {
     /// Builds a config with everything except `instance_id` defaulted:
@@ -466,6 +474,7 @@ impl NodeInstanceConfig {
             slot_bindings: BTreeMap::new(),
             pairing_slots: BTreeMap::new(),
             observation_seeds: BTreeMap::new(),
+            daemon_scopes: BTreeMap::new(),
         }
     }
 }
@@ -505,6 +514,13 @@ pub struct NodeInstancePlan {
     /// identically to a local one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: SlotBindings,
+    /// The scope of each daemon target the instance serves, as the launch
+    /// composed it and checked it against the target's interface. Only an
+    /// instance that serves a daemon target carries any, so the field is
+    /// written only then, and a node built before the field existed still
+    /// reads its configuration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub daemon_scopes: DaemonScopes,
 }
 
 impl NodeInstancePlan {
@@ -517,6 +533,7 @@ impl NodeInstancePlan {
             arguments: BTreeMap::new(),
             clock: ClockBinding::Wall,
             slot_bindings: BTreeMap::new(),
+            daemon_scopes: BTreeMap::new(),
         }
     }
 
@@ -539,6 +556,7 @@ impl NodeInstancePlan {
             // carries daemon-held state (source generations and liveness)
             // that a plan, by design, does not know.
             observation_seeds: BTreeMap::new(),
+            daemon_scopes: self.daemon_scopes,
         }
     }
 }
@@ -859,6 +877,38 @@ mod tests {
         assert_eq!(plan(consumer.clone()).resolve().framework.clock, consumer);
 
         assert!(plan(ClockBinding::Wall).resolve().framework.clock.is_wall());
+    }
+
+    /// The scopes a launch gave an instance reach its configuration whole,
+    /// and an instance with none writes no field, so a node built before
+    /// the field existed still reads its configuration.
+    #[test]
+    fn daemon_scopes_travel_from_the_plan_to_the_config_and_only_when_present() {
+        let scope = serde_json::json!({
+            "max_copies": 4,
+            "options": [{ "option": "so101_sim", "description": "A simulated SO-101" }],
+        });
+        let scoped = NodeInstancePlan {
+            daemon_scopes: BTreeMap::from([("stack".to_owned(), scope.clone())]),
+            ..plan(ClockBinding::Wall)
+        };
+        let encoded = serde_json5::to_string(&scoped).unwrap();
+        let decoded: NodeInstancePlan = serde_json5::from_str(&encoded).unwrap();
+        assert_eq!(decoded, scoped);
+
+        let config = decoded.resolve();
+        assert_eq!(config.daemon_scopes["stack"], scope);
+        let encoded = serde_json5::to_string(&config).unwrap();
+        let decoded: NodeInstanceConfig = serde_json5::from_str(&encoded).unwrap();
+        assert_eq!(decoded.daemon_scopes["stack"], scope);
+
+        let unscoped = plan(ClockBinding::Wall);
+        let encoded = serde_json5::to_string(&unscoped).unwrap();
+        assert!(!encoded.contains("daemon_scopes"), "{encoded}");
+        let encoded = serde_json5::to_string(&unscoped.resolve()).unwrap();
+        assert!(!encoded.contains("daemon_scopes"), "{encoded}");
+        let decoded: NodeInstanceConfig = serde_json5::from_str(&encoded).unwrap();
+        assert!(decoded.daemon_scopes.is_empty());
     }
 
     /// Wall time is the absence of a binding on the wire, so a plan and a
