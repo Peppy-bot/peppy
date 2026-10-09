@@ -22,8 +22,8 @@ use testcontainers::bollard::errors::Error as EngineError;
 use testcontainers::bollard::exec::{CreateExecOptions, StartExecResults};
 use testcontainers::bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType};
 use testcontainers::bollard::query_parameters::{
-    CreateContainerOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
-    StopContainerOptionsBuilder,
+    CreateContainerOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptions,
+    RemoveContainerOptionsBuilder, RemoveVolumeOptions, StopContainerOptionsBuilder,
 };
 use testcontainers::core::client::docker_client_instance;
 use testcontainers::runners::AsyncBuilder;
@@ -399,7 +399,8 @@ fn host_ubuntu_release() -> String {
 ///   mount point as root: [`CONTAINER_PEPPY_HOME`] and its `conf`, the parent
 ///   of the `repositories.json5` mount, and the directory of
 ///   [`CONTAINER_ROUTER_CONFIG`], where a managed router writes its log beside
-///   the config it reads.
+///   the config it reads. A daemon's data root volume takes
+///   [`CONTAINER_PEPPY_HOME`] from the image, owner included.
 fn e2e_dockerfile(ubuntu_release: &str) -> String {
     let router_config_dir = Path::new(CONTAINER_ROUTER_CONFIG)
         .parent()
@@ -748,11 +749,14 @@ async fn collect_output(
 }
 
 /// A running daemon container. The guard owns cleanup: dropping it removes the
-/// container (panic unwinds included), so failed assertions cannot leak
-/// containers.
+/// container and its data root volume (panic unwinds included), so failed
+/// assertions cannot leak either.
 struct Daemon {
     name: String,
     engine: Docker,
+    /// What the container is created from, kept so that [`Daemon::restart`]
+    /// can create its replacement.
+    container: ContainerCreateBody,
 }
 
 impl Daemon {
@@ -956,36 +960,99 @@ impl Daemon {
         self.wait_for_stack(|_| true).await;
     }
 
-    /// Restarts the daemon process by cycling its container.
+    /// Restarts the daemon in a new container of the same name, configuration
+    /// and data root.
     ///
-    /// The container's command IS `peppy service serve`, so this is the whole
-    /// daemon generation going away and a new one coming back: exactly what a
-    /// coordinator-restart test needs, and the only form of restart available
-    /// here. `peppy service stop` / `install` drive a systemd unit that this
-    /// image does not run.
+    /// The container's command IS `peppy service serve`, so stopping it is the
+    /// whole daemon generation going away, every process of it included, and
+    /// the new container brings a new generation that keeps only what the
+    /// daemon wrote in its data root: exactly what a coordinator-restart test
+    /// needs, and the only form of restart available here. `peppy service
+    /// stop` / `install` drive a systemd unit that this image does not run.
+    ///
+    /// The stopped container is replaced, not started again. The engine of a
+    /// CI runner under load can handle the exit of a container after it has
+    /// already started that container again, and it then tears down the root
+    /// filesystem and the runtime state of the new process: the daemon keeps
+    /// serving, but every exec into its container fails. The exit of the old
+    /// container cannot reach a new one.
     async fn restart(&self) {
         self.stop().await;
+        self.remove_container().await;
+        self.create_and_start().await;
+    }
+
+    /// Creates this daemon's container from [`Daemon::container`] and starts
+    /// it.
+    async fn create_and_start(&self) {
+        self.engine
+            .create_container(
+                Some(
+                    CreateContainerOptionsBuilder::new()
+                        .name(&self.name)
+                        .build(),
+                ),
+                self.container.clone(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("creating container {} failed: {error}", self.name));
         self.engine
             .start_container(&self.name, None)
             .await
-            .unwrap_or_else(|error| panic!("restarting {}: {error}", self.name));
+            .unwrap_or_else(|error| panic!("starting container {} failed: {error}", self.name));
+    }
+
+    /// Removes this daemon's container, killed first if it still runs. Its
+    /// data root volume stays.
+    async fn remove_container(&self) {
+        self.engine
+            .remove_container(&self.name, Some(container_removal()))
+            .await
+            .unwrap_or_else(|error| panic!("removing container {}: {error}", self.name));
     }
 }
 
+/// The removal of a daemon's container: killed first if it still runs, and
+/// with its anonymous volumes. The data root is a named volume, which the
+/// removal leaves in place.
+fn container_removal() -> RemoveContainerOptions {
+    RemoveContainerOptionsBuilder::new()
+        .force(true)
+        .v(true)
+        .build()
+}
+
+/// The name of the volume that holds the data root of the daemon container
+/// `container_name`.
+fn data_root_volume_name(container_name: &str) -> String {
+    format!("{container_name}-data")
+}
+
 impl Drop for Daemon {
-    /// Removes the container and blocks until the engine answers, so a test
-    /// ends with its containers gone. Every test that starts a daemon runs on
-    /// a multi-thread runtime, which is what lets a drop block on the removal.
+    /// Removes the container, then its data root volume, and blocks until the
+    /// engine answers each, so a test ends with both gone. Every test that
+    /// starts a daemon runs on a multi-thread runtime, which is what lets a
+    /// drop block on the removal.
     fn drop(&mut self) {
-        let options = RemoveContainerOptionsBuilder::new()
-            .force(true)
-            .v(true)
-            .build();
-        let removal = self.engine.remove_container(&self.name, Some(options));
+        let volume = data_root_volume_name(&self.name);
+        let removal = async {
+            if let Err(error) = self
+                .engine
+                .remove_container(&self.name, Some(container_removal()))
+                .await
+            {
+                eprintln!("removing container {}: {error}", self.name);
+            }
+            if let Err(error) = self
+                .engine
+                .remove_volume(&volume, None::<RemoveVolumeOptions>)
+                .await
+            {
+                eprintln!("removing volume {volume}: {error}");
+            }
+        };
         let runtime = tokio::runtime::Handle::current();
-        if let Err(error) = tokio::task::block_in_place(|| runtime.block_on(removal)) {
-            eprintln!("removing container {}: {error}", self.name);
-        }
+        tokio::task::block_in_place(|| runtime.block_on(removal));
     }
 }
 
@@ -1001,6 +1068,15 @@ async fn start_daemon(
 ) -> Daemon {
     let repositories_config = launch.fixture.repositories_config();
     let mut mounts = vec![
+        // The data root outlives the container, so that a restart brings the
+        // same daemon back in a new container (see [`Daemon::restart`]). A new
+        // volume takes its directories and their owner from the image.
+        Mount {
+            typ: Some(MountType::VOLUME),
+            source: Some(data_root_volume_name(name)),
+            target: Some(CONTAINER_PEPPY_HOME.to_owned()),
+            ..Default::default()
+        },
         read_only_bind(launch.peppy_binary, CONTAINER_PEPPY_BINARY),
         read_only_bind(launch.apptainer_dir, "/opt/peppy-apptainer"),
         // Every daemon, not only the ones that refresh: mounting the config in
@@ -1057,25 +1133,14 @@ async fn start_daemon(
         }),
         ..Default::default()
     };
-    let engine = engine_client().await;
-    engine
-        .create_container(
-            Some(CreateContainerOptionsBuilder::new().name(name).build()),
-            container,
-        )
-        .await
-        .unwrap_or_else(|error| panic!("creating container {name} failed: {error}"));
-    // The guard exists from the moment the container does, so a container
-    // whose start fails is removed all the same.
+    // The guard exists before the container does, so a container whose
+    // creation or start fails is removed all the same, its volume with it.
     let daemon = Daemon {
         name: name.to_owned(),
-        engine,
+        engine: engine_client().await,
+        container,
     };
-    daemon
-        .engine
-        .start_container(name, None)
-        .await
-        .unwrap_or_else(|error| panic!("starting container {name} failed: {error}"));
+    daemon.create_and_start().await;
     daemon
 }
 
