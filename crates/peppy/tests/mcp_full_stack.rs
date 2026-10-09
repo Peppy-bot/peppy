@@ -36,11 +36,14 @@ use mcp_test_support::{
     poll_task_until, protocol_error, register_contract_members,
 };
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ErrorCode,
-    GetTaskParams, ProtocolVersion, ReadResourceRequestParams, RequestMetaObject,
-    ServerNotification, SubscriptionFilter, TaskStatus, object,
+    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientConfig, ErrorCode,
+    GetTaskParams, ProgressNotificationParam, ProtocolVersion, ReadResourceRequestParams,
+    RequestMetaObject, ServerNotification, SubscriptionFilter, TaskStatus, object,
 };
-use rmcp::service::Subscription;
+use rmcp::service::{NotificationContext, Subscription};
+use rmcp::transport::StreamableHttpClientTransport;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt, RoleClient};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -819,6 +822,30 @@ fn refuse_build(node_dir: &Path) {
     .expect("rewrite staged manifest");
 }
 
+/// Rewrites a staged manifest so its process starts, says why it fails on
+/// stderr, and exits before it is ready, with no build step.
+fn fail_at_start(node_dir: &Path) {
+    let manifest_path = node_dir.join(NODE_CONFIG_FILE);
+    let source = fs::read_to_string(&manifest_path).expect("staged manifest exists");
+    let mut node_config: config::node::NodeConfig =
+        serde_json5::from_str(&source).expect("staged manifest parses");
+    node_config.execution.build_cmd = None;
+    node_config.execution.run_cmd = Some(
+        [
+            "sh",
+            "-c",
+            "echo 'the recorder finds no camera' >&2; exit 3",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+    );
+    fs::write(
+        &manifest_path,
+        serde_json5::to_string(&node_config).expect("staged manifest serializes"),
+    )
+    .expect("rewrite staged manifest");
+}
+
 /// Rewrites a staged manifest for the pre-built binary: no build step, the
 /// absolute binary path as `run_cmd`.
 fn point_manifest_at_binary(node_dir: &Path, binary: &Path) {
@@ -841,7 +868,8 @@ struct Stack {
     serve: ServeCommandEmulation,
     ctx: Arc<AppContext>,
     peppy_dirs: PeppyDirs,
-    _hub: tempfile::TempDir,
+    /// The filesystem repository the daemon resolves from.
+    hub: tempfile::TempDir,
     nodes_dir: tempfile::TempDir,
     /// Everything the CLI commands log on this thread, the launch output
     /// included.
@@ -946,7 +974,7 @@ impl Stack {
             serve,
             ctx,
             peppy_dirs,
-            _hub: hub_dir,
+            hub: hub_dir,
             nodes_dir,
             log_capture,
             _log_guard: log_guard,
@@ -1046,6 +1074,44 @@ impl Stack {
             Ok(()) => panic!("the launch must be refused\n{}", self.run_logs()),
             Err(error) => error.to_string(),
         }
+    }
+
+    /// Stages `framework_controls:v1`, whose one target names the daemon
+    /// interface `stack_copies:v1`, and `broken_recorder:v1`, a recorder
+    /// whose process exits before it is ready, into the hub, and refreshes
+    /// the daemon's caches from it.
+    fn stage_framework_controls(&self) {
+        let hub = self.hub.path();
+        fs::write(
+            hub.join("exposures/framework_controls.json5"),
+            FRAMEWORK_CONTROLS,
+        )
+        .expect("write exposure");
+        let broken = stage_provider(
+            hub,
+            &self.peppy_dirs,
+            "broken_recorder",
+            &RECORDER_NODE_CONFIG.replace(r#"name: "mock_recorder""#, r#"name: "broken_recorder""#),
+            RECORDER_MAIN,
+            RECORDING_CONTRACT,
+            "recording",
+        );
+        fail_at_start(&broken);
+        super::common::seed_docs_repo(&self.serve, &self.ctx, hub);
+    }
+
+    /// The names of the copies the daemon's own stack list reports.
+    async fn daemon_copies(&self) -> Vec<String> {
+        let report = peppy::commands::stack::list_nodes_json_collecting(&self.ctx)
+            .await
+            .expect("stack list answers");
+        let listed: Value = serde_json::from_str(&report.output).expect("the list is JSON");
+        listed["core_nodes"][0]["copies"]
+            .as_array()
+            .expect("the coordinator reports its copies")
+            .iter()
+            .map(|copy| copy["name"].as_str().expect("a copy name").to_owned())
+            .collect()
     }
 
     fn reset(&self) {
@@ -2866,4 +2932,409 @@ async fn a_join_filling_a_once_per_robot_target_twice_is_refused() {
     let (robots, _) = listed_robots(&client, "alpha").await;
     assert!(robots.is_empty(), "{robots:?}");
     stack.reset();
+}
+
+// --- A daemon target: the copies of the stack over MCP.
+
+/// The design's `framework/framework_controls.json5`: one fixed target,
+/// `stack`, that names the daemon interface `stack_copies:v1`.
+const FRAMEWORK_CONTROLS: &str = include_str!(
+    "../../daemon-config-internal/src/daemon_interface/fixtures/framework_controls.json5"
+);
+
+/// A copy of the recorder, which starts and stays.
+const RECORDER_ROBOT_FRAGMENT: &str = r#"{
+    peppy_schema: "launcher_fragment/v1",
+    deployments: [
+        {
+            source: { name: "mock_recorder:v1" },
+            instances: [{ instance_id: "recorder" }],
+        },
+    ],
+}"#;
+
+/// A copy of the recorder that exits before it is ready.
+const BROKEN_ROBOT_FRAGMENT: &str = r#"{
+    peppy_schema: "launcher_fragment/v1",
+    deployments: [
+        {
+            source: { name: "broken_recorder:v1" },
+            instances: [{ instance_id: "recorder" }],
+        },
+    ],
+}"#;
+
+/// The framework's endpoint on `port`, whose scope offers two of the three
+/// options of the `robot` axis, which runs as copies, up to two copies.
+fn framework_launcher(port: u16) -> String {
+    format!(
+        r#"{{
+        peppy_schema: "launcher/v1",
+        components: [
+            {{
+                name: "robot",
+                cardinality: "zero_or_more",
+                options: {{
+                    recorder_robot: "recorder_robot.json5",
+                    broken_robot: "broken_robot.json5",
+                    camera_robot: "camera_robot.json5",
+                }},
+            }},
+        ],
+        deployments: [
+            {{
+                source: {{ exposures: ["framework_controls:v1"] }},
+                instances: [
+                    {{ instance_id: "framework_controls_inst", arguments: {{ port: {port} }} }},
+                ],
+            }},
+        ],
+        adjustments: [
+            {{
+                target: "framework_controls_inst",
+                set_daemon_scopes: {{ stack: {{
+                    max_copies: 2,
+                    options: [
+                        {{ option: "recorder_robot", description: "A robot that records episodes" }},
+                        {{ option: "broken_robot", description: "A robot whose software cannot start" }},
+                    ],
+                }} }},
+            }},
+        ],
+    }}"#
+    )
+}
+
+/// A client that keeps every progress notification it receives. The client
+/// handles each notification on a task of its own, so a test waits for the
+/// ones it expects, and reads them in the order of their `progress`.
+struct ProgressClient {
+    info: ClientConfig,
+    received: tokio::sync::watch::Sender<Vec<ProgressNotificationParam>>,
+}
+
+impl ClientHandler for ProgressClient {
+    fn get_info(&self) -> ClientConfig {
+        self.info.clone()
+    }
+
+    async fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        self.received.send_modify(|received| received.push(params));
+    }
+}
+
+type FrameworkClient = rmcp::service::RunningService<RoleClient, ProgressClient>;
+
+/// Connects a client without the tasks extension to `endpoint_url`, and
+/// returns it with the progress notifications it receives.
+async fn connect_recording_progress(
+    endpoint_url: &str,
+) -> (
+    FrameworkClient,
+    tokio::sync::watch::Receiver<Vec<ProgressNotificationParam>>,
+) {
+    let (received, progress) = tokio::sync::watch::channel(Vec::new());
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(endpoint_url.to_owned()),
+    );
+    let client = ProgressClient {
+        info: ClientConfig::default(),
+        received,
+    }
+    .serve_with_lifecycle(
+        transport,
+        ClientLifecycleMode::Discover {
+            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+        },
+    )
+    .await
+    .expect("the MCP client negotiates 2026-07-28");
+    (client, progress)
+}
+
+/// Calls `tool` with `arguments`. The client sends a progress token of its
+/// own with every call.
+async fn call(
+    client: &FrameworkClient,
+    tool: &'static str,
+    arguments: Value,
+) -> rmcp::model::CallToolResult {
+    let params = CallToolRequestParams::new(tool).with_arguments(object(arguments));
+    tokio::time::timeout(WAIT, client.call_tool(params))
+        .await
+        .unwrap_or_else(|_| panic!("{tool} ends"))
+        .unwrap_or_else(|error| panic!("{tool} answers: {error}"))
+}
+
+/// The messages of one call's progress notifications, in their order: the
+/// call whose progress says `first`, once `complete` holds of its messages.
+async fn progress_of(
+    progress: &mut tokio::sync::watch::Receiver<Vec<ProgressNotificationParam>>,
+    first: &str,
+    complete: impl Fn(&[String]) -> bool,
+) -> Vec<String> {
+    let call_progress = |received: &[ProgressNotificationParam]| {
+        let token = received
+            .iter()
+            .find(|params| params.message.as_deref() == Some(first))?
+            .progress_token
+            .clone();
+        let mut ours: Vec<&ProgressNotificationParam> = received
+            .iter()
+            .filter(|params| params.progress_token == token)
+            .collect();
+        ours.sort_by(|left, right| left.progress.total_cmp(&right.progress));
+        let messages: Vec<String> = ours
+            .iter()
+            .map(|params| params.message.clone().unwrap_or_default())
+            .collect();
+        complete(&messages).then_some(messages)
+    };
+    let waited = tokio::time::timeout(
+        WAIT,
+        progress.wait_for(|received| call_progress(received).is_some()),
+    )
+    .await
+    .map(|received| received.expect("the client outlives the wait").clone());
+    match waited {
+        Ok(received) => call_progress(&received).expect("the progress is complete"),
+        Err(_) => panic!(
+            "the progress of the call that says {first:?} arrives; received: {:?}",
+            progress
+                .borrow()
+                .iter()
+                .map(|params| params.message.clone())
+                .collect::<Vec<_>>()
+        ),
+    }
+}
+
+/// Calls a tool that takes no argument and answers structured content.
+async fn structured(client: &FrameworkClient, tool: &'static str) -> Value {
+    client
+        .call_tool(CallToolRequestParams::new(tool))
+        .await
+        .unwrap_or_else(|error| panic!("{tool} answers: {error}"))
+        .structured_content
+        .unwrap_or_else(|| panic!("{tool} answers structured content"))
+}
+
+/// The text of a tool error.
+fn tool_error_text(result: &rmcp::model::CallToolResult) -> String {
+    assert_eq!(result.is_error, Some(true), "{result:?}");
+    serde_json::to_value(&result.content).expect("content serializes")[0]["text"]
+        .as_str()
+        .expect("a text block")
+        .to_owned()
+}
+
+/// The names of the copies `stack.list` reports.
+async fn listed_copies(client: &FrameworkClient) -> Vec<String> {
+    structured(client, "stack.list").await["copies"]
+        .as_array()
+        .expect("copies")
+        .iter()
+        .map(|copy| copy["name"].as_str().expect("a name").to_owned())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
+    let stack = Stack::boot(true).await;
+    stack.stage_framework_controls();
+    write_robot_fragment(&stack, "recorder_robot", RECORDER_ROBOT_FRAGMENT);
+    write_robot_fragment(&stack, "broken_robot", BROKEN_ROBOT_FRAGMENT);
+    write_robot_fragment(&stack, "camera_robot", CAMERA_ROBOT_FRAGMENT);
+    let port = ephemeral_port();
+    stack
+        .launch_launcher(&framework_launcher(port), Vec::new())
+        .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", stack.run_logs()));
+    wait_for_port(port, || stack.run_logs()).await;
+    let (client, mut progress) =
+        connect_recording_progress(&endpoint(port, "/framework_controls/v1/mcp")).await;
+
+    // --- The tools of the target, with the schema of `join` narrowed to
+    // the scope.
+    let tools = client.list_tools(None).await.expect("tools/list answers");
+    let mut names: Vec<&str> = tools.tools.iter().map(|tool| tool.name.as_ref()).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            "stack.join",
+            "stack.list",
+            "stack.recent_calls",
+            "stack.remove"
+        ]
+    );
+    let join_schema = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "stack.join")
+        .map(|tool| serde_json::to_value(&tool.input_schema).expect("schema serializes"))
+        .expect("the tool is listed");
+    assert_eq!(
+        join_schema["properties"]["option"]["enum"],
+        json!(["recorder_robot", "broken_robot"])
+    );
+    assert_eq!(
+        structured(&client, "stack.list").await,
+        json!({
+            "options": [
+                { "option": "recorder_robot", "description": "A robot that records episodes" },
+                { "option": "broken_robot", "description": "A robot whose software cannot start" },
+            ],
+            "copies": [],
+            "max_copies": 2,
+        })
+    );
+
+    // --- Two copies join, each reporting its acceptance first, then the
+    // lines of the join, the start of its instance included.
+    for copy_name in ["alpha", "bravo"] {
+        let joined = call(
+            &client,
+            "stack.join",
+            json!({ "name": copy_name, "option": "recorder_robot" }),
+        )
+        .await;
+        assert_eq!(
+            joined.structured_content,
+            Some(json!({
+                "success": true,
+                "message": format!("{copy_name} (recorder_robot) is on the stack"),
+            })),
+            "{joined:?}\n{}",
+            stack.run_logs()
+        );
+        let accepted =
+            format!("launch: the daemon accepted the addition of {copy_name} (recorder_robot)");
+        let lines = progress_of(&mut progress, &accepted, |lines| {
+            lines.iter().any(|line| line.starts_with("run: "))
+        })
+        .await;
+        assert_eq!(lines[0], accepted, "the acceptance comes first: {lines:?}");
+    }
+    assert_eq!(listed_copies(&client).await, ["alpha", "bravo"]);
+    assert_eq!(stack.daemon_copies().await, ["alpha", "bravo"]);
+
+    // --- Refusals: the limit, a name in use (checked first), and an option
+    // outside the scope, which the narrowed schema refuses.
+    let at_limit = client
+        .call_tool(
+            CallToolRequestParams::new("stack.join").with_arguments(object(
+                json!({ "name": "charlie", "option": "recorder_robot" }),
+            )),
+        )
+        .await
+        .expect("stack.join answers");
+    assert_eq!(
+        tool_error_text(&at_limit),
+        "the action failed: the stack holds 2 copies of the options recorder_robot and \
+         broken_robot (alpha, bravo), the most the scope of this endpoint allows; remove one \
+         first"
+    );
+    let in_use = client
+        .call_tool(
+            CallToolRequestParams::new("stack.join").with_arguments(object(
+                json!({ "name": "alpha", "option": "recorder_robot" }),
+            )),
+        )
+        .await
+        .expect("stack.join answers");
+    assert_eq!(
+        tool_error_text(&in_use),
+        "the action failed: a copy `alpha` is already on the stack; choose another name"
+    );
+    let outside = client
+        .call_tool(
+            CallToolRequestParams::new("stack.join")
+                .with_arguments(object(json!({ "name": "echo", "option": "camera_robot" }))),
+        )
+        .await
+        .expect_err("an option outside the scope is outside the schema");
+    assert_eq!(protocol_error(outside).code, ErrorCode::INVALID_PARAMS);
+
+    // --- A removal reports each instance it stops.
+    let removed = call(&client, "stack.remove", json!({ "name": "bravo" })).await;
+    assert_eq!(
+        removed.structured_content,
+        Some(json!({ "success": true, "message": "bravo is off the stack" }))
+    );
+    let accepted = "launch: the daemon accepted the removal of bravo";
+    let lines = progress_of(&mut progress, accepted, |lines| {
+        lines
+            .iter()
+            .any(|line| line == "launch: Stopping instance `bravo_recorder` of copy `bravo`")
+    })
+    .await;
+    assert_eq!(lines[0], accepted, "the acceptance comes first: {lines:?}");
+
+    // --- A copy whose node fails its start is undone: no copy of it stays.
+    let failed = call(
+        &client,
+        "stack.join",
+        json!({ "name": "delta", "option": "broken_robot" }),
+    )
+    .await;
+    let failure = failed
+        .structured_content
+        .clone()
+        .unwrap_or_else(|| panic!("a join that ran answers its result: {failed:?}"));
+    assert_eq!(failure["success"], false, "{failure}");
+    let message = failure["message"].as_str().expect("a message");
+    let (error, logs) = message
+        .strip_prefix("the addition of delta failed: ")
+        .and_then(|rest| rest.split_once(". Log files: "))
+        .unwrap_or_else(|| panic!("the failure says what failed and names its logs: {message}"));
+    assert!(!error.is_empty(), "{message}");
+    let logs: Vec<&str> = logs.split(", ").collect();
+    assert_eq!(
+        logs.len(),
+        2,
+        "the stack log and the node's run log: {message}"
+    );
+    assert!(
+        logs[1].ends_with("delta_recorder.log")
+            && fs::read_to_string(logs[1])
+                .unwrap_or_default()
+                .contains("the recorder finds no camera"),
+        "the second log is the run log of the instance that failed: {message}"
+    );
+    assert_eq!(listed_copies(&client).await, ["alpha"]);
+    assert_eq!(stack.daemon_copies().await, ["alpha"]);
+
+    // --- The call record: each change, each refusal by its kind.
+    let record = structured(&client, "stack.recent_calls").await;
+    let mut calls: Vec<(String, Value, Value)> = record["calls"]
+        .as_array()
+        .expect("calls")
+        .iter()
+        .map(|call| {
+            (
+                call["tool"].as_str().expect("a tool").to_owned(),
+                call["outcome"].clone(),
+                call["success"].clone(),
+            )
+        })
+        .collect();
+    calls.reverse();
+    assert_eq!(
+        calls,
+        [
+            ("stack.join".to_owned(), json!("completed"), json!(true)),
+            ("stack.join".to_owned(), json!("completed"), json!(true)),
+            ("stack.join".to_owned(), json!("failed"), Value::Null),
+            ("stack.join".to_owned(), json!("failed"), Value::Null),
+            ("stack.join".to_owned(), json!("refused"), Value::Null),
+            ("stack.remove".to_owned(), json!("completed"), json!(true)),
+            ("stack.join".to_owned(), json!("completed"), json!(false)),
+        ],
+        "{record}"
+    );
+    client.cancel().await.expect("the client closes");
 }
