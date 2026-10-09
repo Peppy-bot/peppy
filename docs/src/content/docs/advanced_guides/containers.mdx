@@ -484,6 +484,16 @@ fetch_pinned() {
 }
 ```
 
+Both also get `PEPPY_NODE_BUILD_CACHE`, which names
+`/peppy-cache/nodes/<name>_<tag>`: a directory of the node being built, which
+no build of another node uses. Peppy never reads it. A def keeps there what
+its next build can use, such as a part of the image that it builds again only
+when the inputs of that part change, stored under a hash of those inputs. A
+build of the node can start while an earlier one still ends (after a
+`--force` build, say), so a def stores a file there under a temporary name
+and then renames it, as with the downloads. Nothing prunes the directory: a
+def that stores a new entry removes the entries it no longer needs.
+
 :::caution
 Caching requires a `/peppy-cache` directory in the base image: build-time
 binds cannot create their destination. The peppy base images
@@ -546,8 +556,8 @@ The cache lives at `~/.peppy/cache/container_build` and is safe to delete
 at any time; the next build recreates it. `sccache-cache/` prunes itself to
 sccache's size limit (10 GiB by default). `cargo-home/` grows with every
 dependency version ever built, `uv-python/` with every Python version ever
-installed, and `downloads/` with every pin ever fetched; they are only
-reclaimed by deleting them. `uv-cache/` grows with every package version
+installed, `downloads/` with every pin ever fetched, and `nodes/` with what
+the defs keep there; they are only reclaimed by deleting them. `uv-cache/` grows with every package version
 ever installed. Because the directory is shared and writable, what a
 `%post` writes there can persist into later builds on the same machine, the
 same trust the build itself already runs with. On macOS, builds run inside
