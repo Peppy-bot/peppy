@@ -6,8 +6,9 @@ use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
     AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, DeploymentSource,
     ExternallyCoveredSlots, MemberAddressing, PairingValidationItem, PeppyLauncher, Placements,
-    PreparedLauncher, resolve_clocks, validate_link_plan,
+    PreparedLauncher, check_daemon_scopes, resolve_clocks, validate_link_plan,
 };
+use daemon_config::mcp_deployment::DeploymentTargets;
 use daemon_config::repository::EntryOrigin;
 
 use super::launch::{infer_launcher_origin, parse_launcher_file};
@@ -32,9 +33,10 @@ const PREVIEW_CORE_NODE: &str = "cn-preview";
 /// goes to stdout, so it doubles as the escape hatch: flatten, hand-edit,
 /// launch the flat file. The resolution report goes to stderr.
 ///
-/// The flat plan is then held to the launch-time link rules that need no
-/// daemon: slot-key and vacancy legality, and the pairing rules, coverage
-/// included, so a launcher that leaves a `zero_or_one` pairing slot neither
+/// The flat plan is then held to the launch checks of daemon scopes, which
+/// read the exposure documents alone and so run with a cold nodes cache
+/// too, and to the launch-time link rules that need no daemon: slot-key and
+/// vacancy legality, and the pairing rules, coverage included, so a launcher that leaves a `zero_or_one` pairing slot neither
 /// paired nor vacant fails here instead of minutes later at launch. The
 /// node manifests come from this machine's nodes cache, a git-backed one out
 /// of the checkout the caches materialized for it; when one is not readable
@@ -80,16 +82,82 @@ pub fn resolve_rendered(
         .launch(words, joins)
         .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
     let mut lines = composed.report.render_lines();
-    check_link_plan(
-        &composed.launcher,
-        &CopyMembership::of(composed.copies()),
-        dirs,
-        &mut lines,
-    )?;
+    let copies = CopyMembership::of(composed.copies());
+    check_daemon_scope_rules(&prepared, &composed.launcher, &copies, dirs, &mut lines)?;
+    check_link_plan(&composed.launcher, &copies, dirs, &mut lines)?;
 
     let document = json5_pretty::to_string_pretty(&composed.launcher)
         .map_err(|e| Error::ExecutionFailed(format!("cannot serialize the flat launcher: {e}")))?;
     Ok((document, lines))
+}
+
+/// Hold the flat plan to the launch checks of daemon scopes: every scope
+/// parsed into its interface's type and held against the launcher, every
+/// instance that serves a daemon target on the coordinator, and no link to a
+/// daemon target. They read the exposure documents alone, so they run
+/// whatever the nodes and contracts caches hold. When an exposure document
+/// is not readable here the report says the checks were skipped, so a clean
+/// exit is never mistaken for checked scopes.
+fn check_daemon_scope_rules(
+    prepared: &PreparedLauncher,
+    flat: &PeppyLauncher,
+    copies: &CopyMembership,
+    dirs: &PeppyDirs,
+    report: &mut Vec<String>,
+) -> Result<()> {
+    let mut targets = Vec::with_capacity(flat.deployments.len());
+    let mut unavailable: Vec<String> = Vec::new();
+    for deployment in &flat.deployments {
+        let DeploymentSource::Exposures { exposures } = &deployment.source else {
+            targets.push(DeploymentTargets::default());
+            continue;
+        };
+        let documents = match core_node::resolve_exposure_documents(
+            dirs,
+            exposures,
+            &crate::commands::report_as_info,
+        ) {
+            Ok(documents) => documents,
+            Err(e) => {
+                unavailable.push(format!("{} ({e})", deployment.source.label()));
+                targets.push(DeploymentTargets::default());
+                continue;
+            }
+        };
+        // A document set the launch would refuse (two sources under one
+        // target name, an interface this peppy does not serve) is refused
+        // here as it would be there.
+        let served = DeploymentTargets::of(&documents).map_err(|e| {
+            Error::ExecutionFailed(format!(
+                "deployment {} would be refused at launch: {e}",
+                deployment.source.label()
+            ))
+        })?;
+        targets.push(served);
+    }
+    if !unavailable.is_empty() {
+        report.push(format!(
+            "daemon scopes not checked, {} exposure deployment(s) unavailable: {}",
+            unavailable.len(),
+            unavailable.join(", ")
+        ));
+        return Ok(());
+    }
+    check_daemon_scopes(prepared, flat.deployments.iter().zip(&targets), copies).map_err(
+        |refusals| {
+            Error::ExecutionFailed(format!(
+                "the flat launcher breaks daemon scope rules a launch would reject:{}",
+                daemon_config::format_bulleted(&refusals.0)
+            ))
+        },
+    )?;
+    let scoped: usize = targets.iter().map(|served| served.daemon.len()).sum();
+    if scoped > 0 {
+        report.push(format!(
+            "daemon scopes hold: {scoped} daemon target(s) scoped and placed on the coordinator"
+        ));
+    }
+    Ok(())
 }
 
 /// One deployment's manifest as [`check_link_plan`] resolved it: the

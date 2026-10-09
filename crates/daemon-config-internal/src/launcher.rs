@@ -2,6 +2,7 @@ mod bindings;
 mod clocks;
 mod compose;
 mod composition;
+mod daemon_scopes;
 mod links;
 mod observations;
 mod pairings;
@@ -22,6 +23,7 @@ pub use compose::{
     SELF_COPY_NAME_REFUSAL, SkipReason, SkippedAdjustment, UnitSelection, check_composition,
 };
 pub use composition::{ComponentAxis, LauncherFragmentParser, OptionSpec};
+pub use daemon_scopes::{DaemonScopeError, DaemonScopeRefusals, check_daemon_scopes};
 pub use links::{validate_link_plan, validate_link_slots};
 pub use observations::PlannedObservation;
 pub use pairings::{

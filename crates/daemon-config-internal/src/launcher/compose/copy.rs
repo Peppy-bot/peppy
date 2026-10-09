@@ -412,6 +412,7 @@ pub(super) fn compose_copy(
     let owns = |target: &str| minted.values().any(|id| id.as_str() == target);
     let applied: Vec<AppliedAdjustment> =
         rewrite_report(name, expanded.applied, &minted, &rewrite)?;
+    refuse_daemon_scopes(name, &loaded.name, &applied)?;
     let stack_writes = applied
         .iter()
         .filter(|entry| !owns(&entry.target))
@@ -444,6 +445,29 @@ pub(super) fn compose_copy(
         core_nodes,
         applied,
         skipped,
+    })
+}
+
+/// A scope belongs to the stack: a copy's composition that sets one, on
+/// the copy's own instances or on a stack instance, is refused, at launch,
+/// at a join and at a removal alike, since each composes the copy here.
+fn refuse_daemon_scopes(
+    copy: &Name,
+    option: &str,
+    applied: &[AppliedAdjustment],
+) -> Result<(), CompositionError> {
+    let Some((entry, daemon_target)) = applied.iter().find_map(|entry| match &entry.change {
+        AppliedChange::DaemonScope { daemon_target, .. } => Some((entry, daemon_target)),
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    Err(CompositionError::CopySetsDaemonScope {
+        copy: copy.to_string(),
+        option: option.to_owned(),
+        instance: entry.target.clone(),
+        daemon_target: daemon_target.clone(),
+        origin: entry.origin.clone(),
     })
 }
 
@@ -554,7 +578,9 @@ fn rewrite_report(
                 reason,
             };
             match &mut entry.change {
-                AppliedChange::Argument { .. } | AppliedChange::Clock { .. } => {}
+                AppliedChange::Argument { .. }
+                | AppliedChange::Clock { .. }
+                | AppliedChange::DaemonScope { .. } => {}
                 AppliedChange::LinkSet { old, new, .. } => {
                     if let Some(old) = old {
                         rewrite_link(old, rewrite).map_err(collide)?;
@@ -677,6 +703,13 @@ fn apply_write(
         AppliedChange::Clock { new, .. } => {
             instance.framework.clock = Some(new.clone());
         }
+        AppliedChange::DaemonScope {
+            daemon_target, new, ..
+        } => {
+            instance
+                .daemon_scopes
+                .insert(daemon_target.clone(), new.clone());
+        }
     }
     Ok(())
 }
@@ -763,6 +796,22 @@ pub(super) fn attach(
                     )));
                 }
             }
+            // A copy's composition that sets a scope is refused before it
+            // writes anything (`refuse_daemon_scopes`), so a composed copy
+            // carries none: the arm holds the copy to what runs, as every
+            // value write is.
+            AppliedChange::DaemonScope {
+                daemon_target, new, ..
+            } => {
+                let old = running.daemon_scopes.get(daemon_target);
+                if old != Some(new) {
+                    return Err(refusal(format!(
+                        "{field}: {} -> {}",
+                        render_option(old),
+                        render(new)
+                    )));
+                }
+            }
         }
     }
     add_copy(&mut flat, copy)?;
@@ -801,6 +850,11 @@ pub(super) fn against_running(
                 },
                 AppliedChange::Clock { old, .. } => {
                     *old = running.framework.clock.clone();
+                }
+                AppliedChange::DaemonScope {
+                    daemon_target, old, ..
+                } => {
+                    *old = running.daemon_scopes.get(daemon_target).cloned();
                 }
                 AppliedChange::LinkAdded { .. } => {}
             }

@@ -34,11 +34,17 @@ pub enum AppliedChange {
         old: Option<Name>,
         new: Name,
     },
+    /// The scope of one daemon target the instance serves.
+    DaemonScope {
+        daemon_target: String,
+        old: Option<serde_json::Value>,
+        new: serde_json::Value,
+    },
 }
 
 impl AppliedChange {
-    /// The written field, `arguments.<key>`, `links.<slot>` or
-    /// `framework.clock`.
+    /// The written field, `arguments.<key>`, `links.<slot>`,
+    /// `framework.clock` or `daemon_scopes.<target>`.
     pub fn field(&self) -> String {
         match self {
             AppliedChange::Argument { key, .. } => format!("arguments.{key}"),
@@ -46,6 +52,9 @@ impl AppliedChange {
             | AppliedChange::LinkAdded { slot, .. }
             | AppliedChange::LinkRemoved { slot, .. } => format!("links.{slot}"),
             AppliedChange::Clock { .. } => String::from("framework.clock"),
+            AppliedChange::DaemonScope { daemon_target, .. } => {
+                format!("daemon_scopes.{daemon_target}")
+            }
         }
     }
 
@@ -57,6 +66,7 @@ impl AppliedChange {
             AppliedChange::LinkAdded { target, .. } => format!("+ {target}"),
             AppliedChange::LinkRemoved { .. } => String::from("(absent)"),
             AppliedChange::Clock { new, .. } => new.to_string(),
+            AppliedChange::DaemonScope { new, .. } => render(new),
         }
     }
 
@@ -75,6 +85,9 @@ impl AppliedChange {
                 old.as_ref()
                     .map_or_else(|| String::from("(absent)"), Name::to_string)
             ),
+            AppliedChange::DaemonScope { old, new, .. } => {
+                format!("{} -> {}", render_option(old.as_ref()), render(new))
+            }
         }
     }
 }

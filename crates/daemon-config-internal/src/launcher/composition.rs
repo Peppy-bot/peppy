@@ -576,6 +576,8 @@ impl<'de> Deserialize<'de> for CopyEntry {
             core_node: Option<de::IgnoredAny>,
             #[serde(default, deserialize_with = "written")]
             links: Option<de::IgnoredAny>,
+            #[serde(default, deserialize_with = "written")]
+            daemon_scopes: Option<de::IgnoredAny>,
         }
 
         let raw = Declaration::deserialize(deserializer)?;
@@ -597,6 +599,13 @@ impl<'de> Deserialize<'de> for CopyEntry {
                 "copy `{}` declares `links`; a copy's instances take their `links` from the \
                  option's fragments and the launcher's `adjustments` under the option, and \
                  `with` selects the option's own axes",
+                raw.instance_id
+            )));
+        }
+        if raw.daemon_scopes.is_some() {
+            return Err(de::Error::custom(format!(
+                "copy `{}` declares `daemon_scopes`; a scope belongs to the stack, so give it on \
+                 the stack instance that serves the daemon target",
                 raw.instance_id
             )));
         }
@@ -956,6 +965,11 @@ pub struct Adjustment {
     /// Drops each named slot's entry entirely, returning the slot to absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unset_links: Option<Vec<String>>,
+    /// Replaces the scope of each named daemon target, creating it when
+    /// absent. No operation removes a scope. A scope belongs to the stack,
+    /// so a copy's composition that applies one is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_daemon_scopes: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 /// Written back in the shortest shape that holds it: a lone file as its
@@ -1369,17 +1383,25 @@ fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), Stri
         || adjustment
             .unset_links
             .as_ref()
-            .is_some_and(|v| !v.is_empty());
+            .is_some_and(|v| !v.is_empty())
+        || adjustment
+            .set_daemon_scopes
+            .as_ref()
+            .is_some_and(|m| !m.is_empty());
     if !has_operation {
         return Err(format!(
             "adjustment on `{}` in {origin} names no operation: state at least one of \
-             `set_arguments`, `set_framework`, `set_links`, `add_links`, `unset_links`",
+             `set_arguments`, `set_framework`, `set_links`, `add_links`, `unset_links`, \
+             `set_daemon_scopes`",
             adjustment.target
         ));
     }
 
     if let Some(arguments) = &adjustment.set_arguments {
         check_non_empty_keys(arguments.keys(), "argument", &adjustment.target, origin)?;
+    }
+    if let Some(scopes) = &adjustment.set_daemon_scopes {
+        check_non_empty_keys(scopes.keys(), "daemon target", &adjustment.target, origin)?;
     }
     if let Some(links) = &adjustment.set_links {
         check_non_empty_keys(links.keys(), "link", &adjustment.target, origin)?;
