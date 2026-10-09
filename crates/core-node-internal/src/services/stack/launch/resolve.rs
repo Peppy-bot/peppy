@@ -295,6 +295,7 @@ async fn resolve_launcher_origin(
                 LaunchFeedbackStep::LauncherStep,
                 &ctx.log,
                 None,
+                None,
             );
 
             // The sender moves into the blocking closure, so the channel
@@ -380,6 +381,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
             &ctx.feedback_publisher,
             LaunchFeedbackStep::LauncherStep,
             &ctx.log,
+            None,
             None,
         );
         let resolved = resolve_one(ctx, &deployment, placements, &node_entries, &feedback_tx).await;

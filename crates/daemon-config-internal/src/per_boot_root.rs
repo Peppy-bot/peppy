@@ -15,6 +15,11 @@
 //!   (repositories, credentials, `peppy_config.json5`, the enrollment). It is
 //!   small, and a tool can write it without a peppy process, before the first
 //!   peppy process of the boot clears the root.
+//! - [`PeppyDirs::container_build_cache_dir`]: the caches container builds
+//!   share (the cargo registry, sccache, the uv packages and interpreters,
+//!   the pinned downloads). Every entry in it is keyed by its content or its
+//!   version, so no boot makes one wrong, and without them the first stack
+//!   launch of a boot compiles and downloads every node from nothing.
 //! - the two lock files: a lock file that is unlinked and recreated lets two
 //!   processes lock two different inodes behind the same path.
 //! - the boot record.
@@ -144,11 +149,12 @@ fn recorded_boot_id(peppy_dirs: &PeppyDirs) -> io::Result<Option<BootId>> {
     }
 }
 
-/// The entries of the root that a clear keeps: the configuration, the lock
-/// files and the boot record.
-fn kept_paths(peppy_dirs: &PeppyDirs) -> [PathBuf; 4] {
+/// The entries of the root that a clear keeps: the configuration, the
+/// container build caches, the lock files and the boot record.
+fn kept_paths(peppy_dirs: &PeppyDirs) -> [PathBuf; 5] {
     [
         peppy_dirs.conf_dir(),
+        peppy_dirs.container_build_cache_dir(),
         peppy_dirs.daemon_lock_path(),
         peppy_dirs.root_clear_lock_path(),
         peppy_dirs.root_boot_id_path(),
@@ -238,6 +244,9 @@ mod tests {
             &peppy_dirs.container_build_cache_dir().join("cargo-home/x"),
             1000,
         );
+        write_file(&peppy_dirs.cache_dir().join("nodes.json5"), 10);
+        write_file(&peppy_dirs.git_checkouts_dir().join("hub-0123/file"), 10);
+        write_file(&peppy_dirs.built_nodes_dir().join("node_v1/0123.sif"), 10);
         write_file(&peppy_dirs.root().join("daemon_state.json5"), 10);
         write_file(&peppy_dirs.runtime_config_dir().join("node.json5"), 10);
         write_file(&peppy_dirs.daemon_lock_path(), 0);
@@ -262,9 +271,25 @@ mod tests {
         entries
     }
 
+    fn cache_entries(peppy_dirs: &PeppyDirs) -> Vec<String> {
+        let mut entries: Vec<String> = std::fs::read_dir(peppy_dirs.cache_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        entries.sort();
+        entries
+    }
+
     fn assert_cleared_to_the_kept_files(peppy_dirs: &PeppyDirs) {
-        assert_eq!(root_entries(peppy_dirs), ["conf", "runtime"]);
+        assert_eq!(root_entries(peppy_dirs), ["cache", "conf", "runtime"]);
         assert!(peppy_dirs.conf_dir().join("repositories.json5").exists());
+        assert_eq!(cache_entries(peppy_dirs), ["container_build"]);
+        assert!(
+            peppy_dirs
+                .container_build_cache_dir()
+                .join("cargo-home/x")
+                .exists()
+        );
         assert_eq!(
             runtime_entries(peppy_dirs),
             ["boot_id", "daemon.lock", "root_clear.lock"]
@@ -398,6 +423,7 @@ mod tests {
             }
         );
         assert!(!peppy_dirs.root().join("daemon_state.json5").exists());
-        assert!(!peppy_dirs.container_build_cache_dir().exists());
+        assert!(!peppy_dirs.built_nodes_dir().exists());
+        assert!(peppy_dirs.container_build_cache_dir().exists());
     }
 }

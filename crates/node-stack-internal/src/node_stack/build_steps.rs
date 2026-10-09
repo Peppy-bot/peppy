@@ -217,9 +217,15 @@ pub(super) async fn build_container_image(
         let language = inputs.language;
         let extra_args = inputs.apptainer_build_extra_args.to_vec();
         let def_path = def_path.clone();
+        let node_name = inputs.node_name.to_owned();
+        let node_tag = inputs.node_tag.to_owned();
         tokio::task::spawn_blocking(move || {
             let def_contents = std::fs::read_to_string(&def_path).ok()?;
-            container_build_cache::prepare(&peppy_dirs, language, &def_contents, &extra_args)
+            let node = container_build_cache::NodeIdentity {
+                name: &node_name,
+                tag: &node_tag,
+            };
+            container_build_cache::prepare(&peppy_dirs, &node, language, &def_contents, &extra_args)
         })
         .await
         .map_err(|e| format!("Build cache preparation task failed: {}", e))?
