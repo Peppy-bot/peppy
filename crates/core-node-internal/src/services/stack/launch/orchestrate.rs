@@ -30,6 +30,7 @@ pub(in crate::services::stack) async fn add_node_directly(
         LaunchFeedbackStep::AddingNode,
         &ctx.log,
         Some(Arc::clone(&activity_notify)),
+        None,
     );
 
     let action_context = NodeAddActionContext {
@@ -79,6 +80,9 @@ pub(in crate::services::stack) async fn add_node_directly(
     }
 }
 
+/// Builds one node the change added on this machine. Each line of its output
+/// reaches the launch feedback as `[<name>:<tag>] <line>`: a machine builds
+/// several nodes at once, and their lines interleave.
 pub(in crate::services::stack) async fn build_node_directly(
     ctx: &StackChangeContext,
     launch_id: &str,
@@ -105,6 +109,7 @@ pub(in crate::services::stack) async fn build_node_directly(
         LaunchFeedbackStep::BuildingNode,
         &ctx.log,
         Some(Arc::clone(&activity_notify)),
+        Some(format!("{node_name}:{node_tag}")),
     );
 
     let action_context = NodeBuildActionContext {
@@ -160,6 +165,7 @@ pub(in crate::services::stack) async fn start_node_directly(
         LaunchFeedbackStep::RunningNode,
         &ctx.log,
         Some(Arc::clone(&activity_notify)),
+        None,
     );
 
     let action_context = NodeRunActionContext {

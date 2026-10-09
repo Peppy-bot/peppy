@@ -14,7 +14,11 @@ use core_node_api::encoding::{
     LaunchFeedbackStep, NodeAddGoal, NodeAddLogEntry, NodeBuildGoal, NodeBuildLogEntry, NodeSource,
 };
 use daemon_config::repository::DeploymentRoot;
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Marker git_hash for an add whose bytes a pin already vouched for: the ones
@@ -87,16 +91,27 @@ fn hosts_of(
     hosts
 }
 
+/// How many nodes this machine builds at the same time in one stack change.
+///
+/// The builds of two nodes share nothing but the build caches, which are made
+/// for concurrent builds. Two at a time already hides most of a stack's build
+/// time behind its longest build: a simulation stack spends about half of its
+/// build time on its engine alone, and its other nodes build one after
+/// another beside it. More would put several large compilations in memory at
+/// once, which a small machine does not have.
+const MAX_CONCURRENT_LOCAL_BUILDS: usize = 2;
+
 /// Adds and builds every node of the change, grouped by the machine that
 /// will run it.
 ///
-/// The groups run CONCURRENTLY and each group runs in dependency order. That
-/// split is deliberate: nothing orders one machine's fetch-and-build against
-/// another's, and fetching plus building is where a launch spends nearly all
-/// of its wall clock, so serializing across machines would make a two-machine
-/// launch twice as slow for no invariant. Within a group the order is exactly
-/// what a single-machine launch does, because that is where the ordering
-/// actually matters (a node's transitive dependencies).
+/// The groups run CONCURRENTLY. That split is deliberate: nothing orders one
+/// machine's fetch-and-build against another's, and fetching plus building is
+/// where a launch spends nearly all of its wall clock, so serializing across
+/// machines would make a two-machine launch twice as slow for no invariant.
+/// Within a group the nodes are added in dependency order, the order a
+/// single-machine launch starts them in. This machine then builds what it
+/// added, [`MAX_CONCURRENT_LOCAL_BUILDS`] at a time; a peer builds each node
+/// right after its add, as its daemon admits one build at a time.
 ///
 /// `unresolved` collects the nodes whose add on a peer outlived its budget:
 /// whether each landed is known only by asking that peer.
@@ -173,6 +188,7 @@ async fn add_and_build_group(
     local: &str,
 ) -> GroupOutcome {
     let mut outcome = GroupOutcome::default();
+    let mut added_here = Vec::new();
 
     for key in keys {
         let Some(item) = planned_by_key.get(key) else {
@@ -190,106 +206,200 @@ async fn add_and_build_group(
         )
         .await;
 
-        if core_node.as_str() != local {
-            if let Err(reason) =
-                add_and_build_remotely(ctx, phase, core_node, key, item, &mut outcome).await
-            {
-                outcome.failure = Some(reason);
-                return outcome;
-            }
-            continue;
-        }
-
-        // The identical source and pins a peer would receive: a launch adds
-        // one set of bytes wherever a deployment lands, so the local arm
-        // must not get to differ from the dispatched one. The environment is
-        // the one deliberate difference: the caller's env vars describe this
-        // machine, so they apply here and stay off the goals a peer receives.
-        let encoded = pinned_source(key, item)
-            .and_then(|source| encode_pins(&item.closure_pins).map(|pins| (source, pins)));
-        let node_add_goal = match encoded {
-            Ok((source, pins)) => {
-                NodeAddGoal::for_internal_execution(source, STACK_LAUNCH_GIT_HASH)
-                    .with_launch_id(&phase.launch_id)
-                    .with_env_vars(ctx.env_vars.clone())
-                    .with_pins(pins)
-            }
+        let added = if core_node.as_str() == local {
+            add_locally(ctx, phase, key, item, &mut outcome).await
+        } else {
+            add_and_build_remotely(ctx, phase, core_node, key, item, &mut outcome)
+                .await
+                .map(|()| None)
+        };
+        match added {
+            Ok(Some(node)) => added_here.push(node),
+            Ok(None) => {}
             Err(reason) => {
                 outcome.failure = Some(reason);
                 return outcome;
             }
-        };
-
-        let (result, log_path) = add_node_directly(ctx, node_add_goal).await;
-
-        let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
-        if let Some(path) = log_path {
-            outcome.add_logs.push(NodeAddLogEntry {
-                node_label: key.label(),
-                log_path: path,
-                failed,
-                core_node: local.to_owned(),
-            });
-        }
-
-        let added = match result {
-            Ok(result) if result.success => result,
-            Ok(result) => {
-                outcome.failure = Some(format!(
-                    "failed to add node {}: {}",
-                    key.label(),
-                    result
-                        .error_message
-                        .unwrap_or_else(|| "node_add failed".to_string())
-                ));
-                return outcome;
-            }
-            Err(err) => {
-                outcome.failure = Some(format!("failed to add node {}: {err}", key.label()));
-                return outcome;
-            }
-        };
-
-        // The built-in server is registered ready by its add: nothing to
-        // build.
-        if is_built_in(item) {
-            continue;
-        }
-
-        let node_name = added.node_name.clone().unwrap_or_else(|| key.name.clone());
-        let node_tag = added.node_tag.clone().unwrap_or_else(|| key.tag.clone());
-
-        // Stack launch chains directly from add into build, since the
-        // launcher's contract is "the stack is up and running"; an
-        // `Added` entity isn't actually buildable from the user's
-        // perspective until `node build` has run.
-        let (build_result, build_log_path) = build_node_directly(
-            ctx,
-            &phase.launch_id,
-            node_name,
-            node_tag,
-            ctx.env_vars.clone(),
-            phase.rebuild,
-        )
-        .await;
-
-        let build_failed = build_result.is_err();
-        if let Some(path) = build_log_path {
-            outcome.build_logs.push(NodeBuildLogEntry {
-                node_label: key.label(),
-                log_path: path,
-                failed: build_failed,
-                core_node: local.to_owned(),
-            });
-        }
-
-        if let Err(err) = build_result {
-            outcome.failure = Some(format!("failed to build node {}: {err}", key.label()));
-            return outcome;
         }
     }
 
+    build_locally(ctx, phase, &added_here, &mut outcome).await;
     outcome
+}
+
+/// A node this machine added for the change and still has to build.
+struct AddedNode {
+    label: String,
+    node_name: String,
+    node_tag: String,
+}
+
+/// Adds one node on this machine. Returns the node to build, or `None` for
+/// the built-in MCP server, which its add registers ready.
+async fn add_locally(
+    ctx: &StackChangeContext,
+    phase: &PhaseGoal,
+    key: &NodeKey,
+    item: &PlannedDeployment,
+    outcome: &mut GroupOutcome,
+) -> std::result::Result<Option<AddedNode>, String> {
+    // The identical source and pins a peer would receive: a launch adds
+    // one set of bytes wherever a deployment lands, so the local arm
+    // must not get to differ from the dispatched one. The environment is
+    // the one deliberate difference: the caller's env vars describe this
+    // machine, so they apply here and stay off the goals a peer receives.
+    let (source, pins) = pinned_source(key, item)
+        .and_then(|source| encode_pins(&item.closure_pins).map(|pins| (source, pins)))?;
+    let node_add_goal = NodeAddGoal::for_internal_execution(source, STACK_LAUNCH_GIT_HASH)
+        .with_launch_id(&phase.launch_id)
+        .with_env_vars(ctx.env_vars.clone())
+        .with_pins(pins);
+
+    let (result, log_path) = add_node_directly(ctx, node_add_goal).await;
+
+    let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
+    if let Some(path) = log_path {
+        outcome.add_logs.push(NodeAddLogEntry {
+            node_label: key.label(),
+            log_path: path,
+            failed,
+            core_node: ctx.bound_core_node.as_str().to_owned(),
+        });
+    }
+
+    let added = match result {
+        Ok(result) if result.success => result,
+        Ok(result) => {
+            return Err(format!(
+                "failed to add node {}: {}",
+                key.label(),
+                result
+                    .error_message
+                    .unwrap_or_else(|| "node_add failed".to_string())
+            ));
+        }
+        Err(err) => return Err(format!("failed to add node {}: {err}", key.label())),
+    };
+
+    if is_built_in(item) {
+        return Ok(None);
+    }
+    Ok(Some(AddedNode {
+        label: key.label(),
+        node_name: added.node_name.unwrap_or_else(|| key.name.clone()),
+        node_tag: added.node_tag.unwrap_or_else(|| key.tag.clone()),
+    }))
+}
+
+/// Builds the nodes this machine added, [`MAX_CONCURRENT_LOCAL_BUILDS`] at a
+/// time (see [`build_added_nodes`]).
+///
+/// Stack launch chains directly from add into build, since the launcher's
+/// contract is "the stack is up and running"; an `Added` entity isn't
+/// actually buildable from the user's perspective until `node build` has
+/// run.
+async fn build_locally(
+    ctx: &StackChangeContext,
+    phase: &PhaseGoal,
+    nodes: &[AddedNode],
+    outcome: &mut GroupOutcome,
+) {
+    build_added_nodes(
+        nodes,
+        ctx.bound_core_node.as_str(),
+        MAX_CONCURRENT_LOCAL_BUILDS,
+        |node| {
+            build_node_directly(
+                ctx,
+                &phase.launch_id,
+                node.node_name.clone(),
+                node.node_tag.clone(),
+                ctx.env_vars.clone(),
+                phase.rebuild,
+            )
+        },
+        outcome,
+    )
+    .await;
+}
+
+/// Runs `build` on each of `nodes`, at most `max_at_once` at the same time,
+/// starting them in the order of `nodes`, and records each build's log and
+/// failure in `outcome`.
+///
+/// After a build fails, no other build starts, and the builds already running
+/// finish: what they build is in the artifact cache for the next launch. The
+/// failure recorded is the one of the first node of `nodes` that failed, and
+/// the build logs are recorded in that order too, whichever build ended
+/// first.
+async fn build_added_nodes<F, Fut>(
+    nodes: &[AddedNode],
+    core_node: &str,
+    max_at_once: usize,
+    build: F,
+    outcome: &mut GroupOutcome,
+) where
+    F: Fn(&AddedNode) -> Fut,
+    Fut: Future<Output = (std::result::Result<(), String>, Option<PathBuf>)>,
+{
+    let mut waiting = nodes.iter().enumerate();
+    let mut running = FuturesUnordered::new();
+    let mut ended = Vec::with_capacity(nodes.len());
+    let mut a_build_failed = false;
+    loop {
+        while !a_build_failed && running.len() < max_at_once {
+            let Some((position, node)) = waiting.next() else {
+                break;
+            };
+            running.push(build_one(position, node, core_node, &build));
+        }
+        let Some(ended_build) = running.next().await else {
+            break;
+        };
+        a_build_failed |= ended_build.failure.is_some();
+        ended.push(ended_build);
+    }
+
+    ended.sort_by_key(|ended_build| ended_build.position);
+    for ended_build in ended {
+        outcome.build_logs.extend(ended_build.log);
+        if let Some(reason) = ended_build.failure {
+            outcome.failure.get_or_insert(reason);
+        }
+    }
+}
+
+/// What one build of [`build_added_nodes`] ended with.
+struct EndedBuild {
+    /// The node's position in the add order.
+    position: usize,
+    log: Option<NodeBuildLogEntry>,
+    failure: Option<String>,
+}
+
+async fn build_one<F, Fut>(
+    position: usize,
+    node: &AddedNode,
+    core_node: &str,
+    build: &F,
+) -> EndedBuild
+where
+    F: Fn(&AddedNode) -> Fut,
+    Fut: Future<Output = (std::result::Result<(), String>, Option<PathBuf>)>,
+{
+    let (result, log_path) = build(node).await;
+    EndedBuild {
+        position,
+        log: log_path.map(|path| NodeBuildLogEntry {
+            node_label: node.label.clone(),
+            log_path: path,
+            failed: result.is_err(),
+            core_node: core_node.to_owned(),
+        }),
+        failure: result
+            .err()
+            .map(|err| format!("failed to build node {}: {err}", node.label)),
+    }
 }
 
 /// Adds and builds one node on a peer, over the wire.
@@ -389,6 +499,221 @@ async fn add_and_build_remotely(
 mod tests {
     use super::*;
     use core_node_api::encoding::LaunchGoal;
+    use std::sync::Mutex;
+    use tokio::sync::{mpsc, oneshot};
+
+    fn added(name: &str) -> AddedNode {
+        AddedNode {
+            label: format!("{name}:v1"),
+            node_name: name.to_owned(),
+            node_tag: "v1".to_owned(),
+        }
+    }
+
+    type BuildResult = std::result::Result<(), String>;
+
+    /// The ends of the [`HeldBuilds`] by node name: [`finish`] ends one.
+    type Enders = HashMap<String, oneshot::Sender<BuildResult>>;
+
+    /// Fake builds a test drives by hand: each build reports its node's name
+    /// on `started` when it starts, then waits until the test ends it with
+    /// [`finish`].
+    struct HeldBuilds {
+        started: mpsc::UnboundedSender<String>,
+        endings: Mutex<HashMap<String, oneshot::Receiver<BuildResult>>>,
+    }
+
+    impl HeldBuilds {
+        fn new(names: &[&str]) -> (Self, mpsc::UnboundedReceiver<String>, Enders) {
+            let (started, started_rx) = mpsc::unbounded_channel();
+            let mut endings = HashMap::new();
+            let mut enders = HashMap::new();
+            for name in names {
+                let (ender, ending) = oneshot::channel();
+                endings.insert((*name).to_owned(), ending);
+                enders.insert((*name).to_owned(), ender);
+            }
+            let builds = Self {
+                started,
+                endings: Mutex::new(endings),
+            };
+            (builds, started_rx, enders)
+        }
+
+        async fn build(&self, node_name: String) -> (BuildResult, Option<PathBuf>) {
+            let ending = self
+                .endings
+                .lock()
+                .unwrap()
+                .remove(&node_name)
+                .expect("each node builds once");
+            self.started.send(node_name.clone()).unwrap();
+            let result = ending.await.expect("the test ends every build it starts");
+            (
+                result,
+                Some(PathBuf::from(format!("/logs/{node_name}.log"))),
+            )
+        }
+    }
+
+    fn finish(enders: &mut Enders, name: &str, result: BuildResult) {
+        enders.remove(name).unwrap().send(result).unwrap();
+    }
+
+    fn logged(outcome: &GroupOutcome) -> Vec<(String, bool)> {
+        outcome
+            .build_logs
+            .iter()
+            .map(|entry| (entry.node_label.clone(), entry.failed))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn two_builds_run_at_once_and_the_third_starts_when_one_ends() {
+        let nodes = [added("waldo"), added("backbone"), added("camera")];
+        let (builds, mut started, mut enders) = HeldBuilds::new(&["waldo", "backbone", "camera"]);
+        let mut outcome = GroupOutcome::default();
+
+        let run = build_added_nodes(
+            &nodes,
+            "here",
+            2,
+            |node| builds.build(node.node_name.clone()),
+            &mut outcome,
+        );
+        let drive = async {
+            assert_eq!(started.recv().await.unwrap(), "waldo");
+            assert_eq!(started.recv().await.unwrap(), "backbone");
+            tokio::task::yield_now().await;
+            assert!(
+                started.try_recv().is_err(),
+                "a third build must wait for a free slot"
+            );
+
+            finish(&mut enders, "backbone", Ok(()));
+            assert_eq!(started.recv().await.unwrap(), "camera");
+            finish(&mut enders, "camera", Ok(()));
+            finish(&mut enders, "waldo", Ok(()));
+        };
+        tokio::join!(run, drive);
+
+        assert_eq!(outcome.failure, None);
+        assert_eq!(
+            logged(&outcome),
+            [
+                ("waldo:v1".to_owned(), false),
+                ("backbone:v1".to_owned(), false),
+                ("camera:v1".to_owned(), false),
+            ]
+        );
+        assert!(
+            outcome
+                .build_logs
+                .iter()
+                .all(|entry| entry.core_node == "here")
+        );
+    }
+
+    #[tokio::test]
+    async fn no_build_starts_after_a_failure_and_the_running_build_finishes() {
+        let nodes = [added("waldo"), added("backbone"), added("camera")];
+        let (builds, mut started, mut enders) = HeldBuilds::new(&["waldo", "backbone", "camera"]);
+        let mut outcome = GroupOutcome::default();
+
+        let run = build_added_nodes(
+            &nodes,
+            "here",
+            2,
+            |node| builds.build(node.node_name.clone()),
+            &mut outcome,
+        );
+        let drive = async {
+            assert_eq!(started.recv().await.unwrap(), "waldo");
+            assert_eq!(started.recv().await.unwrap(), "backbone");
+            finish(&mut enders, "backbone", Err("cargo failed".to_owned()));
+            tokio::task::yield_now().await;
+            finish(&mut enders, "waldo", Ok(()));
+        };
+        tokio::join!(run, drive);
+
+        assert!(
+            started.try_recv().is_err(),
+            "camera must not start after backbone failed"
+        );
+        assert_eq!(
+            outcome.failure.as_deref(),
+            Some("failed to build node backbone:v1: cargo failed")
+        );
+        assert_eq!(
+            logged(&outcome),
+            [
+                ("waldo:v1".to_owned(), false),
+                ("backbone:v1".to_owned(), true),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_failure_reported_is_the_first_node_s_whichever_failed_first() {
+        let nodes = [added("waldo"), added("backbone")];
+        let (builds, mut started, mut enders) = HeldBuilds::new(&["waldo", "backbone"]);
+        let mut outcome = GroupOutcome::default();
+
+        let run = build_added_nodes(
+            &nodes,
+            "here",
+            2,
+            |node| builds.build(node.node_name.clone()),
+            &mut outcome,
+        );
+        let drive = async {
+            assert_eq!(started.recv().await.unwrap(), "waldo");
+            assert_eq!(started.recv().await.unwrap(), "backbone");
+            finish(&mut enders, "backbone", Err("second".to_owned()));
+            tokio::task::yield_now().await;
+            finish(&mut enders, "waldo", Err("first".to_owned()));
+        };
+        tokio::join!(run, drive);
+
+        assert_eq!(
+            outcome.failure.as_deref(),
+            Some("failed to build node waldo:v1: first")
+        );
+        assert_eq!(
+            logged(&outcome),
+            [
+                ("waldo:v1".to_owned(), true),
+                ("backbone:v1".to_owned(), true),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn one_build_at_a_time_builds_in_order() {
+        let nodes = [added("waldo"), added("backbone")];
+        let (builds, mut started, mut enders) = HeldBuilds::new(&["waldo", "backbone"]);
+        let mut outcome = GroupOutcome::default();
+
+        let run = build_added_nodes(
+            &nodes,
+            "here",
+            1,
+            |node| builds.build(node.node_name.clone()),
+            &mut outcome,
+        );
+        let drive = async {
+            assert_eq!(started.recv().await.unwrap(), "waldo");
+            tokio::task::yield_now().await;
+            assert!(started.try_recv().is_err());
+            finish(&mut enders, "waldo", Ok(()));
+            assert_eq!(started.recv().await.unwrap(), "backbone");
+            finish(&mut enders, "backbone", Ok(()));
+        };
+        tokio::join!(run, drive);
+
+        assert_eq!(outcome.failure, None);
+        assert_eq!(outcome.build_logs.len(), 2);
+    }
 
     #[test]
     fn remote_build_goal_carries_the_launch_rebuild_switch() {

@@ -84,6 +84,11 @@ pub(in crate::services::stack) async fn publish_relayed(
     publish_feedback(ctx, LaunchFeedback::stdout(line, step), None).await;
 }
 
+/// Prefixes `line` with the label of the node action that reported it.
+fn label_line(line: &mut FeedbackLine, label: &str) {
+    line.line = format!("[{label}] {}", line.line);
+}
+
 /// Writes `line`, which a node action of the launch reported, to the launch
 /// log when the log holds such a line.
 fn record_in_launch_log(log: &ActionLog, line: &FeedbackLine) {
@@ -110,6 +115,10 @@ fn record_in_launch_log(log: &ActionLog, line: &FeedbackLine) {
 /// log's own line, exported from it. A progress sample reaches the terminal
 /// alone.
 ///
+/// With a `line_label`, each line reaches the launch log and the terminal as
+/// `[<line_label>] <line>`, for an action whose output interleaves with
+/// another's.
+///
 /// Returns the sender end (to pass into the process context) and a join handle
 /// for the consumer task. Drop the sender to signal completion, then await the
 /// handle to drain remaining messages.
@@ -118,14 +127,18 @@ pub(in crate::services::stack) fn spawn_feedback_forwarder(
     step: LaunchFeedbackStep,
     log: &ActionLog,
     activity_notify: Option<Arc<Notify>>,
+    line_label: Option<String>,
 ) -> (mpsc::UnboundedSender<FeedbackLine>, JoinHandle<()>) {
     let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
     let publisher = feedback_publisher.clone();
     let log = log.clone();
     let handle = tokio::spawn(async move {
-        while let Some(line) = feedback_rx.recv().await {
+        while let Some(mut line) = feedback_rx.recv().await {
             if let Some(notify) = &activity_notify {
                 notify.notify_one();
+            }
+            if let Some(label) = &line_label {
+                label_line(&mut line, label);
             }
 
             record_in_launch_log(&log, &line);
@@ -196,5 +209,41 @@ mod tests {
             .map(|record| record.body)
             .collect();
         assert_eq!(bodies, ["Cloning the launcher repository"]);
+    }
+
+    #[test]
+    fn a_labelled_line_reaches_the_launch_log_with_its_label_and_the_node_log_without() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = LogKind::Launch {
+            action: StackAction::Launch,
+        };
+        let launch_log =
+            ActionLog::create(dir.path(), "launch.log", launch, LogExporter::disabled()).unwrap();
+        let build_log = ActionLog::create(
+            dir.path(),
+            "build.log",
+            LogKind::Build,
+            LogExporter::disabled(),
+        )
+        .unwrap();
+        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel();
+        let announcer = Announcer::new(build_log.clone(), feedback_tx);
+        announcer.line("Compiling waldo v0.1.0");
+
+        while let Ok(mut line) = feedback_rx.try_recv() {
+            label_line(&mut line, "waldo:v1");
+            record_in_launch_log(&launch_log, &line);
+        }
+
+        let launch_file = std::fs::read_to_string(launch_log.path()).unwrap();
+        assert_eq!(
+            lines_without_time(&launch_file),
+            ["[stdout] [waldo:v1] Compiling waldo v0.1.0"]
+        );
+        let build_file = std::fs::read_to_string(build_log.path()).unwrap();
+        assert_eq!(
+            lines_without_time(&build_file),
+            ["[stdout] Compiling waldo v0.1.0"]
+        );
     }
 }
