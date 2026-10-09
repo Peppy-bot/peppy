@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -39,6 +40,17 @@ const CONTAINER_PEPPY_BINARY: &str = "/usr/local/bin/peppy";
 /// so a run log is `$CONTAINER_PEPPY_HOME/logs/run/<instance>.log` with no
 /// `.peppy` segment in between.
 const CONTAINER_PEPPY_HOME: &str = "/data";
+
+/// The user every daemon container runs as, and so the user each daemon runs
+/// apptainer as.
+///
+/// A regular user, as on a machine where a regular user installs peppy and
+/// `peppy service install` makes the daemon a user service of theirs.
+/// Apptainer run by root mounts each image through a loop device, which a host
+/// that offers none cannot give (an isolated OrbStack machine is one). Run by
+/// a regular user, it mounts the image with FUSE in a user namespace, which
+/// needs no loop device.
+const CONTAINER_DAEMON_USER: &str = "peppy";
 
 /// How long the engine waits for a daemon to stop before it kills it.
 ///
@@ -187,6 +199,26 @@ async fn require_docker() {
         .ping()
         .await
         .expect("the Docker daemon must be reachable on the test host");
+}
+
+/// Fails unless the host lets a regular user create user namespaces.
+///
+/// Each daemon runs apptainer as [`CONTAINER_DAEMON_USER`], and apptainer
+/// makes every container node through a user namespace of that user. Ubuntu
+/// 24.04 and later deny those to a process with no AppArmor profile that
+/// allows them while `kernel.apparmor_restrict_unprivileged_userns` is 1, and
+/// a privileged container runs its processes with no profile. Inside the
+/// container the daemon cannot see the restriction, so a node would fail to
+/// start with an error that does not name it.
+fn require_unprivileged_userns() {
+    let knob = Path::new("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
+    let restricted = std::fs::read_to_string(knob).is_ok_and(|value| value.trim() == "1");
+    assert!(
+        !restricted,
+        "{} is 1, so the daemon containers cannot create the user namespaces apptainer \
+         needs; clear it with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`",
+        knob.display()
+    );
 }
 
 struct ExecOutput {
@@ -350,24 +382,44 @@ fn host_ubuntu_release() -> String {
 ///   container it starts, and a bare Ubuntu image does not have it, so the
 ///   node's own container fails to be created with a `mount source
 ///   /etc/localtime doesn't exist` that says nothing about time zones.
+/// - `uidmap` provides `newuidmap` and `newgidmap`, the helpers through which
+///   apptainer maps the subordinate ids of [`CONTAINER_DAEMON_USER`] into the
+///   user namespaces of its fakeroot builds. The daemon refuses to start a
+///   container node when `newuidmap` is missing.
 /// - The `safe.directory` entry covers the fixture repository. It is bind
 ///   mounted from the host, so it belongs to the user running the tests while
-///   the daemon reads it as root, and libgit2 refuses to open a repository the
-///   current user does not own with `is not owned by current user`. Named
-///   explicitly rather than as a wildcard: this is the one repository in the
-///   image that anybody else owns.
+///   the daemon reads it as [`CONTAINER_DAEMON_USER`], and libgit2 refuses to
+///   open a repository the current user does not own with `is not owned by
+///   current user`. Named explicitly rather than as a wildcard: this is the
+///   one repository in the image that anybody else owns.
+/// - [`CONTAINER_DAEMON_USER`] is the user the daemon runs as. `useradd` gives
+///   it the subordinate id range apptainer's fakeroot builds need. The
+///   directories the daemon writes in are made and given to it ahead of the
+///   container, because the engine makes the missing parent directories of a
+///   mount point as root: [`CONTAINER_PEPPY_HOME`] and its `conf`, the parent
+///   of the `repositories.json5` mount, and the directory of
+///   [`CONTAINER_ROUTER_CONFIG`], where a managed router writes its log beside
+///   the config it reads.
 fn e2e_dockerfile(ubuntu_release: &str) -> String {
+    let router_config_dir = Path::new(CONTAINER_ROUTER_CONFIG)
+        .parent()
+        .expect("the router config is a file in a directory")
+        .display();
     format!(
         "FROM ubuntu:{ubuntu_release}\n\
          RUN apt-get update \\\n\
          \x20&& apt-get install -y --no-install-recommends \\\n\
-         \x20     ca-certificates squashfs-tools tzdata \\\n\
+         \x20     ca-certificates squashfs-tools tzdata uidmap \\\n\
          \x20&& ln -sf /usr/share/zoneinfo/UTC /etc/localtime \\\n\
          \x20&& rm -rf /var/lib/apt/lists/*\n\
          RUN printf '[safe]\\n\\tdirectory = {CONTAINER_FIXTURE_REPO}\\n' > /etc/gitconfig\n\
          COPY --from=ghcr.io/astral-sh/uv:{UV_VERSION} /uv /uvx /usr/local/bin/\n\
          ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python\n\
-         RUN uv python install {NODE_PYTHON_VERSION}\n"
+         RUN uv python install {NODE_PYTHON_VERSION}\n\
+         RUN useradd --create-home {CONTAINER_DAEMON_USER} \\\n\
+         \x20&& install -d -o {CONTAINER_DAEMON_USER} -g {CONTAINER_DAEMON_USER} \\\n\
+         \x20     {CONTAINER_PEPPY_HOME} {CONTAINER_PEPPY_HOME}/conf {router_config_dir}\n\
+         USER {CONTAINER_DAEMON_USER}\n"
     )
 }
 
@@ -376,7 +428,8 @@ fn e2e_dockerfile(ubuntu_release: &str) -> String {
 /// Every test starts several containers and they all want the same image;
 /// building it per container would serialize seven redundant Docker builds
 /// behind each other. `PEPPY_MULTI_DAEMON_E2E_IMAGE` bypasses the build
-/// entirely for runs that supply a prepared image.
+/// entirely for runs that supply a prepared image, which provides what
+/// [`e2e_dockerfile`] does, its [`CONTAINER_DAEMON_USER`] included.
 async fn e2e_image() -> String {
     static IMAGE: OnceCell<String> = OnceCell::const_new();
     IMAGE
@@ -541,7 +594,7 @@ struct FixtureRepository {
 
 impl FixtureRepository {
     fn create() -> Self {
-        let repo = tempfile::tempdir().expect("create the fixture repository directory");
+        let repo = mounted_tempdir("fixture repository");
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_REPO_SOURCE);
         copy_tree(&source, repo.path());
         commit_worktree(repo.path());
@@ -562,6 +615,18 @@ impl FixtureRepository {
     fn repositories_config(&self) -> PathBuf {
         self.conf.path().join("repositories.json5")
     }
+}
+
+/// Creates a temporary directory that the daemon containers mount.
+///
+/// A daemon reads it as [`CONTAINER_DAEMON_USER`], whose id need not be the id
+/// of the user running the tests, and `tempfile` otherwise makes a directory
+/// that its owner alone can open.
+fn mounted_tempdir(purpose: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o755))
+        .tempdir()
+        .unwrap_or_else(|error| panic!("creating the {purpose} directory: {error}"))
 }
 
 /// Copies the contents of `from` into `to`, which must already exist.
@@ -636,7 +701,6 @@ struct DaemonLaunch<'a> {
     image: &'a str,
     peppy_binary: &'a Path,
     apptainer_dir: &'a Path,
-    newuidmap: &'a Path,
     fixture: &'a FixtureRepository,
 }
 
@@ -708,14 +772,25 @@ impl Daemon {
         self.exec(cmd).await
     }
 
-    /// Runs one command inside this container and returns its combined output
-    /// once the command has exited.
+    /// Runs one command inside this container as [`CONTAINER_DAEMON_USER`]
+    /// and returns its combined output once the command has exited.
     async fn exec(&self, cmd: Vec<&str>) -> ExecOutput {
+        self.exec_as(CONTAINER_DAEMON_USER, cmd).await
+    }
+
+    /// Runs one command inside this container as root: what a test needs to
+    /// change a file of the image itself, which the daemon user cannot write.
+    async fn exec_as_root(&self, cmd: Vec<&str>) -> ExecOutput {
+        self.exec_as("root", cmd).await
+    }
+
+    async fn exec_as(&self, user: &str, cmd: Vec<&str>) -> ExecOutput {
         let exec = self
             .engine
             .create_exec(
                 &self.name,
                 CreateExecOptions {
+                    user: Some(user),
                     cmd: Some(cmd),
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
@@ -928,7 +1003,6 @@ async fn start_daemon(
     let mut mounts = vec![
         read_only_bind(launch.peppy_binary, CONTAINER_PEPPY_BINARY),
         read_only_bind(launch.apptainer_dir, "/opt/peppy-apptainer"),
-        read_only_bind(launch.newuidmap, "/usr/local/bin/newuidmap"),
         // Every daemon, not only the ones that refresh: mounting the config in
         // ahead of startup is what keeps the bundled defaults from ever being
         // written, so no daemon in this suite has a network repository to read.
@@ -965,15 +1039,16 @@ async fn start_daemon(
         ),
         host_config: Some(HostConfig {
             // Apptainer builds and runs every container node through a user
-            // namespace and a pile of mounts. Under Docker's default profile
-            // that is blocked twice over: no CAP_SYS_ADMIN, and
-            // `docker-default` AppArmor denies unprivileged userns on Ubuntu
-            // 24.04+ (the same restriction `containers::apptainer` disables in
-            // peppy's Lima guest). A test-only container on a CI runner is the
-            // one place where buying both with `privileged` is the
+            // namespace and a pile of mounts, the FUSE mounts of its images
+            // among them. Under Docker's default profile that is blocked three
+            // times over: no CAP_SYS_ADMIN, `docker-default` AppArmor denies
+            // unprivileged userns on Ubuntu 24.04+ (the same restriction
+            // `containers::apptainer` disables in peppy's Lima guest), and no
+            // `/dev/fuse`. A test-only container on a CI runner is the one
+            // place where buying all three with `privileged` is the
             // proportionate answer; the alternative is three security-opt
-            // knobs that each drift with the host's kernel and AppArmor
-            // configuration.
+            // knobs and a device mapping that each drift with the host's
+            // kernel and AppArmor configuration.
             privileged: Some(true),
             extra_hosts: Some(vec![String::from("host.docker.internal:host-gateway")]),
             network_mode: Some(String::from(BRIDGE_NETWORK)),
@@ -1087,19 +1162,18 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_are_refused() {
     require_docker().await;
+    require_unprivileged_userns();
     let image = e2e_image().await;
 
     let peppy_binary = Path::new(env!("CARGO_BIN_EXE_peppy"));
     let zenohd_binary = bundled_zenohd_binary();
     let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
         .expect("the test-built daemon should have a host Apptainer installation");
-    let newuidmap = executable_on_path("newuidmap");
     let fixture = FixtureRepository::create();
     let launch = DaemonLaunch {
         image: &image,
         peppy_binary,
         apptainer_dir: &apptainer_dir,
-        newuidmap: &newuidmap,
         fixture: &fixture,
     };
     let suffix = format!(
@@ -1755,7 +1829,6 @@ struct Substrate {
     image: String,
     router: pmi::ZenohdInstance,
     apptainer_dir: PathBuf,
-    newuidmap: PathBuf,
     fixture: FixtureRepository,
     launcher_dir: tempfile::TempDir,
     /// Uniquifies container names across concurrent tests in one run.
@@ -1765,6 +1838,7 @@ struct Substrate {
 impl Substrate {
     async fn create() -> Self {
         require_docker().await;
+        require_unprivileged_userns();
         let image = e2e_image().await;
 
         let router = ZenohAdapter::start_router_ephemeral_in_mode(
@@ -1779,7 +1853,6 @@ impl Substrate {
 
         let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
             .expect("the test-built daemon should have a host Apptainer installation");
-        let newuidmap = executable_on_path("newuidmap");
         let fixture = FixtureRepository::create();
         let suffix = format!(
             "{}-{}",
@@ -1792,7 +1865,7 @@ impl Substrate {
 
         // Every launcher these tests drive, in one mountable directory: the
         // file the guide documents, plus the probe launchers beside it.
-        let launcher_dir = tempfile::tempdir().expect("create launcher mount directory");
+        let launcher_dir = mounted_tempdir("launcher mount");
         let documented_launcher = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join(SPLIT_COMPUTE_LAUNCHER);
@@ -1850,7 +1923,6 @@ impl Substrate {
             image,
             router,
             apptainer_dir,
-            newuidmap,
             fixture,
             launcher_dir,
             suffix,
@@ -1872,7 +1944,6 @@ impl Substrate {
             image: &self.image,
             peppy_binary: Path::new(env!("CARGO_BIN_EXE_peppy")),
             apptainer_dir: &self.apptainer_dir,
-            newuidmap: &self.newuidmap,
             fixture: &self.fixture,
         };
         start_daemon(
@@ -3436,7 +3507,7 @@ async fn a_peer_build_that_fails_fails_the_build_and_clears_its_slice() {
     require_success(
         federation
             .cloud
-            .exec(vec![
+            .exec_as_root(vec![
                 "sh",
                 "-c",
                 "printf '#!/bin/sh\nexit 7\n' > /usr/local/bin/uv \
