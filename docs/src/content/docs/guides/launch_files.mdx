@@ -436,13 +436,13 @@ After a build, `peppy stack list` shows each node at stage `Ready` with `0` inst
 
 ## Launch timeouts
 
-A launch adds, builds and starts its nodes one phase at a time, and each phase runs under an idle budget: the clock resets whenever the phase produces output (a git or http download's progress, a `build_cmd`'s lines, a starting node's lines), and the phase fails when it goes quiet for longer than its budget. The budgets are per phase and per node:
+A launch adds, builds and starts its nodes one phase at a time, and each phase runs under an idle budget: the clock resets whenever the phase produces output (a git or http download's progress, a `build_cmd`'s lines, a starting node's lines, the ready signal of a starting instance), and the phase fails when it goes quiet for longer than its budget. The budgets are per phase and per node:
 
 | Flag | Phase | Default |
 | --- | --- | --- |
 | `--node-add-idle-timeout-secs` | fetching a node's source and generating its bindings | 600 |
 | `--node-build-idle-timeout-secs` | running its `build_cmd`, or downloading and assembling its image; bytes landing on disk and CPU time the build burns count as output too | 180 |
-| `--node-run-idle-timeout-secs` | starting an instance, until it signals ready | 600 |
+| `--node-run-idle-timeout-secs` | starting an instance, until its setup ends and the daemon records it as running | 600 |
 
 These defaults are the only ones: the daemon has no budgets of its own, and every launch, build and join carries the budgets of its caller. When no output arrives, the command waits for the largest of the three budgets plus 60 s before it stops, so the daemon's error for the silent phase comes first.
 
@@ -454,11 +454,11 @@ When a budget runs out the launch fails, names the phase and, for an idle budget
 
 - An interrupted **add** never publishes its node. The daemon generates a node's bindings into the node's staged copy on a worker thread of its own, so a generation that is already running when the add's budget runs out finishes on that thread, and the staged copy is removed once it does; a queued generation whose add is gone is skipped. Either way the node never enters the stack and nothing of it is built.
 - An interrupted **build** has its `build_cmd` or image build killed.
-- An interrupted **run** has its half-started instance torn down before the failure is reported.
+- An interrupted **run** has its half-started instance torn down before the failure is reported. An instance that has not answered ready has its process group killed at once; an instance that answered ready gets the shutdown request and the grace first, so its shutdown hooks run (see [How an instance starts](/guides/node_stack/#how-an-instance-starts)).
 
 `peppy stack build` takes the same flags and ends after the build phase, so `--node-run-idle-timeout-secs` bounds nothing in a build. `peppy stack join` takes the same flags and runs its copy's nodes through the same phases, `--max-timeout-secs` bounding the whole join. A join whose budget runs out fails as any [failed join](#copies) does: it stops what it started and removes the nodes it added, leaving the stack it joined running.
 
-Only the node's own output resets a phase's clock; the launcher's progress lines do not.
+Only the node's own output and, in the run phase, the ready signal of the instance reset a phase's clock; the launcher's progress lines do not. Inside the run phase, the daemon also waits for each setup for the [setup budget](/guides/node_stack/#how-an-instance-starts) of its node, at most 540 seconds, which is less than the default run idle budget.
 
 ## Running one launcher across several machines
 

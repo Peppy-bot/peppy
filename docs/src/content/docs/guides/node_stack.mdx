@@ -128,6 +128,39 @@ cat /home/ubuntu/.peppy/logs/run/elegant-solomon-5423.log
 [2026-02-17T10:15:29.852] [stdout] hello world count 3
 ```
 
+### How an instance starts
+
+The daemon starts an instance in three steps. `peppy node run`, `peppy stack launch` and `peppy stack join` use the same steps.
+
+1. **Ready.** The daemon runs the `run_cmd` (or the container) as the leader of a new process group, and waits up to 600 seconds for the ready signal of the instance. The node runtime (peppylib) answers ready when it is connected to messaging and listens for the shutdown request, before your `setup` function runs.
+2. **Setup.** The daemon then waits for your `setup` function to return, for the **setup budget** of the node. A node declares its setup budget in its manifest as `execution.setup_timeout_secs`, a whole number of seconds from 1 to 540. A node that declares none gets the **default setup budget**, 15 seconds. When the setup does not return within the budget, the start fails. The message gives the budget and its source: the `execution.setup_timeout_secs` of the node, or the default setup budget, with the instruction to declare the key.
+3. **Endpoints.** A node that declares [`execution.endpoints`](/guides/first_node/#serving-a-page-or-an-mcp-endpoint) then reports the sockets it bound. The daemon waits 15 seconds for them.
+
+```json5 title="peppy.json5"
+{
+  // ...
+  execution: {
+    language: "rust",
+    run_cmd: ["./target/release/arm_driver"],
+    // The setup waits for the arm controller, which can take two minutes to boot.
+    setup_timeout_secs: 180,
+  },
+}
+```
+
+Declare a setup budget when your setup waits for something outside the node, such as a device, a simulation or a remote service. Keep the budget as small as the work permits: the daemon finds a setup that hangs only at the end of its budget.
+
+A node reads its setup budget with `node_runner.setup_timeout()` in Rust (a `Duration`) and `node_runner.setup_timeout_secs()` in Python (an `int`). The daemon writes the budget it applies into the runtime configuration of the instance. A node that runs standalone, or in its [test harness](/advanced_guides/testing/), reads the budget of its manifest. A setup that waits for something can use the budget to stop with its own reason before the daemon stops the instance.
+
+When the instance answers ready, the daemon sends a progress line. This line restarts the run idle budget of a launch (see [Launch timeouts](/guides/launch_files/#launch-timeouts)). The largest setup budget (540 seconds) is less than the default run idle budget (600 seconds), thus a setup that prints nothing gets the setup error, not the idle error.
+
+When the daemon stops a start before it ends, the step of the start decides how:
+
+- **Before the ready signal**, the node does not listen for the shutdown request. The daemon kills the whole process group of the instance at once: the node and every process that it started in its group.
+- **After the ready signal**, the daemon stops the instance as [`peppy node stop`](#stopping-your-node) stops a running instance. It sends the shutdown request, waits for the shutdown grace and the runtime teardown, and then kills the process group. The node runs its [shutdown hooks](/guides/first_node/#graceful-shutdown), so a setup that holds a resource (a lock, a robot in a simulation) releases it. This applies when the setup outlasts its budget, when the endpoints step fails, when the run budget of a launch or a join runs out (`--node-run-idle-timeout-secs`, `--max-timeout-secs`), and when `peppy stack reset` cancels the start. A stack reset waits for this stop to end before it clears the stack.
+
+A synchronous Python `setup` cannot see the shutdown request before it returns. When it does not return within the grace and the runtime teardown, the kill ends it. An `async` setup stops at its next `await`. The [shutdown lifecycle guide](/advanced_guides/shutdown/) gives the full sequence.
+
 ### Chaining add, build, and run
 
 Now that you've seen all three steps, `peppy node add` exposes flags that chain them for you:

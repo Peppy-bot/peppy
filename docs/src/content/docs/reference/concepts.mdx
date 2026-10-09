@@ -42,6 +42,7 @@ The execution section defines how to prepare and launch the node:
 | `run_cmd` | Command to launch the node |
 | `container` | Optional container configuration. Exactly one of `run_cmd` or `container` must be present; a container node's build goes through the container image, so `build_cmd` is not used |
 | `endpoints` | Optional map of the sockets the node binds during setup, keyed by label (lowercase letters, digits and underscores, starting with a letter). Each entry declares a `kind`, `page` for a URL opened in a browser or `mcp` for one an MCP client attaches to, and a non-empty `description`. The node announces the socket it bound under each label, and the daemon reports the URLs; a declared label that setup never announces fails the start |
+| `setup_timeout_secs` | Optional setup budget of the node: how long the daemon waits for its setup to end once the node answers ready, a whole number of seconds from 1 to 540. Without it, the default setup budget of 15 seconds applies. The node reads its budget at run time; see [How an instance starts](/guides/node_stack/#how-an-instance-starts) |
 
 ### Interfaces
 
@@ -62,7 +63,7 @@ Three higher-level constructs build on these: [contract implementation](/advance
 A **Node Instance** represents a single running execution of a node. Each instance has:
 
 - **Instance ID**: A unique identifier for this running process
-- **State**: Its runtime lifecycle state: `starting` while it comes up, `running` once started, then the terminal `finished` (clean exit) or `failed` (crash) if its process exits on its own
+- **State**: Its runtime lifecycle state: `starting` while it comes up (until its ready signal, then until its setup ends, within its setup budget), `running` once started, then the terminal `finished` (clean exit) or `failed` (crash) if its process exits on its own
 - **Health**: Whether a running instance answers the core node's liveness probes, `healthy` or `unhealthy`; it turns `unhealthy` only after three consecutive missed probes (not applicable once the instance is terminal)
 
 A node can have multiple instances running simultaneously. For example, you might run multiple instances of a camera node, each connected to separate physical devices.
