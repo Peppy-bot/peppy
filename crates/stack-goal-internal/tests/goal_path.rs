@@ -11,17 +11,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::runtime::CoreNodeName;
 use config::runtime::Name;
-use core_node_api::ActionGoal;
 use core_node_api::encoding::{
-    LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse, LaunchResult, NodeRunLogEntry,
-    STACK_BUSY_REASON, StackJoinGoal,
+    CopyInfo, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse, LaunchResult,
+    NodeRunLogEntry, STACK_BUSY_REASON, StackJoinGoal, StackListRequest, StackListResponse,
 };
 use core_node_api::names::CORE_NODE_TAG;
+use core_node_api::{ActionGoal, ServiceRequest};
 use futures::FutureExt;
 use peppylib::messaging::{GoalContext, MessengerHandle, ProducerRef, SenderTarget};
 use peppylib::testing::{
-    EphemeralRouter, MockActionServerCore, READINESS_TIMEOUT, wait_action_reachable,
+    EphemeralRouter, MockActionServerCore, MockServiceCore, READINESS_TIMEOUT,
+    wait_action_reachable, wait_service_reachable,
 };
 use stack_goal::{
     DEFAULT_BUDGETS, DaemonRoute, FollowError, RunningStackGoal, SendError, StackGoalEvent,
@@ -367,4 +369,53 @@ async fn a_result_that_expired_before_its_request_ends_the_goal_saying_so() {
         matches!(error, FollowError::Expired { operation: "Join" }),
         "{error}"
     );
+}
+
+/// The copies come from the daemon's `stack list`, asked along the route the
+/// goals take, with every field the daemon answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_copies_are_read_from_the_daemon_along_the_route() {
+    let (mesh, _provider) = mesh().await;
+    let daemon = mesh.daemon.as_ref().expect("the daemon is connected");
+    let identity = SenderTarget::node(COORDINATOR, CORE_NODE_TAG).expect("a core node identity");
+    let service = StackListRequest::ID.name();
+    let list = MockServiceCore::listen(
+        daemon,
+        COORDINATOR,
+        DAEMON_INSTANCE,
+        identity.clone(),
+        service,
+    )
+    .await
+    .expect("the daemon serves stack_list");
+    wait_service_reachable(
+        &mesh.bridge,
+        COORDINATOR,
+        BRIDGE_INSTANCE,
+        identity,
+        service,
+        &ProducerRef::new(COORDINATOR, DAEMON_INSTANCE),
+        READINESS_TIMEOUT,
+    )
+    .await
+    .expect("stack_list becomes reachable");
+    let bravo = CopyInfo {
+        name: Name::new("bravo").unwrap(),
+        core_node: CoreNodeName::new(COORDINATOR).unwrap(),
+        instance_ids: vec![Name::new("bravo_arm_inst").unwrap()],
+        selections: Vec::new(),
+        option: "so101_sim".to_owned(),
+        set_members: Vec::new(),
+    };
+    let mut answer = StackListResponse::new("{}", COORDINATOR, DAEMON_INSTANCE, "host");
+    answer.copies = vec![bravo.clone()];
+    list.enqueue_response(answer.encode().unwrap());
+
+    let copies = stack_goal::list_copies(mesh.route(), STEP)
+        .await
+        .expect("the daemon answers");
+    assert_eq!(copies, [bravo]);
+    let asked = list.captured();
+    assert_eq!(asked.len(), 1, "one request");
+    assert_eq!(asked[0].message.instance_id(), BRIDGE_INSTANCE);
 }

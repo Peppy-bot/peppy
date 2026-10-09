@@ -9,7 +9,8 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-# The goals, their admission, feedback and result codecs, and the budgets.
+# The goals, their admission, feedback and result codecs, the budgets, and
+# the stack list the copies are read from.
 core-node-api = { workspace = true }
 # The messenger the goal travels on, and the node a caller can be.
 peppylib = { workspace = true }
@@ -17,7 +18,8 @@ thiserror = "2.0"
 tracing = "0.1"
 
 [dev-dependencies]
-# The copy name of the join the crate's documentation sends.
+# The copy name of the join the crate's documentation sends, and the names
+# of a listed copy.
 config = { workspace = true }
 # One poll of a pending `next()`, so a test drops it at its await point.
 futures = "0.3"

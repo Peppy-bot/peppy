@@ -28,8 +28,8 @@
 //!    goal to a task with [`RunningStackGoal::follow_to_end`], which follows
 //!    it until the daemon's work ends.
 //!
-//! The copies of the stack, with the name and the option of each, come from
-//! `peppylib::stack::list`, which asks the daemon a node is bound to.
+//! [`list_copies`] reads the copies of the stack along the same route, with
+//! the name and the option of each.
 //!
 //! # Budgets
 //!
@@ -111,6 +111,7 @@
 
 mod budgets;
 mod goal;
+mod list;
 
 pub use budgets::{
     DAEMON_RESPONSE_GRACE, DEFAULT_BUDGETS, DEFAULT_BUILD_IDLE_TIMEOUT_SECS, silence_window,
@@ -118,3 +119,4 @@ pub use budgets::{
 pub use goal::{
     DaemonRoute, FollowError, RunningStackGoal, SendError, StackGoal, StackGoalEvent, send,
 };
+pub use list::list_copies;
