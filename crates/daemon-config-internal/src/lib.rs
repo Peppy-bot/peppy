@@ -113,9 +113,9 @@ pub mod launcher {
         PlannedPairEndpoint, PlannedPairing, PreparedLauncher, ResolvedClocks, RunningStack,
         SELF_COPY_NAME_REFUSAL, SETS_READ_WHOLE, Selection, SkipReason, SkippedAdjustment,
         UnitSelection, VacantReason, WALL_CLOCK, check_composition, check_daemon_scopes,
-        mint_incarnation, participant_vacancies, resolve_clocks, split_link_target,
-        validate_bindings, validate_clock_connections, validate_link_plan, validate_link_slots,
-        validate_pairings,
+        mint_incarnation, parse_copy_name, participant_vacancies, resolve_clocks,
+        split_link_target, validate_bindings, validate_clock_connections, validate_link_plan,
+        validate_link_slots, validate_pairings,
     };
 }
 
@@ -130,8 +130,8 @@ pub mod contract {
 // scope type, schema narrowing and launch checks.
 pub mod daemon_interface {
     pub use crate::internal::daemon_interface::{
-        DaemonInterface, DaemonScope, MAX_DESCRIPTION_CHARS, ScopedOption, StackCopiesScope,
-        UnservedInterface, served_interfaces,
+        DaemonInterface, DaemonScope, MAX_DESCRIPTION_CHARS, ScopedOption, StackCopiesMember,
+        StackCopiesScope, UnservedInterface, served_interfaces,
     };
 }
 

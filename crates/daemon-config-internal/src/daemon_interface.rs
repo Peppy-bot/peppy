@@ -19,7 +19,7 @@ use peppy_mcp_catalog::{
 };
 use std::sync::LazyLock;
 
-pub use stack_copies::{MAX_DESCRIPTION_CHARS, ScopedOption, StackCopiesScope};
+pub use stack_copies::{MAX_DESCRIPTION_CHARS, ScopedOption, StackCopiesMember, StackCopiesScope};
 
 /// One daemon interface this peppy serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

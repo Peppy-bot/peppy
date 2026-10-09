@@ -215,6 +215,20 @@ fn check_copy_name(name: &Name) -> Result<(), CompositionError> {
 pub const SELF_COPY_NAME_REFUSAL: &str =
     "`self` names the daemon a launch or join targets; give the copy another name";
 
+/// Parses the name a caller gives a copy to join or to remove. A copy's name
+/// is its placement link, so it is held to a core node name's grammar before
+/// it travels as the [`Name`] the goal carries. The CLI's `stack` commands
+/// and the MCP server's daemon bridge parse a copy name with it.
+pub fn parse_copy_name(raw: &str) -> Result<Name, String> {
+    let placement = CoreNodeName::new(raw).map_err(|error| match error {
+        CoreNodeNameError::Reserved => SELF_COPY_NAME_REFUSAL.to_owned(),
+        CoreNodeNameError::Malformed => {
+            format!("a copy's name is its placement link, so it {error}")
+        }
+    })?;
+    Ok(Name::new(placement.into_string()).expect("a core node name is a name"))
+}
+
 /// One copy's selection `own` laid over the stack `stack`: the whole
 /// selection, the fragments the copy pulls in and the constraints that
 /// judge it. A launch, a join and `repo index --check` all derive the
@@ -1114,5 +1128,20 @@ mod membership_tests {
         assert_eq!(tag("hub_inst"), None);
         assert_eq!(membership.copy_of("hub_inst"), None);
         assert_eq!(CopyMembership::default().copy_of("alpha_arm_inst"), None);
+    }
+
+    /// A copy name is a core node name, and each refusal says why in the
+    /// words of a copy.
+    #[test]
+    fn a_copy_name_is_parsed_as_a_core_node_name() {
+        assert_eq!(parse_copy_name("bravo_2").unwrap().as_str(), "bravo_2");
+        assert_eq!(parse_copy_name("self").unwrap_err(), SELF_COPY_NAME_REFUSAL);
+        for malformed in ["", "bad/name", &"a".repeat(64)] {
+            let refusal = parse_copy_name(malformed).unwrap_err();
+            assert!(
+                refusal.starts_with("a copy's name is its placement link, so it must be non-empty"),
+                "{malformed:?}: {refusal}"
+            );
+        }
     }
 }

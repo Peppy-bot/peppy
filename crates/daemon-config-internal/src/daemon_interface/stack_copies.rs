@@ -13,11 +13,36 @@ use std::num::NonZeroU16;
 /// The interface's document, compiled in.
 pub(super) const DOCUMENT: &str = include_str!("stack_copies.v1.json5");
 
-/// The action that adds a copy: its goal names the option and the copy.
-const JOIN: &str = "join";
+/// A member of `stack_copies:v1`, as an exposure entry names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StackCopiesMember {
+    /// The service that answers the scope's options and the copies of them
+    /// on the stack.
+    List,
+    /// The action that adds a copy: its goal names the copy and its option.
+    Join,
+    /// The action that removes a copy: its goal names the copy.
+    Remove,
+}
 
-/// The action that removes a copy: its goal names the copy.
-const REMOVE: &str = "remove";
+impl StackCopiesMember {
+    /// Every member of the interface.
+    pub const ALL: [Self; 3] = [Self::List, Self::Join, Self::Remove];
+
+    /// The member's name in the interface's document.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Join => "join",
+            Self::Remove => "remove",
+        }
+    }
+
+    /// The member the document names `name`, if any.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|member| member.name() == name)
+    }
+}
 
 /// The most characters the description of a scoped option holds.
 pub const MAX_DESCRIPTION_CHARS: usize = 200;
@@ -161,18 +186,18 @@ impl StackCopiesScope {
             else {
                 continue;
             };
-            match task.member.as_str() {
-                JOIN => {
+            match StackCopiesMember::named(&task.member) {
+                Some(StackCopiesMember::Join) => {
                     properties.insert(
                         "option".to_owned(),
                         serde_json::json!({ "type": "string", "enum": options }),
                     );
                     properties.insert("name".to_owned(), copy_name.clone());
                 }
-                REMOVE => {
+                Some(StackCopiesMember::Remove) => {
                     properties.insert("name".to_owned(), copy_name.clone());
                 }
-                _ => {}
+                Some(StackCopiesMember::List) | None => {}
             }
         }
     }

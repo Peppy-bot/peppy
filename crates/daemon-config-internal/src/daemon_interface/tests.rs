@@ -47,6 +47,35 @@ fn the_compiled_in_document_parses_as_a_contract_of_the_registered_identity() {
     );
 }
 
+/// The members the bridge and the narrowing name are the members of the
+/// compiled-in document, each of its kind.
+#[test]
+fn the_stack_copies_members_are_the_members_of_its_document() {
+    let interfaces = &DaemonInterface::StackCopies.document().interfaces;
+    let services: Vec<&str> = interfaces
+        .services
+        .iter()
+        .map(|service| service.name.as_str())
+        .collect();
+    let actions: Vec<&str> = interfaces
+        .actions
+        .iter()
+        .map(|action| action.name.as_str())
+        .collect();
+    assert_eq!(services, [StackCopiesMember::List.name()]);
+    assert_eq!(
+        actions,
+        [
+            StackCopiesMember::Join.name(),
+            StackCopiesMember::Remove.name()
+        ]
+    );
+    for member in StackCopiesMember::ALL {
+        assert_eq!(StackCopiesMember::named(member.name()), Some(member));
+    }
+    assert_eq!(StackCopiesMember::named("reset"), None);
+}
+
 #[test]
 fn the_registry_serves_one_tag_of_each_interface() {
     assert_eq!(

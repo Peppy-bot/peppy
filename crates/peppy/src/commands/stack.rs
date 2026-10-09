@@ -17,6 +17,7 @@ use clap::Subcommand;
 use tracing::info;
 
 use core_node_api::encoding::{LaunchGoal, StackBuildGoal};
+use daemon_config::launcher::parse_copy_name;
 use stack_goal::DEFAULT_BUDGETS;
 
 use super::Command;
@@ -131,20 +132,6 @@ pub enum StackCommands {
         #[arg(long, default_value_t = 2000)]
         per_sample_timeout_ms: u64,
     },
-}
-
-/// A copy's name is its placement link, so it is held to a core node name's
-/// grammar before it travels as the [`config::runtime::Name`] the goal
-/// carries.
-fn parse_copy_name(raw: &str) -> Result<config::runtime::Name, String> {
-    use config::runtime::{CoreNodeName, CoreNodeNameError};
-    let placement = CoreNodeName::new(raw).map_err(|error| match error {
-        CoreNodeNameError::Reserved => daemon_config::launcher::SELF_COPY_NAME_REFUSAL.to_owned(),
-        CoreNodeNameError::Malformed => {
-            format!("a copy's name is its placement link, so it {error}")
-        }
-    })?;
-    Ok(config::runtime::Name::new(placement.into_string()).expect("a core node name is a name"))
 }
 
 /// What `stack launch` and `stack build` take.
