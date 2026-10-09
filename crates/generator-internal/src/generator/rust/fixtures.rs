@@ -1461,11 +1461,13 @@ fn render_dep_harness_parts(
                     );
                 }
             });
-            service_readiness.push(quote! {
-                if !config.#vacant_field {
-                    #( #entries )*
-                }
-            });
+            if !entries.is_empty() {
+                service_readiness.push(quote! {
+                    if !config.#vacant_field {
+                        #( #entries )*
+                    }
+                });
+            }
             dep_mock_inits.push(field);
         }
         Cardinality::OneOrMore | Cardinality::ZeroOrMore => {

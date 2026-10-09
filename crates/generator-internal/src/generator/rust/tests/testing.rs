@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::generator::testgen::{
-    DepLinkSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
+    DepLinkSpec, DepServiceSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
 use config::node::{Cardinality, MessageFormat, NativeEmittedTopic, TopicRetention};
 
@@ -84,6 +84,53 @@ fn multi_instance_dep_slot_gets_an_instance_id_override() {
             "let motor_health_member_ids: Vec<String>",
             "config.motor_health_instance_ids",
         ],
+    );
+}
+
+/// An optional dep slot waits for the readiness of the services its mock
+/// serves only when the slot is bound, and a slot whose mock serves no
+/// service or action has no readiness to wait for, so it renders no guard.
+#[test]
+fn optional_dep_slot_guards_only_the_readiness_its_mock_serves() {
+    let registry_serving = |services: Vec<DepServiceSpec>| {
+        let mut registry = TestGenRegistry::default();
+        registry.record_node_identity("relay_node", "v1");
+        registry.deps.insert(
+            "camera".to_string(),
+            DepLinkSpec {
+                producer_name: "uvc_camera".to_string(),
+                target: TargetSpec::Node {
+                    name: "uvc_camera".to_string(),
+                    tag: "v1".to_string(),
+                },
+                cardinality: Cardinality::ZeroOrOne,
+                topics: Vec::new(),
+                services,
+                actions: Vec::new(),
+            },
+        );
+        registry
+    };
+
+    let serving_nothing = rendered_harness(&registry_serving(Vec::new()));
+    assert_contains_all(
+        &serving_nothing,
+        &["pub camera_vacant: bool", "if config.camera_vacant"],
+    );
+    assert!(
+        !serving_nothing.contains("if !config.camera_vacant"),
+        "a mock that serves nothing has no readiness to guard:\n{serving_nothing}"
+    );
+
+    let serving_a_service = rendered_harness(&registry_serving(vec![DepServiceSpec {
+        name: "enable_camera".to_string(),
+        module_link: "camera".to_string(),
+        request: None,
+        response: None,
+    }]));
+    assert_contains_all(
+        &serving_a_service,
+        &["if !config.camera_vacant", "\"enable_camera\""],
     );
 }
 
