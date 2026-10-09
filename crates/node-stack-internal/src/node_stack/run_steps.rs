@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use config::node::{NodeConfig, PeppygenLanguage};
@@ -610,19 +611,34 @@ impl Drop for TempFileGuard {
     }
 }
 
-/// Kills a child process, drains its output readers (so the stderr buffer
-/// flushes), and returns a formatted error string with a stderr tail.
+/// How long the end of a start waits for the output readers of an instance
+/// it killed, once the process group is dead. A reader ends when every
+/// process that holds its pipe has exited; a process that left the group (a
+/// `setsid` daemon, say) can hold it open past the kill, and the readers it
+/// keeps are aborted at the end of this budget.
+pub const OUTPUT_READER_JOIN_BUDGET: Duration = Duration::from_secs(2);
+
+/// Kills the process group of a child, reaps it, drains its output readers
+/// (so the stderr buffer flushes), and returns a formatted error string with
+/// a stderr tail.
 ///
-/// Used by [`super::entity::NodeEntity::abort_started`]. The reader handles
-/// are joined first, so the stderr buffer holds every line the child wrote
-/// before it was killed.
+/// Used by [`super::entity::NodeEntity::abort_started`]. The child is the
+/// leader of its process group, so the group kill reaches every process it
+/// forked that stayed in the group. The reader handles are joined within
+/// [`OUTPUT_READER_JOIN_BUDGET`], so the stderr buffer holds every line the
+/// group wrote before it was killed.
 pub(super) async fn kill_and_collect_error(
     mut child: Child,
     instance_id_str: &str,
     error: &str,
     stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
-    output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
+    mut output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
 ) -> String {
+    // `id()` is `None` only once the child was reaped, when its group can no
+    // longer be addressed by its pid.
+    if let Some(pid) = child.id() {
+        crate::process_group::kill_process_group(pid);
+    }
     if let Err(kill_err) = child.kill().await {
         debug!(
             "Failed to kill process for node instance '{}': {}",
@@ -634,9 +650,7 @@ pub(super) async fn kill_and_collect_error(
 
     // Drain any remaining output that was already in-flight so error reporting is stable.
     // We intentionally ignore join errors so we don't mask the actual node start failure.
-    for handle in output_reader_handles {
-        let _ = handle.await;
-    }
+    join_output_readers(instance_id_str, &mut output_reader_handles).await;
 
     let stderr_output = stderr_buffer
         .lock()
@@ -656,6 +670,30 @@ pub(super) async fn kill_and_collect_error(
         error.to_string()
     } else {
         format!("{error}{STDERR_TAIL_HEADER}{stderr_output}")
+    }
+}
+
+/// Joins the output readers of a killed instance within
+/// [`OUTPUT_READER_JOIN_BUDGET`], then aborts the ones a surviving process
+/// still keeps open.
+async fn join_output_readers(
+    instance_id_str: &str,
+    handles: &mut [JoinHandle<std::io::Result<()>>],
+) {
+    let joined = tokio::time::timeout(
+        OUTPUT_READER_JOIN_BUDGET,
+        futures::future::join_all(handles.iter_mut()),
+    )
+    .await;
+    if joined.is_ok() {
+        return;
+    }
+    debug!(
+        "Output of node instance '{instance_id_str}' is still open {OUTPUT_READER_JOIN_BUDGET:?} \
+         after its process group was killed; a process outside the group holds it"
+    );
+    for handle in handles.iter() {
+        handle.abort();
     }
 }
 
@@ -806,5 +844,48 @@ mod tests {
         assert_eq!(binds[2].src, "/dev/ttyUSB0");
         assert!(binds[2].dest.is_none());
         assert!(binds[2].opts.is_none());
+    }
+
+    /// Sends on its channel when the task that owns it is dropped, so a test
+    /// can await the abort of a task it no longer holds.
+    struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            if let Some(signal) = self.0.take() {
+                let _ = signal.send(());
+            }
+        }
+    }
+
+    /// A reader that a process outside the killed group keeps open never
+    /// ends: the end of the start aborts it once its budget runs out, on the
+    /// paused clock, and still answers the failure.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn the_end_of_a_start_aborts_the_readers_a_process_outside_the_group_keeps_open() {
+        let mut command = Command::new("true");
+        spawn_as_process_group_leader(&mut command);
+        let child = command.spawn().expect("spawn `true`");
+
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let held_open = tokio::spawn(async move {
+            let _signal = DropSignal(Some(dropped_tx));
+            std::future::pending::<std::io::Result<()>>().await
+        });
+        let stderr = Arc::new(StdMutex::new(VecDeque::from(["last words".to_owned()])));
+
+        let message =
+            kill_and_collect_error(child, "inst", "the start gave up", stderr, vec![held_open])
+                .await;
+
+        assert_eq!(
+            message,
+            format!("the start gave up{STDERR_TAIL_HEADER}last words")
+        );
+        tokio::time::timeout(Duration::from_secs(60), dropped_rx)
+            .await
+            .expect("the reader a process keeps open must be aborted")
+            .expect("the reader's future is dropped on abort");
     }
 }

@@ -4,8 +4,8 @@ use common::{
     AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, create_test_node_with_name,
     fast_health_monitor, instance_state_in_any_state, poll_until, send_node_add_then_build,
     send_node_run_and_wait, send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
-    start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger, wait_until_action_completes, write_peppy_json5,
+    start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
+    wait_until_action_completes, write_peppy_json5,
 };
 use config::runtime::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
@@ -113,17 +113,20 @@ async fn listen_for_node_run_success() {
     );
 }
 
+/// A setup that outlasts the setup budget its node declares fails the
+/// start with a message that names the budget and where it comes from, and
+/// the daemon stops the instance through its shutdown request, since the
+/// instance answered ready.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_timeout() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
-    // Use a short health timeout so the test doesn't take too long
-    let started = start_core_node_with_health_timeout(Duration::from_secs(2)).await;
+    let started = start_core_node_with_mock_messenger().await;
 
-    // Create a node config with a run_cmd that won't respond to health checks
-    // Using "sleep 10" as a simple command that runs but doesn't respond
+    // A short declared setup budget, so the test does not take too long. The
+    // `sleep` answers ready (below) and never reports the end of its setup.
     let peppy_json5 = r#"{
             peppy_schema: "node/v1",
             manifest: {
@@ -132,7 +135,8 @@ async fn listen_for_node_run_timeout() {
             },
             execution: {
                 language: "rust",
-                run_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "100"],
+                setup_timeout_secs: 1,
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME);
@@ -171,6 +175,14 @@ async fn listen_for_node_run_timeout() {
         .expect("failed to start ready service"),
     );
 
+    let (_shutdown_task, shutdown_requested) = common::install_shutdown_listener_for_instance(
+        &started,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        TARGET_INSTANCE_ID,
+    )
+    .await;
+
     // Allow the ready service to fully establish its listener
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -193,7 +205,7 @@ async fn listen_for_node_run_timeout() {
     .await
     .expect("node_run action should complete");
 
-    // The start should fail because the health check timed out
+    // The start should fail because the setup outlasts its budget
     assert!(
         !start_response.result.success,
         "node_run should fail due to health check timeout"
@@ -203,11 +215,17 @@ async fn listen_for_node_run_timeout() {
             .result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("health check timed out"))
+            .map(|msg| msg.contains(
+                "the setup did not end within 1 s, the setup budget `runnable_node:v1` \
+                 declares in `execution.setup_timeout_secs`"
+            ))
             .unwrap_or(false),
-        "error message should indicate health check failure, got: {:?}",
+        "error message should name the declared setup budget, got: {:?}",
         start_response.result.error_message
     );
+    shutdown_requested
+        .await
+        .expect("the daemon stops an instance that answered ready through its shutdown request");
 
     // Verify that PID is None on failure
     assert!(
@@ -2542,8 +2560,10 @@ fn panel_binding() -> peppylib::runtime::EndpointBinding {
     }
 }
 
-/// Adds the panel node, installs the ready and health responders, and,
-/// and the `node_endpoints` responder answering `announced`.
+/// Adds the panel node, installs the ready and health responders, the
+/// `node_endpoints` responder answering `announced`, and the shutdown
+/// request, which a node serves from its ready signal on: a start given up
+/// after the ready signal stops the instance through it.
 async fn add_panel_node_with_services(
     started: &common::StartedCoreNode,
     node_name: &str,
@@ -2601,6 +2621,9 @@ async fn add_panel_node_with_services(
         .await
         .expect("node endpoints service should start"),
     ));
+    let (shutdown, _requested) =
+        common::install_shutdown_listener_for_instance(started, node_name, "v1", instance_id).await;
+    services.push(shutdown);
     // Allow the services to establish their listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
     services
@@ -2889,4 +2912,75 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
         run_output[0].identity.instance_id.as_deref(),
         Some(TARGET_INSTANCE_ID)
     );
+}
+
+/// A start that ends before the instance answers ready, here by a cancel of
+/// its goal, kills the instance's whole process group at once: no process the
+/// node forked outlives the start, and none keeps its output open, so the
+/// goal ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_that_fails_before_its_ready_signal_leaves_no_process_of_its_group() {
+    const NODE_NAME: &str = "forks_and_never_ready_node";
+    const NODE_TAG: &str = "v1";
+    const INSTANCE_ID: &str = "forks_and_never_ready_instance";
+
+    let started = start_core_node_with_mock_messenger().await;
+    let _source = common::add_and_build_forking_node(&started, NODE_NAME, NODE_TAG).await;
+
+    // Nothing answers the ready signal of the instance.
+    let (mut goal, _accepted) = common::send_node_run_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        common::default_instance_plan(INSTANCE_ID),
+        NODE_NAME,
+        NODE_TAG,
+        Duration::from_secs(10),
+        60,
+        Vec::new(),
+    )
+    .await
+    .expect("the daemon accepts the start");
+
+    let pid = poll_until(
+        Duration::from_secs(10),
+        "the daemon should spawn the instance",
+        || {
+            started
+                .node_stack
+                .find(NODE_NAME, NODE_TAG)
+                .and_then(|handle| handle.read().instances().first().and_then(|i| i.pid()))
+        },
+    )
+    .await;
+    let children = poll_until(
+        Duration::from_secs(10),
+        "the instance should fork two children",
+        || {
+            let children = common::children_of(pid);
+            (children.len() >= 2).then_some(children)
+        },
+    )
+    .await;
+
+    peppylib::ActionMessenger::cancel_goal(&started.caller_handle, &goal, Duration::from_secs(5))
+        .await
+        .expect("the daemon takes the cancel");
+    wait_until_action_completes(&mut goal, Duration::from_secs(60)).await;
+    let result =
+        common::fetch_node_run_result(&started.caller_handle, &goal, Duration::from_secs(5))
+            .await
+            .expect("the start answers its result");
+    assert!(
+        !result.success,
+        "the start ends without its ready signal: {result:?}"
+    );
+
+    for process in std::iter::once(pid).chain(children) {
+        poll_until(
+            Duration::from_secs(5),
+            &format!("process {process} of the instance's group should be gone"),
+            || (!common::is_process_running(process)).then_some(()),
+        )
+        .await;
+    }
 }

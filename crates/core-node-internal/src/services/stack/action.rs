@@ -8,7 +8,9 @@ use super::launch::process_launch;
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
-use crate::services::node::gate::{Admission, ConcurrencyGate, finish_on_reset};
+use crate::services::node::gate::{
+    Admission, ConcurrencyGate, finish_on_reset, reset_drain_budget,
+};
 use crate::services::node::{DaemonDefaults, HealthMonitorPolicy, RelationshipCoordinators};
 use core_node_api::ActionId;
 use core_node_api::encoding::{
@@ -175,7 +177,8 @@ impl IdleTimeouts {
 #[derive(Clone, Copy)]
 pub(crate) struct StackChangeTimeouts {
     pub node_startup: Duration,
-    pub node_start_health: Duration,
+    /// The setup budget of an instance whose node declares none.
+    pub default_setup: config::node::SetupTimeout,
     pub health_monitor: HealthMonitorPolicy,
 }
 
@@ -506,7 +509,10 @@ async fn handle_stack_request(
         // SDK's retention window for a result that never arrives. Releasing the
         // gate on panic is handled by `slot` above. Mirrors the panic handling
         // in `run_node_run` / `run_node_add` / `run_node_build`.
-        let work = finish_on_reset(goal.process(ctx), &cancellation, || {
+        // A change starts instances, and a reset that cancels one of their
+        // starts waits for its cooperative stop.
+        let drain_budget = reset_drain_budget(ctx.node_stack.shutdown_grace());
+        let work = finish_on_reset(goal.process(ctx), &cancellation, drain_budget, || {
             LaunchResult::failure(
                 log_for_task.path(),
                 "stack operation cancelled by stack reset",

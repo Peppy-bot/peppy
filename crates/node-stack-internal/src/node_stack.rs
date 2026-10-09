@@ -15,6 +15,7 @@ pub use entity::{
 };
 use pairing::PairingRegistry;
 pub use pairing::{PairEndpoint, Pairing, RemoteSlotMeta, SlotAddr};
+pub use run_steps::OUTPUT_READER_JOIN_BUDGET;
 
 use crate::error::{Error, Result};
 use crate::process_group::kill_process_group;

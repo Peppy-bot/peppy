@@ -46,10 +46,9 @@ pub(crate) async fn clear_stack_slice(
 
 /// Reset drains admitted work, then tears down every instance in one batch.
 pub fn stack_reset_timeout(shutdown_grace_secs: u64) -> std::time::Duration {
-    crate::services::node::gate::COOPERATIVE_TEARDOWN_BUDGET
-        + crate::services::node::teardown_timeout(std::time::Duration::from_secs(
-            shutdown_grace_secs,
-        ))
+    let grace = std::time::Duration::from_secs(shutdown_grace_secs);
+    crate::services::node::gate::reset_drain_budget(grace)
+        + crate::services::node::teardown_timeout(grace)
 }
 
 pub(crate) async fn listen_for_stack_reset(

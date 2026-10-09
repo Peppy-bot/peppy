@@ -101,7 +101,7 @@ async fn live_claims(handle: &MessengerHandle, core_node_name: &str) -> Vec<pmi:
 fn test_node_arguments() -> CoreNodeArguments {
     CoreNodeArguments {
         node_startup_timeout: Duration::from_secs(5),
-        node_start_health_timeout: Duration::from_secs(5),
+        default_setup_timeout: config::node::SetupTimeout::from_secs(5).expect("in range"),
         health_monitor: HealthMonitorPolicy {
             interval: Duration::from_secs(5),
             timeout: Duration::from_secs(3),

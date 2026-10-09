@@ -58,12 +58,22 @@ use tokio_util::sync::CancellationToken;
 ///   signaling the run-phase token it awaits the phase future for up to this
 ///   long so it can SIGKILL the child, unregister the `Starting` instance, and
 ///   clear temp files before the failure is returned.
-/// - [`finish_on_reset`] on a `stack reset`: the reset cancels every admitted
-///   goal and gives each this long to finish its own cleanup.
+/// - [`reset_drain_budget`] on a `stack reset`: the reset cancels every
+///   admitted goal and gives each at least this long to finish its own cleanup.
 ///
 /// On expiry both callers fall back to dropping the future and surface a
 /// transient/timeout failure rather than wedging.
 pub(crate) const COOPERATIVE_TEARDOWN_BUDGET: Duration = Duration::from_secs(30);
+
+/// How long a stack reset gives each admitted goal to finish its own cleanup
+/// after it cancels the goal: [`COOPERATIVE_TEARDOWN_BUDGET`], or the time a
+/// start takes to give up its instance when that is longer. A start that the
+/// reset cancels after the instance answered ready stops it through its
+/// shutdown request and the grace, so the instance's shutdown hooks run before
+/// the reset tears the stack down.
+pub(crate) fn reset_drain_budget(shutdown_grace: Duration) -> Duration {
+    COOPERATIVE_TEARDOWN_BUDGET.max(super::run::start_give_up_budget(shutdown_grace))
+}
 
 /// Outcome of [`ConcurrencyGate::try_admit`].
 pub(crate) enum Admission {
@@ -330,13 +340,14 @@ impl StackState {
     }
 }
 
-/// Runs `work` until a reset cancels it, then gives it
-/// [`COOPERATIVE_TEARDOWN_BUDGET`] to finish its own cleanup before its future
-/// is dropped and `failure` is reported. Whatever the work holds releases with
+/// Runs `work` until a reset cancels it, then gives it `budget`
+/// ([`reset_drain_budget`]) to finish its own cleanup before its future is
+/// dropped and `failure` is reported. Whatever the work holds releases with
 /// the drop.
 pub(crate) async fn finish_on_reset<F, T>(
     work: F,
     cancellation: &CancellationToken,
+    budget: Duration,
     failure: impl FnOnce() -> T,
 ) -> T
 where
@@ -346,7 +357,7 @@ where
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => {
-            let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, work.as_mut()).await;
+            let _ = tokio::time::timeout(budget, work.as_mut()).await;
             failure()
         }
         result = work.as_mut() => result,
@@ -562,7 +573,50 @@ mod tests {
             true
         };
         cancellation.cancel();
-        assert!(!finish_on_reset(work, &cancellation, || false).await);
+        assert!(!finish_on_reset(work, &cancellation, COOPERATIVE_TEARDOWN_BUDGET, || false).await);
         assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// A reset waits for the cooperative stop of a start it cancels: a
+    /// cleanup that outlasts [`COOPERATIVE_TEARDOWN_BUDGET`] but fits the
+    /// reset's drain budget ends before the reset goes on.
+    #[tokio::test(start_paused = true)]
+    async fn a_reset_waits_for_a_cleanup_as_long_as_a_cooperative_stop() {
+        let grace = Duration::from_secs(5);
+        let stop = crate::services::node::teardown_timeout(grace);
+        assert!(stop > COOPERATIVE_TEARDOWN_BUDGET, "the case this covers");
+
+        let cancellation = CancellationToken::new();
+        let work_cancel = cancellation.clone();
+        let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cleaned = cleaned.clone();
+        let work = async move {
+            work_cancel.cancelled().await;
+            tokio::time::sleep(stop).await;
+            worker_cleaned.store(true, std::sync::atomic::Ordering::SeqCst);
+            true
+        };
+        cancellation.cancel();
+        assert!(!finish_on_reset(work, &cancellation, reset_drain_budget(grace), || false).await);
+        assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// The drain budget of a reset covers the longest give-up of a start,
+    /// whatever the shutdown grace, and never falls below the fixed budget.
+    #[test]
+    fn the_reset_drain_budget_covers_the_give_up_of_a_start() {
+        for grace_secs in [1, 5, 30, 120, 600] {
+            let grace = Duration::from_secs(grace_secs);
+            let budget = reset_drain_budget(grace);
+            assert!(budget >= COOPERATIVE_TEARDOWN_BUDGET, "{grace_secs}");
+            assert!(
+                budget >= crate::services::node::run::start_give_up_budget(grace),
+                "{grace_secs}"
+            );
+            assert!(
+                budget >= crate::services::node::teardown_timeout(grace),
+                "{grace_secs}"
+            );
+        }
     }
 }

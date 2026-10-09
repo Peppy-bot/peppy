@@ -92,10 +92,11 @@ async fn handle_node_remove_request(
                 &messenger,
                 &core_node_node,
                 &core_instance_id,
-                node_stack,
+                Arc::clone(&node_stack),
                 &relationships,
             ),
             &ownership.stack.cancellation(),
+            crate::services::node::gate::reset_drain_budget(node_stack.shutdown_grace()),
             || {
                 NodeRemoveResponse::failure("node remove cancelled by stack reset")
                     .encode()
