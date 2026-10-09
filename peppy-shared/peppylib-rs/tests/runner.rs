@@ -1910,10 +1910,12 @@ async fn daemon_node_reads_the_setup_budget_of_its_launch_config() {
         .expect("runner should return Ok");
 }
 
-/// The node serves the shutdown request before it answers ready: once the
-/// ready signal answers, a single probe finds the shutdown service, and the
-/// shutdown it answers ends a setup that waits forever, with its hook run.
-/// This is how the daemon stops a starting instance that answered ready.
+/// A node that answered ready answers the shutdown request, and the shutdown
+/// ends a setup that waits forever, with its hook run: this is how the daemon
+/// stops a starting instance that answered ready. The order in which the
+/// runtime declares the two services, the shutdown request first, is checked
+/// by `the_shutdown_request_is_served_before_the_ready_signal` in the
+/// runtime's unit tests, on a mock session that records it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_node_that_answers_ready_answers_the_shutdown_request() {
     let stack = start_daemon_stack(None).await;

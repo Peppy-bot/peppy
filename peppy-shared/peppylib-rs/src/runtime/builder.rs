@@ -999,3 +999,67 @@ async fn wait_for_handles(handles: Vec<TaskHandle<Result<()>>>) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::messaging::{MessengerHandle, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
+    use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+
+    /// The node serves the shutdown request before it answers ready, and
+    /// answers ready last of its pre-setup services: the daemon stops a
+    /// starting instance that answered ready through that request. The mock
+    /// session records the order in which the runtime declares the services.
+    #[tokio::test]
+    async fn the_shutdown_request_is_served_before_the_ready_signal() {
+        let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
+        messenger
+            .start_session()
+            .await
+            .expect("the mock session starts");
+        let shared = Arc::new(tokio::sync::Mutex::new(messenger));
+        let manifest = config::node::NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "ordered", tag: "v1" },
+                execution: { language: "rust", run_cmd: ["ordered"] },
+            }"#,
+        )
+        .expect("the manifest parses");
+        let processor = Processor::standalone_from_manifest(manifest, &StandaloneConfig::new())
+            .expect("a standalone processor");
+        let node_runner = Arc::new(NodeRunner::over_messenger(
+            MessengerHandle::from_shared(Arc::clone(&shared)),
+            processor,
+            CancellationToken::new(),
+        ));
+
+        let _services = start_pre_setup_services(node_runner)
+            .await
+            .expect("the pre-setup services listen");
+
+        let declared = match &shared.lock().await.adapter {
+            MessengerAdapter::Mock(adapter) => adapter.queryable_declarations(),
+            _ => unreachable!("the session is a mock"),
+        };
+        let services: Vec<&str> = declared
+            .iter()
+            .map(|keyexpr| keyexpr.rsplit('/').next().unwrap_or(keyexpr))
+            .collect();
+        let position = |service: &str| {
+            services
+                .iter()
+                .position(|declared| *declared == service)
+                .unwrap_or_else(|| panic!("`{service}` is declared: {services:?}"))
+        };
+        assert!(
+            position(SHUTDOWN_SERVICE) < position(NODE_READY_SERVICE),
+            "the shutdown request is served before ready: {services:?}"
+        );
+        assert_eq!(
+            services.last(),
+            Some(&NODE_READY_SERVICE),
+            "ready is answered last: {services:?}"
+        );
+    }
+}

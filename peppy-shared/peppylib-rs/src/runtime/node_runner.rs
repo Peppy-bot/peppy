@@ -54,15 +54,27 @@ impl NodeRunner {
                 .reconnecting()
                 .scope(SessionScope::Discovery(processor.discovery()))
                 .await?;
+        Ok(Self::over_messenger(
+            messenger,
+            processor,
+            cancellation_token,
+        ))
+    }
 
+    /// A runner over `messenger`, a session already open.
+    pub(crate) fn over_messenger(
+        messenger: MessengerHandle,
+        processor: Processor,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         let endpoints = AnnouncedEndpoints::new(processor.declared_endpoints().clone());
-        Ok(Self {
+        Self {
             messenger,
             processor,
             cancellation_token,
             shutdown_hooks: Mutex::new(Vec::new()),
             endpoints: Mutex::new(endpoints),
-        })
+        }
     }
 
     /// Announces the socket the node bound for the endpoint the manifest
