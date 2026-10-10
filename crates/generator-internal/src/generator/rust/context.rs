@@ -3,8 +3,8 @@ use super::type_mapping::schema_type_to_tokens;
 use crate::error::{Error, Result};
 use crate::generator::naming::sanitize_capnp_field_name;
 use crate::generator::types::{
-    validate_fixed_length_array_items, validate_generated_type_name_collisions,
-    validate_message_format_field_names,
+    NormalizedFieldNames, validate_fixed_length_array_items,
+    validate_generated_type_name_collisions, validate_message_format_field_names,
 };
 use config::node::{MessageFormat, PeppygenLanguage, SchemaType};
 use encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
@@ -119,42 +119,14 @@ fn validate_object_field_name_collisions_for_rust<'a, I>(fields: I, context: &st
 where
     I: IntoIterator<Item = (&'a String, &'a SchemaType)>,
 {
-    let mut rust_identifiers: HashMap<String, String> = HashMap::new();
-    let mut capnp_fields: HashMap<String, String> = HashMap::new();
+    let mut rust_identifiers =
+        NormalizedFieldNames::new(PeppygenLanguage::Rust, "rust identifier", context);
+    let mut capnp_fields =
+        NormalizedFieldNames::new(PeppygenLanguage::Rust, "capnp field name", context);
 
     for (field_name, schema) in fields {
-        let rust_ident = sanitize_rust_identifier(field_name);
-        if let Some(previous_field) = rust_identifiers.get(&rust_ident) {
-            if previous_field != field_name {
-                return Err(Error::FieldNameNormalizationCollision {
-                    language: PeppygenLanguage::Rust,
-                    context: context.to_string(),
-                    normalization: "rust identifier",
-                    normalized: rust_ident,
-                    first_field: previous_field.clone(),
-                    second_field: field_name.clone(),
-                });
-            }
-        } else {
-            rust_identifiers.insert(rust_ident, field_name.clone());
-        }
-
-        let capnp_field = sanitize_capnp_field_name(field_name);
-        if let Some(previous_field) = capnp_fields.get(&capnp_field) {
-            if previous_field != field_name {
-                return Err(Error::FieldNameNormalizationCollision {
-                    language: PeppygenLanguage::Rust,
-                    context: context.to_string(),
-                    normalization: "capnp field name",
-                    normalized: capnp_field,
-                    first_field: previous_field.clone(),
-                    second_field: field_name.clone(),
-                });
-            }
-        } else {
-            capnp_fields.insert(capnp_field, field_name.clone());
-        }
-
+        rust_identifiers.claim(sanitize_rust_identifier(field_name), field_name)?;
+        capnp_fields.claim(sanitize_capnp_field_name(field_name), field_name)?;
         validate_nested_field_name_collisions_for_rust(schema, &format!("{context}.{field_name}"))?;
     }
 

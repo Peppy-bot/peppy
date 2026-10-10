@@ -3,12 +3,13 @@ use crate::generator::common::CrateDeployMode;
 use crate::generator::naming::{array_item_type_name, nested_type_name};
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, FormatRuleViolation,
-    MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, SchemaType,
-    TopicRetention,
+    MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, PeppygenLanguage,
+    SchemaType, TopicRetention,
 };
 use daemon_config::consts::PeppyDirs;
 use indexmap::IndexMap;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -998,6 +999,54 @@ fn generated_object_child<'a>(
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// The field names of one struct, keyed by their spelling after one
+/// normalization of a target language (a Python identifier, a Rust
+/// identifier, a capnp field name). Two different fields that normalize to
+/// the same spelling would become one generated field, so the second one is
+/// refused.
+pub(crate) struct NormalizedFieldNames<'a> {
+    language: PeppygenLanguage,
+    normalization: &'static str,
+    context: &'a str,
+    first_field_by_spelling: HashMap<String, String>,
+}
+
+impl<'a> NormalizedFieldNames<'a> {
+    pub(crate) fn new(
+        language: PeppygenLanguage,
+        normalization: &'static str,
+        context: &'a str,
+    ) -> Self {
+        Self {
+            language,
+            normalization,
+            context,
+            first_field_by_spelling: HashMap::new(),
+        }
+    }
+
+    /// Records `field_name` under its `normalized` spelling. A different
+    /// field already recorded under that spelling is a collision, reported
+    /// with both field names.
+    pub(crate) fn claim(&mut self, normalized: String, field_name: &str) -> Result<()> {
+        match self.first_field_by_spelling.entry(normalized) {
+            Entry::Vacant(entry) => {
+                entry.insert(field_name.to_string());
+                Ok(())
+            }
+            Entry::Occupied(entry) if entry.get() == field_name => Ok(()),
+            Entry::Occupied(entry) => Err(Error::FieldNameNormalizationCollision {
+                language: self.language,
+                context: self.context.to_string(),
+                normalization: self.normalization,
+                normalized: entry.key().clone(),
+                first_field: entry.get().clone(),
+                second_field: field_name.to_string(),
+            }),
+        }
     }
 }
 

@@ -1,9 +1,9 @@
 use super::identifiers::sanitize_python_identifier;
 use crate::error::{Error, Result};
 use crate::generator::naming::{array_item_type_name, nested_type_name};
+use crate::generator::types::NormalizedFieldNames;
 use config::node::{PeppygenLanguage, QoSProfile, SchemaType, TopicRetention, TypeToken};
 use indexmap::IndexMap;
-use std::collections::HashMap;
 
 /// A field in a Python dataclass.
 pub struct PythonField {
@@ -128,23 +128,10 @@ fn validate_python_identifier_collisions<'a, I>(field_names: I, context: &str) -
 where
     I: IntoIterator<Item = &'a String>,
 {
-    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut identifiers =
+        NormalizedFieldNames::new(PeppygenLanguage::Python, "python identifier", context);
     for field_name in field_names {
-        let normalized = sanitize_python_identifier(field_name);
-        if let Some(previous_field) = seen.get(&normalized) {
-            if previous_field != field_name {
-                return Err(Error::FieldNameNormalizationCollision {
-                    language: PeppygenLanguage::Python,
-                    context: context.to_string(),
-                    normalization: "python identifier",
-                    normalized,
-                    first_field: previous_field.clone(),
-                    second_field: field_name.clone(),
-                });
-            }
-        } else {
-            seen.insert(normalized, field_name.clone());
-        }
+        identifiers.claim(sanitize_python_identifier(field_name), field_name)?;
     }
     Ok(())
 }
