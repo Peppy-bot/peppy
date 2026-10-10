@@ -233,6 +233,7 @@ def _run_cargo_build(package: str, repo_root: Path, env: dict[str, str]) -> None
         ["cargo", "build", "-p", package, "--release", "--locked"],
         cwd=repo_root,
         env=env,
+        check=False,
     )
     if result.returncode != 0:
         raise ReleaseError(
@@ -283,6 +284,7 @@ def _require_unused_tag(tag: str) -> None:
         ["git", "ls-remote", "--tags", GIT_REMOTE, f"refs/tags/{tag}"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise ReleaseError(

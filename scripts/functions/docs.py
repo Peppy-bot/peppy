@@ -686,6 +686,7 @@ def _em_dash_lines(repo_root: Path) -> tuple[EmDashLine, ...]:
         ],
         cwd=repo_root,
         capture_output=True,
+        check=False,
     )
     # Decoded here and not in text mode: its newline translation turns a lone
     # "\r" inside a docs line into a "\n" that git grep did not write.

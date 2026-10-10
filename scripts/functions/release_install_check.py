@@ -151,7 +151,10 @@ class PeppyInstall:
         its exit status."""
         console.print(f"Running `{_command_line(arguments)}`...")
         result = subprocess.run(
-            [str(self.binary), *arguments], stdin=subprocess.DEVNULL, env=self.env
+            [str(self.binary), *arguments],
+            stdin=subprocess.DEVNULL,
+            env=self.env,
+            check=False,
         )
         return result.returncode
 

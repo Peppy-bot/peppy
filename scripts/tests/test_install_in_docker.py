@@ -78,6 +78,7 @@ def _run_in_container(
         text=True,
         timeout=timeout,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
 
 

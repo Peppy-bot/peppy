@@ -125,6 +125,7 @@ def run_as_root(script: str, *, timeout: int = 600) -> None:
         text=True,
         timeout=timeout,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
     if result.returncode != 0:
         pytest.fail(f"setup as root failed:\n{script}{diagnostic(result)}")
@@ -182,6 +183,7 @@ def _ssh_to_localhost() -> tuple[str, ...]:
         text=True,
         timeout=60,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
     if keys.returncode != 0:
         pytest.fail(f"could not authorise the harness's ssh key{diagnostic(keys)}")
@@ -227,6 +229,7 @@ def login_shell(script: str, *, timeout: int = 120) -> subprocess.CompletedProce
         text=True,
         timeout=timeout,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
 
 

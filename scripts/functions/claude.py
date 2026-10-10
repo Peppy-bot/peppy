@@ -110,7 +110,7 @@ def run_claude(
     ticker.start()
     try:
         result = subprocess.run(
-            cmd, cwd=cwd, input=prompt, capture_output=True, text=True
+            cmd, cwd=cwd, input=prompt, capture_output=True, text=True, check=False
         )
     finally:
         stop.set()

@@ -120,6 +120,7 @@ def _run_limactl(
         env=_lima_env(),
         capture_output=capture,
         text=True,
+        check=False,
     )
 
 
@@ -131,6 +132,7 @@ def _lima_shell(
     return subprocess.run(
         [str(limactl), "shell", LIMA_INSTANCE, "--", "bash", "-c", script],
         env=_lima_env(),
+        check=False,
     )
 
 
@@ -140,6 +142,7 @@ def _host_memory_gib() -> int:
         ["sysctl", "-n", "hw.memsize"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0 or not result.stdout.strip().isdigit():
         raise ReleaseError("failed to read host memory size via 'sysctl -n hw.memsize'")

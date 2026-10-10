@@ -20,7 +20,9 @@ def run_git(args: Sequence[str], failure: str, *, cwd: Path | None = None) -> st
     to commit) to stdout, so the message falls back to stdout when stderr is
     empty.
     """
-    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    result = subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
+    )
     if result.returncode != 0:
         raise ReleaseError(
             f"{failure}: {result.stderr.strip() or result.stdout.strip()}"
@@ -37,6 +39,7 @@ def get_repo_root() -> Path:
         ["git", "rev-parse", "--show-toplevel"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise ReleaseError("must be run inside a git repository")
@@ -49,6 +52,7 @@ def get_current_branch() -> str | None:
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         return None
@@ -66,10 +70,12 @@ def has_uncommitted_changes() -> bool:
     staged = subprocess.run(
         ["git", "diff", "--cached", "--quiet"],
         capture_output=True,
+        check=False,
     )
     unstaged = subprocess.run(
         ["git", "diff", "--quiet"],
         capture_output=True,
+        check=False,
     )
     return staged.returncode != 0 or unstaged.returncode != 0
 
@@ -96,6 +102,7 @@ def find_commit(rev: str) -> str | None:
         ["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         return None
@@ -112,6 +119,7 @@ def is_ancestor(ancestor: str, descendant: str) -> bool:
         ["git", "merge-base", "--is-ancestor", ancestor, descendant],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode in (0, 1):
         return result.returncode == 0
@@ -189,6 +197,7 @@ def get_commit_subjects(base: str | None, head: str = "HEAD") -> list[str]:
         ["git", "log", "--no-merges", "--format=%s", rev_range],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise ReleaseError(
@@ -312,6 +321,7 @@ def detached_worktree(commit: str) -> Iterator[Path]:
             subprocess.run(
                 ["git", "worktree", "remove", "--force", str(tree)],
                 capture_output=True,
+                check=False,
             )
 
 

@@ -85,6 +85,7 @@ def _get_username_from_cred_store(creds_store: str) -> str | None:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
@@ -109,6 +110,7 @@ def _inspect_builder_platforms(builder_name: str) -> set[str]:
         ["docker", "buildx", "inspect", builder_name],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         return set()
@@ -154,6 +156,7 @@ def _ensure_buildx_builder() -> None:
                 "docker-container",
                 "--bootstrap",
             ],
+            check=False,
         )
         if result.returncode != 0:
             raise ReleaseError(
@@ -185,6 +188,7 @@ def validate_docker_environment() -> None:
         ["docker", "buildx", "version"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise ReleaseError(
@@ -240,7 +244,7 @@ def build_and_push_base_image(
         f"Building and pushing [bold]{image.repo}[/bold] (tags: {', '.join(tags)})..."
     )
 
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
         raise ReleaseError(
             f"docker buildx build failed for {image.repo} (exit {result.returncode})"
