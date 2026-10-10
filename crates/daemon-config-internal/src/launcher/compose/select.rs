@@ -463,11 +463,7 @@ fn fill(
 fn ambiguous(word: &str, axes: &[&str]) -> CompositionError {
     CompositionError::AmbiguousSelection {
         word: word.to_owned(),
-        axes: axes
-            .iter()
-            .map(|axis| format!("`{axis}`"))
-            .collect::<Vec<_>>()
-            .join(", "),
+        axes: crate::error::format_quoted_list(axes),
     }
 }
 
