@@ -39,9 +39,8 @@ fn repo_init_creates_file_when_missing() {
     );
 }
 
-/// Reproduces the user-reported bug from the daemon: existing
-/// `repositories.json5` only contains an older default, and the user upgrades
-/// peppy. `peppy repo init` must add the missing defaults.
+/// An existing `repositories.json5` that lacks some of the defaults gains the
+/// missing ones from `peppy repo init` and keeps the entries it has.
 #[test]
 fn repo_init_appends_missing_defaults_to_existing_file() {
     let tmp = TempDir::new().unwrap();

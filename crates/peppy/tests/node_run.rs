@@ -1182,7 +1182,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
 
     // cons_b has a declared slot but we deliberately omit --link: the
     // preflight must reject the run naming cons_b's own slot, and only
-    // that slot — cons_a's bound slots are inert items here.
+    // that slot: cons_a's bound slots are inert items here.
     let result = node_run_command(
         consumer_b_instance_id,
         consumer_b_name,

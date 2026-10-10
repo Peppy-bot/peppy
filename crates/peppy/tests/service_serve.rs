@@ -77,9 +77,9 @@ fn serve_command() {
     );
     // This test drives shutdown via the injected external cancellation token
     // (not an OS signal), so the coordinator takes the external-shutdown arm.
-    // The OS-signal arm logs "Shutdown signal received" instead; asserting that
-    // here made the test pass only when a sibling test's process-wide SIGINT
-    // happened to race in first.
+    // The OS-signal arm logs "Shutdown signal received" instead, and only a
+    // process-wide SIGINT from a sibling test can reach it here, so the test
+    // asserts the external arm.
     assert!(
         logs.contains("External shutdown requested"),
         "serve command should log external shutdown reception. Logs:\n{}",

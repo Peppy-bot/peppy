@@ -53,8 +53,8 @@ fn repo_refresh_succeeds_after_adding_fs_repo() {
 
 /// Configures three fs repositories: one that reads, one that never
 /// published an index, and one whose path does not exist. Returns the
-/// readable repository's directory (kept alive by the caller) and the
-/// missing repository's path.
+/// readable and the unpublished repositories' directories (kept alive by the
+/// caller) and the missing repository's path.
 fn seed_one_readable_and_two_unreadable_repositories(
     serve: &ServeCommandEmulation,
 ) -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {

@@ -219,7 +219,7 @@ fn repo_add_explicit_id_assigns_given_id() {
     let (_rt, serve, ctx, _work_dir) = setup();
 
     // An explicit id from the reserved >= 2000 band lands verbatim, not at
-    // the next free slot — organization setups rely on that stability.
+    // the next free slot. Organization setups rely on that stability.
     RepoCommand {
         command: RepoCommands::Add {
             source: "/tmp/private-hub".to_string(),

@@ -413,9 +413,9 @@ async fn node_sync_with_path_succeeds() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_sync_with_include_repositories_prints_provenance() {
-    // Verifies the CLI accepts `peppy node sync -r` (the new include-
-    // repositories flag) and that the verbose two-section output reaches
-    // the captured logs when a dep is repository-resolved.
+    // Verifies the CLI accepts `peppy node sync -r` (include repositories)
+    // and that the verbose two-section output reaches the captured logs when
+    // a dep is repository-resolved.
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -424,7 +424,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     let _guard = log_capture.install();
 
     // Camera node: written into a temp dir and registered as an `fs`
-    // entry in the daemon's packages cache.
+    // entry in the daemon's node cache.
     let camera_dir = tempfile::tempdir().expect("camera tempdir");
     std::fs::write(
         camera_dir.path().join("peppy.json5"),
@@ -450,7 +450,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     )
     .expect("write camera config");
 
-    // Seed the daemon's packages cache so the repo tier can find it.
+    // Seed the daemon's node cache so the repo tier can find it.
     super::common::register_repo_caches(
         serve.temp_dir(),
         &[("uvc_camera", "v1", camera_dir.path())],

@@ -62,9 +62,9 @@ async fn node_stop_command_succeeds() {
     // Override the launch command to avoid spawning a real node process.
     // Health/shutdown services are provided in-process via the mock messenger.
     // The instance has to survive the run, the `instance_count() == 1` check
-    // and the stop, so its lifetime is the test's, not a fixed 4s. The
-    // keep-alive is still just as non-cooperative as the old bare `sleep`, so
-    // the SIGKILL-on-signal modelling below is unaffected.
+    // and the stop, so its lifetime is the test's. The keep-alive ignores the
+    // cooperative shutdown request, so the SIGKILL-on-signal modelling below
+    // is what ends it.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
@@ -112,8 +112,8 @@ async fn node_stop_command_succeeds() {
     // by the run command) and SIGKILL the process when the cooperative shutdown
     // signal arrives. node_stop then observes the process exit within the grace
     // period: a genuine graceful stop, not a force-kill. (The overridden
-    // `run_cmd` is a bare `sleep`, which would otherwise ignore the signal and
-    // be force-killed once the grace period elapsed.)
+    // `run_cmd` is a keep-alive loop that ignores the signal, so without this
+    // kill the daemon force-kills it once the grace period elapses.)
     let node_pid = {
         let logs = log_capture.logs();
         let marker = format!("Started node instance '{instance_id}' (pid: ");
