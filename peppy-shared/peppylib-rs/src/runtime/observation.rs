@@ -15,7 +15,7 @@
 //! supplies only that follow rule; the convergence, the fair merge across
 //! members, and the stale filter live in the engine.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::messaging::{
     MessengerHandle, NonEmptyObservedSources, ObservationState, ObservedSource, ProducerRef,
     SenderTarget, Subscription, TopicMessenger,
@@ -305,12 +305,7 @@ pub async fn subscribe_observed(
     qos: QoSProfile,
 ) -> Result<ObservedTopicSubscription> {
     let processor = node_runner.processor();
-    let watch_rx =
-        processor
-            .observation_slot_watch(link_id)
-            .ok_or_else(|| Error::UnknownObservationSlot {
-                link_id: link_id.to_string(),
-            })?;
+    let watch_rx = node_runner.observation_slot_watch(link_id)?;
     let target = SenderTarget::pairing(pairing_name, pairing_tag)?;
     subscribe_observed_with_watch(
         node_runner.messenger().clone(),

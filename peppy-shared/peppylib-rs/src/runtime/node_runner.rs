@@ -168,7 +168,7 @@ impl NodeRunner {
             })
     }
 
-    fn peer_set_watch(
+    pub(crate) fn peer_set_watch(
         &self,
         link_id: &str,
     ) -> crate::error::Result<tokio::sync::watch::Receiver<crate::messaging::PeerSetState>> {
@@ -245,7 +245,7 @@ impl NodeRunner {
             })
     }
 
-    fn observation_slot_watch(
+    pub(crate) fn observation_slot_watch(
         &self,
         link_id: &str,
     ) -> crate::error::Result<tokio::sync::watch::Receiver<crate::messaging::ObservationState>>

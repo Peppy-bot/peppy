@@ -1796,3 +1796,71 @@ fn init_takes_a_non_utf8_runtime_config_as_daemon_mode() {
         "expected MissingInstanceIdEnvVar, got: {err:?}"
     );
 }
+
+/// The slot helpers that generated code splices refuse a link_id the manifest
+/// declares no slot for, naming the slot kind and the link_id they were given.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slot_helpers_name_an_undeclared_slot() {
+    let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+    let peppy_config = write_value_param_config(temp_dir.path(), "i64");
+    let standalone_config = StandaloneConfig::new()
+        .with_parameters_json(serde_json::json!({ "value": 1 }))
+        .with_messaging(&router.host, router.port);
+    let processor = peppylib::runtime::Processor::new_standalone(&peppy_config, &standalone_config)
+        .expect("standalone processor");
+    let node_runner = peppylib::runtime::NodeRunner::new(processor)
+        .await
+        .expect("node runner");
+
+    let Err(subscribe_error) = peppylib::runtime::subscribe_peer(
+        &node_runner,
+        "missing",
+        "test_pairing",
+        "v1",
+        "topic",
+        config::node::QoSProfile::Reliable,
+    )
+    .await
+    else {
+        panic!("subscribe_peer must refuse an undeclared pairing slot");
+    };
+    assert!(
+        matches!(&subscribe_error, PeppyError::UnknownPairingSlot { link_id } if link_id == "missing"),
+        "expected UnknownPairingSlot for `missing`, got: {subscribe_error:?}"
+    );
+
+    let Err(publisher_error) = peppylib::runtime::declare_peer_publisher(
+        &node_runner,
+        "missing",
+        "test_pairing",
+        "v1",
+        "topic",
+        config::node::QoSProfile::Reliable,
+    ) else {
+        panic!("declare_peer_publisher must refuse an undeclared pairing slot");
+    };
+    assert!(
+        matches!(&publisher_error, PeppyError::UnknownPairingSlot { link_id } if link_id == "missing"),
+        "expected UnknownPairingSlot for `missing`, got: {publisher_error:?}"
+    );
+
+    let Err(observe_error) = peppylib::runtime::subscribe_observed(
+        &node_runner,
+        "missing",
+        "test_pairing",
+        "v1",
+        "topic",
+        config::node::QoSProfile::Reliable,
+    )
+    .await
+    else {
+        panic!("subscribe_observed must refuse an undeclared observer slot");
+    };
+    assert!(
+        matches!(&observe_error, PeppyError::UnknownObservationSlot { link_id } if link_id == "missing"),
+        "expected UnknownObservationSlot for `missing`, got: {observe_error:?}"
+    );
+}

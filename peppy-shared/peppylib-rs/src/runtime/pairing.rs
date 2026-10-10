@@ -215,11 +215,7 @@ pub async fn subscribe_peer(
     qos: QoSProfile,
 ) -> Result<PeerSubscription> {
     let processor = node_runner.processor();
-    let watch_rx = processor
-        .peer_set_watch(link_id)
-        .ok_or_else(|| Error::UnknownPairingSlot {
-            link_id: link_id.to_string(),
-        })?;
+    let watch_rx = node_runner.peer_set_watch(link_id)?;
     let target = SenderTarget::pairing(pairing_name, pairing_tag)?;
     subscribe_peer_with_watch(
         node_runner.messenger().clone(),
@@ -382,11 +378,7 @@ pub fn declare_peer_publisher(
     qos: QoSProfile,
 ) -> Result<PeerPublisher> {
     let processor = node_runner.processor();
-    let watch_rx = processor
-        .peer_set_watch(link_id)
-        .ok_or_else(|| Error::UnknownPairingSlot {
-            link_id: link_id.to_string(),
-        })?;
+    let watch_rx = node_runner.peer_set_watch(link_id)?;
     let target = SenderTarget::pairing(pairing_name, pairing_tag)?;
     Ok(declare_peer_publisher_with_watch(
         node_runner.messenger().clone(),
