@@ -2194,43 +2194,63 @@ async fn single_service_communication_multiple_polls_and_callers() {
     router.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn action_communication_no_instance_id_target() {
-    let router = TestRouterContext::start().await;
+/// One goal exchange between a caller and an action server stand-in that
+/// answers exactly one goal: the goal and its ack, one feedback update, and
+/// the result.
+struct OneGoalExchange {
+    node_name: &'static str,
+    action_name: &'static str,
+    listener: ProducerRef,
+    caller: ProducerRef,
+    goal: Payload,
+    goal_response: Payload,
+    feedback: Payload,
+    result: Payload,
+}
 
-    // Listener instance
-    let listener_node_name = "controller";
-    let listener_action_name = "move_right_arm";
-    const LISTENER_CORE_NODE: &str = "listener_core_node";
-    const LISTENER_INSTANCE_ID: &str = "listener_instance";
+impl OneGoalExchange {
+    /// The `move_right_arm` exchange of the action tests, served at `listener`.
+    fn move_right_arm(listener: ProducerRef) -> Self {
+        Self {
+            node_name: "controller",
+            action_name: "move_right_arm",
+            listener,
+            caller: ProducerRef::new("caller_core_node", "caller_instance"),
+            goal: Payload::from_static(b"arm=right;pos=1,2,3"),
+            goal_response: Payload::from_static(b"accepted"),
+            feedback: Payload::from_static(b"progress=50"),
+            result: Payload::from_static(b"done"),
+        }
+    }
 
-    // Caller instance
-    const CALLER_CORE_NODE: &str = "caller_core_node";
-    const CALLER_INSTANCE_ID: &str = "caller_instance";
-
-    let goal_payload = Payload::from_static(b"arm=right;pos=1,2,3");
-    let goal_response_payload = Payload::from_static(b"accepted");
-    let feedback_payload = Payload::from_static(b"progress=50");
-    let result_payload = Payload::from_static(b"done");
-
-    // Launch a background task that plays the role of the action server.
-    let (action_ready_tx, action_ready_rx) = oneshot::channel();
-
-    let server_task = {
-        let expected_goal_payload = goal_payload.clone();
-        let expected_goal_response_payload = goal_response_payload.clone();
-        let feedback_payload_server = feedback_payload.clone();
-        let result_payload_server = result_payload.clone();
+    /// Spawns the action server stand-in at `listener`. It checks the caller
+    /// and the goal, acks the goal, publishes one feedback update and answers
+    /// one result request. It signals `ready_tx` once both handlers are set
+    /// up.
+    async fn spawn_server(
+        &self,
+        router: &TestRouterContext,
+        ready_tx: oneshot::Sender<()>,
+    ) -> tokio::task::JoinHandle<Result<(), Error>> {
+        let node_name = self.node_name;
+        let action_name = self.action_name;
+        let listener = self.listener.clone();
+        let caller_for_goal = self.caller.clone();
+        let caller_for_result = self.caller.clone();
+        let expected_goal_payload = self.goal.clone();
+        let expected_goal_response_payload = self.goal_response.clone();
+        let feedback_payload_server = self.feedback.clone();
+        let result_payload_server = self.result.clone();
 
         let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
             let mut action = ActionMessenger::expose(
                 &action_handle,
-                LISTENER_CORE_NODE,
-                LISTENER_INSTANCE_ID,
-                test_node_target(listener_node_name),
-                listener_action_name,
+                &listener.core_node,
+                &listener.instance_id,
+                test_node_target(node_name),
+                action_name,
             )
             .await
             .expect("action should start");
@@ -2250,8 +2270,8 @@ async fn action_communication_no_instance_id_target() {
                         .declare_from_wire("_", request.message().payload().into_inner())
                         .await
                         .expect("declare from wire");
-                    assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
-                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
+                    assert_eq!(request.message().core_node(), caller_for_goal.core_node);
+                    assert_eq!(request.message().instance_id(), caller_for_goal.instance_id);
                     assert_eq!(declared.user_payload, expected_goal_payload.as_ref());
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
                         let _ = tx.send(declared.publisher);
@@ -2268,8 +2288,11 @@ async fn action_communication_no_instance_id_target() {
             let result_handler = action.result_service.handle_next_request(move |request| {
                 let response_payload = result_payload_server.clone();
                 async move {
-                    assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
-                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
+                    assert_eq!(request.message().core_node(), caller_for_result.core_node);
+                    assert_eq!(
+                        request.message().instance_id(),
+                        caller_for_result.instance_id
+                    );
                     // Result requests now carry the goal_id envelope (empty body).
                     let request_payload = request.message().payload();
                     let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
@@ -2287,7 +2310,7 @@ async fn action_communication_no_instance_id_target() {
             });
 
             // Signal ready after handler is set up
-            action_ready_tx.send(()).unwrap();
+            ready_tx.send(()).unwrap();
 
             // From this point on, wait for the client to send a goal request
             let handled_goal = tokio::time::timeout(Duration::from_secs(5), goal_handler)
@@ -2323,24 +2346,27 @@ async fn action_communication_no_instance_id_target() {
 
             Ok::<(), Error>(())
         })
-    };
+    }
 
-    action_ready_rx
-        .await
-        .expect("action server should signal readiness");
-
-    // The caller node has its own scope (emulates a separate node running on a different instance)
-    {
+    /// Sends the goal as `caller` to `target` (any producer when `None`), and
+    /// checks that the ack, the feedback update and the result all come from
+    /// `listener` with the expected payloads.
+    async fn send_goal_and_check_replies(
+        &self,
+        router: &TestRouterContext,
+        target: Option<&ProducerRef>,
+    ) {
+        // The caller node has its own scope (emulates a separate node running on a different instance)
         let caller_handle = router.messenger().await;
 
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
-            CALLER_CORE_NODE,
-            CALLER_INSTANCE_ID,
-            test_node_target(listener_node_name),
-            listener_action_name,
-            None, // No target producer
-            goal_payload,
+            &self.caller.core_node,
+            &self.caller.instance_id,
+            test_node_target(self.node_name),
+            self.action_name,
+            target,
+            self.goal.clone(),
             QoSProfile::Reliable,
             FeedbackBuffer::KeepLatest,
             Duration::from_millis(1000),
@@ -2348,9 +2374,12 @@ async fn action_communication_no_instance_id_target() {
         .await
         .expect("caller should send goal");
 
-        assert_eq!(goal_handle.goal_reply().core_node, LISTENER_CORE_NODE);
-        assert_eq!(goal_handle.goal_reply().instance_id, LISTENER_INSTANCE_ID);
-        assert_eq!(goal_handle.goal_reply().body, goal_response_payload);
+        assert_eq!(goal_handle.goal_reply().core_node, self.listener.core_node);
+        assert_eq!(
+            goal_handle.goal_reply().instance_id,
+            self.listener.instance_id
+        );
+        assert_eq!(goal_handle.goal_reply().body, self.goal_response);
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
@@ -2358,9 +2387,9 @@ async fn action_communication_no_instance_id_target() {
             .await
             .expect("caller should receive feedback");
 
-        assert_eq!(feedback_message.payload(), &feedback_payload);
-        assert_eq!(feedback_message.core_node(), LISTENER_CORE_NODE);
-        assert_eq!(feedback_message.instance_id(), LISTENER_INSTANCE_ID);
+        assert_eq!(feedback_message.payload(), &self.feedback);
+        assert_eq!(feedback_message.core_node(), self.listener.core_node);
+        assert_eq!(feedback_message.instance_id(), self.listener.instance_id);
 
         // Finally, request the result using the same handle and ensure the server replies.
         let result_response = ActionMessenger::request_result(
@@ -2372,10 +2401,30 @@ async fn action_communication_no_instance_id_target() {
         .expect("caller should receive result");
 
         assert_eq!(result_response.status, ResultStatus::Completed);
-        assert_eq!(result_response.body, result_payload);
-        assert_eq!(result_response.core_node, LISTENER_CORE_NODE);
-        assert_eq!(result_response.instance_id, LISTENER_INSTANCE_ID);
+        assert_eq!(result_response.body, self.result);
+        assert_eq!(result_response.core_node, self.listener.core_node);
+        assert_eq!(result_response.instance_id, self.listener.instance_id);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn action_communication_no_instance_id_target() {
+    let router = TestRouterContext::start().await;
+    let exchange = OneGoalExchange::move_right_arm(ProducerRef::new(
+        "listener_core_node",
+        "listener_instance",
+    ));
+
+    // Launch a background task that plays the role of the action server.
+    let (action_ready_tx, action_ready_rx) = oneshot::channel();
+    let server_task = exchange.spawn_server(&router, action_ready_tx).await;
+
+    action_ready_rx
+        .await
+        .expect("action server should signal readiness");
+
+    // No target producer
+    exchange.send_goal_and_check_replies(&router, None).await;
 
     server_task
         .await
@@ -2389,24 +2438,11 @@ async fn action_communication_no_instance_id_target() {
 async fn action_communication_with_instance_id_target() {
     let router = TestRouterContext::start().await;
 
-    // Listener instance
-    let listener_node_name = "controller";
-    let listener_action_name = "move_right_arm";
-
     const LISTENER_CORE_NODE1: &str = "listener_core_node1";
     const LISTENER_INSTANCE_ID1: &str = "listener_instance1";
 
-    const LISTENER_CORE_NODE2: &str = "listener_core_node2";
-    const LISTENER_INSTANCE_ID2: &str = "listener_instance2";
-
-    // Caller instance
-    const CALLER_CORE_NODE: &str = "caller_core_node";
-    const CALLER_INSTANCE_ID: &str = "caller_instance";
-
-    let goal_payload = Payload::from_static(b"arm=right;pos=1,2,3");
-    let goal_response_payload = Payload::from_static(b"accepted");
-    let feedback_payload = Payload::from_static(b"progress=50");
-    let result_payload = Payload::from_static(b"done");
+    let listener2 = ProducerRef::new("listener_core_node2", "listener_instance2");
+    let exchange = OneGoalExchange::move_right_arm(listener2.clone());
 
     let call_count = Arc::new(AtomicUsize::new(0));
 
@@ -2415,7 +2451,9 @@ async fn action_communication_with_instance_id_target() {
 
     // This listener should not receive any message
     let server_task1 = {
-        let expected_goal_response_payload = goal_response_payload.clone();
+        let listener_node_name = exchange.node_name;
+        let listener_action_name = exchange.action_name;
+        let expected_goal_response_payload = exchange.goal_response.clone();
 
         let action_handle = router.messenger().await;
 
@@ -2462,169 +2500,15 @@ async fn action_communication_with_instance_id_target() {
         })
     };
 
-    let server_task2 = {
-        let expected_goal_payload = goal_payload.clone();
-        let expected_goal_response_payload = goal_response_payload.clone();
-        let feedback_payload_server = feedback_payload.clone();
-        let result_payload_server = result_payload.clone();
-
-        let action_handle = router.messenger().await;
-
-        tokio::spawn(async move {
-            let mut action = ActionMessenger::expose(
-                &action_handle,
-                LISTENER_CORE_NODE2,
-                LISTENER_INSTANCE_ID2,
-                test_node_target(listener_node_name),
-                listener_action_name,
-            )
-            .await
-            .expect("action should start");
-
-            let (publisher_tx, publisher_rx) =
-                tokio::sync::oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
-            let publisher_tx = std::sync::Mutex::new(Some(publisher_tx));
-            let factory_for_handler = action.feedback_publisher_factory.clone();
-
-            // The factory unwraps the envelope and declares a per-goal
-            // publisher in one async call via declare_from_wire.
-            let goal_handler = action.goal_service.handle_next_request(move |request| {
-                let factory = factory_for_handler.clone();
-                let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
-                async move {
-                    let declared = factory
-                        .declare_from_wire("_", request.message().payload().into_inner())
-                        .await
-                        .expect("declare from wire");
-                    assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
-                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert_eq!(declared.user_payload, expected_goal_payload.as_ref());
-                    if let Some(tx) = publisher_tx.lock().unwrap().take() {
-                        let _ = tx.send(declared.publisher);
-                    }
-                    super::actions::wrap_goal_ack(
-                        true,
-                        None,
-                        expected_goal_response_payload.as_ref(),
-                    )
-                }
-            });
-
-            // Create the result handler future
-            let result_handler = action.result_service.handle_next_request(move |request| {
-                let response_payload = result_payload_server.clone();
-                async move {
-                    assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
-                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    // Result requests now carry the goal_id envelope (empty body).
-                    let request_payload = request.message().payload();
-                    let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
-                        .expect("result request must carry a goal_id envelope");
-                    assert!(!goal_id.is_empty(), "result request must carry a goal_id");
-                    assert!(body.is_empty(), "result request body must be empty");
-
-                    // This test drives the result service directly, so it frames
-                    // the reply with the engine's result-outcome envelope itself.
-                    Ok(super::actions::wrap_result_outcome(
-                        ResultStatus::Completed,
-                        response_payload.as_ref(),
-                    ))
-                }
-            });
-
-            // Signal ready after handler is set up
-            action_ready_tx.send(()).unwrap();
-
-            // From this point on, wait for the client to send a goal request
-            let handled_goal = tokio::time::timeout(Duration::from_secs(5), goal_handler)
-                .await
-                .expect("timed out waiting for goal request")
-                .expect("action should receive goal request");
-
-            assert!(
-                handled_goal,
-                "goal subscription closed before handling request"
-            );
-
-            let feedback_publisher = publisher_rx
-                .await
-                .expect("server should have captured publisher");
-            feedback_publisher
-                .publish(
-                    crate::messaging::NonEmptyPayload::try_new(feedback_payload_server.clone())
-                        .expect("test feedback payload is non-empty"),
-                )
-                .await
-                .expect("action should publish feedback");
-
-            let handled_result = tokio::time::timeout(Duration::from_secs(5), result_handler)
-                .await
-                .expect("timed out waiting for goal request")
-                .expect("action should receive goal request");
-
-            assert!(
-                handled_result,
-                "result subscription closed before handling request"
-            );
-
-            Ok::<(), Error>(())
-        })
-    };
+    let server_task2 = exchange.spawn_server(&router, action_ready_tx).await;
 
     action_ready_rx
         .await
         .expect("action server should signal readiness");
 
-    // The caller node has its own scope (emulates a separate node running on a different instance)
-    {
-        let caller_handle = router.messenger().await;
-
-        let mut goal_handle = ActionMessenger::send_goal(
-            &caller_handle,
-            CALLER_CORE_NODE,
-            CALLER_INSTANCE_ID,
-            test_node_target(listener_node_name),
-            listener_action_name,
-            Some(&ProducerRef::new(
-                LISTENER_CORE_NODE2,
-                LISTENER_INSTANCE_ID2,
-            )),
-            goal_payload,
-            QoSProfile::Reliable,
-            FeedbackBuffer::KeepLatest,
-            Duration::from_millis(1000),
-        )
-        .await
-        .expect("caller should send goal");
-
-        assert_eq!(goal_handle.goal_reply().core_node, LISTENER_CORE_NODE2);
-        assert_eq!(goal_handle.goal_reply().instance_id, LISTENER_INSTANCE_ID2);
-        assert_eq!(goal_handle.goal_reply().body, goal_response_payload);
-
-        // Consume one feedback update from the action server.
-        let feedback_message = goal_handle
-            .on_next_feedback()
-            .await
-            .expect("caller should receive feedback");
-
-        assert_eq!(feedback_message.payload(), &feedback_payload);
-        assert_eq!(feedback_message.core_node(), LISTENER_CORE_NODE2);
-        assert_eq!(feedback_message.instance_id(), LISTENER_INSTANCE_ID2);
-
-        // Finally, request the result using the same handle and ensure the server replies.
-        let result_response = ActionMessenger::request_result(
-            &caller_handle,
-            &goal_handle,
-            Duration::from_millis(500),
-        )
-        .await
-        .expect("caller should receive result");
-
-        assert_eq!(result_response.status, ResultStatus::Completed);
-        assert_eq!(result_response.body, result_payload);
-        assert_eq!(result_response.core_node, LISTENER_CORE_NODE2);
-        assert_eq!(result_response.instance_id, LISTENER_INSTANCE_ID2);
-    }
+    exchange
+        .send_goal_and_check_replies(&router, Some(&listener2))
+        .await;
 
     server_task1
         .await
