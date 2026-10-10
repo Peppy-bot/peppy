@@ -318,10 +318,8 @@ class Detection(unittest.TestCase):
     def test_the_action_declares_every_output_the_detection_emits(self):
         # A composite action forwards only what it declares. An output the
         # detection emits and action.yml does not reaches the workflow as the
-        # empty string, which is how a skipped job is spelled -- so the suite
-        # is silently gated off and nothing anywhere is red. That is exactly
-        # what adding the gate of one half of the release scripts did until
-        # this case existed.
+        # empty string, which is how a skipped job is spelled, so the suite is
+        # silently gated off and nothing anywhere is red.
         self.assertEqual(sorted(declared_outputs()), sorted(select("Readme.md")))
 
 
