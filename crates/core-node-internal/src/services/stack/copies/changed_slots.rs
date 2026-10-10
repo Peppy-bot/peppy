@@ -470,7 +470,7 @@ async fn replace_on_participant(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::stack::fixtures::{placements_with, planned_deployment};
+    use crate::services::stack::fixtures::{graph_holding, placements_with, planned_deployment};
     use config::runtime::ProducerRef;
     use core_node_api::encoding::ObservationTarget;
     use core_node_api::encoding::SetMember;
@@ -727,6 +727,44 @@ mod tests {
         let (reachable, offline) = split_by_liveness(slots(), &placements, &both);
         assert_eq!(reachable.len(), 1);
         assert!(offline.is_empty());
+    }
+
+    /// A join grows a set only on an instance its host runs: one starting,
+    /// ended or absent is refused with the way out, and an instance placed on
+    /// another host is not asked of this one.
+    #[test]
+    fn a_join_grows_a_set_only_on_an_instance_its_host_runs() {
+        use super::super::live::check_grown_slots_running;
+        use core_node_api::InstanceState;
+        let slots = slots_of(&[("robots", "alpha_arm_inst")], Change::Join).unwrap();
+        let on_robot = placements_with("cn-robot", &[]);
+        let not_running = "joining grows `monitor_inst.links.robots`, but `monitor_inst` is not \
+                           running on `cn-robot`; launch the stack again so `cn-robot` runs it, \
+                           or join an option whose fragments do not add to that slot";
+
+        let starting = graph_holding(&[("monitor_inst", InstanceState::Starting)]);
+        assert_eq!(
+            check_grown_slots_running("cn-robot", &starting, &slots, &on_robot).unwrap_err(),
+            "joining grows `monitor_inst.links.robots`, but `monitor_inst` is starting on \
+             `cn-robot`; join again once it is running, or join an option whose fragments do not \
+             add to that slot"
+        );
+        let finished = graph_holding(&[("monitor_inst", InstanceState::Finished)]);
+        assert_eq!(
+            check_grown_slots_running("cn-robot", &finished, &slots, &on_robot).unwrap_err(),
+            not_running
+        );
+        let absent = graph_holding(&[]);
+        assert_eq!(
+            check_grown_slots_running("cn-robot", &absent, &slots, &on_robot).unwrap_err(),
+            not_running
+        );
+        let running = graph_holding(&[("monitor_inst", InstanceState::Running)]);
+        check_grown_slots_running("cn-robot", &running, &slots, &on_robot)
+            .expect("a running instance takes the grown set");
+        let on_cloud = placements_with("cn-robot", &[("monitor_inst", "cn-cloud")]);
+        check_grown_slots_running("cn-robot", &absent, &slots, &on_cloud)
+            .expect("an instance on another host is not asked of this one");
     }
 
     fn observation(source: &str) -> PlannedObservation {
