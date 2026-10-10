@@ -4,6 +4,7 @@
 //! real router live in `peppy-messaging-interface/tests/wire.rs`.
 
 use super::*;
+use crate::adapters::mock::MockAdapter;
 use crate::wire::WirePeer;
 use crate::wire::test_support::{node, seg};
 use crate::wire::{Segment, SenderTarget};
@@ -202,8 +203,8 @@ fn topic_publish_from_a_scalar_slot_leaves_its_peer_open() {
         .unwrap(),
     );
     let publish = ZenohWireFormat::topic_publish(&sender);
-    assert!(keyexprs_match(&publish, &paired));
-    assert!(keyexprs_match(&publish, &observing));
+    assert!(MockAdapter::key_exprs_intersect(&publish, &paired));
+    assert!(MockAdapter::key_exprs_intersect(&publish, &observing));
 }
 
 #[test]
@@ -259,11 +260,23 @@ fn a_pairing_emission_reaches_its_peer_and_its_observers_only() {
             .unwrap(),
         )
     };
-    assert!(keyexprs_match(&to_ctrl_1, &paired("ctrl_1")));
-    assert!(!keyexprs_match(&to_ctrl_1, &paired("ctrl_2")));
-    assert!(keyexprs_match(&to_ctrl_1, &observing));
-    assert!(keyexprs_match(&to_ctrl_1, &observing_pair_of("ctrl_1")));
-    assert!(!keyexprs_match(&to_ctrl_1, &observing_pair_of("ctrl_2")));
+    assert!(MockAdapter::key_exprs_intersect(
+        &to_ctrl_1,
+        &paired("ctrl_1")
+    ));
+    assert!(!MockAdapter::key_exprs_intersect(
+        &to_ctrl_1,
+        &paired("ctrl_2")
+    ));
+    assert!(MockAdapter::key_exprs_intersect(&to_ctrl_1, &observing));
+    assert!(MockAdapter::key_exprs_intersect(
+        &to_ctrl_1,
+        &observing_pair_of("ctrl_1")
+    ));
+    assert!(!MockAdapter::key_exprs_intersect(
+        &to_ctrl_1,
+        &observing_pair_of("ctrl_2")
+    ));
 }
 
 #[test]
@@ -362,17 +375,6 @@ fn a_pairing_key_without_its_recipient_is_refused() {
     ));
 }
 
-/// Single-chunk wildcard matching of two keyexprs, segment by segment: the
-/// rule the wire relies on, checked here without a transport.
-fn keyexprs_match(publish: &str, subscribe: &str) -> bool {
-    let (p, s): (Vec<&str>, Vec<&str>) =
-        (publish.split('/').collect(), subscribe.split('/').collect());
-    p.len() == s.len()
-        && p.iter()
-            .zip(&s)
-            .all(|(a, b)| *a == "*" || *b == "*" || a == b)
-}
-
 #[test]
 fn topic_pairing_and_contract_keyexprs_never_match() {
     // Lock-in guard: identical (name, tag, topic) under pairing vs contract
@@ -404,6 +406,10 @@ fn topic_pairing_and_contract_keyexprs_never_match() {
     let subscribe_discriminator = wildcard_subscribe.split('/').nth(5);
     assert_eq!(publish_discriminator, Some("pairing"));
     assert_eq!(subscribe_discriminator, Some("contract"));
+    assert!(!MockAdapter::key_exprs_intersect(
+        &pairing_publish,
+        &wildcard_subscribe
+    ));
 }
 
 #[test]
@@ -1266,14 +1272,22 @@ fn topic_subscribe_node_only_segment_does_not_match_contract_publisher() {
     // The subscriber keyexpr has `topic/node/widget/v1/*/frames` in its tail.
     // The node-shaped publisher key matches segment-by-segment (after the
     // per-`*` caller-side wildcards) while the contract-shaped one differs
-    // on the discriminator literal. We verify by checking the discriminator
-    // segments appear distinct in the rendered strings.
+    // on the discriminator literal. The substring checks pin the
+    // discriminator segments, and the matcher checks pin the intersection
+    // itself.
     assert!(sub_key.contains("/topic/node/widget/v1/*/frames"));
     assert!(node_pub_key.contains("/topic/node/widget/v1/_/frames"));
     assert!(contract_pub_key.contains("/topic/contract/widget/v1/_/frames"));
     // Cross-check: the contract publisher's tail must NOT appear inside the
     // node-pinned subscriber's keyexpr.
     assert!(!sub_key.contains("/topic/contract/"));
+    // The node publisher reaches the subscriber, the contract publisher does
+    // not.
+    assert!(MockAdapter::key_exprs_intersect(&node_pub_key, &sub_key));
+    assert!(!MockAdapter::key_exprs_intersect(
+        &contract_pub_key,
+        &sub_key
+    ));
 }
 
 #[test]

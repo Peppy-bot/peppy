@@ -640,7 +640,7 @@ impl MockAdapter {
     /// - `**` matches zero or more non-empty chunks.
     ///
     /// Symmetric in its arguments.
-    fn key_exprs_intersect(a: &str, b: &str) -> bool {
+    pub(crate) fn key_exprs_intersect(a: &str, b: &str) -> bool {
         let a_chunks: Vec<&str> = a.split('/').collect();
         let b_chunks: Vec<&str> = b.split('/').collect();
         Self::intersect_chunks(&a_chunks, &b_chunks)
