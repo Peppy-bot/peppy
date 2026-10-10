@@ -12,9 +12,6 @@ mod node;
 mod repo;
 mod stack;
 
-// Note: there used to be a top-level `builder` module here. Build encoding
-// now lives at `node::builder` alongside `node::add`.
-
 pub use clock::{
     ClockConsumerInfo, ClockDomainInfo, ClockListRequest, ClockListResponse, ClockOffsetRequest,
     ClockOffsetResponse, ClockRequest, ClockResponse, ClockTick,

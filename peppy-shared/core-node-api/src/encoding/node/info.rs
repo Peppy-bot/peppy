@@ -109,10 +109,9 @@ pub struct NodeInfo {
 /// Response payload for the `node_info` service.
 ///
 /// `NotInStack` is a first-class *successful* negative answer to the lookup,
-/// not a protocol-level error. Prior to this shape, the daemon rejected
-/// missing-node lookups with `InvalidServiceRequest`, which conflated "no
-/// such node" with "malformed request" and produced spurious ERROR logs
-/// during normal flows like the preflight inside `peppy node add`.
+/// not a protocol-level error. Keeping "no such node" apart from "malformed
+/// request" lets a normal flow, such as the preflight inside
+/// `peppy node add`, look a node up without an ERROR log.
 #[derive(Debug, Clone)]
 pub enum NodeInfoResponse {
     /// The `(name, tag)` pair is not currently in the node stack.

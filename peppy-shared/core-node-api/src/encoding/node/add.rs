@@ -19,7 +19,7 @@ pub enum NodeSource {
         repo_path: String,
         repo_ref: Option<String>,
     },
-    // Only .tzst (.tar.zstd) archives are supported for the moment
+    /// An HTTP archive: a zstd-compressed tarball (`.tar.zst`, `.tar.zstd` or `.tzst`).
     Http {
         url: url::Url,
         sha256: Option<String>,
@@ -299,8 +299,8 @@ impl NodeAddGoal {
                     // Borrow the canonicalized URL bytes as text instead of
                     // allocating a second `String`: `from_utf8_lossy` returns a
                     // borrowed `Cow` for the valid-UTF-8 case (every real git
-                    // URL), matching the lossy decoding `BString`'s `Display`
-                    // already used.
+                    // URL), the same lossy decoding that `BString`'s `Display`
+                    // applies.
                     git.set_repo_url(String::from_utf8_lossy(&repo_url.to_bstring()).as_ref());
                     git.set_repo_path(repo_path);
                     git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
@@ -437,7 +437,7 @@ impl NodeAddGoalResponse {
 }
 
 /// Feedback message for the NodeAdd action.
-/// Represents a single line of output from the build_cmd process.
+/// One line the add reports, tagged with the stream it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddFeedback {
     pub stream: FeedbackStream,

@@ -162,7 +162,7 @@ impl RepoAddRequest {
         let request = reader.get_root::<repo_capnp::repo_add_request::Reader>()?;
         let top = request.get_top();
         // An `auto` discriminant is what a sender that never set the union
-        // leaves on the wire, so ids decode as `None` for every pre-id peer.
+        // leaves on the wire, so a request that pins no id decodes as `None`.
         let id = match request.get_id().which()? {
             IdWhich::Auto(()) => None,
             IdWhich::Explicit(id) => Some(id),
@@ -399,8 +399,8 @@ mod tests {
 
     #[test]
     fn add_request_without_id_decodes_as_auto() {
-        // A request that never pins an id — including bytes a pre-id sender
-        // produced — must decode with `id: None`, never a bogus explicit id.
+        // A request that never pins an id must decode with `id: None`, never a
+        // bogus explicit id.
         let request =
             RepoAddRequest::new_git("https://github.com/org/repo", GitRepoRef::RemoteHead);
         assert_eq!(request.id, None);
