@@ -80,6 +80,18 @@ impl UnitSelection {
             .filter(move |entry| entry.axis != parent_axis)
     }
 
+    /// The options a copy's selection picks on its option's own axes, as
+    /// the copy's `with` map: what recomposes the copy the selection
+    /// describes.
+    pub(super) fn own_choices(&self, parent_axis: &str) -> BTreeMap<String, String> {
+        self.own_axes(parent_axis)
+            .filter_map(|entry| {
+                let option = entry.option.as_ref()?;
+                Some((entry.axis.clone(), option.clone()))
+            })
+            .collect()
+    }
+
     /// The one-line echo of the resolution, as launch feedback prints it
     /// before anything runs: `simulation=waldo (from file)  commander=xr
     /// recorder=(off)`.

@@ -452,10 +452,7 @@ fn check_copies_over(
                     continue;
                 };
                 let name = check_copy_name(bare);
-                let chosen: BTreeMap<String, String> = copy_selection
-                    .own_axes(&item.axis.name)
-                    .filter_map(|entry| Some((entry.axis.clone(), entry.option.clone()?)))
-                    .collect();
+                let chosen = copy_selection.own_choices(&item.axis.name);
                 // The copy as a join composes it: the option entry's
                 // settings under the selection's own choices.
                 let settings = prepared.joined_copy_settings(

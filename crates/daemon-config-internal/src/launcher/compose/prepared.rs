@@ -345,16 +345,7 @@ impl PreparedLauncher {
         let mut released = HashSet::new();
         let routed = self.routed();
         for record in remaining {
-            let with: BTreeMap<String, String> = record
-                .selection
-                .own_axes(&record.axis)
-                .filter_map(|entry| {
-                    entry
-                        .option
-                        .as_ref()
-                        .map(|option| (entry.axis.clone(), option.clone()))
-                })
-                .collect();
+            let with = record.selection.own_choices(&record.axis);
             let composed = compose_copy(
                 self,
                 selection,
