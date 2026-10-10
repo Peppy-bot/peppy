@@ -573,14 +573,19 @@ impl FleetRuntime {
             .unwrap_or_default()
     }
 
+    /// The robot `member` serves and the name a call addresses it by
+    /// (`None` on a target filled once per robot); `None` for a member of
+    /// no robot or of a target the surface does not declare. The published
+    /// names and the routing both derive from it, so they always agree.
+    fn call_address<'a>(&self, member: &'a FleetMember) -> Option<(&'a str, Option<&'a str>)> {
+        let robot = member.robot.as_deref()?;
+        let argument = self.argument_of.get(&member.target)?;
+        Some((robot, argument.as_ref().map(|_| member.name.as_str())))
+    }
+
     /// The published name of `entry` for `member`.
     fn name_for(&self, member: &FleetMember, entry: &ResourceEntry) -> Option<String> {
-        let robot = member.robot.as_deref()?;
-        let name = self
-            .argument_of
-            .get(&member.target)?
-            .as_ref()
-            .map(|_| member.name.as_str());
+        let (robot, name) = self.call_address(member)?;
         Some(published_name(&entry.name, robot, name))
     }
 
@@ -618,13 +623,9 @@ impl FleetRuntime {
 
     /// Whether a call naming `member`'s robot and name reaches it.
     fn routes_to(&self, member: &FleetMember) -> bool {
-        let Some(robot) = member.robot.as_deref() else {
+        let Some((robot, name)) = self.call_address(member) else {
             return false;
         };
-        let Some(argument) = self.argument_of.get(&member.target) else {
-            return false;
-        };
-        let name = argument.as_ref().map(|_| member.name.as_str());
         self.fleet()
             .route(robot, &member.target, name)
             .is_ok_and(|address| address == member.address)
