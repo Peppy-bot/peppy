@@ -600,6 +600,26 @@ mod tests {
         );
     }
 
+    /// A node that declares no set slot leaves nothing to name in
+    /// `add_links`, so the refusal names the manifest fix instead.
+    #[test]
+    fn adding_to_a_node_without_set_slots_is_refused_with_the_manifest_fix() {
+        let monitor_without_slots = planned_deployment("monitor", &[("monitor_inst", None)]);
+        let error = changed_slots(
+            &copy_adding(&[("ghosts", "alpha_arm_inst")]),
+            &[monitor_without_slots],
+            Change::Join,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "copy `alpha` has a member in `monitor_inst.links.ghosts`, which `monitor:v1` does \
+             not declare; declare a `one_or_more` or `zero_or_more` slot in `monitor:v1`'s \
+             `depends_on`, run `peppy node sync` and launch again, or drop `ghosts` from the \
+             option's `add_links`"
+        );
+    }
+
     #[test]
     fn a_removal_emptying_one_or_more_sets_is_refused_naming_each_and_one_leaving_a_member_passes()
     {
