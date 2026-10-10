@@ -253,26 +253,9 @@ mod tests {
         (tmp, peppy_dirs)
     }
 
-    fn root_entries(peppy_dirs: &PeppyDirs) -> Vec<String> {
-        let mut entries: Vec<String> = std::fs::read_dir(peppy_dirs.root())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        entries.sort();
-        entries
-    }
-
-    fn runtime_entries(peppy_dirs: &PeppyDirs) -> Vec<String> {
-        let mut entries: Vec<String> = std::fs::read_dir(peppy_dirs.runtime_config_dir())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        entries.sort();
-        entries
-    }
-
-    fn cache_entries(peppy_dirs: &PeppyDirs) -> Vec<String> {
-        let mut entries: Vec<String> = std::fs::read_dir(peppy_dirs.cache_dir())
+    /// The names of the entries of `dir`, sorted.
+    fn sorted_entry_names(dir: &Path) -> Vec<String> {
+        let mut entries: Vec<String> = std::fs::read_dir(dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
@@ -281,9 +264,15 @@ mod tests {
     }
 
     fn assert_cleared_to_the_kept_files(peppy_dirs: &PeppyDirs) {
-        assert_eq!(root_entries(peppy_dirs), ["cache", "conf", "runtime"]);
+        assert_eq!(
+            sorted_entry_names(peppy_dirs.root()),
+            ["cache", "conf", "runtime"]
+        );
         assert!(peppy_dirs.conf_dir().join("repositories.json5").exists());
-        assert_eq!(cache_entries(peppy_dirs), ["container_build"]);
+        assert_eq!(
+            sorted_entry_names(&peppy_dirs.cache_dir()),
+            ["container_build"]
+        );
         assert!(
             peppy_dirs
                 .container_build_cache_dir()
@@ -291,7 +280,7 @@ mod tests {
                 .exists()
         );
         assert_eq!(
-            runtime_entries(peppy_dirs),
+            sorted_entry_names(&peppy_dirs.runtime_config_dir()),
             ["boot_id", "daemon.lock", "root_clear.lock"]
         );
     }
