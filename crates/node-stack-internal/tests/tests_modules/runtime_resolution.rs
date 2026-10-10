@@ -40,7 +40,7 @@ async fn add_instance_creates_new_entity() {
     let harness = real_lifecycle::lifecycle_harness();
     assert_eq!(stack.len(), 1, "stack should start with root node only");
 
-    // Push config + build (no I/O) first
+    // Push the config and build it first
     fixtures::push_built(&stack, &harness, config).await;
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
@@ -710,7 +710,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
 
 #[test]
 fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
-    // First config: version 1.0.0 exposes a service
+    // First config: tag v1 exposes a service
     let config_v1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             peppy_schema: "node/v1",
@@ -735,7 +735,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
     )
     .expect("valid node config");
 
-    // Second config: version 2.0.0 emits a topic AND exposes a service (different interfaces are allowed with different tag)
+    // Second config: tag v2 exposes another service (a different tag may change interfaces)
     let config_v2: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             peppy_schema: "node/v1",
@@ -760,13 +760,13 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
-    // Add version 1.0.0
+    // Add tag v1
     stack
         .push_config(config_v1, false, PathBuf::from("/tmp"))
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + sensor v1");
 
-    // Adding version 2.0.0 with different interfaces should succeed (different tag = different entity)
+    // Adding tag v2 with different interfaces should succeed (different tag = different entity)
     stack
         .push_config(config_v2, false, PathBuf::from("/tmp"))
         .expect("different tag should create new entity even with different interfaces");
