@@ -132,7 +132,7 @@ pub enum RepoRefreshFeedback {
         /// Repository identity (URL or fs path).
         identity: String,
     },
-    /// Free-form status update emitted during the scan (e.g. "Cloning <url>").
+    /// Free-form status update emitted during the scan (e.g. `Cloning <url>`).
     Progress { message: String },
 }
 

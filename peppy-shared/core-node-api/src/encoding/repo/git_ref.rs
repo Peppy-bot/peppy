@@ -78,8 +78,8 @@ impl GitRepoRef {
     /// [`GitRepoRef::RemoteHead`].
     ///
     /// [`GitRepoRef::PeppyRelease`] reads the tag
-    /// `peppy-release/<version>` in a release build, and the branch
-    /// [`UNRELEASED_HUB_BRANCH`] in any other build.
+    /// `peppy-release/<version>` in a release build, and the branch that
+    /// `UNRELEASED_HUB_BRANCH` names in any other build.
     pub fn read_ref(&self, build: &PeppyBuild) -> Option<ReadRef> {
         match (self, build) {
             (Self::RemoteHead, _) => None,
