@@ -104,67 +104,56 @@ pub fn generate_field_assignment(
     value_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> Result<TokenStream> {
-    generate_field_assignment_inner(
-        builder_expr,
-        field_name,
-        schema,
-        value_expr,
-        names,
-        true,
-        false,
-    )
+    generate_field_assignment_inner(builder_expr, field_name, schema, value_expr, names, false)
 }
 
+/// Assigns `value_expr` to the field, behind an `if let Some(..)` when the
+/// schema is optional.
 fn generate_field_assignment_inner(
     builder_expr: &TokenStream,
     field_name: &str,
     schema: &SchemaType,
     value_expr: &TokenStream,
     names: &mut NameGenerator,
-    handle_optional: bool,
     value_is_ref: bool,
 ) -> Result<TokenStream> {
-    if handle_optional && schema.is_optional() {
-        match schema {
-            SchemaType::Object(_) => {
-                let binding = names.next("value");
-                let inner_expr = quote!(#binding);
-                let inner = generate_field_assignment_inner(
-                    builder_expr,
-                    field_name,
-                    schema,
-                    &inner_expr,
-                    names,
-                    false,
-                    true,
-                )?;
-                return Ok(quote! {
-                    if let Some(#binding) = (#value_expr).as_ref() {
-                        #inner
-                    }
-                });
-            }
-            _ => {
-                let binding = names.next("value");
-                let inner_expr = quote!(#binding);
-                let inner = generate_field_assignment_inner(
-                    builder_expr,
-                    field_name,
-                    schema,
-                    &inner_expr,
-                    names,
-                    false,
-                    true,
-                )?;
-                return Ok(quote! {
-                    if let Some(#binding) = (#value_expr).as_ref() {
-                        #inner
-                    }
-                });
-            }
-        }
+    if !schema.is_optional() {
+        return generate_present_field_assignment(
+            builder_expr,
+            field_name,
+            schema,
+            value_expr,
+            names,
+            value_is_ref,
+        );
     }
 
+    let binding = names.next("value");
+    let inner = generate_present_field_assignment(
+        builder_expr,
+        field_name,
+        schema,
+        &quote!(#binding),
+        names,
+        true,
+    )?;
+    Ok(quote! {
+        if let Some(#binding) = (#value_expr).as_ref() {
+            #inner
+        }
+    })
+}
+
+/// Assigns a value that is present: `value_expr` holds the field's value
+/// itself, never an `Option` of it.
+fn generate_present_field_assignment(
+    builder_expr: &TokenStream,
+    field_name: &str,
+    schema: &SchemaType,
+    value_expr: &TokenStream,
+    names: &mut NameGenerator,
+    value_is_ref: bool,
+) -> Result<TokenStream> {
     let method_component = sanitize_component(field_name);
     let set_method = Ident::new(&format!("set_{method_component}"), Span::call_site());
     let init_method = Ident::new(&format!("init_{method_component}"), Span::call_site());
@@ -387,7 +376,6 @@ fn generate_object_assignment(
             nested_schema,
             &nested_value_expr,
             names,
-            true,
             value_is_ref,
         )?);
     }
@@ -429,7 +417,6 @@ fn generate_object_list_assignment(
             nested_schema,
             &nested_value_expr,
             names,
-            true,
             value_is_ref,
         )?);
     }
