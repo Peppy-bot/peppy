@@ -588,25 +588,23 @@ impl TopicExposure {
     fn check_coherence(&self, target_name: &str) -> Result<(), String> {
         let context = format!("target `{target_name}` topic `{}`", self.member);
         self.content_policies().check_coherence(&context)?;
-        if self.picture.is_some() {
-            let not_a_picture = match self.representation.as_ref().map(|r| r.image) {
-                Some(ImageCodec::Jpeg) => None,
-                Some(ImageCodec::Png16) => {
-                    Some("a `png16` representation publishes 16-bit samples, which are data")
-                }
-                Some(ImageCodec::Raw) => Some(
-                    "a `raw` representation publishes the frame bytes untouched, which are data",
-                ),
-                None => Some("the topic declares no `representation`, so it publishes no frame"),
-            };
-            if let Some(reason) = not_a_picture {
-                return Err(format!(
-                    "{context}: `picture` requires `representation.image: \"jpeg\"`, the picture \
-                     a model looks at; {reason}"
-                ));
-            }
+        if self.picture.is_none() {
+            return Ok(());
         }
-        Ok(())
+        let reason = match self.representation.as_ref().map(|r| r.image) {
+            Some(ImageCodec::Jpeg) => return Ok(()),
+            Some(ImageCodec::Png16) => {
+                "a `png16` representation publishes 16-bit samples, which are data"
+            }
+            Some(ImageCodec::Raw) => {
+                "a `raw` representation publishes the frame bytes untouched, which are data"
+            }
+            None => "the topic declares no `representation`, so it publishes no frame",
+        };
+        Err(format!(
+            "{context}: `picture` requires `representation.image: \"jpeg\"`, the picture a model \
+             looks at; {reason}"
+        ))
     }
 }
 
