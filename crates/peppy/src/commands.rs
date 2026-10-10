@@ -217,8 +217,8 @@ pub trait Command {
 
 /// Parses the daemon's serialized stack graph from its JSON payload. Single
 /// owner of the parse and its error message so the commands that read the stack
-/// snapshot (stack list, node run, node remove, node runtime-config) cannot
-/// drift on it.
+/// snapshot (stack list, node run, node remove, and the restart prompt of
+/// platform enroll and unenroll) cannot drift on it.
 pub(crate) fn parse_stack_graph(graph_json: &str) -> Result<SerializedNodeGraph> {
     serde_json::from_str(graph_json)
         .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))
@@ -248,10 +248,9 @@ fn reject_remote_target(
 ///
 /// `node run` is the shape: its preflight lookup, its build, and its start all
 /// address `conn.core_node_name`, so accepting an override would report success
-/// against the machine the operator did not name. The goal itself is now
+/// against the machine the operator did not name. The goal itself is
 /// host-independent (the daemon assembles the runtime config from its own
-/// state), so what remains is purely that the routing has not been taught to
-/// follow the override. Refusing is the honest answer until it is.
+/// state); only the routing ignores the override, so the command refuses it.
 pub(crate) fn reject_remote_target_for_local_routing(
     conn: &DaemonConnection<'_>,
     command: &str,
@@ -268,9 +267,8 @@ pub(crate) fn reject_remote_target_for_local_routing(
 /// that the daemon resolves on its own machine (e.g. `node init`'s scaffold
 /// dir, defaulting to the caller's cwd): sent to a remote daemon, the path
 /// would silently be read or created on that machine's filesystem while the
-/// CLI reports success with a local-looking path. Until such requests carry no
-/// caller-local paths, these commands refuse a `--core-node` override naming
-/// anything but the local daemon. Sibling of
+/// CLI reports success with a local-looking path. These commands refuse a
+/// `--core-node` override naming anything but the local daemon. Sibling of
 /// [`reject_remote_target_for_local_routing`].
 pub(crate) fn reject_remote_target_for_local_path(
     conn: &DaemonConnection<'_>,

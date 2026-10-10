@@ -30,9 +30,9 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to get node info: {}", e)))?;
 
-    // "Not in stack" is now a first-class successful outcome of the lookup
-    // rather than a daemon-side error. Surface it to the user as a clean
-    // failure message without the generic "Failed to get node info:" prefix.
+    // "Not in stack" is a successful outcome of the lookup, not a daemon-side
+    // error. Surface it to the user as a clean failure message without the
+    // generic "Failed to get node info:" prefix.
     let info = match response {
         NodeInfoResponse::NotInStack => {
             return Err(Error::ExecutionFailed(format!(

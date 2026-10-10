@@ -36,8 +36,7 @@ pub(crate) trait ActionResultLike: Sized {
 /// Drives a goal that has already been sent to completion: decodes the goal
 /// response, prints the log-file path, polls feedback into a scrolling output,
 /// decodes the final result, and maps `success == false` into an execution
-/// error. Replaces ~40 lines of duplicated boilerplate in the `node add`,
-/// `node build`, and `node run`/`run` commands.
+/// error. Shared by `node add`, `node build` and `node run`.
 pub(crate) async fn run_action_with_feedback<Resp, Fb, Res>(
     messenger: &MessengerHandle,
     action_handle: &mut ActionGoalHandle,

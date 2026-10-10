@@ -29,10 +29,8 @@ pub use init::NodeInitBuilder;
 #[cfg(feature = "test-support")]
 pub use run::run_instance_async;
 pub use types::NodeName;
-// Internal helper: `launch` reaches it through the `node::` path; no test or
-// `main.rs` consumer, so it stays off the public surface. (`BuildNodeParams`
-// and `build_node` are used only here via the `builder::` path, so they need no
-// re-export at all.)
+// `stack launch` and `stack join` reach it through the `node::` path; nothing
+// outside the crate uses it.
 pub(crate) use env::caller_env_overrides;
 
 pub(crate) use core_node_api::encoding::DEFAULT_IDLE_TIMEOUT_SECS;
@@ -162,11 +160,10 @@ pub(crate) fn parse_key_at_target(
 
 /// Parses a `--vacant-link SLOT=<why>` argument: a slot the node's manifest
 /// declares `cardinality: "zero_or_one"`, left unresolved at launch on purpose,
-/// plus
-/// the reason the operator gives for it. Splits on the first `=` via
-/// [`parse_key_value_arg`], so a
-/// reason may itself contain `=`; SLOT is validated as a wire segment and the
-/// reason is parsed into a [`VacantReason`] here, once, at the flag boundary.
+/// plus the reason the operator gives for it. Splits on the first `=` via
+/// [`parse_key_value_arg`], so a reason may itself contain `=`; SLOT is
+/// validated as a wire segment and the reason is parsed into a
+/// [`VacantReason`] here, once, at the flag boundary.
 fn parse_vacant_link(raw: &str) -> Result<(String, VacantReason), String> {
     let (link_id, reason) = parse_key_value_arg(raw)
         .map_err(|_| format!("invalid --vacant-link value '{raw}': expected SLOT=<why>"))?;
@@ -304,7 +301,7 @@ pub enum NodeCommands {
         #[arg(long, value_name = "DOMAIN", value_parser = run::parse_clock_domain_name, requires = "run")]
         publish_clock: Option<Name>,
         /// Link a `link_id` from this node's `depends_on` to a target:
-        /// `KEY@TARGET`. One flag for every link kind — a producer binding
+        /// `KEY@TARGET`. One flag for every link kind: a producer binding
         /// (TARGET is a producer `instance_id`), a pairing (TARGET is a peer
         /// `instance_id[/peer_link_id]`), or an observer source (TARGET is a
         /// source `instance_id[/source_link_id]`). Repeatable across slots
@@ -967,10 +964,8 @@ mod tests {
         assert_eq!(comma, expected);
     }
 
-    /// `-sbr` plus `--link` is the bug-replication shape from the report:
-    /// the previous CLI accepted `add . -sbr` and ran an instance with no
-    /// bindings. Now `--link` must parse on that same invocation so the
-    /// user can supply them in one shot.
+    /// `-sbr` plus `--link` parses in one invocation, so the user supplies the
+    /// bindings of the chained run in one shot.
     #[test]
     fn add_sbr_with_link_parses() {
         let cli = try_parse_add(&[".", "-sbr", "--link", "feed@cam_a"])

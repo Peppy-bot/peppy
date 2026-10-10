@@ -28,10 +28,11 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
-/// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
-/// Matches `node info`'s request timeout; this is a metadata lookup,
-/// not a long-running action, so it must fail fast if the daemon is down
-/// rather than waiting out `timeouts.max_secs` (which can be 1 hour).
+/// Timeout for each metadata request (node info, stack list, clock list) that a
+/// run makes before it starts the instance. Matches `node info`'s request
+/// timeout; a metadata lookup is not a long-running action, so it must fail
+/// fast if the daemon is down rather than waiting out `timeouts.max_secs`
+/// (which can be 1 hour).
 const NODE_INFO_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Interval between `NodeInfoRequest` polls while waiting for an in-flight
@@ -910,14 +911,14 @@ pub async fn validate_and_run_instance(
 }
 
 /// Spawn a node instance with already-resolved `slot_bindings`. Callers must
-/// have validated `binds` via [`validate_and_run_instance`] first; invoking
-/// this directly bypasses every binding rule and exists only as the lower
-/// half of the validate-then-spawn split.
+/// have validated `slot_bindings` via [`validate_and_run_instance`] first;
+/// invoking this directly bypasses every binding rule and exists only as the
+/// lower half of the validate-then-spawn split.
 ///
 /// `core_node_name` plays both roles (caller identity and goal target) because
 /// this path routes to the local daemon only; the entry points enforce that via
-/// `reject_remote_target_for_local_routing`. Nothing on the goal is host-local
-/// any more, so the restriction is about routing rather than about the payload.
+/// `reject_remote_target_for_local_routing`. Nothing on the goal is host-local,
+/// so the restriction is about routing rather than about the payload.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
@@ -950,11 +951,8 @@ pub async fn run_instance_async(
     // A PLAN, not a config. The CLI says WHAT to start; the daemon owns the
     // node's runtime identity and assembles the rest from its own state.
     //
-    // This is what removes `node run`'s local-only restriction: the CLI used to
-    // bake its own session's messaging endpoint and core node into the config
-    // it shipped, so aiming the command at another daemon produced a node bound
-    // to the wrong machine. With nothing host-local on the goal there is
-    // nothing left to get wrong.
+    // Nothing host-local rides on the goal: the daemon that runs the instance
+    // supplies its own messaging endpoint and core node.
     let instance_plan = config::runtime::NodeInstancePlan {
         arguments,
         clock,
@@ -1290,11 +1288,8 @@ mod tests {
 
     #[test]
     fn classify_stage_building_waits_does_not_rebuild() {
-        // Regression: previously stage "Building" fell through to the
-        // "build" branch, and the daemon rejected the second build goal
-        // with "action already in progress" / "cannot build". The CLI now
-        // waits for the in-flight build instead of trying to start a new
-        // one.
+        // `Building` waits for the in-flight build: the daemon rejects a
+        // second build goal with "action already in progress".
         assert_eq!(
             classify_stage(NodeStage::Building, "n", "t").expect("Building should classify"),
             BuildDecision::Wait

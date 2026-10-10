@@ -148,7 +148,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     //   directly; no parsing needed. (Validated at parse time by
     //   `NodeSource::resolve_ref`.)
     //
-    // `Git`/`Http` root sources still skip the preflight since we'd need to
+    // `Git`/`Http` root sources skip the preflight since we'd need to
     // fetch them to read the manifest; the daemon's add action stops
     // existing instances transparently in that path. `Pinned` and
     // `Exposures` skip it for a different reason: `parse_node_source` never
@@ -334,8 +334,7 @@ async fn fetch_active_instances_for_name_tag(
     })?;
 
     // `NotInStack` is a normal first-time-add case; there is nothing to
-    // confirm. The daemon no longer reports this as an error, so we match
-    // on the response variant directly instead of sniffing error strings.
+    // confirm.
     let info = match response {
         NodeInfoResponse::NotInStack => return Ok(None),
         NodeInfoResponse::Found(info) => info,
