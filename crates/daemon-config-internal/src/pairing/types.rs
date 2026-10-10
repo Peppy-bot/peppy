@@ -121,11 +121,11 @@ impl<'de> Deserialize<'de> for PeppyPairing {
             topics: Vec<PairingTopic>,
             // Captured only to produce a targeted error: pairing documents
             // are topics-only by design (see the pairing guide's "why topics
-            // only" section).
-            #[serde(default)]
-            services: Option<serde_json::Value>,
-            #[serde(default)]
-            actions: Option<serde_json::Value>,
+            // only" section). A null is a present key.
+            #[serde(default, deserialize_with = "config::node::deserialize_present")]
+            services: Option<()>,
+            #[serde(default, deserialize_with = "config::node::deserialize_present")]
+            actions: Option<()>,
         }
 
         let raw = RawPeppyPairing::deserialize(deserializer)?;
@@ -415,6 +415,24 @@ mod tests {
         }"#;
         let err = serde_json5::from_str::<PeppyPairing>(json5).expect_err("actions rejected");
         assert!(err.to_string().contains("topics-only"), "error: {err}");
+    }
+
+    #[test]
+    fn rejects_a_null_services_or_actions_key_with_topics_only_error() {
+        for key in ["services", "actions"] {
+            let json5 = format!(
+                r#"{{
+                    peppy_schema: "pairing/v1",
+                    manifest: {{ name: "x", tag: "v1" }},
+                    roles: ["a", "b"],
+                    topics: [{{ emitted_by: "a", name: "t" }}],
+                    {key}: null
+                }}"#
+            );
+            let err =
+                serde_json5::from_str::<PeppyPairing>(&json5).expect_err("a null is a present key");
+            assert!(err.to_string().contains("topics-only"), "{key}: {err}");
+        }
     }
 
     #[test]
