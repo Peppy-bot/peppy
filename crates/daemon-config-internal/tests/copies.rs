@@ -8,7 +8,7 @@ use daemon_config::launcher::{
 use std::path::Path;
 
 mod common;
-use common::{fragment_file, words, write};
+use common::{fragment_file, load, words, write};
 
 /// A fleet: one stack axis holding the engine, one axis running as copies
 /// holding the robot, whose fragments carry the commander axis of their own.
@@ -76,11 +76,6 @@ fn fleet_document(deployments: &str) -> String {
             ] }
         } }"#
     )
-}
-
-fn load(document: &str) -> PreparedLauncher {
-    let parsed = PeppyLauncherParser::from_content(document).unwrap();
-    PreparedLauncher::load(&parsed, Path::new("fleet.json5")).unwrap()
 }
 
 fn name(value: &str) -> Name {
