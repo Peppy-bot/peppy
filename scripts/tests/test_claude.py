@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -226,7 +226,7 @@ def test_heartbeat_says_the_minutes_so_far_until_stopped(
 class _RecordedThread:
     """A stand-in for threading.Thread that records how it was driven."""
 
-    started: list[_RecordedThread] = []
+    started: ClassVar[list[_RecordedThread]] = []
 
     def __init__(self, *, target: Any, args: tuple, daemon: bool) -> None:
         self.target = target
