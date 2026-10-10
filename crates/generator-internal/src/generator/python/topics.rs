@@ -270,6 +270,26 @@ pub fn build_emitted_topic(
     Ok(builder.build())
 }
 
+/// Emits the module-level constants of a pairing topic module, which address
+/// the topic on its pairing slot. Both directions of a peer topic and the
+/// observer topic declare and subscribe through these names.
+fn emit_slot_topic_constants(
+    builder: &mut PythonCodeBuilder,
+    topic_name: &str,
+    qos: &str,
+    slot: &crate::generator::types::PeerContext,
+) {
+    builder.add_import("import peppylib");
+    builder.lines([
+        format!("TOPIC_NAME = \"{topic_name}\""),
+        format!("LINK_ID = \"{}\"", slot.link_id),
+        format!("PAIRING_NAME = \"{}\"", slot.pairing_name),
+        format!("PAIRING_TAG = \"{}\"", slot.pairing_tag),
+        format!("QOS = {qos}"),
+    ]);
+    builder.blank_line();
+}
+
 /// Emits the module-level slot constants plus the slot's live state, shared
 /// by both directions of a peer topic module. A scalar slot (`one`,
 /// `zero_or_one`) gets `paired()`/`wait_paired()`; a multi slot gets
@@ -281,15 +301,7 @@ fn emit_peer_module_header(
     qos: &str,
     peer: &crate::generator::types::PeerContext,
 ) {
-    builder.add_import("import peppylib");
-    builder.lines([
-        format!("TOPIC_NAME = \"{topic_name}\""),
-        format!("LINK_ID = \"{}\"", peer.link_id),
-        format!("PAIRING_NAME = \"{}\"", peer.pairing_name),
-        format!("PAIRING_TAG = \"{}\"", peer.pairing_tag),
-        format!("QOS = {qos}"),
-    ]);
-    builder.blank_line();
+    emit_slot_topic_constants(builder, topic_name, qos, peer);
 
     match crate::generator::types::peer_set_doc(peer.cardinality) {
         None => {
@@ -411,15 +423,7 @@ fn emit_observer_module_header(
     observer: &crate::generator::types::PeerContext,
     cardinality: Cardinality,
 ) {
-    builder.add_import("import peppylib");
-    builder.lines([
-        format!("TOPIC_NAME = \"{topic_name}\""),
-        format!("LINK_ID = \"{}\"", observer.link_id),
-        format!("PAIRING_NAME = \"{}\"", observer.pairing_name),
-        format!("PAIRING_TAG = \"{}\"", observer.pairing_tag),
-        format!("QOS = {qos}"),
-    ]);
-    builder.blank_line();
+    emit_slot_topic_constants(builder, topic_name, qos, observer);
 
     let (fn_name, runtime_method, return_type, typing_import) = match cardinality {
         Cardinality::One => ("source", "sole_source", "peppylib.ObservedSource", None),
