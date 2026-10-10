@@ -78,6 +78,61 @@ pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_r
     encoder.finish().expect("failed to finalize zstd stream");
 }
 
+/// The `artifact_path` of the built entity at `(name, tag)`. Panics if the
+/// entity is missing or not built.
+pub fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
+    node_stack
+        .find(name, tag)
+        .expect("entity should exist")
+        .read()
+        .artifact_path()
+        .expect("entity should be built")
+        .to_path_buf()
+}
+
+/// Returns true if the given tar.zst archive contains an entry matching `entry_name`.
+pub fn archive_contains_entry(archive_path: &Path, entry_name: &str) -> bool {
+    let file = std::fs::File::open(archive_path).expect("failed to open archive");
+    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
+    let mut archive = tar::Archive::new(decoder);
+    archive
+        .entries()
+        .expect("failed to read entries")
+        .any(|entry| {
+            let entry = entry.expect("failed to read entry");
+            let path = entry.path().expect("failed to read entry path");
+            let path_str = path.to_string_lossy();
+            let normalized = path_str.trim_start_matches("./");
+            normalized == entry_name
+        })
+}
+
+/// Reads a file from a tar.zst archive and returns its contents as a String.
+pub fn read_file_from_archive(archive_path: &Path, entry_name: &str) -> String {
+    use std::io::Read;
+    let file = std::fs::File::open(archive_path).expect("failed to open archive");
+    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive.entries().expect("failed to read entries") {
+        let mut entry = entry.expect("failed to read entry");
+        let path = entry.path().expect("failed to read entry path");
+        let path_str = path.to_string_lossy();
+        let normalized = path_str.trim_start_matches("./").to_string();
+        if normalized == entry_name {
+            let mut contents = String::new();
+            entry
+                .read_to_string(&mut contents)
+                .expect("failed to read entry contents");
+            return contents;
+        }
+    }
+    panic!(
+        "entry '{}' not found in archive {}",
+        entry_name,
+        archive_path.display()
+    );
+}
+
 /// Builder for `nodes.json5`, `launchers.json5`, `contracts.json5` and
 /// `pairings.json5` cache fixtures. Tests call [`TestPackagesCache::fs_entry`]
 /// / `git_entry` / `launcher_fs_entry` / `contract_git_entry` /

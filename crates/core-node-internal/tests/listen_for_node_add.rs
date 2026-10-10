@@ -4,10 +4,10 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, add_and_build_forking_node,
-    build_staged_node, create_tar_zst_from_dir, is_process_running, poll_until,
-    send_node_add_and_wait, send_node_add_and_wait_with_force, spawn_real_stuck_instance,
-    start_core_node_with_mock_messenger, wait_until_action_completes, wait_until_service_reachable,
-    write_peppy_json5,
+    build_staged_node, create_tar_zst_from_dir, entity_artifact_path, is_process_running,
+    poll_until, send_node_add_and_wait, send_node_add_and_wait_with_force,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger, wait_until_action_completes,
+    wait_until_service_reachable, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
@@ -21,7 +21,7 @@ use git2::{Repository, Signature};
 use gix_url::Url as GitUrl;
 use peppylib::ActionMessenger;
 use peppylib::core_node::transport::poll;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -32,22 +32,6 @@ use {
 
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Returns the current `artifact_path` of the entity at `(name, tag)` as an owned
-/// `PathBuf`. Panics if the entity is missing or is not yet `Built`.
-///
-/// The entity lookup uses the new `Arc<RwLock<NodeEntity>>` API: most call
-/// sites used to call `entity.root_path()` directly; this helper encapsulates
-/// the `read()` + `artifact_path().expect(...)` boilerplate.
-fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
-    node_stack
-        .find(name, tag)
-        .expect("entity should exist")
-        .read()
-        .artifact_path()
-        .expect("entity should be built")
-        .to_path_buf()
-}
 
 /// Returns the number of tracked instances for the entity at `(name, tag)`.
 fn entity_instance_count(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> usize {
@@ -144,48 +128,6 @@ fn serve_bundle_over_http(bundle_bytes: Vec<u8>) -> (Server, url::Url) {
     let url = url::Url::parse(&server.url("/bundles/node.tar.zst").to_string())
         .expect("http bundle url should parse");
     (server, url)
-}
-
-/// Returns true if the given tar.zst archive contains an entry matching `entry_name`.
-fn archive_contains_entry(archive_path: &Path, entry_name: &str) -> bool {
-    let file = std::fs::File::open(archive_path).expect("failed to open archive");
-    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
-    let mut archive = tar::Archive::new(decoder);
-    archive
-        .entries()
-        .expect("failed to read entries")
-        .any(|entry| {
-            let entry = entry.expect("failed to read entry");
-            let path = entry.path().expect("failed to read entry path");
-            let path_str = path.to_string_lossy();
-            let normalized = path_str.trim_start_matches("./");
-            normalized == entry_name
-        })
-}
-
-/// Reads a file from a tar.zst archive and returns its contents as a String.
-fn read_file_from_archive(archive_path: &Path, entry_name: &str) -> String {
-    let file = std::fs::File::open(archive_path).expect("failed to open archive");
-    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
-    let mut archive = tar::Archive::new(decoder);
-    for entry in archive.entries().expect("failed to read entries") {
-        let mut entry = entry.expect("failed to read entry");
-        let path = entry.path().expect("failed to read entry path");
-        let path_str = path.to_string_lossy();
-        let normalized = path_str.trim_start_matches("./").to_string();
-        if normalized == entry_name {
-            let mut contents = String::new();
-            entry
-                .read_to_string(&mut contents)
-                .expect("failed to read entry contents");
-            return contents;
-        }
-    }
-    panic!(
-        "entry '{}' not found in archive {}",
-        entry_name,
-        archive_path.display()
-    );
 }
 
 /// Lists all file entries in a tar.zst archive (normalized paths without leading "./").

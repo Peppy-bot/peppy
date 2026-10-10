@@ -1,71 +1,20 @@
 mod common;
 
 use common::{
-    NodeAddSource, acquire_container_test_guard, send_node_add_and_wait,
-    send_node_add_and_wait_with_env, send_node_build_and_wait, send_node_build_and_wait_forced,
-    start_core_node_with_mock_messenger, start_core_node_with_mock_messenger_outside_home,
-    write_peppy_json5,
+    NodeAddSource, acquire_container_test_guard, archive_contains_entry, entity_artifact_path,
+    read_file_from_archive, send_node_add_and_wait, send_node_add_and_wait_with_env,
+    send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
+    start_core_node_with_mock_messenger_outside_home, write_peppy_json5,
 };
 use core_node_api::encoding::NodeBuildFeedback;
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 const BUILD_CMD_MARKER_FILE: &str = "build_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
-
-fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
-    node_stack
-        .find(name, tag)
-        .expect("entity should exist")
-        .read()
-        .artifact_path()
-        .expect("entity should be built")
-        .to_path_buf()
-}
-
-fn archive_contains_entry(archive_path: &Path, entry_name: &str) -> bool {
-    let file = std::fs::File::open(archive_path).expect("failed to open archive");
-    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
-    let mut archive = tar::Archive::new(decoder);
-    archive
-        .entries()
-        .expect("failed to read entries")
-        .any(|entry| {
-            let entry = entry.expect("failed to read entry");
-            let path = entry.path().expect("failed to read entry path");
-            let path_str = path.to_string_lossy();
-            let normalized = path_str.trim_start_matches("./");
-            normalized == entry_name
-        })
-}
-
-fn read_file_from_archive(archive_path: &Path, entry_name: &str) -> String {
-    use std::io::Read;
-    let file = std::fs::File::open(archive_path).expect("failed to open archive");
-    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
-    let mut archive = tar::Archive::new(decoder);
-    for entry in archive.entries().expect("failed to read entries") {
-        let mut entry = entry.expect("failed to read entry");
-        let path = entry.path().expect("failed to read entry path");
-        let path_str = path.to_string_lossy();
-        let normalized = path_str.trim_start_matches("./").to_string();
-        if normalized == entry_name {
-            let mut contents = String::new();
-            entry
-                .read_to_string(&mut contents)
-                .expect("failed to read entry contents");
-            return contents;
-        }
-    }
-    panic!(
-        "entry '{}' not found in archive {}",
-        entry_name,
-        archive_path.display()
-    );
-}
 
 /// Helper: stage a node via `send_node_add_and_wait` and assert success.
 /// Returns (node_name, node_tag) for use in subsequent build calls.
