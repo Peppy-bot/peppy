@@ -257,60 +257,25 @@ mod tests {
     #[test]
     fn allows_https_and_local_http() {
         let servers = servers();
-        assert!(
-            resolve_api_url_from(
-                Some("https://api.peppy.bot"),
-                None,
-                TransportPolicy::Strict,
-                &servers
-            )
-            .is_ok()
-        );
-        assert!(
-            resolve_api_url_from(
-                Some("http://auth.peppy.localhost:8080"),
-                None,
-                TransportPolicy::Strict,
-                &servers
-            )
-            .is_ok()
-        );
-        assert!(
-            resolve_api_url_from(
-                Some("http://127.0.0.1:3000"),
-                None,
-                TransportPolicy::Strict,
-                &servers
-            )
-            .is_ok()
-        );
-        // The old prefix test accepted these two for the wrong reason: it
-        // matched the literal `127.` and the literal `::1` rather than asking
-        // whether the parsed address is a loopback address.
-        assert!(
-            resolve_api_url_from(
-                Some("http://127.42.7.9:3000"),
-                None,
-                TransportPolicy::Strict,
-                &servers
-            )
-            .is_ok()
-        );
-        assert!(
-            resolve_api_url_from(
-                Some("http://[::1]:3000"),
-                None,
-                TransportPolicy::Strict,
-                &servers
-            )
-            .is_ok()
-        );
+        for url in [
+            "https://api.peppy.bot",
+            "http://auth.peppy.localhost:8080",
+            "http://127.0.0.1:3000",
+            // Every address of 127.0.0.0/8 and the IPv6 loopback is a
+            // loopback address, whatever its spelling.
+            "http://127.42.7.9:3000",
+            "http://[::1]:3000",
+        ] {
+            assert!(
+                resolve_api_url_from(Some(url), None, TransportPolicy::Strict, &servers).is_ok(),
+                "{url} must be admitted"
+            );
+        }
     }
 
-    /// The whole point of matching on [`Host`]: `127.example` is a domain name
-    /// that merely starts like a loopback literal, and the old
-    /// `h.starts_with("127.")` check classified it as local and permitted an
-    /// entire device flow in the clear against a remote host.
+    /// `127.example` is a domain name that only starts like a loopback
+    /// literal. [`is_local`] classifies the parsed host, so the name is not
+    /// local and plain http to it is refused.
     #[test]
     fn domain_names_that_merely_start_like_loopback_are_not_local() {
         let servers = servers();
@@ -327,41 +292,18 @@ mod tests {
     #[test]
     fn rejects_embedded_credentials_queries_and_fragments_for_the_api_base() {
         let servers = servers();
-        let err = resolve_api_url_from(
-            Some("https://alice:hunter2@api.peppy.bot"),
-            None,
-            TransportPolicy::Strict,
-            &servers,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("embedded credentials"),
-            "got: {err}"
-        );
-
-        let err = resolve_api_url_from(
-            Some("https://api.peppy.bot?tenant=x"),
-            None,
-            TransportPolicy::Strict,
-            &servers,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("query string or fragment"),
-            "got: {err}"
-        );
-
-        let err = resolve_api_url_from(
-            Some("https://api.peppy.bot#frag"),
-            None,
-            TransportPolicy::Strict,
-            &servers,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("query string or fragment"),
-            "got: {err}"
-        );
+        for (url, refusal) in [
+            (
+                "https://alice:hunter2@api.peppy.bot",
+                "embedded credentials",
+            ),
+            ("https://api.peppy.bot?tenant=x", "query string or fragment"),
+            ("https://api.peppy.bot#frag", "query string or fragment"),
+        ] {
+            let err = resolve_api_url_from(Some(url), None, TransportPolicy::Strict, &servers)
+                .unwrap_err();
+            assert!(err.to_string().contains(refusal), "{url}: {err}");
+        }
     }
 
     #[test]
