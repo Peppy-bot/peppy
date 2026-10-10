@@ -318,6 +318,24 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
     repo_path
 }
 
+/// Writes a `sleep 60` node config and pushes it onto the stack without a
+/// build: a node that a refused launch must leave in place. Returns the node's
+/// directory.
+fn push_unbuilt_node_onto_stack(
+    node_stack: &node_stack::NodeStack,
+    nodes_directory: &Path,
+    node_name: &str,
+    node_tag: &str,
+) -> PathBuf {
+    let node_dir = write_node_config(nodes_directory, node_name, node_tag, &["sleep", "60"]);
+    let config = NodeConfigParser::from_path(node_dir.join(NODE_CONFIG_FILE))
+        .expect("existing node config should parse");
+    node_stack
+        .push_config(config, false, &node_dir)
+        .expect("should seed stack");
+    node_dir
+}
+
 async fn send_node_launch_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -1041,13 +1059,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let existing_path =
-        write_node_config(nodes_dir.path(), EXISTING_NODE, NODE_TAG, &["sleep", "60"]);
-    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
-    node_stack
-        .push_config(existing_config, false, &existing_path)
-        .expect("should seed stack");
+    push_unbuilt_node_onto_stack(&node_stack, nodes_dir.path(), EXISTING_NODE, NODE_TAG);
 
     let bad_launcher_json5 = r#"{ peppy_schema: "launcher/v1", deployments: [ }"#;
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
@@ -1081,13 +1093,7 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let existing_path =
-        write_node_config(nodes_dir.path(), EXISTING_NODE, NODE_TAG, &["sleep", "60"]);
-    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
-    node_stack
-        .push_config(existing_config, false, &existing_path)
-        .expect("should seed stack");
+    push_unbuilt_node_onto_stack(&node_stack, nodes_dir.path(), EXISTING_NODE, NODE_TAG);
 
     // A launch path that names a directory, not a file.
     let bad_launch_file = nodes_dir.path().join("not_a_file_dir");
@@ -1187,12 +1193,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
     let existing_path =
-        write_node_config(nodes_dir.path(), EXISTING_NODE, NODE_TAG, &["sleep", "60"]);
-    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
-    node_stack
-        .push_config(existing_config, false, &existing_path)
-        .expect("should seed stack");
+        push_unbuilt_node_onto_stack(&node_stack, nodes_dir.path(), EXISTING_NODE, NODE_TAG);
 
     // One deployment resolves through the cache, the other is missing from it.
     let launcher_json5 = r#"
@@ -1255,17 +1256,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     );
 
     // Seed stack with a node so we can assert rollback behavior.
-    let existing_path = write_node_config(
-        nodes_dir.path(),
-        "existing_node",
-        NODE_TAG,
-        &["sleep", "60"],
-    );
-    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
-    node_stack
-        .push_config(existing_config, false, &existing_path)
-        .expect("should seed stack");
+    push_unbuilt_node_onto_stack(&node_stack, nodes_dir.path(), "existing_node", NODE_TAG);
 
     let launcher_json5 = r#"
     {
