@@ -555,11 +555,6 @@ fn check_topic(
     })
 }
 
-/// A topic with a statically bounded payload is checked at validation; a
-/// topic without one must carry the runtime size policy instead. Whether a
-/// payload is bounded is read from the message format alone: an image
-/// representation changes the content a client sees, not the format the
-/// bound is computed from.
 /// The schema of what a member's message leaves as the document: the
 /// whole message, less the member a representation shows as the picture.
 fn document_schema(schema: Value, representation: Option<&ImageRepresentation>) -> Value {
@@ -569,6 +564,11 @@ fn document_schema(schema: Value, representation: Option<&ImageRepresentation>) 
     }
 }
 
+/// A topic with a statically bounded payload is checked at validation; a
+/// topic without one must carry the runtime size policy instead. Whether a
+/// payload is bounded is read from the message format alone: an image
+/// representation changes the content a client sees, not the format the
+/// bound is computed from.
 fn check_topic_size_policy(
     context: &str,
     topic: &TopicExposure,
@@ -787,8 +787,9 @@ struct RepresentationRole<'a> {
     expected: &'static str,
 }
 
-/// Check an image representation's field mapping against the topic's message
-/// format: every role must name a required root member of the right type.
+/// Check an image representation's field mapping against the member's
+/// message format (a topic's message or a service's response): every role
+/// must name a required root member of the right type.
 fn check_representation(
     context: &str,
     fields: &ImageFieldMap,

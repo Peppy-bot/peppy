@@ -50,9 +50,9 @@ impl<'de> Deserialize<'de> for MaxHz {
     }
 }
 
-/// What the runtime does when a snapshot's final serialized content exceeds
-/// `max_result_bytes`: re-encode the image small enough to fit, or report
-/// the read as failed.
+/// What the runtime does when the final serialized content of a resource
+/// snapshot or a tool answer exceeds `max_result_bytes`: re-encode the image
+/// small enough to fit, or report the read or the call as failed.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum OversizePolicy {
@@ -95,13 +95,14 @@ impl ContentPolicies<'_> {
     }
 }
 
-/// Interpret an image-carrying topic through named members of its derived
-/// schema and publish it in the declared codec. Frames whose encoding
-/// already matches the codec pass through without transcoding. A `jpeg`
-/// representation renders colour frames (`rgb8`, `bgr8`) as they are and
-/// 16-bit depth frames as the greyscale picture its `depth_range` spans; a
-/// `png16` representation keeps 16-bit single-channel frames losslessly;
-/// `raw` publishes the frame bytes untouched.
+/// Interpret an image-carrying message (a topic's message or a service's
+/// response) through named members of its derived schema and publish its
+/// frame in the declared codec. Frames whose encoding already matches the
+/// codec pass through without transcoding. A `jpeg` representation renders
+/// colour frames (`rgb8`, `bgr8`) as they are and 16-bit depth frames as
+/// the greyscale picture its `depth_range` spans; a `png16` representation
+/// keeps 16-bit single-channel frames losslessly; `raw` publishes the frame
+/// bytes untouched.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(try_from = "RawImageRepresentation")]
 pub struct ImageRepresentation {
@@ -148,10 +149,11 @@ impl TryFrom<RawImageRepresentation> for ImageRepresentation {
     }
 }
 
-/// The published encoding of an image resource. `jpeg` transcodes
-/// uncompressed color frames; `png16` transcodes 16-bit single-channel
-/// frames (a depth map) losslessly; `raw` passes frame bytes through
-/// untouched and is the explicit opt-in for uncompressed data.
+/// The published encoding of an image frame. `jpeg` transcodes
+/// uncompressed color frames, and 16-bit depth frames under a
+/// `depth_range`; `png16` transcodes 16-bit single-channel frames (a depth
+/// map) losslessly; `raw` passes frame bytes through untouched and is the
+/// explicit opt-in for uncompressed data.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageCodec {
