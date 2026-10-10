@@ -318,8 +318,8 @@ impl NodeRunner {
     /// closure) is harmless.
     ///
     /// Public because a caller that owns the runner's lifecycle without going
-    /// through `NodeBuilder::run` — the test harness core here and its Python
-    /// twin over `NodeRunner.new_standalone` — is responsible for this exact
+    /// through `NodeBuilder::run` (the test harness core here and its Python
+    /// twin over `NodeRunner.new_standalone`) is responsible for this exact
     /// convergence step itself; the sensible grace to pass is
     /// [`Processor::shutdown_grace`](crate::runtime::Processor::shutdown_grace).
     pub async fn run_shutdown_hooks(&self, grace: Duration) {

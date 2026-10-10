@@ -431,7 +431,7 @@ where
 
     /// Initialize and return context for manual async execution.
     ///
-    /// Parses and validates parameters eagerly — any type mismatch or missing
+    /// Parses and validates parameters eagerly: any type mismatch or missing
     /// field is reported immediately rather than being deferred to
     /// [`NodeContext::parameters`].
     ///
@@ -536,7 +536,7 @@ where
 /// Initialized node context for manual async execution.
 ///
 /// Returned by `NodeBuilder::init()`. Parameters are parsed eagerly
-/// during construction — call [`take_parameters`](Self::take_parameters) to
+/// during construction. Call [`take_parameters`](Self::take_parameters) to
 /// take the already-validated, typed parameters.
 pub struct NodeContext<Params> {
     processor: Processor,
@@ -572,7 +572,7 @@ where
     /// Take the parsed parameters.
     ///
     /// Returns the parameters that were parsed and validated during
-    /// [`NodeBuilder::init`]. Can only be called once — subsequent calls
+    /// [`NodeBuilder::init`]. Can only be called once; subsequent calls
     /// return [`Error::ParametersAlreadyTaken`].
     pub fn take_parameters(&mut self) -> Result<Params> {
         self.params.take().ok_or(Error::ParametersAlreadyTaken)
@@ -933,7 +933,7 @@ async fn run_post_setup_services(
     };
 
     // `node_health` stays in post-setup on purpose: many tests use
-    // `wait_for_health` as a "setup completed" signal — they spawn a
+    // `wait_for_health` as a "setup completed" signal: they spawn a
     // consumer, wait for its health endpoint, and only then send shutdown,
     // relying on health reachability to imply that the consumer's
     // `setup_fn` already produced its observable output (e.g. the printed
