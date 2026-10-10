@@ -910,10 +910,8 @@ impl LanguageGenerator for RustGenerator {
             &wire_params,
         )?;
 
-        let handler_params = wire_params.clone();
-
         let request_data_struct_ident =
-            if let Some((ident, tokens)) = build_request_struct("RequestData", &handler_params) {
+            if let Some((ident, tokens)) = build_request_struct("RequestData", &wire_params) {
                 context.add_private_struct(tokens);
                 Some(ident)
             } else {
@@ -948,7 +946,7 @@ impl LanguageGenerator for RustGenerator {
                 handler_helper_name_override: Some(&generic_helper_ident),
                 request_deserializer_name_override: Some(&generic_deserializer_ident),
                 wire_params: &wire_params,
-                handler_params: &handler_params,
+                handler_params: &wire_params,
                 encoding: encoding.as_ref(),
                 request_format,
                 struct_prefix: &struct_prefix,

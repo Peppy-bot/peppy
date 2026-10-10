@@ -1309,8 +1309,6 @@ fn render_dep_harness_parts(
                 )
             }))
             .map(|(name, kind)| {
-                let target = target.clone();
-                let instance_expr = instance_expr.clone();
                 quote! {
                     service_readiness.push(peppylib::testing::ServiceReadiness {
                         target: #target,
