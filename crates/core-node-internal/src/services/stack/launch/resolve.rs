@@ -14,10 +14,6 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-fn deployment_label(deployment: &Deployment) -> String {
-    deployment.source.label()
-}
-
 /// The launcher as the coordinator read it: the document its copies join
 /// onto, the composition the launch selection produced, and where each
 /// instance runs.
@@ -356,7 +352,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
         if deployment.instances.is_empty() {
             planning_errors.push(format!(
                 "deployment {} must have at least one instance",
-                deployment_label(&deployment)
+                deployment.source.label()
             ));
             continue;
         }
@@ -417,7 +413,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
                 DeploymentSource::Exposures { .. } => format!(
                     "duplicate deployment: {} are already deployed as {}; to serve one set on \
                      several hosts, declare one deployment with one instance per host",
-                    deployment_label(&deployment),
+                    deployment.source.label(),
                     key.label()
                 ),
             });
@@ -504,7 +500,7 @@ async fn resolve_one(
     node_entries: &Arc<Vec<repo_cache::NodeCacheEntry>>,
     feedback_tx: &tokio::sync::mpsc::UnboundedSender<FeedbackLine>,
 ) -> std::result::Result<ResolvedDeployment, String> {
-    let label = deployment_label(deployment);
+    let label = deployment.source.label();
     let remote = has_remote_instances(deployment, placements);
     let feedback: crate::services::node::cache::MaterializeFeedback =
         Arc::new(unlogged_step_sink(feedback_tx.clone()));
@@ -625,7 +621,7 @@ pub(in crate::services::stack) async fn mint_doc_pins(
 
     let mut problems: Vec<String> = Vec::new();
     for (item, minted) in planned.iter_mut().zip(minted) {
-        let label = deployment_label(&item.deployment);
+        let label = item.deployment.source.label();
         match minted {
             Ok(doc_pins) => {
                 if has_remote_instances(&item.deployment, placements)
