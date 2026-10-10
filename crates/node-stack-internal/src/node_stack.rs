@@ -372,6 +372,22 @@ impl NodeStackInner {
         })
     }
 
+    /// Projects the first tracked instance whose id is `instance_id`, in any
+    /// state, together with its entity (see [`Self::find_map_entity`]).
+    fn find_instance_map<T>(
+        &self,
+        instance_id: &str,
+        mut project: impl FnMut(&NodeEntity, &TrackedNodeInstance) -> T,
+    ) -> Option<T> {
+        self.find_map_entity(|_, entity| {
+            entity
+                .instances()
+                .iter()
+                .find(|inst| inst.instance_id().as_str() == instance_id)
+                .map(|inst| project(entity, inst))
+        })
+    }
+
     /// Looks up a tracked instance by id across all entities. **Only matches
     /// `Running` instances**; `Starting` instances are skipped because they
     /// haven't subscribed to messenger services yet, so a handle to one would
@@ -626,14 +642,8 @@ impl NodeStackInner {
     /// state (`Starting` counts: the reserve-before-spawn path pairs a
     /// slot while its instance is still starting).
     fn instance_is_live_for_pairing(&self, instance_id: &str) -> bool {
-        self.find_map_entity(|_, entity| {
-            entity
-                .instances()
-                .iter()
-                .find(|inst| inst.instance_id().as_str() == instance_id)
-                .map(|inst| !inst.state().is_terminal())
-        })
-        .unwrap_or(false)
+        self.find_instance_map(instance_id, |_, inst| !inst.state().is_terminal())
+            .unwrap_or(false)
     }
 
     /// Every instance id that is live for pairing purposes, collected in a
@@ -675,28 +685,22 @@ impl NodeStackInner {
     /// current state. Errors when the instance is unknown/terminal or its
     /// manifest declares no such pairing slot.
     fn pairing_slot_meta(&self, slot: &SlotAddr) -> Result<PairingParticipantDependency> {
-        let found = self.find_map_entity(|_, entity| {
-            entity
-                .instances()
-                .iter()
-                .find(|inst| inst.instance_id().as_str() == slot.instance_id)
-                .map(|inst| {
-                    // Only a participant slot can be paired, so an observer
-                    // slot with this link_id resolves to no pair slot.
-                    let dep = entity
-                        .config()
-                        .manifest
-                        .depends_on
-                        .as_ref()
-                        .and_then(|depends_on| {
-                            depends_on
-                                .pairings
-                                .iter()
-                                .find(|participant| participant.link_id == slot.link_id)
-                                .cloned()
-                        });
-                    (dep, inst.state())
-                })
+        let found = self.find_instance_map(&slot.instance_id, |entity, inst| {
+            // Only a participant slot can be paired, so an observer slot with
+            // this link_id resolves to no pair slot.
+            let dep = entity
+                .config()
+                .manifest
+                .depends_on
+                .as_ref()
+                .and_then(|depends_on| {
+                    depends_on
+                        .pairings
+                        .iter()
+                        .find(|participant| participant.link_id == slot.link_id)
+                        .cloned()
+                });
+            (dep, inst.state())
         });
         let Some((dep, state)) = found else {
             return Err(Error::PairingInstanceNotRunning {
@@ -759,14 +763,8 @@ impl NodeStackInner {
 
     /// The copy a local instance belongs to, as recorded when it started.
     fn instance_copy(&self, instance_id: &str) -> Option<config::runtime::Name> {
-        self.find_map_entity(|_, entity| {
-            entity
-                .instances()
-                .iter()
-                .find(|inst| inst.instance_id().as_str() == instance_id)
-                .map(|inst| inst.copy().cloned())
-        })
-        .flatten()
+        self.find_instance_map(instance_id, |_, inst| inst.copy().cloned())
+            .flatten()
     }
 
     /// Establishes a pair between two complementary slots. Validates that
