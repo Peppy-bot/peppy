@@ -15,7 +15,6 @@ use crate::{
     },
 };
 use encoding::compile_capnp;
-use proc_macro2::Span;
 use rust_embed::Embed;
 use sha2::{Digest, Sha256};
 use std::io;
@@ -25,10 +24,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use syn::{
-    Attribute, File, FnArg, ImplItem, ImplItemFn, Item, ItemFn, ItemImpl, Type, parse_file,
-    parse_quote,
-};
+use syn::{Attribute, File, Item, parse_file, parse_quote};
 use toml_edit::{DocumentMut, value};
 
 pub fn add_peppylib_dependencies(
@@ -422,23 +418,6 @@ fn deploy_rust_crates_to_shared_cache(
 }
 
 impl ModuleCategory {
-    fn struct_name(self) -> &'static str {
-        match self {
-            Self::EmittedTopics => "EmittedTopics",
-            Self::ConsumedTopics => "ConsumedTopics",
-            Self::ExposedServices => "ExposedServices",
-            Self::ConsumedServices => "ConsumedServices",
-            Self::ExposedActions => "ExposedActions",
-            Self::ConsumedActions => "ConsumedActions",
-            Self::PairedTopics => "PairedTopics",
-            // Names generated code must never use: write_leaf_module dissolves
-            // `impl <struct_name()>` blocks into free items, so a real
-            // generated `impl Mock` would be destroyed if these collided.
-            Self::Mock => "MockCategoryNeverGenerated",
-            Self::Fixtures => "FixturesCategoryNeverGenerated",
-        }
-    }
-
     fn doc_label(self) -> &'static str {
         match self {
             Self::EmittedTopics => "emitted topics",
@@ -544,7 +523,6 @@ fn write_leaf_module(
     category: ModuleCategory,
 ) -> Result<()> {
     let mut items: Vec<Item> = Vec::new();
-    let struct_ident = syn::Ident::new(category.struct_name(), Span::call_site());
     let node_label = if original_name.is_empty() {
         module_name.to_string()
     } else {
@@ -556,15 +534,7 @@ fn write_leaf_module(
                 node: node_label.clone(),
                 source,
             })?;
-
-        for item in file.items {
-            match item {
-                Item::Impl(impl_block) if impl_targets_struct(&impl_block, &struct_ident) => {
-                    items.extend(extract_impl_functions(impl_block));
-                }
-                other => items.push(other),
-            }
-        }
+        items.extend(file.items);
     }
 
     let mut attrs: Vec<Attribute> = Vec::new();
@@ -631,59 +601,6 @@ fn render_module_file(module_file: File) -> String {
     }
 
     output
-}
-
-fn impl_targets_struct(impl_block: &ItemImpl, struct_ident: &syn::Ident) -> bool {
-    let type_path = match impl_block.self_ty.as_ref() {
-        Type::Path(path) if path.qself.is_none() => path,
-        _ => return false,
-    };
-
-    let Some(last_segment) = type_path.path.segments.last() else {
-        return false;
-    };
-
-    last_segment.ident == *struct_ident
-}
-
-fn extract_impl_functions(impl_block: ItemImpl) -> Vec<Item> {
-    impl_block
-        .items
-        .into_iter()
-        .filter_map(as_function_item)
-        .collect()
-}
-
-fn as_function_item(item: ImplItem) -> Option<Item> {
-    let ImplItem::Fn(method) = item else {
-        return None;
-    };
-
-    if method
-        .sig
-        .inputs
-        .iter()
-        .any(|arg| matches!(arg, FnArg::Receiver(_)))
-    {
-        return None;
-    }
-
-    let ImplItemFn {
-        attrs,
-        vis,
-        modifiers,
-        sig,
-        block,
-        ..
-    } = method;
-
-    Some(Item::Fn(ItemFn {
-        attrs,
-        vis,
-        modifiers,
-        sig,
-        block: Box::new(block),
-    }))
 }
 
 pub(super) fn sanitize_rust_module_name(raw: &str) -> String {
