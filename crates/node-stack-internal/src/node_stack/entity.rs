@@ -1163,80 +1163,78 @@ impl NodeEntity {
             ..
         } = started_ctx;
 
-        let validation_result: Result<()> = {
-            let mut guard = handle.write();
-            let node_name = guard.config.manifest.name.as_str().to_owned();
-            let node_tag = guard.config.manifest.tag.clone();
-            // Generation guard: if a concurrent `push_config` replaced the
-            // entity wholesale, the new entity has a different generation
-            // and is *not* ours to mutate. Fall through to the cleanup
-            // branch (kill child + remove temp files) without touching the
-            // replacement entity's instances list.
-            if guard.generation != start_generation {
-                Err(Error::InvalidStageTransition {
-                    node_name,
-                    node_tag,
-                    from: "stale-generation",
-                    to: "Running",
-                })
-            } else {
-                match &mut guard.stage {
-                    NodeStage::Ready { instances, .. } => {
-                        if let Some(inst) = instances
-                            .iter_mut()
-                            .find(|inst| inst.instance_id() == &instance_id)
-                        {
-                            if inst.state() != InstanceState::Starting {
-                                Err(Error::InvalidStageTransition {
-                                    node_name,
-                                    node_tag,
-                                    from: "Running",
-                                    to: "Running",
-                                })
-                            } else {
-                                inst.set_running(instance_dir.clone(), runtime_config_path.clone());
-                                inst.set_endpoints(endpoints);
-                                Ok(())
-                            }
-                        } else {
-                            Err(Error::InvalidStageTransition {
-                                node_name,
-                                node_tag,
-                                from: "missing",
-                                to: "Running",
-                            })
-                        }
-                    }
-                    other => Err(Error::InvalidStageTransition {
-                        node_name,
-                        node_tag,
-                        from: other.name(),
-                        to: "Ready",
-                    }),
-                }
-            }
-        };
-
-        match validation_result {
-            Ok(()) => {
-                // Successful commit: hand the live Child back without killing.
-                // The OS process keeps running; the caller moves it into the
-                // exit watcher, which observes the eventual exit (clean or
-                // crash) and reaps the process.
-                Ok(child)
-            }
-            Err(e) => {
-                // Concurrent push_config / stale generation / inconsistent
-                // state: the entity is no longer ours, but the spawned
-                // process and the on-disk artifacts created during this
-                // start *are*; kill the child and clean up the temp files
-                // before returning so nothing orphans.
-                kill_child(&mut child).await;
-                let _ = std::fs::remove_dir_all(&instance_dir);
-                let _ = std::fs::remove_file(&runtime_config_path);
-                Err(e)
-            }
+        // The write guard is a temporary of this statement, so it is released
+        // before the cleanup below awaits.
+        let committed = handle.write().commit_starting_instance(
+            start_generation,
+            &instance_id,
+            &instance_dir,
+            &runtime_config_path,
+            endpoints,
+        );
+        if let Err(error) = committed {
+            // Concurrent push_config / stale generation / inconsistent
+            // state: the entity is no longer ours, but the spawned
+            // process and the on-disk artifacts created during this
+            // start *are*; kill the child and clean up the temp files
+            // before returning so nothing orphans.
+            kill_child(&mut child).await;
+            let _ = std::fs::remove_dir_all(&instance_dir);
+            let _ = std::fs::remove_file(&runtime_config_path);
+            return Err(error);
         }
+
+        // Successful commit: hand the live Child back without killing.
+        // The OS process keeps running; the caller moves it into the
+        // exit watcher, which observes the eventual exit (clean or
+        // crash) and reaps the process.
+        Ok(child)
+    }
+
+    /// The entity half of [`Self::commit_started`]: flips the `Starting`
+    /// instance `instance_id` to `Running` and records its on-disk paths and
+    /// endpoints. Refuses, and leaves the entity untouched, when this is not
+    /// the entity the start registered on (generation `start_generation`),
+    /// the entity is not `Ready`, or the instance is missing or not
+    /// `Starting`.
+    fn commit_starting_instance(
+        &mut self,
+        start_generation: u64,
+        instance_id: &Name,
+        instance_dir: &Path,
+        runtime_config_path: &Path,
+        endpoints: Vec<InstanceEndpoint>,
+    ) -> Result<()> {
+        let refuse = |from: &'static str, to: &'static str| Error::InvalidStageTransition {
+            node_name: self.config.manifest.name.as_str().to_owned(),
+            node_tag: self.config.manifest.tag.clone(),
+            from,
+            to,
+        };
+        // Generation guard: if a concurrent `push_config` replaced the entity
+        // wholesale, the new entity has a different generation and is *not*
+        // ours to mutate, so its instances list stays untouched.
+        if self.generation != start_generation {
+            return Err(refuse("stale-generation", "Running"));
+        }
+        let NodeStage::Ready { instances, .. } = &mut self.stage else {
+            return Err(refuse(self.stage.name(), "Ready"));
+        };
+        let Some(instance) = instances
+            .iter_mut()
+            .find(|instance| instance.instance_id() == instance_id)
+        else {
+            return Err(refuse("missing", "Running"));
+        };
+        if instance.state() != InstanceState::Starting {
+            return Err(refuse("Running", "Running"));
+        }
+        instance.set_running(
+            instance_dir.to_path_buf(),
+            runtime_config_path.to_path_buf(),
+        );
+        instance.set_endpoints(endpoints);
+        Ok(())
     }
 
     /// Phase 2 (failure): kills the spawned child, joins the reader tasks (so
