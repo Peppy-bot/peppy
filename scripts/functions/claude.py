@@ -125,7 +125,7 @@ def run_claude(
     except json.JSONDecodeError as e:
         raise ReleaseError(
             f"claude did not return valid JSON ({e}); stdout={result.stdout[:500]!r}"
-        )
+        ) from e
     if not isinstance(payload, dict):
         raise ReleaseError(f"claude response is not an object: {payload!r}")
     structured = payload.get("structured_output")
