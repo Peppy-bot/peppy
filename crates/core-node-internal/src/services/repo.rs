@@ -357,27 +357,23 @@ pub(crate) fn nodes_by_repository<'a>(
     cached: &'a [NodeCacheEntry],
 ) -> Vec<RepoNodes<'a>> {
     let mut winners: HashMap<(&str, &str), &ListedRepo> = HashMap::new();
-    repos
-        .iter()
-        .map(|repo| {
-            let nodes = cached
-                .iter()
-                .filter(|node| node.repo_id == repo.id)
-                .map(|entry| {
-                    let key = (entry.node_name.as_str(), entry.node_tag.as_str());
-                    let shadowed_by = match winners.entry(key) {
-                        Entry::Occupied(winner) => Some(*winner.get()),
-                        Entry::Vacant(vacant) => {
-                            vacant.insert(repo);
-                            None
-                        }
-                    };
-                    AttributedNode { entry, shadowed_by }
-                })
-                .collect();
-            RepoNodes { repo, nodes }
-        })
-        .collect()
+    let mut groups = Vec::with_capacity(repos.len());
+    for repo in repos {
+        let mut nodes = Vec::new();
+        for entry in cached.iter().filter(|node| node.repo_id == repo.id) {
+            let key = (entry.node_name.as_str(), entry.node_tag.as_str());
+            let shadowed_by = match winners.entry(key) {
+                Entry::Occupied(winner) => Some(*winner.get()),
+                Entry::Vacant(vacant) => {
+                    vacant.insert(repo);
+                    None
+                }
+            };
+            nodes.push(AttributedNode { entry, shadowed_by });
+        }
+        groups.push(RepoNodes { repo, nodes });
+    }
+    groups
 }
 
 /// Normalize a list of repo JSON entries: auto-assign missing `id` fields,
