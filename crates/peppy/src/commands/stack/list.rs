@@ -288,85 +288,9 @@ fn format_stack_list(
             section.host_name
         );
         let mut body = String::new();
-        if section.live_claimants > 1 {
-            let _ = match &section.instance_id {
-                Some(instance_id) => writeln!(
-                    body,
-                    "warning: {} live daemons currently claim this name; answered by instance {}",
-                    section.live_claimants, instance_id
-                ),
-                None => writeln!(
-                    body,
-                    "warning: {} live daemons currently claim this name",
-                    section.live_claimants
-                ),
-            };
-            let _ = writeln!(body);
-        }
-
-        // Launch ownership before the tables: which launch produced this
-        // slice, and which launch is holding the machine right now. The
-        // reservation line is what tells an operator WHERE a refused launch
-        // is wedged and the exact command that clears it.
-        let mut owned = false;
-        if let Some(launch) = &section.launch {
-            let _ = writeln!(
-                body,
-                "Slice of launch {} (coordinator: {})",
-                launch.launch_id, launch.coordinator_core_node
-            );
-            owned = true;
-        }
-        if let Some(reservation) = &section.reservation {
-            let _ = writeln!(
-                body,
-                "Reserved for launch {} driven by {}; clear with `peppy stack reset \
-                 --core-node {}`",
-                reservation.launch_id, reservation.coordinator_core_node, section.core_node
-            );
-            owned = true;
-        }
-        if owned {
-            let _ = writeln!(body);
-        }
-
-        for copy in &section.copies {
-            let selection = if copy.selections.is_empty() {
-                String::new()
-            } else {
-                format!(": {}", copy.selections.join(", "))
-            };
-            let _ = writeln!(
-                body,
-                "Copy {} of {} on {}{selection}",
-                copy.name, copy.option, copy.core_node
-            );
-            let _ = writeln!(
-                body,
-                "  Instances: {}",
-                copy.instance_ids
-                    .iter()
-                    .map(config::runtime::Name::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            // One row per slot the copy adds to, however many members it put
-            // there: a camera rig fills three slots of one panel.
-            let by_slot = core_node_api::encoding::slots_in_first_added_order(&copy.set_members);
-            if !by_slot.is_empty() {
-                let _ = writeln!(body, "  Set members:");
-            }
-            for ((instance_id, link_id), targets) in by_slot {
-                let _ = writeln!(
-                    body,
-                    "    {instance_id}.links.{link_id} → {}",
-                    targets.join(", ")
-                );
-            }
-        }
-        if !section.copies.is_empty() {
-            let _ = writeln!(body);
-        }
+        write_claimant_warning(&mut body, section);
+        write_launch_ownership(&mut body, section);
+        write_copies(&mut body, &section.copies);
         match &section.outcome {
             Ok((nodes, edges)) => {
                 body.push_str(&format_stack_body(nodes, edges, colorize, inner_width));
@@ -379,6 +303,101 @@ fn format_stack_list(
         render_section_panel(&mut out, &header, &body, max_width);
     }
     out
+}
+
+/// The warning of a name that more than one live daemon claims, naming the
+/// instance that answered when the section knows it.
+fn write_claimant_warning(body: &mut String, section: &StackSection) {
+    use std::fmt::Write as _;
+
+    if section.live_claimants <= 1 {
+        return;
+    }
+    let _ = match &section.instance_id {
+        Some(instance_id) => writeln!(
+            body,
+            "warning: {} live daemons currently claim this name; answered by instance {}",
+            section.live_claimants, instance_id
+        ),
+        None => writeln!(
+            body,
+            "warning: {} live daemons currently claim this name",
+            section.live_claimants
+        ),
+    };
+    let _ = writeln!(body);
+}
+
+/// Launch ownership, written before the tables: which launch produced this
+/// slice, and which launch is holding the machine right now. The
+/// reservation line is what tells an operator WHERE a refused launch is
+/// wedged and the exact command that clears it.
+fn write_launch_ownership(body: &mut String, section: &StackSection) {
+    use std::fmt::Write as _;
+
+    if let Some(launch) = &section.launch {
+        let _ = writeln!(
+            body,
+            "Slice of launch {} (coordinator: {})",
+            launch.launch_id, launch.coordinator_core_node
+        );
+    }
+    if let Some(reservation) = &section.reservation {
+        let _ = writeln!(
+            body,
+            "Reserved for launch {} driven by {}; clear with `peppy stack reset \
+             --core-node {}`",
+            reservation.launch_id, reservation.coordinator_core_node, section.core_node
+        );
+    }
+    if section.launch.is_some() || section.reservation.is_some() {
+        let _ = writeln!(body);
+    }
+}
+
+/// The copies joined onto the slice: each copy's option, machine and
+/// selections, its instances, and the set members it adds.
+fn write_copies(body: &mut String, copies: &[core_node_api::encoding::CopyInfo]) {
+    use std::fmt::Write as _;
+
+    if copies.is_empty() {
+        return;
+    }
+    for copy in copies {
+        let selection = if copy.selections.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", copy.selections.join(", "))
+        };
+        let _ = writeln!(
+            body,
+            "Copy {} of {} on {}{selection}",
+            copy.name, copy.option, copy.core_node
+        );
+        let _ = writeln!(
+            body,
+            "  Instances: {}",
+            copy.instance_ids
+                .iter()
+                .map(config::runtime::Name::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        // One row per slot the copy adds to, however many members it put
+        // there: a camera rig fills three slots of one panel.
+        let by_slot = core_node_api::encoding::slots_in_first_added_order(&copy.set_members);
+        if !by_slot.is_empty() {
+            let _ = writeln!(body, "  Set members:");
+        }
+        for ((instance_id, link_id), targets) in by_slot {
+            let _ = writeln!(
+                body,
+                "    {instance_id}.links.{link_id} → {}",
+                targets.join(", ")
+            );
+        }
+    }
+    let _ = writeln!(body);
 }
 
 /// Encloses one core node's complete report in a panel. Nested table borders
