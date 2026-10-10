@@ -190,61 +190,59 @@ impl RustGenerator {
         let response_artifacts =
             map_message_format(&format!("{schema_key}_response"), response_format)?;
 
-        // Build GoalRequest struct if there's request data
-        let goal_request_ident = Ident::new("GoalRequest", Span::call_site());
-        if let Some(ref artifacts) = request_artifacts {
-            let params = collect_function_params(
-                Some(artifacts),
-                None,
-                &format!("{action_struct_name}Goal"),
-                context,
-                None,
-            )?;
-            let fields: Vec<(Ident, TokenStream)> = params
-                .iter()
-                .map(|p| (p.ident.clone(), p.ty.clone()))
-                .collect();
-            context.add_struct(goal_request_ident.clone(), fields);
-        }
+        // A goal with request data takes a `GoalRequest` argument and
+        // serializes it; a goal without one sends an empty payload.
+        let (request_param, goal_payload_tokens) = match &request_artifacts {
+            Some(artifacts) => {
+                let goal_request_ident = Ident::new("GoalRequest", Span::call_site());
+                let params = collect_function_params(
+                    Some(artifacts),
+                    None,
+                    &format!("{action_struct_name}Goal"),
+                    context,
+                    None,
+                )?;
+                let fields: Vec<(Ident, TokenStream)> = params
+                    .iter()
+                    .map(|p| (p.ident.clone(), p.ty.clone()))
+                    .collect();
+                context.add_struct(goal_request_ident.clone(), fields);
 
-        // Build GoalResponseData struct
+                let schema_info = self.register_schema(
+                    schema_key,
+                    &format!("{action_struct_name}GoalMessage"),
+                    artifacts,
+                )?;
+                let builder_type = schema_info.builder_type_tokens();
+
+                let request_ident = Ident::new("request", Span::call_site());
+                let assignments = generate_assignments_from_struct(
+                    &Ident::new("root", Span::call_site()),
+                    artifacts.message_format(),
+                    &request_ident,
+                )?;
+
+                let error_context = quote!(format!(
+                    "fire_goal {} {}",
+                    TARGET_NODE_NAME, TARGET_ACTION_NAME
+                ));
+                let serialize_block =
+                    build_serialize_payload(&builder_type, &[], &assignments, &error_context);
+                (
+                    quote!(request: #goal_request_ident,),
+                    quote! { let goal_payload = #serialize_block; },
+                )
+            }
+            None => (
+                quote!(),
+                quote! {
+                    let goal_payload = peppylib::Payload::new();
+                },
+            ),
+        };
+
         let goal_response_data_ident = Ident::new("GoalResponseData", Span::call_site());
         let has_goal_response_data = response_artifacts.is_some();
-
-        // Build goal payload encoding (shared between both branches)
-        let goal_payload_tokens = if let Some(ref request_artifacts) = request_artifacts {
-            let schema_info = self.register_schema(
-                schema_key,
-                &format!("{action_struct_name}GoalMessage"),
-                request_artifacts,
-            )?;
-            let builder_type = schema_info.builder_type_tokens();
-
-            let request_ident = Ident::new("request", Span::call_site());
-            let assignments = generate_assignments_from_struct(
-                &Ident::new("root", Span::call_site()),
-                request_format.expect("request_format should be Some when artifacts exist"),
-                &request_ident,
-            )?;
-
-            let error_context = quote!(format!(
-                "fire_goal {} {}",
-                TARGET_NODE_NAME, TARGET_ACTION_NAME
-            ));
-            let serialize_block =
-                build_serialize_payload(&builder_type, &[], &assignments, &error_context);
-            quote! { let goal_payload = #serialize_block; }
-        } else {
-            quote! {
-                let goal_payload = peppylib::Payload::new();
-            }
-        };
-
-        let request_param = if request_format.is_some() {
-            quote!(request: #goal_request_ident,)
-        } else {
-            quote!()
-        };
 
         // Build response-specific parts (struct definition, deserializer, result expression)
         let mut helper_items = Vec::new();
