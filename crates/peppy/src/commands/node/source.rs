@@ -7,6 +7,9 @@ use gix_url::Url as GitUrl;
 
 use crate::error::{Error, Result};
 
+/// The refusal of a `--ref` given with a source that is not a git repository.
+const REF_NEEDS_A_GIT_SOURCE: &str = "`--ref` is only supported for git sources";
+
 pub fn is_probably_remote_source(source: &str) -> bool {
     source.contains("://") || source.starts_with("git@")
 }
@@ -57,9 +60,7 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
             && is_supported_http_archive(&url)
         {
             if git_ref.is_some() {
-                return Err(Error::ExecutionFailed(
-                    "`--ref` is only supported for git sources".to_string(),
-                ));
+                return Err(Error::ExecutionFailed(REF_NEEDS_A_GIT_SOURCE.to_string()));
             }
             return Ok(NodeSource::Http { url, sha256: None });
         }
@@ -72,12 +73,13 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
         });
     }
 
+    // Only a git source takes a `--ref`: a repository reference and a local
+    // path never do.
+    if git_ref.is_some() {
+        return Err(Error::ExecutionFailed(REF_NEEDS_A_GIT_SOURCE.to_string()));
+    }
+
     if looks_like_repo_node_ref(source) {
-        if git_ref.is_some() {
-            return Err(Error::ExecutionFailed(
-                "`--ref` is only supported for git sources".to_string(),
-            ));
-        }
         let (name, tag) = source
             .split_once(':')
             .expect("looks_like_repo_node_ref guarantees a ':'");
@@ -86,12 +88,6 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
         // a remote target keeps resolving on that target's machine.
         return NodeSource::resolve_ref(name, tag)
             .map_err(|e| Error::ExecutionFailed(e.to_string()));
-    }
-
-    if git_ref.is_some() {
-        return Err(Error::ExecutionFailed(
-            "`--ref` is only supported for git sources".to_string(),
-        ));
     }
 
     let source_path = PathBuf::from(source);
