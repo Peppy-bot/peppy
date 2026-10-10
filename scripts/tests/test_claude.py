@@ -18,7 +18,7 @@ from functions.claude import (
 )
 from functions.cli import ReleaseError
 
-from .helpers import flag_value
+from .helpers import claude_answer, flag_value
 
 _SCHEMA: dict = {
     "type": "object",
@@ -39,17 +39,7 @@ def _mock_run(
         if capture is not None:
             capture["cmd"] = cmd
             capture["input"] = kwargs.get("input")
-        mock = MagicMock()
-        mock.returncode = returncode
-        mock.stdout = json.dumps(
-            {
-                "type": "result",
-                "result": json.dumps(structured),
-                "structured_output": structured,
-            }
-        )
-        mock.stderr = ""
-        return mock
+        return claude_answer(structured, returncode)
 
     return _run
 

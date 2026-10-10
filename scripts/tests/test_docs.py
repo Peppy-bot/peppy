@@ -45,7 +45,7 @@ from functions.docs import (
     update_docs,
 )
 
-from .helpers import flag_value
+from .helpers import claude_answer, flag_value
 
 
 def _blocking(file: str = "docs/x.mdx", change: str = "add flag") -> RequiredChange:
@@ -551,21 +551,6 @@ def test_split_diff_refuses_text_outside_a_file_section() -> None:
 # --- check_docs / update_docs (mocked claude) ---
 
 
-def _claude_answer(structured: object) -> MagicMock:
-    """A successful claude run whose envelope carries *structured*."""
-    mock = MagicMock()
-    mock.returncode = 0
-    mock.stdout = json.dumps(
-        {
-            "type": "result",
-            "result": json.dumps(structured),
-            "structured_output": structured,
-        }
-    )
-    mock.stderr = ""
-    return mock
-
-
 def _git_grep_without_a_match() -> MagicMock:
     """A git grep run that matches nothing: exit status 1, empty bytes."""
     mock = MagicMock()
@@ -595,7 +580,7 @@ class _ClaudeCalls:
             self.prompts.append(str(kwargs.get("input")))
             structured = next(self._answers, None)
             assert structured is not None, "claude called more often than answered"
-            return _claude_answer(structured)
+            return claude_answer(structured)
         raise AssertionError(f"unexpected command: {cmd}")
 
 
@@ -644,7 +629,7 @@ class _ClaudeByPath:
         self.review_prompts.append(prompt)
         named = [file for file in self._reviews if f"`{file}`" in prompt]
         assert len(named) <= 1, f"a review must name one doc file: {named}"
-        return _claude_answer(self._reviews[named[0]] if named else _CONFIRMED)
+        return claude_answer(self._reviews[named[0]] if named else _CONFIRMED)
 
     def __call__(self, cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
         assert cmd and cmd[0] == "claude", f"unexpected command: {cmd}"
@@ -664,7 +649,7 @@ class _ClaudeByPath:
             mock.stdout = ""
             mock.stderr = f"{file} broke"
             return mock
-        return _claude_answer(self._answers[file])
+        return claude_answer(self._answers[file])
 
 
 def _mock_subprocess_run_for_claude(
@@ -685,11 +670,11 @@ def _mock_subprocess_run_for_claude(
             return _git_grep_without_a_match()
         if cmd and cmd[0] == "claude":
             if _is_gap_review(cmd):
-                return _claude_answer(_CONFIRMED)
+                return claude_answer(_CONFIRMED)
             if capture is not None:
                 capture["cmd"] = cmd
                 capture["input"] = kwargs.get("input")
-            return _claude_answer(structured)
+            return claude_answer(structured)
         raise AssertionError(f"unexpected command: {cmd}")
 
     return MagicMock(side_effect=_run)
@@ -979,11 +964,11 @@ def test_check_docs_confirms_gaps_with_the_schema_and_readonly_tools(
 
     def _run(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
         if not _is_gap_review(cmd):
-            return _claude_answer(
+            return claude_answer(
                 {"required_changes": [_gap("docs/x.mdx", "add flag", "blocking")]}
             )
         reviews.append(cmd)
-        return _claude_answer(_CONFIRMED)
+        return claude_answer(_CONFIRMED)
 
     with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
@@ -1295,14 +1280,7 @@ def _claude_edits(
         edits.pop(0)(repo)
         # Answers both the update report and the rewording report: the
         # rewording caller reads nothing from it.
-        structured = {"results": [], "summary": "done"}
-        mock = MagicMock()
-        mock.returncode = 0
-        mock.stdout = json.dumps(
-            {"type": "result", "result": "", "structured_output": structured}
-        )
-        mock.stderr = ""
-        return mock
+        return claude_answer({"results": [], "summary": "done"})
 
     return MagicMock(side_effect=_run)
 
