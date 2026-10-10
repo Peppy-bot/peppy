@@ -825,10 +825,7 @@ impl Payload {
         match &self.inner {
             PayloadInner::Bytes(b) => b.clone(),
             #[cfg(feature = "zenoh")]
-            PayloadInner::Zenoh(z) => match z.to_bytes() {
-                Cow::Borrowed(slice) => bytes::Bytes::copy_from_slice(slice),
-                Cow::Owned(vec) => bytes::Bytes::from(vec),
-            },
+            PayloadInner::Zenoh(z) => contiguous_zenoh_bytes(z),
         }
     }
 
@@ -838,10 +835,7 @@ impl Payload {
         match self.inner {
             PayloadInner::Bytes(b) => b,
             #[cfg(feature = "zenoh")]
-            PayloadInner::Zenoh(z) => match z.to_bytes() {
-                Cow::Borrowed(slice) => bytes::Bytes::copy_from_slice(slice),
-                Cow::Owned(vec) => bytes::Bytes::from(vec),
-            },
+            PayloadInner::Zenoh(z) => contiguous_zenoh_bytes(&z),
         }
     }
 
@@ -858,6 +852,16 @@ impl Payload {
             PayloadInner::Bytes(b) => ZBytes::from(b),
             PayloadInner::Zenoh(z) => z,
         }
+    }
+}
+
+/// Copies a zenoh payload into one owned buffer: a single slice is copied out
+/// of the buffer zenoh holds, and several slices are gathered in order.
+#[cfg(feature = "zenoh")]
+fn contiguous_zenoh_bytes(zbytes: &ZBytes) -> bytes::Bytes {
+    match zbytes.to_bytes() {
+        Cow::Borrowed(slice) => bytes::Bytes::copy_from_slice(slice),
+        Cow::Owned(vec) => bytes::Bytes::from(vec),
     }
 }
 
