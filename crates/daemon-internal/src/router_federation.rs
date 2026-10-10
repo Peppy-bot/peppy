@@ -494,6 +494,26 @@ mod tests {
         );
     }
 
+    /// A reader that panics is a failure that carries the panic, not a
+    /// crashed federation task.
+    #[tokio::test]
+    async fn a_panicking_enrollment_read_reports_failed() {
+        let panicking: EnrollmentReader = Arc::new(|| panic!("the enrollment read blew up"));
+        let deps = FederationDeps {
+            enrollment: panicking,
+            ..deps()
+        };
+
+        match reconcile(&deps, &enrolled_generation(), false).await {
+            FederationOutcome::Failed(message) => assert!(
+                message.starts_with("enrollment read panicked: ")
+                    && message.contains("the enrollment read blew up"),
+                "{message}"
+            ),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
     /// A poke from the control socket is serviced immediately and acked with
     /// the reconcile outcome; the loop ends when the senders are gone.
     #[tokio::test]
