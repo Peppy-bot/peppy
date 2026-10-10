@@ -737,10 +737,11 @@ fn pin_status<E: RepoCacheEntry>(
 mod tests {
     use super::*;
     use crate::services::repo::cache::test_support::{
-        consumes, contract_entry, fingerprint, implements, launcher_entry, mcp_exposure_entry,
-        node_entry, observes, pairing_entry, participates, with_links,
+        consumes, contract_entry, fingerprint, fs_repos, implements, launcher_entry,
+        mcp_exposure_entry, node_entry, observes, pairing_entry, participates, with_links,
+        write_excluded_repos, write_repos,
     };
-    use crate::services::repo::cache::{EntryOrigin, repositories_list_path, write_repo_cache};
+    use crate::services::repo::cache::{EntryOrigin, write_repo_cache};
     use std::path::{Path, PathBuf};
 
     /// A Peppy home whose root is canonical, so an entry under a
@@ -772,29 +773,12 @@ mod tests {
             dir
         }
 
-        fn configure(&self, repos: &[(u32, &Path)]) {
-            let entries: Vec<serde_json::Value> = repos
-                .iter()
-                .map(|(id, path)| {
-                    serde_json::json!({ "id": id, "type": "fs", "path": path.to_string_lossy() })
-                })
-                .collect();
-            std::fs::write(
-                repositories_list_path(&self.dirs),
-                serde_json::to_string(&entries).unwrap(),
-            )
-            .unwrap();
+        fn configure(&self, repos: &[(u64, &Path)]) {
+            write_repos(&self.dirs, &fs_repos(repos));
         }
 
         fn exclude(&self, path: &Path) {
-            std::fs::write(
-                self.dirs.conf_dir().join("excluded_repositories.json5"),
-                serde_json::to_string(&serde_json::json!([
-                    { "id": 1, "type": "fs", "path": path.to_string_lossy() }
-                ]))
-                .unwrap(),
-            )
-            .unwrap();
+            write_excluded_repos(&self.dirs, &fs_repos(&[(1, path)]));
         }
 
         /// Writes the cache of `E`'s kind; the entries name the kind.

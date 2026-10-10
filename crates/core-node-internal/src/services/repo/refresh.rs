@@ -1033,7 +1033,7 @@ mod tests {
     }
     use crate::services::node::checkout_repo_ref;
     use crate::services::node::test_git_daemon::GitDaemon;
-    use crate::services::repo::cache::test_support::{write_excluded_repos, write_repos};
+    use crate::services::repo::cache::test_support::{fs_repos, write_excluded_repos, write_repos};
     use crate::services::repo::cache::{
         EntryOrigin, LauncherCacheEntry, NodeCacheEntry, repositories_list_path,
     };
@@ -1312,14 +1312,7 @@ mod tests {
         let broken = tmp.path().join("broken");
         write_node_json5(&healthy.join("first"), "first", "v1");
         write_node_json5(&broken.join("kept"), "kept", "v1");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-                healthy.display(),
-                broken.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &healthy), (2, &broken)]));
 
         // A clean run first, so the broken repository has something to
         // fall back to.
@@ -1377,13 +1370,7 @@ mod tests {
 
         let repo = tmp.path().join("repo");
         write_node_json5(&repo.join("first"), "first", "v1");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
         publish_repo(&repo);
 
         assert_eq!(reindex_after_change(&peppy_dirs).await, None);
@@ -1469,13 +1456,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let repo = tmp.path().join("repo");
         write_node_json5(&repo.join("node_a"), "node_a", "v1");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         let first_read = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
         let clean = refresh_indexed(&peppy_dirs, first_read, &mut |_| {}).unwrap();
@@ -1510,13 +1491,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let repo = tmp.path().join("repo");
         write_node_json5(&repo.join("vanished"), "vanished", "v1");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
         stale_index(&repo, "vanished/peppy.json5");
 
         let broken = refresh_publishing(&peppy_dirs, &[], TEST_NOW, &mut |_| {}).unwrap();
@@ -1542,14 +1517,7 @@ mod tests {
         let healthy = tmp.path().join("healthy");
         write_node_json5(&healthy.join("node_a"), "node_a", "v1");
         let gone = tmp.path().join("not-mounted");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-                healthy.display(),
-                gone.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &healthy), (2, &gone)]));
 
         let refreshed = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
 
@@ -1594,14 +1562,7 @@ mod tests {
         write_node_json5(&conflicted.join("a"), "vanished", "v1");
         stale_index(&conflicted, "a/peppy.json5");
         let gone = tmp.path().join("not-mounted");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 5, "type": "fs", "path": "{}" }}, {{ "id": 9, "type": "fs", "path": "{}" }}]"#,
-                gone.display(),
-                conflicted.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(5, &gone), (9, &conflicted)]));
 
         let refreshed = refresh_publishing(&peppy_dirs, &[], TEST_NOW, &mut |_| {}).unwrap();
 
@@ -1632,14 +1593,7 @@ mod tests {
         let two = tmp.path().join("two");
         write_node_json5(&one.join("from_one"), "from_one", "v1");
         write_node_json5(&two.join("from_two"), "from_two", "v1");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-                one.display(),
-                two.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &one), (2, &two)]));
         let clean = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         write_all_caches(&peppy_dirs, &clean).unwrap();
 
@@ -1681,21 +1635,8 @@ mod tests {
         write_node_json5(&repo_a.join("node_a"), "node_a", "v1");
         write_node_json5(&repo_b.join("node_b"), "node_b", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-                repo_a.display(),
-                repo_b.display()
-            ),
-        );
-        write_excluded_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo_b.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo_a), (2, &repo_b)]));
+        write_excluded_repos(&peppy_dirs, &fs_repos(&[(1, &repo_b)]));
 
         let RefreshedRepos {
             items, excluded, ..
@@ -1727,21 +1668,9 @@ mod tests {
         write_node_json5(&repo.join("keep_node"), "keep_node", "v1");
         write_node_json5(&repo.join("secret_node"), "secret_node", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
         // Exclude the subdirectory, not the whole repo
-        write_excluded_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.join("secret_node").display()
-            ),
-        );
+        write_excluded_repos(&peppy_dirs, &fs_repos(&[(1, &repo.join("secret_node"))]));
 
         let RefreshedRepos {
             items, excluded, ..
@@ -1785,20 +1714,8 @@ mod tests {
         std::fs::remove_file(repo.join("secret_node").join(NODE_CONFIG_FILE))
             .expect("remove the excluded manifest");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
-        write_excluded_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.join("secret_node").display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
+        write_excluded_repos(&peppy_dirs, &fs_repos(&[(1, &repo.join("secret_node"))]));
 
         let RefreshedRepos {
             items, failures, ..
@@ -1888,13 +1805,7 @@ mod tests {
         let repo = tmp.path().join("repo");
         write_node_json5(&repo.join("node_a"), "node_a", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         // No excluded_repositories.json5 file
         let RefreshedRepos {
@@ -1914,13 +1825,7 @@ mod tests {
         let iface_path = repo.join("uvc_camera/peppy.json5");
         let bytes = write_contract_json5(&iface_path, "uvc_camera", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         let contracts = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
             .unwrap()
@@ -2014,17 +1919,7 @@ mod tests {
         )
         .unwrap();
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[
-                    {{ "id": 1, "type": "fs", "path": "{}" }},
-                    {{ "id": 2, "type": "fs", "path": "{}" }}
-                ]"#,
-                repo_a.display(),
-                repo_b.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo_a), (2, &repo_b)]));
 
         let mut feedbacks = Vec::new();
         let contracts = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |fb| feedbacks.push(fb))
@@ -2086,14 +1981,7 @@ mod tests {
         // Throw a node into repo_a too so we exercise the mixed walk.
         write_node_json5(&repo_a.join("node_a"), "node_a", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-                repo_a.display(),
-                repo_b.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo_a), (2, &repo_b)]));
 
         let items = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
             .unwrap()
@@ -2173,13 +2061,7 @@ mod tests {
         )
         .unwrap();
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         let launchers = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
             .unwrap()
@@ -2205,13 +2087,7 @@ mod tests {
         let repo = tmp.path().join("repo");
         write_launcher_json5(&repo.join("openarm01_sim_teleop.json5"));
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         let launchers = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
             .unwrap()
@@ -2334,13 +2210,7 @@ mod tests {
         let repo = tmp.path().join("repo");
         write_node_json5(&repo.join("node_a"), "node_a", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         let mut feedbacks: Vec<RepoRefreshFeedback> = Vec::new();
         let _ = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |fb| feedbacks.push(fb)).unwrap();

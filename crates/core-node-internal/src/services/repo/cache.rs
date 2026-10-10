@@ -1142,6 +1142,19 @@ pub(crate) mod test_support {
         );
     }
 
+    /// The content of a repository list file (`repositories.json5` or
+    /// `excluded_repositories.json5`) that lists each `(id, path)` as an fs
+    /// repository.
+    pub(crate) fn fs_repos(repos: &[(u64, &Path)]) -> String {
+        let entries: Vec<serde_json::Value> = repos
+            .iter()
+            .map(|(id, path)| {
+                serde_json::json!({ "id": id, "type": "fs", "path": path.to_string_lossy() })
+            })
+            .collect();
+        serde_json::to_string(&entries).expect("a list of fs entries serializes")
+    }
+
     fn write_conf_file(peppy_dirs: &PeppyDirs, file_name: &str, content: &str) {
         let conf_dir = peppy_dirs.conf_dir();
         std::fs::create_dir_all(&conf_dir).expect("create the conf dir");
