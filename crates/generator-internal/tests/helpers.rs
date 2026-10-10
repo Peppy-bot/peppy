@@ -1027,26 +1027,6 @@ pub async fn wait_for_action_reachable_via_target_or_exit(
     }
 }
 
-pub async fn wait_for_shutdown_service_reachable_or_exit(
-    ctx: &WaitContext<'_>,
-    to_node_name: &str,
-    target_instance_id: &str,
-    child: &mut std::process::Child,
-    dir: &std::path::Path,
-    timeout: Duration,
-) {
-    wait_for_service_reachable_or_exit(
-        ctx,
-        to_node_name,
-        SHUTDOWN_SERVICE,
-        Some(target_instance_id),
-        child,
-        dir,
-        timeout,
-    )
-    .await;
-}
-
 pub async fn wait_for_health_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
     to_node_name: &str,
