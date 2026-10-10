@@ -782,6 +782,7 @@ impl InterfaceArtifact {
 
     /// Returns the leaf segment (the topic/service/action name). Panics on an
     /// empty `module_path`, which would be a generator bug.
+    #[cfg(test)]
     pub fn leaf_name(&self) -> &str {
         self.module_path
             .last()
