@@ -389,28 +389,39 @@ fn deploy_rust_crates_to_shared_cache(
         let source = cache_dir.join(vendored.dir_name);
 
         match deploy_mode {
-            CrateDeployMode::Symlink => {
-                match dest.symlink_metadata() {
-                    Ok(meta) if meta.file_type().is_symlink() => {
-                        if fs::read_link(&dest).ok().as_deref() == Some(source.as_path()) {
-                            continue;
-                        }
-                        fs::remove_file(&dest)?;
-                    }
-                    Ok(_) => fs::remove_dir_all(&dest)?,
-                    Err(_) => {}
-                }
-                symlink_dir(&source, &dest)?;
-            }
-            CrateDeployMode::Copy => {
-                if dest.exists() {
-                    fs::remove_dir_all(&dest)?;
-                }
-                copy_dir_recursive(&source, &dest)?;
-            }
+            CrateDeployMode::Symlink => link_vendored_crate(&source, &dest)?,
+            CrateDeployMode::Copy => copy_vendored_crate(&source, &dest)?,
         }
     }
 
+    Ok(())
+}
+
+/// Makes `dest` a symlink to `source`, replacing a directory or a symlink to
+/// another target at `dest`. A `dest` that already links to `source` is left
+/// as it is.
+fn link_vendored_crate(source: &Path, dest: &Path) -> Result<()> {
+    match dest.symlink_metadata() {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if fs::read_link(dest).ok().as_deref() == Some(source) {
+                return Ok(());
+            }
+            fs::remove_file(dest)?;
+        }
+        Ok(_) => fs::remove_dir_all(dest)?,
+        Err(_) => {}
+    }
+    symlink_dir(source, dest)?;
+    Ok(())
+}
+
+/// Replaces the directory at `dest`, or a symlink at `dest` whose target
+/// exists, with a full copy of `source`.
+fn copy_vendored_crate(source: &Path, dest: &Path) -> Result<()> {
+    if dest.exists() {
+        fs::remove_dir_all(dest)?;
+    }
+    copy_dir_recursive(source, dest)?;
     Ok(())
 }
 
@@ -639,6 +650,60 @@ mod tests {
                 "path {path}"
             );
         }
+    }
+
+    /// A node libs directory where a stale real directory and a symlink to
+    /// somewhere else stand in the place of two vendored crates.
+    fn node_libs_dir_with_stale_entries(root: &Path) -> PathBuf {
+        let node_libs_dir = root.join("node").join("libs");
+        fs::create_dir_all(node_libs_dir.join("peppylib").join("stale")).unwrap();
+        symlink_dir(root, &node_libs_dir.join("build-helpers")).unwrap();
+        node_libs_dir
+    }
+
+    #[test]
+    fn symlink_deploy_links_every_vendored_crate_to_the_shared_cache() {
+        let root = tempfile::TempDir::new().unwrap();
+        let peppy_dirs = daemon_config::consts::PeppyDirs::new(root.path().join("peppy"));
+        let node_libs_dir = node_libs_dir_with_stale_entries(root.path());
+
+        // The second deploy finds every link already in place.
+        for _ in 0..2 {
+            deploy_rust_crates_to_shared_cache(
+                &node_libs_dir,
+                &peppy_dirs,
+                CrateDeployMode::Symlink,
+            )
+            .unwrap();
+        }
+
+        let cache_dir = peppy_dirs.rust_libs_cache_dir(&vendored_crates_cache_key());
+        for vendored in &VENDORED_CRATES {
+            let dest = node_libs_dir.join(vendored.dir_name);
+            assert_eq!(
+                fs::read_link(&dest).unwrap(),
+                cache_dir.join(vendored.dir_name)
+            );
+            assert!(dest.join("Cargo.toml").is_file(), "{}", vendored.dir_name);
+        }
+    }
+
+    #[test]
+    fn copy_deploy_replaces_links_and_directories_with_copies() {
+        let root = tempfile::TempDir::new().unwrap();
+        let peppy_dirs = daemon_config::consts::PeppyDirs::new(root.path().join("peppy"));
+        let node_libs_dir = node_libs_dir_with_stale_entries(root.path());
+
+        deploy_rust_crates_to_shared_cache(&node_libs_dir, &peppy_dirs, CrateDeployMode::Copy)
+            .unwrap();
+
+        for vendored in &VENDORED_CRATES {
+            let dest = node_libs_dir.join(vendored.dir_name);
+            let meta = dest.symlink_metadata().unwrap();
+            assert!(meta.is_dir(), "{} is a real directory", vendored.dir_name);
+            assert!(dest.join("Cargo.toml").is_file(), "{}", vendored.dir_name);
+        }
+        assert!(!node_libs_dir.join("peppylib").join("stale").exists());
     }
 
     const TEST_METADATA: WorkspacePackageMetadata = WorkspacePackageMetadata {
