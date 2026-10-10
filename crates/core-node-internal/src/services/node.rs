@@ -58,8 +58,7 @@ pub(crate) use feedback::{
     unlogged_step_sink,
 };
 pub(crate) use git_utils::{
-    checkout_read_ref, checkout_repo_ref, clone_repo_shallow, clone_with_progress, format_bytes,
-    head_commit,
+    checkout_read_ref, checkout_repo_ref, clone_repo_shallow, clone_with_progress, head_commit,
 };
 pub(crate) use run::{
     NodeRunActionContext, assemble_runtime_config, resolve_mount_path_parameters, run_node_run,

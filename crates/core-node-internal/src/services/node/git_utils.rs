@@ -14,6 +14,7 @@ use core_node_api::encoding::ReadRef;
 use daemon_config::repository::GitCommit;
 use git2::Repository;
 use git2::build::{CheckoutBuilder, RepoBuilder};
+use node_stack::build_io::format_bytes;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 use tracing::debug;
@@ -28,12 +29,6 @@ const PROGRESS_REPORT_INTERVAL: Duration = Duration::from_millis(500);
 /// "shallow fetch is not supported by the local transport".
 fn is_local_url(repo_url: &str) -> bool {
     repo_url.starts_with('/') || repo_url.starts_with("file://")
-}
-
-/// Renders byte counts in the compact `KB`/`MB`/`GB` form shared by all of
-/// peppy's progress lines (delegates to the one formatter in `node-stack`).
-pub(crate) fn format_bytes(bytes: usize) -> String {
-    node_stack::build_io::format_bytes(bytes as u64)
 }
 
 pub(crate) fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
@@ -256,7 +251,7 @@ fn progress_callbacks<'cb>(
                 "{verb} {shown_url}: received {recv}/{total} objects ({bytes})",
                 recv = progress.received_objects(),
                 total = progress.total_objects(),
-                bytes = format_bytes(progress.received_bytes()),
+                bytes = format_bytes(progress.received_bytes() as u64),
             ));
         }
         true

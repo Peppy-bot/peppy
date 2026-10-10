@@ -12,9 +12,9 @@ use super::sync::{
     generate_peppygen_for_node, materialize_repo_deps, stack_resolver, stack_then_repo_resolver,
 };
 use super::{
-    clone_with_progress, encode_hex, extract_tar_zst, format_bytes, generate_random_id,
-    is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
-    parse_node_config_file, resolve_local_archive_source, sanitize_repo_path,
+    clone_with_progress, encode_hex, extract_tar_zst, generate_random_id, is_supported_fs_archive,
+    is_supported_http_archive, locate_node_root_dir, parse_node_config_file,
+    resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
 use crate::source_url::SourceUrl;
@@ -30,6 +30,7 @@ use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
+use node_stack::build_io::format_bytes;
 use node_stack::{ActionLog, Announcer, InstanceState, NodeStack, WorkingDirGuard};
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
@@ -612,7 +613,7 @@ fn download_http_bundle_once(
 /// zero total reads as 0% rather than dividing by zero.
 fn download_progress_line(downloaded: u64, total: Option<u64>) -> String {
     let Some(total) = total else {
-        return format!("Downloading: {}", format_bytes(downloaded as usize));
+        return format!("Downloading: {}", format_bytes(downloaded));
     };
     let percent = match total {
         0 => 0,
@@ -620,8 +621,8 @@ fn download_progress_line(downloaded: u64, total: Option<u64>) -> String {
     };
     format!(
         "Downloading: {} / {} ({}%)",
-        format_bytes(downloaded as usize),
-        format_bytes(total as usize),
+        format_bytes(downloaded),
+        format_bytes(total),
         percent,
     )
 }
