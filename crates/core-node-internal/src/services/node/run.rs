@@ -188,7 +188,7 @@ pub(crate) struct NodeRunActionContext {
 /// effective gossip is "configured AND not separate-namespace".
 fn apply_daemon_defaults(
     cfg: &mut RuntimeConfig,
-    defaults: DaemonDefaults,
+    defaults: &DaemonDefaults,
     container_separate_ns: bool,
 ) {
     cfg.discovery.gossip = defaults.gossip && !container_separate_ns;
@@ -1178,12 +1178,9 @@ async fn process_node_run(
     // container always routes through the router as a client even in the peer
     // topology.
     let mut launch_config = runtime_config.clone();
-    // Kept aside before the defaults are consumed below: the endpoints the
-    // node announces are expanded against these once it is healthy.
-    let host_source = ctx.action.daemon_defaults.host_addresses.clone();
     apply_daemon_defaults(
         &mut launch_config,
-        ctx.action.daemon_defaults,
+        &ctx.action.daemon_defaults,
         container_gateway.is_some(),
     );
     if let Some(gateway) = &container_gateway
@@ -1400,7 +1397,7 @@ async fn process_node_run(
     let mut endpoints = Vec::new();
     let health_outcome = match health_outcome {
         StartupOutcome::Ok if !node_config.execution.endpoints.is_empty() => {
-            let host = host_addresses(&host_source);
+            let host = host_addresses(&ctx.action.daemon_defaults.host_addresses);
             tokio::select! {
                 biased;
                 _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
@@ -2222,7 +2219,7 @@ mod tests {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(true, SubscriberBufferConfig::default()),
+            &daemon_defaults(true, SubscriberBufferConfig::default()),
             false,
         );
         assert!(cfg.discovery.gossip);
@@ -2236,7 +2233,7 @@ mod tests {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(false, SubscriberBufferConfig::default()),
+            &daemon_defaults(false, SubscriberBufferConfig::default()),
             false,
         );
         assert!(!cfg.discovery.gossip);
@@ -2249,7 +2246,7 @@ mod tests {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(true, SubscriberBufferConfig::default()),
+            &daemon_defaults(true, SubscriberBufferConfig::default()),
             true,
         );
         assert!(
@@ -2270,7 +2267,7 @@ mod tests {
             let mut cfg = runtime_config_for_test();
             apply_daemon_defaults(
                 &mut cfg,
-                daemon_defaults(gossip, subscriber_buffers),
+                &daemon_defaults(gossip, subscriber_buffers),
                 container_separate_ns,
             );
             assert_eq!(cfg.discovery.standard_buffer_size, 64);
@@ -2320,7 +2317,7 @@ mod tests {
         defaults.namespace =
             config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let mut cfg = runtime_config_for_test();
-        apply_daemon_defaults(&mut cfg, defaults, false);
+        apply_daemon_defaults(&mut cfg, &defaults, false);
         assert_eq!(
             cfg.discovery
                 .namespace
