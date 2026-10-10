@@ -33,8 +33,9 @@ import time
 import warnings
 import weakref
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable, Protocol, Sequence
 
 from peppylib import (
     ActionMessenger,
@@ -171,14 +172,27 @@ class Mocks:
         Each mock's own ``stop()`` is idempotent, so calling this after
         stopping some by hand is safe; the harness calls it on shutdown."""
         for group in (self.deps, self.pairings, self.observed):
-            for value in vars(group).values():
-                if value is None:
-                    continue
-                if isinstance(value, list):
-                    for mock in value:
-                        await mock.stop()
-                else:
-                    await value.stop()
+            for mock in _started_mocks(group):
+                await mock.stop()
+
+
+class _StoppableMock(Protocol):
+    """What :meth:`Mocks.stop_all` needs of a generated mock."""
+
+    async def stop(self) -> None: ...
+
+
+def _started_mocks(group: object) -> Iterator[_StoppableMock]:
+    """Every mock of one namespace group, in attribute order: a multi-instance
+    slot's list gives each of its members, and a vacant slot (``None``) gives
+    none."""
+    for value in vars(group).values():
+        if value is None:
+            continue
+        if isinstance(value, list):
+            yield from value
+            continue
+        yield value
 
 
 def prepare_test_process() -> None:
