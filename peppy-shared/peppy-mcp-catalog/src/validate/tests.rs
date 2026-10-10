@@ -1126,6 +1126,51 @@ fn a_request_field_named_like_a_routing_argument_is_refused() {
     );
 }
 
+/// The recorder's `record_episode` action on a per-robot surface pinned to
+/// the `contract` source, so every goal names its robot.
+fn per_robot_recorder_exposure(contract: &str) -> String {
+    recorder_exposure(contract, "record_episode", "deadline_ms: 60000").replace(
+        r#"server: { title: "Surface" },"#,
+        r#"server: { title: "Surface" },
+        robots: { list: { tool: "robot.list", description: "The robots of the stack." } },"#,
+    )
+}
+
+#[test]
+fn a_per_robot_action_goal_takes_the_routing_argument() {
+    let bundle = build(
+        &per_robot_recorder_exposure(RECORDING_CONTRACT),
+        &[&fixture(RECORDING_CONTRACT)],
+    );
+    let task = &bundle.tasks[0];
+    assert_eq!(
+        task.input_schema["required"],
+        serde_json::json!(["task_name", "episode_index", "robot"])
+    );
+    assert_eq!(
+        task.input_schema["properties"]["robot"],
+        serde_json::json!({ "type": "string" })
+    );
+}
+
+#[test]
+fn an_action_goal_field_named_like_a_routing_argument_is_refused() {
+    let contract = RECORDING_CONTRACT.replace(
+        r#"task_name: "string","#,
+        r#"task_name: "string", robot: "string","#,
+    );
+    let violations = violations_of(
+        &per_robot_recorder_exposure(&contract),
+        &[&fixture(&contract)],
+    );
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(
+        violations[0].contains("action `record_episode`")
+            && violations[0].contains("declares `robot`, the name the server adds"),
+        "{violations:?}"
+    );
+}
+
 /// The listing calls a described service with the robot alone, so one
 /// taking a request of its own cannot fill a listing field.
 #[test]
