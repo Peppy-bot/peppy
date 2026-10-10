@@ -1026,32 +1026,81 @@ mod tests {
 
     #[test]
     fn test_key_exprs_intersect_service_patterns() {
-        // Real patterns from the service messenger
-        // Subscription pattern: {bound_core_node}/*/{as_instance_id}/*/{service_root}/request/**
-        // Request topic: {target_core_node}/{caller_core_node}/{to_instance}/{caller_instance}/{service_root}/request/{request_id}
-
-        // Pattern 1: Specific core node, specific instance
-        // Service bound to core node "listener_core_node" with instance "listener_instance"
+        // Service-shaped patterns that end in a `**` tail. The `*` caller
+        // slots of each pattern take the concrete caller segments of the key,
+        // its literal slots must equal the key's, and the `**` tail takes the
+        // rest of the key, whatever literals fill the leading slots.
         let pattern = "listener_core_node/*/listener_instance/*/service/node/ping/request/**";
-        // Request targeting the specific instance
         let topic = "listener_core_node/caller_core_node/listener_instance/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::key_exprs_intersect(pattern, topic));
 
-        // Pattern 3: Broadcast core node (_any_), specific instance
         let pattern = "_any_/*/listener_instance/*/service/node/ping/request/**";
         let topic = "_any_/caller_core_node/listener_instance/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::key_exprs_intersect(pattern, topic));
 
-        // Pattern 4: Broadcast core node, broadcast instance
         let pattern = "_any_/*/_any_/*/service/node/ping/request/**";
         let topic = "_any_/caller_core_node/_any_/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::key_exprs_intersect(pattern, topic));
 
-        // CoreNode uses its own name as the bound core node (e.g., "core_node")
-        // This allows targeted requests to reach the core node specifically
         let pattern = "core_node/*/listener_instance/*/service/node/ping/request/**";
         let topic = "core_node/caller_core_node/listener_instance/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::key_exprs_intersect(pattern, topic));
+    }
+
+    #[test]
+    fn service_queryable_intersects_every_caller_selector_shape() {
+        // The keys the wire builds for one service: the producer's queryable
+        // intersects a selector pinned to it, the wildcard probe selector and
+        // a selector scoped to its core node, and not a selector pinned to
+        // another core node.
+        use crate::wire::test_support::node;
+        use crate::wire::{ServiceKind, ServiceWireReceiver, ServiceWireSender};
+        use config::runtime::ProducerRef;
+
+        let receiver = ServiceWireReceiver::new(
+            "server_core",
+            "server_inst",
+            node("robot_arm", "v1"),
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid receiver");
+        let queryable = ZenohWireFormat::service_queryable_declare(&receiver);
+        let sender_to = |producer: Option<&ProducerRef>| {
+            ServiceWireSender::new(
+                "caller_core",
+                "caller_inst",
+                producer,
+                node("robot_arm", "v1"),
+                "ping",
+                ServiceKind::Service,
+            )
+            .expect("valid sender")
+        };
+
+        let pinned = sender_to(Some(&ProducerRef::new("server_core", "server_inst")));
+        let probe = sender_to(None);
+        let core_scoped = sender_to(None)
+            .scoped_to_core_node("server_core")
+            .expect("valid core node");
+        for (shape, sender) in [
+            ("pinned", &pinned),
+            ("probe", &probe),
+            ("core-scoped", &core_scoped),
+        ] {
+            let selector = ZenohWireFormat::service_get_selector(sender);
+            assert!(
+                MockAdapter::key_exprs_intersect(&queryable, &selector),
+                "{shape}: {selector}"
+            );
+        }
+
+        let other_core = sender_to(Some(&ProducerRef::new("other_core", "server_inst")));
+        let selector = ZenohWireFormat::service_get_selector(&other_core);
+        assert!(
+            !MockAdapter::key_exprs_intersect(&queryable, &selector),
+            "{selector}"
+        );
     }
 
     #[test]
