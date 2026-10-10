@@ -1,31 +1,54 @@
 use super::test_support::{node, seg};
 use super::*;
 
-// ─── ContractIdentifier ──────────────────────────────────────────────────
+// ─── Identifier constructors ─────────────────────────────────────────────
+
+type TargetConstructor = fn(&str, &str) -> Result<SenderTarget, SenderTargetError>;
+
+/// The contract, node and pairing constructors share one name and tag
+/// validation, so each constructor test runs against all three.
+const TARGET_CONSTRUCTORS: [(&str, TargetConstructor); 3] = [
+    ("contract", SenderTarget::contract),
+    ("node", SenderTarget::node),
+    ("pairing", SenderTarget::pairing),
+];
 
 #[test]
-fn contract_new_preserves_alphanumeric_tag() {
-    let contract = ContractIdentifier::new("camera_driver", "v1").expect("valid contract");
-    assert_eq!(contract.name(), "camera_driver");
-    assert_eq!(contract.tag(), "v1");
+fn target_constructors_preserve_an_alphanumeric_tag() {
+    for (kind, new_target) in TARGET_CONSTRUCTORS {
+        let target =
+            new_target("camera_driver", "v1").unwrap_or_else(|err| panic!("{kind}: {err}"));
+        assert_eq!(target.name(), "camera_driver", "{kind}");
+        assert_eq!(target.tag(), "v1", "{kind}");
+    }
 }
 
 #[test]
-fn contract_new_normalizes_hyphenated_tag() {
-    let contract = ContractIdentifier::new("camera_driver", "v1-beta-2").expect("valid contract");
-    assert_eq!(contract.tag(), "v1_beta_2");
+fn target_constructors_normalize_a_hyphenated_tag() {
+    for (kind, new_target) in TARGET_CONSTRUCTORS {
+        let target =
+            new_target("camera_driver", "v1-beta-2").unwrap_or_else(|err| panic!("{kind}: {err}"));
+        assert_eq!(target.tag(), "v1_beta_2", "{kind}");
+    }
 }
 
 #[test]
-fn contract_new_does_not_touch_underscored_tag() {
-    let contract = ContractIdentifier::new("nav", "v2_stable").expect("valid contract");
-    assert_eq!(contract.tag(), "v2_stable");
+fn target_constructors_keep_an_underscored_tag() {
+    for (kind, new_target) in TARGET_CONSTRUCTORS {
+        let target = new_target("nav", "v2_stable").unwrap_or_else(|err| panic!("{kind}: {err}"));
+        assert_eq!(target.tag(), "v2_stable", "{kind}");
+    }
 }
 
 #[test]
-fn contract_new_rejects_segment_with_slash() {
-    let err = ContractIdentifier::new("nav/sub", "v1").unwrap_err();
-    assert!(matches!(err, SenderTargetError::InvalidSegment(_)));
+fn target_constructors_reject_a_segment_with_a_slash() {
+    for (kind, new_target) in TARGET_CONSTRUCTORS {
+        let err = new_target("nav/sub", "v1").unwrap_err();
+        assert!(
+            matches!(err, SenderTargetError::InvalidSegment(_)),
+            "{kind}"
+        );
+    }
 }
 
 #[test]
@@ -58,33 +81,6 @@ fn segment_try_link_id_still_rejects_slash_and_wildcards() {
         Segment::try_link_id("*"),
         Err(SegmentError::ReservedSentinel(_))
     ));
-}
-
-// ─── NodeIdentifier ───────────────────────────────────────────────────────
-
-#[test]
-fn node_new_preserves_alphanumeric_tag() {
-    let node = NodeIdentifier::new("uvc_camera", "v1").expect("valid node");
-    assert_eq!(node.name(), "uvc_camera");
-    assert_eq!(node.tag(), "v1");
-}
-
-#[test]
-fn node_new_normalizes_hyphenated_tag() {
-    let node = NodeIdentifier::new("uvc_camera", "v1-beta-2").expect("valid node");
-    assert_eq!(node.tag(), "v1_beta_2");
-}
-
-#[test]
-fn node_new_does_not_touch_underscored_tag() {
-    let node = NodeIdentifier::new("uvc_camera", "v2_stable").expect("valid node");
-    assert_eq!(node.tag(), "v2_stable");
-}
-
-#[test]
-fn node_new_rejects_segment_with_slash() {
-    let err = NodeIdentifier::new("nav/sub", "v1").unwrap_err();
-    assert!(matches!(err, SenderTargetError::InvalidSegment(_)));
 }
 
 // ─── SenderTarget ─────────────────────────────────────────────────────────
@@ -129,12 +125,6 @@ fn sender_target_pairing_discriminator_is_pairing() {
 }
 
 #[test]
-fn sender_target_pairing_normalizes_hyphenated_tag() {
-    let target = SenderTarget::pairing("arm_link", "v1-beta").expect("valid pairing target");
-    assert_eq!(target.tag(), "v1_beta");
-}
-
-#[test]
 fn sender_target_pairing_and_contract_with_same_name_tag_are_distinct() {
     // The load-bearing lock-in property: pairing traffic can never match a
     // contract subscription because the wire discriminators differ.
@@ -142,12 +132,6 @@ fn sender_target_pairing_and_contract_with_same_name_tag_are_distinct() {
     let contract = SenderTarget::contract("widget", "v1").expect("valid contract target");
     assert_ne!(pairing, contract);
     assert_ne!(pairing.discriminator(), contract.discriminator());
-}
-
-#[test]
-fn sender_target_pairing_rejects_invalid_segment() {
-    let err = SenderTarget::pairing("arm/link", "v1").unwrap_err();
-    assert!(matches!(err, SenderTargetError::InvalidSegment(_)));
 }
 
 // ─── ServiceKind ──────────────────────────────────────────────────────────
