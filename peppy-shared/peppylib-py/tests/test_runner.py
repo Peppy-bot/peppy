@@ -114,6 +114,10 @@ def _write_node_config(temp_dir: str) -> str:
     return peppy_config_path
 
 
+def _parameters_as_dict() -> dict:
+    return {"frequency_hz": TEST_FREQUENCY_HZ}
+
+
 def _write_daemon_mode_config(
     temp_dir: str,
     router: ZenohdInstance,
@@ -136,7 +140,7 @@ def _write_daemon_mode_config(
         TEST_NODE_NAME,
         TEST_CORE_NODE,
         TEST_INSTANCE_ID,
-        {"frequency_hz": TEST_FREQUENCY_HZ},
+        _parameters_as_dict(),
         shutdown_grace_secs=shutdown_grace_secs,
     )
 
@@ -144,12 +148,17 @@ def _write_daemon_mode_config(
     monkeypatch.chdir(temp_dir)
 
 
-def _standalone_config(router: ZenohdInstance) -> StandaloneConfig:
+def _standalone_config(
+    router: ZenohdInstance, parameters: object | None = None
+) -> StandaloneConfig:
     """The standalone seeding of the test node: its parameters, the router,
-    and the test instance id."""
+    and the test instance id. `parameters` defaults to the dict form of the
+    test node's parameters."""
+    if parameters is None:
+        parameters = _parameters_as_dict()
     return (
         StandaloneConfig()
-        .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
+        .with_parameters(parameters)
         .with_messaging(router.host, router.port)
         .with_instance_id(TEST_INSTANCE_ID)
     )
@@ -221,73 +230,65 @@ async def test_daemon_runner_succeed(monkeypatch):
     assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
 
 
+def _parameters_as_dataclass():
+    # Imported here: the session fixture puts the peppygen stub on sys.path
+    # only once the tests run.
+    from peppygen.parameters import Parameters
+
+    return Parameters(frequency_hz=TEST_FREQUENCY_HZ)
+
+
+def _sync_setup(token_queue: queue.Queue):
+    """A sync setup that checks its parameters and hands over the node's
+    cancellation token."""
+
+    def setup_fn(params, node_runner):
+        assert params.frequency_hz == TEST_FREQUENCY_HZ
+        token_queue.put(node_runner.cancellation_token())
+
+    return setup_fn
+
+
+def _async_setup(token_queue: queue.Queue):
+    """An async setup that checks its parameters, awaits, and hands over the
+    node's cancellation token."""
+
+    async def setup_fn(params, node_runner):
+        assert params.frequency_hz == TEST_FREQUENCY_HZ
+        await asyncio.sleep(0.01)
+        token_queue.put(node_runner.cancellation_token())
+
+    return setup_fn
+
+
 @pytest.mark.asyncio
-async def test_standalone_runner_succeed(monkeypatch):
-    """Node starts in standalone mode, parameters correct, cancellation token shuts it down."""
+@pytest.mark.parametrize(
+    ("make_parameters", "make_setup"),
+    [
+        pytest.param(_parameters_as_dict, _sync_setup, id="dict-parameters"),
+        pytest.param(_parameters_as_dataclass, _sync_setup, id="dataclass-parameters"),
+        pytest.param(_parameters_as_dict, _async_setup, id="async-setup"),
+    ],
+)
+async def test_standalone_runner_succeed(monkeypatch, make_parameters, make_setup):
+    """Node starts in standalone mode, parameters correct, cancellation token
+    shuts it down. with_parameters() accepts a dataclass instance, not just a
+    dict, and NodeBuilder.run auto-detects and supports async setup callbacks.
+    """
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
             peppy_config_path = _write_node_config(temp_dir)
-            standalone_config = _standalone_config(router)
+            standalone_config = _standalone_config(router, make_parameters())
 
             token_queue: queue.Queue = queue.Queue()
 
             def run_node():
-                def setup_fn(params, node_runner):
-                    assert params.frequency_hz == TEST_FREQUENCY_HZ
-                    token_queue.put(node_runner.cancellation_token())
-
                 (
                     NodeBuilder()
                     .with_config_path(peppy_config_path)
                     .standalone(standalone_config)
-                    .run(setup_fn)
-                )
-
-            runner_thread, error_queue = start_runner_thread(run_node)
-
-            cancellation_token: CancellationToken = await asyncio.to_thread(
-                token_queue.get, timeout=5.0
-            )
-
-            # Signal shutdown via cancellation token
-            cancellation_token.cancel()
-
-            # Runner should exit after cancellation
-            runner_thread.join(timeout=10.0)
-    assert not runner_thread.is_alive(), "Runner should have exited"
-    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
-
-
-@pytest.mark.asyncio
-async def test_standalone_with_parameters_dataclass(monkeypatch):
-    """with_parameters() accepts a dataclass instance, not just a dict."""
-    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
-    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = _write_node_config(temp_dir)
-
-            from peppygen.parameters import Parameters
-
-            standalone_config = (
-                StandaloneConfig()
-                .with_parameters(Parameters(frequency_hz=TEST_FREQUENCY_HZ))
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-            )
-
-            token_queue: queue.Queue = queue.Queue()
-
-            def run_node():
-                def setup_fn(params, node_runner):
-                    assert params.frequency_hz == TEST_FREQUENCY_HZ
-                    token_queue.put(node_runner.cancellation_token())
-
-                (
-                    NodeBuilder()
-                    .with_config_path(peppy_config_path)
-                    .standalone(standalone_config)
-                    .run(setup_fn)
+                    .run(make_setup(token_queue))
                 )
 
             runner_thread, error_queue = start_runner_thread(run_node)
@@ -428,43 +429,6 @@ async def test_setup_exception_propagates_to_run(monkeypatch):
             runner_thread.join(timeout=10.0)
 
     assert not runner_thread.is_alive(), "Runner should have exited"
-
-
-@pytest.mark.asyncio
-async def test_run_accepts_async_setup(monkeypatch):
-    """NodeBuilder.run auto-detects and supports async setup callbacks."""
-    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
-    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = _write_node_config(temp_dir)
-            standalone_config = _standalone_config(router)
-
-            token_queue: queue.Queue = queue.Queue()
-
-            def run_node():
-                async def setup_fn(params, node_runner):
-                    assert params.frequency_hz == TEST_FREQUENCY_HZ
-                    await asyncio.sleep(0.01)
-                    token_queue.put(node_runner.cancellation_token())
-
-                (
-                    NodeBuilder()
-                    .with_config_path(peppy_config_path)
-                    .standalone(standalone_config)
-                    .run(setup_fn)
-                )
-
-            runner_thread, error_queue = start_runner_thread(run_node)
-
-            cancellation_token: CancellationToken = await asyncio.to_thread(
-                token_queue.get, timeout=5.0
-            )
-
-            cancellation_token.cancel()
-            runner_thread.join(timeout=10.0)
-
-    assert not runner_thread.is_alive(), "Runner should have exited"
-    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
 
 
 @pytest.mark.asyncio
