@@ -257,10 +257,13 @@ fn derived_name_has_compact_two_word_shape() {
 /// re-running the destructive setup and double-registering listeners.
 #[tokio::test]
 async fn start_with_ready_rejects_a_second_start() {
+    // The boot clears the instances dir and writes the repositories file, so
+    // it runs on a root of its own.
+    let root = tempfile::tempdir().expect("tempdir");
     let core_node = Arc::new(CoreNode::new(test_core_node_config(
         create_mock_messenger().await,
         Some("dup_start_node"),
-        PeppyDirs::new(std::env::temp_dir()),
+        PeppyDirs::new(root.path()),
     )));
 
     // Drive the first start on a task: it registers listeners then serves until
