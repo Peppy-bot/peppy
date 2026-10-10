@@ -307,12 +307,11 @@ def _client(token: str) -> httpx.Client:
     return httpx.Client(headers={"Authorization": f"Bearer {token}"})
 
 
-def test_launchers_hub_tests_run_on_the_set_and_the_release_run(
-    launchers_hub: LaunchersHub,
-) -> None:
+def _check_launchers() -> DispatchedRun:
+    """Run check_launchers on HUB_SET for the release run 18000000001, the
+    release token dispatching and the job token reading, on a fake clock."""
     time = FakeTime()
-
-    run = check_launchers(
+    return check_launchers(
         _client("release-token"),
         _client("job-token"),
         OWNER,
@@ -321,6 +320,12 @@ def test_launchers_hub_tests_run_on_the_set_and_the_release_run(
         sleep=time.sleep,
         clock=time.clock,
     )
+
+
+def test_launchers_hub_tests_run_on_the_set_and_the_release_run(
+    launchers_hub: LaunchersHub,
+) -> None:
+    run = _check_launchers()
 
     assert run == RUN
     [dispatch] = launchers_hub.dispatches
@@ -346,18 +351,9 @@ def test_a_dispatch_that_names_no_run_is_never_waited_for(
     launchers_hub: LaunchersHub,
 ) -> None:
     launchers_hub.dispatch_response = {}
-    time = FakeTime()
 
     with pytest.raises(ReleaseError, match="answered without a workflow_run_id"):
-        check_launchers(
-            _client("release-token"),
-            _client("job-token"),
-            OWNER,
-            HUB_SET,
-            18000000001,
-            sleep=time.sleep,
-            clock=time.clock,
-        )
+        _check_launchers()
 
     assert launchers_hub.reads == []
 
@@ -371,17 +367,8 @@ def test_launchers_hub_tests_that_fail_fail_the_stage(
     mock_api.get(RUN.api_url).mock(
         return_value=httpx.Response(200, json=_run_response("completed", "failure"))
     )
-    time = FakeTime()
 
     with pytest.raises(
         ReleaseError, match=re.escape(f"{RUN.html_url} concluded `failure`")
     ):
-        check_launchers(
-            _client("release-token"),
-            _client("job-token"),
-            OWNER,
-            HUB_SET,
-            18000000001,
-            sleep=time.sleep,
-            clock=time.clock,
-        )
+        _check_launchers()
