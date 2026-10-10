@@ -13,7 +13,7 @@ use crate::bridge::time_to_rfc3339;
 use crate::clock::Clock;
 use crate::server::{read_only_annotations, serialized_len};
 use crate::tasks::ActionExit;
-use rmcp::model::{Implementation, JsonObject, Tool};
+use rmcp::model::{Implementation, JsonObject, Tool, object};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
@@ -134,12 +134,9 @@ impl CallRecord {
     /// The listing of the record tool: no argument, the calls as the
     /// output.
     pub(crate) fn tool(&self) -> Tool {
-        let Value::Object(input) =
-            json!({ "type": "object", "properties": {}, "additionalProperties": false })
-        else {
-            unreachable!("the input schema is an object");
-        };
-        let Value::Object(output) = json!({
+        let input =
+            object(json!({ "type": "object", "properties": {}, "additionalProperties": false }));
+        let output = object(json!({
             "type": "object",
             "properties": {
                 "calls": {
@@ -172,9 +169,7 @@ impl CallRecord {
             },
             "required": ["calls"],
             "additionalProperties": false,
-        }) else {
-            unreachable!("the output schema is an object");
-        };
+        }));
         Tool::new(self.name.clone(), self.description.clone(), Arc::new(input))
             .with_annotations(read_only_annotations())
             .with_raw_output_schema(Arc::new(output))
@@ -319,13 +314,6 @@ mod tests {
         (record, nanos)
     }
 
-    fn arguments(value: Value) -> JsonObject {
-        match value {
-            Value::Object(fields) => fields,
-            _ => panic!("arguments are an object"),
-        }
-    }
-
     fn client(name: &str) -> Option<ClientIdentity> {
         Some(ClientIdentity {
             name: name.into(),
@@ -340,14 +328,14 @@ mod tests {
         let mut first = record.start(
             client("alice"),
             "robot.move_arm",
-            &arguments(json!({ "arm_name": "left_arm" })),
+            &object(json!({ "arm_name": "left_arm" })),
         );
         nanos.store(1_400 * MS, Ordering::SeqCst);
         first.completed(Completion::of(
             &json!({ "success": false, "message": "no plan reaches the pose" }),
         ));
         nanos.store(2_000 * MS, Ordering::SeqCst);
-        let mut second = record.start(None, "robot.stop", &arguments(json!({ "reason": "" })));
+        let mut second = record.start(None, "robot.stop", &object(json!({ "reason": "" })));
 
         let answer = record.answer();
         let calls = answer["calls"].as_array().expect("calls");
@@ -382,7 +370,7 @@ mod tests {
         let (record, _) = record(2);
         for index in 0..3 {
             record
-                .start(None, &format!("tool_{index}"), &arguments(json!({})))
+                .start(None, &format!("tool_{index}"), &object(json!({})))
                 .refused("refused".into());
         }
         let answer = record.answer();
@@ -395,7 +383,7 @@ mod tests {
         assert_eq!(tools, ["tool_2", "tool_1"]);
         assert_eq!(answer["calls"][0]["outcome"], "refused");
 
-        let large = arguments(json!({ "text": "x".repeat(2000) }));
+        let large = object(json!({ "text": "x".repeat(2000) }));
         record
             .start(None, "tool_3", &large)
             .failed("deadline".into());
@@ -408,7 +396,7 @@ mod tests {
     #[test]
     fn a_recording_dropped_while_running_ends_as_cancelled() {
         let (record, _) = record(2);
-        let recording = record.start(None, "tool", &arguments(json!({})));
+        let recording = record.start(None, "tool", &object(json!({})));
         drop(recording);
         let answer = record.answer();
         assert_eq!(answer["calls"][0]["outcome"], "cancelled");
@@ -419,16 +407,16 @@ mod tests {
     fn an_actions_exit_ends_its_recording_in_the_words_of_the_exit() {
         let (record, _) = record(3);
         record
-            .start(None, "done", &arguments(json!({})))
+            .start(None, "done", &object(json!({})))
             .ended_by(&Ok(json!({ "success": true, "message": "at the pose" })));
         record
-            .start(None, "cancelled", &arguments(json!({})))
+            .start(None, "cancelled", &object(json!({})))
             .ended_by(&Err(ActionExit::Cancelled(CancelledGoal {
                 result: json!({ "success": false }),
                 reason: Some("no progress within 2000 ms".into()),
             })));
         record
-            .start(None, "failed", &arguments(json!({})))
+            .start(None, "failed", &object(json!({})))
             .ended_by(&Err(ActionExit::Failed(
                 "the provider abandoned the goal".into(),
             )));

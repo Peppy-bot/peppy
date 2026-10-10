@@ -27,7 +27,7 @@ use rmcp::model::{
     ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProgressToken,
     ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
     ResourceContents, ServerCapabilities, ServerConfig, SubscriptionFilter, Tool, ToolAnnotations,
-    UpdateTaskParams,
+    UpdateTaskParams, object,
 };
 use rmcp::service::{RequestContext, SubscriptionContext, SubscriptionSendError};
 use rmcp::task_manager::{TaskContext, TaskExit, TaskManager, TaskOptions};
@@ -1358,19 +1358,13 @@ fn listing_tool(fleet: &FleetRuntime) -> Tool {
         "required": ["robots"],
         "additionalProperties": false,
     });
-    let Value::Object(input) = input_schema else {
-        unreachable!("the listing input schema is an object");
-    };
-    let Value::Object(output) = output_schema else {
-        unreachable!("the listing output schema is an object");
-    };
     Tool::new(
         fleet.catalog.list.name.clone(),
         fleet.catalog.list.description.clone(),
-        Arc::new(input),
+        Arc::new(object(input_schema)),
     )
     .with_annotations(read_only_annotations())
-    .with_raw_output_schema(Arc::new(output))
+    .with_raw_output_schema(Arc::new(object(output_schema)))
 }
 
 impl ExposureServer {
@@ -1871,13 +1865,6 @@ mod tests {
             .expect("bundle and handlers agree")
     }
 
-    fn arguments(raw: Value) -> JsonObject {
-        match raw {
-            Value::Object(map) => map,
-            other => panic!("arguments must be an object, got {other}"),
-        }
-    }
-
     /// `test_bundle` plus two exposed actions: `record_episode` requires
     /// confirmation and is safety-sensitive, `resume_session` is neither.
     fn task_bundle() -> ExposureBundle {
@@ -2120,7 +2107,7 @@ mod tests {
         let error = run_in_call(
             &server,
             "recorder.record_episode",
-            arguments(json!({ "episode_name": 7 })),
+            object(json!({ "episode_name": 7 })),
             tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -2148,7 +2135,7 @@ mod tests {
         let error = run_in_call(
             &server,
             "recorder.resume_session",
-            arguments(json!({ "extra": true })),
+            object(json!({ "extra": true })),
             tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -2315,7 +2302,7 @@ mod tests {
         let error = start_task(
             &server,
             "recorder.record_episode",
-            arguments(json!({ "episode_name": 7 })),
+            object(json!({ "episode_name": 7 })),
         )
         .expect_err("the goal fields fail the derived schema");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
@@ -2430,7 +2417,7 @@ mod tests {
         let created = start_task(
             &server,
             "recorder.record_episode",
-            arguments(json!({ "episode_name": "pick_and_place" })),
+            object(json!({ "episode_name": "pick_and_place" })),
         )
         .expect("the task starts");
         let task_id = created.task.task_id;
@@ -2489,7 +2476,7 @@ mod tests {
         let created = start_task(
             &server,
             "recorder.record_episode",
-            arguments(json!({ "episode_name": "pick_and_place" })),
+            object(json!({ "episode_name": "pick_and_place" })),
         )
         .expect("the task starts");
         let task_id = created.task.task_id;
@@ -2850,10 +2837,7 @@ mod tests {
             arguments: Value,
         ) -> Result<CallToolResult, McpError> {
             server
-                .look(
-                    &server.state.pictures["camera.look"],
-                    self::arguments(arguments),
-                )
+                .look(&server.state.pictures["camera.look"], object(arguments))
                 .await
         }
 
@@ -2939,7 +2923,7 @@ mod tests {
             let result = server
                 .execute_tool(
                     "camera.set_brightness",
-                    arguments(json!({ "robot": "alpha", "camera": "wrist_left", "value": 3 })),
+                    object(json!({ "robot": "alpha", "camera": "wrist_left", "value": 3 })),
                     None,
                 )
                 .await
@@ -2951,7 +2935,7 @@ mod tests {
             let result = server
                 .execute_tool(
                     "robot.get_identity",
-                    arguments(json!({ "robot": "bravo" })),
+                    object(json!({ "robot": "bravo" })),
                     None,
                 )
                 .await
@@ -2967,7 +2951,7 @@ mod tests {
             let (server, fleet) = served();
             let refused = |arguments: Value| async {
                 server
-                    .execute_tool("camera.set_brightness", self::arguments(arguments), None)
+                    .execute_tool("camera.set_brightness", object(arguments), None)
                     .await
                     .expect_err("refused")
             };
@@ -3065,7 +3049,7 @@ mod tests {
                 })
             );
             let error = server
-                .list_robots(runtime(&server), arguments(json!({ "robot": "alpha" })))
+                .list_robots(runtime(&server), object(json!({ "robot": "alpha" })))
                 .await
                 .expect_err("takes no arguments");
             assert!(error.message.contains("`robot.list` takes no arguments"));
@@ -3568,7 +3552,7 @@ mod tests {
             (json!({ "value": 1, "extra": true }), "extra"),
         ] {
             let error = server
-                .execute_tool("front_camera.set_brightness", arguments(raw.clone()), None)
+                .execute_tool("front_camera.set_brightness", object(raw.clone()), None)
                 .await
                 .expect_err("invalid arguments are rejected");
             assert_eq!(error.code, ErrorCode::INVALID_PARAMS, "for {raw}");
@@ -3585,7 +3569,7 @@ mod tests {
         let result = built_server()
             .execute_tool(
                 "front_camera.set_brightness",
-                arguments(json!({ "value": 12 })),
+                object(json!({ "value": 12 })),
                 None,
             )
             .await
@@ -3605,7 +3589,7 @@ mod tests {
         let result = server
             .execute_tool(
                 "front_camera.set_brightness",
-                arguments(json!({ "value": 1 })),
+                object(json!({ "value": 1 })),
                 None,
             )
             .await
@@ -3629,7 +3613,7 @@ mod tests {
         let result = server
             .execute_tool(
                 "front_camera.set_brightness",
-                arguments(json!({ "value": 1 })),
+                object(json!({ "value": 1 })),
                 None,
             )
             .await
@@ -3654,7 +3638,7 @@ mod tests {
         let result = server
             .execute_tool(
                 "front_camera.set_brightness",
-                arguments(json!({ "value": 1 })),
+                object(json!({ "value": 1 })),
                 None,
             )
             .await
@@ -4007,7 +3991,7 @@ mod tests {
         let error = server
             .look(
                 &server.state.pictures["front_camera.look"],
-                arguments(json!({ "camera": "front" })),
+                object(json!({ "camera": "front" })),
             )
             .await
             .expect_err("an argument is refused");
@@ -4436,7 +4420,7 @@ mod tests {
 
         let record = server.state.record.as_ref().expect("a record");
         let error = server
-            .recent_calls(record, arguments(json!({ "count": 1 })))
+            .recent_calls(record, object(json!({ "count": 1 })))
             .expect_err("takes no argument");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         assert!(recorded_calls(&server).is_empty());
@@ -4462,7 +4446,7 @@ mod tests {
         server
             .execute_tool(
                 "front_camera.set_brightness",
-                arguments(json!({ "value": 12 })),
+                object(json!({ "value": 12 })),
                 a_client(),
             )
             .await
@@ -4499,7 +4483,7 @@ mod tests {
         server
             .execute_tool(
                 "front_camera.set_brightness",
-                arguments(json!({ "value": 65 })),
+                object(json!({ "value": 65 })),
                 None,
             )
             .await
@@ -4534,7 +4518,7 @@ mod tests {
         server
             .execute_tool(
                 "front_camera.set_brightness",
-                arguments(json!({ "value": 1 })),
+                object(json!({ "value": 1 })),
                 None,
             )
             .await
@@ -4562,7 +4546,7 @@ mod tests {
         let result = server
             .execute_tool(
                 "front_camera.set_brightness",
-                arguments(json!({ "value": 1 })),
+                object(json!({ "value": 1 })),
                 None,
             )
             .await
@@ -4725,7 +4709,7 @@ mod tests {
         server
             .run_action_in_call(
                 &task_named(&server, "recorder.record_episode"),
-                arguments(json!({ "episode_name": "demo" })),
+                object(json!({ "episode_name": "demo" })),
                 None,
                 tokio_util::sync::CancellationToken::new(),
                 None,
@@ -4744,7 +4728,7 @@ mod tests {
         let created = server
             .start_task(
                 &task_named(&server, "recorder.record_episode"),
-                arguments(json!({ "episode_name": "demo" })),
+                object(json!({ "episode_name": "demo" })),
                 None,
             )
             .expect("the task starts");
@@ -4773,7 +4757,7 @@ mod tests {
         server
             .execute_tool(
                 "front_camera.set_brightness",
-                arguments(json!({ "value": 1 })),
+                object(json!({ "value": 1 })),
                 None,
             )
             .await
