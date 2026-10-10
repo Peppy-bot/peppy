@@ -18,6 +18,7 @@ use super::{Lease, ReserveOutcome, SliceOwnership};
 use crate::Result;
 use crate::services::node::RelationshipCoordinators;
 use crate::services::response::into_service_response;
+use crate::services::stack::LocalMounts;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
     FederationVerdict, LaunchIdentity, PairCommitRequest, ParticipantInstancesRemoveRequest,
@@ -503,12 +504,12 @@ async fn slice_begin_inner(
     // Recorded first, prepared second: the slice is already this launch's, so a
     // machine that cannot provide a bind source is a refusal the coordinator
     // acts on, not wreckage nobody can find.
-    let prepared = if decoded.append && crate::services::stack::holds_nodes(&context.node_stack) {
-        crate::services::stack::prepare_additional_container_mounts(&decoded.mount_sources).await
+    let mounts = if decoded.append && crate::services::stack::holds_nodes(&context.node_stack) {
+        LocalMounts::AddedToRunningStack
     } else {
-        crate::services::stack::prepare_container_mounts(&decoded.mount_sources).await
+        LocalMounts::WholeStack
     };
-    match prepared {
+    match crate::services::stack::prepare_container_mounts(&decoded.mount_sources, mounts).await {
         Ok(auto_created) => {
             for (instance, hosts) in decoded.lifecycle_watchers {
                 context.relationships.notifier().set_watchers(

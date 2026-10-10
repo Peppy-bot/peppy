@@ -11,7 +11,7 @@ mod state;
 
 pub(crate) use action::{StackChangeDefaults, StackChangeTimeouts, listen_for_stack_action};
 pub(crate) use benchmark::listen_for_stack_benchmark;
-pub(crate) use container_mounts::{prepare_additional_container_mounts, prepare_container_mounts};
+pub(crate) use container_mounts::{LocalMounts, prepare_container_mounts};
 pub use copies::remove::copy_removal_budget;
 pub(crate) use launch::nodes::STACK_LAUNCH_GIT_HASH;
 pub use launch::phases::{idle_timeout_flag, slow_connection_hint};
