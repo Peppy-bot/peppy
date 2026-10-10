@@ -229,14 +229,7 @@ impl ObservationCoordinator {
             Self::insert_record(
                 registry,
                 &obs.observer_instance_id,
-                ObserverRecord {
-                    observer_link_id: obs.observer_link_id.clone(),
-                    pin: ObservedSource {
-                        producer: obs.source.clone(),
-                        source_link_id: obs.source_link_id.clone(),
-                        peer: obs.peer.as_ref().map(PeerInfo::from),
-                    },
-                },
+                ObserverRecord::observing(&obs.observer_link_id, &obs.target()),
             );
         }
     }
