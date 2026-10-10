@@ -1624,3 +1624,16 @@ fn parse_topic_keyexpr_surfaces_default_link_id_literal() {
     let parsed = ZenohWireFormat::parse_topic_keyexpr(key).expect("should parse");
     assert_eq!(parsed.link_id, "_");
 }
+
+#[test]
+fn parse_topic_keyexpr_surfaces_an_empty_link_id_for_a_short_key_or_an_empty_slot() {
+    // A key cut short before index 8 and a key with an empty segment there
+    // both parse, and both surface an empty link_id rather than an error.
+    for key in [
+        "*/publisher_core/*/publisher_inst/topic",
+        "*/publisher_core/*/publisher_inst/topic/node/sensor_node/v1//temperature",
+    ] {
+        let parsed = ZenohWireFormat::parse_topic_keyexpr(key).expect("should parse");
+        assert_eq!(parsed.link_id, "", "{key}");
+    }
+}
