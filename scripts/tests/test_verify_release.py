@@ -89,26 +89,23 @@ def test_verify_archive_all_present(tmp_path: Path) -> None:
     assert missing == []
 
 
-def test_verify_archive_missing_zenohd(tmp_path: Path) -> None:
-    triple = "x86_64-unknown-linux-gnu"
-    members = [m for m in _all_required_members(triple) if m != "bin/zenohd"]
+@pytest.mark.parametrize(
+    ("triple", "left_out"),
+    [
+        ("x86_64-unknown-linux-gnu", "bin/zenohd"),
+        ("aarch64-unknown-linux-gnu", "bin/apptainer/bin/apptainer"),
+        ("aarch64-apple-darwin", "bin/lima/bin/limactl"),
+    ],
+)
+def test_verify_archive_reports_a_missing_binary(
+    tmp_path: Path, triple: str, left_out: str
+) -> None:
+    members = [m for m in _all_required_members(triple) if m != left_out]
     archive = tmp_path / f"peppy-{triple}.tgz"
     _create_archive(archive, members, triple)
 
     problems = verify_release_archive(archive, triple)
-    assert "missing bin/zenohd" in problems
-
-
-def test_verify_archive_missing_apptainer(tmp_path: Path) -> None:
-    triple = "aarch64-unknown-linux-gnu"
-    members = [
-        m for m in _all_required_members(triple) if "apptainer" not in m
-    ]
-    archive = tmp_path / f"peppy-{triple}.tgz"
-    _create_archive(archive, members, triple)
-
-    problems = verify_release_archive(archive, triple)
-    assert "missing bin/apptainer/bin/apptainer" in problems
+    assert f"missing {left_out}" in problems
 
 
 def test_verify_lima_only_required_for_macos(tmp_path: Path) -> None:
@@ -120,16 +117,6 @@ def test_verify_lima_only_required_for_macos(tmp_path: Path) -> None:
 
     missing = verify_release_archive(archive, triple)
     assert missing == []
-
-
-def test_verify_lima_required_for_macos(tmp_path: Path) -> None:
-    triple = "aarch64-apple-darwin"
-    members = [m for m in _all_required_members(triple) if "lima" not in m]
-    archive = tmp_path / f"peppy-{triple}.tgz"
-    _create_archive(archive, members, triple)
-
-    problems = verify_release_archive(archive, triple)
-    assert "missing bin/lima/bin/limactl" in problems
 
 
 def test_verify_all_releases_passes(tmp_path: Path) -> None:
