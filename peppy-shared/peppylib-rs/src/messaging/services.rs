@@ -47,6 +47,28 @@ async fn deliver_outcome(responder: ServiceResponder, outcome: HandlerOutcome) -
     }
 }
 
+/// Runs `handler` on one request and replies to its caller. A failed reply
+/// is logged and swallowed, so a single bad client cannot end the serving
+/// loop.
+async fn answer_request<F, Fut>(
+    handler: F,
+    context: ServiceRequestContext,
+    responder: ServiceResponder,
+) where
+    F: FnOnce(ServiceRequestContext) -> Fut,
+    Fut: std::future::Future<Output = Result<Payload>>,
+{
+    let request_id = context.request_id().to_string();
+    let outcome = run_handler(handler, context).await;
+    if let Err(err) = deliver_outcome(responder, outcome).await {
+        warn!(
+            %err,
+            %request_id,
+            "failed to send service response; dropping request"
+        );
+    }
+}
+
 pub struct ServiceMessenger;
 
 /// Producer scope of a [`ServiceMessenger::poll`] / [`ServiceMessenger::is_reachable`]
@@ -208,15 +230,7 @@ impl ServiceEndpoint {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(false);
         };
-        let request_id = context.request_id().to_string();
-        let outcome = run_handler(handler, context).await;
-        if let Err(err) = deliver_outcome(responder, outcome).await {
-            warn!(
-                %err,
-                %request_id,
-                "failed to send service response; dropping request"
-            );
-        }
+        answer_request(handler, context, responder).await;
         Ok(true)
     }
 
@@ -229,15 +243,7 @@ impl ServiceEndpoint {
         Fut: std::future::Future<Output = Result<Payload>>,
     {
         while let Some((context, responder)) = self.recv_next_request().await? {
-            let request_id = context.request_id().to_string();
-            let outcome = run_handler(&mut handler, context).await;
-            if let Err(err) = deliver_outcome(responder, outcome).await {
-                warn!(
-                    %err,
-                    %request_id,
-                    "failed to send service response; dropping request"
-                );
-            }
+            answer_request(&mut handler, context, responder).await;
         }
         Ok(())
     }
