@@ -172,23 +172,12 @@ def live_units(target_dir: Path, outputs: Iterable[PurePosixPath]) -> LiveUnits:
     copies: set[str] = set()
     inode_indexes: dict[str, dict[tuple[int, int], str]] = {}
     for output in outputs:
-        parts = output.parts
-        if len(parts) < 2 or parts[0] != PROFILE_DIR:
-            raise UnknownLayout(f"{output} is outside the profile dir {PROFILE_DIR}/")
-        inner = parts[1:]
-        if len(inner) >= 2 and inner[0] in OUTPUT_DIRS:
-            unit_hash = hash_in_name(inner[1])
-            if unit_hash is not None:
-                hashes.add(unit_hash)
-                continue
-            if inner[0] == "examples" and len(inner) == 2:
-                copy, unit_dir = f"examples/{inner[1]}", "examples"
-            else:
-                raise UnknownLayout(f"{output} names no unit hash")
-        elif len(inner) == 1:
-            copy, unit_dir = inner[0], "deps"
-        else:
-            raise UnknownLayout(f"{output} is in no directory cargo lists outputs in")
+        inner = path_in_profile_dir(output)
+        unit_hash = unit_hash_of_output(inner)
+        if unit_hash is not None:
+            hashes.add(unit_hash)
+            continue
+        copy, unit_dir = copy_and_its_unit_dir(output, inner)
         if unit_dir not in inode_indexes:
             inode_indexes[unit_dir] = inode_index(profile_dir / unit_dir)
         unit_hash = inode_indexes[unit_dir].get(inode_of(profile_dir / copy))
@@ -197,6 +186,34 @@ def live_units(target_dir: Path, outputs: Iterable[PurePosixPath]) -> LiveUnits:
         hashes.add(unit_hash)
         copies.add(copy)
     return LiveUnits(frozenset(hashes), frozenset(copies))
+
+
+def path_in_profile_dir(output: PurePosixPath) -> tuple[str, ...]:
+    """The parts of a listed output below the profile dir."""
+    parts = output.parts
+    if len(parts) < 2 or parts[0] != PROFILE_DIR:
+        raise UnknownLayout(f"{output} is outside the profile dir {PROFILE_DIR}/")
+    return parts[1:]
+
+
+def unit_hash_of_output(inner: tuple[str, ...]) -> str | None:
+    """The unit hash that names the entry of an output directory the output
+    is in; None when no unit hash names it."""
+    if len(inner) >= 2 and inner[0] in OUTPUT_DIRS:
+        return hash_in_name(inner[1])
+    return None
+
+
+def copy_and_its_unit_dir(output: PurePosixPath, inner: tuple[str, ...]) -> tuple[str, str]:
+    """Names an output that no unit hash names as a copy of a binary or an
+    example, with the unit dir of the output the copy is a hardlink to."""
+    if len(inner) == 1:
+        return inner[0], "deps"
+    if len(inner) == 2 and inner[0] == "examples":
+        return f"examples/{inner[1]}", "examples"
+    if inner[0] in OUTPUT_DIRS:
+        raise UnknownLayout(f"{output} names no unit hash")
+    raise UnknownLayout(f"{output} is in no directory cargo lists outputs in")
 
 
 def inode_of(path: Path) -> tuple[int, int]:
