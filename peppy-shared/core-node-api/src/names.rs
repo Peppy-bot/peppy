@@ -1,4 +1,4 @@
-//! The core node's sender-target tag — the one wire identifier that is not a
+//! The core node's sender-target tag: the one wire identifier that is not a
 //! method. Method wire names live on the [`crate::registry`] id enums
 //! ([`crate::ServiceId`], [`crate::ActionId`], [`crate::TopicId`]) as
 //! `.name()`.

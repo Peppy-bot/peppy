@@ -1,4 +1,4 @@
-//! Wire-level `Payload` type — a cheap `bytes::Bytes` wrapper used across
+//! Wire-level `Payload` type: a cheap `bytes::Bytes` wrapper used across
 //! the peppy messaging stack. Lives in `core-node-api` so that the capnp
 //! `encode()` helpers can return it directly without a `Vec<u8>` boundary
 //! hop, and so that `peppylib` and other crates can share the same type
@@ -63,7 +63,7 @@ impl std::ops::Deref for Payload {
     }
 }
 
-// `assert_eq!(payload, &expected_payload)` — compares a `Payload` returned by
+// `assert_eq!(payload, &expected_payload)`: compares a `Payload` returned by
 // value against a borrowed `Payload` held by the test.
 impl PartialEq<&Payload> for Payload {
     fn eq(&self, other: &&Payload) -> bool {
@@ -152,7 +152,7 @@ mod tests {
         assert_eq!(from_vec.into_inner(), Bytes::from_static(&[1, 2, 3]));
     }
 
-    // The `&`s are the whole point here — this exercises the two by-reference
+    // The `&`s are the whole point here: this exercises the two by-reference
     // `PartialEq` impls, so clippy's "drop the reference" suggestion is wrong.
     #[allow(clippy::op_ref)]
     #[test]
