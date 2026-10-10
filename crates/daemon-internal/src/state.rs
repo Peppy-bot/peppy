@@ -123,7 +123,6 @@ impl DaemonState {
         self.daemon_pid.is_some_and(Self::pid_looks_alive)
     }
 
-    #[cfg(unix)]
     fn pid_looks_alive(pid: u32) -> bool {
         use rustix::io::Errno;
         use rustix::process::{Pid, test_kill_process};
@@ -145,11 +144,6 @@ impl DaemonState {
             // discards a state file that may belong to a running daemon.
             Err(_) => true,
         }
-    }
-
-    #[cfg(not(unix))]
-    fn pid_looks_alive(_pid: u32) -> bool {
-        false
     }
 }
 
@@ -304,7 +298,6 @@ mod tests {
         assert!(DaemonState::read_from(&path).is_err());
     }
 
-    #[cfg(unix)]
     #[test]
     fn pid_looks_alive_for_the_current_process() {
         assert!(DaemonState::pid_looks_alive(std::process::id()));
