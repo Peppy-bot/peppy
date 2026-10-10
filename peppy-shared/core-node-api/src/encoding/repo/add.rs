@@ -140,9 +140,7 @@ impl RepoAddRequest {
                     source.set_fs(path.to_string_lossy().as_ref());
                 }
                 RepoSource::Git { repo_url, repo_ref } => {
-                    let mut git = source.init_git();
-                    git.set_repo_url(repo_url);
-                    git.set_repo_ref(repo_ref.to_string().as_str());
+                    write_git_source(source.init_git(), repo_url, repo_ref);
                 }
             }
         }
@@ -167,15 +165,31 @@ impl RepoAddRequest {
                 path?.to_str()?,
                 "RepoAddRequest.source.fs",
             )?),
-            Which::Git(git) => {
-                let git = git?;
-                let repo_url = git.get_repo_url()?.to_str()?.to_owned();
-                let repo_ref = decode_git_repo_ref(git.get_repo_ref()?.to_str()?)?;
-                RepoSource::Git { repo_url, repo_ref }
-            }
+            Which::Git(git) => read_git_source(git?)?,
         };
         Ok(Self { source, top, id })
     }
+}
+
+/// Writes a git source into an initialized `RepoAddGitSource` builder, the
+/// struct that both `RepoAddRequest` and `RepoExcludeRequest` carry.
+pub(super) fn write_git_source(
+    mut git: repo_capnp::repo_add_git_source::Builder<'_>,
+    repo_url: &str,
+    repo_ref: &GitRepoRef,
+) {
+    git.set_repo_url(repo_url);
+    git.set_repo_ref(repo_ref.to_string().as_str());
+}
+
+/// Inverse of [`write_git_source`]: a ref peppy cannot read is refused.
+pub(super) fn read_git_source(
+    git: repo_capnp::repo_add_git_source::Reader<'_>,
+) -> Result<RepoSource> {
+    Ok(RepoSource::Git {
+        repo_url: git.get_repo_url()?.to_str()?.to_owned(),
+        repo_ref: decode_git_repo_ref(git.get_repo_ref()?.to_str()?)?,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

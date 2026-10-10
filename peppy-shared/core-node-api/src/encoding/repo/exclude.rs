@@ -8,7 +8,8 @@ use crate::{Payload, Result};
 use crate::encoding::RepoSource;
 use crate::encoding::{decode_message, encode_message};
 
-use super::git_ref::{GitRepoRef, decode_git_repo_ref};
+use super::add::{read_git_source, write_git_source};
+use super::git_ref::GitRepoRef;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoExcludeRequest {
@@ -41,9 +42,7 @@ impl RepoExcludeRequest {
                     source.set_fs(path.to_string_lossy().as_ref());
                 }
                 RepoSource::Git { repo_url, repo_ref } => {
-                    let mut git = source.init_git();
-                    git.set_repo_url(repo_url);
-                    git.set_repo_ref(repo_ref.to_string().as_str());
+                    write_git_source(source.init_git(), repo_url, repo_ref);
                 }
             }
         }
@@ -60,12 +59,7 @@ impl RepoExcludeRequest {
                 path?.to_str()?,
                 "RepoExcludeRequest.source.fs",
             )?),
-            Which::Git(git) => {
-                let git = git?;
-                let repo_url = git.get_repo_url()?.to_str()?.to_owned();
-                let repo_ref = decode_git_repo_ref(git.get_repo_ref()?.to_str()?)?;
-                RepoSource::Git { repo_url, repo_ref }
-            }
+            Which::Git(git) => read_git_source(git?)?,
         };
         Ok(Self { source })
     }
