@@ -1163,21 +1163,29 @@ mod tests {
         )
     }
 
-    /// A minimal valid document, as a base for the rejection tests below.
-    fn minimal(services: &str) -> String {
+    /// A document of the `Surface` server whose `targets` block holds the
+    /// `targets` entries.
+    fn with_targets(targets: &str) -> String {
         format!(
             r#"{{
             peppy_schema: "mcp_exposure/v1",
             manifest: {{ name: "surface", tag: "v1" }},
             server: {{ title: "Surface" }},
             targets: {{
-                cam: {{
-                    contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
-                    services: [{services}],
-                }},
+                {targets}
             }},
         }}"#
         )
+    }
+
+    /// A minimal valid document, as a base for the rejection tests below.
+    fn minimal(services: &str) -> String {
+        with_targets(&format!(
+            r#"cam: {{
+                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
+                services: [{services}],
+            }},"#
+        ))
     }
 
     const INFO_SERVICE: &str = r#"{
@@ -1258,27 +1266,15 @@ mod tests {
 
     #[test]
     fn rejects_empty_targets() {
-        let doc = r#"{
-            peppy_schema: "mcp_exposure/v1",
-            manifest: { name: "surface", tag: "v1" },
-            server: { title: "Surface" },
-            targets: {},
-        }"#;
-        assert!(parse_err(doc).contains("at least one target"));
+        let doc = with_targets("");
+        assert!(parse_err(&doc).contains("at least one target"));
     }
 
     #[test]
     fn rejects_a_target_selecting_no_members() {
-        let doc = format!(
-            r#"{{
-            peppy_schema: "mcp_exposure/v1",
-            manifest: {{ name: "surface", tag: "v1" }},
-            server: {{ title: "Surface" }},
-            targets: {{
-                cam: {{ contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }} }},
-            }},
-        }}"#
-        );
+        let doc = with_targets(&format!(
+            r#"cam: {{ contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }} }},"#
+        ));
         let err = parse_err(&doc);
         assert!(
             err.contains("cam") && err.contains("selects no members"),
@@ -1335,23 +1331,16 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_public_names_across_targets() {
-        let doc = format!(
-            r#"{{
-            peppy_schema: "mcp_exposure/v1",
-            manifest: {{ name: "surface", tag: "v1" }},
-            server: {{ title: "Surface" }},
-            targets: {{
-                cam_a: {{
-                    contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
-                    services: [{INFO_SERVICE}],
-                }},
-                cam_b: {{
-                    contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
-                    services: [{INFO_SERVICE}],
-                }},
+        let doc = with_targets(&format!(
+            r#"cam_a: {{
+                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
+                services: [{INFO_SERVICE}],
             }},
-        }}"#
-        );
+            cam_b: {{
+                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
+                services: [{INFO_SERVICE}],
+            }},"#
+        ));
         let err = parse_err(&doc);
         assert!(
             err.contains("cam.info") && err.contains("more than once"),
@@ -1361,26 +1350,19 @@ mod tests {
 
     #[test]
     fn rejects_a_duplicate_target_key() {
-        let doc = format!(
-            r#"{{
-            peppy_schema: "mcp_exposure/v1",
-            manifest: {{ name: "surface", tag: "v1" }},
-            server: {{ title: "Surface" }},
-            targets: {{
-                cam: {{
-                    contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
-                    services: [{INFO_SERVICE}],
-                }},
-                cam: {{
-                    contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
-                    services: [{}],
-                }},
+        let doc = with_targets(&format!(
+            r#"cam: {{
+                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
+                services: [{INFO_SERVICE}],
             }},
-        }}"#,
+            cam: {{
+                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
+                services: [{}],
+            }},"#,
             INFO_SERVICE
                 .replace("video_stream_info", "set_brightness")
                 .replace("cam.info", "cam.set_brightness")
-        );
+        ));
         let err = parse_err(&doc);
         assert!(err.contains("duplicate target `cam`"), "{err}");
     }
@@ -1589,29 +1571,22 @@ mod tests {
 
     #[test]
     fn accepts_reject_on_oversize_without_a_representation() {
-        let doc = format!(
-            r#"{{
-            peppy_schema: "mcp_exposure/v1",
-            manifest: {{ name: "surface", tag: "v1" }},
-            server: {{ title: "Surface" }},
-            targets: {{
-                cam: {{
-                    contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
-                    topics: [
-                        {{
-                            member: "video_stream",
-                            resource: "cam.latest_frame",
-                            description: "Latest frame, canonical JSON rendering.",
-                            freshness: {{ max_age_ms: 2000 }},
-                            update: {{ max_hz: 0.5 }},
-                            max_result_bytes: 524288,
-                            on_oversize: "reject",
-                        }},
-                    ],
-                }},
-            }},
-        }}"#
-        );
+        let doc = with_targets(&format!(
+            r#"cam: {{
+                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
+                topics: [
+                    {{
+                        member: "video_stream",
+                        resource: "cam.latest_frame",
+                        description: "Latest frame, canonical JSON rendering.",
+                        freshness: {{ max_age_ms: 2000 }},
+                        update: {{ max_hz: 0.5 }},
+                        max_result_bytes: 524288,
+                        on_oversize: "reject",
+                    }},
+                ],
+            }},"#
+        ));
         let exposure = parse(&doc).expect("a reject policy needs no image representation");
         let topic = &targets_of(&exposure)["cam"].topics[0];
         assert_eq!(topic.on_oversize, Some(OversizePolicy::Reject));
@@ -1921,35 +1896,28 @@ mod tests {
     /// A one-topic document whose frame topic declares a picture tool.
     /// `representation` is the topic's `representation` entry, or nothing.
     fn picture_over(representation: &str) -> String {
-        format!(
-            r#"{{
-            peppy_schema: "mcp_exposure/v1",
-            manifest: {{ name: "surface", tag: "v1" }},
-            server: {{ title: "Surface" }},
-            targets: {{
-                cam: {{
-                    contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
-                    topics: [
-                        {{
-                            member: "video_stream",
-                            resource: "cam.latest_frame",
-                            description: "Latest frame.",
-                            freshness: {{ max_age_ms: 2000 }},
-                            update: {{ max_hz: 2 }},
-                            {representation}
-                            max_result_bytes: 524288,
-                            on_oversize: "reject",
-                            picture: {{
-                                tool: "cam.look",
-                                description: "The latest frame, as a picture.",
-                            }},
+        with_targets(&format!(
+            r#"cam: {{
+                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
+                topics: [
+                    {{
+                        member: "video_stream",
+                        resource: "cam.latest_frame",
+                        description: "Latest frame.",
+                        freshness: {{ max_age_ms: 2000 }},
+                        update: {{ max_hz: 2 }},
+                        {representation}
+                        max_result_bytes: 524288,
+                        on_oversize: "reject",
+                        picture: {{
+                            tool: "cam.look",
+                            description: "The latest frame, as a picture.",
                         }},
-                    ],
-                    services: [{INFO_SERVICE}],
-                }},
-            }},
-        }}"#
-        )
+                    }},
+                ],
+                services: [{INFO_SERVICE}],
+            }},"#
+        ))
     }
 
     const FRAME_FIELDS: &str =
