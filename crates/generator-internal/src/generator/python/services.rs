@@ -4,7 +4,7 @@ use super::deserialization;
 use super::serialization;
 use super::topics::emit_capnp_schema_loader;
 use crate::error::Result;
-use crate::generator::types::{ContractOrigin, non_empty_message_format};
+use crate::generator::types::{ContractOrigin, DocLanguage, non_empty_message_format};
 use config::node::{Cardinality, ConsumedService, MessageFormat, NativeExposedService};
 
 /// Returns the Python expression for the `SenderTarget` to splice into a
@@ -40,54 +40,48 @@ pub(crate) fn sender_target_python_expr(
 /// calls are separate: the two scalar cardinalities share one emitted name
 /// over two runtime accessors. The docstring prose comes from
 /// `DependencyContext::bound_producers_doc` so both language generators
-/// state the same guarantees; only the Python-API tail sentence is added
-/// here. Callers need `import peppylib`, which every consumed module
-/// already adds.
+/// state the same guarantees, in Python's API terms. Callers need
+/// `import peppylib`, which every consumed module already adds.
 pub(crate) fn emit_bound_producer_accessor_fn(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
 ) {
-    let (fn_name, runtime_method, return_type, typing_import, api_note) =
-        match dependency.cardinality {
-            Cardinality::One => (
-                "bound_producer",
-                "bound_producer",
-                "peppylib.ProducerRef",
-                None,
-                None,
-            ),
-            Cardinality::ZeroOrOne => (
-                "bound_producer",
-                "optional_bound_producer",
-                "Optional[peppylib.ProducerRef]",
-                Some("from typing import Optional"),
-                None,
-            ),
-            Cardinality::OneOrMore => (
-                "bound_producers",
-                "bound_producers",
-                "List[peppylib.ProducerRef]",
-                Some("from typing import List"),
-                Some(crate::generator::types::DocLanguage::Python.never_empty_tail()),
-            ),
-            Cardinality::ZeroOrMore => (
-                "bound_producers",
-                "bound_producers",
-                "List[peppylib.ProducerRef]",
-                Some("from typing import List"),
-                None,
-            ),
-        };
+    let (fn_name, runtime_method, return_type, typing_import) = match dependency.cardinality {
+        Cardinality::One => (
+            "bound_producer",
+            "bound_producer",
+            "peppylib.ProducerRef",
+            None,
+        ),
+        Cardinality::ZeroOrOne => (
+            "bound_producer",
+            "optional_bound_producer",
+            "Optional[peppylib.ProducerRef]",
+            Some("from typing import Optional"),
+        ),
+        Cardinality::OneOrMore => (
+            "bound_producers",
+            "bound_producers",
+            "List[peppylib.ProducerRef]",
+            Some("from typing import List"),
+        ),
+        Cardinality::ZeroOrMore => (
+            "bound_producers",
+            "bound_producers",
+            "List[peppylib.ProducerRef]",
+            Some("from typing import List"),
+        ),
+    };
     if let Some(import) = typing_import {
         builder.add_import(import);
     }
 
-    let doc = dependency.bound_producers_doc();
+    let doc = dependency.bound_producers_doc(DocLanguage::Python);
     builder.blank_line();
     builder.block(
         &format!("def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"),
         |builder| {
-            builder.multiline_docstring(doc[0], doc[1..].iter().copied().chain(api_note));
+            builder.multiline_docstring(doc.summary, doc.body_lines());
             builder.line(&format!(
                 "return node_runner.{runtime_method}({:?})",
                 dependency.link_id
@@ -101,22 +95,19 @@ pub(crate) fn emit_bound_producer_accessor_fn(
 /// Emits the `bound_members()` accessor a set slot carries beside its
 /// `bound_producers()`: the same set as a `List[peppylib.BoundMember]`, each
 /// member with the copy it belongs to. Nothing for a scalar slot. The
-/// docstring prose comes from `DependencyContext::bound_members_doc`, with
-/// the Python never-empty tail on a `one_or_more` slot.
+/// docstring prose comes from `DependencyContext::bound_members_doc`.
 fn emit_bound_members_accessor_fn(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
 ) {
-    let Some(doc) = dependency.bound_members_doc() else {
+    let Some(doc) = dependency.bound_members_doc(DocLanguage::Python) else {
         return;
     };
-    let api_note = (dependency.cardinality == Cardinality::OneOrMore)
-        .then(|| crate::generator::types::DocLanguage::Python.never_empty_tail());
     builder.add_import("from typing import List");
     builder.block(
         "def bound_members(node_runner: peppylib.NodeRunner) -> List[peppylib.BoundMember]:",
         |builder| {
-            builder.multiline_docstring(doc[0], doc[1..].iter().copied().chain(api_note));
+            builder.multiline_docstring(doc.summary, doc.body_lines());
             builder.line(&format!(
                 "return node_runner.bound_members({:?})",
                 dependency.link_id

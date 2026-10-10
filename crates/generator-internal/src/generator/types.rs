@@ -310,75 +310,99 @@ impl DependencyContext {
         }
     }
 
-    /// Pre-wrapped doc lines for the module-level bound-producer accessor,
-    /// shared verbatim by both language generators (the same mechanism as
+    /// The doc of the module-level bound-producer accessor, shared verbatim
+    /// by both language generators (the same mechanism as
     /// [`Self::target_selection_doc`]) so the bound-set guarantees are
-    /// stated once. The first line stands alone as the summary sentence.
-    /// The `one_or_more` prose deliberately stops mid-sentence ("so"): each
-    /// generator appends its own API-specific tail (`first()` for Rust,
-    /// `[0]` for Python).
-    pub fn bound_producers_doc(&self) -> &'static [&'static str] {
+    /// stated once. The `one_or_more` prose stops mid-sentence ("so"): the
+    /// clause that finishes it names one language's API, so it comes from
+    /// `language`, as in [`observed_sources_doc`].
+    pub fn bound_producers_doc(&self, language: DocLanguage) -> AccessorDoc {
         match self.cardinality {
-            Cardinality::One => &[
-                "The producer bound to this module's slot.",
-                "The binding is fixed when the node starts (no live discovery; a",
-                "producer disconnecting never rebinds it) and shared by every",
-                "generated module referencing this slot. This slot declares",
-                "cardinality `one`: launch validation resolved exactly one producer,",
-                "so the accessor is singular and infallible.",
-            ],
-            Cardinality::ZeroOrOne => &[
-                "The producer bound to this module's slot, if any.",
-                "The binding is fixed when the node starts (no live discovery; a",
-                "producer disconnecting never rebinds it) and shared by every",
-                "generated module referencing this slot.",
-                "This slot declares cardinality `zero_or_one`: launch validation",
-                "resolved at most one producer, and nothing is bound wherever the",
-                "deployment wrote the slot vacant.",
-            ],
-            Cardinality::OneOrMore => &[
-                "The producer set currently bound to this module's slot, in plan order.",
-                "A join can grow the set and a removal shrink it, so call the accessor at the",
-                "point of use; a producer disconnecting never changes it. Every generated module",
-                "referencing this slot reads the same set.",
-                "This slot declares cardinality `one_or_more`: the set is never empty, so",
-            ],
-            Cardinality::ZeroOrMore => &[
-                "The producer set currently bound to this module's slot, in plan order.",
-                "A join can grow the set and a removal shrink it, so call the accessor at the",
-                "point of use; a producer disconnecting never changes it. Every generated module",
-                "referencing this slot reads the same set.",
-                "This slot declares cardinality `zero_or_more`: the set may be empty, so",
-                "callers handle the empty case.",
-            ],
+            Cardinality::One => AccessorDoc {
+                summary: "The producer bound to this module's slot.",
+                body: &[
+                    "The binding is fixed when the node starts (no live discovery; a",
+                    "producer disconnecting never rebinds it) and shared by every",
+                    "generated module referencing this slot. This slot declares",
+                    "cardinality `one`: launch validation resolved exactly one producer,",
+                    "so the accessor is singular and infallible.",
+                ],
+                api_note: None,
+                closing: &[],
+            },
+            Cardinality::ZeroOrOne => AccessorDoc {
+                summary: "The producer bound to this module's slot, if any.",
+                body: &[
+                    "The binding is fixed when the node starts (no live discovery; a",
+                    "producer disconnecting never rebinds it) and shared by every",
+                    "generated module referencing this slot.",
+                    "This slot declares cardinality `zero_or_one`: launch validation",
+                    "resolved at most one producer, and nothing is bound wherever the",
+                    "deployment wrote the slot vacant.",
+                ],
+                api_note: None,
+                closing: &[],
+            },
+            Cardinality::OneOrMore => AccessorDoc {
+                summary: "The producer set currently bound to this module's slot, in plan order.",
+                body: &[
+                    "A join can grow the set and a removal shrink it, so call the accessor at the",
+                    "point of use; a producer disconnecting never changes it. Every generated module",
+                    "referencing this slot reads the same set.",
+                    "This slot declares cardinality `one_or_more`: the set is never empty, so",
+                ],
+                api_note: Some(language.never_empty_tail()),
+                closing: &[],
+            },
+            Cardinality::ZeroOrMore => AccessorDoc {
+                summary: "The producer set currently bound to this module's slot, in plan order.",
+                body: &[
+                    "A join can grow the set and a removal shrink it, so call the accessor at the",
+                    "point of use; a producer disconnecting never changes it. Every generated module",
+                    "referencing this slot reads the same set.",
+                    "This slot declares cardinality `zero_or_more`: the set may be empty, so",
+                    "callers handle the empty case.",
+                ],
+                api_note: None,
+                closing: &[],
+            },
         }
     }
 
-    /// Pre-wrapped doc lines for the `bound_members()` accessor a set slot
-    /// carries beside `bound_producers()`: the same set, each member with the
-    /// copy its instance belongs to. `None` for a scalar slot, whose one
-    /// member is what the launch bound. Shared by both language generators;
-    /// each appends its own never-empty tail on a `one_or_more` slot.
-    pub fn bound_members_doc(&self) -> Option<&'static [&'static str]> {
+    /// The doc of the `bound_members()` accessor a set slot carries beside
+    /// `bound_producers()`: the same set, each member with the copy its
+    /// instance belongs to. `None` for a scalar slot, whose one member is
+    /// what the launch bound. Shared by both language generators; the
+    /// never-empty tail of a `one_or_more` slot comes from `language`, as in
+    /// [`Self::bound_producers_doc`].
+    pub fn bound_members_doc(&self, language: DocLanguage) -> Option<AccessorDoc> {
         match self.cardinality {
             Cardinality::One | Cardinality::ZeroOrOne => None,
-            Cardinality::OneOrMore => Some(&[
-                "The members of the set currently bound to this module's slot, in plan order.",
-                "Each member is a producer with the copy its instance belongs to, `None` for",
-                "one the launcher deploys outside any copy. The same set `bound_producers()`",
-                "answers by producer alone, read under the same rules; a node that groups",
-                "producers by copy reads this one.",
-                "This slot declares cardinality `one_or_more`: the set is never empty, so",
-            ]),
-            Cardinality::ZeroOrMore => Some(&[
-                "The members of the set currently bound to this module's slot, in plan order.",
-                "Each member is a producer with the copy its instance belongs to, `None` for",
-                "one the launcher deploys outside any copy. The same set `bound_producers()`",
-                "answers by producer alone, read under the same rules; a node that groups",
-                "producers by copy reads this one.",
-                "This slot declares cardinality `zero_or_more`: the set may be empty, so",
-                "callers handle the empty case.",
-            ]),
+            Cardinality::OneOrMore => Some(AccessorDoc {
+                summary: "The members of the set currently bound to this module's slot, in plan order.",
+                body: &[
+                    "Each member is a producer with the copy its instance belongs to, `None` for",
+                    "one the launcher deploys outside any copy. The same set `bound_producers()`",
+                    "answers by producer alone, read under the same rules; a node that groups",
+                    "producers by copy reads this one.",
+                    "This slot declares cardinality `one_or_more`: the set is never empty, so",
+                ],
+                api_note: Some(language.never_empty_tail()),
+                closing: &[],
+            }),
+            Cardinality::ZeroOrMore => Some(AccessorDoc {
+                summary: "The members of the set currently bound to this module's slot, in plan order.",
+                body: &[
+                    "Each member is a producer with the copy its instance belongs to, `None` for",
+                    "one the launcher deploys outside any copy. The same set `bound_producers()`",
+                    "answers by producer alone, read under the same rules; a node that groups",
+                    "producers by copy reads this one.",
+                    "This slot declares cardinality `zero_or_more`: the set may be empty, so",
+                    "callers handle the empty case.",
+                ],
+                api_note: None,
+                closing: &[],
+            }),
         }
     }
 }

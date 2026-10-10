@@ -2,7 +2,7 @@ use super::deserialization::build_deserialize_fn;
 use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::{build_result_expr_from_values, deserialize_fields_from_format};
 use crate::error::Result;
-use crate::generator::types::{SubscriptionTag, retention_doc};
+use crate::generator::types::{DocLanguage, SubscriptionTag, retention_doc};
 use config::node::{Cardinality, ConsumedTopic, NativeEmittedTopic, QoSProfile, TopicRetention};
 use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
@@ -754,61 +754,45 @@ pub fn build_consumed_topic_subscription(
 /// surfaces every call site that relied on the old guarantee at compile
 /// time. The accessor doc comes from
 /// [`DependencyContext::bound_producers_doc`] so both language generators
-/// state the same guarantees; only the Rust-API tail sentence is added
-/// here.
+/// state the same guarantees, in Rust's API terms.
 ///
 /// [`DependencyContext::bound_producers_doc`]: crate::generator::types::DependencyContext::bound_producers_doc
 pub fn build_bound_producer_accessor_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let link_id_literal = Literal::string(&dependency.link_id);
-    let (api_note, accessor) = match dependency.cardinality {
-        Cardinality::One => (
-            None,
-            quote! {
-                pub fn bound_producer(
-                    node_runner: &crate::NodeRunner,
-                ) -> &peppylib::messaging::ProducerRef {
-                    node_runner.processor().sole_bound_producer(#link_id_literal)
-                }
-            },
-        ),
-        Cardinality::ZeroOrOne => (
-            None,
-            quote! {
-                pub fn bound_producer(
-                    node_runner: &crate::NodeRunner,
-                ) -> Option<&peppylib::messaging::ProducerRef> {
-                    node_runner.processor().optional_bound_producer(#link_id_literal)
-                }
-            },
-        ),
-        Cardinality::OneOrMore => (
-            Some(crate::generator::types::DocLanguage::Rust.never_empty_tail()),
-            quote! {
-                pub fn bound_producers(
-                    node_runner: &crate::NodeRunner,
-                ) -> peppylib::messaging::NonEmptyProducers {
-                    node_runner.processor().non_empty_bound_producers(#link_id_literal)
-                }
-            },
-        ),
-        Cardinality::ZeroOrMore => (
-            None,
-            quote! {
-                pub fn bound_producers(
-                    node_runner: &crate::NodeRunner,
-                ) -> Vec<peppylib::messaging::ProducerRef> {
-                    node_runner.processor().bound_producers(#link_id_literal)
-                }
-            },
-        ),
+    let accessor = match dependency.cardinality {
+        Cardinality::One => quote! {
+            pub fn bound_producer(
+                node_runner: &crate::NodeRunner,
+            ) -> &peppylib::messaging::ProducerRef {
+                node_runner.processor().sole_bound_producer(#link_id_literal)
+            }
+        },
+        Cardinality::ZeroOrOne => quote! {
+            pub fn bound_producer(
+                node_runner: &crate::NodeRunner,
+            ) -> Option<&peppylib::messaging::ProducerRef> {
+                node_runner.processor().optional_bound_producer(#link_id_literal)
+            }
+        },
+        Cardinality::OneOrMore => quote! {
+            pub fn bound_producers(
+                node_runner: &crate::NodeRunner,
+            ) -> peppylib::messaging::NonEmptyProducers {
+                node_runner.processor().non_empty_bound_producers(#link_id_literal)
+            }
+        },
+        Cardinality::ZeroOrMore => quote! {
+            pub fn bound_producers(
+                node_runner: &crate::NodeRunner,
+            ) -> Vec<peppylib::messaging::ProducerRef> {
+                node_runner.processor().bound_producers(#link_id_literal)
+            }
+        },
     };
-    let mut doc_lines: Vec<&str> = dependency.bound_producers_doc().to_vec();
-    if let Some(note) = api_note {
-        doc_lines.push(note);
-    }
-    let doc = super::doc_attrs(&doc_lines);
+    let producers_doc = dependency.bound_producers_doc(DocLanguage::Rust);
+    let doc = super::doc_attrs(&producers_doc.lines().collect::<Vec<_>>());
     let members_accessor = build_bound_members_accessor_fn(dependency);
     quote! {
         #(#doc)*
@@ -835,40 +819,30 @@ fn follows_the_set_attrs(cardinality: Cardinality) -> Vec<TokenStream> {
 fn build_bound_members_accessor_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
-    let Some(doc_lines) = dependency.bound_members_doc() else {
+    let Some(members_doc) = dependency.bound_members_doc(DocLanguage::Rust) else {
         return TokenStream::new();
     };
     let link_id_literal = Literal::string(&dependency.link_id);
-    let (api_note, accessor) = match dependency.cardinality {
-        Cardinality::OneOrMore => (
-            Some(crate::generator::types::DocLanguage::Rust.never_empty_tail()),
-            quote! {
-                pub fn bound_members(
-                    node_runner: &crate::NodeRunner,
-                ) -> peppylib::messaging::NonEmptyMembers {
-                    node_runner.processor().non_empty_bound_members(#link_id_literal)
-                }
-            },
-        ),
-        Cardinality::ZeroOrMore => (
-            None,
-            quote! {
-                pub fn bound_members(
-                    node_runner: &crate::NodeRunner,
-                ) -> Vec<peppylib::messaging::BoundMember> {
-                    node_runner.processor().bound_members(#link_id_literal)
-                }
-            },
-        ),
+    let accessor = match dependency.cardinality {
+        Cardinality::OneOrMore => quote! {
+            pub fn bound_members(
+                node_runner: &crate::NodeRunner,
+            ) -> peppylib::messaging::NonEmptyMembers {
+                node_runner.processor().non_empty_bound_members(#link_id_literal)
+            }
+        },
+        Cardinality::ZeroOrMore => quote! {
+            pub fn bound_members(
+                node_runner: &crate::NodeRunner,
+            ) -> Vec<peppylib::messaging::BoundMember> {
+                node_runner.processor().bound_members(#link_id_literal)
+            }
+        },
         Cardinality::One | Cardinality::ZeroOrOne => {
             unreachable!("a scalar slot has no members doc")
         }
     };
-    let mut doc_lines: Vec<&str> = doc_lines.to_vec();
-    if let Some(note) = api_note {
-        doc_lines.push(note);
-    }
-    let doc = super::doc_attrs(&doc_lines);
+    let doc = super::doc_attrs(&members_doc.lines().collect::<Vec<_>>());
     quote! {
         #(#doc)*
         #accessor
