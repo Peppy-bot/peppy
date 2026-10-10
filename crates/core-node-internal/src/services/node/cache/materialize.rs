@@ -6,9 +6,11 @@
 //! [`daemon_config::consts::PeppyDirs`], so one commit of one repository is
 //! fetched at most once per machine.
 //!
-//! Shared by `add_batch` (`run_repo_node_add`) and `sync`
-//! (`materialize_repo_deps`). Feedback flows through a callback so each
-//! caller can fan it into its own channel / log sink.
+//! `materialize_entry` is used by `sync` (`materialize_repo_deps`), which
+//! reports provenance in its response rather than streaming progress.
+//! [`MaterializeFeedback`] is the thread-safe progress callback that the
+//! pinned add, the built-in MCP servers and the launch resolution give to
+//! their blocking checkouts.
 
 use crate::services::node::Report;
 use crate::services::node::common::parse_node_config_file;
@@ -22,23 +24,11 @@ use std::sync::Arc;
 /// blocking thread the checkout runs on.
 pub(crate) type MaterializeFeedback = Arc<dyn Fn(Report<'_>) + Send + Sync + 'static>;
 
-/// Returns a no-op feedback sink for callers that don't need progress
-/// streaming (e.g. `node sync`, where progress is reported as response
-/// provenance instead).
-pub(crate) fn silent_feedback() -> MaterializeFeedback {
-    Arc::new(|_| {})
-}
-
 /// Materialize one nodes-cache entry to a `(root_dir, parsed config)`
 /// pair, reusing the persistent checkout cache for git entries.
-///
-/// `on_feedback` receives human-readable progress lines from the
-/// underlying clone or fetch. Pass [`silent_feedback`] when no streaming
-/// is wanted.
 pub(crate) async fn materialize_entry(
     entry: &NodeCacheEntry,
     peppy_dirs: &PeppyDirs,
-    on_feedback: MaterializeFeedback,
 ) -> Result<(PathBuf, NodeConfig), String> {
     let id = format!("{}:{}", entry.node_name, entry.node_tag);
     // Only an origin that may reach the network is worth a blocking-pool
@@ -48,13 +38,11 @@ pub(crate) async fn materialize_entry(
     let manifest_path = if entry.origin.resolution_may_block() {
         let dirs = peppy_dirs.clone();
         let origin = entry.origin.clone();
-        tokio::task::spawn_blocking(move || {
-            resolve_cached_artifact_path(&dirs, &origin, &|report| on_feedback(report))
-        })
-        .await
-        .map_err(|e| format!("materialization task for `{id}` failed: {e}"))?
+        tokio::task::spawn_blocking(move || resolve_cached_artifact_path(&dirs, &origin, &|_| {}))
+            .await
+            .map_err(|e| format!("materialization task for `{id}` failed: {e}"))?
     } else {
-        resolve_cached_artifact_path(peppy_dirs, &entry.origin, &|report| on_feedback(report))
+        resolve_cached_artifact_path(peppy_dirs, &entry.origin, &|_| {})
     }
     .map_err(|e| format!("node `{id}`: {e}"))?;
 
