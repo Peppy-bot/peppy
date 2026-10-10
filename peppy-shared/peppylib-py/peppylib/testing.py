@@ -328,6 +328,33 @@ class EphemeralRouter:
         await self.shutdown()
 
 
+async def _wait_for_matching_subscriber(
+    messenger: MessengerHandle,
+    as_core_node: str,
+    as_instance_id: str,
+    as_target: SenderTarget,
+    topic: str,
+    link_id: str | None,
+    peer: PeerInfo | None,
+    timeout: float,
+) -> bool:
+    """Wait until a subscriber matching the exact keyexpr that a publisher
+    with this identity emits on is visible, or ``timeout`` elapses: the
+    pairing keyexpr when the publisher addresses ``peer`` from its slot
+    ``link_id``, else the plain one scoped by ``link_id``."""
+    if peer is not None and link_id is not None:
+        return bool(
+            await TopicMessenger.wait_for_pairing_subscriber(
+                messenger, as_core_node, as_instance_id, as_target, link_id, topic, peer, timeout
+            )
+        )
+    return bool(
+        await TopicMessenger.wait_for_subscriber_with_link_id(
+            messenger, as_core_node, as_instance_id, as_target, topic, timeout, link_id
+        )
+    )
+
+
 class TestTopicPublisher:
     """A publisher whose **first** publish deterministically waits until the
     publishing session sees a matching subscriber, then publishes.
@@ -432,30 +459,19 @@ class TestTopicPublisher:
         """Wait until a subscriber matching this publisher's exact wire
         identity is visible, or ``timeout`` elapses; marks the publisher
         matched on success so later publishes skip the wait."""
-        if self._peer is not None and self._link_id is not None:
-            matched = await TopicMessenger.wait_for_pairing_subscriber(
-                self._messenger,
-                self._as_core_node,
-                self._as_instance_id,
-                self._as_target,
-                self._link_id,
-                self._topic,
-                self._peer,
-                timeout,
-            )
-        else:
-            matched = await TopicMessenger.wait_for_subscriber_with_link_id(
-                self._messenger,
-                self._as_core_node,
-                self._as_instance_id,
-                self._as_target,
-                self._topic,
-                timeout,
-                self._link_id,
-            )
+        matched = await _wait_for_matching_subscriber(
+            self._messenger,
+            self._as_core_node,
+            self._as_instance_id,
+            self._as_target,
+            self._topic,
+            self._link_id,
+            self._peer,
+            timeout,
+        )
         if matched:
             self._matched = True
-        return bool(matched)
+        return matched
 
     async def publish(self, payload: bytes) -> None:
         if not self._matched and not await self.wait_for_subscriber(self.readiness_timeout):
@@ -1127,31 +1143,26 @@ class HarnessCore:
             str(os.fspath(peppy_config_path)), standalone_config
         )
 
+        # The node's own session and identity, which both barriers below
+        # probe from.
+        messenger = node_runner.messenger()
+        core_node = node_runner.bound_core_node()
+        instance_id = node_runner.bound_instance_id()
+
         # Pre-setup readiness barrier: a publisher-side matching wait per
         # observed topic, on the node's session, with the identical keyexpr
         # the node's publisher will use.
         for probe in publisher_readiness:
-            if probe.peer is not None and probe.link_id is not None:
-                matched = await TopicMessenger.wait_for_pairing_subscriber(
-                    node_runner.messenger(),
-                    node_runner.bound_core_node(),
-                    node_runner.bound_instance_id(),
-                    probe.target,
-                    probe.link_id,
-                    probe.topic,
-                    probe.peer,
-                    READINESS_TIMEOUT,
-                )
-            else:
-                matched = await TopicMessenger.wait_for_subscriber_with_link_id(
-                    node_runner.messenger(),
-                    node_runner.bound_core_node(),
-                    node_runner.bound_instance_id(),
-                    probe.target,
-                    probe.topic,
-                    READINESS_TIMEOUT,
-                    probe.link_id,
-                )
+            matched = await _wait_for_matching_subscriber(
+                messenger,
+                core_node,
+                instance_id,
+                probe.target,
+                probe.topic,
+                probe.link_id,
+                probe.peer,
+                READINESS_TIMEOUT,
+            )
             if not matched:
                 raise RuntimeError(
                     f"readiness barrier: the harness subscription for topic "
@@ -1166,9 +1177,9 @@ class HarnessCore:
         for probe in service_readiness:
             await _wait_reachable(
                 probe.kind,
-                node_runner.messenger(),
-                node_runner.bound_core_node(),
-                node_runner.bound_instance_id(),
+                messenger,
+                core_node,
+                instance_id,
                 probe.target,
                 probe.name,
                 probe.producer,
