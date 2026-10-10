@@ -553,21 +553,30 @@ fn fill_pair_requests(
         pair.set_link_id(link_id);
         pair.set_peer_link_id(target.peer_link_id.as_deref().unwrap_or(""));
         if let Some(remote) = &target.remote_peer {
-            let mut builder = pair.reborrow().init_remote_peer();
-            builder.set_pairing_name(&remote.pairing_name);
-            builder.set_pairing_tag(&remote.pairing_tag);
-            builder.set_peer_role(&remote.peer_role);
-            builder.set_peer_cardinality(remote.peer_cardinality.as_str());
-            builder.set_peer_copy(
-                remote
-                    .peer_copy
-                    .as_ref()
-                    .map(|copy| copy.as_str())
-                    .unwrap_or(""),
-            );
+            write_remote_peer(pair.reborrow().init_remote_peer(), remote);
         }
         write_instance_address(pair.init_peer(), &target.peer);
     }
+}
+
+/// Writes the planner's verdict about a peer on another machine into an
+/// initialized `RemotePeerPairing` builder. A peer outside a copy writes an
+/// empty copy.
+fn write_remote_peer(
+    mut builder: node_capnp::remote_peer_pairing::Builder<'_>,
+    remote: &RemotePeerPairing,
+) {
+    builder.set_pairing_name(&remote.pairing_name);
+    builder.set_pairing_tag(&remote.pairing_tag);
+    builder.set_peer_role(&remote.peer_role);
+    builder.set_peer_cardinality(remote.peer_cardinality.as_str());
+    builder.set_peer_copy(
+        remote
+            .peer_copy
+            .as_ref()
+            .map(|copy| copy.as_str())
+            .unwrap_or(""),
+    );
 }
 
 /// Inverse of [`fill_pair_requests`]: an empty `peerLinkId` decodes to
@@ -580,35 +589,7 @@ fn read_pair_requests(
     let mut pairs: BTreeMap<String, Vec<PairTarget>> = BTreeMap::new();
     for idx in 0..list.len() {
         let pair = list.get(idx);
-        let remote = pair.get_remote_peer()?;
-        let pairing_name = remote.get_pairing_name()?.to_str()?;
-        // A same-daemon peer carries no verdict, and Cap'n Proto defaults an
-        // absent struct's text to "". Keying "set" on the pairing name means a
-        // partially-filled verdict is refused below rather than silently
-        // committing a pair under an empty pairing identity.
-        let remote_peer = if pairing_name.is_empty() {
-            None
-        } else {
-            Some(RemotePeerPairing {
-                pairing_name: pairing_name.to_owned(),
-                pairing_tag: required_text(
-                    remote.get_pairing_tag()?.to_str()?,
-                    "NodeRunGoal pair request remote_peer.pairing_tag",
-                )?,
-                peer_role: required_text(
-                    remote.get_peer_role()?.to_str()?,
-                    "NodeRunGoal pair request remote_peer.peer_role",
-                )?,
-                peer_cardinality: read_cardinality(
-                    remote.get_peer_cardinality()?.to_str()?,
-                    "NodeRunGoal pair request remote_peer.peer_cardinality",
-                )?,
-                peer_copy: read_optional_copy(
-                    remote.get_peer_copy()?.to_str()?,
-                    "NodeRunGoal pair request remote_peer.peer_copy",
-                )?,
-            })
-        };
+        let remote_peer = read_remote_peer(pair.get_remote_peer()?)?;
         pairs
             .entry(pair.get_link_id()?.to_str()?.to_owned())
             .or_default()
@@ -619,6 +600,39 @@ fn read_pair_requests(
             });
     }
     Ok(pairs)
+}
+
+/// Inverse of [`write_remote_peer`]: an empty pairing name is no verdict.
+fn read_remote_peer(
+    remote: node_capnp::remote_peer_pairing::Reader<'_>,
+) -> Result<Option<RemotePeerPairing>> {
+    let pairing_name = remote.get_pairing_name()?.to_str()?;
+    // A same-daemon peer carries no verdict, and Cap'n Proto defaults an
+    // absent struct's text to "". Keying "set" on the pairing name means a
+    // partially-filled verdict is refused below rather than silently
+    // committing a pair under an empty pairing identity.
+    if pairing_name.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(RemotePeerPairing {
+        pairing_name: pairing_name.to_owned(),
+        pairing_tag: required_text(
+            remote.get_pairing_tag()?.to_str()?,
+            "NodeRunGoal pair request remote_peer.pairing_tag",
+        )?,
+        peer_role: required_text(
+            remote.get_peer_role()?.to_str()?,
+            "NodeRunGoal pair request remote_peer.peer_role",
+        )?,
+        peer_cardinality: read_cardinality(
+            remote.get_peer_cardinality()?.to_str()?,
+            "NodeRunGoal pair request remote_peer.peer_cardinality",
+        )?,
+        peer_copy: read_optional_copy(
+            remote.get_peer_copy()?.to_str()?,
+            "NodeRunGoal pair request remote_peer.peer_copy",
+        )?,
+    }))
 }
 
 /// Writes a `link_id -> reason` map into an initialized `List(VacantPair)`
@@ -701,15 +715,23 @@ fn fill_observation_requests(
         observation.set_observer_link_id(observer_link_id);
         let mut members = observation.init_targets(targets.len() as u32);
         for (member_idx, target) in targets.iter().enumerate() {
-            let mut member = members.reborrow().get(member_idx as u32);
-            member.set_source_link_id(&target.source_link_id);
-            write_instance_address(member.reborrow().init_source(), &target.source);
-            if let Some(peer) = &target.peer {
-                let mut wire_peer = member.init_peer();
-                wire_peer.set_link_id(&peer.peer_link_id);
-                write_instance_address(wire_peer.init_instance(), &peer.peer);
-            }
+            write_observation_member(members.reborrow().get(member_idx as u32), target);
         }
+    }
+}
+
+/// Writes one observed pairing into an initialized `ObservationMember`
+/// builder; a member with no peer leaves the peer unset.
+fn write_observation_member(
+    mut member: node_capnp::observation_member::Builder<'_>,
+    target: &ObservationTarget,
+) {
+    member.set_source_link_id(&target.source_link_id);
+    write_instance_address(member.reborrow().init_source(), &target.source);
+    if let Some(peer) = &target.peer {
+        let mut wire_peer = member.init_peer();
+        wire_peer.set_link_id(&peer.peer_link_id);
+        write_instance_address(wire_peer.init_instance(), &peer.peer);
     }
 }
 
@@ -736,36 +758,9 @@ fn read_observation_requests(
                  rather than sent empty"
             )));
         }
-        let targets = (0..members.len())
-            .map(|member_idx| {
-                let member = members.get(member_idx);
-                let peer = if member.has_peer() {
-                    let wire_peer = member.get_peer()?;
-                    Some(ObservedPeer {
-                        peer: read_instance_address(
-                            wire_peer.get_instance()?,
-                            "NodeRunGoal observation request peer",
-                        )?,
-                        peer_link_id: required_text(
-                            wire_peer.get_link_id()?.to_str()?,
-                            "NodeRunGoal observation request peer link_id",
-                        )?,
-                    })
-                } else {
-                    None
-                };
-                Ok(ObservationTarget {
-                    source: read_instance_address(
-                        member.get_source()?,
-                        "NodeRunGoal observation request",
-                    )?,
-                    source_link_id: required_text(
-                        member.get_source_link_id()?.to_str()?,
-                        "NodeRunGoal observation request source_link_id",
-                    )?,
-                    peer,
-                })
-            })
+        let targets = members
+            .iter()
+            .map(read_observation_member)
             .collect::<Result<Vec<_>>>()?;
         let targets = ObservationTargets::new(&observer_link_id, targets)
             .map_err(|duplicate| crate::Error::Decoding(duplicate.to_string()))?;
@@ -780,6 +775,36 @@ fn read_observation_requests(
         }
     }
     Ok(observations)
+}
+
+/// Inverse of [`write_observation_member`]. A member with no peer observes
+/// every pair of its source's slot.
+fn read_observation_member(
+    member: node_capnp::observation_member::Reader<'_>,
+) -> Result<ObservationTarget> {
+    let peer = if member.has_peer() {
+        let wire_peer = member.get_peer()?;
+        Some(ObservedPeer {
+            peer: read_instance_address(
+                wire_peer.get_instance()?,
+                "NodeRunGoal observation request peer",
+            )?,
+            peer_link_id: required_text(
+                wire_peer.get_link_id()?.to_str()?,
+                "NodeRunGoal observation request peer link_id",
+            )?,
+        })
+    } else {
+        None
+    };
+    Ok(ObservationTarget {
+        source: read_instance_address(member.get_source()?, "NodeRunGoal observation request")?,
+        source_link_id: required_text(
+            member.get_source_link_id()?.to_str()?,
+            "NodeRunGoal observation request source_link_id",
+        )?,
+        peer,
+    })
 }
 
 /// Response to the NodeRun goal request.
