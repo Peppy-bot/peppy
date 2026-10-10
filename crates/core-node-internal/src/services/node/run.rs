@@ -174,8 +174,9 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) daemon_defaults: DaemonDefaults,
     pub(crate) shutdown_token: CancellationToken,
     pub(crate) relationships: RelationshipCoordinators,
-    /// Which federated launch holds this machine, read to record the launch an
-    /// instance belongs to.
+    /// Which federated launch holds this machine: admits each `node_run` goal
+    /// before the gate, gives the stack reset token that cancels the goal, and
+    /// records the launch an instance belongs to.
     pub(crate) slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 }
 
@@ -239,10 +240,9 @@ pub async fn listen_for_node_run(
             daemon_defaults: config.daemon_defaults,
             shutdown_token: config.shutdown_token,
             relationships: config.relationships,
-            slice_ownership: Arc::clone(&config.slice_ownership),
+            slice_ownership: config.slice_ownership,
         },
         gate: ConcurrencyGate::new(),
-        slice_ownership: config.slice_ownership,
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -254,19 +254,11 @@ pub async fn listen_for_node_run(
 struct NodeRunGoalHandler {
     context: NodeRunActionContext,
     gate: ConcurrencyGate,
-    /// See `NodeAddGoalHandler::slice_ownership`.
-    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 }
 
 impl GoalHandler for NodeRunGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
-        handle_goal_request(
-            pending,
-            self.context.clone(),
-            self.gate.clone(),
-            &self.slice_ownership,
-        )
-        .await
+        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await
     }
 }
 
@@ -529,7 +521,6 @@ async fn handle_goal_request(
     pending: PendingGoal,
     action_context: NodeRunActionContext,
     gate: ConcurrencyGate,
-    slice_ownership: &crate::services::federation::SliceOwnership,
 ) {
     let sender_instance_id = pending.instance_id().to_string();
 
@@ -548,7 +539,7 @@ async fn handle_goal_request(
     // Before the gate, because the gate is per-action and this exclusion is
     // per-machine: a coordinator halfway through replacing this stack must not
     // race a locally-typed `peppy node run`.
-    let admission = match slice_ownership.admit_node_goal(&goal) {
+    let admission = match action_context.slice_ownership.admit_node_goal(&goal) {
         Ok(admission) => admission,
         Err(reason) => {
             reject_goal(pending, encode_rejected_start_goal(reason)).await;
@@ -634,7 +625,7 @@ async fn handle_goal_request(
     let gate_for_task = gate.clone();
     // A stack reset cancels the stack's token; the goal's caller cancels
     // this goal's own, which descends from it.
-    let reset = slice_ownership.stack.cancellation();
+    let reset = action_context.slice_ownership.stack.cancellation();
     let cancellation = reset.child_token();
     tokio::spawn(async move {
         // Frees the gate slot on every exit: explicitly before completion on the
