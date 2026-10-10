@@ -245,6 +245,15 @@ def test_has_changes_in_paths_reports_dirty_and_clean() -> None:
         assert has_changes_in_paths([Path("docs/v1.html")]) is False
 
 
+def test_has_changes_in_paths_raises_when_status_fails() -> None:
+    with (
+        patch("functions.repo.subprocess.run", return_value=_mock_git("", 128)),
+        pytest.raises(ReleaseError) as err,
+    ):
+        has_changes_in_paths([Path("docs/v1.html")])
+    assert str(err.value) == "failed to read git status: boom"
+
+
 def test_commit_paths_stages_then_commits_only_those_paths() -> None:
     with patch(
         "functions.repo.subprocess.run",
@@ -289,6 +298,28 @@ def test_commit_paths_raises_when_commit_fails() -> None:
     ):
         with pytest.raises(ReleaseError, match="failed to commit docs/v1.html"):
             commit_paths([Path("docs/v1.html")], "docs: add release notes for v1")
+
+
+def test_commit_paths_raises_when_staging_fails() -> None:
+    with (
+        patch("functions.repo.subprocess.run", return_value=_mock_git("", 128)) as run,
+        pytest.raises(ReleaseError) as err,
+    ):
+        commit_paths([Path("docs/v1.html")], "docs: add release notes for v1")
+    assert str(err.value) == "failed to stage docs/v1.html: boom"
+    assert run.call_count == 1
+
+
+def test_commit_paths_raises_when_the_new_commit_cannot_be_read() -> None:
+    with (
+        patch(
+            "functions.repo.subprocess.run",
+            side_effect=[_mock_git(""), _mock_git(""), _mock_git("", 128)],
+        ),
+        pytest.raises(ReleaseError) as err,
+    ):
+        commit_paths([Path("docs/v1.html")], "docs: add release notes for v1")
+    assert str(err.value) == "failed to read the commit of docs/v1.html: boom"
 
 
 def test_push_branch_pushes_a_refspec_without_force() -> None:

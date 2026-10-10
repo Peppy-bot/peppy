@@ -11,6 +11,23 @@ from pathlib import Path
 from .cli import ReleaseError
 
 
+def run_git(args: Sequence[str], failure: str, *, cwd: Path | None = None) -> str:
+    """Run `git <args>` in *cwd* (the current directory when None) and return
+    what it prints.
+
+    Raises ReleaseError, *failure* followed by git's own message, when git
+    fails. git writes some failures (a merge conflict, a commit with nothing
+    to commit) to stdout, so the message falls back to stdout when stderr is
+    empty.
+    """
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"{failure}: {result.stderr.strip() or result.stdout.strip()}"
+        )
+    return result.stdout
+
+
 def get_repo_root() -> Path:
     """Return the git repository root directory.
 
@@ -62,16 +79,10 @@ def get_commit(rev: str) -> str:
 
     Raises ReleaseError if the revision does not resolve to a commit locally.
     """
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{rev}^{{commit}}"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"could not resolve '{rev}' to a commit: {result.stderr.strip()}"
-        )
-    return result.stdout.strip()
+    return run_git(
+        ["rev-parse", "--verify", f"{rev}^{{commit}}"],
+        f"could not resolve '{rev}' to a commit",
+    ).strip()
 
 
 def find_commit(rev: str) -> str | None:
@@ -115,17 +126,12 @@ def get_parents(commit: str) -> tuple[str, ...]:
 
     Raises ReleaseError if *commit* cannot be read.
     """
-    result = subprocess.run(
-        ["git", "rev-list", "--parents", "--max-count=1", commit],
-        capture_output=True,
-        text=True,
+    stdout = run_git(
+        ["rev-list", "--parents", "--max-count=1", commit],
+        f"failed to read the parents of '{commit}'",
     )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to read the parents of '{commit}': {result.stderr.strip()}"
-        )
     # One line: the commit itself, then its parents.
-    return tuple(result.stdout.split()[1:])
+    return tuple(stdout.split()[1:])
 
 
 def get_changed_paths(base: str, head: str) -> tuple[str, ...]:
@@ -137,17 +143,11 @@ def get_changed_paths(base: str, head: str) -> tuple[str, ...]:
 
     Raises ReleaseError if either revision cannot be read.
     """
-    result = subprocess.run(
-        ["git", "diff", "--name-only", "--no-renames", "-z", base, head],
-        capture_output=True,
-        text=True,
+    stdout = run_git(
+        ["diff", "--name-only", "--no-renames", "-z", base, head],
+        f"failed to list the paths changed between '{base}' and '{head}'",
     )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to list the paths changed between '{base}' and '{head}': "
-            f"{result.stderr.strip()}"
-        )
-    return tuple(path for path in result.stdout.split("\0") if path)
+    return tuple(path for path in stdout.split("\0") if path)
 
 
 def get_commits_changing(base: str, head: str, path: Path) -> tuple[str, ...]:
@@ -159,9 +159,8 @@ def get_commits_changing(base: str, head: str, path: Path) -> tuple[str, ...]:
 
     Raises ReleaseError if either revision cannot be read.
     """
-    result = subprocess.run(
+    stdout = run_git(
         [
-            "git",
             "rev-list",
             "--full-history",
             "--no-merges",
@@ -169,15 +168,10 @@ def get_commits_changing(base: str, head: str, path: Path) -> tuple[str, ...]:
             "--",
             path.as_posix(),
         ],
-        capture_output=True,
-        text=True,
+        f"failed to list the commits between '{base}' and '{head}' that "
+        f"change '{path}'",
     )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to list the commits between '{base}' and '{head}' that "
-            f"change '{path}': {result.stderr.strip()}"
-        )
-    return tuple(result.stdout.split())
+    return tuple(stdout.split())
 
 
 def get_commit_subjects(base: str | None, head: str = "HEAD") -> list[str]:
@@ -214,16 +208,10 @@ def fetch_remote_branches(remote: str, branches: Sequence[str]) -> None:
     Raises ReleaseError if the fetch fails or a branch is missing on the remote.
     """
     refspecs = [f"+refs/heads/{b}:refs/remotes/{remote}/{b}" for b in branches]
-    result = subprocess.run(
-        ["git", "fetch", remote, *refspecs],
-        capture_output=True,
-        text=True,
+    run_git(
+        ["fetch", remote, *refspecs],
+        f"failed to fetch {', '.join(branches)} from '{remote}'",
     )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to fetch {', '.join(branches)} from '{remote}': "
-            f"{result.stderr.strip()}"
-        )
 
 
 def fetch_tag(remote: str, tag: str) -> None:
@@ -235,15 +223,10 @@ def fetch_tag(remote: str, tag: str) -> None:
     Raises ReleaseError if the fetch fails, the tag is missing on the remote, or
     a local tag of the same name points elsewhere.
     """
-    result = subprocess.run(
-        ["git", "fetch", "--no-tags", remote, f"refs/tags/{tag}:refs/tags/{tag}"],
-        capture_output=True,
-        text=True,
+    run_git(
+        ["fetch", "--no-tags", remote, f"refs/tags/{tag}:refs/tags/{tag}"],
+        f"failed to fetch tag '{tag}' from '{remote}'",
     )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to fetch tag '{tag}' from '{remote}': {result.stderr.strip()}"
-        )
 
 
 def has_changes_in_paths(paths: Sequence[Path]) -> bool:
@@ -251,14 +234,11 @@ def has_changes_in_paths(paths: Sequence[Path]) -> bool:
 
     Raises ReleaseError if the status cannot be read.
     """
-    result = subprocess.run(
-        ["git", "status", "--porcelain", "--", *(str(p) for p in paths)],
-        capture_output=True,
-        text=True,
+    stdout = run_git(
+        ["status", "--porcelain", "--", *(str(p) for p in paths)],
+        "failed to read git status",
     )
-    if result.returncode != 0:
-        raise ReleaseError(f"failed to read git status: {result.stderr.strip()}")
-    return bool(result.stdout.strip())
+    return bool(stdout.strip())
 
 
 def commit_paths(
@@ -275,41 +255,17 @@ def commit_paths(
     Raises ReleaseError if staging or committing fails.
     """
     path_args = [str(p) for p in paths]
-    staged = subprocess.run(
-        ["git", "add", "--", *path_args],
+    joined = ", ".join(path_args)
+    run_git(["add", "--", *path_args], f"failed to stage {joined}", cwd=cwd)
+    run_git(
+        ["commit", "--only", "-m", message, "--", *path_args],
+        f"failed to commit {joined}",
         cwd=cwd,
-        capture_output=True,
-        text=True,
     )
-    if staged.returncode != 0:
-        raise ReleaseError(
-            f"failed to stage {', '.join(path_args)}: {staged.stderr.strip()}"
-        )
-
-    committed = subprocess.run(
-        ["git", "commit", "--only", "-m", message, "--", *path_args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
+    head = run_git(
+        ["rev-parse", "HEAD"], f"failed to read the commit of {joined}", cwd=cwd
     )
-    if committed.returncode != 0:
-        raise ReleaseError(
-            f"failed to commit {', '.join(path_args)}: "
-            f"{committed.stderr.strip() or committed.stdout.strip()}"
-        )
-
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    if head.returncode != 0:
-        raise ReleaseError(
-            f"failed to read the commit of {', '.join(path_args)}: "
-            f"{head.stderr.strip()}"
-        )
-    return head.stdout.strip()
+    return head.strip()
 
 
 def fast_forward_current_branch(commit: str) -> None:
@@ -317,16 +273,10 @@ def fast_forward_current_branch(commit: str) -> None:
 
     Raises ReleaseError if the fast-forward fails.
     """
-    result = subprocess.run(
-        ["git", "merge", "--ff-only", "--quiet", commit],
-        capture_output=True,
-        text=True,
+    run_git(
+        ["merge", "--ff-only", "--quiet", commit],
+        f"failed to fast-forward to '{commit}'",
     )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to fast-forward to '{commit}': "
-            f"{result.stderr.strip() or result.stdout.strip()}"
-        )
 
 
 def merge_into_current_branch(commit: str, message: str) -> None:
@@ -335,16 +285,10 @@ def merge_into_current_branch(commit: str, message: str) -> None:
 
     Raises ReleaseError if the merge fails, a conflict included.
     """
-    result = subprocess.run(
-        ["git", "merge", "--ff", "--no-edit", "-m", message, commit],
-        capture_output=True,
-        text=True,
+    run_git(
+        ["merge", "--ff", "--no-edit", "-m", message, commit],
+        f"failed to merge '{commit}'",
     )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to merge '{commit}': "
-            f"{result.stderr.strip() or result.stdout.strip()}"
-        )
 
 
 @contextmanager
@@ -358,15 +302,10 @@ def detached_worktree(commit: str) -> Iterator[Path]:
     """
     with tempfile.TemporaryDirectory(prefix="peppy-worktree-") as parent:
         tree = Path(parent) / "tree"
-        added = subprocess.run(
-            ["git", "worktree", "add", "--quiet", "--detach", str(tree), commit],
-            capture_output=True,
-            text=True,
+        run_git(
+            ["worktree", "add", "--quiet", "--detach", str(tree), commit],
+            f"failed to add a worktree at '{commit}'",
         )
-        if added.returncode != 0:
-            raise ReleaseError(
-                f"failed to add a worktree at '{commit}': {added.stderr.strip()}"
-            )
         try:
             yield tree
         finally:
@@ -382,16 +321,10 @@ def push_branch(remote: str, source: str, remote_branch: str) -> None:
     The push is a plain (non-forced) one, so it is rejected unless it is a
     fast-forward. Raises ReleaseError if the push fails.
     """
-    result = subprocess.run(
-        ["git", "push", remote, f"{source}:refs/heads/{remote_branch}"],
-        capture_output=True,
-        text=True,
+    run_git(
+        ["push", remote, f"{source}:refs/heads/{remote_branch}"],
+        f"failed to push '{source}' to '{remote}/{remote_branch}'",
     )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to push '{source}' to '{remote}/{remote_branch}': "
-            f"{result.stderr.strip()}"
-        )
 
 
 def switch_to_new_branch(branch: str) -> None:
@@ -407,15 +340,7 @@ def switch_to_new_branch(branch: str) -> None:
     Raises ReleaseError if the branch cannot be checked out (for example when
     another worktree already has it).
     """
-    result = subprocess.run(
-        ["git", "switch", "-C", branch],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to switch to a new branch '{branch}': {result.stderr.strip()}"
-        )
+    run_git(["switch", "-C", branch], f"failed to switch to a new branch '{branch}'")
 
 
 def switch_branch(branch: str) -> None:
@@ -423,12 +348,4 @@ def switch_branch(branch: str) -> None:
 
     Raises ReleaseError if the branch cannot be checked out.
     """
-    result = subprocess.run(
-        ["git", "switch", branch],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to switch back to '{branch}': {result.stderr.strip()}"
-        )
+    run_git(["switch", branch], f"failed to switch back to '{branch}'")

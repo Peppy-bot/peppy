@@ -51,7 +51,7 @@ from typing import TypeVar
 
 from .claude import run_claude
 from .cli import ReleaseError, console, need_cmd, run_with_error_handling
-from .repo import get_repo_root
+from .repo import get_repo_root, run_git
 
 
 # The directory the docs check owns end to end: the updater edits it, and the
@@ -269,17 +269,8 @@ class EmDashLine:
 
 
 def _run_git(args: list[str], cwd: Path) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"git {' '.join(args)} failed: {result.stderr.strip()}"
-        )
-    return result.stdout
+    """Run `git <args>` in *cwd*; a failure names the whole command."""
+    return run_git(args, f"git {' '.join(args)} failed", cwd=cwd)
 
 
 def _is_lock_file(path: str) -> bool:
