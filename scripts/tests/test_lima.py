@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -273,6 +274,32 @@ def test_cargo_build_in_lima_builds_on_guest_disk_and_copies_back(
     assert (
         f"host_release={target_dir}/aarch64-unknown-linux-gnu/release" in script
     )
+
+
+def test_cargo_build_in_lima_quotes_the_tag_and_host_paths(tmp_path: Path) -> None:
+    """A typed tag, a checkout or a home directory with a space stays one word."""
+    limactl = tmp_path / "limactl"
+    repo_root = tmp_path / "my repo"
+    target_dir = repo_root / "target" / ".peppy-release-aarch64-unknown-linux-gnu-abc123"
+    so_dir = _populate_so_dir(tmp_path / "home dir")
+
+    with patch("functions.lima._lima_shell") as mock_shell, \
+         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
+        mock_shell.return_value = MagicMock(returncode=0)
+        cargo_build_in_lima(
+            limactl,
+            "v0.1.0 local",
+            "aarch64-unknown-linux-gnu",
+            repo_root,
+            target_dir=target_dir,
+        )
+
+    script = mock_shell.call_args[0][1]
+    assert "export PEPPY_GIT_TAG='v0.1.0 local'\n" in script
+    assert f"cd {shlex.quote(str(repo_root))}\n" in script
+    assert f"export PEPPYLIB_PREBUILT_SO_DIR={shlex.quote(str(so_dir))}\n" in script
+    host_release = target_dir / "aarch64-unknown-linux-gnu" / "release"
+    assert f"host_release={shlex.quote(str(host_release))}\n" in script
 
 
 def test_cargo_build_in_lima_sets_cross_linker_for_x86_64(tmp_path: Path) -> None:

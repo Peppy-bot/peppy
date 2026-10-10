@@ -394,6 +394,7 @@ def cargo_build_in_lima(
     # target_dir.name is unique per release invocation (mkdtemp suffix), so
     # concurrent or interrupted builds never share a guest tree.
     guest_target_dir = f"{GUEST_RUST_DIR}/target/{target_dir.name}"
+    host_release_dir = target_dir / target_triple / "release"
     copy_back_patterns = " ".join(GUEST_COPY_BACK_ARTIFACTS)
 
     console.print(
@@ -405,19 +406,19 @@ export RUSTUP_HOME={GUEST_RUSTUP_HOME}
 export CARGO_HOME={GUEST_CARGO_HOME}
 export PATH="{GUEST_GO_DIR}/bin:{GUEST_CARGO_HOME}/bin:$PATH"
 export GOTOOLCHAIN=local
-export PEPPY_GIT_TAG={tag}
+export PEPPY_GIT_TAG={shlex.quote(tag)}
 export PEPPY_CROSS_ARCH=1
 export PEPPY_HOST_HOME={shlex.quote(str(Path.home()))}
 export RUSTC_WRAPPER=""
-export PEPPYLIB_PREBUILT_SO_DIR={so_dir}
+export PEPPYLIB_PREBUILT_SO_DIR={shlex.quote(str(so_dir))}
 export CARGO_TARGET_DIR={guest_target_dir}
 {cross_linker}
 rm -rf {guest_target_dir}
 trap 'rm -rf {guest_target_dir}' EXIT
-cd {repo_root}
+cd {shlex.quote(str(repo_root))}
 cargo build -p peppy --release --locked --target {target_triple}
 guest_release={guest_target_dir}/{target_triple}/release
-host_release={target_dir}/{target_triple}/release
+host_release={shlex.quote(str(host_release_dir))}
 mkdir -p "$host_release"
 cd "$guest_release"
 for artifact in {copy_back_patterns}; do
