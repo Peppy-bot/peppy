@@ -193,6 +193,48 @@ fn generate_required_field_reader_statements(
     }
 }
 
+/// The `get_<field>` reader method of a capnp field.
+fn build_getter_ident(field_name: &str) -> Ident {
+    Ident::new(
+        &format!("get_{}", sanitize_component(field_name)),
+        Span::call_site(),
+    )
+}
+
+/// The closure that turns a read error of a field into the generated
+/// crate's deserialization error. Every reader maps through it, so the
+/// message a user sees names the field and the message context the same
+/// way for every field shape.
+fn build_field_error_mapper(field_literal: &Literal, context_expr: &TokenStream) -> TokenStream {
+    quote! {
+        |source| {
+            #[allow(clippy::all)]
+            let context = #context_expr;
+            crate::Error::Deserialization(
+                format!("field '{}' in {}: {}", #field_literal, context, source)
+            )
+        }
+    }
+}
+
+/// The statement that reads a pointer field (text, data, a list or a
+/// struct) into `target`, failing with the field's deserialization error.
+fn build_pointer_field_read(
+    target: &Ident,
+    reader_expr: &TokenStream,
+    getter: &Ident,
+    field_literal: &Literal,
+    context_expr: &TokenStream,
+) -> TokenStream {
+    let error_mapper = build_field_error_mapper(field_literal, context_expr);
+    quote! {
+        let #target = #reader_expr
+            .reborrow()
+            .#getter()
+            .map_err(#error_mapper)?;
+    }
+}
+
 fn schema_supports_presence_check(schema: &SchemaType) -> bool {
     match schema {
         SchemaType::Type(token) => matches!(
@@ -214,10 +256,7 @@ fn generate_primitive_reader(
     context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
-    let method_ident = Ident::new(
-        &format!("get_{}", sanitize_component(field_name)),
-        Span::call_site(),
-    );
+    let method_ident = build_getter_ident(field_name);
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
 
@@ -240,29 +279,19 @@ fn generate_primitive_reader(
         }
         TypeToken::String => {
             let reader_ident = names.next("text");
+            let error_mapper = build_field_error_mapper(&field_literal, context_expr);
             let statements = vec![
-                quote! {
-                    let #reader_ident = #reader_expr
-                        .reborrow()
-                        .#method_ident()
-                        .map_err(|source| {
-                            #[allow(clippy::all)]
-                            let context = #context_expr;
-                            crate::Error::Deserialization(
-                                format!("field '{}' in {}: {}", #field_literal, context, source)
-                            )
-                        })?;
-                },
+                build_pointer_field_read(
+                    &reader_ident,
+                    reader_expr,
+                    &method_ident,
+                    &field_literal,
+                    context_expr,
+                ),
                 quote! {
                     let #value_ident = #reader_ident
                         .to_str()
-                        .map_err(|source| {
-                            #[allow(clippy::all)]
-                            let context = #context_expr;
-                            crate::Error::Deserialization(
-                                format!("field '{}' in {}: {}", #field_literal, context, source)
-                            )
-                        })?
+                        .map_err(#error_mapper)?
                         .to_owned();
                 },
             ];
@@ -271,18 +300,13 @@ fn generate_primitive_reader(
         TypeToken::Bytes => {
             let reader_ident = names.next("data");
             let statements = vec![
-                quote! {
-                    let #reader_ident = #reader_expr
-                        .reborrow()
-                        .#method_ident()
-                        .map_err(|source| {
-                            #[allow(clippy::all)]
-                            let context = #context_expr;
-                            crate::Error::Deserialization(
-                                format!("field '{}' in {}: {}", #field_literal, context, source)
-                            )
-                        })?;
-                },
+                build_pointer_field_read(
+                    &reader_ident,
+                    reader_expr,
+                    &method_ident,
+                    &field_literal,
+                    context_expr,
+                ),
                 quote! {
                     let #value_ident = #reader_ident.to_vec();
                 },
@@ -293,18 +317,13 @@ fn generate_primitive_reader(
             let reader_ident = names.next("timestamp");
             let capnp_ident = names.next("capnp_timestamp");
             let statements = vec![
-                quote! {
-                    let #reader_ident = #reader_expr
-                        .reborrow()
-                        .#method_ident()
-                        .map_err(|source| {
-                            #[allow(clippy::all)]
-                            let context = #context_expr;
-                            crate::Error::Deserialization(
-                                format!("field '{}' in {}: {}", #field_literal, context, source)
-                            )
-                        })?;
-                },
+                build_pointer_field_read(
+                    &reader_ident,
+                    reader_expr,
+                    &method_ident,
+                    &field_literal,
+                    context_expr,
+                ),
                 quote! {
                     let #capnp_ident = peppylib::encoding::CapnpTimestamp {
                         sec: #reader_ident.get_sec(),
@@ -326,10 +345,7 @@ fn generate_array_reader(
     context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> Result<(Vec<TokenStream>, Ident)> {
-    let method_ident = Ident::new(
-        &format!("get_{}", sanitize_component(field_name)),
-        Span::call_site(),
-    );
+    let method_ident = build_getter_ident(field_name);
     match array.items.as_ref() {
         SchemaType::Object(object) => generate_object_array_reader(
             reader_expr,
@@ -377,18 +393,13 @@ fn generate_u8_array_reader(
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
 
-    let mut statements = vec![quote! {
-        let #reader_ident = #reader_expr
-            .reborrow()
-            .#method_ident()
-            .map_err(|source| {
-                #[allow(clippy::all)]
-                let context = #context_expr;
-                crate::Error::Deserialization(
-                    format!("field '{}' in {}: {}", #field_literal, context, source)
-                )
-            })?;
-    }];
+    let mut statements = vec![build_pointer_field_read(
+        &reader_ident,
+        reader_expr,
+        method_ident,
+        &field_literal,
+        context_expr,
+    )];
 
     match length {
         Some(len) => {
@@ -435,18 +446,13 @@ fn generate_primitive_array_reader(
 
     let element_ty = primitive_type_token(token);
 
-    let mut statements = vec![quote! {
-        let #reader_ident = #reader_expr
-            .reborrow()
-            .#method_ident()
-            .map_err(|source| {
-                #[allow(clippy::all)]
-                let context = #context_expr;
-                crate::Error::Deserialization(
-                    format!("field '{}' in {}: {}", #field_literal, context, source)
-                )
-            })?;
-    }];
+    let mut statements = vec![build_pointer_field_read(
+        &reader_ident,
+        reader_expr,
+        method_ident,
+        &field_literal,
+        context_expr,
+    )];
 
     // A text or data list's iterator yields `Result<_, capnp::Error>` per
     // element (each pointer can fail to resolve on its own), unlike a
@@ -465,18 +471,13 @@ fn generate_primitive_array_reader(
         }),
         _ => None,
     };
+    let error_mapper = build_field_error_mapper(&field_literal, context_expr);
     let collect_pointer_elements = |vec_ident: &Ident, element_expr: &TokenStream| {
         quote! {
             let #vec_ident = #reader_ident
                 .iter()
                 .map(|element| {
-                    (#element_expr).map_err(|source| {
-                        #[allow(clippy::all)]
-                        let context = #context_expr;
-                        crate::Error::Deserialization(
-                            format!("field '{}' in {}: {}", #field_literal, context, source)
-                        )
-                    })
+                    (#element_expr).map_err(#error_mapper)
                 })
                 .collect::<::std::result::Result<Vec<#element_ty>, crate::Error>>()?;
         }
@@ -533,24 +534,16 @@ fn generate_object_reader(
     context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> Result<(Vec<TokenStream>, Ident)> {
-    let method_ident = Ident::new(
-        &format!("get_{}", sanitize_component(field_name)),
-        Span::call_site(),
-    );
+    let method_ident = build_getter_ident(field_name);
     let reader_ident = names.next("reader");
     let field_literal = Literal::string(field_name);
-    let mut statements = vec![quote! {
-        let #reader_ident = #reader_expr
-            .reborrow()
-            .#method_ident()
-            .map_err(|source| {
-                #[allow(clippy::all)]
-                let context = #context_expr;
-                crate::Error::Deserialization(
-                    format!("field '{}' in {}: {}", #field_literal, context, source)
-                )
-            })?;
-    }];
+    let mut statements = vec![build_pointer_field_read(
+        &reader_ident,
+        reader_expr,
+        &method_ident,
+        &field_literal,
+        context_expr,
+    )];
 
     let mut field_statements = Vec::new();
     let mut field_inits = Vec::new();
@@ -595,10 +588,7 @@ fn generate_object_array_reader(
     names: &mut NameGenerator,
     length: Option<usize>,
 ) -> Result<(Vec<TokenStream>, Ident)> {
-    let method_ident = Ident::new(
-        &format!("get_{}", sanitize_component(field_name)),
-        Span::call_site(),
-    );
+    let method_ident = build_getter_ident(field_name);
     let list_ident = names.next("list");
     let result_ident = names.next("result");
     let value_ident = names.next(field_name);
@@ -625,18 +615,13 @@ fn generate_object_array_reader(
         field_inits.push(quote!(#field_ident: #nested_value_ident));
     }
 
-    let mut statements = vec![quote! {
-        let #list_ident = #reader_expr
-            .reborrow()
-            .#method_ident()
-            .map_err(|source| {
-                #[allow(clippy::all)]
-                let context = #context_expr;
-                crate::Error::Deserialization(
-                    format!("field '{}' in {}: {}", #field_literal, context, source)
-                )
-            })?;
-    }];
+    let mut statements = vec![build_pointer_field_read(
+        &list_ident,
+        reader_expr,
+        &method_ident,
+        &field_literal,
+        context_expr,
+    )];
 
     if let Some(len) = length {
         let len_lit = Literal::usize_unsuffixed(len);
