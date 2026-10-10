@@ -91,36 +91,31 @@ pub fn handle_clock_request(
 ) -> Result<Payload> {
     // Stamp t1 first: every line after this point inflates server processing
     // time and corrupts the offset estimate the client computes.
-    let server_recv_time = source.now_ns().map_err(|e| Error::InvalidServiceRequest {
-        identifier: context.message().instance_id().to_string(),
-        reason: e.to_string(),
-    })?;
-    let instance_id = context.message().instance_id().to_string();
-    handle_clock_request_inner(source, &context, server_recv_time).map_err(|e| {
-        Error::InvalidServiceRequest {
-            identifier: instance_id,
-            reason: e.to_string(),
-        }
-    })
-}
-
-fn handle_clock_request_inner(
-    source: &dyn ClockSource,
-    context: &ServiceRequestContext,
-    server_recv_time: u64,
-) -> Result<Payload> {
-    let request = ClockRequest::decode(context.message().payload_bytes().as_ref())?;
+    let server_recv_time = source
+        .now_ns()
+        .map_err(|e| invalid_clock_request(&context, e))?;
+    let request = ClockRequest::decode(context.message().payload_bytes().as_ref())
+        .map_err(|e| invalid_clock_request(&context, e))?;
 
     // Stamp t2 last: the response encode + send happens after this point and
     // is part of the round-trip delay the client measures, not server time.
-    let server_send_time = source.now_ns().map_err(|e| Error::InvalidServiceRequest {
-        identifier: context.message().instance_id().to_string(),
-        reason: e.to_string(),
-    })?;
+    let server_send_time = source
+        .now_ns()
+        .map_err(|e| invalid_clock_request(&context, e))?;
 
     ClockResponse::new(request.client_send_time, server_recv_time, server_send_time)
         .encode()
-        .map_err(Into::into)
+        .map_err(|e| invalid_clock_request(&context, e))
+}
+
+/// The refusal of a `clock` request, attributed to the calling instance. It
+/// is built only on a failure, so the success path does not build the
+/// instance id between the t1 and t2 stamps.
+fn invalid_clock_request(context: &ServiceRequestContext, error: impl std::fmt::Display) -> Error {
+    Error::InvalidServiceRequest {
+        identifier: context.message().instance_id().to_string(),
+        reason: error.to_string(),
+    }
 }
 
 /// Wall-clock "now" in nanoseconds since the UNIX epoch — the canonical reader
@@ -564,6 +559,105 @@ mod clock_source_tests {
 
         cache.store(42, Ordering::Relaxed);
         assert_eq!(source.now_ns().expect("cache populated"), 42);
+    }
+}
+
+#[cfg(test)]
+mod clock_request_tests {
+    use super::*;
+    use bytes::Bytes;
+    use std::sync::atomic::AtomicUsize;
+
+    const CALLER_INSTANCE: &str = "caller_inst";
+
+    /// Answers its first `ready_reads` reads with `100 + read index` and every
+    /// later read with `NotReady`, so a test picks which stamp fails.
+    struct ClockReadyFor {
+        ready_reads: usize,
+        reads: AtomicUsize,
+    }
+
+    impl ClockReadyFor {
+        fn new(ready_reads: usize) -> Self {
+            Self {
+                ready_reads,
+                reads: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl ClockSource for ClockReadyFor {
+        fn now_ns(&self) -> std::result::Result<u64, ClockSourceError> {
+            let read = self.reads.fetch_add(1, Ordering::Relaxed);
+            if read >= self.ready_reads {
+                return Err(ClockSourceError::NotReady);
+            }
+            Ok(100 + read as u64)
+        }
+    }
+
+    fn clock_request_context(payload: Bytes) -> ServiceRequestContext {
+        ServiceRequestContext::new(
+            pmi::TopicMessage::from_parts(
+                "caller_core".to_string(),
+                CALLER_INSTANCE.to_string(),
+                payload,
+            ),
+            "request".to_string(),
+            "_".to_string(),
+        )
+    }
+
+    fn encoded_clock_request(client_send_time: u64) -> Bytes {
+        ClockRequest::new(client_send_time)
+            .encode()
+            .expect("clock request encodes")
+            .into_inner()
+    }
+
+    fn assert_invalid_request_from_caller(result: Result<Payload>, expected_reason: &str) {
+        match result {
+            Err(Error::InvalidServiceRequest { identifier, reason }) => {
+                assert_eq!(identifier, CALLER_INSTANCE);
+                assert_eq!(reason, expected_reason);
+            }
+            other => panic!("expected InvalidServiceRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_ready_clock_answers_with_both_server_stamps() {
+        let source = ClockReadyFor::new(2);
+        let payload =
+            handle_clock_request(&source, clock_request_context(encoded_clock_request(7)))
+                .expect("a ready clock answers");
+        let response = ClockResponse::decode(payload.as_ref()).expect("response decodes");
+        assert_eq!(response, ClockResponse::new(7, 100, 101));
+    }
+
+    #[test]
+    fn a_clock_not_ready_at_the_receive_stamp_names_the_clock_error() {
+        let source = ClockReadyFor::new(0);
+        let result = handle_clock_request(&source, clock_request_context(encoded_clock_request(7)));
+        assert_invalid_request_from_caller(result, &ClockSourceError::NotReady.to_string());
+    }
+
+    #[test]
+    fn a_clock_not_ready_at_the_send_stamp_names_the_clock_error_once() {
+        let source = ClockReadyFor::new(1);
+        let result = handle_clock_request(&source, clock_request_context(encoded_clock_request(7)));
+        assert_invalid_request_from_caller(result, &ClockSourceError::NotReady.to_string());
+    }
+
+    #[test]
+    fn an_undecodable_request_names_the_decode_error() {
+        let source = ClockReadyFor::new(2);
+        let garbage = Bytes::from_static(b"\x01");
+        let decode_error = ClockRequest::decode(garbage.as_ref())
+            .expect_err("one byte is no capnp message")
+            .to_string();
+        let result = handle_clock_request(&source, clock_request_context(garbage));
+        assert_invalid_request_from_caller(result, &decode_error);
     }
 }
 
