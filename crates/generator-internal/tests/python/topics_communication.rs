@@ -354,7 +354,7 @@ if __name__ == "__main__":
     // A node's health service is reachable once its setup returned: for the
     // retaining emitter, once it published its one frame. The late-join
     // receiver starts after that.
-    let live_receiver = matches!(scenario, TopicScenario::LiveStream).then(&spawn_receiver);
+    let live_receiver = matches!(scenario, TopicScenario::LiveStream).then(spawn_receiver);
     let mut emitter_child = spawn_emitter();
     wait_for_health_service_reachable_or_exit(
         &ctx,
