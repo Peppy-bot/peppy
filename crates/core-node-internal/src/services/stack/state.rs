@@ -139,6 +139,13 @@ impl ActiveLaunch {
         self.copies.values().map(|copy| &copy.record)
     }
 
+    /// The option of the copy called `name`, when the stack holds one.
+    pub(super) fn copy_option(&self, name: &Name) -> Option<&str> {
+        self.copies
+            .get(name)
+            .map(|copy| copy.record.option.as_str())
+    }
+
     pub(super) fn check_name(&self, name: &Name) -> ChangeResult<()> {
         if self.copies.contains_key(name) {
             return Err(format!("copy `{name}` already exists; choose another name"));

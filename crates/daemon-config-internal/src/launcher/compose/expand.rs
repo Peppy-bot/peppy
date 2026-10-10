@@ -338,6 +338,18 @@ fn apply_adjustment(
             }
         }
     }
+    if let Some(scopes) = &step.adjustment.set_daemon_scopes {
+        for (daemon_target, scope) in scopes {
+            record(AppliedChange::DaemonScope {
+                daemon_target: daemon_target.clone(),
+                old: instance.daemon_scopes.get(daemon_target).cloned(),
+                new: scope.clone(),
+            });
+            instance
+                .daemon_scopes
+                .insert(daemon_target.clone(), scope.clone());
+        }
+    }
     Ok(())
 }
 

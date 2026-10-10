@@ -106,5 +106,8 @@ fn handle_node_list_request_inner(
             coordinator_core_node,
         ));
     }
+    if let Some(change) = ownership.stack.copy_change() {
+        response = response.with_copy_change(change);
+    }
     response.encode().map_err(Into::into)
 }

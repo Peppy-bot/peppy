@@ -1,10 +1,11 @@
 //! The `mcp_exposure/v1` document model: what an author writes to publish
-//! selected members of pinned contracts over MCP.
+//! selected members of pinned contracts and of daemon interfaces over MCP.
 //!
 //! Parsing establishes every document-level rule (a non-empty target set,
-//! per-target member selection, unique public names, policy cross-field
-//! rules), so a value of [`McpExposure`] is coherent on its own. Checking
-//! it against the contracts it names is [`build_exposure_bundle`]'s job.
+//! one source per target, per-target member selection, unique public names,
+//! policy cross-field rules), so a value of [`McpExposure`] is coherent on
+//! its own. Checking it against the contracts and interfaces it names is
+//! [`build_exposure_bundle`]'s job.
 //!
 //! [`build_exposure_bundle`]: crate::build_exposure_bundle
 
@@ -42,11 +43,12 @@ where
 }
 
 /// An MCP exposure document (`peppy_schema: "mcp_exposure/v1"`): the
-/// allowlist that turns selected members of pinned Peppy contracts into a
-/// public MCP surface. The document carries selection, public naming, prose,
-/// and operational policy only; every request and response shape is derived
-/// from the referenced contracts, so the internal and external definitions
-/// cannot drift apart. Anything not named here stays private.
+/// allowlist that turns selected members of pinned Peppy contracts and of
+/// daemon interfaces into a public MCP surface. The document carries
+/// selection, public naming, prose, and operational policy only; every
+/// request and response shape is derived from the referenced contracts and
+/// interfaces, so the internal and external definitions cannot drift apart.
+/// Anything not named here stays private.
 ///
 /// Exposure documents take the contract shape in the repository: a tagged
 /// manifest, indexed by name and tag, sha256-pinned wherever referenced.
@@ -97,13 +99,14 @@ where
 /// of a stack, each filling every target.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExposureSurface {
-    /// Each target is filled by the instance a launcher binds to its
-    /// contract slot, and a call carries the member's own request alone.
+    /// Each contract target is filled by the instance a launcher binds to
+    /// its contract slot, each daemon target by the daemon that started the
+    /// server, and a call carries the member's own request alone.
     Fixed {
         targets: IndexMap<String, ExposureTarget>,
     },
-    /// Every target is filled by the robots of the stack, and every call
-    /// names its robot with [`ROBOT_ARGUMENT`].
+    /// Every target is a contract target filled by the robots of the
+    /// stack, and every call names its robot with [`ROBOT_ARGUMENT`].
     PerRobot {
         robots: RobotSurface,
         targets: IndexMap<String, RobotTarget>,
@@ -248,7 +251,7 @@ fn fixed_targets(
 ) -> Result<IndexMap<String, ExposureTarget>, String> {
     raw.into_iter()
         .map(|(target_name, target)| {
-            let (selection, argument) = target.split();
+            let (selection, argument) = target.split(&target_name)?;
             if argument.is_some() {
                 return Err(format!(
                     "target `{target_name}` declares `argument`, which names the member a call \
@@ -268,7 +271,14 @@ fn per_robot_targets(
 ) -> Result<IndexMap<String, RobotTarget>, String> {
     raw.into_iter()
         .map(|(target_name, target)| {
-            let (selection, argument) = target.split();
+            let (selection, argument) = target.split(&target_name)?;
+            if let TargetSource::Daemon(interface) = &selection.source {
+                return Err(format!(
+                    "target `{target_name}` names daemon interface `{interface}` on a per-robot \
+                     surface, where every tool is routed by `{ROBOT_ARGUMENT}`; a daemon target \
+                     belongs in an exposure without `robots`"
+                ));
+            }
             if argument
                 .as_ref()
                 .is_some_and(|argument| argument.as_str() == ROBOT_ARGUMENT)
@@ -416,24 +426,99 @@ pub struct PinnedContractRef {
     pub sha256: Option<ManifestFingerprint>,
 }
 
-/// One logical target: the contract it draws from and the members it makes
-/// public. The target's key in the surface's target map becomes the `link_id`
-/// of the contract slot a deployment serving the exposure declares, so the
-/// launcher decides which concrete instance fills it.
+/// A reference to an interface of the peppy daemon a target draws its
+/// members from. The interface is compiled into peppy, which serves one tag
+/// of it, so the reference names it by `name:tag` and is never pinned.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DaemonInterfaceRef {
+    pub name: Name,
+    pub tag: String,
+}
+
+impl std::fmt::Display for DaemonInterfaceRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.name, self.tag)
+    }
+}
+
+/// Wire shape of [`DaemonInterfaceRef`]: a `sha256` is read so that its
+/// refusal names the target and says why, rather than reading as an
+/// unknown field.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDaemonInterfaceRef {
+    name: Name,
+    #[serde(deserialize_with = "deserialize_tag")]
+    tag: String,
+    #[serde(default, skip_serializing)]
+    sha256: Option<de::IgnoredAny>,
+}
+
+/// Where a target draws its members from: a contract that node instances
+/// implement, or an interface that the peppy daemon serves.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TargetSource {
+    /// A contract slot of the deployment, which the launcher fills.
+    Contract(PinnedContractRef),
+    /// An interface of the daemon that started the server. It takes no
+    /// slot: the launcher gives the target a scope instead.
+    Daemon(DaemonInterfaceRef),
+}
+
+impl TargetSource {
+    /// The contract the target names, for a contract target.
+    pub fn contract(&self) -> Option<&PinnedContractRef> {
+        match self {
+            Self::Contract(contract) => Some(contract),
+            Self::Daemon(_) => None,
+        }
+    }
+
+    /// The daemon interface the target names, for a daemon target.
+    pub fn daemon(&self) -> Option<&DaemonInterfaceRef> {
+        match self {
+            Self::Contract(_) => None,
+            Self::Daemon(interface) => Some(interface),
+        }
+    }
+}
+
+/// The source as messages name it: ``contract `name:tag` `` or
+/// ``daemon interface `name:tag` ``.
+impl std::fmt::Display for TargetSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Contract(contract) => {
+                write!(f, "contract `{}:{}`", contract.name, contract.tag)
+            }
+            Self::Daemon(interface) => write!(f, "daemon interface `{interface}`"),
+        }
+    }
+}
+
+/// One logical target: the source it draws from and the members it makes
+/// public. The key of a contract target in the surface's target map becomes
+/// the `link_id` of the contract slot a deployment serving the exposure
+/// declares, so the launcher decides which concrete instance fills it. The
+/// key of a daemon target names the scope the launcher gives it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExposureTarget {
-    pub contract: PinnedContractRef,
+    pub source: TargetSource,
     pub topics: Vec<TopicExposure>,
     pub services: Vec<ServiceExposure>,
     pub actions: Vec<ActionExposure>,
 }
 
-/// Wire shape of one target: an [`ExposureTarget`] plus the `argument` a
-/// per-robot surface's target takes.
+/// Wire shape of one target: an [`ExposureTarget`] with its source as the
+/// two keys an author writes, plus the `argument` a per-robot surface's
+/// target takes.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawExposureTarget {
-    contract: PinnedContractRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contract: Option<PinnedContractRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    daemon: Option<RawDaemonInterfaceRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     argument: Option<ArgumentName>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -446,8 +531,20 @@ struct RawExposureTarget {
 
 impl RawExposureTarget {
     fn new(selection: ExposureTarget, argument: Option<ArgumentName>) -> Self {
+        let (contract, daemon) = match selection.source {
+            TargetSource::Contract(contract) => (Some(contract), None),
+            TargetSource::Daemon(interface) => (
+                None,
+                Some(RawDaemonInterfaceRef {
+                    name: interface.name,
+                    tag: interface.tag,
+                    sha256: None,
+                }),
+            ),
+        };
         Self {
-            contract: selection.contract,
+            contract,
+            daemon,
             argument,
             topics: selection.topics,
             services: selection.services,
@@ -455,18 +552,50 @@ impl RawExposureTarget {
         }
     }
 
-    /// The members the target selects, apart from the argument a call names
-    /// one of them by, which only a per-robot surface takes.
-    fn split(self) -> (ExposureTarget, Option<ArgumentName>) {
-        (
+    /// The members the target selects from its one source, apart from the
+    /// argument a call names one of them by, which only a per-robot surface
+    /// takes.
+    fn split(self, target_name: &str) -> Result<(ExposureTarget, Option<ArgumentName>), String> {
+        let source = match (self.contract, self.daemon) {
+            (Some(contract), None) => TargetSource::Contract(contract),
+            (None, Some(daemon)) => {
+                if daemon.sha256.is_some() {
+                    return Err(format!(
+                        "target `{target_name}` pins daemon interface `{}:{}` with `sha256`; a \
+                         daemon interface is compiled into peppy and is never pinned, so remove \
+                         `sha256`",
+                        daemon.name, daemon.tag
+                    ));
+                }
+                TargetSource::Daemon(DaemonInterfaceRef {
+                    name: daemon.name,
+                    tag: daemon.tag,
+                })
+            }
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "target `{target_name}` names both `contract` and `daemon`; a target draws \
+                     its members from one source: a contract that node instances implement, or a \
+                     daemon interface that peppy serves"
+                ));
+            }
+            (None, None) => {
+                return Err(format!(
+                    "target `{target_name}` names no source; give it `contract: {{ name, tag }}` \
+                     for the members of a contract, or `daemon: {{ name, tag }}` for the members \
+                     of a daemon interface"
+                ));
+            }
+        };
+        Ok((
             ExposureTarget {
-                contract: self.contract,
+                source,
                 topics: self.topics,
                 services: self.services,
                 actions: self.actions,
             },
             self.argument,
-        )
+        ))
     }
 }
 
@@ -1200,14 +1329,10 @@ mod tests {
         );
 
         let camera = &targets_of(&exposure)["front_camera"];
-        assert_eq!(camera.contract.name.as_str(), "rgb_camera");
+        let contract = camera.source.contract().expect("a contract target");
+        assert_eq!(contract.name.as_str(), "rgb_camera");
         assert_eq!(
-            camera
-                .contract
-                .sha256
-                .as_ref()
-                .map(ToString::to_string)
-                .as_deref(),
+            contract.sha256.as_ref().map(ToString::to_string).as_deref(),
             Some(RGB_SHA)
         );
         let frame = &camera.topics[0];
@@ -1298,7 +1423,14 @@ mod tests {
     fn accepts_a_reference_without_a_sha256_pin() {
         let doc = minimal(INFO_SERVICE).replace(&format!(r#", sha256: "{RGB_SHA}""#), "");
         let exposure = parse(&doc).expect("the pin is optional");
-        assert_eq!(targets_of(&exposure)["cam"].contract.sha256, None);
+        assert_eq!(
+            targets_of(&exposure)["cam"]
+                .source
+                .contract()
+                .expect("a contract target")
+                .sha256,
+            None
+        );
         let serialized = serde_json::to_string(&exposure).expect("serializes");
         assert!(
             !serialized.contains("sha256"),
@@ -2201,5 +2333,140 @@ mod tests {
         let serialized = serde_json::to_string(&exposure).expect("serializes");
         let reparsed: McpExposure = serde_json::from_str(&serialized).expect("reparses");
         assert_eq!(reparsed, exposure);
+    }
+
+    /// A fixed surface whose one target `stack` takes its members from the
+    /// source written in `source`.
+    fn daemon_document(source: &str) -> String {
+        format!(
+            r#"{{
+            peppy_schema: "mcp_exposure/v1",
+            manifest: {{ name: "framework_controls", tag: "v1" }},
+            server: {{ title: "Robot stack (peppy framework)" }},
+            targets: {{
+                stack: {{
+                    {source}
+                    services: [
+                        {{
+                            member: "list",
+                            tool: "stack.list",
+                            description: "Report what this stack can add and remove.",
+                            operation: "read_only",
+                            deadline_ms: 5000,
+                        }},
+                    ],
+                }},
+            }},
+        }}"#
+        )
+    }
+
+    const STACK_COPIES: &str = r#"daemon: { name: "stack_copies", tag: "v1" },"#;
+
+    #[test]
+    fn a_daemon_target_names_an_interface_by_name_and_tag() {
+        let exposure = parse(&daemon_document(STACK_COPIES)).expect("parses");
+        let stack = &targets_of(&exposure)["stack"];
+        let interface = stack.source.daemon().expect("a daemon target");
+        assert_eq!(interface.to_string(), "stack_copies:v1");
+        assert_eq!(stack.source.contract(), None);
+        assert_eq!(
+            stack.source.to_string(),
+            "daemon interface `stack_copies:v1`"
+        );
+
+        let serialized = serde_json::to_value(&exposure).expect("serializes");
+        assert_eq!(
+            serialized["targets"]["stack"]["daemon"],
+            serde_json::json!({ "name": "stack_copies", "tag": "v1" }),
+            "the reference is written back with no pin and no contract"
+        );
+        assert!(serialized["targets"]["stack"].get("contract").is_none());
+        let reparsed: McpExposure = serde_json::from_value(serialized).expect("reparses");
+        assert_eq!(reparsed, exposure);
+    }
+
+    #[test]
+    fn a_target_names_exactly_one_source() {
+        let both = parse_err(&daemon_document(&format!(
+            r#"{STACK_COPIES} contract: {{ name: "rgb_camera", tag: "v1" }},"#
+        )));
+        assert!(
+            both.contains("target `stack` names both `contract` and `daemon`"),
+            "{both}"
+        );
+        let neither = parse_err(&daemon_document(""));
+        assert!(
+            neither.contains("target `stack` names no source")
+                && neither.contains("`contract: { name, tag }`")
+                && neither.contains("`daemon: { name, tag }`"),
+            "{neither}"
+        );
+    }
+
+    #[test]
+    fn a_daemon_target_is_never_pinned() {
+        let err = parse_err(&daemon_document(&format!(
+            r#"daemon: {{ name: "stack_copies", tag: "v1", sha256: "{RGB_SHA}" }},"#
+        )));
+        assert!(
+            err.contains("target `stack` pins daemon interface `stack_copies:v1` with `sha256`")
+                && err.contains("compiled into peppy and is never pinned"),
+            "{err}"
+        );
+        let err = parse_err(&daemon_document(
+            r#"daemon: { name: "stack_copies", tag: "v1", version: 2 },"#,
+        ));
+        assert!(err.contains("version"), "{err}");
+    }
+
+    #[test]
+    fn a_daemon_target_sits_on_a_fixed_surface_only() {
+        let doc = per_robot(ROBOTS).replace(
+            r#"contract: { name: "robot_status", tag: "v1" },"#,
+            STACK_COPIES,
+        );
+        let err = parse_err(&doc);
+        assert!(
+            err.contains(
+                "target `status` names daemon interface `stack_copies:v1` on a per-robot surface"
+            ) && err.contains("routed by `robot`")
+                && err.contains("belongs in an exposure without `robots`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_member_rules_hold_for_a_daemon_target() {
+        let empty = r#"{
+            peppy_schema: "mcp_exposure/v1",
+            manifest: { name: "framework_controls", tag: "v1" },
+            server: { title: "Stack" },
+            targets: { stack: { daemon: { name: "stack_copies", tag: "v1" } } },
+        }"#;
+        assert!(parse_err(empty).contains("target `stack` selects no members"));
+
+        let twice = daemon_document(STACK_COPIES).replace(
+            "services: [",
+            r#"services: [
+                        {
+                            member: "list",
+                            tool: "stack.list_again",
+                            description: "Report again.",
+                            operation: "read_only",
+                            deadline_ms: 5000,
+                        },"#,
+        );
+        assert!(
+            parse_err(&twice)
+                .contains("target `stack` selects service member `list` more than once")
+        );
+
+        let record = daemon_document(STACK_COPIES).replace(
+            "targets: {",
+            r#"call_record: { tool: "stack.list", description: "The calls.", keep: 10 },
+            targets: {"#,
+        );
+        assert!(parse_err(&record).contains("public name `stack.list` is declared more than once"));
     }
 }

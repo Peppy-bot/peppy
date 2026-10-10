@@ -35,19 +35,8 @@ pub use types::NodeName;
 // re-export at all.)
 pub(crate) use env::caller_env_overrides;
 
-pub(crate) use core_node_api::encoding::DEFAULT_IDLE_TIMEOUT_SECS;
-/// Default idle timeout for the container BUILD phase (`peppy node build`,
-/// `peppy stack launch --node-build-idle-timeout-secs`), tighter than
-/// [`DEFAULT_IDLE_TIMEOUT_SECS`] on purpose: the build's idle clock does not
-/// depend on sporadic subprocess chatter. It also resets whenever bytes land
-/// on disk (image download, cache writes, SIF assembly, compiler output) or
-/// the build's processes burn CPU (a compiler holding one crate for minutes),
-/// sampled every 5 s. So 180 s of silence is 36 consecutive samples with no
-/// growth and no CPU: not "maybe still working", but wedged. Add and run keep
-/// the 600 s default because they have no such signal: add has quiet
-/// delta-resolution stretches, and run has no progress proxy at all (nodes
-/// legitimately initialize silently).
-pub(crate) const DEFAULT_BUILD_IDLE_TIMEOUT_SECS: u64 = 180;
+use core_node_api::encoding::DEFAULT_IDLE_TIMEOUT_SECS;
+use stack_goal::DEFAULT_BUILD_IDLE_TIMEOUT_SECS;
 /// Default absolute max timeout in seconds (safety net).
 pub(crate) const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
 

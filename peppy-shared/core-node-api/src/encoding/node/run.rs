@@ -1042,6 +1042,10 @@ mod tests {
                     ])
                     .expect("one producer is a valid set"),
                 )]),
+                daemon_scopes: BTreeMap::from([(
+                    "stack".to_owned(),
+                    serde_json::json!({ "max_copies": 4, "options": [] }),
+                )]),
                 ..plan("planner_inst")
             },
             "deliberative_planner",
@@ -1054,6 +1058,10 @@ mod tests {
         let decoded = NodeRunGoal::decode(&encoded).expect("decode");
         assert_eq!(decoded, goal);
         assert_eq!(decoded.instance_plan.clock, sim_clock());
+        assert_eq!(
+            decoded.instance_plan.daemon_scopes["stack"]["max_copies"],
+            4
+        );
         assert_eq!(
             decoded.instance_plan.slot_bindings["camera"].as_slice()[0]
                 .producer

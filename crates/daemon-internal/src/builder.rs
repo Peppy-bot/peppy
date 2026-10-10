@@ -25,7 +25,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(600); // 10 minutes
-const DEFAULT_NODE_START_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
@@ -301,7 +300,7 @@ impl ServeCommandBuilder {
                     Arc::clone(messenger),
                     resolved_core_node_name,
                     DEFAULT_NODE_STARTUP_TIMEOUT,
-                    DEFAULT_NODE_START_HEALTH_TIMEOUT,
+                    config::node::SetupTimeout::DEFAULT,
                     self.root_dir.clone(),
                     self.peppy_dirs.clone(),
                     self.messaging_ready.clone(),

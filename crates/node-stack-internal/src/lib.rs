@@ -55,9 +55,9 @@ pub use core_node_api::InstanceState;
 pub use node_stack::add_steps;
 pub use node_stack::{
     Artifact, BuildContext, BuiltInLaunch, CACHED_BUILD_REUSE_PREFIX, EntityHandle, InstanceClock,
-    NodeEntity, NodeStack, NodeStage, OutputSinks, PairEndpoint, Pairing, PairingNodeSnapshot,
-    RemoteSlotMeta, SlotAddr, StartContext, StartedInstanceCtx, TrackedNodeInstance,
-    WorkingDirGuard, pairing_slot_view,
+    NodeEntity, NodeStack, NodeStage, OUTPUT_READER_JOIN_BUDGET, OutputSinks, PairEndpoint,
+    Pairing, PairingNodeSnapshot, RemoteSlotMeta, SlotAddr, StartContext, StartedInstanceCtx,
+    TrackedNodeInstance, WorkingDirGuard, pairing_slot_view,
 };
 pub use process_group::{kill_process_group, terminate_process_group};
 pub use virtual_deptree::{NodeKey, VirtualDeptree, VirtualNodeInfo};

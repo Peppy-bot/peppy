@@ -3,6 +3,7 @@ use super::refine::{
     ServiceRefinement, TopicRefinement,
 };
 use super::retention::TopicRetention;
+use super::setup_timeout::SetupTimeout;
 use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
@@ -1570,6 +1571,41 @@ pub struct Execution {
     /// node that serves nothing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub endpoints: EndpointDeclarations,
+    /// The setup budget the node declares: how long the daemon waits for its
+    /// setup to end once it answers ready. `None` for a node that declares
+    /// none, which gets the default setup budget. Left out of the serialized
+    /// manifest when `None`, so the fingerprint of a manifest without the
+    /// key does not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_timeout_secs: Option<SetupTimeout>,
+}
+
+impl Execution {
+    /// The setup budget of the node: its declaration, else the default
+    /// setup budget.
+    pub fn setup_timeout(&self) -> SetupTimeout {
+        self.setup_timeout_secs.unwrap_or_default()
+    }
+}
+
+/// Deserializes `execution.setup_timeout_secs`, refusing a value that is not
+/// a whole number of seconds in range as a structured error naming the key
+/// and the range.
+fn deserialize_setup_timeout<'de, D>(deserializer: D) -> Result<Option<SetupTimeout>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let written = serde_json::Value::deserialize(deserializer)?;
+    SetupTimeout::from_written(&written)
+        .map(Some)
+        .map_err(|refusal| {
+            de::Error::custom(
+                crate::error::StructuredError::SetupTimeoutOutOfRange {
+                    written: refusal.written().to_owned(),
+                }
+                .json5_message(),
+            )
+        })
 }
 
 /// Custom deserialization for [`Execution`] so a missing `language` field
@@ -1591,6 +1627,8 @@ impl<'de> Deserialize<'de> for Execution {
             container: Option<ContainerConfig>,
             #[serde(default, deserialize_with = "deserialize_endpoints")]
             endpoints: EndpointDeclarations,
+            #[serde(default, deserialize_with = "deserialize_setup_timeout")]
+            setup_timeout_secs: Option<SetupTimeout>,
         }
 
         let raw = RawExecution::deserialize(deserializer)?;
@@ -1606,6 +1644,7 @@ impl<'de> Deserialize<'de> for Execution {
             run_cmd: raw.run_cmd,
             container: raw.container,
             endpoints: raw.endpoints,
+            setup_timeout_secs: raw.setup_timeout_secs,
         })
     }
 }

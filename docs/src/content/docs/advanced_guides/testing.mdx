@@ -165,7 +165,7 @@ async fn a_failing_setup_fails_through_shutdown() {
   </TabItem>
 </Tabs>
 
-The harness also exposes the running node directly: `node_runner()` (`h.node_runner`) for calling its runtime surface in-process, `instance_id()` (`h.instance_id`) for the generated instance id, `setup_finished()` to ask whether `setup` has returned, and `session()` (`h.session`), the fixture caller/observer session the `fixtures` callers drive the node through.
+The harness also exposes the running node directly: `node_runner()` (`h.node_runner`) for calling its runtime surface in-process, `instance_id()` (`h.instance_id`) for the generated instance id, `setup_finished()` to ask whether `setup` has returned, and `session()` (`h.session`), the fixture caller/observer session the `fixtures` callers drive the node through. Under the harness, the node reads the [setup budget](/guides/node_stack/#how-an-instance-starts) of its manifest (`setup_timeout()` in Rust, `setup_timeout_secs()` in Python), as it does under a daemon that applies that budget; the harness itself does not stop a setup at the end of the budget.
 
 ## Driving each surface
 

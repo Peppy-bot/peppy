@@ -33,6 +33,33 @@ pub struct SetMember {
     pub target: String,
 }
 
+/// The change of one copy that holds a daemon's stack: the join of a copy,
+/// which `copies` lists only once the join ends, or the removal of a copy.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CopyChange {
+    pub action: CopyAction,
+    pub name: Name,
+    pub option: String,
+}
+
+/// What a [`CopyChange`] does to its copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyAction {
+    Join,
+    Remove,
+}
+
+impl CopyAction {
+    /// The action as `stack_copies` names its member: `join` or `remove`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Join => "join",
+            Self::Remove => "remove",
+        }
+    }
+}
+
 /// `members` grouped by the slot they were added to, each slot once in the
 /// order the copy first added to it, with its targets in the order they were
 /// added. The order `stack list` prints and a join or removal delivers by.
@@ -113,6 +140,9 @@ pub struct StackListResponse {
     /// a destructive request's budget is derived from. An absent field reads
     /// as 0, which a daemon configured to wait for no cleanup also reports.
     pub shutdown_grace_secs: u64,
+    /// The join or the removal of a copy that holds this daemon's stack now.
+    /// `None` while no change runs, and while any other change runs.
+    pub copy_change: Option<CopyChange>,
 }
 
 /// Which launch a slice belongs to, and who drove it.
@@ -147,6 +177,7 @@ impl StackListResponse {
             host_name: host_name.into(),
             launch: None,
             reservation: None,
+            copy_change: None,
         }
     }
 
@@ -161,6 +192,12 @@ impl StackListResponse {
     /// reserved by a federated launch always sets this.
     pub fn with_reservation(mut self, reservation: LaunchIdentity) -> Self {
         self.reservation = Some(reservation);
+        self
+    }
+
+    /// Attaches the join or the removal of a copy that holds the stack now.
+    pub fn with_copy_change(mut self, change: CopyChange) -> Self {
+        self.copy_change = Some(change);
         self
     }
 
@@ -220,6 +257,18 @@ impl StackListResponse {
                 }
                 None => reservation.set_none(()),
             }
+            let mut copy_change = response.reborrow().init_copy_change();
+            match &self.copy_change {
+                Some(change) => {
+                    let mut wire = match change.action {
+                        CopyAction::Join => copy_change.init_join(),
+                        CopyAction::Remove => copy_change.init_remove(),
+                    };
+                    wire.set_name(change.name.as_str());
+                    wire.set_option(&change.option);
+                }
+                None => copy_change.set_none(()),
+            }
         }
         encode_message(&builder)
     }
@@ -243,6 +292,14 @@ impl StackListResponse {
             match response.get_reservation().which()? {
                 Which::None(()) => None,
                 Which::Identity(identity) => Some(decode_identity(identity?, "reservation")?),
+            }
+        };
+        let copy_change = {
+            use node_capnp::stack_list_response::copy_change::Which;
+            match response.get_copy_change().which()? {
+                Which::None(()) => None,
+                Which::Join(copy) => Some(decode_copy_change(CopyAction::Join, copy?)?),
+                Which::Remove(copy) => Some(decode_copy_change(CopyAction::Remove, copy?)?),
             }
         };
 
@@ -296,8 +353,22 @@ impl StackListResponse {
             host_name: response.get_host_name()?.to_str()?.to_owned(),
             launch,
             reservation,
+            copy_change,
         })
     }
+}
+
+/// Decodes the copy of a wire copy change, refusing a name that is not a
+/// name and a blank option.
+fn decode_copy_change(
+    action: CopyAction,
+    copy: node_capnp::changed_copy::Reader<'_>,
+) -> Result<CopyChange> {
+    Ok(CopyChange {
+        action,
+        name: read_name(copy.get_name()?.to_str()?, "copy_change.name")?,
+        option: required_text(copy.get_option()?.to_str()?, "copy_change.option")?,
+    })
 }
 
 /// Decodes one wire launch identity, refusing a blank half: a launch nobody
@@ -515,6 +586,45 @@ mod tests {
                     StackListResponse::decode(payload.as_ref()).expect_err("blank half must fail");
                 assert!(error.to_string().contains(expected), "got: {error}");
             }
+        }
+    }
+
+    /// The join or the removal that holds the stack travels with its action,
+    /// and a stack that no copy change holds reports none.
+    #[test]
+    fn response_round_trips_the_copy_change() {
+        let idle = StackListResponse::new("{}", "cn-atlas", "gen_1", "atlas");
+        let decoded = StackListResponse::decode(&idle.encode().unwrap()).unwrap();
+        assert_eq!(decoded.copy_change, None);
+        for action in [CopyAction::Join, CopyAction::Remove] {
+            let response = StackListResponse::new("{}", "cn-atlas", "gen_1", "atlas")
+                .with_copy_change(CopyChange {
+                    action,
+                    name: Name::new("bravo").unwrap(),
+                    option: "so101_sim".into(),
+                });
+            let decoded = StackListResponse::decode(&response.encode().unwrap()).unwrap();
+            assert_eq!(decoded, response);
+        }
+    }
+
+    /// A copy change that names no copy, or no option, is refused at the wire
+    /// boundary.
+    #[test]
+    fn response_decode_rejects_a_copy_change_without_its_copy() {
+        for (name, option, expected) in [
+            ("", "so101_sim", "copy_change.name"),
+            ("bad/name", "so101_sim", "copy_change.name"),
+            ("bravo", "", "copy_change.option"),
+        ] {
+            let mut builder = Builder::new_default();
+            let wire = builder.init_root::<node_capnp::stack_list_response::Builder>();
+            let mut copy = wire.init_copy_change().init_join();
+            copy.set_name(name);
+            copy.set_option(option);
+            let payload = encode_message(&builder).unwrap();
+            let error = StackListResponse::decode(&payload).expect_err("a blank copy must fail");
+            assert!(error.to_string().contains(expected), "got: {error}");
         }
     }
 

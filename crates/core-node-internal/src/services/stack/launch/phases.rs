@@ -1,4 +1,3 @@
-use crate::services::node::gate::COOPERATIVE_TEARDOWN_BUDGET;
 use core_node_api::encoding::LaunchFeedbackStep;
 use node_stack::ActionLog;
 use std::pin::Pin;
@@ -45,6 +44,17 @@ async fn watch_idle(notify: Arc<Notify>, idle_timeout: Duration) {
     }
 }
 
+/// How a phase that cannot be dropped is asked to end: the token asks it to
+/// give up what it holds, and the phase gets `budget` to do it before it is
+/// dropped. The run phase gives up a half-started instance this way, and its
+/// budget is the time a start takes to give up its instance
+/// (`start_give_up_budget`), which covers the cooperative stop of an instance
+/// that answered ready.
+pub(super) struct DrainOnCancel {
+    pub(super) token: CancellationToken,
+    pub(super) budget: Duration,
+}
+
 /// Outcome of a per-phase operation wrapped with idle + (optional) launch-deadline enforcement.
 pub(super) enum PhaseOutcome<T> {
     Completed(T),
@@ -74,15 +84,15 @@ pub(super) enum PhaseOutcome<T> {
 /// - **run** cannot rely on drop alone: `prepare_and_spawn` returns a raw
 ///   `tokio::process::Child` held on the phase future's stack with no `kill_on_drop`, so
 ///   dropping it leaves the OS process and its `Starting` stack entry behind. Callers that
-///   need run-phase cancellation pass `cancel_and_drain = Some(token)`; on timeout the
-///   runner signals the token and awaits the phase future's cooperative cleanup (bounded by
-///   `COOPERATIVE_TEARDOWN_BUDGET`) instead of dropping it.
+///   need run-phase cancellation pass `cancel_and_drain = Some(DrainOnCancel)`; on timeout
+///   the runner signals the token and awaits the phase future's cooperative cleanup (bounded
+///   by the drain's budget) instead of dropping it.
 async fn run_phase_with_timeouts<F, T>(
     phase: Pin<Box<F>>,
     activity_notify: Arc<Notify>,
     idle_timeout: Duration,
     change_deadline: Option<Instant>,
-    cancel_and_drain: Option<CancellationToken>,
+    cancel_and_drain: Option<&DrainOnCancel>,
 ) -> PhaseOutcome<T>
 where
     F: std::future::Future<Output = T> + ?Sized,
@@ -91,13 +101,13 @@ where
         None => {
             run_phase_drop_on_timeout(phase, activity_notify, idle_timeout, change_deadline).await
         }
-        Some(token) => {
+        Some(drain) => {
             run_phase_cancel_on_timeout(
                 phase,
                 activity_notify,
                 idle_timeout,
                 change_deadline,
-                token,
+                drain,
             )
             .await
         }
@@ -137,16 +147,16 @@ where
 }
 
 /// Timeout behavior for phases that own resources (e.g. a spawned child
-/// process) not reaped by `Drop`. On timeout, signals `cancel_token` and
-/// awaits the phase future for up to `COOPERATIVE_TEARDOWN_BUDGET` so it
-/// can run its own teardown (SIGKILL the child, unregister the `Starting`
-/// instance, remove temp files) before we return the timeout outcome.
+/// process) not reaped by `Drop`. On timeout, signals the drain's token and
+/// awaits the phase future for up to the drain's budget so it can run its own
+/// teardown (stop or kill the instance, unregister the `Starting` instance,
+/// remove temp files) before we return the timeout outcome.
 pub(super) async fn run_phase_cancel_on_timeout<F, T>(
     mut phase: Pin<Box<F>>,
     activity_notify: Arc<Notify>,
     idle_timeout: Duration,
     change_deadline: Option<Instant>,
-    cancel_token: CancellationToken,
+    drain: &DrainOnCancel,
 ) -> PhaseOutcome<T>
 where
     F: std::future::Future<Output = T> + ?Sized,
@@ -169,12 +179,11 @@ where
     };
 
     // Timeout fired. Ask the phase to tear itself down, then drive it to
-    // completion so its cleanup (kill child, remove `Starting` entry, delete
-    // instance dir) actually runs. If cleanup stalls past the budget we drop
-    // the future as a last resort; still strictly better than today, since
-    // the run phase would have been dropped immediately in that branch.
-    cancel_token.cancel();
-    let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, phase.as_mut()).await;
+    // completion so its cleanup (stop or kill the child, remove `Starting`
+    // entry, delete instance dir) actually runs. If cleanup stalls past the
+    // budget we drop the future as a last resort.
+    drain.token.cancel();
+    let _ = tokio::time::timeout(drain.budget, phase.as_mut()).await;
 
     timeout_kind
 }
@@ -196,26 +205,25 @@ pub(super) async fn run_phase<F, T>(
     log: &ActionLog,
     step: LaunchFeedbackStep,
     build_failure: impl FnOnce(String) -> T,
-    cancel_and_drain: Option<CancellationToken>,
+    cancel_and_drain: Option<DrainOnCancel>,
 ) -> T
 where
     F: std::future::Future<Output = T> + ?Sized,
 {
-    let drain = cancel_and_drain.clone();
     let phase = run_phase_with_timeouts(
         phase,
         activity_notify,
         idle_timeout,
         change_deadline,
-        cancel_and_drain,
+        cancel_and_drain.as_ref(),
     );
     tokio::pin!(phase);
     let outcome = tokio::select! {
         biased;
         _ = reset.cancelled() => {
-            if let Some(token) = drain {
-                token.cancel();
-                let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, phase.as_mut()).await;
+            if let Some(drain) = &cancel_and_drain {
+                drain.token.cancel();
+                let _ = tokio::time::timeout(drain.budget, phase.as_mut()).await;
             }
             let reason = "stack operation cancelled by stack reset".to_owned();
             log.error(&reason);
@@ -274,6 +282,28 @@ mod tests {
             }
             _ = std::future::pending::<()>() => unreachable!("phase should never complete on its own in these tests"),
         }
+    }
+
+    /// A drain with the fixed cooperative budget.
+    fn drain(token: CancellationToken) -> DrainOnCancel {
+        DrainOnCancel {
+            token,
+            budget: crate::services::node::gate::COOPERATIVE_TEARDOWN_BUDGET,
+        }
+    }
+
+    /// A phase whose cleanup, once the token asks for it, takes `cleanup`
+    /// before it sets `cleanup_ran`: a start that stops its instance through
+    /// the shutdown request and the grace.
+    async fn slowly_cancellable_phase(
+        cancel: CancellationToken,
+        cleanup: Duration,
+        cleanup_ran: Arc<AtomicBool>,
+    ) -> String {
+        cancel.cancelled().await;
+        tokio::time::sleep(cleanup).await;
+        cleanup_ran.store(true, Ordering::SeqCst);
+        "cleaned_up".to_owned()
     }
 
     /// Sets `dropped` when the future that owns it is dropped, observing the
@@ -353,7 +383,7 @@ mod tests {
             Arc::clone(&notify),
             Duration::from_millis(100),
             None,
-            token,
+            &drain(token),
         )
         .await;
 
@@ -381,7 +411,7 @@ mod tests {
             // Idle much larger than max so only the deadline branch can fire.
             Duration::from_secs(600),
             Some(deadline),
-            token,
+            &drain(token),
         )
         .await;
 
@@ -414,7 +444,7 @@ mod tests {
             Arc::clone(&notify),
             Duration::from_millis(100),
             Some(Instant::now() + Duration::from_millis(100)),
-            token.clone(),
+            &drain(token.clone()),
         )
         .await;
 
@@ -425,6 +455,76 @@ mod tests {
         assert!(
             !token.is_cancelled(),
             "happy path must not cancel the token",
+        );
+    }
+
+    /// The run idle limit waits for a cleanup as long as the drain budget
+    /// says, beyond the fixed cooperative budget.
+    #[tokio::test(start_paused = true)]
+    async fn cancel_on_timeout_waits_the_drain_budget_for_a_long_cleanup() {
+        let token = CancellationToken::new();
+        let cleanup_ran = Arc::new(AtomicBool::new(false));
+        let cleanup = crate::services::node::gate::COOPERATIVE_TEARDOWN_BUDGET * 2;
+
+        let outcome = run_phase_cancel_on_timeout(
+            Box::pin(slowly_cancellable_phase(
+                token.clone(),
+                cleanup,
+                Arc::clone(&cleanup_ran),
+            )),
+            Arc::new(Notify::new()),
+            Duration::from_millis(100),
+            None,
+            &DrainOnCancel {
+                token,
+                budget: cleanup + Duration::from_secs(1),
+            },
+        )
+        .await;
+
+        assert!(matches!(outcome, PhaseOutcome::IdleTimeout));
+        assert!(
+            cleanup_ran.load(Ordering::SeqCst),
+            "the cleanup ends within the drain budget"
+        );
+    }
+
+    /// A stack reset gives the run phase its drain budget too, so the start
+    /// it cancels stops its instance before the reset tears the stack down.
+    #[tokio::test(start_paused = true)]
+    async fn a_reset_waits_the_drain_budget_of_the_run_phase() {
+        let log_dir = tempfile::tempdir().expect("log dir");
+        let log = log_in(log_dir.path(), "run.log", LogKind::Run);
+        let token = CancellationToken::new();
+        let reset = CancellationToken::new();
+        let cleanup_ran = Arc::new(AtomicBool::new(false));
+        let cleanup = crate::services::node::gate::COOPERATIVE_TEARDOWN_BUDGET * 2;
+        reset.cancel();
+
+        let failure = run_phase(
+            Box::pin(slowly_cancellable_phase(
+                token.clone(),
+                cleanup,
+                Arc::clone(&cleanup_ran),
+            )),
+            Arc::new(Notify::new()),
+            Duration::from_secs(600),
+            None,
+            &reset,
+            &log,
+            LaunchFeedbackStep::RunningNode,
+            |reason| format!("failed: {reason}"),
+            Some(DrainOnCancel {
+                token,
+                budget: cleanup + Duration::from_secs(1),
+            }),
+        )
+        .await;
+
+        assert_eq!(failure, "failed: stack operation cancelled by stack reset");
+        assert!(
+            cleanup_ran.load(Ordering::SeqCst),
+            "the reset waits for the cleanup within the drain budget"
         );
     }
 

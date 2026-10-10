@@ -372,7 +372,7 @@ impl ServeCommandEmulation {
             host_addresses: Some(test_host_addresses()),
             arguments: CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
-                node_start_health_timeout: Duration::from_secs(30),
+                default_setup_timeout: config::node::SetupTimeout::from_secs(30).expect("in range"),
                 health_monitor: HealthMonitorPolicy {
                     interval: Duration::from_secs(5),
                     timeout: Duration::from_secs(3),

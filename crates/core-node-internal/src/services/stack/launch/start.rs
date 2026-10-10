@@ -254,6 +254,7 @@ pub(in crate::services::stack) async fn start_node_instances(
                 arguments: instance.arguments.clone(),
                 clock: clocks.binding_for(instance_id),
                 slot_bindings,
+                daemon_scopes: instance.daemon_scopes.clone(),
                 ..config::runtime::NodeInstancePlan::new(instance.instance_id.clone())
             };
 

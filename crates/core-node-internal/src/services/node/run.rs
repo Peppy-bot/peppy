@@ -6,9 +6,11 @@ use super::gate::ConcurrencyGate;
 use super::health_monitor::{HealthMonitorParams, HealthMonitorPolicy, spawn_health_monitor};
 use super::pairing::plan_requested_pairs;
 use super::stack_log::{StackLog, StackLogEvent};
+use super::stop::{DoomedInstance, StopOutcome};
 use super::{FeedbackLine, RelationshipCoordinators};
 use crate::Result;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
+use config::node::SetupTimeout;
 use config::peppy_config::SubscriberBufferConfig;
 use config::runtime::Name;
 use config::runtime::RuntimeConfig;
@@ -21,7 +23,9 @@ use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::VacantReason;
 use daemon_config::peppy_config::PeppyConfig;
 use futures::FutureExt;
-use node_stack::{self, ActionLog, Announcer, EntityHandle, NodeEntity, NodeStack};
+use node_stack::{
+    self, ActionLog, Announcer, EntityHandle, NodeEntity, NodeStack, StartedInstanceCtx,
+};
 use peppylib::encoding::endpoints::{NodeEndpointsRequest, NodeEndpointsResponse};
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
@@ -56,6 +60,103 @@ const CONTAINER_DRAIN_QUIET_WINDOW: Duration = Duration::from_millis(100);
 /// stdout drains shortly after. It only bounds a wedged reader or a container
 /// that never produces the stdout the drain was told to wait for.
 const DRAIN_MAX_WAIT: Duration = Duration::from_secs(2);
+
+/// How long the daemon waits for a healthy instance to report the endpoints it
+/// bound during its setup.
+const NODE_ENDPOINTS_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The longest [`process_node_run`] takes to give up a start once it decides
+/// to: the cooperative stop of the instance ([`super::teardown_timeout`]), the
+/// join of its output readers and the drain of its feedback. A stack reset and
+/// the run idle limit of a launch wait this long for a start they cancel, so
+/// the instance's shutdown hooks run to their end.
+pub(crate) fn start_give_up_budget(shutdown_grace: Duration) -> Duration {
+    super::teardown_timeout(shutdown_grace) + node_stack::OUTPUT_READER_JOIN_BUDGET + DRAIN_MAX_WAIT
+}
+
+// The ready signal restarts the run idle budget of a launch, and the largest
+// setup budget stays below its default, so a setup that prints nothing runs out
+// its setup budget and not the idle one.
+const _: () = assert!(SetupTimeout::MAX_SECS < core_node_api::encoding::DEFAULT_IDLE_TIMEOUT_SECS);
+
+/// The setup budget of one start: how long the daemon waits for the setup of
+/// the instance to end (its health signal) once it answers ready, and where
+/// the budget comes from, which the daemon's messages name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SetupBudget {
+    timeout: SetupTimeout,
+    source: SetupBudgetSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SetupBudgetSource {
+    /// The `execution.setup_timeout_secs` of the node `name:tag`.
+    Declared { node: String },
+    /// The daemon's default setup budget.
+    Default,
+}
+
+impl SetupBudget {
+    /// The budget the node `node_name:tag` declares, else the daemon's
+    /// default setup budget.
+    fn resolve(
+        node_name: &str,
+        tag: &str,
+        declared: Option<SetupTimeout>,
+        default_setup_timeout: SetupTimeout,
+    ) -> Self {
+        match declared {
+            Some(timeout) => Self {
+                timeout,
+                source: SetupBudgetSource::Declared {
+                    node: format!("{node_name}:{tag}"),
+                },
+            },
+            None => Self {
+                timeout: default_setup_timeout,
+                source: SetupBudgetSource::Default,
+            },
+        }
+    }
+
+    fn duration(&self) -> Duration {
+        self.timeout.as_duration()
+    }
+
+    /// The budget and its source, as the messages of a start name them.
+    fn described(&self) -> String {
+        let secs = self.timeout.as_secs();
+        match &self.source {
+            SetupBudgetSource::Declared { node } => format!(
+                "{secs} s, the setup budget `{node}` declares in `execution.setup_timeout_secs`"
+            ),
+            SetupBudgetSource::Default => format!("{secs} s, the default setup budget"),
+        }
+    }
+
+    /// The progress line of a start once the instance answers ready.
+    fn ready_line(&self, instance_id: &str) -> String {
+        format!(
+            "`{instance_id}` is ready; waiting for its setup up to {}",
+            self.described()
+        )
+    }
+
+    /// The failure of a start whose setup outlasts the budget. A setup that
+    /// ran out the default setup budget is told how to declare its own.
+    fn timed_out(&self) -> String {
+        let failure = format!("the setup did not end within {}", self.described());
+        match self.source {
+            SetupBudgetSource::Declared { .. } => failure,
+            SetupBudgetSource::Default => format!(
+                "{failure}; a node whose setup takes longer declares its setup budget in \
+                 `execution.setup_timeout_secs` of its manifest, from {} to {} s",
+                SetupTimeout::MIN_SECS,
+                SetupTimeout::MAX_SECS
+            ),
+        }
+    }
+}
 
 /// Quiet window to use for the given node kind. See the constants above.
 fn drain_quiet_window(is_container: bool) -> Duration {
@@ -147,7 +248,8 @@ impl DaemonDefaults {
 #[derive(Clone)]
 pub struct NodeRunServiceConfig {
     pub node_startup_timeout: Duration,
-    pub node_start_health_timeout: Duration,
+    /// The setup budget of an instance whose node declares none.
+    pub default_setup_timeout: SetupTimeout,
     pub peppy_dirs: PeppyDirs,
     pub health_monitor: HealthMonitorPolicy,
     pub daemon_defaults: DaemonDefaults,
@@ -168,7 +270,8 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) core_node_name: String,
     pub(crate) caller_instance_id: String,
     pub(crate) node_startup_timeout: Duration,
-    pub(crate) node_start_health_timeout: Duration,
+    /// The setup budget of an instance whose node declares none.
+    pub(crate) default_setup_timeout: SetupTimeout,
     pub(crate) peppy_dirs: PeppyDirs,
     pub(crate) health_monitor: HealthMonitorPolicy,
     pub(crate) daemon_defaults: DaemonDefaults,
@@ -233,7 +336,7 @@ pub async fn listen_for_node_run(
             core_node_name: core_node_name.to_string(),
             caller_instance_id: instance_id.to_string(),
             node_startup_timeout: config.node_startup_timeout,
-            node_start_health_timeout: config.node_start_health_timeout,
+            default_setup_timeout: config.default_setup_timeout,
             peppy_dirs: config.peppy_dirs,
             health_monitor: config.health_monitor,
             daemon_defaults: config.daemon_defaults,
@@ -636,6 +739,7 @@ async fn handle_goal_request(
     // this goal's own, which descends from it.
     let reset = slice_ownership.stack.cancellation();
     let cancellation = reset.child_token();
+    let reset_grace = action_context.node_stack.shutdown_grace();
     tokio::spawn(async move {
         // Frees the gate slot on every exit: explicitly before completion on the
         // normal path (via `release_then_complete` below), or on unwind for a
@@ -659,9 +763,12 @@ async fn handle_goal_request(
             cancellation.clone(),
         );
         let work = under_goal_cancel(&goal_ctx, &cancellation, work);
-        let work = crate::services::node::gate::finish_on_reset(work, &reset, || {
-            NodeRunResult::failure("node run cancelled by stack reset")
-        });
+        let work = crate::services::node::gate::finish_on_reset(
+            work,
+            &reset,
+            crate::services::node::gate::reset_drain_budget(reset_grace),
+            || NodeRunResult::failure("node run cancelled by stack reset"),
+        );
         tokio::pin!(work);
 
         let mut feedback_open = true;
@@ -992,6 +1099,13 @@ async fn process_node_run(
         return NodeRunResult::failure(msg);
     }
 
+    let setup_budget = SetupBudget::resolve(
+        &node_name,
+        &tag,
+        node_config.execution.setup_timeout_secs,
+        ctx.action.default_setup_timeout,
+    );
+
     // Pairing pre-spawn check (the trust-boundary twin of the CLI preflight
     // and the launcher validator): coverage of every required slot, and
     // resolution of each requested target to one concrete peer slot. Loud
@@ -1209,9 +1323,11 @@ async fn process_node_run(
     let host_source = ctx.action.daemon_defaults.host_addresses.clone();
     apply_daemon_defaults(
         &mut launch_config,
-        ctx.action.daemon_defaults,
+        ctx.action.daemon_defaults.clone(),
         container_gateway.is_some(),
     );
+    // The setup budget this daemon waits for, so the node can read it.
+    launch_config.lifecycle.setup_timeout_secs = setup_budget.timeout;
     if let Some(gateway) = &container_gateway
         && is_host_local_router(&launch_config.messaging_host)
     {
@@ -1297,7 +1413,7 @@ async fn process_node_run(
         return NodeRunResult::failure(msg);
     }
 
-    let (mut child, started_ctx) =
+    let (child, started_ctx) =
         match node_stack::NodeEntity::prepare_and_spawn(&entity_handle, start_ctx).await {
             Ok(t) => t,
             Err(e) => {
@@ -1310,6 +1426,17 @@ async fn process_node_run(
                 return NodeRunResult::failure(msg);
             }
         };
+
+    let abandon = StartAbandon {
+        ctx: &ctx,
+        entity_handle: &entity_handle,
+        instance_id: &instance_id,
+        node_name: &node_name,
+        node_tag: &tag,
+        is_container,
+        feedback_sync: &feedback_sync,
+        publish_enabled: &publish_enabled,
+    };
 
     // Reserve every planned pair now that this instance is registered (in
     // `Starting`). The registry re-validates under its own lock, so a peer
@@ -1324,25 +1451,14 @@ async fn process_node_run(
             "failed to reserve pair for slot `{}`: {reserve_msg}",
             pair.own.link_id
         );
-        ctx.action
-            .relationships
-            .pairing()
-            .dissolve_for_instance(instance_id_str)
+        return abandon
+            .give_up(
+                child,
+                started_ctx,
+                StartStage::BeforeReady,
+                StartFailure::Reason(reason),
+            )
             .await;
-        let msg = node_stack::NodeEntity::abort_started(
-            &entity_handle,
-            child,
-            started_ctx,
-            reason,
-            &instance_id,
-        )
-        .await;
-        ctx.announcer.log().error(&msg);
-        feedback_sync
-            .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
-            .await;
-        publish_enabled.store(false, Ordering::Release);
-        return NodeRunResult::failure(msg);
     }
 
     let signal_target = NodeSignalTarget {
@@ -1362,322 +1478,264 @@ async fn process_node_run(
     );
 
     // Race the ready-signal wait against external cancellation. If the outer
-    // idle/max-timeout watchdog cancels while the node is quietly starting,
-    // we must SIGKILL the child and unregister the `Starting` instance;
-    // otherwise the OS process outlives the launch failure.
-    let ready_outcome = tokio::select! {
+    // idle/max-timeout watchdog or a stack reset cancels while the node is
+    // quietly starting, its process group is killed and the `Starting`
+    // instance unregistered; otherwise the OS processes outlive the launch
+    // failure. The node does not listen for the shutdown request yet.
+    let ready = tokio::select! {
         biased;
-        _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
-        res = poll_startup_service(&signal_target, StartupProbe::Ready, ctx.action.node_startup_timeout, &mut child) => {
-            match res {
-                Ok(_) => StartupOutcome::Ok,
-                Err(e) => StartupOutcome::Failed(e),
-            }
-        }
+        _ = cancel_token.cancelled() => Err(StartFailure::cancelled("ready-signal wait")),
+        res = poll_startup_service(&signal_target, StartupProbe::Ready, ctx.action.node_startup_timeout, &child) => res.map(drop),
     };
-
-    if let Some(reason) = startup_abort_reason(&ready_outcome) {
+    if let Err(failure) = ready {
         debug!(
             "Aborting node instance '{}' during ready wait: {}",
-            instance_id_str, reason
+            instance_id_str, failure
         );
-        ctx.action
-            .relationships
-            .pairing()
-            .dissolve_for_instance(instance_id_str)
+        return abandon
+            .give_up(child, started_ctx, StartStage::BeforeReady, failure)
             .await;
-        let msg = node_stack::NodeEntity::abort_started(
-            &entity_handle,
-            child,
-            started_ctx,
-            reason.to_string(),
-            &instance_id,
-        )
-        .await;
-        feedback_sync
-            .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
-            .await;
-        publish_enabled.store(false, Ordering::Release);
-        return NodeRunResult::failure(msg);
     }
 
     debug!(
-        "Node instance '{}' is ready, performing health check...",
+        "Node instance '{}' is ready, waiting for its setup...",
         instance_id_str
     );
+    // A progress line: it restarts the run idle budget of a launch, here and
+    // through the feedback a remote start relays, so a silent setup runs out
+    // its setup budget and not the idle one.
+    ctx.announcer
+        .progress(setup_budget.ready_line(instance_id_str));
 
-    let health_outcome = tokio::select! {
+    // From the ready signal on, the node answers the shutdown request: a start
+    // given up from here stops the instance cooperatively, so its shutdown
+    // hooks run.
+    let setup = tokio::select! {
         biased;
-        _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
-        res = poll_startup_service(&signal_target, StartupProbe::Health, ctx.action.node_start_health_timeout, &mut child) => {
-            match res {
-                Ok(_) => StartupOutcome::Ok,
-                Err(e) => StartupOutcome::Failed(e),
-            }
-        }
+        _ = cancel_token.cancelled() => Err(StartFailure::cancelled("setup")),
+        res = poll_startup_service(&signal_target, StartupProbe::Health(&setup_budget), setup_budget.duration(), &child) => res.map(drop),
     };
 
     // The endpoints the node bound during setup, read once it is healthy
     // (the runtime seals and offers them in the same post-setup step as
     // `node_health`) and expanded against this machine's addresses. A node
     // whose manifest declares none is never asked.
-    let mut endpoints = Vec::new();
-    let health_outcome = match health_outcome {
-        StartupOutcome::Ok if !node_config.execution.endpoints.is_empty() => {
+    let endpoints = match setup {
+        Ok(()) if !node_config.execution.endpoints.is_empty() => {
             let host = host_addresses(&host_source);
             tokio::select! {
                 biased;
-                _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
-                res = poll_startup_service(&signal_target, StartupProbe::Endpoints, ctx.action.node_start_health_timeout, &mut child) => {
-                    match res.and_then(|reply| {
-                        let response = NodeEndpointsResponse::decode(reply.as_ref())
-                            .map_err(|e| format!("failed to decode the node endpoints reply: {e}"))?;
+                _ = cancel_token.cancelled() => Err(StartFailure::cancelled("setup")),
+                res = poll_startup_service(&signal_target, StartupProbe::Endpoints, NODE_ENDPOINTS_TIMEOUT, &child) => {
+                    res.and_then(|reply| {
+                        let response = NodeEndpointsResponse::decode(reply.as_ref()).map_err(|e| {
+                            StartFailure::Reason(format!(
+                                "failed to decode the node endpoints reply: {e}"
+                            ))
+                        })?;
                         expand_announcements(
                             instance_id_str,
                             &node_config.execution.endpoints,
                             response.endpoints,
                             &host,
                         )
-                    }) {
-                        Ok(read) => {
-                            endpoints = read;
-                            StartupOutcome::Ok
-                        }
-                        Err(e) => StartupOutcome::Failed(e),
-                    }
+                        .map_err(StartFailure::Reason)
+                    })
                 }
             }
         }
-        other => other,
+        Ok(()) => Ok(Vec::new()),
+        Err(failure) => Err(failure),
     };
-
-    match health_outcome {
-        StartupOutcome::Ok => {
+    let endpoints = match endpoints {
+        Ok(endpoints) => endpoints,
+        Err(failure) => {
             debug!(
-                "Health check passed for node instance '{}'",
-                instance_id_str
+                "Aborting node instance '{}' during setup: {}",
+                instance_id_str, failure
             );
-            // Last chance to bail out cleanly: once `commit_started` succeeds
-            // the child is owned by the stack and a late cancel would have to
-            // go through the normal stop path instead of abort_started.
-            if cancel_token.is_cancelled() {
-                let reason = "cancelled before commit".to_string();
-                debug!(
-                    "Aborting node instance '{}' after health check: {}",
-                    instance_id_str, reason
-                );
-                ctx.action
-                    .relationships
-                    .pairing()
-                    .dissolve_for_instance(instance_id_str)
-                    .await;
-                let msg = node_stack::NodeEntity::abort_started(
-                    &entity_handle,
-                    child,
-                    started_ctx,
-                    reason,
-                    &instance_id,
-                )
+            return abandon
+                .give_up(child, started_ctx, StartStage::AfterReady, failure)
                 .await;
-                feedback_sync
-                    .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
-                    .await;
-                publish_enabled.store(false, Ordering::Release);
-                return NodeRunResult::failure(msg);
-            }
-            let pid = child.id().unwrap_or(0);
-            let commit_result = node_stack::NodeEntity::commit_started(
-                &entity_handle,
+        }
+    };
+    debug!(
+        "Health check passed for node instance '{}'",
+        instance_id_str
+    );
+    // Last chance to bail out cleanly: once `commit_started` succeeds
+    // the child is owned by the stack and a late cancel would have to
+    // go through the normal stop path instead of abort_started.
+    if cancel_token.is_cancelled() {
+        let reason = "cancelled before commit".to_string();
+        debug!(
+            "Aborting node instance '{}' after health check: {}",
+            instance_id_str, reason
+        );
+        return abandon
+            .give_up(
                 child,
                 started_ctx,
-                instance_id.clone(),
-                endpoints.clone(),
+                StartStage::AfterReady,
+                StartFailure::Reason(reason),
             )
             .await;
-            match commit_result {
-                Ok(committed_child) => {
-                    // Cancelled by the exit watcher once the node's process
-                    // exits on its own, so the health monitor stops probing a
-                    // now-terminal instance instead of logging a spurious
-                    // "became unhealthy" on the way out.
-                    let instance_done = CancellationToken::new();
-                    let stack_log = StackLog::for_instance(
-                        &ctx.action.peppy_dirs,
-                        ctx.action.node_stack.log_exporter().clone(),
-                        instance_id.as_str(),
-                        runtime_config.node_name.as_str(),
-                        &tag,
-                        launch_id.as_deref(),
-                    );
+    }
+    let pid = child.id().unwrap_or(0);
+    let commit_result = node_stack::NodeEntity::commit_started(
+        &entity_handle,
+        child,
+        started_ctx,
+        instance_id.clone(),
+        endpoints.clone(),
+    )
+    .await;
+    match commit_result {
+        Ok(committed_child) => {
+            // Cancelled by the exit watcher once the node's process
+            // exits on its own, so the health monitor stops probing a
+            // now-terminal instance instead of logging a spurious
+            // "became unhealthy" on the way out.
+            let instance_done = CancellationToken::new();
+            let stack_log = StackLog::for_instance(
+                &ctx.action.peppy_dirs,
+                ctx.action.node_stack.log_exporter().clone(),
+                instance_id.as_str(),
+                runtime_config.node_name.as_str(),
+                &tag,
+                launch_id.as_deref(),
+            );
 
-                    spawn_exit_watcher(ExitWatcherParams {
-                        child: committed_child,
-                        entity_handle: Arc::clone(&entity_handle),
-                        to_node_name: runtime_config.node_name.as_str().to_owned(),
-                        node_tag: tag.clone(),
-                        target_instance_id: instance_id.clone(),
-                        stack_log: stack_log.clone(),
-                        relationships: ctx.action.relationships.clone(),
-                        instance_done: instance_done.clone(),
-                        shutdown_token: ctx.action.shutdown_token.clone(),
-                    });
+            spawn_exit_watcher(ExitWatcherParams {
+                child: committed_child,
+                entity_handle: Arc::clone(&entity_handle),
+                to_node_name: runtime_config.node_name.as_str().to_owned(),
+                node_tag: tag.clone(),
+                target_instance_id: instance_id.clone(),
+                stack_log: stack_log.clone(),
+                relationships: ctx.action.relationships.clone(),
+                instance_done: instance_done.clone(),
+                shutdown_token: ctx.action.shutdown_token.clone(),
+            });
 
-                    spawn_health_monitor(HealthMonitorParams {
-                        messenger: ctx.action.messenger.clone(),
-                        core_node_name: ctx.action.core_node_name.clone(),
-                        caller_instance_id: ctx.action.caller_instance_id.clone(),
-                        to_node_name: runtime_config.node_name.as_str().to_owned(),
-                        target_core_node: runtime_config.bound_core_node.as_str().to_owned(),
-                        target_instance_id: instance_id.clone(),
-                        node_tag: tag.clone(),
-                        node_stack: Arc::clone(&ctx.action.node_stack),
-                        stack_log,
-                        policy: ctx.action.health_monitor,
-                        shutdown_token: ctx.action.shutdown_token.clone(),
-                        instance_done,
-                    });
+            spawn_health_monitor(HealthMonitorParams {
+                messenger: ctx.action.messenger.clone(),
+                core_node_name: ctx.action.core_node_name.clone(),
+                caller_instance_id: ctx.action.caller_instance_id.clone(),
+                to_node_name: runtime_config.node_name.as_str().to_owned(),
+                target_core_node: runtime_config.bound_core_node.as_str().to_owned(),
+                target_instance_id: instance_id.clone(),
+                node_tag: tag.clone(),
+                node_stack: Arc::clone(&ctx.action.node_stack),
+                stack_log,
+                policy: ctx.action.health_monitor,
+                shutdown_token: ctx.action.shutdown_token.clone(),
+                instance_done,
+            });
 
-                    // Register this instance's own observer slots before the
-                    // lifecycle notify below, so the `on_instance_running`
-                    // observer branch finds them and delivers each slot's whole
-                    // member set. Empty for a non-observer.
-                    // Additive: one instance is merged into the live
-                    // registry, leaving every other instance's entry standing.
-                    if !planned_observations.is_empty() {
-                        ctx.action
-                            .relationships
-                            .observation()
-                            .register_instance(instance_id_str, &planned_observations);
-                    }
+            // Register this instance's own observer slots before the
+            // lifecycle notify below, so the `on_instance_running`
+            // observer branch finds them and delivers each slot's whole
+            // member set. Empty for a non-observer.
+            // Additive: one instance is merged into the live
+            // registry, leaving every other instance's entry standing.
+            if !planned_observations.is_empty() {
+                ctx.action
+                    .relationships
+                    .observation()
+                    .register_instance(instance_id_str, &planned_observations);
+            }
 
-                    // The instance is Running: notify the observation
-                    // coordinator. If this instance is a source, every slot
-                    // observing it is re-delivered whole at a freshly bumped
-                    // generation for that member; if it is itself an observer,
-                    // it receives every slot it declares, each member stamped
-                    // with its own liveness. Best-effort and independent of
-                    // pairing, so it always runs (a source need not be paired).
-                    ctx.action
-                        .relationships
-                        .observation()
-                        .on_instance_running(instance_id_str)
-                        .await;
+            // The instance is Running: notify the observation
+            // coordinator. If this instance is a source, every slot
+            // observing it is re-delivered whole at a freshly bumped
+            // generation for that member; if it is itself an observer,
+            // it receives every slot it declares, each member stamped
+            // with its own liveness. Best-effort and independent of
+            // pairing, so it always runs (a source need not be paired).
+            ctx.action
+                .relationships
+                .observation()
+                .on_instance_running(instance_id_str)
+                .await;
 
-                    // The same event, for the daemons that cannot see it. An
-                    // observer on another machine has no local lifecycle event
-                    // to react to, so without this its subscription would never
-                    // activate and a source restart would go unnoticed. Records
-                    // the watchers first: they arrived on this goal, and the
-                    // announcement is what they are for.
-                    ctx.action
-                        .relationships
-                        .notifier()
-                        .set_watchers(instance_id_str, &lifecycle_watchers);
-                    ctx.action
-                        .relationships
-                        .notifier()
-                        .announce_running(instance_id_str)
-                        .await;
+            // The same event, for the daemons that cannot see it. An
+            // observer on another machine has no local lifecycle event
+            // to react to, so without this its subscription would never
+            // activate and a source restart would go unnoticed. Records
+            // the watchers first: they arrived on this goal, and the
+            // announcement is what they are for.
+            ctx.action
+                .relationships
+                .notifier()
+                .set_watchers(instance_id_str, &lifecycle_watchers);
+            ctx.action
+                .relationships
+                .notifier()
+                .announce_running(instance_id_str)
+                .await;
 
-                    // The instance is Running: deliver every reserved pin
-                    // live over `peer_update` (boot config is always
-                    // all-Unpaired, so this is the only way slots get
-                    // paired). The watchers above are already running, so
-                    // the process is reaped even if the run fails here.
-                    if !planned_pairs.is_empty() {
-                        if let Err(reason) = ctx
-                            .action
-                            .relationships
-                            .pairing()
-                            .deliver_pairs_for_instance(instance_id_str, &planned_pairs)
-                            .await
-                        {
-                            ctx.action
-                                .relationships
-                                .pairing()
-                                .dissolve_for_instance(instance_id_str)
-                                .await;
-                            let msg = format!(
-                                "node instance '{instance_id_str}' started but pairing \
-                                 delivery failed: {reason}. The instance was left running \
-                                 with its pairing slots unpaired; stop it with \
-                                 `peppy node stop {instance_id_str}`"
-                            );
-                            ctx.announcer.log().error(&msg);
-                            feedback_sync
-                                .drain_or_warn(
-                                    instance_id_str,
-                                    drain_quiet_window(is_container),
-                                    false,
-                                )
-                                .await;
-                            publish_enabled.store(false, Ordering::Release);
-                            return NodeRunResult::failure(msg);
-                        }
-                        for pair in &planned_pairs {
-                            ctx.announcer
-                                .line(format!("paired: {} ⇌ {}", pair.own, pair.peer));
-                        }
-                    }
-
-                    // Wait until the readers have drained the child's startup
-                    // output onto the feedback stream before closing it. Keyed
-                    // off a positive "reader caught up" signal, so heavy load
-                    // delays the close instead of dropping output. Containers
-                    // wait for their first stdout line; processes do not, so a
-                    // silent process is not penalized.
-                    feedback_sync
-                        .drain_or_warn(
-                            instance_id_str,
-                            drain_quiet_window(is_container),
-                            is_container,
-                        )
-                        .await;
-                    let result = NodeRunResult::success(pid).with_endpoints(endpoints);
-                    publish_enabled.store(false, Ordering::Release);
-                    result
-                }
-                Err(e) => {
-                    let msg = format!("Failed to register instance: {}", e);
+            // The instance is Running: deliver every reserved pin
+            // live over `peer_update` (boot config is always
+            // all-Unpaired, so this is the only way slots get
+            // paired). The watchers above are already running, so
+            // the process is reaped even if the run fails here.
+            if !planned_pairs.is_empty() {
+                if let Err(reason) = ctx
+                    .action
+                    .relationships
+                    .pairing()
+                    .deliver_pairs_for_instance(instance_id_str, &planned_pairs)
+                    .await
+                {
                     ctx.action
                         .relationships
                         .pairing()
                         .dissolve_for_instance(instance_id_str)
                         .await;
+                    let msg = format!(
+                        "node instance '{instance_id_str}' started but pairing \
+                         delivery failed: {reason}. The instance was left running \
+                         with its pairing slots unpaired; stop it with \
+                         `peppy node stop {instance_id_str}`"
+                    );
                     ctx.announcer.log().error(&msg);
                     feedback_sync
                         .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
                         .await;
                     publish_enabled.store(false, Ordering::Release);
-                    NodeRunResult::failure(msg)
+                    return NodeRunResult::failure(msg);
+                }
+                for pair in &planned_pairs {
+                    ctx.announcer
+                        .line(format!("paired: {} ⇌ {}", pair.own, pair.peer));
                 }
             }
+
+            // Wait until the readers have drained the child's startup
+            // output onto the feedback stream before closing it. Keyed
+            // off a positive "reader caught up" signal, so heavy load
+            // delays the close instead of dropping output. Containers
+            // wait for their first stdout line; processes do not, so a
+            // silent process is not penalized.
+            feedback_sync
+                .drain_or_warn(
+                    instance_id_str,
+                    drain_quiet_window(is_container),
+                    is_container,
+                )
+                .await;
+            let result = NodeRunResult::success(pid).with_endpoints(endpoints);
+            publish_enabled.store(false, Ordering::Release);
+            result
         }
-        StartupOutcome::Cancelled | StartupOutcome::Failed(_) => {
-            let reason = match health_outcome {
-                StartupOutcome::Cancelled => "cancelled during health check".to_string(),
-                StartupOutcome::Failed(e) => e,
-                StartupOutcome::Ok => unreachable!(),
-            };
-            debug!(
-                "Aborting node instance '{}' during health check: {}",
-                instance_id_str, reason
-            );
+        Err(e) => {
+            let msg = format!("Failed to register instance: {}", e);
             ctx.action
                 .relationships
                 .pairing()
                 .dissolve_for_instance(instance_id_str)
                 .await;
-            let msg = node_stack::NodeEntity::abort_started(
-                &entity_handle,
-                child,
-                started_ctx,
-                reason,
-                &instance_id,
-            )
-            .await;
-            // The run log is where an operator reads why an instance never
-            // started; the reason travels on the result too.
             ctx.announcer.log().error(&msg);
             feedback_sync
                 .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
@@ -1688,19 +1746,149 @@ async fn process_node_run(
     }
 }
 
-/// Outcome of a startup step (ready-signal wait, health check, endpoint
-/// read) racing against external cancellation.
-enum StartupOutcome {
-    Ok,
-    Cancelled,
-    Failed(String),
+/// How far a start got before the daemon gave it up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartStage {
+    /// The node has not answered ready, and does not listen for the shutdown
+    /// request yet.
+    BeforeReady,
+    /// The node answered ready, and answers the shutdown request.
+    AfterReady,
 }
 
-fn startup_abort_reason(outcome: &StartupOutcome) -> Option<&str> {
-    match outcome {
-        StartupOutcome::Ok => None,
-        StartupOutcome::Cancelled => Some("cancelled during ready-signal wait"),
-        StartupOutcome::Failed(msg) => Some(msg.as_str()),
+/// What [`process_node_run`] needs to give up the start of an instance it
+/// spawned and has not committed to Running.
+struct StartAbandon<'a> {
+    ctx: &'a ProcessNodeRunContext,
+    entity_handle: &'a EntityHandle,
+    instance_id: &'a Name,
+    node_name: &'a str,
+    node_tag: &'a str,
+    is_container: bool,
+    feedback_sync: &'a FeedbackSync,
+    publish_enabled: &'a AtomicBool,
+}
+
+impl StartAbandon<'_> {
+    /// Gives up the start. After the ready signal, an instance whose leader
+    /// still runs is stopped through its cooperative stop (the shutdown
+    /// request, the grace, then a kill of its process group), so its shutdown
+    /// hooks run; else its process group is killed at once. Then the instance
+    /// leaves the stack, and the failure gives its reason with the tail of
+    /// its stderr, which the run log holds too.
+    ///
+    /// The start never reaps the leader before this kill (see
+    /// [`leader_runs`]), so `child.id()` still names the leader's process
+    /// group, and the kill reaches every process the leader left in it.
+    async fn give_up(
+        &self,
+        mut child: Child,
+        started_ctx: StartedInstanceCtx,
+        stage: StartStage,
+        failure: StartFailure<'_>,
+    ) -> NodeRunResult {
+        let instance_id = self.instance_id.as_str();
+        let target = DoomedInstance {
+            node_name: self.node_name.to_owned(),
+            node_tag: self.node_tag.to_owned(),
+            instance_id: self.instance_id.clone(),
+            pid: child.id(),
+            is_container: self.is_container,
+        };
+        self.ctx
+            .action
+            .relationships
+            .pairing()
+            .dissolve_for_instance(instance_id)
+            .await;
+        let reason = match failure {
+            StartFailure::Reason(reason) => {
+                if stage == StartStage::AfterReady && leader_runs(&child) {
+                    self.stop_cooperatively(&target, &reason).await;
+                } else {
+                    super::stop::kill_process_groups(std::slice::from_ref(&target)).await;
+                }
+                reason
+            }
+            StartFailure::LeaderExited(probe) => {
+                super::stop::kill_process_groups(std::slice::from_ref(&target)).await;
+                // Reaped only now that its group is killed.
+                match child.wait().await {
+                    Ok(status) => probe.exited(&status),
+                    Err(err) => probe.exited(&format!("unknown: {err}")),
+                }
+            }
+        };
+        let msg = NodeEntity::abort_started(
+            self.entity_handle,
+            child,
+            started_ctx,
+            reason,
+            self.instance_id,
+        )
+        .await;
+        // The run log is where an operator reads why an instance never
+        // started; the reason travels on the result too.
+        self.ctx.announcer.log().error(&msg);
+        self.feedback_sync
+            .drain_or_warn(instance_id, drain_quiet_window(self.is_container), false)
+            .await;
+        self.publish_enabled.store(false, Ordering::Release);
+        NodeRunResult::failure(msg)
+    }
+
+    /// The cooperative stop of `peppy node stop`, for a starting instance.
+    async fn stop_cooperatively(&self, target: &DoomedInstance, reason: &str) {
+        let instance_id = self.instance_id.as_str();
+        let grace = self.ctx.action.node_stack.shutdown_grace();
+        self.ctx.announcer.line(format!(
+            "stopping `{instance_id}` through its shutdown request: {reason}"
+        ));
+        let outcome = super::stop::force_stop_instance(
+            &self.ctx.action.messenger,
+            &self.ctx.action.core_node_name,
+            &self.ctx.action.caller_instance_id,
+            target,
+            grace,
+        )
+        .await;
+        if outcome == StopOutcome::ForceKilled {
+            self.ctx.announcer.warning(format!(
+                "`{instance_id}` did not exit within {} s of its shutdown request; its process \
+                 group was killed",
+                super::force_kill_deadline(grace).as_secs()
+            ));
+        }
+    }
+}
+
+/// Why the daemon gives up a start.
+enum StartFailure<'a> {
+    /// The reason the failure gives.
+    Reason(String),
+    /// The leader process exited while `probe` was pending. It is not reaped
+    /// yet, so its pid still names its process group; its exit status is
+    /// read once the group is killed.
+    LeaderExited(StartupProbe<'a>),
+}
+
+impl StartFailure<'_> {
+    /// A cancel of the start, during `step`.
+    fn cancelled(step: &str) -> Self {
+        Self::Reason(format!("cancelled during {step}"))
+    }
+}
+
+impl std::fmt::Display for StartFailure<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Reason(reason) => f.write_str(reason),
+            Self::LeaderExited(probe) => write!(
+                f,
+                "the node process exited while the daemon waited for `{}`",
+                probe.service()
+            ),
+        }
     }
 }
 
@@ -1800,20 +1988,21 @@ struct NodeSignalTarget<'a> {
 }
 
 /// The framework services the daemon polls on a starting node, in order:
-/// the ready signal (the runtime is up), the health check (setup returned),
-/// and, for a node whose manifest declares endpoints, the sockets it bound.
+/// the ready signal (the runtime is up and answers the shutdown request), the
+/// health signal (setup returned, within the setup budget), and, for a node
+/// whose manifest declares endpoints, the sockets it bound.
 #[derive(Clone, Copy)]
-enum StartupProbe {
+enum StartupProbe<'a> {
     Ready,
-    Health,
+    Health(&'a SetupBudget),
     Endpoints,
 }
 
-impl StartupProbe {
+impl StartupProbe<'_> {
     fn service(self) -> &'static str {
         match self {
             StartupProbe::Ready => NODE_READY_SERVICE,
-            StartupProbe::Health => NODE_HEALTH_SERVICE,
+            StartupProbe::Health(_) => NODE_HEALTH_SERVICE,
             StartupProbe::Endpoints => NODE_ENDPOINTS_SERVICE,
         }
     }
@@ -1823,7 +2012,7 @@ impl StartupProbe {
             StartupProbe::Ready => NodeReadyRequest::new()
                 .encode()
                 .map_err(|e| format!("failed to encode node ready request: {e}")),
-            StartupProbe::Health => NodeHealthRequest::new()
+            StartupProbe::Health(_) => NodeHealthRequest::new()
                 .encode()
                 .map_err(|e| format!("failed to encode node health request: {e}")),
             StartupProbe::Endpoints => NodeEndpointsRequest::new()
@@ -1832,16 +2021,17 @@ impl StartupProbe {
         }
     }
 
-    /// The failure when the node process exits while this probe is pending.
-    fn exited(self, status: std::process::ExitStatus) -> String {
+    /// The failure when the node process exits while this probe is pending,
+    /// with its exit status.
+    fn exited(self, status: &dyn std::fmt::Display) -> String {
         match self {
             StartupProbe::Ready => format!(
                 "node process exited during startup (status={status}); its log says why. If the \
                  node was built before this daemon was upgraded, {} and launch again",
                 peppylib::runtime::REBUILD_REMEDY
             ),
-            StartupProbe::Health => {
-                format!("node process exited before becoming healthy (status={status})")
+            StartupProbe::Health(_) => {
+                format!("node process exited before its setup ended (status={status})")
             }
             StartupProbe::Endpoints => {
                 format!("node process exited before announcing its endpoints (status={status})")
@@ -1855,7 +2045,7 @@ impl StartupProbe {
             StartupProbe::Ready => format!(
                 "startup timed out waiting for node to be ready (node may still be compiling): {err}"
             ),
-            StartupProbe::Health => format!("health check timed out: {err}"),
+            StartupProbe::Health(budget) => budget.timed_out(),
             StartupProbe::Endpoints => {
                 format!("timed out waiting for the node to report its endpoints: {err}")
             }
@@ -1863,26 +2053,32 @@ impl StartupProbe {
     }
 }
 
+/// Whether the leader process of a starting instance still runs. It reaps
+/// nothing: a leader that exited stays a zombie until the give-up of the
+/// start reaps it, once its process group is killed, so until then its pid
+/// names that group and no other process.
+fn leader_runs(child: &Child) -> bool {
+    child.id().is_some_and(super::stop::process_runs)
+}
+
 /// Polls one framework service of a newly started node until it answers,
 /// returning the reply payload, and fails when `timeout` runs out or the
-/// child process exits first. Polling in short intervals covers the startup
+/// leader process exits first. Polling in short intervals covers the startup
 /// race where the node registers the service after a first request was
 /// already published.
-async fn poll_startup_service(
+async fn poll_startup_service<'a>(
     target: &NodeSignalTarget<'_>,
-    probe: StartupProbe,
+    probe: StartupProbe<'a>,
     timeout: Duration,
-    child: &mut Child,
-) -> std::result::Result<Payload, String> {
-    let request_payload = probe.request()?;
+    child: &Child,
+) -> std::result::Result<Payload, StartFailure<'a>> {
+    let request_payload = probe.request().map_err(StartFailure::Reason)?;
     let deadline = Instant::now() + timeout;
     let mut last_err: Option<PeppyError> = None;
 
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Err(probe.exited(status)),
-            Ok(None) => {}
-            Err(err) => return Err(format!("failed to query node process status: {err}")),
+        if !leader_runs(child) {
+            return Err(StartFailure::LeaderExited(probe));
         }
 
         let now = Instant::now();
@@ -1891,7 +2087,7 @@ async fn poll_startup_service(
                 instance_id: Some(target.target_instance_id.to_string()),
                 service_name: probe.service().to_string(),
             });
-            return Err(probe.timed_out(err));
+            return Err(StartFailure::Reason(probe.timed_out(err)));
         }
 
         let remaining = deadline - now;
@@ -2076,18 +2272,110 @@ mod tests {
     fn an_exit_during_startup_names_the_rebuild() {
         use std::os::unix::process::ExitStatusExt;
         let status = std::process::ExitStatus::from_raw(1 << 8);
-        let during_startup = StartupProbe::Ready.exited(status);
+        let during_startup = StartupProbe::Ready.exited(&status);
         assert!(
             during_startup.contains("exited during startup")
                 && during_startup.contains(peppylib::runtime::REBUILD_REMEDY),
             "{during_startup}"
         );
-        for probe in [StartupProbe::Health, StartupProbe::Endpoints] {
+        let budget = SetupBudget::resolve("camera", "v1", None, SetupTimeout::DEFAULT);
+        for probe in [StartupProbe::Health(&budget), StartupProbe::Endpoints] {
             assert!(
-                !probe.exited(status).contains("peppy node build"),
+                !probe.exited(&status).contains("peppy node build"),
                 "{}",
-                probe.exited(status)
+                probe.exited(&status)
             );
+        }
+    }
+
+    #[test]
+    fn a_declared_setup_budget_is_the_budget_of_the_start() {
+        let declared = SetupTimeout::from_secs(180).expect("in range");
+        let budget = SetupBudget::resolve(
+            "robot_initializer",
+            "v1",
+            Some(declared),
+            SetupTimeout::DEFAULT,
+        );
+        assert_eq!(budget.duration(), Duration::from_secs(180));
+        assert_eq!(
+            budget.source,
+            SetupBudgetSource::Declared {
+                node: "robot_initializer:v1".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn a_node_without_a_setup_budget_gets_the_default_setup_budget_of_the_daemon() {
+        let daemon_default = SetupTimeout::from_secs(30).expect("in range");
+        let budget = SetupBudget::resolve("camera", "v1", None, daemon_default);
+        assert_eq!(budget.duration(), Duration::from_secs(30));
+        assert_eq!(budget.source, SetupBudgetSource::Default);
+    }
+
+    #[test]
+    fn the_setup_timeout_names_the_declared_budget() {
+        let budget = SetupBudget::resolve(
+            "robot_initializer",
+            "v1",
+            Some(SetupTimeout::from_secs(180).expect("in range")),
+            SetupTimeout::DEFAULT,
+        );
+        assert_eq!(
+            budget.timed_out(),
+            "the setup did not end within 180 s, the setup budget `robot_initializer:v1` \
+             declares in `execution.setup_timeout_secs`"
+        );
+        let err = PeppyError::ServiceTimeout {
+            instance_id: Some("robot_initializer_inst".to_owned()),
+            service_name: NODE_HEALTH_SERVICE.to_owned(),
+        };
+        assert_eq!(
+            StartupProbe::Health(&budget).timed_out(err),
+            budget.timed_out()
+        );
+    }
+
+    #[test]
+    fn the_setup_timeout_of_the_default_budget_tells_how_to_declare_one() {
+        let budget = SetupBudget::resolve("camera", "v1", None, SetupTimeout::DEFAULT);
+        assert_eq!(
+            budget.timed_out(),
+            "the setup did not end within 15 s, the default setup budget; a node whose setup \
+             takes longer declares its setup budget in `execution.setup_timeout_secs` of its \
+             manifest, from 1 to 540 s"
+        );
+    }
+
+    #[test]
+    fn the_ready_line_names_the_budget_the_start_waits_for() {
+        let declared = SetupBudget::resolve(
+            "sim_isaac",
+            "v1",
+            Some(SetupTimeout::MAX),
+            SetupTimeout::DEFAULT,
+        );
+        assert_eq!(
+            declared.ready_line("isaac_inst"),
+            "`isaac_inst` is ready; waiting for its setup up to 540 s, the setup budget \
+             `sim_isaac:v1` declares in `execution.setup_timeout_secs`"
+        );
+        let default = SetupBudget::resolve("camera", "v1", None, SetupTimeout::DEFAULT);
+        assert_eq!(
+            default.ready_line("camera_inst"),
+            "`camera_inst` is ready; waiting for its setup up to 15 s, the default setup budget"
+        );
+    }
+
+    /// A start given up after the ready signal waits for a cooperative stop,
+    /// and its budget holds the longest stop the grace allows.
+    #[test]
+    fn the_give_up_budget_of_a_start_holds_a_cooperative_stop() {
+        for grace_secs in [1, 5, 60] {
+            let grace = Duration::from_secs(grace_secs);
+            assert!(start_give_up_budget(grace) > super::super::teardown_timeout(grace));
+            assert!(start_give_up_budget(grace) > super::super::force_kill_deadline(grace));
         }
     }
 

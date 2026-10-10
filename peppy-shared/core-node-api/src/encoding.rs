@@ -53,6 +53,7 @@ pub use repo::{
     RepoRefreshGoalResponse, RepoRefreshResult, RepoRemoveRequest, RepoRemoveResponse, RepoSource,
     RepoSourceKind,
 };
+pub use stack::STACK_BUSY_REASON;
 pub use stack::benchmark::{
     BenchmarkFeedbackStep, ClockConfidence, DEFAULT_SAMPLES, InterfaceKind, InterfaceLatency,
     MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse,
@@ -66,8 +67,8 @@ pub use stack::launch::{
     PlacementSpec, StackBuildGoal,
 };
 pub use stack::list::{
-    CopyInfo, LaunchIdentity, SetMember, StackListRequest, StackListResponse,
-    slots_in_first_added_order,
+    CopyAction, CopyChange, CopyInfo, LaunchIdentity, SetMember, StackListRequest,
+    StackListResponse, slots_in_first_added_order,
 };
 pub use stack::remove::StackRemoveGoal;
 pub use stack::reset::{StackResetRequest, StackResetResponse};

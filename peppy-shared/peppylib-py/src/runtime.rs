@@ -20,8 +20,11 @@ type SharedEventLoopSlot = Arc<Mutex<Option<Py<PyAny>>>>;
 struct AsyncSetup {
     /// Signalled when the setup coroutine completes (any outcome).
     setup_complete_rx: tokio::sync::oneshot::Receiver<()>,
-    /// The `concurrent.futures.Future` of the setup coroutine.
+    /// The `concurrent.futures.Future` of the setup coroutine. It completes
+    /// when the setup task ends, after a cancel too.
     setup_future: Py<PyAny>,
+    /// Pure-Python callable that cancels the setup task, from any thread.
+    cancel_setup: Py<PyAny>,
     /// Teardown handles for the loop thread, fired after `builder.run()`.
     event_loop_shutdown: EventLoopShutdown,
     /// Held by the setup phase; dropping it disarms the shutdown-monitor
@@ -353,6 +356,7 @@ fn create_event_loop_helpers<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModu
     PyModule::from_code(
         py,
         c"
+import concurrent.futures
 import sys
 import traceback
 
@@ -412,6 +416,50 @@ def make_task_failure_attacher(event_loop, report_failure):
         except RuntimeError:
             pass  # loop already closed: the node is shutting down anyway
     return _attach
+
+def submit_setup(event_loop, asyncio_mod, setup):
+    # Runs the setup coroutine as one task of event_loop, which runs in
+    # another thread. Returns the concurrent.futures.Future of its outcome and
+    # a function that cancels the task from any thread. The future completes
+    # when the task ends, after a cancel too, so a caller that cancels the
+    # setup can wait until the setup has unwound; the future of
+    # run_coroutine_threadsafe completes as soon as it is cancelled instead.
+    if not asyncio_mod.iscoroutine(setup):
+        raise TypeError('A coroutine object is required')
+    outcome = concurrent.futures.Future()
+    started = []
+
+    def _copy_outcome(task):
+        if task.cancelled():
+            outcome.cancel()
+        elif (exc := task.exception()) is not None:
+            outcome.set_exception(exc)
+        else:
+            outcome.set_result(task.result())
+
+    def _start():
+        try:
+            task = event_loop.create_task(setup)
+        except BaseException as exc:
+            if not outcome.done():
+                outcome.set_exception(exc)
+            raise
+        task.add_done_callback(_copy_outcome)
+        started.append(task)
+
+    def _cancel_on_loop():
+        for task in started:
+            task.cancel()
+
+    def cancel():
+        # Scheduled after _start, which the loop runs first.
+        try:
+            event_loop.call_soon_threadsafe(_cancel_on_loop)
+        except RuntimeError:
+            pass  # loop already closed: the setup ended with it
+
+    event_loop.call_soon_threadsafe(_start)
+    return outcome, cancel
 
 def make_run_loop(event_loop, asyncio_mod, cancel_token):
     def _run():
@@ -645,12 +693,19 @@ fn build_async_setup(
         }
     });
 
-    // 8. Submit the setup coroutine and bridge its completion into a tokio
-    //    oneshot. The caller awaits it with the GIL released (the event loop
-    //    thread needs the GIL to run the coroutine) and without blocking its
-    //    tokio worker, so the runner's select stays responsive to shutdown
-    //    requests and cancellation arriving mid-setup.
-    let future = asyncio.call_method1("run_coroutine_threadsafe", (setup_awaitable, event_loop))?;
+    // 8. Submit the setup coroutine as one task of the loop and bridge its
+    //    completion into a tokio oneshot. The caller awaits it with the GIL
+    //    released (the event loop thread needs the GIL to run the coroutine)
+    //    and without blocking its tokio worker, so the runner's select stays
+    //    responsive to shutdown requests and cancellation arriving mid-setup.
+    //    The submit also gives the cancel of the setup task, which a stop
+    //    that interrupts the setup fires (see `CancelSetupOnStop`).
+    let submitted =
+        helpers
+            .getattr("submit_setup")?
+            .call1((event_loop, asyncio, setup_awaitable))?;
+    let future = submitted.get_item(0)?;
+    let cancel_setup = submitted.get_item(1)?.unbind();
     let setup_complete_rx = notify_on_future_done(py, &future)?;
     let future_ref = future.unbind();
 
@@ -730,6 +785,7 @@ fn build_async_setup(
     Ok(AsyncSetup {
         setup_complete_rx,
         setup_future: future_ref,
+        cancel_setup,
         event_loop_shutdown: EventLoopShutdown {
             stop_trigger: stop_trigger.unbind(),
             thread: thread.clone().unbind(),
@@ -749,6 +805,71 @@ fn store_python_error(error_slot: &SharedPyError, err: PyErr) {
 
 fn take_python_error(error_slot: &SharedPyError) -> Option<PyErr> {
     error_slot.lock().ok().and_then(|mut guard| guard.take())
+}
+
+/// Held while an async setup runs. A stop that arrives during the setup (the
+/// shutdown request, a signal, the daemon watchdog) drops the runner's setup
+/// future, and this guard with it, before the runner takes its shutdown hooks.
+/// The guard then registers the cancel of the setup as the last hook, so it
+/// runs first: it cancels the setup task at its next await and waits until
+/// the setup has unwound, and only then do the hooks registered before the
+/// stop run. The hook phase's grace bounds that wait like any hook.
+struct CancelSetupOnStop {
+    armed: Option<ArmedSetup>,
+}
+
+struct ArmedSetup {
+    node_runner: Arc<NodeRunner>,
+    setup_future: Py<PyAny>,
+    cancel_setup: Py<PyAny>,
+}
+
+impl CancelSetupOnStop {
+    fn arm(node_runner: Arc<NodeRunner>, setup_future: Py<PyAny>, cancel_setup: Py<PyAny>) -> Self {
+        Self {
+            armed: Some(ArmedSetup {
+                node_runner,
+                setup_future,
+                cancel_setup,
+            }),
+        }
+    }
+
+    /// The setup ended: registers nothing, and answers the setup's future.
+    fn disarm(mut self) -> Py<PyAny> {
+        self.armed
+            .take()
+            .expect("a guard is armed until it is disarmed or dropped")
+            .setup_future
+    }
+}
+
+impl Drop for CancelSetupOnStop {
+    fn drop(&mut self) {
+        let Some(ArmedSetup {
+            node_runner,
+            setup_future,
+            cancel_setup,
+        }) = self.armed.take()
+        else {
+            return;
+        };
+        node_runner.on_shutdown(async move {
+            let unwound = crate::py_future::try_attach_gated(|py| {
+                if let Err(err) = cancel_setup.bind(py).call0() {
+                    print_shutdown_hook_error(py, &err);
+                    return None;
+                }
+                notify_on_future_done(py, setup_future.bind(py))
+                    .inspect_err(|err| print_shutdown_hook_error(py, err))
+                    .ok()
+            })
+            .flatten();
+            if let Some(unwound) = unwound {
+                let _ = unwound.await;
+            }
+        });
+    }
 }
 
 /// Python wrapper for CancellationToken.
@@ -883,6 +1004,15 @@ impl PyNodeRunner {
     /// [`run_shutdown_hooks`](Self::run_shutdown_hooks).
     fn shutdown_grace_secs(&self) -> f64 {
         self.inner.processor().shutdown_grace().as_secs_f64()
+    }
+
+    /// The setup budget of this instance, in whole seconds: how long the
+    /// daemon waits for `setup` to return once the node answers ready, before
+    /// it stops the instance. The daemon resolves it from the manifest's
+    /// `execution.setup_timeout_secs`, else its default setup budget; a
+    /// standalone node and the test harness read the budget of the manifest.
+    fn setup_timeout_secs(&self) -> u64 {
+        self.inner.setup_timeout().as_secs()
     }
 
     /// Run the registered shutdown hooks, bounded collectively by
@@ -1047,6 +1177,17 @@ impl PyNodeRunner {
     /// for an instance run outside a copy.
     fn copy(&self) -> Option<&str> {
         self.inner.copy()
+    }
+
+    /// The scope of each daemon target this instance serves, as a dict
+    /// keyed by target name, as the launch gave it. Empty for an instance
+    /// that serves no daemon target, and for one run standalone.
+    fn daemon_scopes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        pythonize(py, self.inner.daemon_scopes()).map_err(|e| {
+            PyRuntimeError::new_err(format!(
+                "failed to convert the daemon scopes to Python: {e}"
+            ))
+        })
     }
 
     /// Announces the socket the node bound for the endpoint the manifest
@@ -1658,17 +1799,22 @@ impl PyNodeBuilder {
                                 // coroutine, and without blocking this tokio
                                 // worker so the runner's select still observes
                                 // shutdown requests and cancellation while
-                                // setup is in flight.
-                                async_setup
-                                    .setup_complete_rx
-                                    .await
+                                // setup is in flight. A stop drops this future
+                                // here, and the guard cancels the setup.
+                                let cancel_on_stop = CancelSetupOnStop::arm(
+                                    Arc::clone(&node_runner),
+                                    async_setup.setup_future,
+                                    async_setup.cancel_setup,
+                                );
+                                let completed = async_setup.setup_complete_rx.await;
+                                let setup_future = cancel_on_stop.disarm();
+                                completed
                                     .map_err(|_| peppy_io_err("async setup channel closed"))?;
 
                                 // Phase 3: check for exceptions and capture
                                 // the return value (re-acquires GIL)
                                 match Python::try_attach(|py| -> PyResult<()> {
-                                    let result =
-                                        async_setup.setup_future.bind(py).call_method0("result")?;
+                                    let result = setup_future.bind(py).call_method0("result")?;
                                     if !result.is_none() {
                                         // Watch every returned task: holding
                                         // them below keeps the GC-time

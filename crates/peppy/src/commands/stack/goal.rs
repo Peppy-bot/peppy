@@ -1,22 +1,21 @@
-//! Driving one stack goal to its result: sending it, relaying its
-//! feedback, holding it to the operator's budgets, and reporting the log
-//! files it wrote.
+//! Driving one stack goal to its result: sending it and following it
+//! through the shared goal path, rendering its feedback, holding it to the
+//! operator's budgets, and reporting the log files it wrote.
 
 use std::path::Path;
 use std::time::Duration;
 
 use core_node::{idle_timeout_flag, slow_connection_hint};
 use core_node_api::encoding::{
-    LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse, LaunchResult, NodeAddLogEntry,
-    NodeBuildLogEntry, NodeRunLogEntry, StackBudgets,
+    LaunchFeedback, LaunchFeedbackStep, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry,
+    NodeRunLogEntry, StackBudgets,
 };
-use peppylib::ActionMessenger;
-use peppylib::core_node::transport::send_goal;
-use peppylib::messaging::ResultStatus;
+use stack_goal::{DAEMON_RESPONSE_GRACE, DaemonRoute, RunningStackGoal, StackGoal, StackGoalEvent};
+use tokio::time::Instant;
 use tracing::info;
 
-use super::super::action_poll::FEEDBACK_DRAIN_TIMEOUT;
-use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
+use crate::commands::{CALLER_INSTANCE_ID, SCROLLING_OUTPUT_LINES};
+use crate::context::DaemonConnection;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
@@ -25,10 +24,6 @@ use crate::terminal::ScrollingOutput;
 // precise error first. When the user omits the flag, no CLI ceiling is installed; the
 // contract is idle-only (daemon-side `max_timeout_secs = None`).
 const CLI_MAX_TIMEOUT_FLOOR: Duration = Duration::from_secs(7200);
-// Headroom granted to the daemon to surface its own timeout error before the CLI's fallback
-// ceiling fires. Keeps the error the user sees specific ("build idle timeout exceeded...") rather
-// than a generic CLI-side "daemon hung" message.
-const DAEMON_RESPONSE_GRACE: Duration = Duration::from_secs(60);
 
 // CLI wall-clock fallback ceiling. `None` means idle-only (daemon-side contract honored).
 // When the user opts into `--max-timeout-secs`, add DAEMON_RESPONSE_GRACE and enforce
@@ -103,246 +98,175 @@ fn display_node_log_files(
     }
 }
 
-fn handle_feedback(
-    feedback: &LaunchFeedback,
-    scrolling_output: &mut Option<ScrollingOutput>,
-    current_scrolling_step: &mut Option<LaunchFeedbackStep>,
-) {
-    // Check if we're switching between steps
-    let step_changed = current_scrolling_step
-        .as_ref()
-        .map(|s| std::mem::discriminant(s) != std::mem::discriminant(&feedback.step))
-        .unwrap_or(true);
+/// What the terminal shows of a goal's feedback: the launcher's lines as
+/// they come, and the lines of a node phase in a scrolling window that a
+/// new step clears.
+#[derive(Default)]
+struct GoalOutput {
+    scrolling: Option<ScrollingOutput>,
+    /// The step of the last feedback, which names the phase that went quiet
+    /// when the watchdog fires.
+    step: Option<LaunchFeedbackStep>,
+}
 
-    if step_changed {
-        // Clear existing scrolling output if we were in a scrolling step
-        if let Some(output) = scrolling_output.as_mut() {
-            output.clear();
-            *scrolling_output = None;
+impl GoalOutput {
+    fn show(&mut self, feedback: &LaunchFeedback) {
+        let step_changed = self
+            .step
+            .as_ref()
+            .map(|s| std::mem::discriminant(s) != std::mem::discriminant(&feedback.step))
+            .unwrap_or(true);
+
+        if step_changed {
+            self.clear();
+            self.scrolling = None;
+            self.step = Some(feedback.step);
         }
-        *current_scrolling_step = Some(feedback.step);
-    }
 
-    match &feedback.step {
-        LaunchFeedbackStep::LauncherStep => {
-            if feedback.is_stdout() {
-                info!("{}", feedback.line);
-            } else {
-                tracing::warn!("{}", feedback.line);
+        match &feedback.step {
+            LaunchFeedbackStep::LauncherStep => {
+                if feedback.is_stdout() {
+                    info!("{}", feedback.line);
+                } else {
+                    tracing::warn!("{}", feedback.line);
+                }
+            }
+            LaunchFeedbackStep::AddingNode
+            | LaunchFeedbackStep::BuildingNode
+            | LaunchFeedbackStep::RunningNode => {
+                let output = self
+                    .scrolling
+                    .get_or_insert_with(|| ScrollingOutput::new(SCROLLING_OUTPUT_LINES));
+                output.add_line(&feedback.line);
             }
         }
-        LaunchFeedbackStep::AddingNode
-        | LaunchFeedbackStep::BuildingNode
-        | LaunchFeedbackStep::RunningNode => {
-            let output = scrolling_output
-                .get_or_insert_with(|| ScrollingOutput::new(SCROLLING_OUTPUT_LINES));
-            output.add_line(&feedback.line);
+    }
+
+    /// Takes the scrolling window off the terminal.
+    fn clear(&mut self) {
+        if let Some(output) = self.scrolling.as_mut() {
+            output.clear();
         }
     }
 }
 
-/// A goal [`drive_stack_goal`] drives, and the word every line it writes
-/// calls that goal by. Visible only inside `commands::stack`, so the three
-/// stack goals are the whole set.
-pub(super) trait StackGoal: core_node_api::ActionGoal {
-    const OPERATION: &'static str;
-}
-
-impl StackGoal for core_node_api::encoding::LaunchGoal {
-    const OPERATION: &'static str = "Launch";
-}
-
-impl StackGoal for core_node_api::encoding::StackBuildGoal {
-    const OPERATION: &'static str = "Build";
-}
-
-impl StackGoal for core_node_api::encoding::StackJoinGoal {
-    const OPERATION: &'static str = "Join";
-}
-
-impl StackGoal for core_node_api::encoding::StackRemoveGoal {
-    const OPERATION: &'static str = "Remove";
+/// The CLI's route to the daemon a command addresses.
+fn daemon_route<'a>(conn: &'a DaemonConnection<'_>) -> DaemonRoute<'a> {
+    DaemonRoute {
+        messenger: conn.messenger,
+        caller_core_node: &conn.core_node_name,
+        caller_instance_id: CALLER_INSTANCE_ID,
+        daemon_core_node: &conn.target_core_node,
+    }
 }
 
 /// Sends `goal` to the daemon and follows it to its result under `budgets`.
 pub(super) async fn drive_stack_goal<G: StackGoal>(
-    conn: &crate::context::DaemonConnection<'_>,
+    conn: &DaemonConnection<'_>,
     goal: &G,
     budgets: &StackBudgets,
 ) -> Result<()> {
     let operation = G::OPERATION;
-    let cli_max_timeout: Option<Duration> = compute_cli_max_timeout(budgets.max_timeout_secs);
+    let mut running = stack_goal::send(daemon_route(conn), goal)
+        .await
+        .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
+    info!(
+        "{operation} goal accepted, log file: {}",
+        running.log_path().display()
+    );
 
-    // CLI-side liveness watchdog: trips if no feedback arrives from any phase. Must cover the
-    // longest per-phase idle budget (only one phase runs at a time) plus a grace window so the
-    // daemon's phase-specific timeout always fires first and surfaces a precise error.
-    let cli_idle_timeout = Duration::from_secs(
-        budgets
-            .node_add_idle_timeout_secs
-            .max(budgets.node_build_idle_timeout_secs)
-            .max(budgets.node_run_idle_timeout_secs),
-    )
-    .saturating_add(DAEMON_RESPONSE_GRACE);
+    let mut output = GoalOutput::default();
+    let followed = follow_under_watchdog(&mut running, budgets, &mut output).await;
+    output.clear();
+    let result = followed?;
 
-    let mut action_handle = send_goal(
-        goal,
-        conn.messenger,
-        &conn.core_node_name,
-        CALLER_INSTANCE_ID,
-        Some(&conn.target_core_node),
-        GOAL_TIMEOUT,
-    )
-    .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to send {operation} goal: {e}")))?;
+    display_node_log_files(
+        &result.node_add_logs,
+        &result.node_build_logs,
+        &result.node_run_logs,
+    );
+    crate::commands::log_endpoints(&result.instance_endpoints);
 
-    let goal_response = LaunchGoalResponse::decode(&action_handle.goal_reply().body)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
-
-    if !goal_response.accepted {
-        let reason = goal_response
-            .rejection_reason
-            .unwrap_or_else(|| "unknown reason".to_string());
+    if !result.success {
+        let error_msg = result
+            .error_message
+            .unwrap_or_else(|| "unknown error".to_string());
         return Err(Error::ExecutionFailed(format!(
-            "{operation} goal rejected: {}",
-            reason
+            "{operation} failed: {}. Log file: {}",
+            error_msg,
+            result.log_path.display()
         )));
     }
 
-    info!(
-        "{operation} goal accepted, log file: {}",
-        goal_response.log_path.display()
-    );
+    info!("{operation} completed successfully");
+    Ok(())
+}
 
-    let absolute_deadline: Option<tokio::time::Instant> =
-        cli_max_timeout.and_then(|d| tokio::time::Instant::now().checked_add(d));
-    let mut last_activity = tokio::time::Instant::now();
-    let mut scrolling_output: Option<ScrollingOutput> = None;
-    let mut current_scrolling_step: Option<LaunchFeedbackStep> = None;
-
-    // Drain feedback until the server closes the stream on completion,
-    // honoring the idle / max-timeout budgets.
+/// Shows the goal's feedback until its result. The CLI's watchdog gives up
+/// when no feedback arrives for the goal's silence window, which covers the
+/// longest per-phase idle budget (only one phase runs at a time) plus a grace
+/// window so the daemon's phase-specific timeout always fires first and
+/// surfaces a precise error, or when `--max-timeout-secs` sets a ceiling and
+/// the goal outlasts it.
+async fn follow_under_watchdog(
+    running: &mut RunningStackGoal,
+    budgets: &StackBudgets,
+    output: &mut GoalOutput,
+) -> Result<LaunchResult> {
+    let silence_window = stack_goal::silence_window(budgets);
+    let ceiling: Option<Instant> = compute_cli_max_timeout(budgets.max_timeout_secs)
+        .and_then(|max_timeout| Instant::now().checked_add(max_timeout));
     loop {
-        let now = tokio::time::Instant::now();
-        if let Some(deadline) = absolute_deadline
-            && now >= deadline
-        {
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
-            return Err(Error::ExecutionFailed(format!(
-                "{operation} timed out: max timeout exceeded. Log file: {}",
-                goal_response.log_path.display()
-            )));
-        }
-        if now.duration_since(last_activity) >= cli_idle_timeout {
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
-            // Name the phase that went quiet and the flag that raises its
-            // budget, so a slow-connection user is pointed at the fix instead
-            // of a bare timeout.
-            let (phase, hint) = match current_scrolling_step {
-                Some(step) => (
-                    format!(" during the {} phase", step.phase_label()),
-                    idle_timeout_flag(step)
-                        .map(|flag| format!("; {}", slow_connection_hint(flag)))
-                        .unwrap_or_default(),
-                ),
-                None => (String::new(), String::new()),
-            };
-            return Err(Error::ExecutionFailed(format!(
-                "{operation} timed out: no output received for {}s{phase}{hint}. Log file: {}",
-                cli_idle_timeout.as_secs(),
-                goal_response.log_path.display()
-            )));
-        }
-
-        match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                last_activity = tokio::time::Instant::now();
-                let payload = msg.payload_bytes();
-                if let Ok(feedback) = LaunchFeedback::decode(payload.as_ref()) {
-                    handle_feedback(
-                        &feedback,
-                        &mut scrolling_output,
-                        &mut current_scrolling_step,
-                    );
-                }
-            }
-            Ok(Err(_)) => break, // end-of-stream: the goal has completed
-            Err(_) => {}         // drain slice elapsed; re-check timeouts and keep draining
+        let silent_at = Instant::now().checked_add(silence_window);
+        let wake_at = [silent_at, ceiling].into_iter().flatten().min();
+        let event = match wake_at {
+            Some(wake_at) => tokio::time::timeout_at(wake_at, running.next()).await,
+            None => Ok(running.next().await),
+        };
+        let Ok(event) = event else {
+            return Err(watchdog_error(
+                running,
+                silence_window,
+                output.step,
+                ceiling.is_some_and(|ceiling| Instant::now() >= ceiling),
+            ));
+        };
+        match event.map_err(|error| Error::ExecutionFailed(error.to_string()))? {
+            StackGoalEvent::Feedback(feedback) => output.show(&feedback),
+            StackGoalEvent::Ended(result) => return Ok(result),
         }
     }
+}
 
-    // The goal has completed; fetch its (server-buffered) result once. Give it
-    // the remaining max budget so it resolves promptly.
-    let now = tokio::time::Instant::now();
-    let result_timeout = match absolute_deadline {
-        Some(deadline) => deadline
-            .saturating_duration_since(now)
-            .max(Duration::from_secs(1)),
-        None => Duration::from_secs(30),
+/// The watchdog's error: the ceiling that ran out, or the silence, with the
+/// phase that went quiet and the flag that raises its budget, so a
+/// slow-connection user is pointed at the fix instead of a bare timeout.
+fn watchdog_error(
+    running: &RunningStackGoal,
+    silence_window: Duration,
+    step: Option<LaunchFeedbackStep>,
+    ceiling_reached: bool,
+) -> Error {
+    let operation = running.operation();
+    let log_path = running.log_path().display();
+    if ceiling_reached {
+        return Error::ExecutionFailed(format!(
+            "{operation} timed out: max timeout exceeded. Log file: {log_path}"
+        ));
+    }
+    let (phase, hint) = match step {
+        Some(step) => (
+            format!(" during the {} phase", step.phase_label()),
+            idle_timeout_flag(step)
+                .map(|flag| format!("; {}", slow_connection_hint(flag)))
+                .unwrap_or_default(),
+        ),
+        None => (String::new(), String::new()),
     };
-    match ActionMessenger::request_result(conn.messenger, &action_handle, result_timeout).await {
-        Ok(reply) => {
-            let body = match reply.status {
-                ResultStatus::Completed | ResultStatus::Cancelled => reply.body,
-                ResultStatus::Abandoned => {
-                    if let Some(output) = scrolling_output.as_mut() {
-                        output.clear();
-                    }
-                    return Err(Error::ExecutionFailed(format!(
-                        "{operation} was abandoned by its worker before producing a result"
-                    )));
-                }
-                ResultStatus::Expired => {
-                    if let Some(output) = scrolling_output.as_mut() {
-                        output.clear();
-                    }
-                    return Err(Error::ExecutionFailed(format!(
-                        "{operation} result expired before it could be fetched"
-                    )));
-                }
-            };
-            let result = LaunchResult::decode(body.as_ref()).map_err(|err| {
-                Error::ExecutionFailed(format!("Failed to decode {operation} result: {err}"))
-            })?;
-
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
-
-            display_node_log_files(
-                &result.node_add_logs,
-                &result.node_build_logs,
-                &result.node_run_logs,
-            );
-            crate::commands::log_endpoints(&result.instance_endpoints);
-
-            if !result.success {
-                let error_msg = result
-                    .error_message
-                    .unwrap_or_else(|| "unknown error".to_string());
-                return Err(Error::ExecutionFailed(format!(
-                    "{operation} failed: {}. Log file: {}",
-                    error_msg,
-                    result.log_path.display()
-                )));
-            }
-
-            info!("{operation} completed successfully");
-            Ok(())
-        }
-        Err(err) => {
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
-            Err(Error::ExecutionFailed(format!(
-                "Failed to get {operation} result: {}",
-                err
-            )))
-        }
-    }
+    Error::ExecutionFailed(format!(
+        "{operation} timed out: no output received for {}s{phase}{hint}. Log file: {log_path}",
+        silence_window.as_secs(),
+    ))
 }
 
 #[cfg(test)]

@@ -40,3 +40,10 @@ peppy-mcp-catalog = { workspace = true }
 # `PackagesBaseUrl::loopback_http_for_tests`, for the tests of downstream
 # crates that serve a PyPI mirror over plain HTTP on loopback.
 test-support = []
+
+[dev-dependencies]
+# The validator the MCP server runtime compiles a tool's input schema with
+# (`jsonschema::validator_for`, default features off there too), so the
+# tests of a daemon interface's schema narrowing judge input the way the
+# runtime does.
+jsonschema = { version = "0.58", default-features = false }

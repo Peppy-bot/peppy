@@ -8,16 +8,18 @@ sidebar:
 import { Code } from '@astrojs/starlight/components';
 import cameraAndRecordingExposure from '../guides/snippets/exposures/camera_and_recording.json5?raw';
 import mcpLauncher from '../guides/snippets/launchers/mcp_camera_and_recording.json5?raw';
+import frameworkControlsExposure from '../guides/snippets/exposures/framework_controls.json5?raw';
+import frameworkControlsLauncher from '../guides/snippets/launchers/mcp_framework_controls.json5?raw';
 
 An **MCP exposure** makes selected parts of a running Peppy stack available to [Model Context Protocol](https://modelcontextprotocol.io) clients. A client can read camera frames, look through a camera, call services, and run long-running actions through one HTTP endpoint. The client does not need a Peppy session, access to the messaging layer, or knowledge that the system uses Peppy.
 
 An exposure is an allowlist. In one document, you choose the contract members to publish and give each one a stable public name, a description, and operational policies. A launcher names the exposures to serve, and the daemon runs the MCP server that is built into the `peppy` binary for them: one process, one loopback port, one endpoint per exposure. Nothing is generated or built. **Anything you do not name is not reachable through the endpoint.** This remains true even if a client guesses a name or knows the internal one. A client sees only the selected members, even when the underlying stack contains more.
 
-You do not write the public request and response schemas by hand. Peppy derives them from the referenced contracts, at check time and again when the server starts, so the published schemas cannot drift from the contracts behind them.
+You do not write the public request and response schemas by hand. Peppy derives them from the referenced contracts and [daemon interfaces](#daemon-targets), at check time and again when the server starts, so the published schemas cannot drift from the definitions behind them.
 
 ## What an exposure publishes
 
-An exposure draws from [contracts](/advanced_guides/contract_implementation/). Each Peppy communication type has an MCP equivalent:
+An exposure draws from [contracts](/advanced_guides/contract_implementation/), which node instances implement, and from the [daemon interfaces](#daemon-targets) that peppy serves. Each Peppy communication type has an MCP equivalent:
 
 | Contract member | Published as | What a client can do |
 | --- | --- | --- |
@@ -103,7 +105,7 @@ It selects from these two contracts:
 
 ### Targets are logical, not instances
 
-Each key under `targets` names a **role**, not a running node. The server's manifest declares one `depends_on.contracts` slot per target, with the target name as its `link_id`, and the launcher connects that slot to a running instance at [deploy time](#deploy-it). The same exposure can therefore work with a simulated camera or a real one without being changed. A target name follows the rules of a node name, because it becomes a slot's `link_id`.
+Each key under `targets` names a **role**, not a running node. A target names exactly one source: `contract` for the members of a contract, or `daemon` for the members of a [daemon interface](#daemon-targets). The server's manifest declares one `depends_on.contracts` slot per contract target, with the target name as its `link_id`, and the launcher connects that slot to a running instance at [deploy time](#deploy-it). The same exposure can therefore work with a simulated camera or a real one without being changed. A target name follows the rules of a node name, because it becomes a slot's `link_id`.
 
 A target must select at least one member, and an exposure must declare at least one target.
 
@@ -115,6 +117,75 @@ A target's `contract` names the contract by `name:tag`. Contract membership is f
 - **Absent:** the launch pins the contract bytes it resolves, and the exposure is validated against those. The exposure follows the contract as its repository evolves.
 
 The value is the SHA-256 hash of the contract document's exact bytes: `sha256sum contracts/rgb_camera.json5`. Pin when the schemas you published to clients must not change under you without a deliberate republication of the exposure.
+
+### Daemon targets
+
+A **daemon target** names `daemon: { name, tag }` instead of a contract. Its members are functions of the peppy daemon that started the server, for example the addition of a robot to the stack. A daemon interface is a document in the contract format that is compiled into `peppy`. No node implements it, and nothing on the messaging layer answers it: the server calls its own daemon.
+
+<Code code={frameworkControlsExposure} lang="json5" title="exposures/framework_controls.json5" />
+
+- **Never pinned.** A daemon target takes no `sha256`. peppy serves one tag of each interface, the tag of its release, and no older one. A change of members, or of what a member means, takes a new tag, so a document that names an interface ships with the peppy release that serves its tag.
+- **One grammar.** Members, public names, descriptions and every policy are the same as on a contract target. The member rules also apply: a member that the interface does not declare, a member selected twice, a target with no member and a public name used twice are refused.
+- **Fixed surface only.** A daemon target sits on a fixed surface. On a [per-robot surface](#per-robot-surfaces) every tool is routed by `robot`, so a daemon target belongs in an exposure without `robots`.
+- **No slot.** The derived node does not consume or link anything for a daemon target. The launcher gives the target a **scope** instead of a link: what a client of the target may do. A deployment whose exposures hold only daemon targets is valid.
+- **The coordinator.** An instance that serves a daemon target runs on the coordinator, the daemon that the launch was sent to: it reads and changes the stack of that daemon.
+
+#### The interfaces peppy serves
+
+| Interface | Members | What a client does |
+| --- | --- | --- |
+| `stack_copies:v1` | service `list`, actions `join` and `remove` | Lists, adds and removes the [copies](/guides/launch_files/#copies) of the running launch, within the options the scope names |
+
+The members of `stack_copies:v1`:
+
+| Member | Request | Feedback | Response or result |
+| --- | --- | --- | --- |
+| `list` (service) | none | | `options`: each `{ option, description }` of the scope. `copies`: each `{ name, option }`, the copies of the scope's options on the stack, in name order. `max_copies`: the most copies of the scope's options on the stack. `change`: `{ action, name, option }`, the addition (`join`) or the removal (`remove`) of a copy of a scoped option that runs now; absent while none runs |
+| `join` (action) | `name`, `option` | `step` (`launch`, `add`, `build` or `run`) and `line`, one message per line of the join's log | `success`, and a `message` that says why and names the log files when the join failed |
+| `remove` (action) | `name` | `step` and `line`, one message per line of the removal's log | `success` and `message` |
+
+`join` adds a copy of `option` under `name`, as `peppy stack join OPTION:NAME` does with no other argument: the option's entry in the launcher decides the copy's selection. `remove` stops and removes a copy, as `peppy stack remove NAME` does.
+
+#### Scopes
+
+The launcher gives each daemon target its scope with [`daemon_scopes`](/guides/launch_files/#daemon_scopes-optional) on the instance, or with a `set_daemon_scopes` adjustment. The launch parses every scope into the type of its interface before anything starts. The scope of a `stack_copies` target:
+
+```json5
+{
+  max_copies: 4,
+  options: [
+    { option: "openarm_sim", description: "A simulated OpenArm v2 standing on the floor: two arms with grippers" },
+    { option: "so101_sim", description: "A simulated SO-101 clamped on the edge of a table: one arm with a gripper" },
+  ],
+}
+```
+
+- `options` names at least one option, each option once. `option` is an option of an axis of the launcher that runs as copies. `description` is one line of at most 200 characters that says what a copy of the option is. A scope names no model: the description says what the robot is.
+- `max_copies` is a number from 1 to 65535: the most copies of these options on the stack.
+
+The server narrows the published schemas of a daemon target with its scope. For `stack_copies`, `join.option` takes only the options of the scope, and `join.name` and `remove.name` take only a copy name: 1 to 63 letters, digits, `_` or `-`, and not `self`, the rule that the daemon and the CLI apply to a copy. The endpoint refuses input outside the narrowed schema before the call reaches the daemon, and the [call record](#the-call-record) writes the call as `refused`. [`peppy mcp catalog`](#check-it) prints the schemas of the interface without the narrowing, because the scope belongs to an instance of the server and not to the exposure.
+
+#### What the tools of `stack_copies` do
+
+The endpoint calls the daemon that started it, through the same goal path as `peppy stack join` and `peppy stack remove`.
+
+- `list` answers the options of the scope with their descriptions, the copies whose option is in the scope in name order, and `max_copies`, within the deadline of the tool. While the daemon adds or removes a copy of an option of the scope, from any client, `list` also answers that change: `"change": { "action": "join", "name": "bravo", "option": "so101_sim" }`. A copy that joins is in `copies` only once its join ends, so `change` is where a client sees it in the meantime, also after a call that stopped waiting. While the daemon has not yet admitted or refused a `join` of the endpoint, `list` waits for that answer, so the join is in `change` from the moment the endpoint takes it.
+- `join` reads the copies of the stack. It refuses a name that a copy of any option has ("a copy `bravo` is already on the stack; choose another name"), and refuses when the stack holds `max_copies` copies of the scope's options, naming them. It then sends the join of the option under the name, as `peppy stack join OPTION:NAME` with no other argument: no selection, no argument and no environment, placed on the coordinator, with the [default budgets](/guides/launch_files/#launch-timeouts) of the CLI. The robot runs with the environment that its launcher entries declare.
+- When the daemon accepts the join, the first progress message says so (`launch: the daemon accepted the addition of bravo (so101_sim)`), and each line of the join's log follows as `<step>: <line>`, where the step is `launch`, `add`, `build` or `run`. The lines of a starting instance are in it. A join that succeeds ends with `success: true` and "bravo (so101_sim) is on the stack". A join that fails is undone, and ends with `success: false` and a message that says why and names the log files: the log of the join, then the log of the node phase that failed. When the undo cannot clean up, the message says that the copy remains listed. A refusal that the daemon gives after it accepts the join, for example a copy of that name that joined since the read of the stack, ends the same way.
+- The endpoint runs one `join` at a time, from its read of the stack until the daemon's work ends, also after the call ended. Another `join` in that time is refused with the daemon's busy text: "a stack or node operation is in progress on this daemon; wait for it to finish".
+- `remove` reads the copies of the stack, and refuses a name that is not a copy of an option of the scope ("no copy `zulu` of the options openarm_sim and so101_sim on the stack"). It then sends the removal, which reports each instance that it stops, the last started first. A removal that succeeds ends with `success: true` and "bravo is off the stack". A removal that the daemon refuses after it accepts it, for example of a copy that the stack links to, ends with `success: false`. `remove` waits for no other call of the endpoint: the daemon refuses a removal while another stack change runs.
+- A cancel, or a closed call, stops the wait and not the change: the call ends at once as cancelled, with `success: false` and "stopped waiting; the addition of bravo continues on the stack". The endpoint sends no cancel to the daemon, because a stack change ignores one, and follows the change to its end. A cancel that comes before the daemon answers the goal waits for that answer, so a goal that the daemon refuses ends refused. Call `list` before you add or remove again: its `change` reports the change until it ends.
+- When the daemon sends nothing for one progress window of the document, the call fails with "the daemon sent nothing for 660 s; the addition of bravo can still be running". The endpoint sends no cancel and follows the change to its end. A change that ends without a result, for example because the daemon is gone, fails the call and names the log of the change.
+
+The [call record](#the-call-record) writes:
+
+| Call | `outcome` | `success` |
+| --- | --- | --- |
+| Input outside the narrowed schema | `refused` | |
+| A refusal before the change: a name in use, the limit, a second `join`, a name that is no copy of the scope, or the daemon's refusal of the goal, its busy text included | `failed` | |
+| A join or a removal that ran to its end | `completed` | `true` or `false` |
+| A call that stopped waiting | `cancelled` | |
+| A silent daemon, or a change with no result | `failed` | |
 
 ### Public names
 
@@ -248,6 +319,8 @@ An action declares exactly one of `deadline_ms` and `progress_timeout_ms`.
 
 The provider's reply to the cancel is read too. A reply that the goal had already ended means the end of its feedback stream did not come through: the endpoint reads the result at once and returns it, or fails with `the goal ended, but its result is no longer readable` when the provider no longer keeps it. A reply that the provider does not know the goal fails with `no progress within <N> ms; a cancel was sent and the provider does not know the goal`. A cancel that fails, for example because no reply came within one window, fails with `no progress within <N> ms; a cancel was sent and failed: <error>`, and the endpoint logs it as a warning, because the goal can still run on the provider. The cancel the endpoint forwards for the client gets the same replies, and the same messages without the `no progress within <N> ms; ` part.
 
+A tool of a [daemon target](#daemon-targets) follows a different rule, because a stack change ignores a cancel: after one window without a sign of progress, the call fails, the endpoint sends no cancel, and it follows the change to its end (see [What the tools of `stack_copies` do](#what-the-tools-of-stack_copies-do)).
+
 A feedback message that does not decode is logged and not shown to the client. It is still a message the provider sent for the goal, so it counts as a sign of progress.
 
 The bound relies on the provider: it publishes a feedback message each time its progress changes, and none while nothing changes. A message sent on a timer while nothing moves would hide a goal that is stuck. The wait for a confirmation is no progress of the goal, and nothing would bound it, so an action cannot declare `progress_timeout_ms` together with `confirmation_required`.
@@ -306,14 +379,14 @@ Public property names use the DSL's `snake_case` spelling. The internal wire enc
 
 ## Check it
 
-An exposure is checked where it is published, by the repository check, and again by every launch that serves it. Both read the contracts through the local repository caches, so run [`peppy repo refresh`](/advanced_guides/repositories/#refresh-the-index) on the machine first. Neither check needs a running daemon.
+An exposure is checked where it is published, by the repository check, and again by every launch that serves it. Both read the contracts through the local repository caches, so run [`peppy repo refresh`](/advanced_guides/repositories/#refresh-the-index) on the machine first, and both read the daemon interfaces from the `peppy` that runs them. Neither check needs a running daemon.
 
 ```sh
 peppy repo index . --check --validate-mcp-exposures   # the index, then every exposure against its contracts
 peppy mcp catalog camera_and_recording:v1             # the catalog an endpoint for the exposure advertises
 ```
 
-`peppy repo index --check --validate-mcp-exposures` validates every exposure the repository's index lists against the contracts it references and reports **every** violation of **every** exposure at once, so you fix a document in one pass. A contract the caches cannot resolve is an error naming that contract, never a pass. A file that declares the exposure schema but does not parse as one (a document claiming a public name twice, say) is listed by no index, so the check reports it by path rather than letting it pass unseen. Run the check in the repository's CI, as [mcp-hub](https://github.com/Peppy-bot/mcp-hub) does: a hub cannot then merge an exposure that a launch would refuse.
+`peppy repo index --check --validate-mcp-exposures` validates every exposure the repository's index lists against the contracts and the daemon interfaces it references and reports **every** violation of **every** exposure at once, so you fix a document in one pass. A contract the caches cannot resolve is an error naming that contract, never a pass. A file that declares the exposure schema but does not parse as one (a document claiming a public name twice, say) is listed by no index, so the check reports it by path rather than letting it pass unseen. Run the check in the repository's CI, as [mcp-hub](https://github.com/Peppy-bot/mcp-hub) does: a hub cannot then merge an exposure that a launch would refuse.
 
 ```text
 2 exposures do not validate:
@@ -323,7 +396,7 @@ peppy mcp catalog camera_and_recording:v1             # the catalog an endpoint 
     - contract `episode_recording:v1` not in contract cache; run `peppy repo refresh`
 ```
 
-`peppy mcp catalog <name:tag>` prints the catalog the server derives for one exposure: every resource, tool, task, and picture tool with its public name, description, policies, and derived JSON Schemas, the call record when the exposure declares one, plus the identity the endpoint advertises and the contract slots its targets become. It is what a running endpoint answers through discovery and the list methods, so it is the thing to read when you want to see what a client will see. The catalog is derived on demand and is never committed.
+`peppy mcp catalog <name:tag>` prints the catalog the server derives for one exposure: every resource, tool, task, and picture tool with its public name, description, policies, and derived JSON Schemas, the call record when the exposure declares one, plus the identity the endpoint advertises, the contract slots its contract targets become (`contracts`), and the interface each daemon target names (`daemon_targets`). It is what a running endpoint answers through discovery and the list methods, so it is the thing to read when you want to see what a client will see. For a daemon target it prints the schemas of the interface without the narrowing of a [scope](#scopes): a running endpoint narrows them with the scope its launcher gives the target, which belongs to the instance and not to the exposure. The catalog is derived on demand and is never committed.
 
 ```json
 {
@@ -347,7 +420,7 @@ peppy mcp catalog camera_and_recording:v1             # the catalog an endpoint 
 
 ## Deploy it
 
-A launcher deploys exposures with `source: { exposures: [...] }`, listing each as `"<name>:<tag>"`. The deployment takes one argument, `port`, and one `links` entry per target of every exposure it lists. Each link connects a logical role to a running instance. A [per-robot surface](#per-robot-surfaces) takes no `links`: the launcher's `adjustments` under each robot's option fill its targets.
+A launcher deploys exposures with `source: { exposures: [...] }`, listing each as `"<name>:<tag>"`. The deployment takes one argument, `port`, and one `links` entry per contract target of every exposure it lists. Each link connects a logical role to a running instance. A [per-robot surface](#per-robot-surfaces) takes no `links`: the launcher's `adjustments` under each robot's option fill its targets. A [daemon target](#daemon-targets) takes no link either: it takes a scope.
 
 <Code code={mcpLauncher} lang="json5" title="launchers/mcp_camera_and_recording.json5" />
 
@@ -355,7 +428,7 @@ A launcher deploys exposures with `source: { exposures: [...] }`, listing each a
 peppy stack launch mcp_camera_and_recording
 ```
 
-The daemon resolves each exposure through the machine's [repository caches](/advanced_guides/repositories/), then every contract the exposures reference, validates every exposure against those contracts, and derives the server's node from the result: its identity, its manifest (one contract slot per target, consuming exactly the selected members), and the catalog of each endpoint. Nothing is added or built. The node lands in the stack ready to run, with the installed `peppy` binary as its artifact, and its instance runs `peppy mcp serve`. You never run that command yourself: the daemon hands it the pinned documents through the environment, and run by hand it refuses, naming `PEPPY_MCP_SERVE_SPEC`. The derived manifest and the documents the server reads are written under `~/.peppy/built_in/<node name>/`. On Linux, replacing the `peppy` binary on disk while the daemon runs (an upgrade, a rebuild) does not strand it: the daemon keeps serving built-in nodes from its own running image, warns in the add log that the file was replaced, and picks up the new binary when it restarts.
+The daemon resolves each exposure through the machine's [repository caches](/advanced_guides/repositories/), then every contract the exposures reference, validates every exposure against those contracts and the daemon interfaces it serves, and derives the server's node from the result: its identity, its manifest (one contract slot per contract target, consuming exactly the selected members), and the catalog of each endpoint. Nothing is added or built. The node lands in the stack ready to run, with the installed `peppy` binary as its artifact, and its instance runs `peppy mcp serve`. You never run that command yourself: the daemon hands it the pinned documents through the environment, and run by hand it refuses, naming `PEPPY_MCP_SERVE_SPEC`. The derived manifest and the documents the server reads are written under `~/.peppy/built_in/<node name>/`. On Linux, replacing the `peppy` binary on disk while the daemon runs (an upgrade, a rebuild) does not strand it: the daemon keeps serving built-in nodes from its own running image, warns in the add log that the file was replaced, and picks up the new binary when it restarts.
 
 The node's identity is derived from the exposures it serves, so a relaunch, a peer, and a reader of `peppy stack list` all name it the same way: `mcp` followed by `_<name>_<tag>` for each exposure in name-then-tag order, at the tag `builtin`. The launcher above registers `mcp_camera_and_recording_v1:builtin`.
 
@@ -366,6 +439,12 @@ http://127.0.0.1:8900/<exposure name>/<exposure tag>/mcp
 ```
 
 Every other path returns 404, a bare `/mcp` included. Point a client at `http://127.0.0.1:8900/camera_and_recording/v1/mcp`.
+
+A deployment of an exposure with a daemon target gives the target its scope, keyed by the target's name:
+
+<Code code={frameworkControlsLauncher} lang="json5" title="launchers/mcp_framework_controls.json5" />
+
+The scope reaches the server with the runtime configuration of its instance, and the server parses it when it starts. A launch and a join check every scope before they start the server. A server that starts without a scope for one of its daemon targets, with a scope that does not parse, or with a scope key that names no daemon target, for example under `peppy node run` of its node, serves nothing and stops. Its run log names each daemon target that lacks a scope and says how to give one: in the instance's `daemon_scopes`, or with a `set_daemon_scopes` adjustment on the instance.
 
 `port` is a preference. A server that finds the port free takes it. A server that finds it held by another process takes a port the operating system picks on the same loopback address, says so in its run log with a warning naming both ports, and announces the port it holds. Only a held port falls back: any other bind failure stops the process, its run log says `cannot bind 127.0.0.1:<port>`, and the launch fails naming that instance. The URL the server ended up on is never a guess: the launch or the join that started it prints it under `MCP endpoints:`, and [`peppy stack list`](#seeing-what-is-served) shows it for as long as the instance runs.
 
@@ -460,7 +539,7 @@ What a client sees on a per-robot surface:
 
 One deployment can list several exposures, two tags of the same exposure included. They share one process and one port, and nothing else: each endpoint keeps its own catalog, snapshots, subscriptions, and task handles, so a public name, a subscription, or a task handle on one endpoint is unknown to the others.
 
-Targets with the same name across the listed exposures **share one slot** when they name the same contract, and the manifest consumes the union of the members they select. One `links` entry then fills the slot for every exposure using it. The same target name bound to different contracts is refused, naming both exposures and both contracts: two exposures sharing a target name must pin the same contract.
+Targets with the same name across the listed exposures **share one slot** when they name the same contract, and the manifest consumes the union of the members they select. One `links` entry then fills the slot for every exposure using it. Daemon targets with the same name share one scope when they name the same interface. The same target name bound to different sources (two contracts, a contract and a daemon interface, or two daemon interfaces) is refused, naming both exposures and both sources: two exposures sharing a target name must name the same source.
 
 ```json5
 {
@@ -480,12 +559,14 @@ Targets with the same name across the listed exposures **share one slot** when t
 The launch refuses, before anything starts, when:
 
 - an exposure or a contract it references is not in the caches, or an exposure does not parse;
-- an exposure does not validate against its contracts. The report lists every violation of every listed exposure at once;
+- an exposure names a daemon interface, or a tag of it, that this peppy does not serve. The refusal names the tag that this peppy serves;
+- an exposure does not validate against its contracts and daemon interfaces. The report lists every violation of every listed exposure at once;
 - an exposure's `sha256` disagrees with the contract bytes the launch resolved, or two listed exposures pin one contract at different bytes. One deployment carries one content per contract;
 - an exposure is listed twice in one deployment;
 - two deployments list the same set of exposures. They would derive the same node identity, so the error names the set and points at the remedy: to serve one set on several hosts, declare one deployment with one instance per host;
 - a deployment lists a per-robot surface beside a fixed one, or two surfaces sharing a target name its member by different arguments;
-- a `links` entry names no target of the listed exposures, or a target is left without a link, as for any node's slot;
+- a `links` entry names no target of the listed exposures, or a contract target is left without a link, as for any node's slot;
+- a daemon target has no scope, a scope does not parse into the type of its interface or does not hold against the launcher, or a scope or a link is on the wrong instance or target. See [the checks of `daemon_scopes`](/guides/launch_files/#daemon_scopes-optional);
 - on a [per-robot surface](#per-robot-surfaces), a robot fills a target with no `argument` twice, or an instance the launcher deploys outside every copy fills a target. `peppy stack join` refuses the same two before the copy starts.
 
 Any number of instances run on one machine, whatever port each prefers. The first to reach a port holds it and the others take another, so a launcher that needs a known URL for each server names a different `port` for each, and a joined copy gets one with `--set-arguments <instance>.port=<n>`. Two servers that start together and prefer one port settle between themselves which of them holds it. Read a server's run log with [`peppy node info`](/guides/node_stack/#inspecting-a-node-with-peppy-node-info) on the node's identity.
@@ -510,7 +591,7 @@ Instance endpoints
 
 ### Placement
 
-An exposure deployment is placed like any other: `core_node` on the instance names the machine it runs on, and the coordinator ships the pinned exposure documents and the contracts they reference, from which the other machine derives the same server. The [federation limits](/advanced_guides/federation/#limits) apply: an exposure or a contract resolved from a filesystem repository cannot back an instance placed on another machine. The server reads the messaging layer like any node, so a topic-heavy exposure belongs on the machine that produces the topic.
+An exposure deployment is placed like any other: `core_node` on the instance names the machine it runs on, and the coordinator ships the pinned exposure documents and the contracts they reference, from which the other machine derives the same server. An instance that serves a [daemon target](#daemon-targets) is the exception: it runs on the coordinator, so it declares no `core_node` and belongs to no copy. The [federation limits](/advanced_guides/federation/#limits) apply: an exposure or a contract resolved from a filesystem repository cannot back an instance placed on another machine. The server reads the messaging layer like any node, so a topic-heavy exposure belongs on the machine that produces the topic.
 
 ## What a client sees
 
@@ -584,10 +665,14 @@ Validation reports **every** violation at once, so you can fix the document in o
 - A `max_result_bytes` is smaller than a payload's static maximum, or a topic with an unbounded payload omits the size policy.
 - An action with `progress_timeout_ms` has no `feedback_topic` in its contract.
 - A contract `sha256` does not match the resolved document's bytes.
+- A daemon target names an interface, or a tag of it, that this peppy does not serve. The error names the tag that this peppy serves, or the interfaces that it serves for an unknown name.
 
 Parsing catches document-level errors before these checks. Examples include:
 
 - An exposure with no targets or a target that selects no members.
+- A target that names both `contract` and `daemon`, or neither.
+- A daemon target with a `sha256`: a daemon interface is compiled into peppy and is never pinned.
+- A daemon target on a document with `robots`: every tool of a per-robot surface is routed by `robot`.
 - A public name claimed twice anywhere in the document, the names of picture tools and of the call record's tool included, or a service or action member selected twice by one target.
 - A target `argument` on a document without `robots`, a target `argument` of `robot`, a `describe` entry naming a target the robot fills any number of times or a service its target does not select as a tool, or an argument name that is not `snake_case`.
 - A blank `title`, `instructions`, or `description` value.

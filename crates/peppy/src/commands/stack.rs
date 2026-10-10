@@ -16,10 +16,11 @@ use std::sync::Arc;
 use clap::Subcommand;
 use tracing::info;
 
-use core_node_api::encoding::{DEFAULT_IDLE_TIMEOUT_SECS, LaunchGoal, StackBuildGoal};
+use core_node_api::encoding::{LaunchGoal, StackBuildGoal};
+use daemon_config::launcher::parse_copy_name;
+use stack_goal::DEFAULT_BUDGETS;
 
 use super::Command;
-use super::node::DEFAULT_BUILD_IDLE_TIMEOUT_SECS;
 use crate::{context::AppContext, error::Error as CommandError};
 
 #[derive(Subcommand)]
@@ -84,7 +85,8 @@ pub enum StackCommands {
     /// Needs no running stack and touches nothing: the flattened
     /// `launcher/v1` document goes to stdout, so it doubles as the escape
     /// hatch (flatten, hand-edit, launch the flat file), while the
-    /// resolution report goes to stderr.
+    /// resolution report goes to stderr. A flat document declares no axis,
+    /// so the launch of one that keeps a `stack_copies` scope refuses it.
     Resolve {
         /// The launcher to resolve: a repository launcher's name, or a path
         /// to a `launcher/v1` file.
@@ -133,20 +135,6 @@ pub enum StackCommands {
     },
 }
 
-/// A copy's name is its placement link, so it is held to a core node name's
-/// grammar before it travels as the [`config::runtime::Name`] the goal
-/// carries.
-fn parse_copy_name(raw: &str) -> Result<config::runtime::Name, String> {
-    use config::runtime::{CoreNodeName, CoreNodeNameError};
-    let placement = CoreNodeName::new(raw).map_err(|error| match error {
-        CoreNodeNameError::Reserved => daemon_config::launcher::SELF_COPY_NAME_REFUSAL.to_owned(),
-        CoreNodeNameError::Malformed => {
-            format!("a copy's name is its placement link, so it {error}")
-        }
-    })?;
-    Ok(config::runtime::Name::new(placement.into_string()).expect("a core node name is a name"))
-}
-
 /// What `stack launch` and `stack build` take.
 #[derive(clap::Args)]
 pub struct LauncherArgs {
@@ -170,20 +158,21 @@ pub struct LauncherArgs {
 }
 
 /// The phase budgets a launch or a join runs under, each idle budget a
-/// positive number of seconds.
+/// positive number of seconds. Each flag defaults to its field of
+/// [`DEFAULT_BUDGETS`].
 #[derive(clap::Args, Debug)]
 pub struct StackTimeouts {
     /// Idle timeout in seconds for the node add phase (resets on git/http
     /// progress or sub-process output).
-    #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, default_value_t = DEFAULT_BUDGETS.node_add_idle_timeout_secs, value_parser = clap::value_parser!(u64).range(1..))]
     pub node_add_idle_timeout_secs: u64,
     /// Idle timeout in seconds for the node build phase (resets on build
     /// output, bytes written to disk, or CPU time the build burns).
-    #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, default_value_t = DEFAULT_BUDGETS.node_build_idle_timeout_secs, value_parser = clap::value_parser!(u64).range(1..))]
     pub node_build_idle_timeout_secs: u64,
     /// Idle timeout in seconds for the node run-startup phase (resets on
     /// subprocess output until the node signals ready).
-    #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, default_value_t = DEFAULT_BUDGETS.node_run_idle_timeout_secs, value_parser = clap::value_parser!(u64).range(1..))]
     pub node_run_idle_timeout_secs: u64,
     /// Absolute maximum in seconds for the whole operation. Unset, only the
     /// idle timeouts apply.
@@ -320,5 +309,65 @@ impl Command for StackCommand {
                 benchmark::benchmark(ctx, samples, warmup, per_sample_timeout_ms)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct StackCli {
+        #[command(subcommand)]
+        command: StackCommands,
+    }
+
+    fn parsed(arguments: &[&str]) -> StackCommands {
+        StackCli::try_parse_from(std::iter::once("stack").chain(arguments.iter().copied()))
+            .expect("the command parses")
+            .command
+    }
+
+    /// A launch, a build and a join with no budget flag send the shared
+    /// default budgets, the only defaults of these budgets.
+    #[test]
+    fn the_budget_flags_default_to_the_shared_default_budgets() {
+        let StackCommands::Join { timeouts, .. } = parsed(&["join", "so101_sim:bravo"]) else {
+            unreachable!("`stack join` parses into `Join`")
+        };
+        assert_eq!(timeouts.budgets(), DEFAULT_BUDGETS);
+        for subcommand in ["launch", "build"] {
+            let (StackCommands::Launch(args) | StackCommands::Build(args)) =
+                parsed(&[subcommand, "simulation_mcp"])
+            else {
+                unreachable!("`stack {subcommand}` parses into its launcher arguments")
+            };
+            assert_eq!(args.timeouts.budgets(), DEFAULT_BUDGETS, "{subcommand}");
+        }
+    }
+
+    /// A flag replaces its own budget and leaves the others at their
+    /// defaults.
+    #[test]
+    fn a_budget_flag_replaces_its_own_budget() {
+        let StackCommands::Join { timeouts, .. } = parsed(&[
+            "join",
+            "so101_sim:bravo",
+            "--node-build-idle-timeout-secs",
+            "900",
+            "--max-timeout-secs",
+            "3600",
+        ]) else {
+            unreachable!("`stack join` parses into `Join`")
+        };
+        assert_eq!(
+            timeouts.budgets(),
+            core_node_api::encoding::StackBudgets {
+                node_build_idle_timeout_secs: 900,
+                max_timeout_secs: Some(3600),
+                ..DEFAULT_BUDGETS
+            }
+        );
     }
 }

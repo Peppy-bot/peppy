@@ -2,17 +2,20 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node,
-    build_staged_node, children_of, install_kill_on_shutdown_listener, instance_state_in_any_state,
-    is_process_running, poll_until, send_node_add_and_wait, send_node_add_then_build,
-    send_node_run_and_wait, spawn_real_running_instance, spawn_real_stuck_instance,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    add_and_build_process_node, build_staged_node, children_of, install_kill_on_shutdown_listener,
+    instance_state_in_any_state, is_process_running, poll_until, send_node_add_and_wait,
+    send_node_add_then_build, send_node_run_and_wait, send_node_run_and_wait_with_env,
+    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::StackResetRequest;
+use node_stack::NodeStack;
 use peppylib::core_node::transport::poll;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -490,5 +493,177 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
         "a reset teardown must never be recorded as a crash, got:
 {}",
         log_content
+    );
+}
+
+/// The environment variable that makes this test binary the node of
+/// [`setup_budget_test_node`], with the role it plays. The daemon passes it
+/// to the instance it starts; a plain run of the suite leaves it unset.
+const TEST_NODE_ROLE_VAR: &str = "SETUP_BUDGET_TEST_NODE_ROLE";
+/// The file the test node's shutdown hook writes.
+const TEST_NODE_MARKER_VAR: &str = "SETUP_BUDGET_TEST_NODE_MARKER";
+/// The role of a node whose setup registers a shutdown hook, then waits
+/// until the node is stopped.
+const SETUP_WAITS_UNTIL_STOPPED: &str = "setup_waits_until_stopped";
+/// What the shutdown hook of the test node writes.
+const SHUTDOWN_HOOK_MARK: &str = "the shutdown hook ran";
+
+/// A real peppylib node: this test binary, which the daemon starts again with
+/// [`TEST_NODE_ROLE_VAR`] set and this test alone selected (see
+/// [`test_node_run_cmd`]). Its setup registers a shutdown hook that writes
+/// the marker, then waits until the node is stopped. Without the variable,
+/// as in every plain run of the suite, it does nothing.
+#[test]
+fn setup_budget_test_node() {
+    let Ok(role) = std::env::var(TEST_NODE_ROLE_VAR) else {
+        return;
+    };
+    assert_eq!(role, SETUP_WAITS_UNTIL_STOPPED);
+    let marker = PathBuf::from(std::env::var(TEST_NODE_MARKER_VAR).expect("the marker path"));
+    let manifest = config::node::NodeConfigParser::from_content(
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "setup_waits", tag: "v1" },
+            execution: { language: "rust", run_cmd: ["setup_waits"] },
+        }"#,
+    )
+    .expect("the test node's manifest parses");
+    peppylib::runtime::NodeBuilder::<serde_json::Value>::new()
+        .with_manifest(manifest)
+        .run(move |_parameters, node_runner| async move {
+            node_runner.on_shutdown(async move {
+                std::fs::write(&marker, SHUTDOWN_HOOK_MARK).expect("write the marker");
+            });
+            std::future::pending::<()>().await;
+            Ok(())
+        })
+        .expect("the test node runs until it is stopped");
+}
+
+/// The `run_cmd` that starts [`setup_budget_test_node`].
+fn test_node_run_cmd() -> Vec<String> {
+    let test_binary = std::env::current_exe().expect("the path of this test binary");
+    vec![
+        test_binary.display().to_string(),
+        "setup_budget_test_node".to_owned(),
+        "--exact".to_owned(),
+        "--nocapture".to_owned(),
+        "--test-threads".to_owned(),
+        "1".to_owned(),
+    ]
+}
+
+/// The pid of the one instance of `name:tag`, once the daemon spawned it.
+fn starting_pid(node_stack: &NodeStack, name: &str, tag: &str) -> Option<u32> {
+    node_stack.find(name, tag).and_then(|handle| {
+        handle
+            .read()
+            .instances()
+            .first()
+            .and_then(|inst| inst.pid())
+    })
+}
+
+/// A stack reset that cancels a start after the instance answered ready
+/// stops it through its shutdown request, the way `peppy node stop` stops a
+/// running instance, and waits for that stop: the node's shutdown hook has
+/// run once the reset answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_stopped_by_a_reset_runs_the_node_s_shutdown_hook() {
+    const NODE_NAME: &str = "setup_waits_node";
+    const NODE_TAG: &str = "v1";
+    const INSTANCE_ID: &str = "setup_waits_instance";
+
+    let started = start_core_node_with_real_messenger().await;
+    let run_cmd = test_node_run_cmd();
+    let run_cmd: Vec<&str> = run_cmd.iter().map(String::as_str).collect();
+    let _source = add_and_build_process_node(&started, NODE_NAME, NODE_TAG, &run_cmd).await;
+
+    let marker_dir = tempfile::tempdir().expect("marker dir");
+    let marker = marker_dir.path().join("shutdown_hook");
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel();
+    let start = tokio::spawn({
+        let caller = started.caller_handle.clone();
+        let core_node_name = started.core_node_name.clone();
+        let env_vars = vec![
+            (
+                TEST_NODE_ROLE_VAR.to_owned(),
+                SETUP_WAITS_UNTIL_STOPPED.to_owned(),
+            ),
+            (
+                TEST_NODE_MARKER_VAR.to_owned(),
+                marker.display().to_string(),
+            ),
+        ];
+        async move {
+            send_node_run_and_wait_with_env(
+                &caller,
+                &core_node_name,
+                common::default_instance_plan(INSTANCE_ID),
+                NODE_NAME,
+                NODE_TAG,
+                &NodeRunTestTimeouts {
+                    goal: Duration::from_secs(10),
+                    result: Duration::from_secs(120),
+                },
+                Some(feedback_tx),
+                env_vars,
+            )
+            .await
+        }
+    });
+
+    // The daemon reports the ready signal of the instance; from then on the
+    // start waits for a setup that waits until it is stopped.
+    let ready_line = format!("`{INSTANCE_ID}` is ready");
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while let Some(feedback) = feedback_rx.recv().await {
+            if feedback.line.contains(&ready_line) {
+                return;
+            }
+        }
+        panic!("the start ended before the instance answered ready");
+    })
+    .await
+    .expect("the instance should answer ready");
+    let pid = starting_pid(&started.node_stack, NODE_NAME, NODE_TAG)
+        .expect("the starting instance has a process");
+    assert!(
+        !marker.exists(),
+        "the setup still waits, and the hook has not run"
+    );
+
+    let reset_response = poll(
+        &StackResetRequest::new(),
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started.core_node_name,
+        core_node::stack_reset_timeout(started.node_stack.shutdown_grace().as_secs()),
+    )
+    .await
+    .expect("the reset should complete");
+    assert!(
+        reset_response.success,
+        "the reset should succeed: {:?}",
+        reset_response.error_message
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("the shutdown hook should have left its marker"),
+        SHUTDOWN_HOOK_MARK
+    );
+    let start = start
+        .await
+        .expect("the start task should not panic")
+        .expect("the start should complete");
+    assert!(
+        !start.result.success,
+        "the reset cancels the start: {:?}",
+        start.result
+    );
+    assert!(
+        !is_process_running(pid),
+        "the instance's process is gone once the reset answers"
     );
 }

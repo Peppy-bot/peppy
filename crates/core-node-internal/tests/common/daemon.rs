@@ -3,6 +3,7 @@
 use super::poll::AbortOnDrop;
 use super::test_node_target;
 use config::consts::DEFAULT_MESSAGING_HOST;
+use config::node::SetupTimeout;
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy};
 use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
@@ -54,7 +55,7 @@ pub struct StartedCoreNode {
 fn default_node_arguments() -> CoreNodeArguments {
     CoreNodeArguments {
         node_startup_timeout: Duration::from_secs(10),
-        node_start_health_timeout: Duration::from_secs(30),
+        default_setup_timeout: setup_budget(30),
         health_monitor: HealthMonitorPolicy {
             interval: Duration::from_secs(5),
             timeout: Duration::from_secs(3),
@@ -139,12 +140,14 @@ pub async fn start_core_node_with_mock_messenger_outside_home() -> StartedCoreNo
     .await
 }
 
+/// A setup budget of `secs` seconds, in range.
+pub fn setup_budget(secs: u64) -> SetupTimeout {
+    SetupTimeout::from_secs(secs).expect("a setup budget in range")
+}
+
 pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
-    start_core_node_with_real_messenger_and_timeouts(
-        Duration::from_secs(10),
-        Duration::from_secs(30),
-    )
-    .await
+    start_core_node_with_real_messenger_and_timeouts(Duration::from_secs(10), setup_budget(30))
+        .await
 }
 
 /// Convenience wrapper over [`start_core_node_with_real_messenger_in_topology`]
@@ -155,7 +158,7 @@ pub async fn start_core_node_with_real_messenger_topology(
 ) -> StartedCoreNode {
     start_core_node_with_real_messenger_in_topology(
         Duration::from_secs(10),
-        Duration::from_secs(30),
+        setup_budget(30),
         topology,
     )
     .await
@@ -163,11 +166,11 @@ pub async fn start_core_node_with_real_messenger_topology(
 
 pub async fn start_core_node_with_real_messenger_and_timeouts(
     node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
+    default_setup_timeout: SetupTimeout,
 ) -> StartedCoreNode {
     start_core_node_with_real_messenger_in_topology(
         node_startup_timeout,
-        node_start_health_timeout,
+        default_setup_timeout,
         daemon_config::peppy_config::LocalNodesTopology::Peer,
     )
     .await
@@ -180,7 +183,7 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
 /// dual-topology e2e tests.
 pub async fn start_core_node_with_real_messenger_in_topology(
     node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
+    default_setup_timeout: SetupTimeout,
     topology: daemon_config::peppy_config::LocalNodesTopology,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
@@ -206,7 +209,7 @@ pub async fn start_core_node_with_real_messenger_in_topology(
     let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
     let mut args = default_node_arguments();
     args.node_startup_timeout = node_startup_timeout;
-    args.node_start_health_timeout = node_start_health_timeout;
+    args.default_setup_timeout = default_setup_timeout;
     let peppy_config = daemon_config::peppy_config::PeppyConfig {
         zenoh: daemon_config::peppy_config::ZenohConfig::Managed(
             daemon_config::peppy_config::ManagedZenohConfig {
@@ -266,13 +269,15 @@ pub async fn start_core_node_with_pypi_mirror(
     .await
 }
 
-pub async fn start_core_node_with_health_timeout(
-    node_start_health_timeout: Duration,
+/// Variant of [`start_core_node_with_mock_messenger`] whose default setup
+/// budget is `default_setup_timeout`.
+pub async fn start_core_node_with_default_setup_timeout(
+    default_setup_timeout: SetupTimeout,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
-    args.node_start_health_timeout = node_start_health_timeout;
+    args.default_setup_timeout = default_setup_timeout;
     start_core_node_with_messenger(
         shared_messenger,
         args,
@@ -604,6 +609,55 @@ pub async fn install_kill_on_shutdown_listener(
         }
     });
     AbortOnDrop(shutdown_task)
+}
+
+/// Serves the shutdown request of the instance `instance_id` of `name:tag`
+/// in the test process, as the runtime of a node serves it from its ready
+/// signal on: the request SIGKILLs the process the stack records for the
+/// instance, a `Starting` one included, and is reported on the returned
+/// receiver. The guard aborts the listener on drop.
+pub async fn install_shutdown_listener_for_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &str,
+) -> (
+    AbortOnDrop<peppylib::PeppyResult<()>>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let shutdown_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let (shutdown_task, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
+        &shutdown_handle,
+        &started.core_node_name,
+        instance_id,
+        test_node_target(name),
+    )
+    .await
+    .expect("failed to start shutdown listener for test instance");
+    let node_stack = started.node_stack.clone();
+    let (name, tag, instance_id) = (name.to_owned(), tag.to_owned(), instance_id.to_owned());
+    let (requested_tx, requested_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        if shutdown_rx.await.is_err() {
+            return;
+        }
+        let pid = node_stack.find(&name, &tag).and_then(|handle| {
+            handle
+                .read()
+                .instances()
+                .iter()
+                .find(|inst| inst.instance_id().as_str() == instance_id)
+                .and_then(|inst| inst.pid())
+        });
+        if let Some(pid) = pid {
+            let _ = std::process::Command::new("kill")
+                .arg("-KILL")
+                .arg(pid.to_string())
+                .status();
+        }
+        let _ = requested_tx.send(());
+    });
+    (AbortOnDrop(shutdown_task), requested_rx)
 }
 
 /// RAII guard for a test-spawned instance deliberately left in `Starting`:

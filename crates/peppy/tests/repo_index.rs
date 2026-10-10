@@ -593,6 +593,168 @@ mod exposures {
             .expect("the exposure validates once its contract is cached");
     }
 
+    /// The design's `framework/framework_controls.json5`, kept beside the
+    /// registry of the daemon interfaces whose `stack_copies:v1` it names.
+    const FRAMEWORK_CONTROLS: &str = include_str!(
+        "../../daemon-config-internal/src/daemon_interface/fixtures/framework_controls.json5"
+    );
+
+    /// `FRAMEWORK_CONTROLS` under the exposure name `name`, with `edit`
+    /// applied to its text.
+    fn framework_document(name: &str, edit: (&str, &str)) -> String {
+        FRAMEWORK_CONTROLS
+            .replace(
+                r#"manifest: { name: "framework_controls", tag: "v1" }"#,
+                &format!(r#"manifest: {{ name: "{name}", tag: "v1" }}"#),
+            )
+            .replace(edit.0, edit.1)
+    }
+
+    const STACK_COPIES_REFERENCE: &str = r#"daemon: { name: "stack_copies", tag: "v1" }"#;
+
+    /// A hub of `framework/` documents: the design's document, and one per
+    /// way a daemon target can be wrong. No contract is cached, since a
+    /// daemon target references none.
+    #[test]
+    fn a_document_of_daemon_targets_is_checked_against_the_interfaces_peppy_serves() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("hub");
+        std::fs::create_dir_all(repo.join("exposures")).unwrap();
+        let write = |file: &str, content: String| {
+            std::fs::write(repo.join("exposures").join(file), content).unwrap();
+        };
+        write("framework_controls.json5", FRAMEWORK_CONTROLS.to_owned());
+        write(
+            "unserved_tag.json5",
+            framework_document(
+                "unserved_tag",
+                (
+                    STACK_COPIES_REFERENCE,
+                    r#"daemon: { name: "stack_copies", tag: "v2" }"#,
+                ),
+            ),
+        );
+        write(
+            "unknown_interface.json5",
+            framework_document(
+                "unknown_interface",
+                (
+                    STACK_COPIES_REFERENCE,
+                    r#"daemon: { name: "node_controls", tag: "v1" }"#,
+                ),
+            ),
+        );
+        write(
+            "unknown_member.json5",
+            framework_document(
+                "unknown_member",
+                (r#"member: "list""#, r#"member: "lists""#),
+            ),
+        );
+        write(
+            "pinned.json5",
+            framework_document(
+                "pinned",
+                (
+                    STACK_COPIES_REFERENCE,
+                    &format!(
+                        r#"daemon: {{ name: "stack_copies", tag: "v1", sha256: "{}" }}"#,
+                        "a".repeat(64)
+                    ),
+                ),
+            ),
+        );
+        write(
+            "both_sources.json5",
+            framework_document(
+                "both_sources",
+                (
+                    STACK_COPIES_REFERENCE,
+                    r#"daemon: { name: "stack_copies", tag: "v1" }, contract: { name: "rgb_camera", tag: "v1" }"#,
+                ),
+            ),
+        );
+        repo_index(Some(repo.clone()), None).expect("the hub indexes");
+        let dirs = PeppyDirs::new(tmp.path().join("home"));
+
+        let report = check_index(&repo, CheckScope::IndexAndMcpExposures, &dirs)
+            .expect_err("the wrong documents fail the check")
+            .to_string();
+        assert!(!report.contains("`framework_controls:v1`"), "{report}");
+        for (id, phrase) in [
+            (
+                "unserved_tag:v1",
+                "target `stack`: daemon interface `stack_copies:v2` is not one this peppy \
+                 serves; it serves `stack_copies` at tag `v1` only",
+            ),
+            (
+                "unknown_interface:v1",
+                "daemon interface `node_controls:v1` is not one this peppy serves; it serves \
+                 `stack_copies:v1`",
+            ),
+            (
+                "unknown_member:v1",
+                "selects service member `lists`, but daemon interface `stack_copies:v1` \
+                 declares no such service",
+            ),
+            (
+                "exposures/pinned.json5",
+                "a daemon interface is compiled into peppy and is never pinned",
+            ),
+            (
+                "exposures/both_sources.json5",
+                "names both `contract` and `daemon`",
+            ),
+        ] {
+            assert!(
+                report.contains(&format!("`{id}`")),
+                "{id} missing from:\n{report}"
+            );
+            assert!(
+                report.contains(phrase),
+                "{id}: `{phrase}` missing from:\n{report}"
+            );
+        }
+        assert!(report.contains("5 exposures do not validate"), "{report}");
+    }
+
+    /// `peppy mcp catalog` prints a daemon target's schemas as the interface
+    /// declares them: the scope that narrows them belongs to an instance.
+    #[test]
+    fn the_catalog_of_a_daemon_target_is_the_interfaces_own() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("hub");
+        std::fs::create_dir_all(repo.join("exposures")).unwrap();
+        std::fs::write(
+            repo.join("exposures/framework_controls.json5"),
+            FRAMEWORK_CONTROLS,
+        )
+        .unwrap();
+        let dirs = PeppyDirs::new(tmp.path().join("home"));
+        std::fs::create_dir_all(dirs.cache_dir()).unwrap();
+        seed_exposure_cache(&dirs, &repo, &["framework_controls"]);
+
+        let rendered =
+            mcp_catalog_rendered(&dirs, "framework_controls:v1").expect("the catalog derives");
+        let catalog: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(catalog["contracts"], serde_json::json!([]));
+        assert_eq!(
+            catalog["daemon_targets"],
+            serde_json::json!([{ "target": "stack", "name": "stack_copies", "tag": "v1" }])
+        );
+        let join = catalog["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["name"] == "stack.join")
+            .expect("stack.join is a task");
+        assert_eq!(
+            join["input_schema"]["properties"],
+            serde_json::json!({ "name": { "type": "string" }, "option": { "type": "string" } })
+        );
+        assert_eq!(join["progress_timeout_ms"], 660000);
+    }
+
     #[test]
     fn the_catalog_command_prints_the_derived_bundle() {
         let tmp = TempDir::new().unwrap();
