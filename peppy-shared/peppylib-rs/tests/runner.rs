@@ -94,6 +94,44 @@ impl Drop for EnvAndDirGuard {
     }
 }
 
+/// Polls until the test node's `service` is reachable. Panics with the
+/// runner's result if the runner exits first, and with `timeout_message`
+/// when the service is still unreachable after 10 s.
+async fn wait_until_reachable<T: std::fmt::Debug>(
+    messenger: &peppylib::MessengerHandle,
+    runner_task: &mut tokio::task::JoinHandle<T>,
+    service: &str,
+    timeout_message: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if runner_task.is_finished() {
+            let result = runner_task.await.expect("runner task should not panic");
+            panic!("runner exited early: {result:?}");
+        }
+
+        if peppylib::ServiceMessenger::is_reachable(
+            messenger,
+            TEST_CORE_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            test_node_target(TEST_NODE_NAME),
+            service,
+            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        )
+        .await
+        .expect("reachability check should succeed")
+        {
+            return;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("{timeout_message}");
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_runner_succeed() {
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -166,33 +204,13 @@ async fn daemon_runner_succeed() {
         .await
         .expect("failed to create messenger");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if runner_task.is_finished() {
-            let result = runner_task.await.expect("runner task should not panic");
-            panic!("runner exited early: {result:?}");
-        }
-
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            test_node_target(TEST_NODE_NAME),
-            SHUTDOWN_SERVICE,
-            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
-        )
-        .await
-        .expect("reachability check should succeed")
-        {
-            break;
-        }
-
-        if Instant::now() >= deadline {
-            panic!("shutdown service did not become reachable");
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_until_reachable(
+        &messenger,
+        &mut runner_task,
+        SHUTDOWN_SERVICE,
+        "shutdown service did not become reachable",
+    )
+    .await;
 
     let health_request = NodeHealthRequest::new()
         .encode()
@@ -842,33 +860,13 @@ async fn node_ready_but_not_healthy() {
         .await
         .expect("failed to create messenger");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if runner_task.is_finished() {
-            let result = runner_task.await.expect("runner task should not panic");
-            panic!("runner exited early: {result:?}");
-        }
-
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            test_node_target(TEST_NODE_NAME),
-            NODE_READY_SERVICE,
-            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
-        )
-        .await
-        .expect("reachability check should succeed")
-        {
-            break;
-        }
-
-        if Instant::now() >= deadline {
-            panic!("ready service did not become reachable");
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_until_reachable(
+        &messenger,
+        &mut runner_task,
+        NODE_READY_SERVICE,
+        "ready service did not become reachable",
+    )
+    .await;
 
     let ready_payload = Payload::from_static(b"ready");
     let ready_response = peppylib::ServiceMessenger::poll(
@@ -885,33 +883,13 @@ async fn node_ready_but_not_healthy() {
     .expect("ready service should respond while setup is blocked");
     assert_eq!(ready_response.payload(), &ready_payload);
     assert_eq!(ready_response.instance_id(), TEST_INSTANCE_ID);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if runner_task.is_finished() {
-            let result = runner_task.await.expect("runner task should not panic");
-            panic!("runner exited early: {result:?}");
-        }
-
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            test_node_target(TEST_NODE_NAME),
-            SHUTDOWN_SERVICE,
-            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
-        )
-        .await
-        .expect("reachability check should succeed")
-        {
-            break;
-        }
-
-        if Instant::now() >= deadline {
-            panic!("shutdown service should be reachable while setup is blocked");
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_until_reachable(
+        &messenger,
+        &mut runner_task,
+        SHUTDOWN_SERVICE,
+        "shutdown service should be reachable while setup is blocked",
+    )
+    .await;
 
     assert!(
         !peppylib::ServiceMessenger::is_reachable(
@@ -953,33 +931,13 @@ async fn node_ready_but_not_healthy() {
 
     let _ = setup_continue_tx.send(());
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if runner_task.is_finished() {
-            let result = runner_task.await.expect("runner task should not panic");
-            panic!("runner exited early: {result:?}");
-        }
-
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            test_node_target(TEST_NODE_NAME),
-            NODE_HEALTH_SERVICE,
-            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
-        )
-        .await
-        .expect("reachability check should succeed")
-        {
-            break;
-        }
-
-        if Instant::now() >= deadline {
-            panic!("health service did not become reachable");
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_until_reachable(
+        &messenger,
+        &mut runner_task,
+        NODE_HEALTH_SERVICE,
+        "health service did not become reachable",
+    )
+    .await;
 
     let health_response = peppylib::ServiceMessenger::poll(
         &messenger,
@@ -1097,34 +1055,13 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         .await
         .expect("failed to create messenger");
 
-    // Wait for shutdown service to become reachable
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if runner_task.is_finished() {
-            let result = runner_task.await.expect("runner task should not panic");
-            panic!("runner exited early: {result:?}");
-        }
-
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            test_node_target(TEST_NODE_NAME),
-            SHUTDOWN_SERVICE,
-            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
-        )
-        .await
-        .expect("reachability check should succeed")
-        {
-            break;
-        }
-
-        if Instant::now() >= deadline {
-            panic!("shutdown service did not become reachable");
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_until_reachable(
+        &messenger,
+        &mut runner_task,
+        SHUTDOWN_SERVICE,
+        "shutdown service did not become reachable",
+    )
+    .await;
 
     // Send shutdown request
     let shutdown_payload = Payload::from_static(b"shutdown");
@@ -1241,33 +1178,13 @@ async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
 
     // The shutdown service is a pre-setup service, so it must be reachable
     // while setup_fn is still blocked
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if runner_task.is_finished() {
-            let result = runner_task.await.expect("runner task should not panic");
-            panic!("runner exited early: {result:?}");
-        }
-
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            test_node_target(TEST_NODE_NAME),
-            SHUTDOWN_SERVICE,
-            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
-        )
-        .await
-        .expect("reachability check should succeed")
-        {
-            break;
-        }
-
-        if Instant::now() >= deadline {
-            panic!("shutdown service did not become reachable");
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_until_reachable(
+        &messenger,
+        &mut runner_task,
+        SHUTDOWN_SERVICE,
+        "shutdown service did not become reachable",
+    )
+    .await;
 
     // Send the shutdown request while setup_fn is still blocked
     let shutdown_payload = Payload::from_static(b"shutdown");
@@ -1466,33 +1383,13 @@ async fn send_shutdown_when_reachable<T: std::fmt::Debug>(
         .await
         .expect("failed to create messenger");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if runner_task.is_finished() {
-            let result = runner_task.await;
-            panic!("runner exited early: {result:?}");
-        }
-
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            test_node_target(TEST_NODE_NAME),
-            SHUTDOWN_SERVICE,
-            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
-        )
-        .await
-        .expect("reachability check should succeed")
-        {
-            break;
-        }
-
-        if Instant::now() >= deadline {
-            panic!("shutdown service did not become reachable");
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_until_reachable(
+        &messenger,
+        runner_task,
+        SHUTDOWN_SERVICE,
+        "shutdown service did not become reachable",
+    )
+    .await;
 
     peppylib::ServiceMessenger::poll(
         &messenger,
