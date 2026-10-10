@@ -5,6 +5,7 @@ between the two languages surfaces here, not in node suites)."""
 
 import asyncio
 import gc
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from peppylib import (
     TopicMessenger,
     TopicRetention,
 )
+from peppylib.clock import ClockRequest, ClockResponse
 from peppylib.testing import (
     MOCK_CLOCK_INSTANCE_ID,
     STANDALONE_CORE_NODE,
@@ -624,6 +626,119 @@ async def test_prepare_test_process_sets_zenoh_runtime():
     )
     # Module import already ran; calling again is idempotent.
     peppy_testing.prepare_test_process()
+
+
+# --- Pump failures ------------------------------------------------------------
+#
+# A mock's background pump meets a messaging error only when the transport
+# breaks, which a live mesh does not do on demand. These cases hand the pumps a
+# fake endpoint instead, so each failure happens exactly where the test puts
+# it.
+
+
+def _listen_on(monkeypatch, endpoint) -> None:
+    """Make every ``ServiceMessenger.listen`` of ``peppylib.testing`` return
+    ``endpoint`` instead of declaring a queryable."""
+
+    class _FakeServiceMessenger:
+        @staticmethod
+        async def listen(*_args):
+            return endpoint
+
+    monkeypatch.setattr(peppy_testing, "ServiceMessenger", _FakeServiceMessenger)
+
+
+class _BrokenReceiveEndpoint:
+    """A service endpoint whose receive stream fails on the first request."""
+
+    def __init__(self) -> None:
+        self.failed = asyncio.Event()
+
+    async def recv_next_request(self):
+        self.failed.set()
+        raise RuntimeError("receive stream broke")
+
+
+class _ScriptedRequestsEndpoint:
+    """A service endpoint that delivers the given ``(context, responder)``
+    pairs in order, then reports the listener closed."""
+
+    def __init__(self, pairs) -> None:
+        self._pairs = deque(pairs)
+
+    async def recv_next_request(self):
+        if not self._pairs:
+            return None
+        return self._pairs.popleft()
+
+
+class _ClockRequestContext:
+    def __init__(self, client_send_time: int) -> None:
+        self.payload = ClockRequest(client_send_time).encode()
+
+
+class _RecordingResponder:
+    """A responder that records each response, or fails to send it when
+    ``fails`` is set."""
+
+    def __init__(self, fails: bool = False) -> None:
+        self._fails = fails
+        self.responses: list[bytes] = []
+
+    async def respond(self, payload: bytes) -> None:
+        if self._fails:
+            raise RuntimeError("response send failed")
+        self.responses.append(bytes(payload))
+
+
+@pytest.mark.asyncio
+async def test_mock_service_core_stops_its_pump_on_a_broken_receive_stream(monkeypatch):
+    """A receive error stops the request pump with a warning, as the Rust
+    pump logs and stops, so ``close()`` still runs its teardown checks
+    instead of raising the error."""
+    endpoint = _BrokenReceiveEndpoint()
+    _listen_on(monkeypatch, endpoint)
+    mock = await MockServiceCore.listen(
+        None, MOCK_CORE, MOCK_INSTANCE, _node_target("dep_node"), "get_info"
+    )
+
+    # The pump fails and warns in the same step that sets the event.
+    with pytest.warns(UserWarning, match="request pump stopped: receive stream broke"):
+        await endpoint.failed.wait()
+
+    await mock.close()
+
+
+@pytest.mark.asyncio
+async def test_mock_clock_keeps_serving_after_a_failed_response(monkeypatch):
+    """A response the clock service fails to send loses that request only:
+    the next caller is still answered, as the Rust core's request loop logs
+    the failure and keeps serving."""
+    failing = _RecordingResponder(fails=True)
+    answering = _RecordingResponder()
+    _listen_on(
+        monkeypatch,
+        _ScriptedRequestsEndpoint(
+            [(_ClockRequestContext(1), failing), (_ClockRequestContext(2), answering)]
+        ),
+    )
+
+    clock = await MockClock.start(
+        None, STANDALONE_CORE_NODE, MOCK_CLOCK_INSTANCE_ID, "publisher"
+    )
+    try:
+        # The fake listener closes after its two requests, so the pump returns
+        # by itself: awaiting it is the end of the exchange.
+        with pytest.warns(
+            UserWarning, match="failed to send a clock response: response send failed"
+        ):
+            await clock._pump
+    finally:
+        await clock.close()
+
+    assert failing.responses == []
+    assert len(answering.responses) == 1
+    assert ClockResponse.decode(answering.responses[0]).client_send_time == 2
 
 
 # --- resolve_node_dir / Mocks ------------------------------------------------

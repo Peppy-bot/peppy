@@ -66,6 +66,12 @@ _CONNECT_RETRIES = 5
 _CONNECT_RETRY_DELAY = 0.2
 _REACHABILITY_POLL_INTERVAL = 0.025
 
+#: The exceptions a failed native messaging call raises: peppylib maps every
+#: Rust messaging error to one of these. A mock pump that catches them handles
+#: exactly what its Rust twin handles as an `Err`, and a Rust panic still
+#: surfaces.
+_MESSAGING_ERRORS = (ConnectionError, RuntimeError, TimeoutError, ValueError)
+
 #: The identity segment generated test surfaces pin the node-under-test with;
 #: the Python twin of the Rust runtime's ``STANDALONE_CORE_NODE`` constant, so
 #: peppygen's veneers reference it instead of embedding the literal.
@@ -583,7 +589,17 @@ class MockServiceCore:
 
     async def _run_pump(self, endpoint: Any) -> None:
         while True:
-            pair = await endpoint.recv_next_request()
+            # A broken receive stream stops the pump with a warning, as the
+            # Rust core logs and stops, so close() still reports what the test
+            # left dangling instead of raising this error.
+            try:
+                pair = await endpoint.recv_next_request()
+            except _MESSAGING_ERRORS as error:
+                warnings.warn(
+                    f"mock service `{self._service_name}` request pump stopped: {error}",
+                    stacklevel=1,
+                )
+                return
             if pair is None:
                 return
             context, responder = pair
@@ -907,7 +923,9 @@ class MockClock:
             try:
                 request = ClockRequest.decode(bytes(context.payload))
             except ValueError as error:
-                await responder.respond_error(f"invalid clock request: {error}")
+                await _send_clock_reply(
+                    responder.respond_error(f"invalid clock request: {error}")
+                )
                 continue
             # Stamp t2 last: the response encode + send happens after this
             # point and is part of the round-trip delay the client measures,
@@ -916,7 +934,7 @@ class MockClock:
             response = ClockResponse(
                 request.client_send_time, server_recv_time, server_send_time
             )
-            await responder.respond(response.encode())
+            await _send_clock_reply(responder.respond(response.encode()))
 
     async def _run_ticker(self, publisher: TopicPublisher) -> None:
         # Same loop shape as the daemon's wall-mode publisher: SensorData QoS
@@ -1000,6 +1018,16 @@ class MockClock:
                 pass
             except Exception as error:  # noqa: BLE001 — teardown reports, never raises
                 warnings.warn(f"mock clock task failed: {error}", stacklevel=1)
+
+
+async def _send_clock_reply(reply: Awaitable[None]) -> None:
+    """Await one reply of the mock clock service. A failed send loses that
+    request only, as the Rust core's request loop logs it and keeps serving
+    the next caller."""
+    try:
+        await reply
+    except _MESSAGING_ERRORS as error:
+        warnings.warn(f"mock clock failed to send a clock response: {error}", stacklevel=1)
 
 
 @dataclass
