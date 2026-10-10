@@ -1759,6 +1759,13 @@ def test_the_notes_of_another_release_are_not_its_notes_commit(
     assert _notes_commit_lookup(release_repo) is None
 
 
+def _commit_notes_after_a_merge(repo: ReleaseRepo) -> str:
+    """Commit a code change on `dev`, then the notes alone on top of it;
+    return the notes commit."""
+    repo.commit_on_dev({"code.rs": "fn merged() {}\n"}, "merged")
+    return repo.commit_release_notes()
+
+
 @pytest.mark.parametrize(
     "change_notes",
     [
@@ -1768,10 +1775,7 @@ def test_the_notes_of_another_release_are_not_its_notes_commit(
             "notes and code",
         ),
         # The notes alone, on a commit that is not the release commit.
-        lambda repo: (
-            repo.commit_on_dev({"code.rs": "fn merged() {}\n"}, "merged"),
-            repo.commit_release_notes(),
-        )[-1],
+        _commit_notes_after_a_merge,
     ],
     ids=["notes-and-code", "notes-off-the-release-commit"],
 )
