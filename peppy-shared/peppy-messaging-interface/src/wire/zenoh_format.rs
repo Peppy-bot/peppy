@@ -17,6 +17,12 @@ use std::fmt;
 /// Single-chunk wildcard. Matches exactly one path segment.
 const SINGLE_CHUNK_WILDCARD: &str = "*";
 
+/// The value of an addressing slot the caller pinned, or the single-chunk
+/// wildcard when it left the slot open.
+fn pinned_or_wildcard(slot: Option<&Segment>) -> &str {
+    slot.map_or(SINGLE_CHUNK_WILDCARD, Segment::as_str)
+}
+
 /// Returns the three wire segments `(discriminator, name, tag)` for a target.
 /// When the target is `None` (untargeted receiver), all three become the
 /// single-chunk wildcard so the keyexpr matches any publisher's emission.
@@ -103,13 +109,10 @@ impl ZenohWireFormat {
     /// slots and that trailing segment filled with the peer's by an
     /// observation pinned to a pair, and wildcarded by an observing one.
     pub(crate) fn topic_subscribe(r: &TopicWireReceiver) -> String {
-        let from_core = r.from_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let from_inst = r
-            .from_instance_id
-            .as_deref()
-            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let from_core = pinned_or_wildcard(r.from_core_node.as_ref());
+        let from_inst = pinned_or_wildcard(r.from_instance_id.as_ref());
         let (discriminator, name, tag) = target_segments(r.from_target.as_ref());
-        let link_id = r.from_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let link_id = pinned_or_wildcard(r.from_link_id.as_ref());
         let (as_core, as_inst) = match &r.pairing_recipient {
             Some(PairingRecipient::Any) => (SINGLE_CHUNK_WILDCARD, SINGLE_CHUNK_WILDCARD),
             Some(PairingRecipient::Peer(peer)) => {
@@ -173,14 +176,8 @@ impl ZenohWireFormat {
             &s.to_service_name,
             s.kind,
         );
-        let target_core = s
-            .target_core_node
-            .as_deref()
-            .unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let target_inst = s
-            .target_instance_id
-            .as_deref()
-            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_core = pinned_or_wildcard(s.target_core_node.as_ref());
+        let target_inst = pinned_or_wildcard(s.target_instance_id.as_ref());
         format!(
             "{target_core}/{}/{target_inst}/{}/{root}",
             s.bound_core_node, s.as_instance_id,
@@ -311,16 +308,10 @@ impl ZenohWireFormat {
     /// the producer's `_` advertisement via Zenoh's matcher.
     pub(crate) fn action_feedback_subscribe(s: &ActionWireSender, goal_id: &str) -> String {
         let action_root = action_root(&s.to_target, SINGLE_CHUNK_WILDCARD, &s.to_action_name);
-        let target_core = s
-            .target_core_node
-            .as_deref()
-            .unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let target_inst_segment = s
-            .target_instance_id
-            .as_deref()
-            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_core = pinned_or_wildcard(s.target_core_node.as_ref());
+        let target_inst = pinned_or_wildcard(s.target_instance_id.as_ref());
         format!(
-            "{}/{target_core}/{}/{target_inst_segment}/{action_root}/feedback/{target_inst_segment}/{goal_id}",
+            "{}/{target_core}/{}/{target_inst}/{action_root}/feedback/{target_inst}/{goal_id}",
             s.as_core_node, s.as_instance_id,
         )
     }
@@ -347,14 +338,8 @@ impl ZenohWireFormat {
     /// taken from the (typically pinned) sender; unpinned slots wildcard.
     pub(crate) fn action_liveliness_watch(s: &ActionWireSender) -> String {
         let (discriminator, name, tag) = target_segments(Some(&s.to_target));
-        let target_core = s
-            .target_core_node
-            .as_deref()
-            .unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let target_inst = s
-            .target_instance_id
-            .as_deref()
-            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_core = pinned_or_wildcard(s.target_core_node.as_ref());
+        let target_inst = pinned_or_wildcard(s.target_instance_id.as_ref());
         format!(
             "action_liveliness/{target_core}/{target_inst}/{discriminator}/{name}/{tag}/{}",
             s.to_action_name,
@@ -383,9 +368,7 @@ impl ZenohWireFormat {
         scope: PresenceScope<'_>,
         core_node: Option<&Segment>,
     ) -> String {
-        let core_node = core_node
-            .map(Segment::as_str)
-            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let core_node = pinned_or_wildcard(core_node);
         let prefix = namespace_prefix(scope);
         format!("{prefix}core_node_presence/{core_node}/{SINGLE_CHUNK_WILDCARD}")
     }
