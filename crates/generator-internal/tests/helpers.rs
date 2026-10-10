@@ -1499,6 +1499,17 @@ pub const CONSUMED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
 }
 "#;
 
+/// The consumer side of the `move_arm` action of [`EXPOSED_ACTION_EXAMPLE`]:
+/// its goal request, goal response, feedback and result formats.
+pub fn consumed_move_arm_action_messages() -> generator::ConsumedActionMessage {
+    generator::ConsumedActionMessage {
+        goal_request: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap()),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
+        feedback: Some(serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap()),
+        result_response: Some(serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap()),
+    }
+}
+
 pub const TOPIC_DEDUP_SHARED_FORMAT: &str = r#"{
   positions: { $type: "array", $items: "f64", $length: 3 },
   velocities: { $type: "array", $items: "f64", $length: 3 },
