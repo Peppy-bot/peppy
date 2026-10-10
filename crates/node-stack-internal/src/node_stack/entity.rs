@@ -392,8 +392,8 @@ pub struct NodeEntity {
     /// and consumed by `node build`. Set to `Some` while the entity is
     /// `Added`, taken (set to `None`) by the build path. The `Arc` lets the
     /// build task hold its own reference for the duration of the build after
-    /// `take_pending_working_dir` clears the entity-side slot. Never
-    /// persisted.
+    /// `take_pending_working_dir_if_generation` clears the entity-side slot.
+    /// Never persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
     /// Broadcasts this entity's stage label on every stage transition
     /// (`Added`/`Building`/`Ready`/`Root`). Observers obtain a receiver via
@@ -482,7 +482,7 @@ impl NodeEntity {
 
     /// Returns the in-memory working directory guard staged by `node add`
     /// for a future `node build`, if any. The build path consumes this via
-    /// [`Self::take_pending_working_dir`].
+    /// [`Self::take_pending_working_dir_if_generation`].
     pub fn pending_working_dir(&self) -> Option<Arc<WorkingDirGuard>> {
         self.pending_working_dir.clone()
     }
@@ -491,11 +491,6 @@ impl NodeEntity {
     /// later `node build` can reuse it without re-cloning the source.
     pub fn set_pending_working_dir(&mut self, guard: Arc<WorkingDirGuard>) {
         self.pending_working_dir = Some(guard);
-    }
-
-    /// Takes the staged working-directory guard, leaving `None` in place.
-    pub fn take_pending_working_dir(&mut self) -> Option<Arc<WorkingDirGuard>> {
-        self.pending_working_dir.take()
     }
 
     /// Takes the staged working-directory guard, but only if the entity's
