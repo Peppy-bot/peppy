@@ -797,9 +797,9 @@ impl PeppyConfig {
         if let Some(name) = &self.core_node_name
             && let Err(reason) = config::runtime::CoreNodeName::new(name.as_str())
         {
-            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+            return Err(cannot_parse_config(format!(
                 "{PEPPY_CONFIG_FILE}: invalid core_node_name {name:?}: {reason}"
-            ))));
+            )));
         }
 
         self.zenoh.validate()?;
@@ -808,14 +808,14 @@ impl PeppyConfig {
         // router restart, or a brief daemon blip would trip every node's
         // watchdog. Reject a hand-edited too-small value loud at load time.
         if self.lifecycle.daemon_grace_secs < MIN_DAEMON_GRACE_SECS {
-            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+            return Err(cannot_parse_config(format!(
                 "invalid lifecycle.daemon_grace_secs: must be >= {MIN_DAEMON_GRACE_SECS}"
-            ))));
+            )));
         }
         if self.lifecycle.shutdown_grace_secs < MIN_SHUTDOWN_GRACE_SECS {
-            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+            return Err(cannot_parse_config(format!(
                 "invalid lifecycle.shutdown_grace_secs: must be >= {MIN_SHUTDOWN_GRACE_SECS}"
-            ))));
+            )));
         }
         Ok(())
     }
@@ -866,11 +866,8 @@ fn load_or_create_with_override(
     }
 
     let content = std::fs::read_to_string(&path)?;
-    let config: PeppyConfig = serde_json5::from_str(&content).map_err(|e| {
-        Error::Parsing(ParsingError::CannotParseConfig(format!(
-            "{PEPPY_CONFIG_FILE}: {e}"
-        )))
-    })?;
+    let config: PeppyConfig = serde_json5::from_str(&content)
+        .map_err(|e| cannot_parse_config(format!("{PEPPY_CONFIG_FILE}: {e}")))?;
     // serde parses any numeric field, so a hand-edited 0 buffer size survives
     // the parse above; reject it before it reaches a bounded channel downstream.
     config.validate()?;
