@@ -75,12 +75,11 @@ fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
         .collect()
 }
 
-/// Whether `inst` is the instance addressed by `instance_id`. When
-/// `require_running` is set, only `Running` instances match; otherwise an
-/// instance in any state (e.g. `Starting`) matches.
-fn instance_matches(inst: &TrackedNodeInstance, instance_id: &Name, require_running: bool) -> bool {
-    inst.instance_id() == instance_id
-        && (!require_running || inst.state() == InstanceState::Running)
+/// Whether `inst` is the instance addressed by `instance_id` and is
+/// `Running`. A `Starting` instance has not subscribed to messenger services
+/// yet, so it does not match.
+fn is_running_instance(inst: &TrackedNodeInstance, instance_id: &Name) -> bool {
+    inst.instance_id() == instance_id && inst.state() == InstanceState::Running
 }
 
 /// One pair endpoint's pairing identity, normalized so a locally-resolved
@@ -359,21 +358,16 @@ impl NodeStackInner {
 
     /// Shared entity scan for the instance-lookup methods. Visits every entity
     /// in graph order, holding each entity's read guard while `project`
-    /// inspects it, and returns the first `Some` projection. When `skip_root`
-    /// is set the synthetic root entity is not visited. Holding the guard
+    /// inspects it, and returns the first `Some` projection. Holding the guard
     /// across the projection keeps each lookup atomic with respect to a
     /// concurrent `prepare_and_spawn` / `stop_instance` mutating that entity's
     /// instances list.
     fn find_map_entity<T>(
         &self,
-        skip_root: bool,
         mut project: impl FnMut(&EntityHandle, &NodeEntity) -> Option<T>,
     ) -> Option<T> {
         self.graph.node_weights().find_map(|handle| {
             let guard = handle.read();
-            if skip_root && self.is_root(&key_from_entity(&guard)) {
-                return None;
-            }
             project(handle, &guard)
         })
     }
@@ -385,11 +379,11 @@ impl NodeStackInner {
     /// to clean up an in-flight start should use `NodeEntity::abort_started`
     /// instead.
     fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
-        self.find_map_entity(false, |_, entity| {
+        self.find_map_entity(|_, entity| {
             entity
                 .instances()
                 .iter()
-                .find(|inst| instance_matches(inst, instance_id, true))
+                .find(|inst| is_running_instance(inst, instance_id))
                 .cloned()
         })
     }
@@ -408,11 +402,14 @@ impl NodeStackInner {
         &self,
         instance_id: &Name,
     ) -> Option<(String, String)> {
-        self.find_map_entity(true, |_, entity| {
+        self.find_map_entity(|_, entity| {
+            if self.is_root(&key_from_entity(entity)) {
+                return None;
+            }
             entity
                 .instances()
                 .iter()
-                .any(|inst| instance_matches(inst, instance_id, false))
+                .any(|inst| inst.instance_id() == instance_id)
                 .then(|| {
                     (
                         entity.config().manifest.name.as_str().to_owned(),
@@ -425,11 +422,11 @@ impl NodeStackInner {
     /// Same filtering rule as [`find_by_instance_id`]: only entities
     /// containing a `Running` instance with the given id are returned.
     fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
-        self.find_map_entity(false, |handle, entity| {
+        self.find_map_entity(|handle, entity| {
             entity
                 .instances()
                 .iter()
-                .any(|inst| instance_matches(inst, instance_id, true))
+                .any(|inst| is_running_instance(inst, instance_id))
                 .then(|| handle.clone())
         })
     }
@@ -629,7 +626,7 @@ impl NodeStackInner {
     /// state (`Starting` counts: the reserve-before-spawn path pairs a
     /// slot while its instance is still starting).
     fn instance_is_live_for_pairing(&self, instance_id: &str) -> bool {
-        self.find_map_entity(false, |_, entity| {
+        self.find_map_entity(|_, entity| {
             entity
                 .instances()
                 .iter()
@@ -678,7 +675,7 @@ impl NodeStackInner {
     /// current state. Errors when the instance is unknown/terminal or its
     /// manifest declares no such pairing slot.
     fn pairing_slot_meta(&self, slot: &SlotAddr) -> Result<PairingParticipantDependency> {
-        let found = self.find_map_entity(false, |_, entity| {
+        let found = self.find_map_entity(|_, entity| {
             entity
                 .instances()
                 .iter()
@@ -762,7 +759,7 @@ impl NodeStackInner {
 
     /// The copy a local instance belongs to, as recorded when it started.
     fn instance_copy(&self, instance_id: &str) -> Option<config::runtime::Name> {
-        self.find_map_entity(false, |_, entity| {
+        self.find_map_entity(|_, entity| {
             entity
                 .instances()
                 .iter()
