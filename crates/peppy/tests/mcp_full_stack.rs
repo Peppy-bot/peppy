@@ -803,15 +803,14 @@ fn stage_provider(
     node_dir
 }
 
-/// Rewrites a staged manifest so its build fails at once, for launches
-/// expected to refuse before any node runs.
-fn refuse_build(node_dir: &Path) {
+/// Reads the staged manifest of `node_dir`, applies `edit` to it, and writes
+/// it back.
+fn rewrite_manifest(node_dir: &Path, edit: impl FnOnce(&mut config::node::NodeConfig)) {
     let manifest_path = node_dir.join(NODE_CONFIG_FILE);
     let source = fs::read_to_string(&manifest_path).expect("staged manifest exists");
     let mut node_config: config::node::NodeConfig =
         serde_json5::from_str(&source).expect("staged manifest parses");
-    node_config.execution.build_cmd = Some(vec!["false".to_string()]);
-    node_config.execution.run_cmd = Some(vec!["true".to_string()]);
+    edit(&mut node_config);
     fs::write(
         &manifest_path,
         serde_json5::to_string(&node_config).expect("staged manifest serializes"),
@@ -819,20 +818,23 @@ fn refuse_build(node_dir: &Path) {
     .expect("rewrite staged manifest");
 }
 
+/// Rewrites a staged manifest so its build fails at once, for launches
+/// expected to refuse before any node runs.
+fn refuse_build(node_dir: &Path) {
+    rewrite_manifest(node_dir, |node_config| {
+        node_config.execution.build_cmd = Some(vec!["false".to_string()]);
+        node_config.execution.run_cmd = Some(vec!["true".to_string()]);
+    });
+}
+
 /// Rewrites a staged manifest for the pre-built binary: no build step, the
 /// absolute binary path as `run_cmd`.
 fn point_manifest_at_binary(node_dir: &Path, binary: &Path) {
-    let manifest_path = node_dir.join(NODE_CONFIG_FILE);
-    let source = fs::read_to_string(&manifest_path).expect("staged manifest exists");
-    let mut node_config: config::node::NodeConfig =
-        serde_json5::from_str(&source).expect("staged manifest parses");
-    node_config.execution.build_cmd = None;
-    node_config.execution.run_cmd = Some(vec![binary.to_str().expect("utf-8 path").to_string()]);
-    fs::write(
-        &manifest_path,
-        serde_json5::to_string(&node_config).expect("staged manifest serializes"),
-    )
-    .expect("rewrite staged manifest");
+    rewrite_manifest(node_dir, |node_config| {
+        node_config.execution.build_cmd = None;
+        node_config.execution.run_cmd =
+            Some(vec![binary.to_str().expect("utf-8 path").to_string()]);
+    });
 }
 
 /// A launched stack: the emulated daemon, its CLI context, and the hub it
