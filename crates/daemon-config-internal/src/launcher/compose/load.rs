@@ -472,6 +472,20 @@ fn check_copy_axis_references(
     copy_axes: &[CopyAxis<'_>],
     routed: &[Routed<'_>],
 ) -> Result<(), CompositionError> {
+    check_fragments_copy_axis_references(launcher, loaded)?;
+    check_launcher_constraints_copy_axes(launcher)?;
+    for routed in routed {
+        check_routed_adjustment_copy_axes(launcher, loaded, copy_axes, routed)?;
+    }
+    Ok(())
+}
+
+/// Every fragment of every option, held to the copy axes its unit can
+/// fill: see [`check_fragment_copy_axis_references`].
+fn check_fragments_copy_axis_references(
+    launcher: &PeppyLauncher,
+    loaded: &LoadedComposition,
+) -> Result<(), CompositionError> {
     for axis in &launcher.components {
         let foreign: Vec<&ComponentAxis> = launcher
             .repeatable_axes()
@@ -479,38 +493,55 @@ fn check_copy_axis_references(
             .collect();
         for (_, option) in loaded.options_of(&axis.name) {
             for fragment in option.all_fragments() {
-                if axis.cardinality.is_repeatable() && !fragment.body.core_nodes.is_empty() {
-                    return Err(CompositionError::CopyFragmentCoreNodes {
-                        origin: fragment.origin.clone(),
-                        axis: axis.name.clone(),
-                    });
-                }
-                for adjustment in &fragment.body.adjustments {
-                    if let Some(copy_axis) = foreign
-                        .iter()
-                        .find(|copy_axis| names_axis(adjustment.when.as_ref(), &copy_axis.name))
-                    {
-                        return Err(CompositionError::GuardOnCopyAxis {
-                            target: adjustment.target.to_string(),
-                            origin: fragment.origin.clone(),
-                            axis: copy_axis.name.clone(),
-                        });
-                    }
-                }
-                for constraint in &fragment.body.constraints {
-                    if let Some(copy_axis) = foreign
-                        .iter()
-                        .find(|copy_axis| constraint_names_axis(constraint, &copy_axis.name))
-                    {
-                        return Err(CompositionError::ConstraintOnCopyAxis {
-                            origin: fragment.origin.clone(),
-                            axis: copy_axis.name.clone(),
-                        });
-                    }
-                }
+                check_fragment_copy_axis_references(axis, fragment, &foreign)?;
             }
         }
     }
+    Ok(())
+}
+
+/// A fragment of an option of `axis`: a copy's fragment declares no core
+/// node link, and no guard or constraint of the fragment names one of the
+/// `foreign` copy axes, which its unit never fills.
+fn check_fragment_copy_axis_references(
+    axis: &ComponentAxis,
+    fragment: &LoadedFragment,
+    foreign: &[&ComponentAxis],
+) -> Result<(), CompositionError> {
+    if axis.cardinality.is_repeatable() && !fragment.body.core_nodes.is_empty() {
+        return Err(CompositionError::CopyFragmentCoreNodes {
+            origin: fragment.origin.clone(),
+            axis: axis.name.clone(),
+        });
+    }
+    for adjustment in &fragment.body.adjustments {
+        if let Some(copy_axis) = foreign
+            .iter()
+            .find(|copy_axis| names_axis(adjustment.when.as_ref(), &copy_axis.name))
+        {
+            return Err(CompositionError::GuardOnCopyAxis {
+                target: adjustment.target.to_string(),
+                origin: fragment.origin.clone(),
+                axis: copy_axis.name.clone(),
+            });
+        }
+    }
+    for constraint in &fragment.body.constraints {
+        if let Some(copy_axis) = foreign
+            .iter()
+            .find(|copy_axis| constraint_names_axis(constraint, &copy_axis.name))
+        {
+            return Err(CompositionError::ConstraintOnCopyAxis {
+                origin: fragment.origin.clone(),
+                axis: copy_axis.name.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// A launcher constraint naming two copy axes holds for neither.
+fn check_launcher_constraints_copy_axes(launcher: &PeppyLauncher) -> Result<(), CompositionError> {
     for (position, constraint) in launcher.constraints.iter().enumerate() {
         let named: Vec<&str> = launcher
             .repeatable_axes()
@@ -524,128 +555,161 @@ fn check_copy_axis_references(
             });
         }
     }
-    for routed in routed {
-        let entry = &routed.entry;
-        let stack_ids = &routed.stack_ids;
-        let named: Vec<&str> = copy_axes
-            .iter()
-            .filter(|copy_axis| entry.names_axis(copy_axis.name))
-            .map(|copy_axis| copy_axis.name)
-            .collect();
-        if named.len() > 1 {
-            return Err(CompositionError::AdjustmentSpansCopyAxes {
-                target: entry.adjustment.target.to_string(),
-                origin: entry.origin.clone(),
-                axes: crate::error::format_quoted_list(named),
-            });
-        }
-        let target = entry.adjustment.target.as_str();
-        // An entry writing an instance its own option defines is that option's
-        // write, whichever other options define the id.
-        let own_write = entry.under.is_some_and(|(axis, option)| {
-            loaded.option(axis, option).definable_ids().contains(target)
+    Ok(())
+}
+
+/// One launcher adjustment, routed. It names at most one copy axis. An
+/// entry naming none cannot target an id both a stack option and a copy
+/// option define, unless its own option defines the id. In each axis of
+/// copies that runs it, it writes an instance those copies or the stack
+/// define, and an entry from outside the copy axes reads no stack
+/// option's own axis.
+fn check_routed_adjustment_copy_axes(
+    launcher: &PeppyLauncher,
+    loaded: &LoadedComposition,
+    copy_axes: &[CopyAxis<'_>],
+    routed: &Routed<'_>,
+) -> Result<(), CompositionError> {
+    let entry = &routed.entry;
+    let named: Vec<&str> = copy_axes
+        .iter()
+        .filter(|copy_axis| entry.names_axis(copy_axis.name))
+        .map(|copy_axis| copy_axis.name)
+        .collect();
+    if named.len() > 1 {
+        return Err(CompositionError::AdjustmentSpansCopyAxes {
+            target: entry.adjustment.target.to_string(),
+            origin: entry.origin.clone(),
+            axes: crate::error::format_quoted_list(named),
         });
-        if !own_write
-            && named.is_empty()
-            && let Some((stack_axis, stack_option)) = stack_option_defining(launcher, loaded, entry)
-            && let Some((copy_axis, copy_option)) = copy_option_defining(launcher, loaded, target)
-        {
-            return Err(CompositionError::AdjustmentTargetAmbiguous(Box::new(
-                AdjustmentTargetAmbiguous {
-                    target: target.to_owned(),
-                    origin: entry.origin.clone(),
-                    stack: format!("{stack_axis}.{stack_option}"),
-                    keeping: entry.under.map_or_else(String::new, |(axis, option)| {
-                        format!(
-                            ", guarded `when: {{ {axis}: \"{option}\" }}` as option `{axis}.{option}` guards it now"
-                        )
-                    }),
-                    copy_axis: copy_axis.to_owned(),
-                    copy_option: copy_option.to_owned(),
-                },
-            )));
+    }
+    let target = entry.adjustment.target.as_str();
+    // An entry writing an instance its own option defines is that option's
+    // write, whichever other options define the id.
+    let own_write = entry
+        .under
+        .is_some_and(|(axis, option)| loaded.option(axis, option).definable_ids().contains(target));
+    if !own_write
+        && named.is_empty()
+        && let Some((stack_axis, stack_option)) = stack_option_defining(launcher, loaded, entry)
+        && let Some((copy_axis, copy_option)) = copy_option_defining(launcher, loaded, target)
+    {
+        return Err(CompositionError::AdjustmentTargetAmbiguous(Box::new(
+            AdjustmentTargetAmbiguous {
+                target: target.to_owned(),
+                origin: entry.origin.clone(),
+                stack: format!("{stack_axis}.{stack_option}"),
+                keeping: entry.under.map_or_else(String::new, |(axis, option)| {
+                    format!(
+                        ", guarded `when: {{ {axis}: \"{option}\" }}` as option `{axis}.{option}` guards it now"
+                    )
+                }),
+                copy_axis: copy_axis.to_owned(),
+                copy_option: copy_option.to_owned(),
+            },
+        )));
+    }
+    // An entry under an option that runs as copies is selected in that
+    // axis's copies alone; one from an option that fills once or the
+    // top level runs in every axis of copies it reaches.
+    let under_copy_axis = entry
+        .under
+        .is_some_and(|(under, _)| copy_axes.iter().any(|copy_axis| copy_axis.name == under));
+    for copy_axis in copy_axes
+        .iter()
+        .filter(|copy_axis| routed.copy_axes.contains(&copy_axis.name))
+    {
+        check_copy_adjustment_target_defined(
+            loaded,
+            entry,
+            copy_axis.name,
+            &routed.stack_ids,
+            target,
+        )?;
+        if under_copy_axis {
+            continue;
         }
-        // An entry under an option that runs as copies is selected in that
-        // axis's copies alone; one from an option that fills once or the
-        // top level runs in every axis of copies it reaches.
-        let under_copy_axis = entry
-            .under
-            .is_some_and(|(under, _)| copy_axes.iter().any(|copy_axis| copy_axis.name == under));
-        for copy_axis in copy_axes
-            .iter()
-            .filter(|copy_axis| routed.copy_axes.contains(&copy_axis.name))
-        {
-            // An entry that speaks about the axis writes an instance of its
-            // copies or of the stack.
-            if entry.names_axis(copy_axis.name) && !stack_ids.contains(target) {
-                let defined: HashSet<&str> = entry
-                    .options_named_on(copy_axis.name)
-                    .into_iter()
-                    .flat_map(|option| loaded.option(copy_axis.name, option).definable_ids())
-                    .collect();
-                if !defined.contains(target) {
-                    let named = entry.options_named_on(copy_axis.name);
-                    let defining: Vec<&str> = loaded
-                        .options_of(copy_axis.name)
-                        .filter(|(option, loaded)| {
-                            !named.contains(&option.as_str())
-                                && loaded.definable_ids().contains(target)
-                        })
-                        .map(|(option, _)| option.as_str())
-                        .collect();
-                    let reach: Vec<&str> =
-                        defined.iter().chain(stack_ids.iter()).copied().collect();
-                    let joiner = if reach.is_empty() { "; " } else { ", or " };
-                    return Err(CompositionError::CopyAdjustmentTargetUndefined(Box::new(
-                        CopyAdjustmentTargetUndefined {
-                            target: target.to_owned(),
-                            origin: entry.origin.clone(),
-                            copy_axis: copy_axis.name.to_owned(),
-                            named: crate::error::format_quoted_list(named),
-                            in_reach: in_reach(reach.iter().copied()),
-                            defining: match defining.as_slice() {
-                                [] => String::new(),
-                                [option] => format!(
-                                    "{joiner}guard it `when: {{ {}: \"{option}\" }}`",
-                                    copy_axis.name
-                                ),
-                                options => format!(
-                                    "{joiner}guard it `when: {{ {}: [{}] }}`",
-                                    copy_axis.name,
-                                    options
-                                        .iter()
-                                        .map(|option| format!("\"{option}\""))
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                ),
-                            },
-                        },
-                    )));
-                }
-            }
-            if under_copy_axis {
-                continue;
-            }
-            // A copy's selection holds the launcher's axes and the copied
-            // option's own, so an entry that reaches the copies from an
-            // option that fills once cannot be guarded on that option's axes.
-            let launcher_axis =
-                |name: &str| launcher.components.iter().any(|axis| axis.name == name);
-            let own_axis = entry
-                .adjustment
-                .when
-                .iter()
-                .flat_map(|when| when.keys())
-                .find(|axis| !launcher_axis(axis));
-            if let Some(axis) = own_axis {
-                return Err(CompositionError::CopyAdjustmentReadsOptionAxis {
-                    target: target.to_owned(),
-                    origin: entry.origin.clone(),
-                    copy_axis: copy_axis.name.to_owned(),
-                    axis: axis.clone(),
-                });
-            }
-        }
+        check_copy_adjustment_reads_no_option_axis(launcher, entry, copy_axis.name, target)?;
+    }
+    Ok(())
+}
+
+/// An entry that speaks about `copy_axis` writes an instance of its
+/// copies or of the stack.
+fn check_copy_adjustment_target_defined(
+    loaded: &LoadedComposition,
+    entry: &LauncherAdjustment<'_>,
+    copy_axis: &str,
+    stack_ids: &HashSet<&str>,
+    target: &str,
+) -> Result<(), CompositionError> {
+    if !entry.names_axis(copy_axis) || stack_ids.contains(target) {
+        return Ok(());
+    }
+    let defined: HashSet<&str> = entry
+        .options_named_on(copy_axis)
+        .into_iter()
+        .flat_map(|option| loaded.option(copy_axis, option).definable_ids())
+        .collect();
+    if defined.contains(target) {
+        return Ok(());
+    }
+    let named = entry.options_named_on(copy_axis);
+    let defining: Vec<&str> = loaded
+        .options_of(copy_axis)
+        .filter(|(option, loaded)| {
+            !named.contains(&option.as_str()) && loaded.definable_ids().contains(target)
+        })
+        .map(|(option, _)| option.as_str())
+        .collect();
+    let reach: Vec<&str> = defined.iter().chain(stack_ids.iter()).copied().collect();
+    let joiner = if reach.is_empty() { "; " } else { ", or " };
+    Err(CompositionError::CopyAdjustmentTargetUndefined(Box::new(
+        CopyAdjustmentTargetUndefined {
+            target: target.to_owned(),
+            origin: entry.origin.clone(),
+            copy_axis: copy_axis.to_owned(),
+            named: crate::error::format_quoted_list(named),
+            in_reach: in_reach(reach.iter().copied()),
+            defining: match defining.as_slice() {
+                [] => String::new(),
+                [option] => format!("{joiner}guard it `when: {{ {copy_axis}: \"{option}\" }}`"),
+                options => format!(
+                    "{joiner}guard it `when: {{ {copy_axis}: [{}] }}`",
+                    options
+                        .iter()
+                        .map(|option| format!("\"{option}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            },
+        },
+    )))
+}
+
+/// A copy's selection holds the launcher's axes and the copied option's
+/// own, so an entry that reaches the copies of `copy_axis` from an option
+/// that fills once cannot be guarded on that option's axes.
+fn check_copy_adjustment_reads_no_option_axis(
+    launcher: &PeppyLauncher,
+    entry: &LauncherAdjustment<'_>,
+    copy_axis: &str,
+    target: &str,
+) -> Result<(), CompositionError> {
+    let launcher_axis = |name: &str| launcher.components.iter().any(|axis| axis.name == name);
+    let own_axis = entry
+        .adjustment
+        .when
+        .iter()
+        .flat_map(|when| when.keys())
+        .find(|axis| !launcher_axis(axis));
+    if let Some(axis) = own_axis {
+        return Err(CompositionError::CopyAdjustmentReadsOptionAxis {
+            target: target.to_owned(),
+            origin: entry.origin.clone(),
+            copy_axis: copy_axis.to_owned(),
+            axis: axis.clone(),
+        });
     }
     Ok(())
 }
