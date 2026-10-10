@@ -387,6 +387,35 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_component_trims_separators_and_guards_a_leading_digit() {
+        assert_eq!(sanitize_component("--Foo--Bar--"), "foo_bar");
+        assert_eq!(sanitize_component("9lives"), "_9lives");
+        assert_eq!(sanitize_component("__"), "");
+        assert_eq!(sanitize_component(""), "");
+    }
+
+    #[test]
+    fn normalize_snake_case_guards_a_leading_digit_and_empty_input() {
+        assert_eq!(normalize_snake_case("9Lives"), "_9_lives");
+        assert_eq!(normalize_snake_case("--"), "message");
+        assert_eq!(normalize_snake_case(""), "message");
+    }
+
+    #[test]
+    fn to_camel_case_guards_a_leading_digit_and_empty_input() {
+        assert_eq!(to_camel_case("3d_pose"), "T3dPose");
+        assert_eq!(to_camel_case("--"), "Item");
+        assert_eq!(to_camel_case(""), "Item");
+    }
+
+    #[test]
+    fn capnp_field_name_guards_a_leading_digit_and_empty_input() {
+        assert_eq!(sanitize_capnp_field_name("2nd_value"), "_2ndValue");
+        assert_eq!(sanitize_capnp_field_name("--"), "_field");
+        assert_eq!(sanitize_capnp_field_name("FRAME_ID"), "frameId");
+    }
+
+    #[test]
     fn capnp_field_name_camel_cases() {
         assert_eq!(sanitize_capnp_field_name("frame_id"), "frameId");
         assert_eq!(sanitize_capnp_field_name("sample_rate"), "sampleRate");
