@@ -307,14 +307,7 @@ fn section<T>(
         if nodes.len() == 1 { "" } else { "s" }
     );
 
-    let mut start = 0;
-    while start < hits.len() {
-        let repo_id = node_of(&hits[start]).repo_id;
-        let end = hits[start..]
-            .iter()
-            .position(|hit| node_of(hit).repo_id != repo_id)
-            .map_or(hits.len(), |offset| start + offset);
-        let group = &hits[start..end];
+    for group in hits.chunk_by(|a, b| node_of(a).repo_id == node_of(b).repo_id) {
         out.push_str(&format!("  {}:\n", node_of(&group[0]).repo_label));
         let rows: Vec<Vec<String>> = group
             .iter()
@@ -344,7 +337,6 @@ fn section<T>(
             max_width.map(|width| width.saturating_sub(INDENT.len())),
         );
         out.push_str(&indented(&table));
-        start = end;
     }
     out
 }
@@ -730,6 +722,66 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(text, expected);
+    }
+
+    /// The rows of one section group by repository in the order the report
+    /// lists them, each group a table of its own under the repository's
+    /// label, and the title counts the nodes of every group.
+    #[test]
+    fn human_output_groups_a_sections_rows_by_repository() {
+        let private = |name: &str, path: &str| IndexedNode {
+            repo_id: 1003,
+            repo_label: "/home/user/private-hub".to_owned(),
+            ..node(name, path)
+        };
+        let implementer = |node: IndexedNode| Implementer {
+            node,
+            link_id: "camera".to_owned(),
+            sha256: None,
+            pin: PinStatus::Unpinned,
+        };
+        let report = SearchReport {
+            implementers: vec![
+                implementer(node("uvc_camera_linux", "uvc_camera/linux/peppy.json5")),
+                implementer(node("realsense_d4xx", "realsense_d4xx/peppy.json5")),
+                implementer(private("lab_camera", "lab_camera/peppy.json5")),
+            ],
+            ..empty_report()
+        };
+        let outcome = shown(
+            vec![report],
+            vec![matched(
+                RepoItemKind::Contract,
+                "rgb_camera",
+                "v1",
+                contract(),
+            )],
+        );
+
+        let text = render_human(&query("rgb_camera:v1"), &outcome, false, None);
+
+        let expected = [
+            "rgb_camera:v1",
+            "  contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+            "",
+            "Implemented by 3 indexed nodes",
+            "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
+            "    ┌──────────────────┬─────┬────────┬──────────┬──────────────────────────────┐",
+            "    │ NODE             │ TAG │ SLOT   │ PIN      │ PATH                         │",
+            "    ├──────────────────┼─────┼────────┼──────────┼──────────────────────────────┤",
+            "    │ uvc_camera_linux │ v1  │ camera │ unpinned │ uvc_camera/linux/peppy.json5 │",
+            "    │ realsense_d4xx   │ v1  │ camera │ unpinned │ realsense_d4xx/peppy.json5   │",
+            "    └──────────────────┴─────┴────────┴──────────┴──────────────────────────────┘",
+            "  /home/user/private-hub:",
+            "    ┌────────────┬─────┬────────┬──────────┬────────────────────────┐",
+            "    │ NODE       │ TAG │ SLOT   │ PIN      │ PATH                   │",
+            "    ├────────────┼─────┼────────┼──────────┼────────────────────────┤",
+            "    │ lab_camera │ v1  │ camera │ unpinned │ lab_camera/peppy.json5 │",
+            "    └────────────┴─────┴────────┴──────────┴────────────────────────┘",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(text, expected, "\n{text}");
     }
 
     /// Under a width limit the widest columns give way first, ties
