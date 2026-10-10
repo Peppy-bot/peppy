@@ -199,7 +199,11 @@ impl ClockBinding {
                 role: ClockRole::Consumer { publisher },
                 ..
             } => Some(publisher),
-            _ => None,
+            Self::Wall
+            | Self::Sim {
+                role: ClockRole::Publisher,
+                ..
+            } => None,
         }
     }
 
@@ -210,7 +214,7 @@ impl ClockBinding {
         match (self, other) {
             (Self::Wall, Self::Wall) => true,
             (Self::Sim { domain: a, .. }, Self::Sim { domain: b, .. }) => a == b,
-            _ => false,
+            (Self::Wall, Self::Sim { .. }) | (Self::Sim { .. }, Self::Wall) => false,
         }
     }
 

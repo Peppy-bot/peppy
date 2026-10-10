@@ -407,7 +407,7 @@ impl SchemaType {
         match self {
             SchemaType::Type(token) => Some(token),
             SchemaType::Primitive(schema) => Some(&schema.kind),
-            _ => None,
+            SchemaType::Array(_) | SchemaType::Object(_) => None,
         }
     }
 }
