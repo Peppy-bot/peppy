@@ -10,7 +10,7 @@ mod mock;
 mod parameters;
 mod ruff;
 mod scaffold;
-pub(crate) mod serialization;
+mod serialization;
 mod services;
 mod topics;
 mod type_mapping;

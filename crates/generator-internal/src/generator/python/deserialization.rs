@@ -21,7 +21,7 @@ fn capnp_read_expr(reader_var: &str, capnp_name: &str) -> String {
 ///
 /// `reader_var` is the pycapnp reader variable (e.g., `"capnp_msg"` or `"reader_0"`).
 /// Returns the variable name holding the deserialized value.
-pub fn generate_field_reader_statements(
+fn generate_field_reader_statements(
     builder: &mut PythonCodeBuilder,
     reader_var: &str,
     field_name: &str,
@@ -171,7 +171,7 @@ fn keyword_arguments(bindings: &[(String, String)]) -> String {
 /// Deserializes all fields from a `MessageFormat`, iterating directly over format fields.
 ///
 /// Returns a list of `(python_field_name, variable_name)` pairs for constructing a dataclass.
-pub fn deserialize_format_fields(
+fn deserialize_format_fields(
     builder: &mut PythonCodeBuilder,
     reader_var: &str,
     format: &MessageFormat,
