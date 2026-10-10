@@ -54,7 +54,8 @@ use serialization::{
 };
 use services::{
     ExposedServiceMethodSpec, ServiceResponseSpec, build_exposed_service_method,
-    build_request_struct, build_response_payload_tokens, deserialize_fields_from_format,
+    build_request_struct, build_response_payload_tokens, build_result_expr_from_values,
+    deserialize_fields_from_format,
 };
 use topics::{
     ConsumedTopicSubscriptionSpec, PeerTopicSubscriptionSpec, build_consumed_topic_subscription,
@@ -576,21 +577,13 @@ impl RustGenerator {
             &schema_struct_name,
             &feedback_context_expr,
         )?;
-        let field_inits: Vec<TokenStream> = params
-            .iter()
-            .zip(value_idents.iter())
-            .map(|(param, value_ident)| {
-                let field_ident = &param.ident;
-                quote!(#field_ident: #value_ident)
-            })
-            .collect();
         let helper_tokens = build_deserialize_fn(
             &helper_fn_ident,
             &reader_type,
             &feedback_context_expr,
             &quote!(#struct_ident),
             &field_statements,
-            &quote!(#struct_ident { #( #field_inits ),* }),
+            &build_result_expr_from_values(&params, &value_idents, Some(&struct_ident)),
         );
 
         let method_ident = Ident::new("on_next_feedback_message", Span::call_site());
