@@ -50,10 +50,15 @@ pub(super) struct ChangedSlot {
     cardinality: Cardinality,
 }
 
+/// The slot `link_id` of `instance` as a refusal names it.
+fn slot_field(instance: &Name, link_id: &str) -> String {
+    format!("`{instance}.links.{link_id}`")
+}
+
 impl ChangedSlot {
     /// This slot as a refusal names it.
     pub(super) fn field(&self) -> String {
-        format!("`{}.links.{}`", self.instance_id, self.link_id)
+        slot_field(&self.instance_id, &self.link_id)
     }
 
     /// The machine the slot's instance runs on.
@@ -90,7 +95,7 @@ fn changed_slot(
     slot: &str,
     change: Change,
 ) -> Result<Option<ChangedSlot>, String> {
-    let field = format!("`{instance}.links.{slot}`");
+    let field = slot_field(instance, slot);
     let item = planned
         .iter()
         .find(|item| {
@@ -148,28 +153,39 @@ fn changed_slot(
             )),
             Change::Removal => Ok(None),
         },
-        None => {
-            let set_slots: Vec<&str> = declared
-                .iter()
-                .filter(|(_, _, cardinality)| !cardinality.is_scalar())
-                .map(|(link_id, ..)| *link_id)
-                .collect();
-            Err(if set_slots.is_empty() {
-                format!(
-                    "copy `{copy_name}` has a member in {field}, which `{node}` does not \
-                     declare; declare a `one_or_more` or `zero_or_more` slot in `{node}`'s \
-                     `depends_on`, run `peppy node sync` and launch again, or drop `{slot}` from \
-                     the option's `add_links`"
-                )
-            } else {
-                format!(
-                    "copy `{copy_name}` has a member in {field}, which `{node}` does not \
-                     declare; name one of its set slots in the option's `add_links`: {}",
-                    daemon_config::format_quoted_list(set_slots)
-                )
-            })
-        }
+        None => Err(undeclared_slot_refusal(
+            copy_name, &field, &node, slot, &declared,
+        )),
     }
+}
+
+/// The refusal of a member of copy `copy_name` in `slot` (named `field`),
+/// which `node` does not declare. It names the node's set slots to use
+/// instead, or the manifest fix when the node declares none.
+fn undeclared_slot_refusal(
+    copy_name: &Name,
+    field: &str,
+    node: &str,
+    slot: &str,
+    declared: &[(&str, SetKind, Cardinality)],
+) -> String {
+    let set_slots: Vec<&str> = declared
+        .iter()
+        .filter(|(_, _, cardinality)| !cardinality.is_scalar())
+        .map(|(link_id, ..)| *link_id)
+        .collect();
+    if set_slots.is_empty() {
+        return format!(
+            "copy `{copy_name}` has a member in {field}, which `{node}` does not declare; \
+             declare a `one_or_more` or `zero_or_more` slot in `{node}`'s `depends_on`, run \
+             `peppy node sync` and launch again, or drop `{slot}` from the option's `add_links`"
+        );
+    }
+    format!(
+        "copy `{copy_name}` has a member in {field}, which `{node}` does not declare; name one \
+         of its set slots in the option's `add_links`: {}",
+        daemon_config::format_quoted_list(set_slots)
+    )
 }
 
 /// Refuses a removal of `copy` that would leave a `one_or_more` slot of `slots`
