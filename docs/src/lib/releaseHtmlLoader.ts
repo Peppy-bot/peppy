@@ -28,6 +28,9 @@ const atomParser = new XMLParser({
 });
 const atomValidator = new SyntaxValidator({ multipleRoots: false });
 
+// The directory of the release files, relative to the Astro project root.
+const RELEASES_DIR = './src/content/releases/';
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -191,11 +194,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function releaseHtmlLoader(base = './src/content/releases'): Loader {
+export function releaseHtmlLoader(): Loader {
   return {
     name: 'release-html-loader',
     async load(context) {
-      const baseUrl = new URL(base.endsWith('/') ? base : `${base}/`, context.config.root);
+      const baseUrl = new URL(RELEASES_DIR, context.config.root);
       const basePath = fileURLToPath(baseUrl);
       const releasePaths = [];
 
