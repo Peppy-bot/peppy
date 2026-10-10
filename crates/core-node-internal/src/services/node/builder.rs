@@ -393,19 +393,11 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
 
     let log = announcer.log().clone();
     let log_path = log.path();
-    let log_for_panic = log.clone();
 
-    // Clones for panic-handler entity cleanup. After
-    // `take_pending_working_dir_if_generation` succeeds the entity is in
-    // `Building` state; if the async block panics we must roll it out of the
-    // stack the same way the normal `Err(e)` path does.
-    let node_stack_for_panic = Arc::clone(&action_context.node_stack);
-    let node_name_for_panic = node_name.clone();
-    let node_tag_for_panic = node_tag.clone();
-    let entity_handle_for_panic = entity_handle.clone();
-    let generation_for_panic = captured_generation;
-    let working_dir_detached = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let working_dir_detached_for_panic = Arc::clone(&working_dir_detached);
+    // Set once the entity's working dir is detached, which leaves the entity
+    // in `Building`: a panic after that point rolls the entity out of the
+    // stack as the normal `Err(e)` path does.
+    let working_dir_detached = std::sync::atomic::AtomicBool::new(false);
 
     match AssertUnwindSafe(async {
         let mut env_vars = match super::validate_goal_env_vars(&goal_env_vars) {
@@ -448,7 +440,6 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         }
 
         let working_dir_path = working_dir_guard.path().to_path_buf();
-        let expected_generation = captured_generation;
 
         let build_result = node_stack::NodeEntity::build(
             &entity_handle,
@@ -485,7 +476,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     &node_name,
                     &node_tag,
                     &entity_handle,
-                    expected_generation,
+                    captured_generation,
                     Arc::clone(&working_dir_guard),
                 );
                 NodeBuildResult::failure(&log_path, "build cancelled".to_string())
@@ -497,7 +488,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     &node_name,
                     &node_tag,
                     &entity_handle,
-                    expected_generation,
+                    captured_generation,
                 );
                 let msg = format!("Failed to build node: {}", e);
                 log.error(&msg);
@@ -515,18 +506,18 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 super::panic_message(&*panic_payload)
             );
             tracing::error!("{}", msg);
-            log_for_panic.error(&msg);
+            log.error(&msg);
             // If the working dir was already detached the entity is in
             // `Building` state; roll it out so it doesn't stay stuck.
-            if working_dir_detached_for_panic.load(std::sync::atomic::Ordering::Acquire) {
-                let _ = node_stack_for_panic.remove_config_if_matches(
-                    &node_name_for_panic,
-                    &node_tag_for_panic,
-                    &entity_handle_for_panic,
-                    generation_for_panic,
+            if working_dir_detached.load(std::sync::atomic::Ordering::Acquire) {
+                let _ = action_context.node_stack.remove_config_if_matches(
+                    &node_name,
+                    &node_tag,
+                    &entity_handle,
+                    captured_generation,
                 );
             }
-            NodeBuildResult::failure(log_for_panic.path(), msg)
+            NodeBuildResult::failure(log.path(), msg)
         }
     }
 }
