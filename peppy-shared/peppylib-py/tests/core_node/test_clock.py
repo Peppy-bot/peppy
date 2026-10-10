@@ -12,7 +12,6 @@ import peppylib.testing as peppy_testing
 from peppylib import (
     MessengerHandle,
     NodeRunner,
-    ProducerRef,
     QoSProfile,
     SenderTarget,
     StandaloneConfig,

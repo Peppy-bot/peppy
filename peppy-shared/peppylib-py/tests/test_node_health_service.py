@@ -4,9 +4,8 @@ Tests for peppylib node health service.
 Python equivalent of peppy-shared/peppylib-rs/tests/node_health_service.rs.
 """
 
-import asyncio
-
 import pytest
+from common import TEST_INSTANCE_ID, TEST_NODE_NAME, TEST_NODE_TAG
 
 from peppylib import (
     MessengerHandle,
@@ -17,8 +16,6 @@ from peppylib import (
 )
 from peppylib.config import NODE_HEALTH_SERVICE
 from peppylib.services import NodeHealthService
-
-from common import TEST_INSTANCE_ID, TEST_NODE_NAME, TEST_NODE_TAG
 
 TEST_CORE_NODE_NAME = "test_core_node"
 CALLER_INSTANCE_ID = "caller_instance"

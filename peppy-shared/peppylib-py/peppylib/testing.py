@@ -33,9 +33,9 @@ import time
 import warnings
 import weakref
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Protocol, Sequence
+from typing import Any, Protocol
 
 from peppylib import (
     ActionMessenger,
@@ -51,8 +51,8 @@ from peppylib import (
     ServiceMessenger,
     StandaloneConfig,
     TopicMessenger,
-    TopicRetention,
     TopicPublisher,
+    TopicRetention,
     ZenohdInstance,
 )
 from peppylib.clock import ClockBinding, ClockRequest, ClockResponse, ClockTick
@@ -234,7 +234,9 @@ prepare_test_process()
 # tests never overlap meshes anyway; the lock exists for tests that start
 # several routers/harnesses concurrently on one loop. One mesh at a time
 # keeps gossip discovery fast and deterministic.
-_MESH_SERIAL_LOCKS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+_MESH_SERIAL_LOCKS: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Lock
+] = weakref.WeakKeyDictionary()
 
 
 def _mesh_serial_lock() -> asyncio.Lock:
@@ -283,11 +285,11 @@ class EphemeralRouter:
         self._serial = serial
 
     @classmethod
-    async def start(cls) -> "EphemeralRouter":
+    async def start(cls) -> EphemeralRouter:
         return await cls.start_on("127.0.0.1", None)
 
     @classmethod
-    async def start_on(cls, host: str, port: int | None = None) -> "EphemeralRouter":
+    async def start_on(cls, host: str, port: int | None = None) -> EphemeralRouter:
         prepare_test_process()
         serial = await acquire_mesh_serial()
         try:
@@ -300,7 +302,7 @@ class EphemeralRouter:
     @classmethod
     async def start_unserialized(
         cls, host: str = "127.0.0.1", port: int | None = None
-    ) -> "EphemeralRouter":
+    ) -> EphemeralRouter:
         prepare_test_process()
         instance = await ZenohdInstance.start_ephemeral(host, port)
         return cls(instance, None)
@@ -333,7 +335,7 @@ class EphemeralRouter:
         wrapper drops into call sites written against the raw instance."""
         await self.shutdown()
 
-    async def __aenter__(self) -> "EphemeralRouter":
+    async def __aenter__(self) -> EphemeralRouter:
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
@@ -428,7 +430,7 @@ class TestTopicPublisher:
         retention: TopicRetention,
         link_id: str | None = None,
         readiness_timeout: float = READINESS_TIMEOUT,
-    ) -> "TestTopicPublisher":
+    ) -> TestTopicPublisher:
         publisher = await TopicMessenger.declare_publisher(
             messenger,
             as_core_node,
@@ -462,7 +464,7 @@ class TestTopicPublisher:
         qos: QoSProfile,
         peer: PeerInfo,
         readiness_timeout: float = READINESS_TIMEOUT,
-    ) -> "TestTopicPublisher":
+    ) -> TestTopicPublisher:
         """Declare a pairing publisher from the mock's slot ``link_id`` to
         ``peer`` (the node under test, on its slot), for a mock playing the
         other end of a pair."""
@@ -636,7 +638,7 @@ class MockServiceCore:
         as_instance_id: str,
         as_identity: SenderTarget,
         as_service_name: str,
-    ) -> "MockServiceCore":
+    ) -> MockServiceCore:
         endpoint = await ServiceMessenger.listen(
             messenger, as_core_node, as_instance_id, as_identity, as_service_name
         )
@@ -692,7 +694,7 @@ class MockServiceCore:
         test failure surfaced here, not a hang."""
         try:
             return await asyncio.wait_for(self._requests.get(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise TimeoutError(
                 f"mock service `{self._service_name}` received no request within {timeout}s"
             ) from None
@@ -793,7 +795,7 @@ class MockActionServerCore:
         as_identity: SenderTarget,
         as_action_name: str,
         has_feedback: bool,
-    ) -> "MockActionServerCore":
+    ) -> MockActionServerCore:
         engine = await ConcurrentAction.expose(
             messenger,
             bound_core_node,
@@ -811,7 +813,7 @@ class MockActionServerCore:
             raise RuntimeError(f"mock action `{self._action_name}` is stopped")
         try:
             pending = await asyncio.wait_for(self._engine.recv_next_goal(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise TimeoutError(
                 f"mock action `{self._action_name}` received no goal within {timeout}s"
             ) from None
@@ -903,7 +905,7 @@ class MockClock:
         core_node: str,
         instance_id: str,
         clock: str = "wall",
-    ) -> "MockClock":
+    ) -> MockClock:
         """Serve the clock surface for ``core_node`` (under the harness:
         :data:`STANDALONE_CORE_NODE`) in the shape ``clock`` asks for, one of
         :data:`HARNESS_CLOCKS`."""
@@ -1167,7 +1169,7 @@ class HarnessCore:
         setup: SetupFn,
         parameters: Any = None,
         service_readiness: Sequence[ServiceReadiness] = (),
-    ) -> "HarnessCore":
+    ) -> HarnessCore:
         """Build and start the node under test. ``standalone_config`` must
         already carry the messaging endpoint, instance id, parameters, and one
         seeding call per mock. ``setup`` is the node's real entry point (the
@@ -1272,7 +1274,7 @@ class HarnessCore:
         if task is not None:
             try:
                 await asyncio.wait_for(task, grace)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 # A setup that parks forever without watching the node's
                 # cancellation token; production drops it at shutdown the
                 # same way (wait_for already cancelled it).

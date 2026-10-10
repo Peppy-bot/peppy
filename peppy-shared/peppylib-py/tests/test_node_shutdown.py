@@ -7,6 +7,7 @@ Python equivalent of peppy-shared/peppylib-rs/tests/shutdown_node.rs.
 import asyncio
 
 import pytest
+from common import TEST_INSTANCE_ID, TEST_NODE_NAME, TEST_NODE_TAG
 
 from peppylib import (
     MessengerHandle,
@@ -17,8 +18,6 @@ from peppylib import (
 )
 from peppylib.config import SHUTDOWN_SERVICE
 from peppylib.services import ShutdownService
-
-from common import TEST_INSTANCE_ID, TEST_NODE_NAME, TEST_NODE_TAG
 
 TEST_CORE_NODE_NAME = "test_core_node"
 CALLER_INSTANCE_ID = "caller_instance"

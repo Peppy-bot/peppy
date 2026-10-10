@@ -24,11 +24,11 @@ from ._peppylib.core_node import (  # type: ignore[import-not-found]
     DatastoreRemoveResponse,
     DatastoreStoreResponse,
     StoredValue,
-    datastore_get as get,
-    datastore_list as list,
-    datastore_remove as remove,
-    datastore_store as store,
 )
+from ._peppylib.core_node import datastore_get as get
+from ._peppylib.core_node import datastore_list as list
+from ._peppylib.core_node import datastore_remove as remove
+from ._peppylib.core_node import datastore_store as store
 
 
 class Encoding(StrEnum):
@@ -47,15 +47,15 @@ class Encoding(StrEnum):
 
 
 __all__ = [
-    "store",
-    "get",
-    "list",
-    "remove",
-    "Encoding",
-    "StoredValue",
     "DatastoreEntry",
-    "DatastoreStoreResponse",
     "DatastoreGetResponse",
     "DatastoreListResponse",
     "DatastoreRemoveResponse",
+    "DatastoreStoreResponse",
+    "Encoding",
+    "StoredValue",
+    "get",
+    "list",
+    "remove",
+    "store",
 ]

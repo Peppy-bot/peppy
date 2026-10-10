@@ -4,13 +4,13 @@ Tests for peppylib NodeBuilder runner lifecycle.
 Python equivalent of peppy-shared/peppylib-rs/tests/runner.rs.
 """
 
+import asyncio
 import faulthandler
 import os
 import queue
 import sys
 import tempfile
 import threading
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -30,6 +30,19 @@ from peppylib import (
 # regression in the shutdown teardown surfaces as a stack trace, not a bare
 # SIGSEGV.
 faulthandler.enable()
+from common import (
+    PEPPY_CONFIG,
+    TEST_FREQUENCY_HZ,
+    TEST_INSTANCE_ID,
+    TEST_NODE_NAME,
+    TEST_NODE_TAG,
+    create_codegen_fingerprint,
+    create_runtime_config,
+    start_runner_thread,
+    wait_for_service,
+    write_peppygen_stub,
+)
+
 from peppylib.config import (
     NODE_CONFIG_FILE,
     NODE_HEALTH_SERVICE,
@@ -43,19 +56,6 @@ from peppylib.runtime import (
     NodeBuilder,
     NodeRunner,
     StandaloneConfig,
-)
-
-from common import (
-    PEPPY_CONFIG,
-    TEST_FREQUENCY_HZ,
-    TEST_INSTANCE_ID,
-    TEST_NODE_NAME,
-    TEST_NODE_TAG,
-    create_codegen_fingerprint,
-    create_runtime_config,
-    start_runner_thread,
-    wait_for_service,
-    write_peppygen_stub,
 )
 
 TEST_CORE_NODE = "test_core"

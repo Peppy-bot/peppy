@@ -11,12 +11,11 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from common import TEST_FREQUENCY_HZ, TEST_INSTANCE_ID
 
 from peppylib import ZenohdInstance
 from peppylib.config import NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME
 from peppylib.runtime import NodeRunner, StandaloneConfig
-
-from common import TEST_FREQUENCY_HZ, TEST_INSTANCE_ID
 
 ENDPOINTS_PEPPY_CONFIG = """{
   peppy_schema: "node/v1",

@@ -11,7 +11,7 @@ from __future__ import annotations
 from ._peppylib.core_node import (  # type: ignore[import-not-found]
     StackList,
     StackListResponse,
-    stack_list as list,
 )
+from ._peppylib.core_node import stack_list as list
 
-__all__ = ["list", "StackList", "StackListResponse"]
+__all__ = ["StackList", "StackListResponse", "list"]

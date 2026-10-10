@@ -18,12 +18,11 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from common import start_runner_thread
 
 from peppylib import QoSProfile, ZenohdInstance
 from peppylib.config import NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME
 from peppylib.runtime import NodeBuilder, NodeRunner, StandaloneConfig
-
-from common import start_runner_thread
 
 # Every slot kind a launch would resolve, at the cardinalities whose seeding
 # rules differ. Observer slots must also be consumed, which the manifest parser
