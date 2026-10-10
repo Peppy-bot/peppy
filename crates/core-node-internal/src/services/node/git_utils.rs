@@ -192,12 +192,7 @@ pub(crate) fn clone_with_progress(
     on_progress: &mut dyn FnMut(&str),
 ) -> std::result::Result<Repository, String> {
     let mut builder = RepoBuilder::new();
-    let mut fetch_opts = git2::FetchOptions::new();
-    if shallow && !is_local_url(repo_url) {
-        fetch_opts.depth(1);
-    }
-    fetch_opts.remote_callbacks(progress_callbacks(repo_url, "Cloning", on_progress));
-    builder.fetch_options(fetch_opts);
+    builder.fetch_options(fetch_options(repo_url, shallow, "Cloning", on_progress));
 
     let repo = builder.clone(repo_url, dst).map_err(|e| {
         let shown_url = SourceUrl::new(repo_url);
@@ -225,12 +220,27 @@ pub(crate) fn fetch_with_progress(
     shallow: bool,
     on_progress: &mut dyn FnMut(&str),
 ) -> std::result::Result<(), git2::Error> {
+    let mut fetch_opts = fetch_options(repo_url, shallow, "Fetching", on_progress);
+    remote.fetch(&[refspec], Some(&mut fetch_opts), None)
+}
+
+/// The fetch options of a clone or a fetch of `repo_url`, reporting progress
+/// lines that start with `verb` through `on_progress`.
+///
+/// `shallow` requests a `depth=1` fetch, which is dropped when `repo_url`
+/// targets the local transport (see [`is_local_url`]).
+fn fetch_options<'cb>(
+    repo_url: &str,
+    shallow: bool,
+    verb: &'static str,
+    on_progress: &'cb mut dyn FnMut(&str),
+) -> git2::FetchOptions<'cb> {
     let mut fetch_opts = git2::FetchOptions::new();
     if shallow && !is_local_url(repo_url) {
         fetch_opts.depth(1);
     }
-    fetch_opts.remote_callbacks(progress_callbacks(repo_url, "Fetching", on_progress));
-    remote.fetch(&[refspec], Some(&mut fetch_opts), None)
+    fetch_opts.remote_callbacks(progress_callbacks(repo_url, verb, on_progress));
+    fetch_opts
 }
 
 fn progress_callbacks<'cb>(
