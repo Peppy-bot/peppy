@@ -271,237 +271,107 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
     );
     assert!(!node_stack.contains("git_hash_mismatch_node", "v1"));
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_invalid_config_fails() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{ manifest: [unclosed"#;
-    write_peppy_json5(source_dir.path(), peppy_json5);
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should complete");
-
-    assert!(
-        !add_result.success,
-        "node_add should fail for invalid json5"
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("Failed to parse node config"))
-            .unwrap_or(false),
-        "error message should indicate parse failure, got: {:?}",
-        add_result.error_message
-    );
-
-    assert_eq!(node_stack.len(), 1, "only root should exist");
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_no_run_cmd_fails() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 =
-        node_config_with_execution("no_run_cmd_node", "v1", r#"{ language: "rust" }"#);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should complete");
-
-    assert!(
-        !add_result.success,
-        "node_add should fail when run_cmd is missing"
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("process"))
-            .unwrap_or(false),
-        "error message should mention process, got: {:?}",
-        add_result.error_message
-    );
-
-    assert_eq!(node_stack.len(), 1, "only root should exist");
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_dependency_not_resolved() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-
-    // Try to add a consumer node that depends on a non-existent provider
-    let peppy_json5 = r#"{
-        peppy_schema: "node/v1",
-        manifest: {
-            name: "consumer_node",
-            tag: "v1",
-            depends_on: {
-                nodes: [
-                    { name: "non_existent_node", tag: "v1", link_id: "non_existent_node" }
-                ]
-            },
-        },
-        execution: {
-            language: "rust",
-            run_cmd: ["sleep", "10"],
-        },
-    }"#;
-    write_peppy_json5(source_dir.path(), peppy_json5);
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should complete");
-
-    assert!(
-        !add_result.success,
-        "node_add should fail when dependencies are missing"
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("Failed to add node"))
-            .unwrap_or(false),
-        "error message should indicate add failure, got: {:?}",
-        add_result.error_message
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("does not exist in the stack"))
-            .unwrap_or(false),
-        "error message should indicate missing dependency, got: {:?}",
-        add_result.error_message
-    );
-
-    assert_eq!(node_stack.len(), 1, "only root should exist");
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_duplicate_link_id_fails() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-
-    // Two depends_on.nodes entries sharing the same link_id must be rejected
-    // at parse time, before any dependency resolution runs.
-    let peppy_json5 = r#"{
-        peppy_schema: "node/v1",
-        manifest: {
-            name: "dup_link_id_node",
-            tag: "v1",
-            depends_on: {
-                nodes: [
-                    { name: "alpha", tag: "v1", link_id: "dup" },
-                    { name: "beta",  tag: "v1", link_id: "dup" },
-                ],
-            },
-        },
-        execution: {
-            language: "rust",
-            run_cmd: ["sleep", "10"],
-        },
-    }"#;
-    write_peppy_json5(source_dir.path(), peppy_json5);
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should complete");
-
-    assert!(
-        !add_result.success,
-        "node_add should fail when depends_on contains duplicate link_id"
-    );
-    let err_msg = add_result.error_message.unwrap_or_default();
-    assert!(
-        err_msg.contains("Duplicate link_id"),
-        "error message should mention duplicate link_id, got: {err_msg}"
-    );
-    assert!(
-        err_msg.contains("dup"),
-        "error message should name the offending link_id, got: {err_msg}"
-    );
-
-    assert_eq!(node_stack.len(), 1, "only root should exist");
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
-    // If there is a missing dependency, the NODE_ADD_ACTION should fail with a MissingDependency error
-    // BEFORE running build_cmd. This mimics real nodes (e.g. fake_video_reconstruction) where
-    // `cargo build` fails because peppygen interfaces are incomplete when dependencies are missing.
-    const TARGET_NODE_NAME: &str = "add_cmd_node";
-    const TARGET_NODE_TAG: &str = "v1";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        peppy_schema: "node/v1",
-        manifest: {
-          name: "TARGET_NODE_NAME",
-          tag: "TARGET_NODE_TAG",
-          depends_on: {
+/// A consumer node that depends on a provider no stack holds.
+const CONFIG_WITH_AN_UNRESOLVED_DEPENDENCY: &str = r#"{
+    peppy_schema: "node/v1",
+    manifest: {
+        name: "consumer_node",
+        tag: "v1",
+        depends_on: {
             nodes: [
-              { name: "fake_uvc_camera", tag: "v1", link_id: "fake_uvc_camera" }
+                { name: "non_existent_node", tag: "v1", link_id: "non_existent_node" }
             ]
-          },
         },
-        interfaces: {
-          topics: {
-            consumes: [
-              {
-                link_id: "fake_uvc_camera",
-                name: "video_stream"
-              },
+    },
+    execution: {
+        language: "rust",
+        run_cmd: ["sleep", "10"],
+    },
+}"#;
+
+/// Two depends_on.nodes entries sharing the same link_id must be rejected at
+/// parse time, before any dependency resolution runs.
+const CONFIG_WITH_A_DUPLICATE_LINK_ID: &str = r#"{
+    peppy_schema: "node/v1",
+    manifest: {
+        name: "dup_link_id_node",
+        tag: "v1",
+        depends_on: {
+            nodes: [
+                { name: "alpha", tag: "v1", link_id: "dup" },
+                { name: "beta",  tag: "v1", link_id: "dup" },
             ],
+        },
+    },
+    execution: {
+        language: "rust",
+        run_cmd: ["sleep", "10"],
+    },
+}"#;
+
+/// A node that consumes a topic of a dependency the stack does not hold. The
+/// add must fail with a missing dependency BEFORE running build_cmd. This
+/// mimics real nodes (e.g. fake_video_reconstruction) where `cargo build`
+/// fails because peppygen interfaces are incomplete when dependencies are
+/// missing.
+const CONFIG_CONSUMING_AN_ABSENT_DEPENDENCY: &str = r#"{
+    peppy_schema: "node/v1",
+    manifest: {
+      name: "add_cmd_node",
+      tag: "v1",
+      depends_on: {
+        nodes: [
+          { name: "fake_uvc_camera", tag: "v1", link_id: "fake_uvc_camera" }
+        ]
+      },
+    },
+    interfaces: {
+      topics: {
+        consumes: [
+          {
+            link_id: "fake_uvc_camera",
+            name: "video_stream"
           },
-        },
-        execution: {
-          language: "rust",
-          build_cmd: ["true"],
-          run_cmd: ["sleep", "10"]
-        },
-    }"#
-    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+        ],
+      },
+    },
+    execution: {
+      language: "rust",
+      build_cmd: ["true"],
+      run_cmd: ["sleep", "10"]
+    },
+}"#;
+
+#[rstest::rstest]
+#[case::invalid_json5(
+    r#"{ manifest: [unclosed"#.to_string(),
+    &["Failed to parse node config"]
+)]
+#[case::no_run_cmd(
+    node_config_with_execution("no_run_cmd_node", "v1", r#"{ language: "rust" }"#),
+    &["process"]
+)]
+#[case::unresolved_dependency(
+    CONFIG_WITH_AN_UNRESOLVED_DEPENDENCY.to_string(),
+    &["Failed to add node", "does not exist in the stack"]
+)]
+#[case::duplicate_link_id(
+    CONFIG_WITH_A_DUPLICATE_LINK_ID.to_string(),
+    &["Duplicate link_id", "dup"]
+)]
+#[case::absent_dependency_of_a_consumed_topic(
+    CONFIG_CONSUMING_AN_ABSENT_DEPENDENCY.to_string(),
+    &["does not exist in the stack"]
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_rejects_a_config_it_cannot_add(
+    #[case] peppy_json5: String,
+    #[case] expected_error_parts: &[&str],
+) {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -513,27 +383,17 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
         None,
     )
     .await
-    .expect("node_add request should succeed");
+    .expect("node_add request should complete");
 
-    assert!(
-        !add_result.success,
-        "node_add should fail when dependency is missing"
-    );
+    assert!(!add_result.success, "node_add should fail");
+    let error_message = add_result.error_message.unwrap_or_default();
+    for part in expected_error_parts {
+        assert!(
+            error_message.contains(part),
+            "error message should contain {part:?}, got: {error_message}"
+        );
+    }
 
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("does not exist in the stack"))
-            .unwrap_or(false),
-        "error message should indicate missing dependency, got: {:?}",
-        add_result.error_message
-    );
-
-    assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        "node should not be added when dependency is missing"
-    );
     assert_eq!(node_stack.len(), 1, "only root should exist");
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
