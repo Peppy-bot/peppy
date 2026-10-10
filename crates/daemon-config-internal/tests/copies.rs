@@ -1889,24 +1889,20 @@ fn the_repository_check_composes_every_launch_and_every_join() {
     };
     // A copy repairs the engine's dangling link at launch; the stack alone
     // cannot, and the check reports it.
-    let parsed =
-        PeppyLauncherParser::from_content(&document(r#", links: { obsolete: "missing_inst" }"#))
-            .unwrap();
-    let problems = daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"));
+    let problems = composition_problems(&document(r#", links: { obsolete: "missing_inst" }"#));
     assert!(
         problems
             .iter()
             .any(|problem| problem.contains("missing_inst")),
         "{problems:?}"
     );
-    let sound = PeppyLauncherParser::from_content(&document("")).unwrap();
-    let problems = daemon_config::launcher::check_composition(&sound, Path::new("fleet.json5"));
+    let problems = composition_problems(&document(""));
     assert!(problems.is_empty(), "{problems:?}");
 
     // An entry listing no copy is proved as the launch that names one, the
     // copy running under the option's name: the entry's `with` selects an
     // option whose fragment dangles a link.
-    let unlisted = PeppyLauncherParser::from_content(
+    let problems = composition_problems(
         r#"{
         peppy_schema: "launcher/v1",
         components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
@@ -1919,9 +1915,7 @@ fn the_repository_check_composes_every_launch_and_every_join() {
         } } }],
         deployments: [{ robot: "real", with: { commander: "web" } }],
     }"#,
-    )
-    .unwrap();
-    let problems = daemon_config::launcher::check_composition(&unlisted, Path::new("fleet.json5"));
+    );
     assert!(
         problems
             .iter()
@@ -1993,8 +1987,7 @@ fn a_join_cannot_release_a_vacancy_it_pairs_nothing_into() {
             if instance == "simulation_inst" && slot == "arm"),
         "got: {err}"
     );
-    let parsed = PeppyLauncherParser::from_content(&document).unwrap();
-    let problems = daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"));
+    let problems = composition_problems(&document);
     assert!(
         problems
             .iter()
@@ -2587,6 +2580,13 @@ fn removing_a_copy_takes_out_its_members_and_a_stack_link_keeps_it() {
 fn load_error(document: &str) -> CompositionError {
     let parsed = PeppyLauncherParser::from_content(document).unwrap();
     PreparedLauncher::load(&parsed, Path::new("fleet.json5")).unwrap_err()
+}
+
+/// The problems the repository check reports for `document`, read as the
+/// launcher at `fleet.json5`.
+fn composition_problems(document: &str) -> Vec<String> {
+    let parsed = PeppyLauncherParser::from_content(document).unwrap();
+    daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"))
 }
 
 /// A launcher whose copies of `robot` may run beside copies of `cameras`,
@@ -3261,11 +3261,7 @@ fn an_option_is_deployed_by_one_entry() {
 /// problem.
 #[test]
 fn the_repository_check_joins_under_the_entrys_settings() {
-    let check = |deployments: &str| {
-        let parsed =
-            PeppyLauncherParser::from_content(&rigged_fleet_document(deployments)).unwrap();
-        daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"))
-    };
+    let check = |deployments: &str| composition_problems(&rigged_fleet_document(deployments));
     // `commander=web  rig=(off)` is legal on its own, and under this entry
     // no copy runs with the rig off.
     let problems = check(
@@ -3497,17 +3493,12 @@ fn a_file_copy_may_leave_an_axis_for_a_launch_word() {
         text.contains("`--with <option>` on `peppy stack join`") && !text.contains("stack launch"),
         "{text}"
     );
-    let parsed = PeppyLauncherParser::from_content(&document("")).unwrap();
-    let problems = daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"));
+    let problems = composition_problems(&document(""));
     assert!(problems.is_empty(), "{problems:?}");
 
     // An override of an instance only one option defines is reported for
     // the other option the launch word may name.
-    let parsed = PeppyLauncherParser::from_content(&document(
-        r#", arguments: { headset_inst: { fov: 1 } }"#,
-    ))
-    .unwrap();
-    let problems = daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"));
+    let problems = composition_problems(&document(r#", arguments: { headset_inst: { fov: 1 } }"#));
     assert!(
         problems
             .iter()
@@ -3555,17 +3546,12 @@ fn a_file_copy_may_leave_two_axes_for_launch_words() {
         launched.copies()[0].selection.echo(),
         "robot=real  commander=web  camera=usb"
     );
-    let parsed = PeppyLauncherParser::from_content(&document("")).unwrap();
-    let problems = daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"));
+    let problems = composition_problems(&document(""));
     assert!(problems.is_empty(), "{problems:?}");
 
     // An override of an instance only one commander defines is reported for
     // each camera the other commander runs beside.
-    let parsed = PeppyLauncherParser::from_content(&document(
-        r#", arguments: { headset_inst: { fov: 1 } }"#,
-    ))
-    .unwrap();
-    let problems = daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"));
+    let problems = composition_problems(&document(r#", arguments: { headset_inst: { fov: 1 } }"#));
     for combination in [
         "(commander=web) (camera=usb)",
         "(commander=web) (camera=ip)",
@@ -3841,7 +3827,7 @@ fn a_join_cannot_add_to_a_slot_holding_a_single_member() {
 /// reporting a problem.
 #[test]
 fn the_repository_check_accepts_a_copy_that_adds_a_stack_instance_to_a_set() {
-    let parsed = PeppyLauncherParser::from_content(
+    let problems = composition_problems(
         r#"{
         peppy_schema: "launcher/v1",
         components: [
@@ -3855,8 +3841,6 @@ fn the_repository_check_accepts_a_copy_that_adds_a_stack_instance_to_a_set() {
             { source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "first" }] }
         ]
     }"#,
-    )
-    .unwrap();
-    let problems = daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"));
+    );
     assert!(problems.is_empty(), "{problems:?}");
 }
