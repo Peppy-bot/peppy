@@ -1151,9 +1151,9 @@ where
     let instances = Vec::<DeploymentInstance>::deserialize(deserializer)?;
     let mut seen = HashSet::with_capacity(instances.len());
     for instance in &instances {
-        let id = instance.instance_id.to_string();
-        if !seen.insert(id.clone()) {
-            let err = crate::error::StructuredError::DuplicateName(id);
+        if !seen.insert(instance.instance_id.as_str()) {
+            let err =
+                crate::error::StructuredError::DuplicateName(instance.instance_id.to_string());
             return Err(de::Error::custom(err.json5_message()));
         }
     }
