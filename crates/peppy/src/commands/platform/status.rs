@@ -47,8 +47,8 @@ enum DaemonReport {
 /// daemon renews with the session of this machine, so it needs the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RenewalMeans {
-    session: bool,
-    daemon_running: bool,
+    has_session: bool,
+    is_daemon_running: bool,
 }
 
 impl RenewalMeans {
@@ -56,8 +56,8 @@ impl RenewalMeans {
         Self {
             // The platform view is `Ok(None)` exactly when there is no session
             // to ask with.
-            session: !matches!(platform, Ok(None)),
-            daemon_running: !matches!(daemon, DaemonReport::NotRunning),
+            has_session: !matches!(platform, Ok(None)),
+            is_daemon_running: !matches!(daemon, DaemonReport::NotRunning),
         }
     }
 
@@ -66,12 +66,12 @@ impl RenewalMeans {
     fn absent(self) -> impl Iterator<Item = (&'static str, &'static str)> {
         [
             (
-                self.session,
+                self.has_session,
                 "no_session",
                 "needs a session: run `peppy platform login`",
             ),
             (
-                self.daemon_running,
+                self.is_daemon_running,
                 "daemon_not_running",
                 "needs the daemon: start it with `peppy service serve`",
             ),
@@ -427,8 +427,8 @@ mod tests {
     const EXPIRES_AT: i64 = ISSUED_AT + 90 * DAY_SECS;
     const DUE_AT: i64 = ISSUED_AT + 60 * DAY_SECS;
     const ALL_MEANS: RenewalMeans = RenewalMeans {
-        session: true,
-        daemon_running: true,
+        has_session: true,
+        is_daemon_running: true,
     };
 
     /// A certificate issued at [`ISSUED_AT`] for 90 days.
@@ -476,12 +476,12 @@ mod tests {
     fn the_renewal_lines_name_what_the_daemon_needs() {
         let certificate = certificate();
         let no_session = RenewalMeans {
-            session: false,
-            daemon_running: true,
+            has_session: false,
+            is_daemon_running: true,
         };
         let nothing = RenewalMeans {
-            session: false,
-            daemon_running: false,
+            has_session: false,
+            is_daemon_running: false,
         };
 
         let lines = renewal_lines(&certificate, ISSUED_AT, no_session);
