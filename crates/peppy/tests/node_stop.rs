@@ -9,7 +9,8 @@ use peppylib::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 use super::common::{
-    emulate_startup_services, node_run_command, serve_app_context, stack_graph, test_node_target,
+    emulate_startup_services, node_add_command, node_run_command, serve_app_context, stack_graph,
+    test_node_target,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -68,26 +69,9 @@ async fn node_stop_command_succeeds() {
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     // Add the node to the node stack (without running)
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect("node add command should succeed");
 
     let messenger_handle = node_ctx
         .messenger_handle()

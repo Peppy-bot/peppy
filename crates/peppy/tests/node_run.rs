@@ -13,8 +13,8 @@ use peppylib::MessengerHandle;
 use peppylib::core_node::transport::poll;
 
 use super::common::{
-    CALLER_INSTANCE_ID, emulate_startup_services, node_run_command, serve_app_context, stack_graph,
-    test_node_target,
+    CALLER_INSTANCE_ID, emulate_startup_services, node_add_command, node_run_command,
+    serve_app_context, stack_graph, test_node_target,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -42,54 +42,11 @@ async fn node_run_command_succeeds() {
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // First, create a node using the init command
-    NodeCommand {
-        command: NodeCommands::Init {
-            node_name: NodeName::new(node_name).expect("valid node name"),
-            to_dir: None,
-            toolchain: Toolchain::Cargo,
-            with_container: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node init command should succeed");
-
-    // Get the path to the peppy.json5 file
-    let node_path = node_dir.path().join(node_name);
-    let peppy_json5_path = node_path.join("peppy.json5");
-    assert!(
-        peppy_json5_path.exists(),
-        "peppy.json5 should exist at {}",
-        peppy_json5_path.display()
-    );
-
     // The spawned instance has to still be in the stack for the post-run
     // `instance_count()` assertion, so tie it to the test rather than to
     // a fixed `sleep`.
     let instances = InstanceLifetime::new();
-    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
-
-    // Add the node to the node stack (without running)
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    init_and_add_built_node(&node_ctx, node_dir.path(), node_name, &instances);
 
     // Verify the node was added with 0 instances
     let messenger_handle = node_ctx
@@ -239,26 +196,9 @@ async fn node_run_command_with_args_succeeds() {
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     // Add the node to the node stack (without running)
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect("node add command should succeed");
 
     // Verify the node was added with 0 instances before run
     let messenger_handle = node_ctx
@@ -372,54 +312,11 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // First, create a node using the init command
-    NodeCommand {
-        command: NodeCommands::Init {
-            node_name: NodeName::new(node_name).expect("valid node name"),
-            to_dir: None,
-            toolchain: Toolchain::Cargo,
-            with_container: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node init command should succeed");
-
-    // Get the path to the peppy.json5 file
-    let node_path = node_dir.path().join(node_name);
-    let peppy_json5_path = node_path.join("peppy.json5");
-    assert!(
-        peppy_json5_path.exists(),
-        "peppy.json5 should exist at {}",
-        peppy_json5_path.display()
-    );
-
     // The spawned instance has to still be in the stack for the post-run
     // `instance_count()` assertion, so tie it to the test rather than to
     // a fixed `sleep`.
     let instances = InstanceLifetime::new();
-    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
-
-    // Add the node to the node stack (without running)
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    init_and_add_built_node(&node_ctx, node_dir.path(), node_name, &instances);
 
     // Verify the node was added with 0 instances before run
     let messenger_handle = node_ctx
@@ -699,48 +596,13 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    NodeCommand {
-        command: NodeCommands::Init {
-            node_name: NodeName::new(node_name).expect("valid node name"),
-            to_dir: None,
-            toolchain: Toolchain::Cargo,
-            with_container: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node init command should succeed");
-
-    let node_path = node_dir.path().join(node_name);
-    let peppy_json5_path = node_path.join("peppy.json5");
-    assert!(peppy_json5_path.exists());
     // The spawned instance has to still be in the stack for the post-run
     // `instance_count()` assertion, so tie it to the test rather than to
     // a fixed `sleep`.
     let instances = InstanceLifetime::new();
-    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
-
     // Add the node WITH building it. The node should land in the `Ready`
     // stage so that `node run -b` finds it already built.
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    init_and_add_built_node(&node_ctx, node_dir.path(), node_name, &instances);
 
     let messenger_handle = node_ctx
         .messenger_handle()
@@ -874,55 +736,42 @@ fn write_consumer_with_slots(
     consumer_dir
 }
 
-/// Adds a scaffolded producer node to the stack and builds it.
-/// Mirrors the boilerplate that `node_run_command_succeeds` runs
-/// through; tests below treat it as the "set up a runnable target"
-/// step.
-async fn add_built_producer(
+/// Scaffolds a cargo node with `node init`, points its `run_cmd` at the
+/// keep-alive of `instances`, and adds and builds it.
+fn init_and_add_built_node(
     node_ctx: &Arc<AppContext>,
     work_dir: &std::path::Path,
-    producer_name: &str,
+    node_name: &str,
     instances: &InstanceLifetime,
 ) {
     NodeCommand {
         command: NodeCommands::Init {
-            node_name: NodeName::new(producer_name).expect("valid node name"),
+            node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
         },
     }
     .execute(node_ctx)
-    .expect("producer node init should succeed");
-    let producer_path = work_dir.join(producer_name);
-    let producer_json5 = producer_path.join("peppy.json5");
-    // Producer instances spawned from this node are named by `--link`s
-    // validated several CLI round-trips later, so they must outlive their own
-    // spawn; a fixed `sleep` would make that a race.
-    peppy::test_support::override_run_cmd_while(&producer_json5, &instances.sentinel());
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(producer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(node_ctx)
-    .expect("producer node add should succeed");
+    .expect("node init command should succeed");
+    let node_path = work_dir.join(node_name);
+    let peppy_json5_path = node_path.join("peppy.json5");
+    assert!(
+        peppy_json5_path.exists(),
+        "peppy.json5 should exist at {}",
+        peppy_json5_path.display()
+    );
+    // The tests check the instances spawned from this node several CLI
+    // round-trips after their spawn (a producer is named by `--link`s
+    // validated later), so they must outlive it; a fixed `sleep` would make
+    // that a race.
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
+    node_add_command(&node_path)
+        .execute(node_ctx)
+        .expect("node add command should succeed");
 }
 
-async fn add_built_consumer_with_pins(
+fn add_built_consumer_with_pins(
     node_ctx: &Arc<AppContext>,
     work_dir: &std::path::Path,
     consumer_name: &str,
@@ -938,13 +787,12 @@ async fn add_built_consumer_with_pins(
         producer_name,
         &slots,
         instances,
-    )
-    .await;
+    );
 }
 
 /// [`add_built_consumer_with_pins`] over slots that carry their own declared
 /// cardinality.
-async fn add_built_consumer_with_slots(
+fn add_built_consumer_with_slots(
     node_ctx: &Arc<AppContext>,
     work_dir: &std::path::Path,
     consumer_name: &str,
@@ -954,26 +802,9 @@ async fn add_built_consumer_with_slots(
 ) {
     let consumer_dir =
         write_consumer_with_slots(work_dir, consumer_name, producer_name, slots, instances);
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(consumer_dir.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(node_ctx)
-    .expect("consumer node add should succeed");
+    node_add_command(&consumer_dir)
+        .execute(node_ctx)
+        .expect("consumer node add should succeed");
 }
 
 // ─── --link binding-driven-routing integration tests ───────────────────────
@@ -999,7 +830,7 @@ async fn node_run_rejects_unbound_slots() {
     let _guard = log_capture.install();
 
     let instances = InstanceLifetime::new();
-    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
+    init_and_add_built_node(&node_ctx, work_dir.path(), producer_name, &instances);
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
@@ -1007,8 +838,7 @@ async fn node_run_rejects_unbound_slots() {
         producer_name,
         &["wrist_left", "wrist_right"],
         &instances,
-    )
-    .await;
+    );
 
     let result =
         node_run_command(instance_id, consumer_name, Vec::new(), Vec::new()).execute(&node_ctx);
@@ -1051,7 +881,7 @@ async fn node_run_bind_rejects_dead_key() {
     let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
-    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
+    init_and_add_built_node(&node_ctx, work_dir.path(), producer_name, &instances);
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
@@ -1059,8 +889,7 @@ async fn node_run_bind_rejects_dead_key() {
         producer_name,
         &["wrist_left"],
         &instances,
-    )
-    .await;
+    );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     emulate_startup_services(
@@ -1114,7 +943,7 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
     let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
-    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
+    init_and_add_built_node(&node_ctx, work_dir.path(), producer_name, &instances);
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
@@ -1122,8 +951,7 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
         producer_name,
         &["wrist_left", "wrist_right"],
         &instances,
-    )
-    .await;
+    );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     emulate_startup_services(
@@ -1202,8 +1030,8 @@ async fn node_run_bind_rejects_target_mismatch() {
     let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
-    add_built_producer(&node_ctx, work_dir.path(), expected_producer, &instances).await;
-    add_built_producer(&node_ctx, work_dir.path(), wrong_producer, &instances).await;
+    init_and_add_built_node(&node_ctx, work_dir.path(), expected_producer, &instances);
+    init_and_add_built_node(&node_ctx, work_dir.path(), wrong_producer, &instances);
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
@@ -1211,8 +1039,7 @@ async fn node_run_bind_rejects_target_mismatch() {
         expected_producer,
         &["wrist_left"],
         &instances,
-    )
-    .await;
+    );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     emulate_startup_services(
@@ -1280,7 +1107,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
-    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
+    init_and_add_built_node(&node_ctx, work_dir.path(), producer_name, &instances);
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
@@ -1288,8 +1115,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
         producer_name,
         &["wrist_left", "wrist_right"],
         &instances,
-    )
-    .await;
+    );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     emulate_startup_services(
@@ -1390,7 +1216,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
-    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
+    init_and_add_built_node(&node_ctx, work_dir.path(), producer_name, &instances);
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
@@ -1398,8 +1224,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
         producer_name,
         &["wrist_left", "wrist_right"],
         &instances,
-    )
-    .await;
+    );
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
@@ -1407,8 +1232,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
         producer_name,
         &["second_consumer_pin"],
         &instances,
-    )
-    .await;
+    );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     emulate_startup_services(
@@ -1500,7 +1324,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
-    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
+    init_and_add_built_node(&node_ctx, work_dir.path(), producer_name, &instances);
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
@@ -1508,8 +1332,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
         producer_name,
         &["wrist_left", "wrist_right"],
         &instances,
-    )
-    .await;
+    );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     emulate_startup_services(
@@ -1631,7 +1454,7 @@ async fn node_run_covers_a_zero_or_one_slot_by_link_or_vacancy() {
     let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
-    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
+    init_and_add_built_node(&node_ctx, work_dir.path(), producer_name, &instances);
     add_built_consumer_with_slots(
         &node_ctx,
         work_dir.path(),
@@ -1639,8 +1462,7 @@ async fn node_run_covers_a_zero_or_one_slot_by_link_or_vacancy() {
         producer_name,
         &[("main_camera", None), ("wrist_camera", Some("zero_or_one"))],
         &instances,
-    )
-    .await;
+    );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     for instance_id in [producer_instance_id, spare_producer_instance_id] {
@@ -1771,26 +1593,9 @@ async fn node_run_prints_the_web_pages_of_a_node_that_declares_a_page() {
         )],
     );
 
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect("node add command should succeed");
 
     // The emulated node: ready, health, and the endpoints it bound.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
