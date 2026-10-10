@@ -361,9 +361,11 @@ def report(selection, base):
     because the gray "skipped" mark a workflow shows explains nothing."""
     versus = base[:12] if base else "the base commit"
     lines = []
-    for job, gates in JOBS.items():
+    for job, outputs in JOBS.items():
         selected = [
-            selection[gate] for gate in gates if selection[gate] not in ("", "false")
+            selection[output]
+            for output in outputs
+            if selection[output] not in ("", "false")
         ]
         if not selected:
             print(
@@ -377,7 +379,10 @@ def report(selection, base):
         # A boolean output says only that the job runs; a selection says which
         # packages or libraries of it do.
         detail = ", ".join(value for value in selected if value != "true")
-        lines.append("- **%s** runs%s" % (job, ": `%s`" % detail if detail else ""))
+        if detail:
+            lines.append("- **%s** runs: `%s`" % (job, detail))
+        else:
+            lines.append("- **%s** runs" % job)
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_file:
         return
@@ -406,8 +411,8 @@ def main():
     output_file = os.environ.get("GITHUB_OUTPUT")
     if output_file:
         with open(output_file, "a") as handle:
-            for gate, value in selection.items():
-                handle.write("%s=%s\n" % (gate, value))
+            for output, value in selection.items():
+                handle.write("%s=%s\n" % (output, value))
     report(selection, base)
 
 
