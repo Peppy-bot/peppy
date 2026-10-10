@@ -383,11 +383,7 @@ impl MessengerBackend for MockAdapter {
     }
 
     async fn watch_action_producer(&self, sender: &ActionWireSender) -> Result<LivelinessWatch> {
-        if !self.is_session_connected {
-            return Err(Error::MessagingSessionError(
-                "Session not initialized".to_string(),
-            ));
-        }
+        self.require_session()?;
         let pattern = ZenohWireFormat::action_liveliness_watch(sender);
         let (tx, rx) = flume::unbounded::<LivelinessEvent>();
         {
@@ -418,11 +414,7 @@ impl MessengerBackend for MockAdapter {
         sender: &ActionWireSender,
         _timeout: std::time::Duration,
     ) -> Result<ActionLivelinessProbe> {
-        if !self.is_session_connected {
-            return Err(Error::MessagingSessionError(
-                "Session not initialized".to_string(),
-            ));
-        }
+        self.require_session()?;
         let pattern = ZenohWireFormat::action_liveliness_watch(sender);
         let alive = {
             let liveliness = self.liveliness.lock().unwrap();
@@ -455,11 +447,7 @@ impl MessengerBackend for MockAdapter {
         &self,
         core_node: Option<&Segment>,
     ) -> Result<LivelinessWatch<CoreNodePresence>> {
-        if !self.is_session_connected {
-            return Err(Error::MessagingSessionError(
-                "Session not initialized".to_string(),
-            ));
-        }
+        self.require_session()?;
         let pattern = ZenohWireFormat::core_node_presence_filter(PresenceScope::Session, core_node);
         let (tx, rx) = flume::unbounded::<LivelinessEvent<CoreNodePresence>>();
         {
@@ -507,11 +495,7 @@ impl MessengerBackend for MockAdapter {
         core_node: Option<&Segment>,
         _timeout: std::time::Duration,
     ) -> Result<CoreNodePresenceList> {
-        if !self.is_session_connected {
-            return Err(Error::MessagingSessionError(
-                "Session not initialized".to_string(),
-            ));
-        }
+        self.require_session()?;
         let pattern = ZenohWireFormat::core_node_presence_filter(scope, core_node);
         // The mock answers instantly: pre-fill the reply channel and drop
         // the sender so `collect` returns without waiting.
@@ -574,6 +558,14 @@ impl Drop for MockLivelinessGuard {
 }
 
 impl MockAdapter {
+    /// Refuses an operation that needs a started session.
+    fn require_session(&self) -> Result<()> {
+        if !self.is_session_connected {
+            return Err(Error::session_not_initialized());
+        }
+        Ok(())
+    }
+
     /// Fan a liveliness transition out to every watcher whose pattern
     /// intersects `keyexpr`. Each watcher callback attaches its own domain's
     /// event value; send errors (dropped watches) are ignored, mirroring the
@@ -597,11 +589,7 @@ impl MockAdapter {
     /// count for `keyexpr`, notifies intersecting watchers, and returns a
     /// token whose drop reverses both.
     fn declare_liveliness(&self, keyexpr: String) -> Result<LivelinessToken> {
-        if !self.is_session_connected {
-            return Err(Error::MessagingSessionError(
-                "Session not initialized".to_string(),
-            ));
-        }
+        self.require_session()?;
         {
             let mut liveliness = self.liveliness.lock().unwrap();
             *liveliness.tokens.entry(keyexpr.clone()).or_insert(0) += 1;

@@ -86,6 +86,14 @@ impl core::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl Error {
+    /// An operation that needs an open messaging session ran before
+    /// `start_session` or after `stop_session`.
+    pub(crate) fn session_not_initialized() -> Self {
+        Self::MessagingSessionError("Session not initialized".to_string())
+    }
+}
+
 /// Test support shared by this crate's unit tests.
 #[cfg(test)]
 pub(crate) mod test_support {

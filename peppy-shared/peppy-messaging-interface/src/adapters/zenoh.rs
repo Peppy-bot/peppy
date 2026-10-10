@@ -834,10 +834,7 @@ impl MessengerBackend for ZenohAdapter {
     }
 
     async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceQueryable> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
 
         let (tx, rx) = flume::bounded::<IncomingRequest>(
             self.client_config
@@ -876,10 +873,7 @@ impl MessengerBackend for ZenohAdapter {
         kind: ServiceQueryKind,
         timeout: Option<std::time::Duration>,
     ) -> Result<ReplyStream> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let selector = ZenohWireFormat::service_get_selector(sender);
         // Mandatory query attachment: carries the request kind (UserRequest
         // vs Probe) plus the consumer's sibling-exclusion set. The producer
@@ -1015,10 +1009,7 @@ impl MessengerBackend for ZenohAdapter {
         sender: &ActionWireSender,
         timeout: std::time::Duration,
     ) -> Result<ActionLivelinessProbe> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let keyexpr = ZenohWireFormat::action_liveliness_watch(sender);
         // The callback closure owns `tx`; zenoh drops it when the query
         // finalizes (at the latest after `timeout`), so the probe's
@@ -1077,10 +1068,7 @@ impl MessengerBackend for ZenohAdapter {
         core_node: Option<&Segment>,
         timeout: std::time::Duration,
     ) -> Result<CoreNodePresenceList> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let keyexpr = ZenohWireFormat::core_node_presence_filter(scope, core_node);
         // Owned so the `'static` reply callback can strip exactly the prefix
         // the selector above wrote.
@@ -1236,7 +1224,7 @@ impl ZenohAdapter {
     fn open_session(&self) -> Result<&Arc<zenoh::Session>> {
         self.session
             .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))
+            .ok_or_else(Error::session_not_initialized)
     }
 
     fn declared_topics(
@@ -1277,10 +1265,7 @@ impl ZenohAdapter {
     /// a lock can release it before waiting out the timeout (mirrors
     /// [`ActionLivelinessProbe`]).
     fn subscriber_match_wait(&self, keyexpr: String) -> Result<SubscriberMatchWait> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         Ok(SubscriberMatchWait {
             session: Arc::clone(session),
             keyexpr,
@@ -1291,10 +1276,7 @@ impl ZenohAdapter {
     /// differ per domain (action producers, core-node presence), the
     /// declaration mechanics don't.
     async fn declare_liveliness_token(&self, keyexpr: String) -> Result<LivelinessToken> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let token = session
             .liveliness()
             .declare_token(keyexpr)
@@ -1318,10 +1300,7 @@ impl ZenohAdapter {
         keyexpr: String,
         extract: impl Fn(&Sample) -> Option<T> + Send + Sync + 'static,
     ) -> Result<LivelinessWatch<T>> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let (tx, rx) = flume::unbounded::<LivelinessEvent<T>>();
         let subscriber = session
             .liveliness()
@@ -1365,10 +1344,7 @@ impl ZenohAdapter {
         qos: PublisherQoS,
         is_primary: bool,
     ) -> Result<()> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let zenoh_qos = ZenohQoS::from(qos);
 
         // session.put() directly rather than declare_publisher() + put() + drop.
@@ -1402,10 +1378,7 @@ impl ZenohAdapter {
             buffering,
         );
 
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
 
         // The callback runs on zenoh's reception thread. A topic's full
         // buffer blocks that thread until the reader takes a message, so the
