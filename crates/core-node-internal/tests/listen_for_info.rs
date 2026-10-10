@@ -1,37 +1,15 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
+use common::start_core_node_with_mock_messenger;
 use config::consts::DEFAULT_MESSAGING_PORT;
-use core_node_api::ServiceId;
-use core_node_api::encoding::{InfoRequest, InfoResponse};
-use peppylib::ServiceMessenger;
-use peppylib::messaging::ServiceTarget;
-use std::time::Duration;
+use core_node_api::encoding::InfoRequest;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_info_success() {
     let started = start_core_node_with_mock_messenger().await;
 
-    // Send an info request to the core node
-    let info_request = InfoRequest::new();
-    let request_payload = info_request.encode().expect("encode should succeed");
+    let info_response = common::poll_core_node(&started, &InfoRequest::new()).await;
 
-    let response = ServiceMessenger::poll(
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        common::core_node_target(&started.core_node_name),
-        ServiceId::Info.name(),
-        ServiceTarget::Any,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("info request should succeed");
-
-    let info_response = InfoResponse::decode(&response.payload()).expect("decode should succeed");
-
-    // Verify the response contains expected fields
     assert_eq!(
         info_response.core_node_name, started.core_node_name,
         "core_node_name should match"
