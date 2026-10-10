@@ -351,6 +351,7 @@ def measure(disk_dir: str) -> Measurement:
             capture_output=True,
             text=True,
             timeout=DU_TIMEOUT_SECONDS,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return Measurement(

@@ -1073,7 +1073,11 @@ def git_environment() -> dict[str, str]:
 def run_git(arguments: Sequence[str]) -> str:
     """What `git <arguments>` prints; a git that fails stops the job."""
     result = subprocess.run(
-        ["git", *arguments], capture_output=True, text=True, env=git_environment()
+        ["git", *arguments],
+        capture_output=True,
+        text=True,
+        env=git_environment(),
+        check=False,
     )
     if result.returncode != 0:
         raise ResolveError(f"git {' '.join(arguments)} failed: {result.stderr.strip()}")
@@ -1104,7 +1108,9 @@ def agent_holds_a_key() -> bool:
     """Whether an ssh-agent this process reaches holds a key, which is what
     load-private-hub-key.sh leaves."""
     try:
-        result = subprocess.run(["ssh-add", "-l"], capture_output=True, text=True)
+        result = subprocess.run(
+            ["ssh-add", "-l"], capture_output=True, text=True, check=False
+        )
     except FileNotFoundError:
         return False
     return result.returncode == 0
@@ -1420,6 +1426,7 @@ def unpack_peppy(archive: Path, destination: Path) -> Path:
         ["tar", "-xzf", str(archive), "-C", str(destination)],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise ResolveError(f"unpacking {archive} failed: {result.stderr.strip()}")
@@ -1430,7 +1437,9 @@ def unpack_peppy(archive: Path, destination: Path) -> Path:
 
 
 def peppy_version(peppy: Path) -> str:
-    result = subprocess.run([str(peppy), "--version"], capture_output=True, text=True)
+    result = subprocess.run(
+        [str(peppy), "--version"], capture_output=True, text=True, check=False
+    )
     version = result.stdout.strip()
     if result.returncode != 0 or not version or "\n" in version:
         raise ResolveError(

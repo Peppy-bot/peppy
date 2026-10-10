@@ -196,6 +196,7 @@ def changed_files(base: str) -> list[str] | None:
     reachable = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", base + "^{commit}"],
         capture_output=True,
+        check=False,
     )
     if reachable.returncode != 0:
         return None
