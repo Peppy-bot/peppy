@@ -300,52 +300,52 @@ fn spawn_rust_node_release(dir: &Path, env_vars: &[(&str, &str)]) -> std::proces
     command.spawn().expect("spawn release node binary")
 }
 
-/// Codegen an (interface-less) peppygen library + fingerprint into a fresh node
-/// dir so the process is a real peppygen node, write `main`, and build it.
-/// Returns the built node directory. The `TempDir` is intentionally leaked so
-/// the built artifacts survive for the process lifetime (cached reuse).
-fn build_rust_node(main_src: &str) -> PathBuf {
+/// Codegen an (interface-less) peppygen library + fingerprint for
+/// `node_config` into a fresh node dir, so the process built there is a real
+/// peppygen node. Returns the `TempDir` that owns the node dir and the user
+/// node directory inside it.
+fn generate_peppygen_node<G: LanguageGenerator + Default>(node_config: &str) -> (TempDir, PathBuf) {
     let temp_dir = TempDir::new().expect("temp dir");
     let (generator, output_dir, user_node, peppy_config_path) =
-        helpers::init_test_env::<generator::RustGenerator>(&temp_dir, STUB_NODE_CONFIG);
+        helpers::init_test_env::<G>(&temp_dir, node_config);
     let output_config = helpers::copy_config_to_output(&user_node, &output_dir);
     generator
         .build(&output_dir, &helpers::test_peppy_dirs(), Default::default())
-        .expect("codegen peppygen (rust)");
+        .expect("codegen peppygen");
     std::fs::remove_file(output_config).expect("remove staged config");
     config::fingerprint::create_codegen_fingerprint(
         &peppy_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
+    (temp_dir, user_node)
+}
 
+/// Generates a Rust peppygen node, writes `main`, and builds it. Returns the
+/// built node directory. The directory is kept on disk once the build
+/// succeeds, so the built artifacts survive for the process lifetime (cached
+/// reuse); a failed build removes it.
+fn build_rust_node(main_src: &str) -> PathBuf {
+    let (temp_dir, user_node) =
+        generate_peppygen_node::<generator::RustGenerator>(STUB_NODE_CONFIG);
     helpers::init_cargo_user_node(&user_node);
     ensure_peppylib_dep(&user_node);
     std::fs::write(user_node.join("src").join("main.rs"), main_src).expect("write main.rs");
     compile_rust_node_release(&user_node);
 
-    std::mem::forget(temp_dir);
+    let _ = temp_dir.keep();
     user_node
 }
 
+/// The Python counterpart of [`build_rust_node`]: generates the node, writes
+/// `main.py`, and sets up its project venv.
 fn build_python_node(main_src: &str) -> PathBuf {
-    let temp_dir = TempDir::new().expect("temp dir");
-    let (generator, output_dir, user_node, peppy_config_path) =
-        helpers::init_test_env::<generator::PythonGenerator>(&temp_dir, STUB_PYTHON_NODE_CONFIG);
-    let output_config = helpers::copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(&output_dir, &helpers::test_peppy_dirs(), Default::default())
-        .expect("codegen peppygen (python)");
-    std::fs::remove_file(output_config).expect("remove staged config");
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
+    let (temp_dir, user_node) =
+        generate_peppygen_node::<generator::PythonGenerator>(STUB_PYTHON_NODE_CONFIG);
     helpers::init_python_user_node(&user_node);
     std::fs::write(user_node.join("main.py"), main_src).expect("write main.py");
     helpers::init_python_project_venv(&user_node);
 
-    std::mem::forget(temp_dir);
+    let _ = temp_dir.keep();
     user_node
 }
 
