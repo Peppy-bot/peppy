@@ -450,17 +450,7 @@ impl Apptainer {
     /// On Linux this always returns `true` (no VM needed). On macOS it checks
     /// whether the Lima instance is booted and SSH-reachable without starting it.
     pub fn is_lima_ready() -> bool {
-        if !cfg!(target_os = "macos") {
-            return true;
-        }
-        let Ok(lima_dir) = lima::resolve_lima_dir() else {
-            return false;
-        };
-        let limactl_path = lima_dir.join("bin/limactl");
-        let Ok(lima_home) = lima::resolve_lima_home() else {
-            return false;
-        };
-        lima::is_lima_instance_running(&limactl_path, &lima_home)
+        !cfg!(target_os = "macos") || running_lima().is_some()
     }
 
     /// Creates a new `Apptainer` by resolving the apptainer installation directory.
@@ -715,67 +705,8 @@ impl Apptainer {
                 limactl_path,
                 lima_home,
                 ..
-            } => Self::kill_guest_pgid(limactl_path, lima_home, key),
+            } => signal_guest_pgid(limactl_path, lima_home, key, GuestSignal::Kill),
         }
-    }
-
-    /// Issues the in-VM group kill for `key` via `limactl shell`. Shared by
-    /// [`kill_guest_process_group`](Self::kill_guest_process_group) (facade
-    /// instance) and
-    /// [`kill_guest_process_groups_best_effort`](Self::kill_guest_process_groups_best_effort)
-    /// (no facade).
-    ///
-    /// Bounded: `limactl shell` reaches into the VM over SSH, which can hang
-    /// on a wedged VM, and this runs on stop/teardown paths that must not
-    /// block. On deadline expiry the `limactl` child is killed and a
-    /// timeout-specific error returned.
-    fn kill_guest_pgid(limactl_path: &Path, lima_home: &Path, key: &str) -> Result<()> {
-        /// Generous upper bound for one in-VM `kill` round trip over `limactl shell`.
-        const KILL_GUEST_PGID_TIMEOUT: Duration = Duration::from_secs(10);
-        /// Poll cadence while waiting for the `limactl` child to exit.
-        const KILL_GUEST_PGID_POLL: Duration = Duration::from_millis(50);
-
-        let guest_pgid = lima::guest_pgid_path(key);
-        let mut child = lima::lima_shell_cmd(limactl_path, lima_home, lima::LIMA_INSTANCE)
-            .args(lima::lima_kill_pgid_argv(&guest_pgid))
-            .spawn()
-            .map_err(Error::from)?;
-        await_guest_kill(
-            &mut child,
-            &guest_pgid,
-            KILL_GUEST_PGID_TIMEOUT,
-            KILL_GUEST_PGID_POLL,
-            Instant::now,
-            std::thread::sleep,
-        )
-    }
-
-    /// Issues a cooperative in-VM SIGTERM for `key` via `limactl shell`. The
-    /// guest pgid file is left in place so the force phase can still SIGKILL the
-    /// same group if it ignores SIGTERM.
-    ///
-    /// Bounded for the same reason as [`kill_guest_pgid`](Self::kill_guest_pgid):
-    /// stop/teardown paths cannot block indefinitely on a wedged VM or SSH
-    /// channel.
-    fn terminate_guest_pgid(limactl_path: &Path, lima_home: &Path, key: &str) -> Result<()> {
-        /// Generous upper bound for one in-VM `kill` round trip over `limactl shell`.
-        const TERMINATE_GUEST_PGID_TIMEOUT: Duration = Duration::from_secs(10);
-        /// Poll cadence while waiting for the `limactl` child to exit.
-        const TERMINATE_GUEST_PGID_POLL: Duration = Duration::from_millis(50);
-
-        let guest_pgid = lima::guest_pgid_path(key);
-        let mut child = lima::lima_shell_cmd(limactl_path, lima_home, lima::LIMA_INSTANCE)
-            .args(lima::lima_terminate_pgid_argv(&guest_pgid))
-            .spawn()
-            .map_err(Error::from)?;
-        await_guest_kill(
-            &mut child,
-            &guest_pgid,
-            TERMINATE_GUEST_PGID_TIMEOUT,
-            TERMINATE_GUEST_PGID_POLL,
-            Instant::now,
-            std::thread::sleep,
-        )
     }
 
     /// Best-effort batch form of
@@ -791,24 +722,7 @@ impl Apptainer {
     /// Synchronous (it shells out to `limactl`), so call it from a blocking
     /// context (e.g. `tokio::task::spawn_blocking`).
     pub fn kill_guest_process_groups_best_effort(keys: &[String]) {
-        if !cfg!(target_os = "macos") || keys.is_empty() {
-            return;
-        }
-        let (limactl_path, lima_home) = match (lima::resolve_lima_dir(), lima::resolve_lima_home())
-        {
-            (Ok(lima_dir), Ok(lima_home)) => (lima_dir.join("bin/limactl"), lima_home),
-            // No resolvable Lima installation means no VM, hence no guest
-            // processes to kill.
-            _ => return,
-        };
-        if !lima::is_lima_instance_running(&limactl_path, &lima_home) {
-            return;
-        }
-        for key in keys {
-            if let Err(e) = Self::kill_guest_pgid(&limactl_path, &lima_home, key) {
-                tracing::debug!("In-VM guest group kill failed for '{key}': {e}");
-            }
-        }
+        signal_guest_process_groups_best_effort(keys, GuestSignal::Kill);
     }
 
     /// Best-effort batch form of the guest-side cooperative SIGTERM used by
@@ -825,25 +739,7 @@ impl Apptainer {
     /// Synchronous (it shells out to `limactl`), so call it from a blocking
     /// context (e.g. `tokio::task::spawn_blocking`).
     pub fn terminate_guest_process_groups_best_effort(keys: &[String]) -> bool {
-        if !cfg!(target_os = "macos") || keys.is_empty() {
-            return false;
-        }
-        let (limactl_path, lima_home) = match (lima::resolve_lima_dir(), lima::resolve_lima_home())
-        {
-            (Ok(lima_dir), Ok(lima_home)) => (lima_dir.join("bin/limactl"), lima_home),
-            // No resolvable Lima installation means no VM, hence no guest
-            // processes to signal.
-            _ => return false,
-        };
-        if !lima::is_lima_instance_running(&limactl_path, &lima_home) {
-            return false;
-        }
-        for key in keys {
-            if let Err(e) = Self::terminate_guest_pgid(&limactl_path, &lima_home, key) {
-                tracing::debug!("In-VM guest group SIGTERM failed for '{key}': {e}");
-            }
-        }
-        true
+        signal_guest_process_groups_best_effort(keys, GuestSignal::Terminate)
     }
 
     /// Run `args` in the container runtime environment and capture its output.
@@ -1184,6 +1080,109 @@ impl Apptainer {
             },
         )
     }
+}
+
+/// The signal a stop or cancel path sends to the guest process group that the
+/// Lima wrapper recorded for a key (see [`lima::lima_guest_pgid_argv`]).
+#[derive(Clone, Copy)]
+pub(crate) enum GuestSignal {
+    /// A cooperative SIGTERM to the wrapped `apptainer` child. The pgid file
+    /// stays, so the force phase can still SIGKILL the same group if the
+    /// workload ignores SIGTERM.
+    Terminate,
+    /// A SIGKILL to the whole group, which also removes the pgid file.
+    Kill,
+}
+
+impl GuestSignal {
+    /// The guest-side argv that sends this signal to the group recorded at
+    /// `pgid_file`.
+    pub(crate) fn argv(self, pgid_file: &Path) -> Vec<String> {
+        match self {
+            GuestSignal::Terminate => lima::lima_terminate_pgid_argv(pgid_file),
+            GuestSignal::Kill => lima::lima_kill_pgid_argv(pgid_file),
+        }
+    }
+
+    /// How the debug line of a failed best-effort signal names it.
+    fn name(self) -> &'static str {
+        match self {
+            GuestSignal::Terminate => "SIGTERM",
+            GuestSignal::Kill => "kill",
+        }
+    }
+}
+
+/// The `limactl` binary and the LIMA_HOME of the peppy Lima VM, or `None` when
+/// no Lima installation resolves or its VM is not running. A VM that is not
+/// running has no guest processes left to signal, and the callers must never
+/// boot one, which a full [`Apptainer::new`] readiness preflight could do.
+fn running_lima() -> Option<(PathBuf, PathBuf)> {
+    let limactl_path = lima::resolve_lima_dir().ok()?.join("bin/limactl");
+    let lima_home = lima::resolve_lima_home().ok()?;
+    if !lima::is_lima_instance_running(&limactl_path, &lima_home) {
+        return None;
+    }
+    Some((limactl_path, lima_home))
+}
+
+/// Sends `signal` to the guest process group recorded for `key` via `limactl
+/// shell`. Shared by [`Apptainer::kill_guest_process_group`] (facade instance)
+/// and the best-effort batch forms (no facade).
+///
+/// Bounded: `limactl shell` reaches into the VM over SSH, which can hang on a
+/// wedged VM, and this runs on stop/teardown paths that must not block. On
+/// deadline expiry the `limactl` child is killed and a timeout-specific error
+/// returned.
+fn signal_guest_pgid(
+    limactl_path: &Path,
+    lima_home: &Path,
+    key: &str,
+    signal: GuestSignal,
+) -> Result<()> {
+    /// Generous upper bound for one in-VM `kill` round trip over `limactl shell`.
+    const SIGNAL_GUEST_PGID_TIMEOUT: Duration = Duration::from_secs(10);
+    /// Poll cadence while waiting for the `limactl` child to exit.
+    const SIGNAL_GUEST_PGID_POLL: Duration = Duration::from_millis(50);
+
+    let guest_pgid = lima::guest_pgid_path(key);
+    let mut child = lima::lima_shell_cmd(limactl_path, lima_home, lima::LIMA_INSTANCE)
+        .args(signal.argv(&guest_pgid))
+        .spawn()
+        .map_err(Error::from)?;
+    await_guest_kill(
+        &mut child,
+        &guest_pgid,
+        SIGNAL_GUEST_PGID_TIMEOUT,
+        SIGNAL_GUEST_PGID_POLL,
+        Instant::now,
+        std::thread::sleep,
+    )
+}
+
+/// Sends `signal` to the guest process group of each key, best effort, for
+/// node stop and daemon teardown. Returns `false` without signaling outside
+/// macOS (the host process-group signal already reaches the shared-namespace
+/// workload), when there are no keys, and when the Lima VM is not running (see
+/// [`running_lima`]). Otherwise signals every key and returns `true`. Failures
+/// are logged at debug level, never returned: a guest-signal problem must not
+/// block a stop.
+fn signal_guest_process_groups_best_effort(keys: &[String], signal: GuestSignal) -> bool {
+    if !cfg!(target_os = "macos") || keys.is_empty() {
+        return false;
+    }
+    let Some((limactl_path, lima_home)) = running_lima() else {
+        return false;
+    };
+    for key in keys {
+        if let Err(e) = signal_guest_pgid(&limactl_path, &lima_home, key, signal) {
+            tracing::debug!(
+                "In-VM guest group {} failed for '{key}': {e}",
+                signal.name()
+            );
+        }
+    }
+    true
 }
 
 /// Resolve a relative path to absolute by joining it onto the current working

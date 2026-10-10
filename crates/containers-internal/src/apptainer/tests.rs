@@ -2,7 +2,7 @@ use super::activity::{
     BuildActivity, BuildActivityProbe, ProcessCpu, build_cpu_time, parse_guest_activity,
     parse_ps_cputime, parse_ps_process_table,
 };
-use super::facade::{Apptainer, Backend, is_uri, prepare_scratch_dir};
+use super::facade::{Apptainer, Backend, GuestSignal, is_uri, prepare_scratch_dir};
 #[cfg(target_os = "linux")]
 use super::facade::{apparmor_profile_ref, check_setup_status, shell_escape_single_quoted};
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
@@ -2244,6 +2244,22 @@ fn guest_command_rejects_empty_args() {
         }
         other => panic!("expected ConfigurationError, got {other:?}"),
     }
+}
+
+/// Each guest signal sends the argv of its own script: a swap would SIGKILL a
+/// workload that the stop path means to ask to exit, or leave a group that a
+/// cancel means to kill running.
+#[test]
+fn each_guest_signal_sends_its_own_argv() {
+    let pgid_file = Path::new("/tmp/peppy/pgids/buildkey.pgid");
+    assert_eq!(
+        GuestSignal::Kill.argv(pgid_file),
+        super::lima::lima_kill_pgid_argv(pgid_file)
+    );
+    assert_eq!(
+        GuestSignal::Terminate.argv(pgid_file),
+        super::lima::lima_terminate_pgid_argv(pgid_file)
+    );
 }
 
 // ---------------------------------------------------------------------------
