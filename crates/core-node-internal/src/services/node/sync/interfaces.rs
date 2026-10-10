@@ -11,15 +11,6 @@ use generator::{ConsumedActionMessage, ContractOrigin, DeploymentInterface};
 use node_stack::NodeStack;
 use std::collections::{HashMap, HashSet};
 
-/// Collects consumed interfaces from a node config and resolves their message
-/// formats by looking up the exposed interfaces from dependency nodes via the
-/// caller-supplied resolver.
-///
-/// The `resolve` closure returns a [`config::node::NodeConfig`] for a given
-/// `(name, tag)` pair, or `None` if the dependency cannot be found. Callers
-/// usually wrap a [`NodeStack`] (see [`stack_resolver`]) but can also chain a
-/// peer map first to resolve sibling nodes that haven't been added to the
-/// stack yet; used by `node sync -a` for batch operations.
 /// The full peppygen interface set for one node, in one call: consumed
 /// interfaces from `depends_on`, contract-backed produced entries resolved
 /// through `manifest.implements` (coverage-checked, sha-pinned,
@@ -63,12 +54,11 @@ pub fn collect_all_deployment_interfaces(
 }
 
 /// The pairing slot link_ids of a manifest, participants and observers alike.
-/// Entries naming one
-/// are resolved by `collect_pairing_interfaces` against the pairing document
-/// and generated under `paired_topics/<link_id>/<topic>`, so both the consumed
-/// collector and the implements resolver must step over them: neither knows
-/// the pairing kind, and collecting an entry twice would either drop it
-/// silently or land it in the wrong module category.
+/// Entries naming one are resolved by `collect_pairing_interfaces` against the
+/// pairing document and generated under `paired_topics/<link_id>/<topic>`, so
+/// both the consumed collector and the implements resolver must step over
+/// them: neither knows the pairing kind, and collecting an entry twice would
+/// either drop it silently or land it in the wrong module category.
 fn pairing_slot_link_ids(manifest: &config::node::Manifest) -> HashSet<&str> {
     manifest
         .depends_on
@@ -93,6 +83,15 @@ struct ResolvedDependencies {
     contract_docs: HashMap<String, daemon_config::contract::PeppyContract>,
 }
 
+/// Collects consumed interfaces from a node config and resolves their message
+/// formats by looking up the exposed interfaces from dependency nodes via the
+/// caller-supplied resolver.
+///
+/// The `resolve` closure returns a [`config::node::NodeConfig`] for a given
+/// `(name, tag)` pair, or `None` if the dependency cannot be found. Callers
+/// wrap a [`NodeStack`] (see [`stack_resolver`]), or layer the configs
+/// materialized from the repository cache under it (see
+/// [`stack_then_repo_resolver`]).
 fn collect_consumed_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
@@ -565,8 +564,8 @@ fn resolve_implements(
 
         // `None`: no member of this kind by this name. `Some(Err)`: the
         // member exists but does not admit the entry's `refine` block.
-        // Each arm is the same three steps — select the member by name,
-        // apply the entry's refinement, hand the result to the generator —
+        // Each arm is the same three steps (select the member by name,
+        // apply the entry's refinement, hand the result to the generator)
         // over a different section, refinement type, and payload.
         macro_rules! resolve {
             ($members:expr, $entry:expr, $build:path) => {
@@ -711,8 +710,8 @@ fn member_kind(doc: &daemon_config::contract::PeppyContract, name: &str) -> Opti
 
 /// Convenience helper that builds a resolver closure backed by a [`NodeStack`].
 ///
-/// Use this for callers that don't have any local peers to layer on top of
-/// the daemon's persistent stack, i.e. `node add` and `auto_sync_if_missing`.
+/// Use this for callers that resolve against the stack alone, such as
+/// `auto_sync_if_missing`.
 pub fn stack_resolver(
     node_stack: &NodeStack,
 ) -> impl Fn(&str, &str) -> Option<config::node::NodeConfig> + '_ {
@@ -1043,8 +1042,7 @@ mod implements_tests {
     }
 
     /// Services and actions resolve through the same entry-driven path with
-    /// origins stamped, including the (not-yet-used-in-production)
-    /// contract-declared action shape.
+    /// origins stamped, including the contract-declared action shape.
     #[test]
     fn resolves_service_and_action_members_with_origin() {
         const ARM_BODY: &str = r#"{
@@ -1581,8 +1579,8 @@ mod implements_tests {
         assert_eq!(
             out.len(),
             1,
-            "expected exactly one ConsumedService, got {} entries (pre-fix this was 0: \
-             the service was silently dropped)",
+            "expected exactly one ConsumedService, got {} entries (a response-only \
+             service must not be dropped)",
             out.len()
         );
         match out[0].interface() {
@@ -1718,10 +1716,10 @@ mod implements_tests {
         assert_eq!(out.len(), 4, "no entry may be collected twice: {out:?}");
     }
 
-    /// A consumed entry naming no member of its contract used to resolve to
-    /// `None` and get dropped, so a typo produced a missing module and a
-    /// successful sync. Nothing upstream sees contract link_ids, so this is
-    /// the only place it can be reported.
+    /// A consumed entry naming no member of its contract is refused, not
+    /// dropped, so a typo cannot produce a missing module and a successful
+    /// sync. Nothing upstream sees contract link_ids, so this is the only
+    /// place it can be reported.
     #[test]
     fn consumed_entry_absent_from_contract_is_rejected() {
         let tmp = TempDir::new().unwrap();
@@ -1881,8 +1879,7 @@ mod implements_tests {
     /// consuming a contract-declared action must resolve every action message
     /// format (goal request/response, feedback, result) from the contract
     /// document, and carry a contract-origin dependency so codegen addresses
-    /// the producer as a contract. Consumed topics and services already had
-    /// contract-slot coverage here; actions had none.
+    /// the producer as a contract.
     #[test]
     fn consumed_action_via_contract_resolves() {
         let tmp = TempDir::new().unwrap();

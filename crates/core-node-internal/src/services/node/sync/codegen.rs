@@ -67,8 +67,8 @@ pub(super) fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
             // Directory was already removed by another process, that's fine
         }
         Err(e) => {
-            // Log warning but proceed - generator will create directories as needed.
-            // This handles edge cases like permission issues or concurrent renames.
+            // Proceed: the generator creates the directories it needs. This
+            // handles edge cases like permission issues or concurrent renames.
             debug!(
                 "Failed to move old .peppy directory: {}, proceeding with generation",
                 e

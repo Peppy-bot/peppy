@@ -160,7 +160,7 @@ pub(crate) struct DependencyLookupEntry {
 /// Builds a lookup from `link_id` → [`DependencyLookupEntry`] using the
 /// node's `depends_on.nodes` and `depends_on.contracts`. Parse-time
 /// validation has already guaranteed uniqueness of `link_id` across both
-/// lists, so insertion-order is preserved.
+/// lists, so no entry overwrites another.
 pub(super) fn build_dependency_lookup(
     manifest: &config::node::Manifest,
 ) -> std::collections::HashMap<String, DependencyLookupEntry> {

@@ -1,16 +1,15 @@
 //! Regression tests for `node_add` with `manifest.implements`.
 //!
 //! `node_add` copies the source to a temp working dir and *regenerates*
-//! peppygen there before handing off to `node_build`. An earlier version
-//! of the add path called only `collect_consumed_interfaces` (which
-//! handles `depends_on`) and skipped the produced-side contract resolution, so the
-//! generator never saw the contract-backed's topics/services. The
-//! resulting peppygen had a flat layout (`emitted_topics.rs` was empty)
-//! and any node code importing nested paths like
-//! `peppygen::emitted_topics::<link_id>::<topic>` failed to compile
-//! inside the container. `sync` did this correctly, which is why a sync
-//! followed by build was enough to mask the bug on a developer's
-//! workstation but the daemon-driven path produced broken artifacts.
+//! peppygen there before handing off to `node_build`. That regeneration
+//! must resolve the produced-side contract entries of `manifest.implements`
+//! as well as `depends_on`. Without them the generator never sees the
+//! contract-backed topics/services, the resulting peppygen has a flat
+//! layout (`emitted_topics.rs` is empty), and node code importing nested
+//! paths like `peppygen::emitted_topics::<link_id>::<topic>` fails to
+//! compile inside the container. A sync followed by a build on a
+//! developer's workstation does not go through this path, so it cannot
+//! catch such a gap.
 //!
 //! These tests assert against the daemon-staged working dir directly
 //! (via `pending_working_dir`) so they catch a regression in the add
@@ -55,10 +54,9 @@ const NODE_BODY: &str = r#"{
 
 /// `node_add` must resolve the contract-backed entries and pass the
 /// resolved topics/services to the generator so the staged peppygen nests
-/// artifacts under `{category}/{link_id}/`. Before the
-/// fix, the working dir's `emitted_topics.rs` and
-/// `exposed_services.rs` were empty for a node whose only contributions
-/// came through an implemented contract.
+/// artifacts under `{category}/{link_id}/`. For a node whose only
+/// contributions come through an implemented contract, the working dir's
+/// `emitted_topics.rs` and `exposed_services.rs` are otherwise empty.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_add_generates_contract_backed_modules_in_working_dir() {
     let started = start_core_node_with_mock_messenger().await;
