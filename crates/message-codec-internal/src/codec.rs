@@ -45,12 +45,6 @@ pub struct CodecError {
 #[error("{0}")]
 pub struct ConversionError(String);
 
-impl From<ConversionError> for String {
-    fn from(error: ConversionError) -> Self {
-        error.0
-    }
-}
-
 impl From<String> for ConversionError {
     fn from(message: String) -> Self {
         Self(message)
@@ -81,15 +75,7 @@ impl MessageCodec {
                 schema_name: schema_name.to_string(),
                 source: Box::new(source),
             })?;
-        Ok(Self::from_layout(layout))
-    }
-
-    pub fn from_layout(layout: StructLayout) -> Self {
-        Self { layout }
-    }
-
-    pub fn layout(&self) -> &StructLayout {
-        &self.layout
+        Ok(Self { layout })
     }
 
     /// Encodes a JSON object into a framed message.
