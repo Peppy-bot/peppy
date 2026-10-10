@@ -364,7 +364,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         mounts,
         watchers_to_register,
         &placements,
-        false,
+        federated::SliceBegin::Replace,
     )
     .await
     {

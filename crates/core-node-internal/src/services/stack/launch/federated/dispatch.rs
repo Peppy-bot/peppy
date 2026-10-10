@@ -329,8 +329,18 @@ impl SliceBeginRefusal {
     }
 }
 
-/// Tells every participant to replace its stack slice, in parallel, handing
-/// each the bind sources its slice needs.
+/// What a participant does with the slice of this launch it holds when a
+/// stack change begins its slice.
+#[derive(Clone, Copy)]
+pub(in crate::services::stack) enum SliceBegin {
+    /// A launch replaces whatever slice the participant holds.
+    Replace,
+    /// A join adds to the slice of this launch the participant holds.
+    Append,
+}
+
+/// Tells every participant to replace or extend its stack slice, as `slice`
+/// says, in parallel, handing each the bind sources its slice needs.
 ///
 /// This is the first destructive step of a federated launch on any machine, and
 /// it happens only once every participant is reserved. A refusal here is
@@ -349,9 +359,7 @@ pub(in crate::services::stack) async fn begin_participant_slices(
     mount_sources_by_machine: &HashMap<String, Vec<String>>,
     watchers: &LifecycleWatchers,
     placements: &daemon_config::launcher::Placements,
-    // A join adds to the slice of this launch each participant holds; a
-    // launch replaces whatever slice it holds.
-    append: bool,
+    slice: SliceBegin,
 ) -> std::result::Result<(), SliceBeginRefusal> {
     set_local_watchers(ctx, watchers, placements);
     ask_participant_slices(ctx, participants, |core_node| {
@@ -362,7 +370,7 @@ pub(in crate::services::stack) async fn begin_participant_slices(
                 .cloned()
                 .unwrap_or_default(),
         );
-        request.append = append;
+        request.append = matches!(slice, SliceBegin::Append);
         request.lifecycle_watchers = watchers_hosted_by(watchers, placements, core_node);
         request
     })

@@ -40,8 +40,8 @@
 mod dispatch;
 
 pub(in crate::services::stack) use dispatch::{
-    RemoteGoalFailure, begin_participant_slices, clear_participant_slices, run_remote_goal,
-    set_participant_watchers,
+    RemoteGoalFailure, SliceBegin, begin_participant_slices, clear_participant_slices,
+    run_remote_goal, set_participant_watchers,
 };
 
 use crate::services::stack::action::StackChangeContext;

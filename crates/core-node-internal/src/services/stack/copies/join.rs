@@ -229,7 +229,7 @@ async fn join_inner(
             &change.mounts,
             &watchers,
             &placements,
-            true,
+            federated::SliceBegin::Append,
         )
         .await
         .map_err(|refusal| {
