@@ -132,9 +132,7 @@ pub(crate) fn read_producer(
 ) -> Result<config::runtime::ProducerRef> {
     let segment = |field, name: &str| -> Result<String> {
         let text = read_text(field, codec, name)?;
-        pmi::Segment::try_from(text.as_str()).map_err(|e| {
-            crate::error::Error::Deserialization(format!("{codec} field `{name}`: {e}"))
-        })?;
+        pmi::Segment::try_from(text.as_str()).map_err(|e| field_error(codec, name, e))?;
         Ok(text)
     };
     Ok(config::runtime::ProducerRef::new(
@@ -150,9 +148,7 @@ pub(crate) fn read_link_id(
     name: &str,
 ) -> Result<String> {
     let text = read_text(field, codec, name)?;
-    pmi::Segment::try_link_id(&text).map_err(|e| {
-        crate::error::Error::Deserialization(format!("{codec} field `{name}`: {e}"))
-    })?;
+    pmi::Segment::try_link_id(&text).map_err(|e| field_error(codec, name, e))?;
     Ok(text)
 }
 
@@ -165,12 +161,19 @@ pub(crate) fn read_text(
     name: &str,
 ) -> Result<String> {
     field
-        .map_err(|e| crate::error::Error::Deserialization(format!("{codec} field `{name}`: {e}")))?
+        .map_err(|e| field_error(codec, name, e))?
         .to_str()
         .map(str::to_owned)
         .map_err(|e| {
             crate::error::Error::Deserialization(format!("{codec} field `{name}` not UTF-8: {e}"))
         })
+}
+
+/// The refusal of a delivery whose field `name` of `codec` fails to read or
+/// breaks a wire rule. Every framework service codec labels its field errors
+/// this way.
+fn field_error(codec: &str, name: &str, error: impl std::fmt::Display) -> crate::error::Error {
+    crate::error::Error::Deserialization(format!("{codec} field `{name}`: {error}"))
 }
 
 #[cfg(test)]
