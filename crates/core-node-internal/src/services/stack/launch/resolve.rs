@@ -9,7 +9,7 @@ use core_node_api::encoding::{LaunchFeedbackStep, LaunchGoal, LauncherOrigin, Pl
 use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
 use daemon_config::repository::{DeploymentRoot, PinnedItem};
-use parking_lot::Mutex as StdMutex;
+use parking_lot::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -592,7 +592,7 @@ pub(in crate::services::stack) async fn mint_doc_pins(
     // caches, on one blocking thread: both are read and parsed per load, and
     // a launch with N deployments otherwise paid N of each, sequentially, on
     // the critical path.
-    let collected = Arc::new(StdMutex::new(Vec::<String>::new()));
+    let collected = Arc::new(Mutex::new(Vec::<String>::new()));
     let sets: Vec<Vec<config::node::Manifest>> = planned
         .iter()
         .map(|item| item.pin_manifests.clone())
