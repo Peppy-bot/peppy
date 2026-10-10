@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -64,14 +65,6 @@ def test_get_commit_subjects_skips_blank_lines() -> None:
         assert get_commit_subjects("v0.1.0") == ["a", "b"]
 
 
-def test_get_commit_subjects_raises_on_git_failure() -> None:
-    with patch(
-        "functions.repo.subprocess.run", return_value=_mock_git("", returncode=128)
-    ):
-        with pytest.raises(ReleaseError, match="failed to read commit log"):
-            get_commit_subjects("v9.9.9")
-
-
 # --- resolving and comparing commits ---
 
 
@@ -86,14 +79,6 @@ def test_get_commit_resolves_revision_to_sha() -> None:
         "--verify",
         "origin/dev^{commit}",
     ]
-
-
-def test_get_commit_raises_on_unknown_revision() -> None:
-    with patch(
-        "functions.repo.subprocess.run", return_value=_mock_git("", returncode=128)
-    ):
-        with pytest.raises(ReleaseError, match="could not resolve 'origin/nope'"):
-            get_commit("origin/nope")
 
 
 def test_find_commit_resolves_an_abbreviated_sha() -> None:
@@ -139,14 +124,6 @@ def test_get_parents_of_a_root_commit_is_empty() -> None:
         assert get_parents("aaa") == ()
 
 
-def test_get_parents_raises_on_an_unknown_commit() -> None:
-    with patch(
-        "functions.repo.subprocess.run", return_value=_mock_git("", returncode=128)
-    ):
-        with pytest.raises(ReleaseError, match="failed to read the parents of 'nope'"):
-            get_parents("nope")
-
-
 def test_get_changed_paths_lists_every_path_without_renames() -> None:
     # NUL-separated, so a path is read back whole whatever characters it holds.
     with patch(
@@ -165,14 +142,6 @@ def test_get_changed_paths_lists_every_path_without_renames() -> None:
     ]
 
 
-def test_get_changed_paths_raises_when_git_errors() -> None:
-    with patch(
-        "functions.repo.subprocess.run", return_value=_mock_git("", returncode=128)
-    ):
-        with pytest.raises(ReleaseError, match="failed to list the paths changed"):
-            get_changed_paths("aaa", "bbb")
-
-
 def test_is_ancestor_reads_exit_code() -> None:
     with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
         assert is_ancestor("old", "new") is True
@@ -180,13 +149,6 @@ def test_is_ancestor_reads_exit_code() -> None:
 
     with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
         assert is_ancestor("side", "new") is False
-
-
-def test_is_ancestor_raises_when_git_errors() -> None:
-    # An unreadable revision exits 128; it must not be reported as "not an ancestor".
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 128)):
-        with pytest.raises(ReleaseError, match="failed to compare 'old' with 'new'"):
-            is_ancestor("old", "new")
 
 
 # --- fetching, committing, and pushing ---
@@ -204,12 +166,6 @@ def test_fetch_remote_branches_uses_explicit_forced_refspecs() -> None:
     ]
 
 
-def test_fetch_remote_branches_raises_on_failure() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
-        with pytest.raises(ReleaseError, match="failed to fetch dev, main"):
-            fetch_remote_branches("origin", ("dev", "main"))
-
-
 def test_fetch_tag_fetches_only_that_tag() -> None:
     with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
         fetch_tag("origin", "v0.2.0")
@@ -220,12 +176,6 @@ def test_fetch_tag_fetches_only_that_tag() -> None:
         "origin",
         "refs/tags/v0.2.0:refs/tags/v0.2.0",
     ]
-
-
-def test_fetch_tag_raises_on_failure() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
-        with pytest.raises(ReleaseError, match="failed to fetch tag 'v0.2.0'"):
-            fetch_tag("origin", "v0.2.0")
 
 
 def test_has_changes_in_paths_reports_dirty_and_clean() -> None:
@@ -339,12 +289,6 @@ def test_push_branch_pushes_a_commit() -> None:
     ]
 
 
-def test_push_branch_raises_when_rejected() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
-        with pytest.raises(ReleaseError, match="failed to push 'dev' to 'origin/main'"):
-            push_branch("origin", "dev", "main")
-
-
 # --- commits that change a path ---
 
 
@@ -371,12 +315,6 @@ def test_get_commits_changing_is_empty_when_no_commit_changes_the_path() -> None
         assert get_commits_changing("base", "dev", Path("docs/v1.html")) == ()
 
 
-def test_get_commits_changing_raises_when_git_errors() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 128)):
-        with pytest.raises(ReleaseError, match="that change 'docs/v1.html': boom"):
-            get_commits_changing("base", "dev", Path("docs/v1.html"))
-
-
 # --- merges ---
 
 
@@ -390,12 +328,6 @@ def test_fast_forward_current_branch_refuses_anything_else() -> None:
         "--quiet",
         "origin/dev",
     ]
-
-
-def test_fast_forward_current_branch_raises_on_failure() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 128)):
-        with pytest.raises(ReleaseError, match="failed to fast-forward to 'origin/dev'"):
-            fast_forward_current_branch("origin/dev")
 
 
 def test_merge_into_current_branch_fast_forwards_when_it_can() -> None:
@@ -459,19 +391,99 @@ def test_switch_to_new_branch_resets_an_existing_branch() -> None:
     assert run.call_args.args[0] == ["git", "switch", "-C", "auto/docs-update-abc"]
 
 
-def test_switch_to_new_branch_raises_when_checked_out_elsewhere() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
-        with pytest.raises(ReleaseError, match="failed to switch to a new branch"):
-            switch_to_new_branch("auto/docs-update-abc")
-
-
 def test_switch_branch_checks_out_an_existing_branch() -> None:
     with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
         switch_branch("dev")
     assert run.call_args.args[0] == ["git", "switch", "dev"]
 
 
-def test_switch_branch_raises_on_failure() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
-        with pytest.raises(ReleaseError, match="failed to switch back to 'dev'"):
-            switch_branch("dev")
+# --- a failed git command ---
+
+
+@pytest.mark.parametrize(
+    ("call", "returncode", "message"),
+    [
+        pytest.param(
+            lambda: get_commit_subjects("v9.9.9"),
+            128,
+            "failed to read commit log",
+            id="get_commit_subjects",
+        ),
+        pytest.param(
+            lambda: get_commit("origin/nope"),
+            128,
+            "could not resolve 'origin/nope'",
+            id="get_commit-unknown-revision",
+        ),
+        pytest.param(
+            lambda: get_parents("nope"),
+            128,
+            "failed to read the parents of 'nope'",
+            id="get_parents-unknown-commit",
+        ),
+        pytest.param(
+            lambda: get_changed_paths("aaa", "bbb"),
+            128,
+            "failed to list the paths changed",
+            id="get_changed_paths",
+        ),
+        # An unreadable revision exits 128; it must not be reported as "not
+        # an ancestor".
+        pytest.param(
+            lambda: is_ancestor("old", "new"),
+            128,
+            "failed to compare 'old' with 'new'",
+            id="is_ancestor",
+        ),
+        pytest.param(
+            lambda: fetch_remote_branches("origin", ("dev", "main")),
+            1,
+            "failed to fetch dev, main",
+            id="fetch_remote_branches",
+        ),
+        pytest.param(
+            lambda: fetch_tag("origin", "v0.2.0"),
+            1,
+            "failed to fetch tag 'v0.2.0'",
+            id="fetch_tag",
+        ),
+        pytest.param(
+            lambda: push_branch("origin", "dev", "main"),
+            1,
+            "failed to push 'dev' to 'origin/main'",
+            id="push_branch-rejected",
+        ),
+        pytest.param(
+            lambda: get_commits_changing("base", "dev", Path("docs/v1.html")),
+            128,
+            "that change 'docs/v1.html': boom",
+            id="get_commits_changing",
+        ),
+        pytest.param(
+            lambda: fast_forward_current_branch("origin/dev"),
+            128,
+            "failed to fast-forward to 'origin/dev'",
+            id="fast_forward_current_branch",
+        ),
+        pytest.param(
+            lambda: switch_to_new_branch("auto/docs-update-abc"),
+            1,
+            "failed to switch to a new branch",
+            id="switch_to_new_branch-checked-out-elsewhere",
+        ),
+        pytest.param(
+            lambda: switch_branch("dev"),
+            1,
+            "failed to switch back to 'dev'",
+            id="switch_branch",
+        ),
+    ],
+)
+def test_a_failed_git_command_raises_a_release_error(
+    call: Callable[[], object], returncode: int, message: str
+) -> None:
+    with (
+        patch("functions.repo.subprocess.run", return_value=_mock_git("", returncode)),
+        pytest.raises(ReleaseError, match=message),
+    ):
+        call()
