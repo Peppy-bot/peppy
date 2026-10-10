@@ -1,6 +1,7 @@
 use super::super::error::{Error, Result};
 use super::facade::wait_for_child_bounded;
 use config::node::is_blocked_mount_source;
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -994,8 +995,10 @@ fn plan_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<MountPlan> {
         true
     });
 
-    // Phase 2: Add new mounts (skip blocked system paths).
-    let existing: Vec<String> = mounts_seq
+    // Phase 2: Add new mounts (skip blocked system paths). A path joins the
+    // registered set as soon as it is added, so a path that `paths` names
+    // twice is written once: Lima refuses repeated mount locations.
+    let mut registered: HashSet<String> = mounts_seq
         .iter()
         .filter_map(|entry| {
             entry
@@ -1013,19 +1016,20 @@ fn plan_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<MountPlan> {
             );
             continue;
         }
-        if !existing.iter().any(|loc| loc == *path) {
-            let mut mount_entry = serde_yaml::Mapping::new();
-            mount_entry.insert(
-                serde_yaml::Value::String("location".to_string()),
-                serde_yaml::Value::String(path.to_string()),
-            );
-            mount_entry.insert(
-                serde_yaml::Value::String("writable".to_string()),
-                serde_yaml::Value::Bool(true),
-            );
-            mounts_seq.push(serde_yaml::Value::Mapping(mount_entry));
-            added.push((*path).to_string());
+        if !registered.insert((*path).to_string()) {
+            continue;
         }
+        let mut mount_entry = serde_yaml::Mapping::new();
+        mount_entry.insert(
+            serde_yaml::Value::String("location".to_string()),
+            serde_yaml::Value::String(path.to_string()),
+        );
+        mount_entry.insert(
+            serde_yaml::Value::String("writable".to_string()),
+            serde_yaml::Value::Bool(true),
+        );
+        mounts_seq.push(serde_yaml::Value::Mapping(mount_entry));
+        added.push((*path).to_string());
     }
 
     Ok(MountPlan {
@@ -1137,6 +1141,35 @@ mod tests {
         assert!(
             ensure_extra_mounts(&config_path, &["/data/new_mount"]).expect("should succeed"),
             "the write must agree with the answer the dry run gave"
+        );
+    }
+
+    /// Two binds from the same host directory hand the same path in twice.
+    /// Lima refuses a config whose mounts repeat a location, so the VM
+    /// restart that follows the write would fail.
+    #[test]
+    fn ensure_extra_mounts_registers_a_path_given_twice_once() {
+        let dir = tempdir().expect("create temp dir");
+        let config_path = dir.path().join("lima.yaml");
+        let initial = "mounts:\n- location: \"~\"\n  writable: true\n";
+        fs::write(&config_path, initial).expect("write initial config");
+
+        let modified = ensure_extra_mounts(&config_path, &["/data/twice", "/data/twice"])
+            .expect("should succeed");
+        assert!(modified, "config should have been modified");
+
+        let content = fs::read_to_string(&config_path).expect("read config");
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&content).expect("parse result config");
+        let entries_for_path = parsed["mounts"]
+            .as_sequence()
+            .expect("mounts is a sequence")
+            .iter()
+            .filter(|m| m["location"].as_str() == Some("/data/twice"))
+            .count();
+        assert_eq!(
+            entries_for_path, 1,
+            "the path should be registered once, got:\n{content}"
         );
     }
 
