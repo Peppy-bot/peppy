@@ -839,6 +839,12 @@ impl Daemon {
         self.peppy(&cmd).await
     }
 
+    /// This daemon's `stack list --json` report; `operation` names the step in
+    /// a failure.
+    async fn stack_list_json(&self, operation: &str) -> String {
+        require_success(self.peppy(&["stack", "list", "--json"]).await, operation)
+    }
+
     async fn wait_for_stack(&self, predicate: impl Fn(&str) -> bool) -> String {
         let started = Instant::now();
         let mut last = String::new();
@@ -3434,10 +3440,10 @@ async fn a_federated_build_builds_each_node_where_the_launch_places_it() {
         build.text
     );
 
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "listing the built federation",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("listing the built federation")
+        .await;
     assert_eq!(
         slice_nodes(&listed, &federation.robot_core_node),
         BTreeMap::from([(
@@ -3549,10 +3555,10 @@ async fn a_peer_build_that_fails_fails_the_build_and_clears_its_slice() {
         build.text
     );
 
-    let listed = require_success(
-        federation.cloud.peppy(&["stack", "list", "--json"]).await,
-        "listing the peer after the failed build",
-    );
+    let listed = federation
+        .cloud
+        .stack_list_json("listing the peer after the failed build")
+        .await;
     assert!(
         slice_nodes(&listed, &federation.cloud_core_node).is_empty(),
         "the peer's slice is cleared:\n{listed}"
@@ -3783,10 +3789,10 @@ async fn copies_join_and_remove_with_an_offline_neighbor() {
         "{}",
         removed.text
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the copy on the offline host leaves the record",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the copy on the offline host leaves the record")
+        .await;
     let coordinator = coordinator_section(&listed, &federation.robot_core_node);
     assert!(copy_names(&coordinator).is_empty(), "{listed}");
     let instances: Vec<_> = coordinator["stack"]["nodes"]
@@ -3819,10 +3825,12 @@ async fn a_join_refused_by_a_machine_with_its_own_stack_leaves_that_stack_alone(
     );
     let own_launch =
         |listed: &str| coordinator_section(listed, &federation.cloud_core_node)["launch"].clone();
-    let before = own_launch(&require_success(
-        federation.cloud.peppy(&["stack", "list", "--json"]).await,
-        "cloud's launch before the refused join",
-    ));
+    let before = own_launch(
+        &federation
+            .cloud
+            .stack_list_json("cloud's launch before the refused join")
+            .await,
+    );
     assert_eq!(before["coordinator_core_node"], federation.cloud_core_node);
     require_success(
         federation
@@ -3852,10 +3860,12 @@ async fn a_join_refused_by_a_machine_with_its_own_stack_leaves_that_stack_alone(
         "{}",
         refused.text
     );
-    let after = own_launch(&require_success(
-        federation.cloud.peppy(&["stack", "list", "--json"]).await,
-        "cloud's launch after the refused join",
-    ));
+    let after = own_launch(
+        &federation
+            .cloud
+            .stack_list_json("cloud's launch after the refused join")
+            .await,
+    );
     assert_eq!(
         after, before,
         "the refused join must leave cloud's launch as it was"
@@ -3919,10 +3929,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
         !remote.contains("uvc_camera_python_mock"),
         "the peer keeps no node the failed join added:\n{remote}"
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata",
-    );
+    let listed = federation.robot.stack_list_json("copy metadata").await;
     assert!(!listed.contains("\"failed\""), "{listed}");
     clear_planted_instance_dir(&federation.cloud, "failed_cam_inst").await;
     require_success(
@@ -3990,10 +3997,7 @@ async fn a_join_whose_peer_work_outlives_its_deadline_leaves_nothing_on_the_peer
         !remote.contains("uvc_camera_python_mock"),
         "the peer keeps no node the expired join added:\n{remote}"
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata",
-    );
+    let listed = federation.robot.stack_list_json("copy metadata").await;
     assert!(
         copy_names(&coordinator_section(&listed, &federation.robot_core_node)).is_empty(),
         "{listed}"
@@ -4156,10 +4160,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
             .await,
         "rejoin remote bravo",
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata",
-    );
+    let listed = federation.robot.stack_list_json("copy metadata").await;
     assert_eq!(
         copy_names(&coordinator_section(&listed, &federation.robot_core_node)),
         ["alpha", "bravo", "charlie"]
@@ -4974,10 +4975,10 @@ async fn copies_exchange_topics_services_and_actions_only_within_themselves() {
     let mut retired: Vec<String> = Vec::new();
     exercise_gated_round(&federation, &mut stations, LAUNCHED_STATION, &retired).await;
 
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata before the removal",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("copy metadata before the removal")
+        .await;
     let before = copy_instances(&coordinator_section(&listed, &federation.robot_core_node));
     require_success(
         federation
@@ -4986,10 +4987,10 @@ async fn copies_exchange_topics_services_and_actions_only_within_themselves() {
             .await,
         "remove the copy the test rejoins",
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata after the removal",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("copy metadata after the removal")
+        .await;
     assert!(
         !copy_names(&coordinator_section(&listed, &federation.robot_core_node))
             .contains(&REJOINED_STATION.to_owned()),
@@ -5003,10 +5004,10 @@ async fn copies_exchange_topics_services_and_actions_only_within_themselves() {
     retired.push(rejoining.label());
     rejoining.rejoined();
     join_station(&federation, rejoining).await;
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata after the rejoin",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("copy metadata after the rejoin")
+        .await;
     let after = copy_instances(&coordinator_section(&listed, &federation.robot_core_node));
     for station in stations.iter().filter(|s| s.name != REJOINED_STATION) {
         let copy = station.name;
@@ -5491,10 +5492,10 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
             recorded_bindings(&coordinator_section(listed, cloud), PEER_GATE, "commander"),
         )
     };
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the gates before any copy",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the gates before any copy")
+        .await;
     assert_eq!(gates(&listed), (Vec::new(), Vec::new()), "{listed}");
 
     require_delivered(
@@ -5511,10 +5512,7 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
             .await,
         "join a station on the coordinator",
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the grown gates",
-    );
+    let listed = federation.robot.stack_list_json("the grown gates").await;
     let grown = vec![
         format!("alpha_commander_inst@{cloud} [copy alpha/commander_inst]"),
         format!("bravo_commander_inst@{robot} [copy bravo/commander_inst]"),
@@ -5540,10 +5538,7 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
         federation.robot.peppy(&["stack", "remove", "alpha"]).await,
         "remove the peer's station",
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the shrunken gates",
-    );
+    let listed = federation.robot.stack_list_json("the shrunken gates").await;
     let shrunk = vec![format!(
         "bravo_commander_inst@{robot} [copy bravo/commander_inst]"
     )];
@@ -5556,10 +5551,10 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
             .await,
         "reset the federation",
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the reset coordinator",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the reset coordinator")
+        .await;
     assert!(
         copy_names(&coordinator_section(&listed, robot)).is_empty(),
         "{listed}"
@@ -5751,10 +5746,10 @@ async fn a_join_growing_a_set_whose_instance_is_gone_is_refused_and_changes_noth
         refused.text
     );
 
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the coordinator after the refused join",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the coordinator after the refused join")
+        .await;
     let coordinator = coordinator_section(&listed, robot);
     assert!(copy_names(&coordinator).is_empty(), "{listed}");
     assert!(
@@ -5812,10 +5807,10 @@ async fn a_set_on_an_offline_machine_refuses_a_join_and_stays_on_removal() {
         "{}",
         refused.text
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the coordinator after the refused join",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the coordinator after the refused join")
+        .await;
     let coordinator = coordinator_section(&listed, robot);
     assert_eq!(copy_names(&coordinator), ["alpha"], "{listed}");
     assert_eq!(
@@ -5836,10 +5831,10 @@ async fn a_set_on_an_offline_machine_refuses_a_join_and_stays_on_removal() {
         "{}",
         removed.text
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the coordinator after the removal",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the coordinator after the removal")
+        .await;
     let coordinator = coordinator_section(&listed, robot);
     assert!(copy_names(&coordinator).is_empty(), "{listed}");
     assert!(
