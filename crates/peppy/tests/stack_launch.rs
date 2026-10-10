@@ -110,6 +110,22 @@ fn expect_runtime_config(
     })
 }
 
+/// Ends a test's instances once nothing reads them any more. Dropping
+/// `instances` first ends every keep-alive, so each Stop finds an
+/// already-exited process instead of waiting out the daemon's force-kill
+/// grace. A failed Stop is ignored: this is teardown.
+fn end_instances(instances: InstanceLifetime, ctx: &Arc<AppContext>, instance_ids: &[&str]) {
+    drop(instances);
+    for instance_id in instance_ids {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(ctx);
+    }
+}
+
 /// Stages a checked-in hub fixture node into a temp nodes directory, ready for
 /// [`register_repo_caches`].
 ///
@@ -768,18 +784,12 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     let [producer_config, consumer_config] =
         read_runtime_config_dumps([&producer_dump, &consumer_dump]).await;
 
-    // The dumps are captured, so nothing below needs these instances. Ending
-    // the keep-alive first lets each Stop observe an already-exited process
-    // instead of waiting out the daemon's force-kill grace.
-    drop(instances);
-    for instance_id in [consumer_instance_id, producer_instance_id] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    // The dumps are captured, so nothing below needs these instances.
+    end_instances(
+        instances,
+        &ctx,
+        &[consumer_instance_id, producer_instance_id],
+    );
 
     let producer_config = expect_runtime_config(producer_config, "producer", &producer_dump);
     assert_eq!(
@@ -913,18 +923,12 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
 
     let [consumer_config] = read_runtime_config_dumps([&consumer_dump]).await;
 
-    // The dumps are captured, so nothing below needs these instances. Ending
-    // the keep-alive first lets each Stop observe an already-exited process
-    // instead of waiting out the daemon's force-kill grace three times over.
-    drop(instances);
-    for instance_id in [consumer_instance_id, front_instance_id, rear_instance_id] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    // The dumps are captured, so nothing below needs these instances.
+    end_instances(
+        instances,
+        &ctx,
+        &[consumer_instance_id, front_instance_id, rear_instance_id],
+    );
 
     let consumer_config = expect_runtime_config(consumer_config, "consumer", &consumer_dump);
     let expected = config::runtime::BoundProducers::try_from(vec![
@@ -1314,18 +1318,12 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
 
     let [consumer_config] = read_runtime_config_dumps([&consumer_dump]).await;
 
-    // The dumps are captured, so nothing below needs these instances. Ending
-    // the keep-alive first lets each Stop observe an already-exited process
-    // instead of waiting out the daemon's force-kill grace.
-    drop(instances);
-    for instance_id in [consumer_instance_id, producer_instance_id] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    // The dumps are captured, so nothing below needs these instances.
+    end_instances(
+        instances,
+        &ctx,
+        &[consumer_instance_id, producer_instance_id],
+    );
 
     let consumer_config = expect_runtime_config(consumer_config, "consumer", &consumer_dump);
     assert_eq!(
@@ -1770,18 +1768,8 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     let [controller_config, arm_config] =
         read_runtime_config_dumps([&controller_dump, &arm_dump]).await;
 
-    // The dumps are captured, so nothing below needs these instances. Ending
-    // the keep-alive first lets each Stop observe an already-exited process
-    // instead of waiting out the daemon's force-kill grace.
-    drop(instances);
-    for instance_id in [controller_instance_id, arm_instance_id] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    // The dumps are captured, so nothing below needs these instances.
+    end_instances(instances, &ctx, &[controller_instance_id, arm_instance_id]);
 
     let controller_config =
         expect_runtime_config(controller_config, "arm_controller", &controller_dump);
@@ -1960,15 +1948,11 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     let [bound_config, vacant_config] =
         read_runtime_config_dumps([&bound_dump, &vacant_dump]).await;
 
-    drop(instances);
-    for instance_id in [bound_instance_id, vacant_instance_id, producer_instance_id] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    end_instances(
+        instances,
+        &ctx,
+        &[bound_instance_id, vacant_instance_id, producer_instance_id],
+    );
 
     let bound_config = expect_runtime_config(bound_config, "bound instance", &bound_dump);
     assert_eq!(
@@ -2229,17 +2213,7 @@ async fn stack_launch_establishes_launcher_pairings() {
     assert_eq!(pin.producer.instance_id, "arm_1");
     assert_eq!(pin.peer_link_id, "controller");
 
-    // Assertions are done; ending the keep-alive first lets each Stop observe
-    // an already-exited process instead of waiting out the force-kill deadline.
-    drop(instances);
-    for instance_id in ["ctrl_1", "arm_1"] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    end_instances(instances, &ctx, &["ctrl_1", "arm_1"]);
 }
 
 /// Vacancy is per instance, which is the whole reason it lives in the
@@ -2386,15 +2360,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
         "the controller pairs the instance it named, not its vacant sibling"
     );
 
-    drop(instances);
-    for instance_id in ["ctrl_1", "arm_watched", "arm_governed"] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    end_instances(instances, &ctx, &["ctrl_1", "arm_watched", "arm_governed"]);
 }
 
 /// An observer slot the deployment wrote gets its member set twice over: once
@@ -2623,17 +2589,7 @@ async fn stack_launch_delivers_observer_member_sets() {
         "a `zero_or_more` slot the launcher omits has nothing to seed: {seeds:?}"
     );
 
-    // Assertions are done; ending the keep-alive first lets each Stop observe
-    // an already-exited process instead of waiting out the force-kill deadline.
-    drop(instances);
-    for instance_id in ["rec_1", "arm_1", "arm_2"] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    end_instances(instances, &ctx, &["rec_1", "arm_1", "arm_2"]);
 }
 
 /// A required pairing slot with neither a `links:` entry (on either
@@ -3015,24 +2971,20 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         members[1]
     );
 
-    drop(instances);
-    for instance_id in [
-        "commander_inst",
-        "recorder_inst",
-        "grip_follower_1",
-        "grip_leader_1",
-        "follower_1",
-        "leader_2",
-        "leader_1",
-        "backbone_inst",
-    ] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    end_instances(
+        instances,
+        &ctx,
+        &[
+            "commander_inst",
+            "recorder_inst",
+            "grip_follower_1",
+            "grip_leader_1",
+            "follower_1",
+            "leader_2",
+            "leader_1",
+            "backbone_inst",
+        ],
+    );
 }
 
 /// A `zero_or_more` node dependency whose node the launcher does not deploy
@@ -3149,13 +3101,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     // in-stack-but-unbound case the commander panel test pins.
     let [consumer_config] = read_runtime_config_dumps([&consumer_dump]).await;
 
-    drop(instances);
-    let _ = NodeCommand {
-        command: NodeCommands::Stop {
-            instance_id: consumer_instance_id.to_string(),
-        },
-    }
-    .execute(&ctx);
+    end_instances(instances, &ctx, &[consumer_instance_id]);
 
     let consumer_config = expect_runtime_config(consumer_config, "consumer", &consumer_dump);
     let recorder_slot = consumer_config
