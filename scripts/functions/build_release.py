@@ -131,9 +131,10 @@ def _run_local(tag: str | None = None) -> None:
     repo_root = get_repo_root()
     os.chdir(repo_root)
 
-    if has_uncommitted_changes():
-        if not prompt_yn("Working tree has uncommitted changes. Continue?"):
-            sys.exit(1)
+    if has_uncommitted_changes() and not prompt_yn(
+        "Working tree has uncommitted changes. Continue?"
+    ):
+        sys.exit(1)
 
     if tag is None:
         tag = prompt("Tag for the build (example: v0.0.1)")
