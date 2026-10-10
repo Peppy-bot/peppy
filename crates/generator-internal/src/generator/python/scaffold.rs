@@ -1,6 +1,6 @@
 use super::identifiers::is_python_keyword;
 use crate::error::Result;
-use crate::generator::common::{cache_sibling_path, copy_dir_recursive};
+use crate::generator::common::{copy_dir_recursive, populate_cache_dir_once};
 use crate::generator::naming::sanitize_component;
 use crate::generator::scaffold_tree::{
     ModuleEntry, TreeWriter, build_module_tree, group_artifacts_by_category, write_module_tree,
@@ -109,74 +109,9 @@ pub fn add_peppylib_dependencies(
     );
     let cache_dir = peppy_dirs.python_libs_cache_dir(&cache_key);
 
-    if !cache_dir.join(".complete").exists() {
-        let parent = cache_dir.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "cache dir has no parent")
-        })?;
-        fs::create_dir_all(parent)?;
-        let lock_path = cache_sibling_path(&cache_dir, ".lock");
-        let lock_file = fs::File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)?;
-        lock_file.lock()?;
-
-        if !cache_dir.join(".complete").exists() {
-            let staging_dir =
-                cache_sibling_path(&cache_dir, &format!(".staging-{}", std::process::id()));
-            if staging_dir.exists() {
-                fs::remove_dir_all(&staging_dir)?;
-            }
-
-            // Write the embedded Python wrappers.
-            for file_path in EmbeddedPeppylibPy::iter() {
-                let file_path_str = file_path.as_ref();
-                let destination = staging_dir.join(file_path_str);
-                if let Some(parent) = destination.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                let content = EmbeddedPeppylibPy::get(file_path_str).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("embedded peppylib file not found: {file_path_str}"),
-                    )
-                })?;
-                fs::write(&destination, content.data.as_ref())?;
-            }
-
-            // Write the target platform's native extension under the canonical
-            // name Python imports at runtime.
-            let so_bytes = PEPPYLIB_PLATFORM_SO
-                .iter()
-                .find(|(name, _)| *name == expected_so_name)
-                .map(|(_, bytes)| *bytes)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!(
-                            "no embedded native extension found for platform \
-                             '{target_suffix}' (expected '{expected_so_name}'). \
-                             Linux container bindings are only produced (or, \
-                             after a shared-crate change, refreshed) by a cross \
-                             build: every release build runs one, a debug build \
-                             only with PEPPY_CROSS_BUILD=1. Rebuild peppy \
-                             (`cargo build --release`, or PEPPY_CROSS_BUILD=1 \
-                             `cargo build`) and restart the daemon."
-                        ),
-                    )
-                })?;
-            fs::write(staging_dir.join(SO_CANONICAL_NAME), so_bytes)?;
-
-            if cache_dir.exists() {
-                fs::remove_dir_all(&cache_dir)?;
-            }
-            fs::rename(&staging_dir, &cache_dir)?;
-            fs::write(cache_dir.join(".complete"), "")?;
-        }
-        drop(lock_file);
-    }
+    populate_cache_dir_once(&cache_dir, |staging_dir| {
+        write_peppylib_package(staging_dir, &expected_so_name, &target_suffix)
+    })?;
 
     // Deploy peppylib as a standalone project at `.peppy/libs/peppylib`
     // (sibling of peppygen, mirroring the Rust layout) so each node gets the
@@ -203,6 +138,52 @@ pub fn add_peppylib_dependencies(
     copy_dir_recursive(&cache_dir, &package_dir)?;
     fs::remove_file(package_dir.join(".complete"))?;
 
+    Ok(())
+}
+
+/// Writes the peppylib Python package into `staging_dir`: the embedded
+/// wrappers, and the native extension of `target_suffix` under the canonical
+/// name Python imports at runtime.
+fn write_peppylib_package(
+    staging_dir: &Path,
+    expected_so_name: &str,
+    target_suffix: &str,
+) -> Result<()> {
+    for file_path in EmbeddedPeppylibPy::iter() {
+        let file_path_str = file_path.as_ref();
+        let destination = staging_dir.join(file_path_str);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let content = EmbeddedPeppylibPy::get(file_path_str).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("embedded peppylib file not found: {file_path_str}"),
+            )
+        })?;
+        fs::write(&destination, content.data.as_ref())?;
+    }
+
+    let so_bytes = PEPPYLIB_PLATFORM_SO
+        .iter()
+        .find(|(name, _)| *name == expected_so_name)
+        .map(|(_, bytes)| *bytes)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "no embedded native extension found for platform \
+                     '{target_suffix}' (expected '{expected_so_name}'). \
+                     Linux container bindings are only produced (or, \
+                     after a shared-crate change, refreshed) by a cross \
+                     build: every release build runs one, a debug build \
+                     only with PEPPY_CROSS_BUILD=1. Rebuild peppy \
+                     (`cargo build --release`, or PEPPY_CROSS_BUILD=1 \
+                     `cargo build`) and restart the daemon."
+                ),
+            )
+        })?;
+    fs::write(staging_dir.join(SO_CANONICAL_NAME), so_bytes)?;
     Ok(())
 }
 
@@ -309,7 +290,6 @@ pub(super) fn sanitize_python_module_name(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[test]
@@ -575,28 +555,6 @@ mod tests {
         assert!(
             suffix.ends_with(std::env::consts::ARCH),
             "container should use host architecture, got: {suffix}"
-        );
-    }
-
-    #[test]
-    fn cache_sibling_path_preserves_semver_dots() {
-        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456-1.0.0");
-        assert_eq!(
-            cache_sibling_path(&cache_dir, ".lock"),
-            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.lock"),
-        );
-        assert_eq!(
-            cache_sibling_path(&cache_dir, ".staging-42"),
-            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.staging-42"),
-        );
-    }
-
-    #[test]
-    fn cache_sibling_path_works_without_dots() {
-        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456");
-        assert_eq!(
-            cache_sibling_path(&cache_dir, ".lock"),
-            PathBuf::from("/data/libs/rust/abc123def456.lock"),
         );
     }
 }

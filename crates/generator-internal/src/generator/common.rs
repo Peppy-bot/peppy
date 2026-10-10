@@ -218,13 +218,62 @@ pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 /// Unlike `Path::with_extension`, this preserves dots in the original name.
 /// For example, given `some/path/abc123-1.0.0` and suffix `.lock`, this returns
 /// `some/path/abc123-1.0.0.lock` (not `some/path/abc123-1.0.lock`).
-pub fn cache_sibling_path(cache_dir: &Path, suffix: &str) -> std::path::PathBuf {
+fn cache_sibling_path(cache_dir: &Path, suffix: &str) -> std::path::PathBuf {
     let name = cache_dir
         .file_name()
         .expect("cache_dir must have a file name component");
     let mut new_name = name.to_os_string();
     new_name.push(suffix);
     cache_dir.with_file_name(new_name)
+}
+
+/// Fills the shared cache directory `cache_dir` once, safe against the
+/// generations of other processes that fill the same cache at the same time.
+///
+/// A `.complete` marker inside `cache_dir` states that the cache is whole. It
+/// is written last and never removed, so a caller that sees it reads a whole
+/// cache without taking the lock. Otherwise the `.lock` sibling is locked and
+/// the marker checked again, because another process may have finished the
+/// cache while this one waited. `fill` then writes the cache into a
+/// `.staging-<pid>` sibling, which replaces whatever partial `cache_dir` an
+/// interrupted run left before the marker is written.
+pub(crate) fn populate_cache_dir_once(
+    cache_dir: &Path,
+    fill: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    let complete_marker = cache_dir.join(".complete");
+    if complete_marker.exists() {
+        return Ok(());
+    }
+
+    let parent = cache_dir
+        .parent()
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "cache dir has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let lock_file = fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(cache_sibling_path(cache_dir, ".lock"))?;
+    lock_file.lock()?;
+    if complete_marker.exists() {
+        return Ok(());
+    }
+
+    let staging_dir = cache_sibling_path(cache_dir, &format!(".staging-{}", std::process::id()));
+    if staging_dir.exists() {
+        fs::remove_dir_all(&staging_dir)?;
+    }
+    fill(&staging_dir)?;
+    if cache_dir.exists() {
+        fs::remove_dir_all(cache_dir)?;
+    }
+    fs::rename(&staging_dir, cache_dir)?;
+    fs::write(&complete_marker, "")?;
+    // The lock is released only once the marker is written.
+    drop(lock_file);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -286,5 +335,100 @@ impl WorkspacePackageMetadata {
             version: env!("CARGO_PKG_VERSION"),
             edition: "2024",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn write_file(dir: &Path, name: &str, contents: &str) -> Result<()> {
+        fs::create_dir_all(dir)?;
+        fs::write(dir.join(name), contents)?;
+        Ok(())
+    }
+
+    #[test]
+    fn populate_cache_dir_once_fills_the_cache_and_marks_it_complete() {
+        let root = TempDir::new().unwrap();
+        let cache_dir = root.path().join("caches").join("abc123-1.0.0");
+
+        populate_cache_dir_once(&cache_dir, |staging| write_file(staging, "lib.txt", "v1"))
+            .unwrap();
+
+        assert_eq!(fs::read_to_string(cache_dir.join("lib.txt")).unwrap(), "v1");
+        assert!(cache_dir.join(".complete").exists());
+        assert!(
+            !cache_sibling_path(&cache_dir, &format!(".staging-{}", std::process::id())).exists(),
+            "the staging directory becomes the cache"
+        );
+    }
+
+    #[test]
+    fn populate_cache_dir_once_leaves_a_complete_cache_alone() {
+        let root = TempDir::new().unwrap();
+        let cache_dir = root.path().join("abc123-1.0.0");
+        populate_cache_dir_once(&cache_dir, |staging| write_file(staging, "lib.txt", "v1"))
+            .unwrap();
+
+        populate_cache_dir_once(&cache_dir, |_| {
+            panic!("a complete cache must not be filled again")
+        })
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(cache_dir.join("lib.txt")).unwrap(), "v1");
+    }
+
+    /// A run interrupted before the marker leaves a partial cache behind; the
+    /// next run replaces it whole instead of trusting any of it.
+    #[test]
+    fn populate_cache_dir_once_replaces_a_cache_left_without_its_marker() {
+        let root = TempDir::new().unwrap();
+        let cache_dir = root.path().join("abc123-1.0.0");
+        write_file(&cache_dir, "stale.txt", "partial").unwrap();
+
+        populate_cache_dir_once(&cache_dir, |staging| write_file(staging, "lib.txt", "v1"))
+            .unwrap();
+
+        assert!(!cache_dir.join("stale.txt").exists());
+        assert_eq!(fs::read_to_string(cache_dir.join("lib.txt")).unwrap(), "v1");
+        assert!(cache_dir.join(".complete").exists());
+    }
+
+    #[test]
+    fn populate_cache_dir_once_marks_nothing_complete_when_the_fill_fails() {
+        let root = TempDir::new().unwrap();
+        let cache_dir = root.path().join("abc123-1.0.0");
+
+        let result = populate_cache_dir_once(&cache_dir, |_| {
+            Err(io::Error::new(ErrorKind::NotFound, "no embedded file").into())
+        });
+
+        assert!(result.is_err());
+        assert!(!cache_dir.join(".complete").exists());
+    }
+
+    #[test]
+    fn cache_sibling_path_preserves_semver_dots() {
+        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456-1.0.0");
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".lock"),
+            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.lock"),
+        );
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".staging-42"),
+            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.staging-42"),
+        );
+    }
+
+    #[test]
+    fn cache_sibling_path_works_without_dots() {
+        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456");
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".lock"),
+            PathBuf::from("/data/libs/rust/abc123def456.lock"),
+        );
     }
 }

@@ -2,7 +2,7 @@ use super::identifiers::is_rust_keyword;
 use crate::generator::common::{
     CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfig, EmbeddedCoreNodeApi,
     EmbeddedPeppyMessagingInterface, EmbeddedPeppylib, WorkspacePackageMetadata,
-    cache_sibling_path, copy_dir_recursive,
+    copy_dir_recursive, populate_cache_dir_once,
 };
 use crate::{
     error::{Error, Result},
@@ -366,44 +366,19 @@ fn deploy_rust_crates_to_shared_cache(
     let cache_key = vendored_crates_cache_key();
     let cache_dir = peppy_dirs.rust_libs_cache_dir(&cache_key);
 
-    let parent = cache_dir
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cache dir has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let lock_path = cache_sibling_path(&cache_dir, ".lock");
-    let lock_file = fs::File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)?;
-    lock_file.lock()?;
-
-    if !cache_dir.join(".complete").exists() {
-        let staging_dir =
-            cache_sibling_path(&cache_dir, &format!(".staging-{}", std::process::id()));
-        if staging_dir.exists() {
-            fs::remove_dir_all(&staging_dir)?;
-        }
-
+    populate_cache_dir_once(&cache_dir, |staging_dir| {
         let metadata = WorkspacePackageMetadata::embedded();
-        copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedPeppylib>("peppylib", staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedPeppyMessagingInterface>(
             "peppy-messaging-interface",
-            &staging_dir,
+            staging_dir,
             &metadata,
         )?;
-        copy_embedded_crate::<EmbeddedConfig>("peppy-config-model", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedCoreNodeApi>("core-node-api", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedBuildHelpers>("build-helpers", &staging_dir, &metadata)?;
-
-        if cache_dir.exists() {
-            fs::remove_dir_all(&cache_dir)?;
-        }
-        fs::rename(&staging_dir, &cache_dir)?;
-        fs::write(cache_dir.join(".complete"), "")?;
-    }
-    drop(lock_file);
+        copy_embedded_crate::<EmbeddedConfig>("peppy-config-model", staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedCoreNodeApi>("core-node-api", staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedBuildHelpers>("build-helpers", staging_dir, &metadata)?;
+        Ok(())
+    })?;
 
     // Link or copy all vendored crates (peppylib, peppy-messaging-interface, config,
     // core-node-api, build-helpers) into node_libs_dir.
