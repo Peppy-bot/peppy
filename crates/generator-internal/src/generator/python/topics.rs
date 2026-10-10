@@ -105,6 +105,35 @@ fn follows_the_set_suffix(cardinality: Cardinality) -> String {
         .unwrap_or_default()
 }
 
+/// Emits what a consumer module decodes into, shared by the bound-set, peer
+/// and observer consumers: the capnp schema loader, the `Message` dataclass
+/// after its nested dataclasses (dependency order), then the
+/// `_deserialize_payload` helper that `Subscription.next` calls.
+fn emit_consumed_message(
+    builder: &mut PythonCodeBuilder,
+    arguments: &MessageFormat,
+    schema_info: &PythonSchemaInfo,
+) -> Result<()> {
+    let mut nested_classes = Vec::new();
+    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
+
+    emit_capnp_schema_loader(builder, schema_info);
+    emit_nested_classes(builder, &nested_classes);
+    let field_refs: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.type_str.as_str()))
+        .collect();
+    builder.dataclass("Message", &field_refs);
+    deserialization::build_deserialize_fn(
+        builder,
+        schema_info,
+        arguments,
+        "Message",
+        "_deserialize_payload",
+    );
+    Ok(())
+}
+
 /// Emits the held-`Subscription` class shared by the bound-set, peer, and
 /// observer consumer modules; the docstring and the identity tag differ.
 /// `next()` mirrors the Rust `Subscription::next`: a `(tag, message)` tuple,
@@ -458,27 +487,8 @@ pub fn build_pair_topic_consumer(
     kind: PairTopicConsumerKind,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
-    let mut nested_classes = Vec::new();
-
-    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
-
     builder.add_import("from typing import Optional, Tuple");
-    emit_capnp_schema_loader(&mut builder, schema_info);
-    emit_nested_classes(&mut builder, &nested_classes);
-
-    let field_refs: Vec<(&str, &str)> = fields
-        .iter()
-        .map(|f| (f.name.as_str(), f.type_str.as_str()))
-        .collect();
-    builder.dataclass("Message", &field_refs);
-
-    deserialization::build_deserialize_fn(
-        &mut builder,
-        schema_info,
-        arguments,
-        "Message",
-        "_deserialize_payload",
-    );
+    emit_consumed_message(&mut builder, arguments, schema_info)?;
 
     let qos = qos_profile_python(&topic.qos_profile);
     let (subscription_doc, subscription_tag, subscribe_doc, subscribe_method) = match kind {
@@ -540,38 +550,13 @@ pub fn build_consumed_topic(
 ) -> Result<String> {
     let topic_name = topic.name.as_str();
     let mut builder = PythonCodeBuilder::new();
-    let mut nested_classes = Vec::new();
-
-    // Collect fields from the message format
-    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
 
     // Optional covers any Optional fields in the dataclasses and the closed
     // sentinel of `Subscription.next`; Tuple wraps the `(producer, message)`
     // pair each message yields (the producer itself is a structured
     // `peppylib.ProducerRef`).
     builder.add_import("from typing import Optional, Tuple");
-
-    // Add capnp imports and a lazy, cached schema loader.
-    emit_capnp_schema_loader(&mut builder, schema_info);
-
-    // Emit nested dataclasses first (dependency order)
-    emit_nested_classes(&mut builder, &nested_classes);
-
-    // Emit the main Message dataclass
-    let field_refs: Vec<(&str, &str)> = fields
-        .iter()
-        .map(|f| (f.name.as_str(), f.type_str.as_str()))
-        .collect();
-    builder.dataclass("Message", &field_refs);
-
-    // Generate deserialize_payload helper function
-    deserialization::build_deserialize_fn(
-        &mut builder,
-        schema_info,
-        arguments,
-        "Message",
-        "_deserialize_payload",
-    );
+    emit_consumed_message(&mut builder, arguments, schema_info)?;
 
     // Generate the held-subscription consumer API. `subscribe()` covers the
     // slot's complete bound producer set (one pinned wire subscription per
