@@ -180,7 +180,7 @@ fn sole_member(state: &ObservationState, context: &str) -> ObservedMemberState {
 struct Fixture {
     // Instances outlive their own spawn in every test here (an observer links
     // to an already-running source), so their lifetime is the fixture's.
-    _instances: InstanceLifetime,
+    instances: InstanceLifetime,
     // Where the source's `run_cmd` records its pid, so a stop can be answered
     // by actually ending the process instead of waiting out the daemon's
     // force-kill deadline.
@@ -223,7 +223,7 @@ async fn setup() -> Fixture {
     add_built_node(&ctx, observer_dir.path(), &observer_config(&instances));
 
     Fixture {
-        _instances: instances,
+        instances,
         source_pidfile,
         _ctrl_dir: ctrl_dir,
         _serve: serve,
@@ -342,7 +342,7 @@ async fn observer_boot_config_seeds_membership_at_spawn() {
     add_built_node(
         &fx.ctx,
         probe_dir.path(),
-        &config_dumping_observer_config(&dump, &fx._instances),
+        &config_dumping_observer_config(&dump, &fx.instances),
     );
     emulate_observer_services(
         &fx.messenger,
@@ -468,7 +468,7 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
     add_built_node(
         &fx.ctx,
         fleet_dir.path(),
-        &fleet_observer_config(&fx._instances),
+        &fleet_observer_config(&fx.instances),
     );
 
     // Both sources are instances of the same node, started in sequence, so each
