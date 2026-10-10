@@ -420,21 +420,27 @@ pub fn parse_endpoint<'a>(
         return Err("metadata and endpoint configuration are not supported".to_string());
     }
 
-    let (host, port, bracketed) = split_endpoint_host_port(address)?;
-    validate_endpoint_host(host, bracketed)?;
-    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+    let (host, port) = split_endpoint_host_port(address)?;
+    let host = check_dial_host(host)?;
+    let Some(port) = parse_dial_port(port) else {
         return Err("port must be an integer from 1 through 65535".to_string());
-    }
-    let port = port
-        .parse::<u16>()
-        .map_err(|_| "port must be an integer from 1 through 65535".to_string())?;
-    if port == 0 {
-        return Err("port must be an integer from 1 through 65535".to_string());
-    }
+    };
     Ok(ParsedEndpoint { host, port })
 }
 
-fn split_endpoint_host_port(address: &str) -> std::result::Result<(&str, &str, bool), String> {
+/// The host of a dial endpoint, by the form it is written in.
+#[derive(Debug, Clone, Copy)]
+enum EndpointHost<'a> {
+    /// Written in brackets, which only an IPv6 address may use. Holds the
+    /// text between the brackets.
+    Bracketed(&'a str),
+    /// Written bare: a hostname or an IPv4 address.
+    Plain(&'a str),
+}
+
+fn split_endpoint_host_port(
+    address: &str,
+) -> std::result::Result<(EndpointHost<'_>, &str), String> {
     if let Some(bracketed) = address.strip_prefix('[') {
         let Some(close) = bracketed.find(']') else {
             return Err("IPv6 addresses must be enclosed in matching brackets".to_string());
@@ -447,7 +453,7 @@ fn split_endpoint_host_port(address: &str) -> std::result::Result<(&str, &str, b
         if port.contains(':') {
             return Err("must contain exactly one port".to_string());
         }
-        return Ok((host, port, true));
+        return Ok((EndpointHost::Bracketed(host), port));
     }
 
     let Some((host, port)) = address.rsplit_once(':') else {
@@ -456,34 +462,40 @@ fn split_endpoint_host_port(address: &str) -> std::result::Result<(&str, &str, b
     if host.contains(':') {
         return Err("IPv6 addresses must be enclosed in brackets".to_string());
     }
-    Ok((host, port, false))
+    Ok((EndpointHost::Plain(host), port))
 }
 
-fn validate_endpoint_host(host: &str, bracketed: bool) -> std::result::Result<(), String> {
-    if host.is_empty() {
-        return Err("host must not be empty".to_string());
+/// Checks that `host` names a machine peppy can dial, and returns it
+/// without brackets.
+fn check_dial_host(host: EndpointHost<'_>) -> std::result::Result<&str, String> {
+    match host {
+        EndpointHost::Bracketed("") | EndpointHost::Plain("") => {
+            Err("host must not be empty".to_string())
+        }
+        EndpointHost::Bracketed(address) => check_bracketed_dial_host(address),
+        EndpointHost::Plain(host) => check_plain_dial_host(host),
     }
+}
 
-    if bracketed {
-        let address = host
-            .parse::<Ipv6Addr>()
-            .map_err(|_| "bracketed host must be a valid IPv6 address".to_string())?;
-        return if address.is_unspecified() {
-            Err(
-                "host must be dialable; the wildcard address [::] is only valid for listening"
-                    .to_string(),
-            )
-        } else {
-            Ok(())
-        };
+fn check_bracketed_dial_host(host: &str) -> std::result::Result<&str, String> {
+    let address = host
+        .parse::<Ipv6Addr>()
+        .map_err(|_| "bracketed host must be a valid IPv6 address".to_string())?;
+    if address.is_unspecified() {
+        return Err(
+            "host must be dialable; the wildcard address [::] is only valid for listening"
+                .to_string(),
+        );
     }
+    Ok(host)
+}
 
+fn check_plain_dial_host(host: &str) -> std::result::Result<&str, String> {
     if let Ok(address) = host.parse::<Ipv4Addr>() {
-        return if address.is_unspecified() {
-            Err("host must be dialable; 0.0.0.0 is only valid for listening".to_string())
-        } else {
-            Ok(())
-        };
+        if address.is_unspecified() {
+            return Err("host must be dialable; 0.0.0.0 is only valid for listening".to_string());
+        }
+        return Ok(host);
     }
     if host
         .bytes()
@@ -509,7 +521,20 @@ fn validate_endpoint_host(host: &str, bracketed: bool) -> std::result::Result<()
     {
         return Err("host must be a valid hostname or IP address".to_string());
     }
-    Ok(())
+    Ok(host)
+}
+
+/// The port of a dial endpoint: decimal digits only, without a sign, from 1
+/// through 65535.
+fn parse_dial_port(port: &str) -> Option<u16> {
+    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let port = port.parse::<u16>().ok()?;
+    if port == 0 {
+        return None;
+    }
+    Some(port)
 }
 
 /// Settings peppy can honor only while it owns the bundled router process.
@@ -1518,6 +1543,16 @@ mod tests {
                 host: "2001:db8::1",
                 port: 7449
             }
+        );
+    }
+
+    /// Empty brackets are an empty host, refused as such before the IPv6
+    /// rules of a bracketed host run.
+    #[test]
+    fn endpoint_parser_refuses_empty_brackets_as_an_empty_host() {
+        assert_eq!(
+            parse_endpoint("tls/[]:7449", "tls"),
+            Err("host must not be empty".to_string())
         );
     }
 
