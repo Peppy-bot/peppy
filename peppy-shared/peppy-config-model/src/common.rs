@@ -2,7 +2,7 @@ use crate::internal::node::TypeToken;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-// A flexible value to hold arbitrary JSON5 content (runtime values only)
+/// A flexible value to hold arbitrary JSON5 content (runtime values only).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(untagged)]
 pub enum AnyType {
@@ -236,7 +236,7 @@ impl Serialize for DefaultValue {
 ///   both produce [`ParameterSpec::Group`].
 ///
 /// `$default` is type- and range-checked against `$type` before this value can
-/// be constructed, and is permitted only on `Primitive` — never on arrays or
+/// be constructed, and is permitted only on `Primitive`, never on arrays or
 /// groups. This is what makes the schema "parse, don't validate".
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParameterSpec {
@@ -256,7 +256,7 @@ impl ParameterSpec {
     /// synthesizing `Group`s from their leaves' defaults.
     ///
     /// Arrays cannot carry defaults, so a missing array always reports as
-    /// missing. Returns `None` if any reachable leaf lacks a default — in that
+    /// missing. Returns `None` if any reachable leaf lacks a default; in that
     /// case the caller should surface a missing-parameter error naming the
     /// missing path.
     fn synthesize_default(&self, path: &str, missing: &mut Vec<String>) -> Option<AnyType> {
@@ -766,8 +766,8 @@ pub(crate) fn join_field_path(parent: &str, field: &str) -> String {
 
 /// Type alias for parameter type specifications declared in `peppy.json5`.
 ///
-/// Each key is a parameter name and each value is a typed [`ParameterSpec`]
-/// — either a primitive leaf (with optional `$default`) or a nested group.
+/// Each key is a parameter name and each value is a typed [`ParameterSpec`]:
+/// a primitive leaf (with optional `$default`), an array, or a nested group.
 pub type ParameterSchema = BTreeMap<String, ParameterSpec>;
 
 /// Fills the fields of one group from its schema (`path` is empty at the
@@ -877,7 +877,7 @@ fn validate_value_against_spec(
                     });
                 }
             }
-            // Validate each declared field — defaults have already been filled
+            // Validate each declared field. Defaults have already been filled
             // in by `validate_node_arguments`, so any missing key here is a true
             // error.
             for (k, sub_spec) in fields {
