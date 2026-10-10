@@ -22,7 +22,7 @@ use crate::runtime::PyNodeRunner;
 
 /// Request side of the NTP-style 4-timestamp exchange.
 ///
-/// Carries `client_send_time` (`t0`) — the client's local clock just before
+/// Carries `client_send_time` (`t0`), the client's local clock just before
 /// the request goes on the wire. Encoders/decoders use the same capnp wire
 /// schema as the Rust [`ClockRequest`].
 #[pyclass(name = "ClockRequest", skip_from_py_object)]
@@ -66,8 +66,8 @@ impl PyClockRequest {
 /// Response side of the NTP-style 4-timestamp exchange.
 ///
 /// Carries the echoed `client_send_time` (`t0`), `server_recv_time` (`t1`),
-/// and `server_send_time` (`t2`). `t3` is the client's local time on receive —
-/// never on the wire.
+/// and `server_send_time` (`t2`). `t3` is the client's local time on receive,
+/// which never goes on the wire.
 #[pyclass(name = "ClockResponse", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyClockResponse {
@@ -162,7 +162,7 @@ impl PyClockTick {
 /// Result of an NTP-style clock-sync exchange.
 ///
 /// Mirrors [`peppylib::clock::ClockSync`]. `synchronize` does not
-/// adjust the local clock — it only measures.
+/// adjust the local clock: it only measures.
 #[pyclass(name = "ClockSync", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyClockSync {
@@ -220,7 +220,7 @@ fn synchronize_clock<'py>(
 ///
 /// Wraps the raw [`Subscription`] (not the Rust `ClockSubscription` adapter)
 /// so the Python lock guards the same inner state as
-/// [`crate::messaging::PySubscription`] — no double-mutex layering.
+/// [`crate::messaging::PySubscription`], with no double-mutex layering.
 #[pyclass(name = "ClockSubscription")]
 pub struct PyClockSubscription {
     inner: Arc<Mutex<Subscription>>,

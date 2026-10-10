@@ -293,7 +293,7 @@ impl PyServiceMessenger {
     }
 
     /// Send a request to a service and wait for a response. `target` is the
-    /// producer's full `(core_node, instance_id)` pair — `Some` pins it (no
+    /// producer's full `(core_node, instance_id)` pair: `Some` pins it (no
     /// discovery), `None` is a genuine wildcard (discover-then-pin).
     /// Generated `poll` wrappers pass their explicit `target` parameter, a
     /// membership-checked member of the slot's bound set.

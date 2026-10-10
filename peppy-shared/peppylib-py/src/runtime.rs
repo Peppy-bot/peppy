@@ -338,7 +338,7 @@ async fn run_python_shutdown_hook(callback: Py<PyAny>, event_loop_slot: SharedEv
 /// loop thread.
 ///
 /// The two closures that run on the event loop thread (the exception handler and
-/// the `run_forever` wrapper) **must** be plain Python functions — not PyO3
+/// the `run_forever` wrapper) **must** be plain Python functions, not PyO3
 /// `PyCFunction` closures.  PyO3 wraps every `PyCFunction` invocation in
 /// `catch_unwind`, and Rust's `catch_unwind` cannot intercept foreign (non-Rust)
 /// exceptions such as those raised by C/C++ extensions (e.g. pycapnp).  If such
@@ -348,7 +348,7 @@ async fn run_python_shutdown_hook(callback: Py<PyAny>, event_loop_slot: SharedEv
 ///
 /// By defining these helpers as pure Python (via `PyModule::from_code`), we keep
 /// `catch_unwind` out of the call path entirely, letting Python's own `try/except
-/// BaseException` handle any exception — foreign or otherwise.
+/// BaseException` handle any exception, foreign or otherwise.
 fn create_event_loop_helpers<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {
     PyModule::from_code(
         py,
@@ -446,9 +446,9 @@ def make_loop_teardown(event_loop, asyncio_mod):
         # stopped separately, by the stop trigger that quiesce fires after the
         # shutdown-hook phase. Because nothing stops the loop here, the future
         # this coroutine completes is set through the ordinary path while the
-        # loop is still running, so it can never be orphaned. Removing the loop
-        # stop from the awaited coroutine is the whole point of splitting drain
-        # from stop. See tests/test_shutdown_drain_deadlock.py.
+        # loop is still running, so it can never be orphaned. Keeping the loop
+        # stop out of the awaited coroutine is why the drain and the stop are
+        # separate. See tests/test_shutdown_drain_deadlock.py.
         pending = _cancel_other_tasks()
         if pending:
             await asyncio_mod.gather(*pending, return_exceptions=True)
@@ -468,11 +468,11 @@ def make_loop_teardown(event_loop, asyncio_mod):
         # (the grace-timeout path, where a slow user hook exhausted the window
         # so the drain hook was abandoned before it cancelled and gathered),
         # then defers loop.stop() one hop so those cancellations run their
-        # finally cleanup before the loop exits. This call_soon(stop) is NOT the
-        # orphaning hazard the old in-drain stop was: nothing awaits a future
-        # across it (quiesce only joins the loop thread), so the batch ordering
-        # here is a best-effort cleanup nicety, not a correctness dependency. No
-        # gather: an uncancellable task must never be able to block the stop.
+        # finally cleanup before the loop exits. Nothing awaits a future across
+        # this call_soon(stop) (quiesce only joins the loop thread), so it
+        # cannot orphan one, and the batch ordering here is a best-effort
+        # cleanup nicety, not a correctness dependency. No gather: an
+        # uncancellable task must never be able to block the stop.
         _cancel_other_tasks()
         event_loop.call_soon(event_loop.stop)
 
@@ -503,7 +503,7 @@ def make_loop_teardown(event_loop, asyncio_mod):
 ///
 /// Creates a dedicated asyncio event loop in a background thread and submits
 /// the setup coroutine. Returns a channel receiver and future handle so the
-/// caller can wait for completion **after releasing the GIL** — the event loop
+/// caller can wait for completion **after releasing the GIL**: the event loop
 /// thread needs the GIL to run the coroutine.
 ///
 /// The event loop stays alive after setup returns so that background tasks
@@ -698,8 +698,8 @@ fn build_async_setup(
     // 10. Build the failure attacher that Phase 3 of `PyNodeBuilder::run`
     //     invokes with the setup return value. The returned tasks are held
     //     for the node's lifetime (to keep them alive), so asyncio's GC-time
-    //     "Task exception was never retrieved" report — and with it the loop
-    //     exception handler that would cancel the node — can never fire for
+    //     "Task exception was never retrieved" report (and with it the loop
+    //     exception handler that would cancel the node) can never fire for
     //     them. Without this watcher, a returned task that dies leaves a
     //     half-alive node that still answers health probes. On a
     //     non-cancelled exception the watcher records the error (re-raised
@@ -842,7 +842,7 @@ impl PyCancellationToken {
 #[pyclass(name = "NodeRunner")]
 pub struct PyNodeRunner {
     pub(crate) inner: Arc<NodeRunner>,
-    /// Cached messenger handle — cloning `MessengerHandle` is a cheap `Arc`
+    /// Cached messenger handle. Cloning `MessengerHandle` is a cheap `Arc`
     /// bump, but we avoid re-wrapping it on every `messenger()` call.
     cached_messenger: PyMessengerHandle,
     /// The node's persistent asyncio loop, filled once async setup starts.
@@ -875,8 +875,9 @@ impl PyNodeRunner {
     /// Build a `NodeRunner` in standalone mode from a peppy.json5 path and a
     /// `StandaloneConfig`. Mirrors the Rust-side
     /// `Processor::new_standalone(...)` + `NodeRunner::new(...)` flow used by
-    /// `crates/peppylib/tests/core_node/common.rs` so Python integration tests
-    /// can stand up a runner without going through `NodeBuilder::run`.
+    /// `peppy-shared/peppylib-rs/tests/core_node/common.rs` so Python
+    /// integration tests can stand up a runner without going through
+    /// `NodeBuilder::run`.
     #[staticmethod]
     fn new_standalone<'py>(
         py: Python<'py>,
@@ -1619,9 +1620,9 @@ impl PyNodeBuilder {
     /// `peppygen.parameters.Parameters` dataclass instance (hydrated from the
     /// runtime config dict).
     ///
-    /// - **sync** `def setup(params: Parameters, node_runner: NodeRunner): ...` — runs directly.
+    /// - **sync** `def setup(params: Parameters, node_runner: NodeRunner): ...` runs directly.
     /// - **async** `async def setup(params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task] | None: ...`
-    ///   — runs on a persistent asyncio event loop. Return background tasks
+    ///   runs on a persistent asyncio event loop. Return background tasks
     ///   created with `asyncio.create_task()` so the framework holds strong
     ///   references, preventing garbage collection.
     ///

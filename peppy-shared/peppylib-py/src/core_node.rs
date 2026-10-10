@@ -1,8 +1,8 @@
 //! Python bindings for the `core_node` high-level service wrappers.
 //!
-//! Mirrors `pub use core_node::{info::info, stack};` from
-//! `crates/peppylib/src/lib.rs`: takes a `NodeRunner` directly and returns
-//! fully-typed responses.
+//! Mirrors `peppylib::info` and `peppylib::stack`
+//! (peppy-shared/peppylib-rs/src/lib.rs): takes a `NodeRunner` directly and
+//! returns fully-typed responses.
 
 use core_node_api::encoding::{ContainerInfo, InfoResponse, StackListResponse};
 use pyo3::exceptions::{PyKeyError, PyRuntimeError};
@@ -136,7 +136,7 @@ impl PyInfoResponse {
     }
 }
 
-/// Python wrapper for `core_node_api::encoding::StackListResponse` — used by
+/// Python wrapper for `core_node_api::encoding::StackListResponse`, used by
 /// test stubs to produce capnp wire bytes for the `STACK_LIST` service.
 #[pyclass(name = "StackListResponse", skip_from_py_object)]
 #[derive(Clone)]
@@ -200,7 +200,7 @@ impl PyStackListResponse {
 
 /// Python wrapper for `peppylib::stack::StackList`.
 ///
-/// `graph` is returned as a Python dict via `pythonize` — the nested
+/// `graph` is returned as a Python dict via `pythonize`. The nested
 /// `SerializedNodeGraph` types all derive `Serialize`/`Deserialize`, so a
 /// dict/list representation faithfully mirrors the Rust shape without hand-
 /// wrapping six more classes.

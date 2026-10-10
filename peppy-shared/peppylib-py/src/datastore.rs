@@ -21,7 +21,7 @@ use crate::messaging::{
 };
 use crate::runtime::PyNodeRunner;
 
-/// Python wrapper for `core_node_api::encoding::DatastoreStoreResponse` — an
+/// Python wrapper for `core_node_api::encoding::DatastoreStoreResponse`, an
 /// empty ack. Exposes `encode()` so test stubs can produce wire bytes.
 #[pyclass(name = "DatastoreStoreResponse", skip_from_py_object)]
 #[derive(Clone)]
@@ -43,7 +43,7 @@ impl PyDatastoreStoreResponse {
     }
 }
 
-/// Python wrapper for `core_node_api::encoding::DatastoreGetResponse` — used
+/// Python wrapper for `core_node_api::encoding::DatastoreGetResponse`, used
 /// by test stubs to produce capnp wire bytes for the `DATASTORE_GET` service.
 #[pyclass(name = "DatastoreGetResponse", skip_from_py_object)]
 #[derive(Clone)]
@@ -90,7 +90,7 @@ impl PyDatastoreGetResponse {
     }
 }
 
-/// Python wrapper for `core_node_api::encoding::DatastoreListResponse` — used by
+/// Python wrapper for `core_node_api::encoding::DatastoreListResponse`, used by
 /// test stubs to produce capnp wire bytes for the `DATASTORE_LIST` service.
 /// Construct it from `(key, encoding, last_modified_by)` triples.
 #[pyclass(name = "DatastoreListResponse", skip_from_py_object)]
@@ -121,7 +121,7 @@ impl PyDatastoreListResponse {
     }
 }
 
-/// Python wrapper for `core_node_api::encoding::DatastoreRemoveResponse` — used
+/// Python wrapper for `core_node_api::encoding::DatastoreRemoveResponse`, used
 /// by test stubs to produce capnp wire bytes for the `DATASTORE_REMOVE` service.
 #[pyclass(name = "DatastoreRemoveResponse", skip_from_py_object)]
 #[derive(Clone)]
@@ -148,11 +148,11 @@ impl PyDatastoreRemoveResponse {
     }
 }
 
-/// Python wrapper for `peppylib::datastore::StoredValue` — the
-/// value returned by [`datastore::get`]: the raw bytes plus their Zenoh-style
+/// Python wrapper for `peppylib::datastore::StoredValue`, the value returned
+/// by [`peppylib::datastore::get`]: the raw bytes plus their Zenoh-style
 /// encoding tag. The `encoding` getter returns a plain `str` (the open set of
 /// tags means an arbitrary value may come back); it compares equal to the
-/// `peppylib.Encoding` members.
+/// `peppylib.datastore.Encoding` members.
 #[pyclass(name = "StoredValue", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyStoredValue {
@@ -183,10 +183,10 @@ impl PyStoredValue {
     }
 }
 
-/// Python wrapper for `peppylib::datastore::DatastoreEntry` — one
-/// key's metadata returned by [`datastore::list`]: its key, the encoding tag of
-/// its value, and the `instance_id` of the node that last wrote it. The value
-/// bytes are not included; fetch them with [`datastore::get`].
+/// Python wrapper for `peppylib::datastore::DatastoreEntry`, the metadata of
+/// one key as returned by [`peppylib::datastore::list`]: its key, the encoding
+/// tag of its value, and the `instance_id` of the node that last wrote it. The
+/// value bytes are not included; fetch them with [`peppylib::datastore::get`].
 #[pyclass(name = "DatastoreEntry", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyDatastoreEntry {
@@ -233,7 +233,7 @@ fn datastore_store<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
-    // `future_into_py_unit` resolves to Python `None` — a store that succeeds
+    // `future_into_py_unit` resolves to Python `None`: a store that succeeds
     // has nothing to return (see the helper for why a bare `Ok(())` would not).
     future_into_py_unit(py, async move {
         peppylib::datastore::store(&runner, key, value, encoding, timeout)
@@ -266,8 +266,8 @@ fn datastore_get<'py>(
 }
 
 /// List the metadata of every key in `node_runner`'s bound core node datastore.
-/// Resolves to a list of `DatastoreEntry` (key, encoding, last_modified_by) —
-/// the value bytes are not included; fetch them with `datastore::get`.
+/// Resolves to a list of `DatastoreEntry` (key, encoding, last_modified_by).
+/// The value bytes are not included; fetch them with `datastore::get`.
 ///
 /// Python equivalent of `peppylib::datastore::list`.
 #[pyfunction]

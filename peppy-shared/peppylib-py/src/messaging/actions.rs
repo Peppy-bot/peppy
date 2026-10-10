@@ -276,7 +276,7 @@ pub struct PyActionCreation {
     result_service: Arc<Mutex<ServiceEndpoint>>,
     /// Producer-instance liveliness advertisement. Held (not Python-visible)
     /// so the producer stays observable as alive for exactly as long as this
-    /// creation — and with it the action endpoint — exists.
+    /// creation (and with it the action endpoint) exists.
     _liveliness_token: peppylib::messaging::LivelinessToken,
 }
 
@@ -364,7 +364,7 @@ impl PyActionMessenger {
     ///
     /// Pass `SenderTarget.node(name, tag)` for nodes or
     /// `SenderTarget.contract(name, tag)` for contract-implemented actions.
-    /// `target` is the producer's full `(core_node, instance_id)` pair —
+    /// `target` is the producer's full `(core_node, instance_id)` pair:
     /// `Some` pins it (no discovery), `None` is a genuine wildcard
     /// (discover-then-pin). Generated `fire_goal` wrappers pass their
     /// explicit `target` parameter, a membership-checked member of the
@@ -690,7 +690,7 @@ impl PyPendingGoal {
 /// and feedback are all handled by the Rust engine.
 ///
 /// `weakref` so `peppylib.testing`'s mock action server can track live goal
-/// contexts without keeping them alive — a strong registry would defer the
+/// contexts without keeping them alive: a strong registry would defer the
 /// abandon-on-drop transition a test triggers by releasing its goal handle.
 #[pyclass(name = "GoalContext", weakref)]
 pub struct PyGoalContext {
@@ -778,7 +778,7 @@ impl PyGoalContext {
     /// Exists for mock action servers simulating producer loss (see the Rust
     /// `GoalContext::disarm_close_on_drop`); the wheel always ships it, the
     /// same accepted trade-off as the inert generated mock subpackages. Never
-    /// call it from production node code — consumers rely on the abandon
+    /// call it from production node code: consumers rely on the abandon
     /// transition it suppresses.
     fn disarm_close_on_drop(&self) {
         self.inner.disarm_close_on_drop();

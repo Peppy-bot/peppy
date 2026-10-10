@@ -122,7 +122,7 @@ pub(crate) fn encoded_to_py_bytes<'py>(
 }
 
 /// Wrap a `core_node_api::Error` from a `decode()` call as a Python
-/// `ValueError` — decode failures usually mean the bytes the caller passed in
+/// `ValueError`: decode failures usually mean the bytes the caller passed in
 /// don't match the expected wire schema.
 pub(crate) fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
     PyValueError::new_err(format!("failed to decode {what}: {err}"))
@@ -131,8 +131,8 @@ pub(crate) fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
 /// Drive a void async binding and resolve it to Python `None`.
 ///
 /// `future_into_py` converts the future's `Ok` value via `IntoPyObject`, and
-/// under PyO3 0.28 a bare `()` converts to an empty tuple rather than `None`,
-/// while `Option::<()>::None` converts to `None`. Routing void async methods
+/// PyO3 converts a bare `()` to an empty tuple rather than `None`, while
+/// `Option::<()>::None` converts to `None`. Routing void async methods
 /// through this helper gives them the Pythonic `None` return. The
 /// `Output = PyResult<()>` bound also means the compiler rejects any non-void
 /// future passed here by mistake.
