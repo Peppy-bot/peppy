@@ -400,6 +400,23 @@ mod tests {
         NodeConfigParser::from_content(content).expect("parse node config")
     }
 
+    /// Validates `node`'s dependencies as its own caller would, naming the
+    /// node by its manifest name and tag.
+    fn dependency_errors(
+        node: &NodeConfig,
+        policy: MissingDependencyPolicy,
+        resolve: impl Fn(&str, &str) -> Option<NodeConfig>,
+    ) -> Vec<ParsingError> {
+        validate_dependency_specs(
+            &node.manifest,
+            &node.interfaces,
+            node.manifest.name.as_str(),
+            &node.manifest.tag,
+            policy,
+            resolve,
+        )
+    }
+
     /// A node that implements the `uvc_camera:v1` contract (the provider).
     fn camera_mock() -> NodeConfig {
         parse(
@@ -476,14 +493,10 @@ mod tests {
         let node = node_with_pairing(
             r#"{ topics: { consumes: [ { link_id: "controller", name: "joint_commands" } ] } }"#,
         );
-        let errors = validate_dependency_specs(
-            &node.manifest,
-            &node.interfaces,
-            "robot_arm",
-            "v1",
-            MissingDependencyPolicy::RequireResolvable,
-            |_, _| None,
-        );
+        let errors =
+            dependency_errors(&node, MissingDependencyPolicy::RequireResolvable, |_, _| {
+                None
+            });
         assert!(
             errors.is_empty(),
             "a pairing-backed consumed topic must not be reported here: {errors:?}"
@@ -505,14 +518,10 @@ mod tests {
             ),
         ] {
             let node = node_with_pairing(interfaces);
-            let errors = validate_dependency_specs(
-                &node.manifest,
-                &node.interfaces,
-                "robot_arm",
-                "v1",
-                MissingDependencyPolicy::RequireResolvable,
-                |_, _| None,
-            );
+            let errors =
+                dependency_errors(&node, MissingDependencyPolicy::RequireResolvable, |_, _| {
+                    None
+                });
             assert_eq!(errors.len(), 1, "errors: {errors:?}");
             assert!(
                 matches!(
@@ -561,14 +570,10 @@ mod tests {
                     }}
                 }}"#
             ));
-            let errors = validate_dependency_specs(
-                &node.manifest,
-                &node.interfaces,
-                "lerobot_recorder",
-                "v1",
-                MissingDependencyPolicy::RequireResolvable,
-                |_, _| None,
-            );
+            let errors =
+                dependency_errors(&node, MissingDependencyPolicy::RequireResolvable, |_, _| {
+                    None
+                });
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
@@ -699,11 +704,8 @@ mod tests {
     fn node_dep_consumer_of_native_interface_passes() {
         let consumer = node_dep_consumer("debug_stream");
         let producer = hybrid_producer();
-        let errors = validate_dependency_specs(
-            &consumer.manifest,
-            &consumer.interfaces,
-            "consumer",
-            "v1",
+        let errors = dependency_errors(
+            &consumer,
             MissingDependencyPolicy::RequireResolvable,
             |name, _| (name == "hybrid").then(|| producer.clone()),
         );
@@ -714,11 +716,8 @@ mod tests {
     fn node_dep_consumer_of_contract_backed_only_interface_gets_dedicated_error() {
         let consumer = node_dep_consumer("video_stream");
         let producer = hybrid_producer();
-        let errors = validate_dependency_specs(
-            &consumer.manifest,
-            &consumer.interfaces,
-            "consumer",
-            "v1",
+        let errors = dependency_errors(
+            &consumer,
             MissingDependencyPolicy::RequireResolvable,
             |name, _| (name == "hybrid").then(|| producer.clone()),
         );
@@ -738,11 +737,8 @@ mod tests {
     fn node_dep_consumer_of_missing_interface_still_gets_missing_interface() {
         let consumer = node_dep_consumer("nonexistent");
         let producer = hybrid_producer();
-        let errors = validate_dependency_specs(
-            &consumer.manifest,
-            &consumer.interfaces,
-            "consumer",
-            "v1",
+        let errors = dependency_errors(
+            &consumer,
             MissingDependencyPolicy::RequireResolvable,
             |name, _| (name == "hybrid").then(|| producer.clone()),
         );
@@ -772,11 +768,8 @@ mod tests {
             }"#,
         );
         let consumer = node_dep_consumer("video_stream");
-        let errors = validate_dependency_specs(
-            &consumer.manifest,
-            &consumer.interfaces,
-            "consumer",
-            "v1",
+        let errors = dependency_errors(
+            &consumer,
             MissingDependencyPolicy::RequireResolvable,
             |name, _| (name == "hybrid").then(|| producer.clone()),
         );
@@ -801,21 +794,6 @@ mod tests {
                 }}
             }}"#
         ))
-    }
-
-    fn optional_dep_errors(
-        consumer: &NodeConfig,
-        policy: MissingDependencyPolicy,
-        resolve: impl Fn(&str, &str) -> Option<NodeConfig>,
-    ) -> Vec<ParsingError> {
-        validate_dependency_specs(
-            &consumer.manifest,
-            &consumer.interfaces,
-            "panel",
-            "v1",
-            policy,
-            resolve,
-        )
     }
 
     #[track_caller]
@@ -844,7 +822,7 @@ mod tests {
         let policy = MissingDependencyPolicy::AllowAbsentWhenSlotAdmitsEmpty;
         for cardinality in ["zero_or_more", "zero_or_one"] {
             let consumer = optional_dep_consumer(cardinality);
-            let errors = optional_dep_errors(&consumer, policy, |_, _| None);
+            let errors = dependency_errors(&consumer, policy, |_, _| None);
             assert!(
                 errors.is_empty(),
                 "an absent `{cardinality}` dependency is the admitted empty set: {errors:?}"
@@ -852,7 +830,7 @@ mod tests {
         }
         for cardinality in ["one", "one_or_more"] {
             let consumer = optional_dep_consumer(cardinality);
-            let errors = optional_dep_errors(&consumer, policy, |_, _| None);
+            let errors = dependency_errors(&consumer, policy, |_, _| None);
             assert_sole_missing_recorder(cardinality, &errors);
         }
     }
@@ -864,7 +842,7 @@ mod tests {
     fn require_resolvable_reports_absent_dependencies_of_every_cardinality() {
         for cardinality in ["one", "zero_or_one", "one_or_more", "zero_or_more"] {
             let consumer = optional_dep_consumer(cardinality);
-            let errors = optional_dep_errors(
+            let errors = dependency_errors(
                 &consumer,
                 MissingDependencyPolicy::RequireResolvable,
                 |_, _| None,
@@ -880,7 +858,7 @@ mod tests {
     fn admitted_absence_policy_still_validates_a_resolved_dependency() {
         let consumer = optional_dep_consumer("zero_or_more");
         let recorder_without_finish = unrelated();
-        let errors = optional_dep_errors(
+        let errors = dependency_errors(
             &consumer,
             MissingDependencyPolicy::AllowAbsentWhenSlotAdmitsEmpty,
             |name, _| (name == "recorder").then(|| recorder_without_finish.clone()),
