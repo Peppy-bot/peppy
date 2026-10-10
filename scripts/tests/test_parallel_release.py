@@ -1119,6 +1119,13 @@ def _parents(repo: ReleaseRepo, commit: str) -> list[str]:
     return _git(repo.origin, "rev-list", "--parents", "-n", "1", commit).split()[1:]
 
 
+def _reject_the_push_to_main(remote: str, source: str, remote_branch: str) -> None:
+    """A push_branch whose push to `main` the remote rejects."""
+    if remote_branch == "main":
+        raise ReleaseError(f"failed to push '{source}' to 'origin/main': rejected")
+    real_push_branch(remote, source, remote_branch)
+
+
 def test_publish_releases_then_commits_the_notes_and_aligns_main(
     publish,
     release_repo: ReleaseRepo,
@@ -1381,13 +1388,8 @@ def test_publish_rerun_finds_the_notes_merged_into_dev_that_moved(
 ) -> None:
     release_repo.merge_elsewhere(MERGED_SINCE, "merged since the build")
 
-    def rejected_main_push(remote: str, source: str, remote_branch: str) -> None:
-        if remote_branch == "main":
-            raise ReleaseError(f"failed to push '{source}' to 'origin/main': rejected")
-        real_push_branch(remote, source, remote_branch)
-
     with patch(
-        "functions.parallel_release.push_branch", side_effect=rejected_main_push
+        "functions.parallel_release.push_branch", side_effect=_reject_the_push_to_main
     ), pytest.raises(ReleaseError, match="Re-run the failed publish job"):
         publish()
 
@@ -1642,13 +1644,8 @@ def test_publish_rerun_after_a_failed_upload_publishes_the_release(
 def test_publish_rerun_after_a_failed_push_finishes_only_the_git_side(
     publish, release_repo: ReleaseRepo, github: FakeGitHub
 ) -> None:
-    def rejected_main_push(remote: str, source: str, remote_branch: str) -> None:
-        if remote_branch == "main":
-            raise ReleaseError(f"failed to push '{source}' to 'origin/main': rejected")
-        real_push_branch(remote, source, remote_branch)
-
     with patch(
-        "functions.parallel_release.push_branch", side_effect=rejected_main_push
+        "functions.parallel_release.push_branch", side_effect=_reject_the_push_to_main
     ), pytest.raises(ReleaseError) as excinfo:
         publish()
 
