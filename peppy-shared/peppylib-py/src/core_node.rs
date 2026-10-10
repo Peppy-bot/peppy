@@ -4,8 +4,6 @@
 //! `crates/peppylib/src/lib.rs`: takes a `NodeRunner` directly and returns
 //! fully-typed responses.
 
-use std::time::Duration;
-
 use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::{ContainerInfo, CopyInfo, InfoResponse, StackListResponse};
 use pyo3::exceptions::{PyKeyError, PyRuntimeError};
@@ -13,13 +11,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pythonize::pythonize;
 
-use crate::messaging::{duration_from_secs_f64, encode_err, to_py_err};
+use crate::messaging::{encode_err, optional_duration_from_secs_f64, to_py_err};
 use crate::runtime::PyNodeRunner;
-
-fn optional_timeout(arg_name: &str, secs: Option<f64>) -> PyResult<Option<Duration>> {
-    secs.map(|s| duration_from_secs_f64(arg_name, s))
-        .transpose()
-}
 
 /// Python wrapper for `core_node_api::encoding::ContainerInfo`.
 #[pyclass(name = "ContainerInfo", from_py_object)]
@@ -292,7 +285,7 @@ fn info<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = optional_timeout("response_timeout_secs", response_timeout_secs)?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let response = peppylib::info(&runner, timeout).await.map_err(to_py_err)?;
         Ok(PyInfoResponse::from(response))
@@ -310,7 +303,7 @@ fn stack_list<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = optional_timeout("response_timeout_secs", response_timeout_secs)?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let result = peppylib::stack::list(&runner, timeout)
             .await

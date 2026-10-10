@@ -16,7 +16,9 @@ use peppylib::datastore::{DatastoreEntry, StoredValue};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::messaging::{duration_from_secs_f64, encode_err, future_into_py_unit, to_py_err};
+use crate::messaging::{
+    encode_err, future_into_py_unit, optional_duration_from_secs_f64, to_py_err,
+};
 use crate::runtime::PyNodeRunner;
 
 /// Python wrapper for `core_node_api::encoding::DatastoreStoreResponse` — an
@@ -241,9 +243,7 @@ fn datastore_store<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = response_timeout_secs
-        .map(|s| duration_from_secs_f64("response_timeout_secs", s))
-        .transpose()?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     // `future_into_py_unit` resolves to Python `None` — a store that succeeds
     // has nothing to return (see the helper for why a bare `Ok(())` would not).
     future_into_py_unit(py, async move {
@@ -267,9 +267,7 @@ fn datastore_get<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = response_timeout_secs
-        .map(|s| duration_from_secs_f64("response_timeout_secs", s))
-        .transpose()?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let value = peppylib::datastore::get(&runner, key, timeout)
             .await
@@ -291,9 +289,7 @@ fn datastore_list<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = response_timeout_secs
-        .map(|s| duration_from_secs_f64("response_timeout_secs", s))
-        .transpose()?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let entries = peppylib::datastore::list(&runner, timeout)
             .await
@@ -318,9 +314,7 @@ fn datastore_remove<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = response_timeout_secs
-        .map(|s| duration_from_secs_f64("response_timeout_secs", s))
-        .transpose()?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let removed = peppylib::datastore::remove(&runner, key, timeout)
             .await

@@ -79,6 +79,16 @@ pub(crate) fn duration_from_secs_f64(arg_name: &str, secs: f64) -> PyResult<Dura
     })
 }
 
+/// [`duration_from_secs_f64`] for an optional seconds argument: `None` stays
+/// `None`.
+pub(crate) fn optional_duration_from_secs_f64(
+    arg_name: &str,
+    secs: Option<f64>,
+) -> PyResult<Option<Duration>> {
+    secs.map(|s| duration_from_secs_f64(arg_name, s))
+        .transpose()
+}
+
 /// Wrap a `core_node_api::Error` from an `encode()` call as a Python
 /// `RuntimeError` — encode failures indicate an internal/wire-shape bug, not
 /// caller misuse.

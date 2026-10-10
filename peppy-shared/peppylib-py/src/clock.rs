@@ -15,7 +15,7 @@ use pyo3::types::PyBytes;
 use tokio::sync::Mutex;
 
 use crate::messaging::{
-    decode_err, duration_from_secs_f64, encode_err, future_into_py_unit, to_py_err,
+    decode_err, encode_err, future_into_py_unit, optional_duration_from_secs_f64, to_py_err,
 };
 use crate::runtime::PyNodeRunner;
 
@@ -220,9 +220,7 @@ fn synchronize_clock<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = response_timeout_secs
-        .map(|s| duration_from_secs_f64("response_timeout_secs", s))
-        .transpose()?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let sync = synchronize(&runner, timeout).await.map_err(to_py_err)?;
         Ok(PyClockSync::from(sync))
