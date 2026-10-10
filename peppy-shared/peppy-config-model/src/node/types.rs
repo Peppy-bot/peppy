@@ -1652,12 +1652,11 @@ fn extract_parameter_refs(mount_path: &str) -> Vec<&str> {
     let mut remaining = mount_path;
     while let Some(start) = remaining.find("${parameters:") {
         let after_prefix = &remaining[start + "${parameters:".len()..];
-        if let Some(end) = after_prefix.find('}') {
-            refs.push(&after_prefix[..end]);
-            remaining = &after_prefix[end + 1..];
-        } else {
+        let Some(end) = after_prefix.find('}') else {
             break;
-        }
+        };
+        refs.push(&after_prefix[..end]);
+        remaining = &after_prefix[end + 1..];
     }
     refs
 }
