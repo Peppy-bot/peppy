@@ -580,22 +580,7 @@ fn download_http_bundle_once(
             && last_report.elapsed() >= Duration::from_millis(500)
         {
             last_report = Instant::now();
-            let progress_msg = if let Some(total) = total_size {
-                let pct = if total > 0 {
-                    (bytes_downloaded as f64 / total as f64 * 100.0) as u64
-                } else {
-                    0
-                };
-                format!(
-                    "Downloading: {} / {} ({}%)",
-                    format_bytes(bytes_downloaded as usize),
-                    format_bytes(total as usize),
-                    pct,
-                )
-            } else {
-                format!("Downloading: {}", format_bytes(bytes_downloaded as usize))
-            };
-            announcer.progress(progress_msg);
+            announcer.progress(download_progress_line(bytes_downloaded, total_size));
         }
     }
     file.flush().map_err(|e| {
@@ -620,6 +605,25 @@ fn download_http_bundle_once(
     }
 
     Ok(())
+}
+
+/// The progress line of a bundle download: the bytes received so far, and
+/// the total with a percentage when the server sent a `content-length`. A
+/// zero total reads as 0% rather than dividing by zero.
+fn download_progress_line(downloaded: u64, total: Option<u64>) -> String {
+    let Some(total) = total else {
+        return format!("Downloading: {}", format_bytes(downloaded as usize));
+    };
+    let percent = match total {
+        0 => 0,
+        _ => (downloaded as f64 / total as f64 * 100.0) as u64,
+    };
+    format!(
+        "Downloading: {} / {} ({}%)",
+        format_bytes(downloaded as usize),
+        format_bytes(total as usize),
+        percent,
+    )
 }
 
 fn decode_sha256_hex(input: &str) -> std::result::Result<Vec<u8>, String> {
@@ -1714,6 +1718,23 @@ mod tests {
                 PathBuf::from(expected),
                 "repo path {repo_path}"
             );
+        }
+    }
+
+    #[test]
+    fn download_progress_line_formats_known_and_unknown_totals() {
+        let cases = [
+            (512, None, "Downloading: 512 B"),
+            (1, Some(4), "Downloading: 1 B / 4 B (25%)"),
+            (7, Some(0), "Downloading: 7 B / 0 B (0%)"),
+            (
+                3 * 1024 * 1024 / 2,
+                Some(3 * 1024 * 1024),
+                "Downloading: 1.5 MB / 3.0 MB (50%)",
+            ),
+        ];
+        for (downloaded, total, expected) in cases {
+            assert_eq!(download_progress_line(downloaded, total), expected);
         }
     }
 
