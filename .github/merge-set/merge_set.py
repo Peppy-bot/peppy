@@ -1681,8 +1681,8 @@ def quoted(branch: str) -> str:
     return urllib.parse.quote(branch, safe="/")
 
 
-def pull_request_path(pull_request: PullRequest) -> str:
-    return f"/repos/{pull_request.repository.full_name}/pulls/{pull_request.number}"
+def pull_request_path(repository: Repository, number: int) -> str:
+    return f"/repos/{repository.full_name}/pulls/{number}"
 
 
 def comment_path(dashboard: Dashboard) -> str:
@@ -1690,8 +1690,8 @@ def comment_path(dashboard: Dashboard) -> str:
     return f"/repos/{repository.full_name}/issues/comments/{dashboard.id}"
 
 
-def issue_comments_path(pull_request: PullRequest) -> str:
-    return f"/repos/{pull_request.repository.full_name}/issues/{pull_request.number}/comments"
+def issue_comments_path(repository: Repository, number: int) -> str:
+    return f"/repos/{repository.full_name}/issues/{number}/comments"
 
 
 class GitHubGateway:
@@ -1733,13 +1733,15 @@ class GitHubGateway:
         return [parse_pull_request(repository, item) for item in items]
 
     def pull_request(self, repository: Repository, number: int) -> PullRequest:
-        item = self.api.request("GET", f"/repos/{repository.full_name}/pulls/{number}")
+        item = self.api.request("GET", pull_request_path(repository, number))
         return parse_pull_request(repository, item)
 
     def merge_state(self, pull_request: PullRequest) -> tuple[bool | None, str]:
         """Whether the pull request merges without conflicts (None while GitHub
         computes it), and its `mergeable_state`."""
-        item = self.api.request("GET", pull_request_path(pull_request))
+        item = self.api.request(
+            "GET", pull_request_path(pull_request.repository, pull_request.number)
+        )
         return item.get("mergeable"), item.get("mergeable_state") or MERGE_STATE_UNKNOWN
 
     def branch_rules(self, repository: Repository) -> BranchRules:
@@ -1924,7 +1926,8 @@ class GitHubGateway:
 
     def dashboard(self, pull_request: PullRequest) -> Dashboard | None:
         """The oldest dashboard the bot wrote on the pull request."""
-        for comment in self.api.pages(issue_comments_path(pull_request)):
+        path = issue_comments_path(pull_request.repository, pull_request.number)
+        for comment in self.api.pages(path):
             if self.is_dashboard(comment):
                 return self.dashboard_of(pull_request, comment)
         return None
@@ -1955,7 +1958,9 @@ class GitHubGateway:
     def create_comment(self, pull_request: PullRequest, body: str) -> str:
         """Write a comment on the pull request, and return its URL."""
         comment = self.api.request(
-            "POST", issue_comments_path(pull_request), body={"body": body}
+            "POST",
+            issue_comments_path(pull_request.repository, pull_request.number),
+            body={"body": body},
         )
         return comment["html_url"]
 
@@ -1986,7 +1991,7 @@ class GitHubGateway:
         """Merge the pull request at its head commit, and return the merge
         commit. A call that fails is checked against the pull request: GitHub
         can merge it and still fail the response."""
-        path = pull_request_path(pull_request)
+        path = pull_request_path(pull_request.repository, pull_request.number)
         try:
             response = self.api.request(
                 "PUT",
@@ -2673,7 +2678,7 @@ def relay(
     if subject.branch is None:
         subject = subject_of_pull_request(
             api_for(pull_request_scope(repository)).request(
-                "GET", f"/repos/{repository.full_name}/pulls/{subject.pull_request}"
+                "GET", pull_request_path(repository, subject.pull_request)
             )
         )
     inputs = dispatch_inputs(repository, subject)
@@ -2686,7 +2691,7 @@ def relay(
         return started
     api_for(pull_request_scope(repository)).request(
         "POST",
-        f"/repos/{repository.full_name}/issues/{subject.pull_request}/comments",
+        issue_comments_path(repository, subject.pull_request),
         body={"body": render_request_received(ticked, subject.branch, run_url)},
     )
     return (

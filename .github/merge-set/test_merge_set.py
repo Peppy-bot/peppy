@@ -2381,6 +2381,33 @@ class Gateway(unittest.TestCase):
                         gateway.merge(pull_request(NODES_HUB, 88), "message"), expected
                     )
 
+    def test_the_calls_about_a_pull_request_name_its_paths(self):
+        pr = pull_request(NODES_HUB, 88)
+        pull_path = "/repos/Peppy-bot/nodes-hub/pulls/88"
+        comments_path = "/repos/Peppy-bot/nodes-hub/issues/88/comments"
+        repo = {"full_name": "Peppy-bot/nodes-hub"}
+        item = {
+            "number": 88,
+            "html_url": pr.url,
+            "title": pr.title,
+            "state": "open",
+            "head": {"sha": pr.head_commit, "ref": SET_NAME, "repo": repo},
+            "base": {"ref": "main", "repo": repo},
+            "mergeable": True,
+            "mergeable_state": "clean",
+        }
+        api = FakeApi(
+            {("GET", pull_path): item, ("POST", comments_path): {"html_url": "c9"}}
+        )
+        gateway = gateway_of(api)
+        self.assertEqual(gateway.pull_request(NODES_HUB, 88), pr)
+        self.assertEqual(gateway.merge_state(pr), (True, "clean"))
+        self.assertEqual(gateway.create_comment(pr, "a report"), "c9")
+        self.assertEqual(
+            [call[:2] for call in api.calls],
+            [("GET", pull_path), ("GET", pull_path), ("POST", comments_path)],
+        )
+
     def test_a_merge_asks_for_the_head_commit_it_checked(self):
         path = "/repos/Peppy-bot/nodes-hub/pulls/88/merge"
         api = FakeApi({("PUT", path): {"sha": "m" * 40}})
