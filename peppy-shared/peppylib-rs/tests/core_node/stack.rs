@@ -7,14 +7,14 @@ use core_node_api::{
     InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
     SerializedNodeGraph,
 };
-use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::messaging::MessengerHandle;
 use peppylib::runtime::NodeRunner;
 use peppylib::stack;
 use peppylib::testing::EphemeralRouter;
 use tempfile::TempDir;
 
 use super::common::{
-    CORE_NODE, SERVER_INSTANCE, start_router_and_runner, test_node_target, wait_until_reachable,
+    CORE_NODE, SERVER_INSTANCE, listen_as_core_node, start_router_and_runner, wait_until_reachable,
 };
 
 /// Spins up a single-shot `STACK_LIST` listener that returns `graph` serialized
@@ -22,15 +22,7 @@ use super::common::{
 /// stub self-reports the `(core_node, instance_id)` it listens as.
 async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph, host_name: &str) {
     let host_name = host_name.to_string();
-    let mut endpoint = ServiceMessenger::listen(
-        &server,
-        CORE_NODE,
-        SERVER_INSTANCE,
-        test_node_target(CORE_NODE),
-        ServiceId::StackList.name(),
-    )
-    .await
-    .expect("listen should succeed");
+    let mut endpoint = listen_as_core_node(&server, ServiceId::StackList).await;
 
     tokio::spawn(async move {
         endpoint

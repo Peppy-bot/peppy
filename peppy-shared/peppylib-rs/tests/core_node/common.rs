@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use config::runtime::ClockBinding;
-use core_node_api::names;
+use core_node_api::{ServiceId, names};
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{MessengerHandle, ProducerRef};
+use peppylib::messaging::{MessengerHandle, ProducerRef, ServiceEndpoint, ServiceMessenger};
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use peppylib::testing::EphemeralRouter;
 use tempfile::TempDir;
@@ -29,6 +29,23 @@ pub(crate) const SERVER_INSTANCE: &str = "test_server";
 /// these tests must mirror that tag to actually route through the wire.
 pub(crate) fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, names::CORE_NODE_TAG).expect("test node target")
+}
+
+/// Listens for `service` on `server` as the core node, the identity the
+/// runner's core-node calls address, which every stub must serve under.
+pub(crate) async fn listen_as_core_node(
+    server: &MessengerHandle,
+    service: ServiceId,
+) -> ServiceEndpoint {
+    ServiceMessenger::listen(
+        server,
+        CORE_NODE,
+        SERVER_INSTANCE,
+        test_node_target(CORE_NODE),
+        service.name(),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("listen {} should succeed: {e}", service.name()))
 }
 
 /// Writes a minimal `peppy.json5` into `dir` suitable for

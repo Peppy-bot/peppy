@@ -7,12 +7,12 @@ use config::runtime::{
 use core_node_api::encoding::{ClockResponse, ClockTick};
 use core_node_api::{ServiceId, TopicId, names};
 use peppylib::clock;
-use peppylib::messaging::{MessengerHandle, SenderTarget, ServiceMessenger, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, SenderTarget, TopicMessenger};
 use peppylib::testing::EphemeralRouter;
 use tempfile::TempDir;
 
 use super::common::{
-    CORE_NODE, SERVER_INSTANCE, publish_once, start_router_and_runner,
+    CORE_NODE, SERVER_INSTANCE, listen_as_core_node, publish_once, start_router_and_runner,
     start_router_and_runner_with_clock, test_node_target, wait_for_topic_subscriber,
     wait_until_reachable,
 };
@@ -21,15 +21,7 @@ use super::common::{
 /// verbatim. The handler decodes the inbound `ClockRequest` to assert wire
 /// shape, even though it ignores the value.
 async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockResponse) {
-    let mut endpoint = ServiceMessenger::listen(
-        &server,
-        CORE_NODE,
-        SERVER_INSTANCE,
-        test_node_target(CORE_NODE),
-        ServiceId::Clock.name(),
-    )
-    .await
-    .expect("listen should succeed");
+    let mut endpoint = listen_as_core_node(&server, ServiceId::Clock).await;
 
     tokio::spawn(async move {
         endpoint
