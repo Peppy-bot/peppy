@@ -244,6 +244,53 @@ fn node_init_with_to_dir_creates_the_node_in_that_directory() {
 }
 
 #[test]
+fn node_init_refuses_an_existing_node_directory() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to start mock serve emulation");
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let node_name = "test_node";
+    let existing_node_dir = node_dir.path().join(node_name);
+    std::fs::create_dir(&existing_node_dir).expect("failed to create the existing node dir");
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), serve.messenger())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let _guard = log_capture.install();
+
+    let err = NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            toolchain: Toolchain::Cargo,
+            to_dir: None,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect_err("node init should refuse a directory that already exists");
+
+    let expected = format!(
+        "Node directory already exists: {}",
+        existing_node_dir.display()
+    );
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains(&expected),
+        "the error should carry the refusal of the daemon. Got: {err_msg}"
+    );
+    let logs = log_capture.logs();
+    assert!(
+        !logs.contains("Successfully created node"),
+        "a refused init should not log a success. Logs:\n{logs}"
+    );
+}
+
+#[test]
 fn node_uv_init_command_success() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let serve = rt

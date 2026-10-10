@@ -24,6 +24,30 @@ async fn info_command_succeeds_when_daemon_running() {
         .expect("info command should succeed when daemon is running");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn info_command_fails_when_the_target_core_node_does_not_answer() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to start serve emulation");
+
+    // No daemon serves `absent-core`, so the info request gets no reply.
+    let ctx = Arc::new(
+        AppContext::with_messenger(serve.temp_dir(), serve.messenger())
+            .with_daemon_state_file(serve.daemon_state_path())
+            .with_core_node_override(Some("absent-core".to_string())),
+    );
+
+    let err = InfoCommand
+        .execute(&ctx)
+        .expect_err("info command should fail when the target does not answer");
+
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("Failed to get daemon info: "),
+        "error message should say the daemon info request failed. Got: {err_msg}"
+    );
+}
+
 #[test]
 fn info_command_fails_without_daemon() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
