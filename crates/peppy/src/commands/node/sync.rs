@@ -81,23 +81,25 @@ async fn sync_resolved_node(
 
     info!("Synced node interfaces at {}", node_root_dir.display());
 
-    if include_repositories {
-        if !response.resolved_from_stack.is_empty() {
-            info!("Synchronized from node stack:");
-            for dep in &response.resolved_from_stack {
-                info!("  - {}", dep);
-            }
+    if !include_repositories {
+        return Ok(());
+    }
+
+    if !response.resolved_from_stack.is_empty() {
+        info!("Synchronized from node stack:");
+        for dep in &response.resolved_from_stack {
+            info!("  - {}", dep);
         }
-        if !response.resolved_from_repositories.is_empty() {
-            info!("Synchronized from repositories:");
-            for entry in &response.resolved_from_repositories {
-                info!(
-                    "  - {}:{} ({})",
-                    entry.name,
-                    entry.tag,
-                    entry.source_kind.as_str()
-                );
-            }
+    }
+    if !response.resolved_from_repositories.is_empty() {
+        info!("Synchronized from repositories:");
+        for entry in &response.resolved_from_repositories {
+            info!(
+                "  - {}:{} ({})",
+                entry.name,
+                entry.tag,
+                entry.source_kind.as_str()
+            );
         }
     }
 

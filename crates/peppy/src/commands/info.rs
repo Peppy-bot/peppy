@@ -54,7 +54,7 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     let request = InfoRequest::new();
-    match poll(
+    let response = poll(
         &request,
         conn.messenger,
         &conn.core_node_name,
@@ -63,33 +63,26 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
         REQUEST_TIMEOUT,
     )
     .await
-    {
-        Ok(response) => {
-            println!();
-            println!("Daemon Info");
-            println!("-----------");
-            println!("Version: {}", response.git_version);
-            println!("Core node name: {}", response.core_node_name);
-            println!("Core node instance ID: {}", response.core_node_instance_id);
-            println!("Host name: {}", response.host_name);
-            println!("Messaging port: {}", response.messaging_port);
-            println!("Uptime: {}s", response.uptime_secs);
-            println!("Node count: {}", response.node_count);
-            println!();
-            println!("Container Info");
-            println!("--------------");
-            println!(
-                "Apptainer version: {}",
-                response.container_info.apptainer_version
-            );
-            println!("Lima version: {}", response.container_info.lima_version);
-        }
-        Err(e) => {
-            return Err(Error::ExecutionFailed(format!(
-                "Failed to get daemon info: {e}"
-            )));
-        }
-    }
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to get daemon info: {e}")))?;
+
+    println!();
+    println!("Daemon Info");
+    println!("-----------");
+    println!("Version: {}", response.git_version);
+    println!("Core node name: {}", response.core_node_name);
+    println!("Core node instance ID: {}", response.core_node_instance_id);
+    println!("Host name: {}", response.host_name);
+    println!("Messaging port: {}", response.messaging_port);
+    println!("Uptime: {}s", response.uptime_secs);
+    println!("Node count: {}", response.node_count);
+    println!();
+    println!("Container Info");
+    println!("--------------");
+    println!(
+        "Apptainer version: {}",
+        response.container_info.apptainer_version
+    );
+    println!("Lima version: {}", response.container_info.lima_version);
 
     Ok(())
 }

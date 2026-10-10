@@ -88,16 +88,16 @@ impl NodeInitBuilder {
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_init service: {}", e)))?;
 
-        if response.success {
-            info!(
-                "Successfully created node '{}' at {}/{}",
-                self.node_name,
-                self.to_dir.display(),
-                self.node_name
-            );
-            Ok(())
-        } else {
-            Err(Error::ExecutionFailed(response.error_message))
+        if !response.success {
+            return Err(Error::ExecutionFailed(response.error_message));
         }
+
+        info!(
+            "Successfully created node '{}' at {}/{}",
+            self.node_name,
+            self.to_dir.display(),
+            self.node_name
+        );
+        Ok(())
     }
 }
