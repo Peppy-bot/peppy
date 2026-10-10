@@ -295,18 +295,10 @@ impl CapnpFacade {
             include!(concat!(env!("OUT_DIR"), "/embedded_capnp.rs"));
         }
 
-        let binary_bytes = embedded::CAPNP_BINARY.ok_or_else(|| {
-            Error::Encoding(format!(
-                "no bundled capnp binary available for {}/{}",
-                env::consts::OS,
-                env::consts::ARCH
-            ))
-        })?;
-
         let binary_path = daemon_config::consts::PeppyDirs::default()
             .bin_dir()
             .join("peppy_capnp_binary");
-        Self::install_bundled_binary(&binary_path, binary_bytes)
+        Self::install_bundled_binary(&binary_path, embedded::CAPNP_BINARY)
     }
 }
 

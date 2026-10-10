@@ -21,7 +21,7 @@ mod capnp_build {
         let mut file = fs::File::create(&generated).unwrap();
         writeln!(
             file,
-            r#"pub const CAPNP_BINARY: Option<&[u8]> = Some(include_bytes!("{}"));"#,
+            r#"pub const CAPNP_BINARY: &[u8] = include_bytes!("{}");"#,
             binary_path.display()
         )
         .unwrap();
