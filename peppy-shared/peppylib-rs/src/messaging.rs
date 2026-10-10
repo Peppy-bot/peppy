@@ -522,10 +522,7 @@ impl MessengerHandle {
 
     async fn new_session(adapter: ZenohAdapter) -> Result<Messenger> {
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-        messenger
-            .start_session()
-            .await
-            .map_err(Error::PeppyMessagingInterface)?;
+        messenger.start_session().await?;
 
         Ok(messenger)
     }
@@ -564,9 +561,7 @@ impl MessengerHandle {
             match &messenger.adapter {
                 #[cfg(feature = "zenoh")]
                 MessengerAdapter::Zenoh(adapter) => {
-                    let wait = adapter
-                        .topic_subscriber_wait(sender)
-                        .map_err(Error::PeppyMessagingInterface)?;
+                    let wait = adapter.topic_subscriber_wait(sender)?;
                     drop(messenger);
                     return wait
                         .resolve(timeout)
@@ -594,10 +589,7 @@ impl MessengerHandle {
     ) -> Result<ServiceEndpoint> {
         let queryable = {
             let messenger = self.messenger.lock().await;
-            messenger
-                .listen_service(recv)
-                .await
-                .map_err(Error::PeppyMessagingInterface)?
+            messenger.listen_service(recv).await?
         };
         Ok(ServiceEndpoint::new(Arc::clone(&self.messenger), queryable))
     }
@@ -779,10 +771,7 @@ impl MessengerHandle {
     ) -> Result<bool> {
         let probe = {
             let messenger = self.messenger.lock().await;
-            messenger
-                .probe_action_producer(sender, timeout)
-                .await
-                .map_err(Error::PeppyMessagingInterface)?
+            messenger.probe_action_producer(sender, timeout).await?
         };
         Ok(probe.resolve().await)
     }
@@ -823,8 +812,7 @@ impl MessengerHandle {
             let messenger = self.messenger.lock().await;
             messenger
                 .list_core_node_presence(PresenceScope::Session, core_node, timeout)
-                .await
-                .map_err(Error::PeppyMessagingInterface)?
+                .await?
         };
         list.collect().await.map_err(Error::PeppyMessagingInterface)
     }

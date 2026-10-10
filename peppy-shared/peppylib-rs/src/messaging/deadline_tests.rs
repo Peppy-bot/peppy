@@ -9,8 +9,8 @@ use futures::{
     task::{ArcWake, waker_ref},
 };
 use pmi::{
-    Messenger, MessengerAdapter, MessengerBackend, MockAdapter, ResponseToken, ServiceKind,
-    ServiceQueryKind, ServiceQueryable, ServiceWireReceiver, ServiceWireSender,
+    ActionWireSender, Messenger, MessengerAdapter, MessengerBackend, MockAdapter, ResponseToken,
+    ServiceKind, ServiceQueryKind, ServiceQueryable, ServiceWireReceiver, ServiceWireSender,
 };
 use std::{
     cell::Cell,
@@ -558,6 +558,41 @@ async fn issuance_errors_remain_transport_errors() {
             matches!(error, Error::PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError::PublishError { topic })
             if topic == SERVICE)
         );
+    }
+}
+
+/// The liveliness probe and the presence listing issue their query under
+/// the messenger lock like a service poll does, so a stopped session fails
+/// them at issuance with the transport error as it is.
+#[tokio::test(start_paused = true)]
+async fn liveliness_issuance_errors_remain_transport_errors() {
+    let handle = mock_handle().await;
+    handle.messenger.lock().await.stop_session().await.unwrap();
+    let action_sender = ActionWireSender::new(
+        CORE,
+        "deadline_caller",
+        Some(&ProducerRef::new(CORE, PRODUCER)),
+        target(),
+        "deadline_action",
+    )
+    .unwrap();
+
+    let probe_error = handle
+        .probe_action_producer(&action_sender, BUDGET)
+        .await
+        .unwrap_err();
+    let presence_error = handle
+        .list_core_node_presence(None, BUDGET)
+        .await
+        .unwrap_err();
+
+    for error in [probe_error, presence_error] {
+        assert!(matches!(
+            error,
+            Error::PeppyMessagingInterface(
+                pmi::PeppyMessagingInterfaceError::MessagingSessionError(_)
+            )
+        ));
     }
 }
 
