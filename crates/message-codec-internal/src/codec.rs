@@ -3,8 +3,10 @@
 //! Encoding visits the layout's fields in declaration order and allocates
 //! every pointer target (text, data, nested struct, list) at the point of
 //! its field, into a default heap allocator, then frames the message with
-//! [`capnp::serialize::write_message`]. That is the sequence generated
-//! nodes follow, so the two produce the same bytes for the same values.
+//! [`capnp::serialize::write_message_to_words`], which writes the same
+//! stream framing as [`capnp::serialize::write_message`]. That is the
+//! sequence generated nodes follow, so the two produce the same bytes for
+//! the same values.
 //! Decoding reads each field back through the same accessors, in place in
 //! the framed bytes as the transport handed them over (no alignment is
 //! assumed of them), and renders it with the canonical value rules.
