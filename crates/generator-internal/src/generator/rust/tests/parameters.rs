@@ -353,6 +353,46 @@ fn reject_parameters_with_invalid_field_names() {
     }
 }
 
+/// The generated code has no array parameter type, so an array is refused
+/// at any depth, and the error names the field by its dotted path.
+#[test]
+fn reject_array_parameters_with_their_dotted_path() {
+    use crate::error::Error;
+    use crate::generator::rust::generate_parameters_struct;
+    use config::ParameterSpec;
+    use config::node::TypeToken;
+    use std::collections::BTreeMap;
+
+    let array = ParameterSpec::Array {
+        items: Box::new(ParameterSpec::Primitive {
+            kind: TypeToken::U16,
+            default: None,
+        }),
+        length: None,
+    };
+    let cases = [
+        (
+            BTreeMap::from([("gains".to_string(), array.clone())]),
+            "gains",
+        ),
+        (
+            BTreeMap::from([(
+                "video".to_string(),
+                ParameterSpec::Group(BTreeMap::from([("frames".to_string(), array)])),
+            )]),
+            "video.frames",
+        ),
+    ];
+
+    for (schema, expected_path) in cases {
+        let error = generate_parameters_struct(&schema).unwrap_err();
+        assert!(
+            matches!(&error, Error::UnsupportedArrayParameter { path } if path == expected_path),
+            "expected UnsupportedArrayParameter at `{expected_path}`, got: {error:?}"
+        );
+    }
+}
+
 /// Bool literal as a parameter spec is rejected at parse time: the typed
 /// `ParameterSpec` enum cannot represent it. This guards the "parse, don't
 /// validate" boundary: invalid schemas never reach the generator.
