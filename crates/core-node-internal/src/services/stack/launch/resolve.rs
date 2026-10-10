@@ -37,6 +37,8 @@ pub(in crate::services::stack) struct ParsedLaunch {
 /// caller that resolved selections itself could do so for a filesystem
 /// launcher and not for a repository one, and the two origins would drift
 /// into meaning different things.
+///
+/// Every refusal is published as the launch's error before it is returned.
 pub(in crate::services::stack) async fn parse_launcher_config(
     ctx: &StackChangeContext,
     goal: &LaunchGoal,
@@ -48,76 +50,66 @@ pub(in crate::services::stack) async fn parse_launcher_config(
     )
     .await;
 
-    let launch_file = match resolve_launcher_origin(ctx, &goal.launcher_origin).await {
-        Ok(path) => path,
-        Err(msg) => {
-            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(msg);
-        }
-    };
+    let parsed = read_launcher_config(ctx, goal).await;
+    if let Err(reason) = &parsed {
+        publish_error(ctx, reason, LaunchFeedbackStep::LauncherStep).await;
+    }
+    parsed
+}
+
+/// The steps of [`parse_launcher_config`], which publishes the reason of
+/// whichever step refuses.
+async fn read_launcher_config(
+    ctx: &StackChangeContext,
+    goal: &LaunchGoal,
+) -> std::result::Result<ParsedLaunch, String> {
+    let launch_file = resolve_launcher_origin(ctx, &goal.launcher_origin).await?;
 
     if !launch_file.exists() {
-        let msg = format!("launch file does not exist: {}", launch_file.display());
-        publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(msg);
+        return Err(format!(
+            "launch file does not exist: {}",
+            launch_file.display()
+        ));
     }
 
     if !launch_file.is_file() {
-        let msg = format!("launch file path must be a file: {}", launch_file.display());
-        publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(msg);
+        return Err(format!(
+            "launch file path must be a file: {}",
+            launch_file.display()
+        ));
     }
 
-    let parsed = match PeppyLauncherParser::from_path(&launch_file) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            let msg = format!("Invalid launcher config: {e}");
-            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(msg);
-        }
-    };
+    let parsed = PeppyLauncherParser::from_path(&launch_file)
+        .map_err(|e| format!("Invalid launcher config: {e}"))?;
 
     let prepared = daemon_config::launcher::PreparedLauncher::load(&parsed, &launch_file)
         .map_err(|e| e.to_string())?;
-    let composed = match prepared.launch(&goal.selections, &goal.joins) {
-        Ok(composed) => {
-            if !parsed.components.is_empty() {
-                // The full resolution is echoed before anything runs, so the
-                // operator sees which stack this launch is of, and which
-                // copies, while there is still time to interrupt it.
-                for line in composed.report.selection_lines() {
-                    publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
-                }
-            }
-            composed
+    // Not a parse failure: the document was already read fine. The
+    // composition errors themselves name the axis and its options, so the
+    // prefix only says which step refused.
+    let composed = prepared
+        .launch(&goal.selections, &goal.joins)
+        .map_err(|e| format!("Cannot resolve the launcher's components: {e}"))?;
+    if !parsed.components.is_empty() {
+        // The full resolution is echoed before anything runs, so the
+        // operator sees which stack this launch is of, and which copies,
+        // while there is still time to interrupt it.
+        for line in composed.report.selection_lines() {
+            publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
         }
-        Err(e) => {
-            // Not a parse failure: the document was already read fine. The
-            // composition errors themselves name the axis and its options,
-            // so the prefix only says which step refused.
-            let msg = format!("Cannot resolve the launcher's components: {e}");
-            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(msg);
-        }
-    };
+    }
 
     let copy_names: Vec<&str> = composed
         .copies()
         .iter()
         .map(|copy| copy.name.as_str())
         .collect();
-    let placements = match resolve_placements(
+    let placements = resolve_placements(
         &composed.launcher,
         goal,
         &copy_names,
         ctx.bound_core_node.as_str(),
-    ) {
-        Ok(placements) => placements,
-        Err(msg) => {
-            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(msg);
-        }
-    };
+    )?;
 
     Ok(ParsedLaunch {
         prepared,

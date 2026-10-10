@@ -1200,6 +1200,70 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
     );
 }
 
+/// A launcher that parses but whose options fail to load, here because
+/// option `real` declares an axis named like the launcher's own `robot`
+/// axis, fails the launch and names the reason in the launch feedback and
+/// the launch log, as every other refusal of the launcher does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launcher_whose_options_fail_to_load_reports_why_in_the_feedback() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let launcher_dir = tempdir().expect("failed to create launcher dir");
+    let launch_file_path = launcher_dir.path().join("peppy_launcher.json5");
+    // No cache fixture: the options fail to load before any deployment is
+    // resolved, so nothing reads `nodes.json5`.
+    fs::write(
+        &launch_file_path,
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [{ name: "robot", cardinality: "zero_or_more", options: {
+                real: {
+                    deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
+                    components: [{ name: "robot", options: {
+                        arm: { deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "inner_inst" }] }] },
+                    } }],
+                },
+            } }],
+        }"#,
+    )
+    .expect("failed to write launch file");
+
+    let mut feedback_lines: Vec<String> = Vec::new();
+    let (_goal_response, result) = send_launch_origin_and_wait_observing(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        LauncherOrigin::Fs(launch_file_path),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        vec![],
+        &mut |feedback| feedback_lines.push(feedback.line),
+    )
+    .await
+    .expect("launch should return a result");
+
+    assert!(
+        !result.success,
+        "launch should fail when the launcher's options fail to load"
+    );
+    let error_message = result
+        .error_message
+        .clone()
+        .expect("a failed launch names its reason");
+    assert!(
+        feedback_lines
+            .iter()
+            .any(|line| line.contains(&error_message)),
+        "the reason `{error_message}` reaches the launch feedback; feedback:\n{}",
+        feedback_lines.join("\n")
+    );
+    let launch_log = fs::read_to_string(&result.log_path).expect("read the launch log");
+    assert!(
+        launch_log.contains(&error_message),
+        "the reason `{error_message}` is on record in the launch log at {}:\n{launch_log}",
+        result.log_path.display()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_config_missing_required_deployment_does_not_apply_partial_plan() {
     const EXISTING_NODE: &str = "existing_node";
