@@ -5,8 +5,7 @@
 use super::super::composition::{ArgumentOverrides, ComponentAxis, CopyEntry};
 use super::super::types::PeppyLauncher;
 use super::constraints::{
-    ConstraintInPlay, ConstraintScope, LAUNCHER, constraint_satisfied, constraints_in_play,
-    render_constraint,
+    ConstraintInPlay, ConstraintScope, constraint_satisfied, constraints_in_play, render_constraint,
 };
 use super::copy::{ComposedCopy, CopyRequest, attach, combine, compose_copy, copy_over_stack};
 use super::error::CompositionError;
@@ -747,24 +746,17 @@ impl<'a> Ledger<'a> {
         let mut constraints: Vec<ConstraintInPlay<'a>> = Vec::new();
         let mut positions: HashMap<(Option<usize>, usize), usize> = HashMap::new();
         for (position, constraint) in prepared.launcher.constraints.iter().enumerate() {
-            positions.insert((None, position), constraints.len());
-            constraints.push(ConstraintInPlay {
-                constraint,
-                origin: LAUNCHER,
-                key: (None, position),
-            });
+            let in_play = ConstraintInPlay::of_launcher(position, constraint);
+            positions.insert(in_play.key, constraints.len());
+            constraints.push(in_play);
         }
         for axis in &prepared.launcher.components {
             for (_, loaded) in prepared.loaded.options_of(&axis.name) {
                 for fragment in loaded.all_fragments() {
                     for (position, constraint) in fragment.body.constraints.iter().enumerate() {
-                        let key = (Some(fragment.id), position);
-                        positions.entry(key).or_insert_with(|| {
-                            constraints.push(ConstraintInPlay {
-                                constraint,
-                                origin: &fragment.origin,
-                                key,
-                            });
+                        let in_play = ConstraintInPlay::of_fragment(fragment, position, constraint);
+                        positions.entry(in_play.key).or_insert_with(|| {
+                            constraints.push(in_play);
                             constraints.len() - 1
                         });
                     }
