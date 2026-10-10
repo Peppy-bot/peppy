@@ -1312,6 +1312,52 @@ fn goal_id_from_request(payload: &[u8]) -> Result<String> {
     Ok(goal_id.to_string())
 }
 
+/// The goal sub-service a background loop of [`ConcurrentAction`] serves.
+#[derive(Clone, Copy)]
+enum GoalRequestService {
+    Cancel,
+    Result,
+}
+
+/// Waits for the next request on `service` that carries a `goal_id`, and
+/// returns that `goal_id` with the request's responder. A request without a
+/// goal envelope is answered with an error and skipped. `None` ends the
+/// calling loop: `stop` fired, the request stream closed, or receiving failed
+/// (logged).
+async fn next_goal_request(
+    service: &mut ServiceEndpoint,
+    stop: &CancellationToken,
+    kind: GoalRequestService,
+) -> Option<(String, ServiceResponder)> {
+    loop {
+        let next = tokio::select! {
+            _ = stop.cancelled() => return None,
+            next = service.recv_next_request() => next,
+        };
+        let (context, responder) = match next {
+            Ok(Some(pair)) => pair,
+            Ok(None) => return None,
+            Err(err) => {
+                match kind {
+                    GoalRequestService::Cancel => warn!(%err, "action cancel loop stopped"),
+                    GoalRequestService::Result => warn!(%err, "action result loop stopped"),
+                }
+                return None;
+            }
+        };
+
+        let Ok(goal_id) = goal_id_from_request(context.message().payload_bytes().as_ref()) else {
+            let reason = match kind {
+                GoalRequestService::Cancel => "malformed cancel request payload",
+                GoalRequestService::Result => "malformed result request payload",
+            };
+            let _ = responder.respond_error(reason.to_string()).await;
+            continue;
+        };
+        return Some((goal_id, responder));
+    }
+}
+
 /// Background loop: routes each incoming cancel request to the matching live
 /// goal's [`CancellationToken`] and replies with a typed [`CancelState`]. There
 /// is no "no active goal" reply: a live goal is `Signalled`, an
@@ -1323,30 +1369,9 @@ async fn run_cancel_loop(
     tombstones: Tombstones,
     stop: CancellationToken,
 ) {
-    loop {
-        let next = tokio::select! {
-            _ = stop.cancelled() => return,
-            next = cancel_service.recv_next_request() => next,
-        };
-        let (context, responder) = match next {
-            Ok(Some(pair)) => pair,
-            Ok(None) => return,
-            Err(err) => {
-                warn!(%err, "action cancel loop stopped");
-                return;
-            }
-        };
-
-        let goal_id = match goal_id_from_request(context.message().payload_bytes().as_ref()) {
-            Ok(goal_id) => goal_id,
-            Err(_) => {
-                let _ = responder
-                    .respond_error("malformed cancel request payload".to_string())
-                    .await;
-                continue;
-            }
-        };
-
+    while let Some((goal_id, responder)) =
+        next_goal_request(&mut cancel_service, &stop, GoalRequestService::Cancel).await
+    {
         // Clone the token + terminal flag out under the lock, then fire + respond
         // without holding the registry lock across the network reply.
         let found = registry
@@ -1409,30 +1434,9 @@ async fn run_result_loop(
     tombstones: Tombstones,
     stop: CancellationToken,
 ) {
-    loop {
-        let next = tokio::select! {
-            _ = stop.cancelled() => return,
-            next = result_service.recv_next_request() => next,
-        };
-        let (context, responder) = match next {
-            Ok(Some(pair)) => pair,
-            Ok(None) => return,
-            Err(err) => {
-                warn!(%err, "action result loop stopped");
-                return;
-            }
-        };
-
-        let goal_id = match goal_id_from_request(context.message().payload_bytes().as_ref()) {
-            Ok(goal_id) => goal_id,
-            Err(_) => {
-                let _ = responder
-                    .respond_error("malformed result request payload".to_string())
-                    .await;
-                continue;
-            }
-        };
-
+    while let Some((goal_id, responder)) =
+        next_goal_request(&mut result_service, &stop, GoalRequestService::Result).await
+    {
         // Clone the slot out under the std lock (dropped at the `;`); never hold
         // the registry lock across `.await`.
         let slot = registry.lock().unwrap().get(&goal_id).cloned();
@@ -2321,6 +2325,16 @@ mod engine_tests {
         (handle, action, sender)
     }
 
+    async fn send_malformed_request(
+        handle: &MessengerHandle,
+        service: &pmi::ServiceWireSender,
+    ) -> Error {
+        handle
+            .poll_service(service, Payload::new(), ServiceQueryKind::UserRequest, None)
+            .await
+            .unwrap_err()
+    }
+
     /// A result poll that misses against a producer that is still alive stays
     /// an error: the follow-up liveliness probe finds the producer's token, so
     /// no Abandoned outcome is synthesized for a goal that is still running.
@@ -2368,5 +2382,23 @@ mod engine_tests {
             ),
         }
         drop(context);
+    }
+
+    #[tokio::test]
+    async fn malformed_cancel_and_result_requests_get_an_error_and_the_loops_keep_serving() {
+        let (handle, _action, sender) = expose_mock_action().await;
+        for (service, expected_reason) in [
+            (sender.cancel_service(), "malformed cancel request payload"),
+            (sender.result_service(), "malformed result request payload"),
+        ] {
+            // The second request is answered only if the loop kept serving
+            // after it answered the first.
+            for _ in 0..2 {
+                match send_malformed_request(&handle, &service).await {
+                    Error::ServiceError { reason, .. } => assert_eq!(reason, expected_reason),
+                    other => panic!("expected the malformed-request error, got {other:?}"),
+                }
+            }
+        }
     }
 }
