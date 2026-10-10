@@ -1374,32 +1374,7 @@ impl LanguageGenerator for RustGenerator {
                 .iter()
                 .map(|param| (param.ident.clone(), param.ty.clone()))
                 .collect();
-            context.add_struct(request_struct_ident.clone(), fields);
-            let ctor_params: Vec<TokenStream> = request_struct_params
-                .iter()
-                .map(|param| {
-                    let ident = &param.ident;
-                    let ty = &param.ty;
-                    quote!(#ident: #ty)
-                })
-                .collect();
-            let ctor_bindings: Vec<TokenStream> = request_struct_params
-                .iter()
-                .map(|param| {
-                    let ident = &param.ident;
-                    quote!(#ident)
-                })
-                .collect();
-            let ctor_tokens = quote! {
-                impl #request_struct_ident {
-                    pub fn new(#(#ctor_params),*) -> Self {
-                        Self {
-                            #( #ctor_bindings ),*
-                        }
-                    }
-                }
-            };
-            context.add_private_struct(ctor_tokens);
+            context.add_struct_with_constructor(request_struct_ident.clone(), fields);
         }
 
         let request_encoding = self.prepare_message_encoding(

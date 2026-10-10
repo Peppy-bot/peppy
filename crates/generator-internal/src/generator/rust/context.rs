@@ -27,6 +27,27 @@ impl GenerationContext {
         }
     }
 
+    /// Registers a struct like [`Self::add_struct`], plus a `new`
+    /// constructor that takes every field in order.
+    pub fn add_struct_with_constructor(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
+        let ctor_params: Vec<TokenStream> = fields
+            .iter()
+            .map(|(field_ident, ty)| quote!(#field_ident: #ty))
+            .collect();
+        let ctor_bindings: Vec<&Ident> =
+            fields.iter().map(|(field_ident, _)| field_ident).collect();
+        self.private_items.push(quote! {
+            impl #ident {
+                pub fn new(#(#ctor_params),*) -> Self {
+                    Self {
+                        #( #ctor_bindings ),*
+                    }
+                }
+            }
+        });
+        self.add_struct(ident, fields);
+    }
+
     pub fn add_private_struct(&mut self, tokens: TokenStream) {
         self.private_items.push(tokens);
     }
@@ -63,26 +84,14 @@ impl StructDefinition {
         let field_tokens: Vec<TokenStream> = self
             .fields
             .into_iter()
-            .map(|(field_ident, ty)| {
-                let name = field_ident;
-                let field_ty = ty;
-                quote!(pub #name: #field_ty)
-            })
+            .map(|(field_ident, ty)| quote!(pub #field_ident: #ty))
             .collect();
 
-        if field_tokens.is_empty() {
-            quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub struct #ident {}
-            }
-        } else {
-            quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub struct #ident {
-                    #( #field_tokens ),*
-                }
+        quote! {
+            #[derive(Debug, Clone)]
+            #[allow(dead_code)]
+            pub struct #ident {
+                #( #field_tokens ),*
             }
         }
     }
@@ -207,8 +216,6 @@ pub fn collect_function_params(
             .unwrap_or_else(|| format!("{struct_prefix}Response"));
         let response_ident = Ident::new(&response_struct_name, Span::call_site());
         let mut fields = Vec::new();
-        let mut ctor_params: Vec<TokenStream> = Vec::new();
-        let mut ctor_bindings: Vec<TokenStream> = Vec::new();
 
         for (field_name, schema) in &return_artifacts.message_format().0 {
             let field_ident = Ident::new(
@@ -217,35 +224,10 @@ pub fn collect_function_params(
             );
             let field_ty =
                 schema_type_to_tokens(schema, &response_struct_name, field_name, context)?;
-            let ctor_ident = field_ident.clone();
-            let ctor_ty = field_ty.clone();
-            ctor_params.push(quote!(#ctor_ident: #ctor_ty));
-            ctor_bindings.push(quote!(#ctor_ident));
             fields.push((field_ident, field_ty));
         }
 
-        context.add_struct(response_ident.clone(), fields);
-
-        let ctor_tokens = if ctor_params.is_empty() {
-            quote! {
-                impl #response_ident {
-                    pub fn new() -> Self {
-                        Self {}
-                    }
-                }
-            }
-        } else {
-            quote! {
-                impl #response_ident {
-                    pub fn new(#(#ctor_params),*) -> Self {
-                        Self {
-                            #( #ctor_bindings ),*
-                        }
-                    }
-                }
-            }
-        };
-        context.add_private_struct(ctor_tokens);
+        context.add_struct_with_constructor(response_ident, fields);
     }
 
     let Some(artifacts) = accept_format_artifacts else {
