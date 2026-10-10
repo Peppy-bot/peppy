@@ -18,7 +18,7 @@ use super::{capnp_list_len, decode_message, encode_message};
 /// A datastore key: any non-empty string.
 ///
 /// The datastore stores and retrieves values by exact key. Keys are carried in
-/// the message payload (not a Zenoh keyexpr), so any character is allowed —
+/// the message payload (not a Zenoh keyexpr), so any character is allowed:
 /// slashes, dots, spaces and Unicode all round-trip. The only requirement is
 /// that the key is non-empty.
 ///

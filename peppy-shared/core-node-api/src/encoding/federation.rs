@@ -514,7 +514,7 @@ fn read_slot_set(wire: federation_capnp::slot_set::Reader<'_>) -> Result<SlotSet
 /// all of them, because they differ only in which verb the bool reports and
 /// that verb is already the service name.
 ///
-/// [`Self::rejection_reason`] is load-bearing on refusal — see the schema.
+/// [`Self::rejection_reason`] is load-bearing on refusal; see the schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationVerdict {
     pub ok: bool,
@@ -840,7 +840,7 @@ impl RelationshipNotification {
 }
 
 /// Carries no fields: the notification is best-effort and the receiver simply
-/// converges on what it is told, so a well-formed reply is itself the ack —
+/// converges on what it is told, so a well-formed reply is itself the ack,
 /// the same contract [`HealthRequest`](crate::encoding::HealthRequest) uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RelationshipNotificationAck;

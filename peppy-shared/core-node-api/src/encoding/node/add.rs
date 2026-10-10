@@ -36,7 +36,7 @@ pub enum NodeSource {
     /// Resolve a `(name, tag)` against the RECEIVING daemon's own repo
     /// cache, then continue exactly as a pinned batch: that daemon
     /// resolves the transitive closure once, pins every entry, and adds
-    /// by pin. The entry arm for `peppy node add <name>:<tag>` — the
+    /// by pin. The entry arm for `peppy node add <name>:<tag>`: the
     /// receiving daemon is the coordinator of its own add.
     ResolveRef {
         name: String,

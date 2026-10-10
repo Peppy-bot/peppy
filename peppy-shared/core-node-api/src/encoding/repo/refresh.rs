@@ -5,7 +5,7 @@ use crate::encoding::{decode_message, encode_message, encode_message_non_empty, 
 use crate::repo_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
 
-/// Goal message for the RepoRefresh action (empty — refresh all repos).
+/// Goal message for the RepoRefresh action (empty: refresh all repos).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRefreshGoal;
 

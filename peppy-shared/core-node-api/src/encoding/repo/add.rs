@@ -62,8 +62,8 @@ impl RepoSource {
     ///
     /// The canonical *identity* string (used for duplicate detection and
     /// exclusion matching) is intentionally not computed here: the `Fs` arm
-    /// canonicalizes against the real filesystem, which is the daemon's job —
-    /// see `core-node`'s `services::repo::source_identity`.
+    /// canonicalizes against the real filesystem, which is the daemon's job
+    /// (see `core-node`'s `services::repo::source_identity`).
     pub fn kind(&self) -> RepoSourceKind {
         match self {
             RepoSource::Fs(_) => RepoSourceKind::Fs,

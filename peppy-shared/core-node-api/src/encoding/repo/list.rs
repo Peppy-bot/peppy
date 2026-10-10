@@ -7,7 +7,7 @@ use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_t
 use crate::repo_capnp;
 use crate::{Payload, Result};
 
-/// Request message for the RepoList service (empty — list all).
+/// Request message for the RepoList service (empty: list all).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoListRequest;
 

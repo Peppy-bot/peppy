@@ -41,7 +41,7 @@ pub struct PairTarget {
     ///
     /// A daemon validates a pair against the two manifests it holds. For a peer
     /// on another machine it holds neither, so the rules cannot be re-derived
-    /// there — and a federated launch's coordinator has already checked the
+    /// there, and a federated launch's coordinator has already checked the
     /// whole plan against every participant's manifests. This carries that
     /// verdict; `None` means the peer is local and the local manifests decide.
     pub remote_peer: Option<RemotePeerPairing>,
@@ -213,9 +213,9 @@ impl ObservationTargets {
 
     /// Materializes a planner's per-slot member lists into the map a goal
     /// carries. Both planners (the launcher and the CLI preflight) group their
-    /// validated plan this way, so the invariant they lean on — the launcher
+    /// validated plan this way, so the invariant they lean on (the launcher
     /// validator already rejected duplicates within a slot, making one here a
-    /// planner bug rather than a user error — is asserted once, here.
+    /// planner bug rather than a user error) is asserted once, here.
     pub fn slots_from_plan(
         members: BTreeMap<String, Vec<ObservationTarget>>,
     ) -> BTreeMap<String, ObservationTargets> {
@@ -668,7 +668,7 @@ fn write_instance_address(
 ///
 /// Both halves are required. Every wire message a peer acts on is
 /// self-describing about placement, so an absent core node is a bug in the
-/// sender rather than a shorthand for "local" — refusing here is what stops a
+/// sender rather than a shorthand for "local". Refusing here is what stops a
 /// daemon from ever having to guess. `context` names the message, since the
 /// address itself cannot say which one carried it.
 fn read_instance_address(

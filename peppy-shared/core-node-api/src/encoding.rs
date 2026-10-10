@@ -79,7 +79,7 @@ use crate::{Payload, Result};
 /// Ties a codec struct to the Cap'n Proto wire root it encodes.
 ///
 /// Implemented next to each codec, in the same file whose `encode`/`decode`
-/// bodies name that root — the one place the pairing is a checkable fact.
+/// bodies name that root, the one place the pairing is a checkable fact.
 /// The method registry ([`crate::registry`]) resolves a payload's reflection
 /// handle through this trait, so registry entries name only the codec struct.
 pub trait Wire {
@@ -112,7 +112,7 @@ pub(crate) fn optional_text(s: &str) -> Option<String> {
 /// field and an omitted one are indistinguishable on the wire. Refusing here is
 /// what stops a receiver from acting on a defaulted identity. Sites that can
 /// name the fix for the operator (a version skew, say) should return their own
-/// `Error::Decoding` with that prose instead — this is the default, not a rule.
+/// `Error::Decoding` with that prose instead. This is the default, not a rule.
 pub(crate) fn required_text(value: &str, field: &str) -> Result<String> {
     if value.is_empty() {
         return Err(crate::Error::Decoding(format!("`{field}` is empty")));
@@ -235,7 +235,7 @@ pub(crate) fn decode_fs_path(path: &str, label: &str) -> Result<PathBuf> {
 
 /// Like [`decode_fs_path`] but additionally requires an absolute path.
 /// Use this when the daemon will open the path without further
-/// resolution — relative paths would silently anchor at the daemon's
+/// resolution: relative paths would silently anchor at the daemon's
 /// CWD, which is a footgun.
 pub(crate) fn decode_absolute_fs_path(path: &str, label: &str) -> Result<PathBuf> {
     let buf = decode_fs_path(path, label)?;
@@ -362,7 +362,7 @@ mod tests {
     }
 
     // The write/read pair is only useful if it is exactly lossless, empty list
-    // included — an off-by-one in either half would survive a one-element test.
+    // included: an off-by-one in either half would survive a one-element test.
     #[test]
     fn text_list_round_trips() {
         for values in [

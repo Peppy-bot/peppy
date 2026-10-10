@@ -21,7 +21,7 @@ use crate::encoding::{
 ///
 /// Identifies a node already present in the node stack by `(name, tag)`.
 /// Unlike `node_add`, `node_info` does not resolve configs from filesystem,
-/// git, or HTTP sources — it only inspects what is already in the stack.
+/// git, or HTTP sources: it only inspects what is already in the stack.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInfoRequest {
     pub node_name: String,
@@ -88,7 +88,7 @@ pub struct NodeInstanceInfo {
     pub endpoints: Vec<InstanceEndpoint>,
 }
 
-/// Body of a successful `node_info` lookup — carries all metadata about a
+/// Body of a successful `node_info` lookup: carries all metadata about a
 /// node that was found in the stack.
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
@@ -116,7 +116,7 @@ pub struct NodeInfo {
 pub enum NodeInfoResponse {
     /// The `(name, tag)` pair is not currently in the node stack.
     NotInStack,
-    /// The node is in the stack — carries its full metadata.
+    /// The node is in the stack; carries its full metadata.
     Found(Box<NodeInfo>),
 }
 
