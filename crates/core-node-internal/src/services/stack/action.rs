@@ -7,7 +7,7 @@ use super::copies::remove::remove;
 use super::launch::process_launch;
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
-use crate::services::node::common::panic_message;
+use crate::services::node::common::{encode_response_or_err, panic_message};
 use crate::services::node::gate::{Admission, ConcurrencyGate, finish_on_reset};
 use crate::services::node::{DaemonDefaults, HealthMonitorPolicy, RelationshipCoordinators};
 use core_node_api::ActionId;
@@ -283,24 +283,18 @@ impl GoalHandler for StackActionHandler {
     }
 }
 
-/// Names the action whose response could not be encoded.
-fn encoding_failure(action: StackAction, error: impl std::fmt::Display) -> peppylib::PeppyError {
-    peppylib::PeppyError::InvalidServiceRequest {
-        identifier: action.id().name().to_string(),
-        reason: format!("Failed to encode response: {error}"),
-    }
-}
-
 fn encode_rejected(action: StackAction, reason: impl Into<String>) -> PeppyResult<Payload> {
-    LaunchGoalResponse::rejected(reason)
-        .encode()
-        .map_err(|e| encoding_failure(action, e))
+    encode_response_or_err(
+        action.id().name(),
+        LaunchGoalResponse::rejected(reason).encode(),
+    )
 }
 
 fn encode_accepted(action: StackAction, log_path: &Path) -> PeppyResult<Payload> {
-    LaunchGoalResponse::accepted(log_path)
-        .encode()
-        .map_err(|e| encoding_failure(action, e))
+    encode_response_or_err(
+        action.id().name(),
+        LaunchGoalResponse::accepted(log_path).encode(),
+    )
 }
 
 /// The context every stack change runs under: who asked, where it writes, and

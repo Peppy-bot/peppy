@@ -19,6 +19,7 @@
 
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_contract_doc;
 use config::node::{
@@ -40,9 +41,7 @@ use peppylib::messaging::{
     ConcurrentAction, NODE_HEALTH_SERVICE, PendingGoal, SenderTarget, ServiceTarget,
 };
 use peppylib::types::Payload;
-use peppylib::{
-    ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger, TopicMessenger,
-};
+use peppylib::{ActionMessenger, MessengerHandle, PeppyResult, ServiceMessenger, TopicMessenger};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -121,21 +120,17 @@ struct BenchmarkActionContext {
 }
 
 fn encode_accepted() -> PeppyResult<Payload> {
-    StackBenchmarkGoalResponse::accepted()
-        .encode()
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: ActionId::StackBenchmark.name().to_string(),
-            reason: e.to_string(),
-        })
+    encode_response_or_err(
+        ActionId::StackBenchmark.name(),
+        StackBenchmarkGoalResponse::accepted().encode(),
+    )
 }
 
 fn encode_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
-    StackBenchmarkGoalResponse::rejected(reason)
-        .encode()
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: ActionId::StackBenchmark.name().to_string(),
-            reason: e.to_string(),
-        })
+    encode_response_or_err(
+        ActionId::StackBenchmark.name(),
+        StackBenchmarkGoalResponse::rejected(reason).encode(),
+    )
 }
 
 impl GoalHandler for StackBenchmarkGoalHandler {

@@ -168,9 +168,10 @@ pub(crate) fn parse_node_config_file(config_path: &Path) -> Result<NodeConfig, S
 }
 
 /// Maps an encoding `Result` to a `PeppyResult`, wrapping the error as an
-/// `InternalEncodingError` so it can be returned directly from a goal handler.
-/// Used in place of open-coding the same `map_err` at every rejection and
-/// accepted-response encoding site in the add/build/start handlers.
+/// `InternalEncodingError` attributed to `identifier` so it can be returned
+/// directly from a goal handler. Used in place of open-coding the same
+/// `map_err` at every rejection and accepted-response encoding site of the
+/// goal handlers.
 pub(crate) fn encode_response_or_err(
     identifier: &'static str,
     result: core_node_api::Result<peppylib::types::Payload>,

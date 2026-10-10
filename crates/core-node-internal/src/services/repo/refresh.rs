@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::cache as node_cache;
+use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::{checkout_read_ref, clone_repo_shallow, head_commit};
 use crate::services::repo::cache::{RepoCacheEntry, RepoItems, write_repo_cache};
@@ -26,7 +27,7 @@ use daemon_config::repository::GitCommit;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult};
+use peppylib::{MessengerHandle, PeppyResult};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
@@ -68,21 +69,17 @@ struct RepoRefreshGoalHandler {
 }
 
 fn encode_refresh_accepted() -> PeppyResult<Payload> {
-    RepoRefreshGoalResponse::accepted()
-        .encode()
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: ActionId::RepoRefresh.name().to_string(),
-            reason: e.to_string(),
-        })
+    encode_response_or_err(
+        ActionId::RepoRefresh.name(),
+        RepoRefreshGoalResponse::accepted().encode(),
+    )
 }
 
 fn encode_refresh_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
-    RepoRefreshGoalResponse::rejected(reason)
-        .encode()
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: ActionId::RepoRefresh.name().to_string(),
-            reason: e.to_string(),
-        })
+    encode_response_or_err(
+        ActionId::RepoRefresh.name(),
+        RepoRefreshGoalResponse::rejected(reason).encode(),
+    )
 }
 
 impl GoalHandler for RepoRefreshGoalHandler {
