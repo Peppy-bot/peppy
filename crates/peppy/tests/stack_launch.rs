@@ -53,6 +53,65 @@ fn launcher_args(launcher_config_path: PathBuf, max_timeout_secs: Option<u64>) -
     }
 }
 
+/// The `run_cmd` of an emulated node that snapshots the boot config the
+/// daemon handed it (the file `PEPPY_RUNTIME_CONFIG` names) to `dump`, then
+/// keeps alive until `instances` drops.
+fn runtime_config_dumping_run_cmd(dump: &Path, instances: &InstanceLifetime) -> Vec<String> {
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            dump.display(),
+            instances.keep_alive_script(),
+        ),
+    ]
+}
+
+/// Polls the snapshots of [`runtime_config_dumping_run_cmd`] until each of
+/// them parses, for at most 5 s. The node's `sh` copies its boot config
+/// concurrently with the test, and a plain `cp` can expose a partial file, so
+/// a dump that does not parse yet counts as not written. A dump still missing
+/// at the deadline stays `None`, so a caller can stop its instances before it
+/// fails on it through [`expect_runtime_config`].
+async fn read_runtime_config_dumps<const N: usize>(
+    dumps: [&Path; N],
+) -> [Option<config::runtime::RuntimeConfig>; N] {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut configs: [Option<config::runtime::RuntimeConfig>; N] = std::array::from_fn(|_| None);
+    while Instant::now() < deadline {
+        for (dump, config) in dumps.iter().zip(configs.iter_mut()) {
+            if config.is_none()
+                && let Ok(content) = fs::read_to_string(dump)
+                && let Ok(parsed) =
+                    serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+            {
+                *config = Some(parsed);
+            }
+        }
+        if configs.iter().all(Option::is_some) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    configs
+}
+
+/// The boot config [`read_runtime_config_dumps`] read from the dump at `path`,
+/// or a panic that names the node by `label` when it never appeared or parsed.
+fn expect_runtime_config(
+    dump: Option<config::runtime::RuntimeConfig>,
+    label: &str,
+    path: &Path,
+) -> config::runtime::RuntimeConfig {
+    dump.unwrap_or_else(|| {
+        panic!(
+            "{label} runtime config dump never appeared / parsed at {}",
+            path.display()
+        )
+    })
+}
+
 /// Stages a checked-in hub fixture node into a temp nodes directory, ready for
 /// [`register_repo_caches`].
 ///
@@ -700,18 +759,9 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     let link_id = "main";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    // Each instance's run_cmd snapshots its own `PEPPY_RUNTIME_CONFIG`
-    // file to the test-owned dump location, then sleeps long enough that
-    // the test process has time to read the snapshot before issuing Stop.
-    let producer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            producer_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    // Each instance's run_cmd snapshots its own boot config to a test-owned
+    // dump location and keeps alive until the test has read it.
+    let producer_run_cmd = runtime_config_dumping_run_cmd(&producer_dump, &instances);
     let producer_path = write_node_config_for_helper(
         nodes_dir.path(),
         producer_name,
@@ -723,15 +773,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         None,
     );
 
-    let consumer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            consumer_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let consumer_run_cmd = runtime_config_dumping_run_cmd(&consumer_dump, &instances);
     let consumer_depends_on = format!(
         r#"{{ nodes: [{{ name: "{producer_name}", tag: "{node_tag}", link_id: "{link_id}" }}] }}"#
     );
@@ -844,27 +886,8 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     // BOTH dumps before stopping anything: stopping the consumer before
     // its dump has flushed would race with the negative-case assertion
     // below.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut producer_config: Option<config::runtime::RuntimeConfig> = None;
-    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if producer_config.is_none()
-            && let Ok(content) = fs::read_to_string(&producer_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            producer_config = Some(cfg);
-        }
-        if consumer_config.is_none()
-            && let Ok(content) = fs::read_to_string(&consumer_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            consumer_config = Some(cfg);
-        }
-        if producer_config.is_some() && consumer_config.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let [producer_config, consumer_config] =
+        read_runtime_config_dumps([&producer_dump, &consumer_dump]).await;
 
     // The dumps are captured, so nothing below needs these instances. Ending
     // the keep-alive first lets each Stop observe an already-exited process
@@ -879,12 +902,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         .execute(&ctx);
     }
 
-    let producer_config = producer_config.unwrap_or_else(|| {
-        panic!(
-            "producer runtime config dump never appeared / parsed at {}",
-            producer_dump.display()
-        )
-    });
+    let producer_config = expect_runtime_config(producer_config, "producer", &producer_dump);
     assert_eq!(
         producer_config.node_instance.instance_id.as_str(),
         producer_instance_id,
@@ -894,12 +912,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         "producers do not declare slot_bindings; the binding lives on the consumer",
     );
 
-    let consumer_config = consumer_config.unwrap_or_else(|| {
-        panic!(
-            "consumer runtime config dump never appeared / parsed at {}",
-            consumer_dump.display()
-        )
-    });
+    let consumer_config = expect_runtime_config(consumer_config, "consumer", &consumer_dump);
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
         Some(&config::runtime::BoundProducers::from(
@@ -955,15 +968,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
         None,
     );
 
-    let consumer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            consumer_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let consumer_run_cmd = runtime_config_dumping_run_cmd(&consumer_dump, &instances);
     let consumer_depends_on = format!(
         r#"{{ nodes: [{{ name: "{producer_name}", tag: "{node_tag}", link_id: "{link_id}", cardinality: "one_or_more" }}] }}"#
     );
@@ -1059,17 +1064,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
     .execute(&ctx)
     .expect("launch command should succeed");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if let Ok(content) = fs::read_to_string(&consumer_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            consumer_config = Some(cfg);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let [consumer_config] = read_runtime_config_dumps([&consumer_dump]).await;
 
     // The dumps are captured, so nothing below needs these instances. Ending
     // the keep-alive first lets each Stop observe an already-exited process
@@ -1084,12 +1079,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
         .execute(&ctx);
     }
 
-    let consumer_config = consumer_config.unwrap_or_else(|| {
-        panic!(
-            "consumer runtime config dump never appeared / parsed at {}",
-            consumer_dump.display()
-        )
-    });
+    let consumer_config = expect_runtime_config(consumer_config, "consumer", &consumer_dump);
     let expected = config::runtime::BoundProducers::try_from(vec![
         config::runtime::ProducerRef::new(&core_node_name, rear_instance_id),
         config::runtime::ProducerRef::new(&core_node_name, front_instance_id),
@@ -1428,15 +1418,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         Some(producer_interfaces),
     );
 
-    let consumer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            consumer_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let consumer_run_cmd = runtime_config_dumping_run_cmd(&consumer_dump, &instances);
     let consumer_depends_on = format!(
         r#"{{
             nodes: [],
@@ -1555,17 +1537,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     .execute(&ctx)
     .expect("launch should succeed with implementing producer");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if let Ok(content) = fs::read_to_string(&consumer_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            consumer_config = Some(cfg);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let [consumer_config] = read_runtime_config_dumps([&consumer_dump]).await;
 
     // The dumps are captured, so nothing below needs these instances. Ending
     // the keep-alive first lets each Stop observe an already-exited process
@@ -1580,12 +1552,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         .execute(&ctx);
     }
 
-    let consumer_config = consumer_config.unwrap_or_else(|| {
-        panic!(
-            "consumer runtime config dump never appeared / parsed at {}",
-            consumer_dump.display()
-        )
-    });
+    let consumer_config = expect_runtime_config(consumer_config, "consumer", &consumer_dump);
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
         Some(&config::runtime::BoundProducers::from(
@@ -1923,15 +1890,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
 
     // arm_controller: emits joint_commands (implements joint_command_source),
     // consumes joint_states through its `arm` slot (bound in the launcher).
-    let controller_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            controller_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let controller_run_cmd = runtime_config_dumping_run_cmd(&controller_dump, &instances);
     let controller_depends_on = format!(
         r#"{{
             nodes: [],
@@ -1962,15 +1921,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     // consumes joint_commands through its `controller` slot, bound back
     // to the controller in the launcher (every declared slot must be
     // bound).
-    let arm_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            arm_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let arm_run_cmd = runtime_config_dumping_run_cmd(&arm_dump, &instances);
     let arm_depends_on = format!(
         r#"{{
             nodes: [],
@@ -2104,27 +2055,8 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     .expect("launch should succeed with both contract slots bound");
 
     // Both `sh` wrappers snapshot their runtime config before sleeping.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut controller_config: Option<config::runtime::RuntimeConfig> = None;
-    let mut arm_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if controller_config.is_none()
-            && let Ok(content) = fs::read_to_string(&controller_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            controller_config = Some(cfg);
-        }
-        if arm_config.is_none()
-            && let Ok(content) = fs::read_to_string(&arm_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            arm_config = Some(cfg);
-        }
-        if controller_config.is_some() && arm_config.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let [controller_config, arm_config] =
+        read_runtime_config_dumps([&controller_dump, &arm_dump]).await;
 
     // The dumps are captured, so nothing below needs these instances. Ending
     // the keep-alive first lets each Stop observe an already-exited process
@@ -2139,12 +2071,8 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
         .execute(&ctx);
     }
 
-    let controller_config = controller_config.unwrap_or_else(|| {
-        panic!(
-            "arm_controller runtime config dump never appeared / parsed at {}",
-            controller_dump.display()
-        )
-    });
+    let controller_config =
+        expect_runtime_config(controller_config, "arm_controller", &controller_dump);
     assert_eq!(
         controller_config
             .node_instance
@@ -2157,12 +2085,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
          the bound producer's full wire address",
     );
 
-    let arm_config = arm_config.unwrap_or_else(|| {
-        panic!(
-            "robot_arm runtime config dump never appeared / parsed at {}",
-            arm_dump.display()
-        )
-    });
+    let arm_config = expect_runtime_config(arm_config, "robot_arm", &arm_dump);
     assert_eq!(
         arm_config.node_instance.slot_bindings.get(arm_link_id),
         Some(&config::runtime::BoundProducers::from(
@@ -2354,26 +2277,8 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     .execute(&ctx)
     .expect("a launch mixing a bound and a vacant zero_or_one slot should succeed");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut bound_config: Option<config::runtime::RuntimeConfig> = None;
-    let mut vacant_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        for (dump, slot) in [
-            (&bound_dump, &mut bound_config),
-            (&vacant_dump, &mut vacant_config),
-        ] {
-            if slot.is_none()
-                && let Ok(content) = fs::read_to_string(dump)
-                && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-            {
-                *slot = Some(cfg);
-            }
-        }
-        if bound_config.is_some() && vacant_config.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let [bound_config, vacant_config] =
+        read_runtime_config_dumps([&bound_dump, &vacant_dump]).await;
 
     drop(instances);
     for instance_id in [bound_instance_id, vacant_instance_id, producer_instance_id] {
@@ -2385,12 +2290,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
         .execute(&ctx);
     }
 
-    let bound_config = bound_config.unwrap_or_else(|| {
-        panic!(
-            "bound instance runtime config dump never appeared / parsed at {}",
-            bound_dump.display()
-        )
-    });
+    let bound_config = expect_runtime_config(bound_config, "bound instance", &bound_dump);
     assert_eq!(
         bound_config.node_instance.slot_bindings.get(link_id),
         Some(&config::runtime::BoundProducers::from(
@@ -2400,12 +2300,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
          wire address",
     );
 
-    let vacant_config = vacant_config.unwrap_or_else(|| {
-        panic!(
-            "vacant instance runtime config dump never appeared / parsed at {}",
-            vacant_dump.display()
-        )
-    });
+    let vacant_config = expect_runtime_config(vacant_config, "vacant instance", &vacant_dump);
     assert_eq!(
         vacant_config.node_instance.slot_bindings.get(link_id),
         Some(&config::runtime::BoundProducers::default()),
@@ -2874,15 +2769,7 @@ async fn stack_launch_delivers_observer_member_sets() {
     let run_cmd = instances.keep_alive_argv();
     // The recorder copies the boot config the daemon wrote before keeping alive,
     // so the spawn seed survives the live delivery that replaces it in memory.
-    let recorder_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            recorder_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let recorder_run_cmd = runtime_config_dumping_run_cmd(&recorder_dump, &instances);
     // The source plays the `arm` role through its participant slot `controller`,
     // declared optional so a watched-only deployment may write it vacant.
     let arm_path = write_node_config_for_helper(
@@ -3080,23 +2967,8 @@ async fn stack_launch_delivers_observer_member_sets() {
     // received. A floored slot rejects an empty seed at node construction, so a
     // real observer could not even start unseeded; this asserts what the daemon
     // wrote, which the live delivery above would otherwise mask.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut boot: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if let Ok(content) = fs::read_to_string(&recorder_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            boot = Some(cfg);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let boot = boot.unwrap_or_else(|| {
-        panic!(
-            "recorder runtime config dump never appeared / parsed at {}",
-            recorder_dump.display()
-        )
-    });
+    let [boot] = read_runtime_config_dumps([&recorder_dump]).await;
+    let boot = expect_runtime_config(boot, "recorder", &recorder_dump);
     let seeds = &boot.node_instance.observation_seeds;
 
     let watch_seed = seeds
@@ -3295,15 +3167,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     // set can be read back from what the daemon actually assembled.
     let dump_dir = tempfile::tempdir().expect("temp dump dir");
     let commander_dump = dump_dir.path().join("commander.json5");
-    let commander_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            commander_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let commander_run_cmd = runtime_config_dumping_run_cmd(&commander_dump, &instances);
 
     // `lerobot_recorder` is staged but never instantiated: the commander's
     // `recorder` slot is `zero_or_more`, so the deployment binds nothing to it,
@@ -3649,15 +3513,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
         Some(recorder_interfaces),
     );
 
-    let consumer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            consumer_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let consumer_run_cmd = runtime_config_dumping_run_cmd(&consumer_dump, &instances);
     let consumer_depends_on = format!(
         r#"{{ nodes: [{{ name: "{recorder_name}", tag: "{node_tag}", link_id: "{link_id}", cardinality: "zero_or_more" }}] }}"#
     );
@@ -3739,17 +3595,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
 
     // The consumer boots with the slot as an explicit empty set, mirroring the
     // in-stack-but-unbound case the commander panel test pins.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if let Ok(content) = fs::read_to_string(&consumer_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            consumer_config = Some(cfg);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let [consumer_config] = read_runtime_config_dumps([&consumer_dump]).await;
 
     drop(instances);
     let _ = NodeCommand {
@@ -3759,12 +3605,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     }
     .execute(&ctx);
 
-    let consumer_config = consumer_config.unwrap_or_else(|| {
-        panic!(
-            "consumer runtime config dump never appeared / parsed at {}",
-            consumer_dump.display()
-        )
-    });
+    let consumer_config = expect_runtime_config(consumer_config, "consumer", &consumer_dump);
     let recorder_slot = consumer_config
         .node_instance
         .slot_bindings
