@@ -441,26 +441,9 @@ pub fn node_add_command(source: &std::path::Path) -> peppy::commands::node::Node
 pub fn add_built_node(ctx: &Arc<AppContext>, dir: &std::path::Path, config: &str) {
     use peppy::commands::Command;
     std::fs::write(dir.join("peppy.json5"), config).expect("write node config");
-    peppy::commands::node::NodeCommand {
-        command: peppy::commands::node::NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(dir.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(ctx)
-    .expect("node add should succeed");
+    node_add_command(dir)
+        .execute(ctx)
+        .expect("node add should succeed");
 }
 
 /// Builds the standard `node run` command used by pairing/observer e2e tests.
