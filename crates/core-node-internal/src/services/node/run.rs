@@ -78,13 +78,7 @@ fn is_host_local_router(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host.eq_ignore_ascii_case("localhost.")
         || ip_host.parse::<IpAddr>().is_ok_and(|ip| {
-            let ip = match ip {
-                IpAddr::V6(ip) => ip
-                    .to_ipv4_mapped()
-                    .map(IpAddr::V4)
-                    .unwrap_or(IpAddr::V6(ip)),
-                ip => ip,
-            };
+            let ip = ip.to_canonical();
             ip.is_loopback() || ip.is_unspecified()
         })
 }
