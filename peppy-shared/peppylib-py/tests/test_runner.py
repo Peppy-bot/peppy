@@ -53,6 +53,7 @@ from common import (
     TEST_NODE_TAG,
     create_codegen_fingerprint,
     create_runtime_config,
+    start_runner_thread,
     wait_for_service,
     write_peppygen_stub,
 )
@@ -82,6 +83,78 @@ async def _wait_for_service(
     )
 
 
+async def _poll_test_node(
+    messenger: MessengerHandle, service_name: str, payload: bytes, timeout_secs: float
+):
+    """Call the test node's `service_name` as the shutdown sender, pinned to
+    the test instance."""
+    return await ServiceMessenger.poll(
+        messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
+        service_name,
+        ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+        payload,
+        timeout_secs,
+    )
+
+
+async def _connect_control_messenger(router: ZenohdInstance) -> MessengerHandle:
+    """Open the test's control session on `router`. The runner opens its
+    session under the `local` workspace namespace; this control messenger must
+    too, or its probes never route to it."""
+    return await MessengerHandle.from_host_port_with_namespace(router.host, router.port)
+
+
+def _write_node_config(temp_dir: str) -> str:
+    """Write the test node's `peppy.json5` into `temp_dir` and return its path."""
+    peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+    Path(peppy_config_path).write_text(PEPPY_CONFIG)
+    return peppy_config_path
+
+
+def _write_daemon_mode_config(
+    temp_dir: str,
+    router: ZenohdInstance,
+    monkeypatch: pytest.MonkeyPatch,
+    shutdown_grace_secs: int | None = None,
+) -> None:
+    """Prepare `temp_dir` the way the daemon prepares a node it launches: the
+    manifest, its codegen fingerprint and the runtime config, with the runtime
+    config variable pointing at that config and `temp_dir` as the working
+    directory. `shutdown_grace_secs`, when set, pins the node's shutdown grace.
+    """
+    peppy_config_path = _write_node_config(temp_dir)
+    create_codegen_fingerprint(peppy_config_path, PEPPYGEN_OUTPUT_PATH)
+
+    runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
+    create_runtime_config(
+        runtime_config_path,
+        router.host,
+        router.port,
+        TEST_NODE_NAME,
+        TEST_CORE_NODE,
+        TEST_INSTANCE_ID,
+        {"frequency_hz": TEST_FREQUENCY_HZ},
+        shutdown_grace_secs=shutdown_grace_secs,
+    )
+
+    monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
+    monkeypatch.chdir(temp_dir)
+
+
+def _standalone_config(router: ZenohdInstance) -> StandaloneConfig:
+    """The standalone seeding of the test node: its parameters, the router,
+    and the test instance id."""
+    return (
+        StandaloneConfig()
+        .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
+        .with_messaging(router.host, router.port)
+        .with_instance_id(TEST_INSTANCE_ID)
+    )
+
+
 class NonCoroutineAwaitable:
     """Awaitable that is not a coroutine object. A shutdown hook returning one
     exercises the runtime's coercion path: asyncio's schedulers accept only
@@ -103,48 +176,22 @@ async def test_daemon_runner_succeed(monkeypatch):
     """Node starts in daemon mode, parameters are deserialized, services work, shutdown exits."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
-            peppy_config_path.write_text(PEPPY_CONFIG)
-            create_codegen_fingerprint(str(peppy_config_path), PEPPYGEN_OUTPUT_PATH)
-
-            runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
-            create_runtime_config(
-                runtime_config_path,
-                router.host,
-                router.port,
-                TEST_NODE_NAME,
-                TEST_CORE_NODE,
-                TEST_INSTANCE_ID,
-                {"frequency_hz": TEST_FREQUENCY_HZ},
-            )
-
-            monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
-            monkeypatch.chdir(temp_dir)
+            _write_daemon_mode_config(temp_dir, router, monkeypatch)
 
             result_queue: queue.Queue = queue.Queue()
-            error_queue: queue.Queue = queue.Queue()
 
             def run_node():
-                try:
+                def setup_fn(params, _node_runner):
+                    result_queue.put(params.frequency_hz)
 
-                    def setup_fn(params, _node_runner):
-                        result_queue.put(params.frequency_hz)
+                NodeBuilder().run(setup_fn)
 
-                    NodeBuilder().run(setup_fn)
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             frequency_hz = await asyncio.to_thread(result_queue.get, timeout=5.0)
             assert frequency_hz == TEST_FREQUENCY_HZ
 
-            # The runner opens its session under the `local` workspace namespace; this
-            # control messenger must too, or its probes never route to it.
-            messenger = await MessengerHandle.from_host_port_with_namespace(
-                router.host, router.port
-            )
+            messenger = await _connect_control_messenger(router)
 
             # Wait for shutdown service to become reachable
             await _wait_for_service(
@@ -155,27 +202,15 @@ async def test_daemon_runner_succeed(monkeypatch):
             )
 
             # Poll health service
-            health_response = await ServiceMessenger.poll(
-                messenger,
-                TEST_CORE_NODE,
-                SHUTDOWN_SENDER_INSTANCE_ID,
-                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-                NODE_HEALTH_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
-                b"health",
-                2.0,)
+            health_response = await _poll_test_node(
+                messenger, NODE_HEALTH_SERVICE, b"health", 2.0
+            )
             assert health_response is not None
 
             # Send shutdown
-            shutdown_response = await ServiceMessenger.poll(
-                messenger,
-                TEST_CORE_NODE,
-                SHUTDOWN_SENDER_INSTANCE_ID,
-                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-                SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
-                b"shutdown",
-                2.0,)
+            shutdown_response = await _poll_test_node(
+                messenger, SHUTDOWN_SERVICE, b"shutdown", 2.0
+            )
             # Wait for runner to exit
             runner_thread.join(timeout=10.0)
 
@@ -192,37 +227,24 @@ async def test_standalone_runner_succeed(monkeypatch):
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
-            standalone_config = (
-                StandaloneConfig()
-                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-            )
+            peppy_config_path = _write_node_config(temp_dir)
+            standalone_config = _standalone_config(router)
 
             token_queue: queue.Queue = queue.Queue()
-            error_queue: queue.Queue = queue.Queue()
 
             def run_node():
-                try:
+                def setup_fn(params, node_runner):
+                    assert params.frequency_hz == TEST_FREQUENCY_HZ
+                    token_queue.put(node_runner.cancellation_token())
 
-                    def setup_fn(params, node_runner):
-                        assert params.frequency_hz == TEST_FREQUENCY_HZ
-                        token_queue.put(node_runner.cancellation_token())
+                (
+                    NodeBuilder()
+                    .with_config_path(peppy_config_path)
+                    .standalone(standalone_config)
+                    .run(setup_fn)
+                )
 
-                    (
-                        NodeBuilder()
-                        .with_config_path(peppy_config_path)
-                        .standalone(standalone_config)
-                        .run(setup_fn)
-                    )
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             cancellation_token: CancellationToken = await asyncio.to_thread(
                 token_queue.get, timeout=5.0
@@ -243,8 +265,7 @@ async def test_standalone_with_parameters_dataclass(monkeypatch):
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
+            peppy_config_path = _write_node_config(temp_dir)
 
             from peppygen.parameters import Parameters
 
@@ -256,26 +277,20 @@ async def test_standalone_with_parameters_dataclass(monkeypatch):
             )
 
             token_queue: queue.Queue = queue.Queue()
-            error_queue: queue.Queue = queue.Queue()
 
             def run_node():
-                try:
+                def setup_fn(params, node_runner):
+                    assert params.frequency_hz == TEST_FREQUENCY_HZ
+                    token_queue.put(node_runner.cancellation_token())
 
-                    def setup_fn(params, node_runner):
-                        assert params.frequency_hz == TEST_FREQUENCY_HZ
-                        token_queue.put(node_runner.cancellation_token())
+                (
+                    NodeBuilder()
+                    .with_config_path(peppy_config_path)
+                    .standalone(standalone_config)
+                    .run(setup_fn)
+                )
 
-                    (
-                        NodeBuilder()
-                        .with_config_path(peppy_config_path)
-                        .standalone(standalone_config)
-                        .run(setup_fn)
-                    )
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             cancellation_token: CancellationToken = await asyncio.to_thread(
                 token_queue.get, timeout=5.0
@@ -296,44 +311,31 @@ async def test_async_setup_with_background_task(monkeypatch):
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
-            standalone_config = (
-                StandaloneConfig()
-                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-            )
+            peppy_config_path = _write_node_config(temp_dir)
+            standalone_config = _standalone_config(router)
 
             token_queue: queue.Queue = queue.Queue()
             started_queue: queue.Queue = queue.Queue()
-            error_queue: queue.Queue = queue.Queue()
 
             def run_node():
-                try:
+                async def setup_fn(_params, node_runner):
+                    token_queue.put(node_runner.cancellation_token())
 
-                    async def setup_fn(_params, node_runner):
-                        token_queue.put(node_runner.cancellation_token())
+                    async def background_task():
+                        started_queue.put("started")
+                        while not node_runner.cancellation_token().is_cancelled():
+                            await asyncio.sleep(0.05)
 
-                        async def background_task():
-                            started_queue.put("started")
-                            while not node_runner.cancellation_token().is_cancelled():
-                                await asyncio.sleep(0.05)
+                    return [asyncio.create_task(background_task())]
 
-                        return [asyncio.create_task(background_task())]
+                (
+                    NodeBuilder()
+                    .with_config_path(peppy_config_path)
+                    .standalone(standalone_config)
+                    .run(setup_fn)
+                )
 
-                    (
-                        NodeBuilder()
-                        .with_config_path(peppy_config_path)
-                        .standalone(standalone_config)
-                        .run(setup_fn)
-                    )
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             await asyncio.to_thread(started_queue.get, timeout=5.0)
             cancellation_token: CancellationToken = await asyncio.to_thread(
@@ -366,40 +368,26 @@ async def test_returned_task_failure_fails_the_node(monkeypatch, death_delay_s):
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
-            standalone_config = (
-                StandaloneConfig()
-                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-            )
-
-            error_queue: queue.Queue = queue.Queue()
+            peppy_config_path = _write_node_config(temp_dir)
+            standalone_config = _standalone_config(router)
 
             def run_node():
-                try:
+                async def setup_fn(_params, _node_runner):
+                    async def dying_task():
+                        if death_delay_s:
+                            await asyncio.sleep(death_delay_s)
+                        raise FileNotFoundError("scene file missing")
 
-                    async def setup_fn(_params, _node_runner):
-                        async def dying_task():
-                            if death_delay_s:
-                                await asyncio.sleep(death_delay_s)
-                            raise FileNotFoundError("scene file missing")
+                    return [asyncio.create_task(dying_task())]
 
-                        return [asyncio.create_task(dying_task())]
+                (
+                    NodeBuilder()
+                    .with_config_path(peppy_config_path)
+                    .standalone(standalone_config)
+                    .run(setup_fn)
+                )
 
-                    (
-                        NodeBuilder()
-                        .with_config_path(peppy_config_path)
-                        .standalone(standalone_config)
-                        .run(setup_fn)
-                    )
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             # No external cancel: the dying task alone must bring the node down.
             runner_thread.join(timeout=15.0)
@@ -418,35 +406,21 @@ async def test_setup_exception_propagates_to_run(monkeypatch):
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
-            standalone_config = (
-                StandaloneConfig()
-                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-            )
-
-            error_queue: queue.Queue = queue.Queue()
+            peppy_config_path = _write_node_config(temp_dir)
+            standalone_config = _standalone_config(router)
 
             def run_node():
-                try:
+                def setup_fn(_params, _node_runner):
+                    raise RuntimeError("setup boom")
 
-                    def setup_fn(_params, _node_runner):
-                        raise RuntimeError("setup boom")
+                (
+                    NodeBuilder()
+                    .with_config_path(peppy_config_path)
+                    .standalone(standalone_config)
+                    .run(setup_fn)
+                )
 
-                    (
-                        NodeBuilder()
-                        .with_config_path(peppy_config_path)
-                        .standalone(standalone_config)
-                        .run(setup_fn)
-                    )
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             error = await asyncio.to_thread(error_queue.get, timeout=5.0)
             assert isinstance(error, RuntimeError)
@@ -462,38 +436,25 @@ async def test_run_accepts_async_setup(monkeypatch):
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
-            standalone_config = (
-                StandaloneConfig()
-                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-            )
+            peppy_config_path = _write_node_config(temp_dir)
+            standalone_config = _standalone_config(router)
 
             token_queue: queue.Queue = queue.Queue()
-            error_queue: queue.Queue = queue.Queue()
 
             def run_node():
-                try:
+                async def setup_fn(params, node_runner):
+                    assert params.frequency_hz == TEST_FREQUENCY_HZ
+                    await asyncio.sleep(0.01)
+                    token_queue.put(node_runner.cancellation_token())
 
-                    async def setup_fn(params, node_runner):
-                        assert params.frequency_hz == TEST_FREQUENCY_HZ
-                        await asyncio.sleep(0.01)
-                        token_queue.put(node_runner.cancellation_token())
+                (
+                    NodeBuilder()
+                    .with_config_path(peppy_config_path)
+                    .standalone(standalone_config)
+                    .run(setup_fn)
+                )
 
-                    (
-                        NodeBuilder()
-                        .with_config_path(peppy_config_path)
-                        .standalone(standalone_config)
-                        .run(setup_fn)
-                    )
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             cancellation_token: CancellationToken = await asyncio.to_thread(
                 token_queue.get, timeout=5.0
@@ -511,50 +472,24 @@ async def test_node_ready_but_not_healthy(monkeypatch):
     """Ready service available before setup completes; health service only after."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
-            peppy_config_path.write_text(PEPPY_CONFIG)
-            create_codegen_fingerprint(str(peppy_config_path), PEPPYGEN_OUTPUT_PATH)
-
-            runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
-            create_runtime_config(
-                runtime_config_path,
-                router.host,
-                router.port,
-                TEST_NODE_NAME,
-                TEST_CORE_NODE,
-                TEST_INSTANCE_ID,
-                {"frequency_hz": TEST_FREQUENCY_HZ},
-            )
-
-            monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
-            monkeypatch.chdir(temp_dir)
+            _write_daemon_mode_config(temp_dir, router, monkeypatch)
 
             setup_started = threading.Event()
             setup_continue = threading.Event()
-            error_queue: queue.Queue = queue.Queue()
 
             def run_node():
-                try:
+                def setup_fn(_params, _node_runner):
+                    setup_started.set()
+                    setup_continue.wait(timeout=30.0)
 
-                    def setup_fn(_params, _node_runner):
-                        setup_started.set()
-                        setup_continue.wait(timeout=30.0)
+                NodeBuilder().run(setup_fn)
 
-                    NodeBuilder().run(setup_fn)
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             await asyncio.to_thread(setup_started.wait, timeout=5.0)
             assert setup_started.is_set(), "Setup should have started"
 
-            # The runner opens its session under the `local` workspace namespace; this
-            # control messenger must too, or its probes never route to it.
-            messenger = await MessengerHandle.from_host_port_with_namespace(
-                router.host, router.port
-            )
+            messenger = await _connect_control_messenger(router)
 
             # Wait for ready service
             await _wait_for_service(
@@ -565,15 +500,9 @@ async def test_node_ready_but_not_healthy(monkeypatch):
             )
 
             # Poll ready service: should echo back
-            ready_response = await ServiceMessenger.poll(
-                messenger,
-                TEST_CORE_NODE,
-                SHUTDOWN_SENDER_INSTANCE_ID,
-                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-                NODE_READY_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
-                b"ready",
-                2.0,)
+            ready_response = await _poll_test_node(
+                messenger, NODE_READY_SERVICE, b"ready", 2.0
+            )
             assert ready_response.payload == b"ready"
             assert ready_response.instance_id == TEST_INSTANCE_ID
 
@@ -599,15 +528,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
 
             # Polling health should fail (service is unreachable)
             with pytest.raises(ConnectionError):
-                await ServiceMessenger.poll(
-                    messenger,
-                    TEST_CORE_NODE,
-                    SHUTDOWN_SENDER_INSTANCE_ID,
-                    SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-                    NODE_HEALTH_SERVICE,
-                    ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
-                    b"health",
-                    0.2,)
+                await _poll_test_node(messenger, NODE_HEALTH_SERVICE, b"health", 0.2)
 
             # Unblock setup
             setup_continue.set()
@@ -621,27 +542,15 @@ async def test_node_ready_but_not_healthy(monkeypatch):
             )
 
             # Poll health service: should now succeed
-            health_response = await ServiceMessenger.poll(
-                messenger,
-                TEST_CORE_NODE,
-                SHUTDOWN_SENDER_INSTANCE_ID,
-                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-                NODE_HEALTH_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
-                b"health",
-                2.0,)
+            health_response = await _poll_test_node(
+                messenger, NODE_HEALTH_SERVICE, b"health", 2.0
+            )
             assert health_response is not None
 
             # Send shutdown
-            shutdown_response = await ServiceMessenger.poll(
-                messenger,
-                TEST_CORE_NODE,
-                SHUTDOWN_SENDER_INSTANCE_ID,
-                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-                SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
-                b"shutdown",
-                2.0,)
+            shutdown_response = await _poll_test_node(
+                messenger, SHUTDOWN_SERVICE, b"shutdown", 2.0
+            )
             # Wait for runner to exit
             runner_thread.join(timeout=10.0)
 
@@ -657,39 +566,17 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
     """Shutdown causes the cancellation token to be cancelled."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
-            peppy_config_path.write_text(PEPPY_CONFIG)
-            create_codegen_fingerprint(str(peppy_config_path), PEPPYGEN_OUTPUT_PATH)
-
-            runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
-            create_runtime_config(
-                runtime_config_path,
-                router.host,
-                router.port,
-                TEST_NODE_NAME,
-                TEST_CORE_NODE,
-                TEST_INSTANCE_ID,
-                {"frequency_hz": TEST_FREQUENCY_HZ},
-            )
-
-            monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
-            monkeypatch.chdir(temp_dir)
+            _write_daemon_mode_config(temp_dir, router, monkeypatch)
 
             token_queue: queue.Queue = queue.Queue()
-            error_queue: queue.Queue = queue.Queue()
 
             def run_node():
-                try:
+                def setup_fn(_params, node_runner):
+                    token_queue.put(node_runner.cancellation_token())
 
-                    def setup_fn(_params, node_runner):
-                        token_queue.put(node_runner.cancellation_token())
+                NodeBuilder().run(setup_fn)
 
-                    NodeBuilder().run(setup_fn)
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             cancellation_token: CancellationToken = await asyncio.to_thread(
                 token_queue.get, timeout=5.0
@@ -700,11 +587,7 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
                 "Cancellation token should not be cancelled before shutdown"
             )
 
-            # The runner opens its session under the `local` workspace namespace; this
-            # control messenger must too, or its probes never route to it.
-            messenger = await MessengerHandle.from_host_port_with_namespace(
-                router.host, router.port
-            )
+            messenger = await _connect_control_messenger(router)
 
             # Wait for shutdown service
             await _wait_for_service(
@@ -715,15 +598,7 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
             )
 
             # Send shutdown
-            await ServiceMessenger.poll(
-                messenger,
-                TEST_CORE_NODE,
-                SHUTDOWN_SENDER_INSTANCE_ID,
-                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-                SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
-                b"shutdown",
-                2.0,)
+            await _poll_test_node(messenger, SHUTDOWN_SERVICE, b"shutdown", 2.0)
 
             # Wait for runner to exit
             runner_thread.join(timeout=10.0)
@@ -748,51 +623,25 @@ async def test_daemon_shutdown_during_setup_exits_after_setup_completes(monkeypa
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
-            peppy_config_path.write_text(PEPPY_CONFIG)
-            create_codegen_fingerprint(str(peppy_config_path), PEPPYGEN_OUTPUT_PATH)
-
-            runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
-            create_runtime_config(
-                runtime_config_path,
-                router.host,
-                router.port,
-                TEST_NODE_NAME,
-                TEST_CORE_NODE,
-                TEST_INSTANCE_ID,
-                {"frequency_hz": TEST_FREQUENCY_HZ},
-            )
-
-            monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
-            monkeypatch.chdir(temp_dir)
+            _write_daemon_mode_config(temp_dir, router, monkeypatch)
 
             token_queue: queue.Queue = queue.Queue()
             setup_continue = threading.Event()
-            error_queue: queue.Queue = queue.Queue()
 
             def run_node():
-                try:
+                def setup_fn(_params, node_runner):
+                    token_queue.put(node_runner.cancellation_token())
+                    setup_continue.wait(timeout=30.0)
 
-                    def setup_fn(_params, node_runner):
-                        token_queue.put(node_runner.cancellation_token())
-                        setup_continue.wait(timeout=30.0)
+                NodeBuilder().run(setup_fn)
 
-                    NodeBuilder().run(setup_fn)
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             cancellation_token: CancellationToken = await asyncio.to_thread(
                 token_queue.get, timeout=5.0
             )
 
-            # The runner opens its session under the `local` workspace namespace; this
-            # control messenger must too, or its probes never route to it.
-            messenger = await MessengerHandle.from_host_port_with_namespace(
-                router.host, router.port
-            )
+            messenger = await _connect_control_messenger(router)
 
             # The shutdown service is registered pre-setup, so it must be
             # reachable while setup is still blocked
@@ -804,15 +653,7 @@ async def test_daemon_shutdown_during_setup_exits_after_setup_completes(monkeypa
             )
 
             # Send shutdown while setup is still blocked
-            await ServiceMessenger.poll(
-                messenger,
-                TEST_CORE_NODE,
-                SHUTDOWN_SENDER_INSTANCE_ID,
-                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-                SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
-                b"shutdown",
-                2.0,)
+            await _poll_test_node(messenger, SHUTDOWN_SERVICE, b"shutdown", 2.0)
 
             # The runner cannot exit while the setup callback is still on the
             # stack: run() only returns after setup does
@@ -844,60 +685,34 @@ async def test_daemon_shutdown_interrupts_blocked_async_setup(monkeypatch):
     the block, and exits without setup ever completing."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
-            peppy_config_path.write_text(PEPPY_CONFIG)
-            create_codegen_fingerprint(str(peppy_config_path), PEPPYGEN_OUTPUT_PATH)
-
-            runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
-            create_runtime_config(
-                runtime_config_path,
-                router.host,
-                router.port,
-                TEST_NODE_NAME,
-                TEST_CORE_NODE,
-                TEST_INSTANCE_ID,
-                {"frequency_hz": TEST_FREQUENCY_HZ},
-            )
-
-            monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
-            monkeypatch.chdir(temp_dir)
+            _write_daemon_mode_config(temp_dir, router, monkeypatch)
 
             token_queue: queue.Queue = queue.Queue()
-            error_queue: queue.Queue = queue.Queue()
             hook_markers: list = []
 
             def run_node():
-                try:
+                async def setup_fn(_params, node_runner):
+                    def cleanup_hook():
+                        hook_markers.append("cleanup")
 
-                    async def setup_fn(_params, node_runner):
-                        def cleanup_hook():
-                            hook_markers.append("cleanup")
+                    node_runner.on_shutdown(cleanup_hook)
+                    token_queue.put(node_runner.cancellation_token())
+                    # Never completes: only the shutdown can end the node,
+                    # by cancelling this await. The sentinel below must
+                    # stay unreached; it trips the exact-list assertion if
+                    # setup ever resumes instead of being interrupted.
+                    await asyncio.Event().wait()
+                    hook_markers.append("resumed")
 
-                        node_runner.on_shutdown(cleanup_hook)
-                        token_queue.put(node_runner.cancellation_token())
-                        # Never completes: only the shutdown can end the node,
-                        # by cancelling this await. The sentinel below must
-                        # stay unreached; it trips the exact-list assertion if
-                        # setup ever resumes instead of being interrupted.
-                        await asyncio.Event().wait()
-                        hook_markers.append("resumed")
+                NodeBuilder().run(setup_fn)
 
-                    NodeBuilder().run(setup_fn)
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             cancellation_token: CancellationToken = await asyncio.to_thread(
                 token_queue.get, timeout=5.0
             )
 
-            # The runner opens its session under the `local` workspace namespace; this
-            # control messenger must too, or its probes never route to it.
-            messenger = await MessengerHandle.from_host_port_with_namespace(
-                router.host, router.port
-            )
+            messenger = await _connect_control_messenger(router)
             await _wait_for_service(
                 messenger,
                 SHUTDOWN_SERVICE,
@@ -905,16 +720,7 @@ async def test_daemon_shutdown_interrupts_blocked_async_setup(monkeypatch):
                 error_queue,
             )
 
-            await ServiceMessenger.poll(
-                messenger,
-                TEST_CORE_NODE,
-                SHUTDOWN_SENDER_INSTANCE_ID,
-                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-                SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
-                b"shutdown",
-                2.0,
-            )
+            await _poll_test_node(messenger, SHUTDOWN_SERVICE, b"shutdown", 2.0)
 
             runner_thread.join(timeout=10.0)
 
@@ -939,15 +745,8 @@ async def test_cancellation_token_cancelled_awaitable(monkeypatch):
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
-            standalone_config = (
-                StandaloneConfig()
-                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-            )
+            peppy_config_path = _write_node_config(temp_dir)
+            standalone_config = _standalone_config(router)
             node_runner = await NodeRunner.new_standalone(
                 peppy_config_path, standalone_config
             )
@@ -975,45 +774,33 @@ async def test_node_runner_exposes_messenger_and_metadata(monkeypatch):
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
+            peppy_config_path = _write_node_config(temp_dir)
             standalone_config = (
-                StandaloneConfig()
-                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-                .with_node_name(TEST_NODE_NAME)
+                _standalone_config(router).with_node_name(TEST_NODE_NAME)
             )
 
             result_queue: queue.Queue = queue.Queue()
-            error_queue: queue.Queue = queue.Queue()
 
             def run_node():
-                try:
-
-                    def setup_fn(_params, node_runner: NodeRunner):
-                        result_queue.put(
-                            {
-                                "messenger": node_runner.messenger(),
-                                "bound_core_node": node_runner.bound_core_node(),
-                                "bound_instance_id": node_runner.bound_instance_id(),
-                                "node_name": node_runner.node_name(),
-                                "token": node_runner.cancellation_token(),
-                            }
-                        )
-
-                    (
-                        NodeBuilder()
-                        .with_config_path(peppy_config_path)
-                        .standalone(standalone_config)
-                        .run(setup_fn)
+                def setup_fn(_params, node_runner: NodeRunner):
+                    result_queue.put(
+                        {
+                            "messenger": node_runner.messenger(),
+                            "bound_core_node": node_runner.bound_core_node(),
+                            "bound_instance_id": node_runner.bound_instance_id(),
+                            "node_name": node_runner.node_name(),
+                            "token": node_runner.cancellation_token(),
+                        }
                     )
-                except Exception as e:
-                    error_queue.put(e)
 
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+                (
+                    NodeBuilder()
+                    .with_config_path(peppy_config_path)
+                    .standalone(standalone_config)
+                    .run(setup_fn)
+                )
+
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             result = await asyncio.to_thread(result_queue.get, timeout=5.0)
 
@@ -1055,74 +842,62 @@ async def test_shutdown_joins_event_loop_thread(monkeypatch):
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
+            peppy_config_path = _write_node_config(temp_dir)
             standalone_config = (
-                StandaloneConfig()
-                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-                .with_node_name(TEST_NODE_NAME)
+                _standalone_config(router).with_node_name(TEST_NODE_NAME)
             )
 
             for iteration in range(SHUTDOWN_REPEAT):
                 token_queue: queue.Queue = queue.Queue()
                 started_queue: queue.Queue = queue.Queue()
                 lingering_queue: queue.Queue = queue.Queue()
-                error_queue: queue.Queue = queue.Queue()
 
                 def run_node():
-                    try:
+                    async def setup_fn(_params, node_runner):
+                        token = node_runner.cancellation_token()
+                        token_queue.put(token)
+                        messenger = node_runner.messenger()
+                        core_node = node_runner.bound_core_node()
+                        instance_id = node_runner.bound_instance_id()
+                        node_name = node_runner.node_name()
+                        node_tag = node_runner.node_tag()
 
-                        async def setup_fn(_params, node_runner):
-                            token = node_runner.cancellation_token()
-                            token_queue.put(token)
-                            messenger = node_runner.messenger()
-                            core_node = node_runner.bound_core_node()
-                            instance_id = node_runner.bound_instance_id()
-                            node_name = node_runner.node_name()
-                            node_tag = node_runner.node_tag()
+                        async def emit_loop():
+                            started_queue.put("started")
+                            publisher = await TopicMessenger.declare_publisher(
+                                messenger,
+                                core_node,
+                                instance_id,
+                                SenderTarget.node(node_name, node_tag),
+                                "regression_topic",
+                                QoSProfile.Reliable,
+                                TopicRetention.live_only(),
+                            )
+                            while not token.is_cancelled():
+                                await publisher.publish(b"frame")
+                                await asyncio.sleep(0.001)
 
-                            async def emit_loop():
-                                started_queue.put("started")
-                                publisher = await TopicMessenger.declare_publisher(
-                                    messenger,
-                                    core_node,
-                                    instance_id,
-                                    SenderTarget.node(node_name, node_tag),
-                                    "regression_topic",
-                                    QoSProfile.Reliable,
-                                    TopicRetention.live_only(),
-                                )
-                                while not token.is_cancelled():
-                                    await publisher.publish(b"frame")
-                                    await asyncio.sleep(0.001)
+                        return [asyncio.create_task(emit_loop())]
 
-                            return [asyncio.create_task(emit_loop())]
+                    (
+                        NodeBuilder()
+                        .with_config_path(peppy_config_path)
+                        .standalone(standalone_config)
+                        .run(setup_fn)
+                    )
 
-                        (
-                            NodeBuilder()
-                            .with_config_path(peppy_config_path)
-                            .standalone(standalone_config)
-                            .run(setup_fn)
-                        )
+                    # run() has returned: the daemon event-loop thread must
+                    # already be joined, otherwise interpreter finalization
+                    # could kill it mid-native-call.
+                    lingering_queue.put(
+                        [
+                            t.name
+                            for t in threading.enumerate()
+                            if t.name == EVENT_LOOP_THREAD_NAME
+                        ]
+                    )
 
-                        # run() has returned: the daemon event-loop thread must
-                        # already be joined, otherwise interpreter finalization
-                        # could kill it mid-native-call.
-                        lingering_queue.put(
-                            [
-                                t.name
-                                for t in threading.enumerate()
-                                if t.name == EVENT_LOOP_THREAD_NAME
-                            ]
-                        )
-                    except Exception as e:
-                        error_queue.put(e)
-
-                runner_thread = threading.Thread(target=run_node, daemon=True)
-                runner_thread.start()
+                runner_thread, error_queue = start_runner_thread(run_node)
 
                 await asyncio.to_thread(started_queue.get, timeout=5.0)
                 token = await asyncio.to_thread(token_queue.get, timeout=5.0)
@@ -1168,18 +943,11 @@ async def test_failed_async_setup_does_not_leak_event_loop_thread(monkeypatch):
 
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
+            peppy_config_path = _write_node_config(temp_dir)
             standalone_config = (
-                StandaloneConfig()
-                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-                .with_node_name(TEST_NODE_NAME)
+                _standalone_config(router).with_node_name(TEST_NODE_NAME)
             )
 
-            error_queue: queue.Queue = queue.Queue()
             lingering_queue: queue.Queue = queue.Queue()
 
             def run_node():
@@ -1195,8 +963,6 @@ async def test_failed_async_setup_does_not_leak_event_loop_thread(monkeypatch):
                         .standalone(standalone_config)
                         .run(setup_fn)
                     )
-                except Exception as e:
-                    error_queue.put(e)
                 finally:
                     # Runs whether or not run() raised: the daemon event-loop
                     # thread must be gone the instant run() returns.
@@ -1212,8 +978,7 @@ async def test_failed_async_setup_does_not_leak_event_loop_thread(monkeypatch):
             # asyncio) does not hit the patched function.
             asyncio.run_coroutine_threadsafe = boom
             try:
-                runner_thread = threading.Thread(target=run_node, daemon=True)
-                runner_thread.start()
+                runner_thread, error_queue = start_runner_thread(run_node)
                 runner_thread.join(timeout=10.0)
             finally:
                 asyncio.run_coroutine_threadsafe = real_run_coroutine_threadsafe
@@ -1343,76 +1108,50 @@ async def test_daemon_shutdown_hooks_run_lifo_with_messaging(monkeypatch):
     release must be able to use messaging)."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
-            peppy_config_path.write_text(PEPPY_CONFIG)
-            create_codegen_fingerprint(str(peppy_config_path), PEPPYGEN_OUTPUT_PATH)
-
-            runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
-            create_runtime_config(
-                runtime_config_path,
-                router.host,
-                router.port,
-                TEST_NODE_NAME,
-                TEST_CORE_NODE,
-                TEST_INSTANCE_ID,
-                {"frequency_hz": TEST_FREQUENCY_HZ},
-            )
-
-            monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
-            monkeypatch.chdir(temp_dir)
+            _write_daemon_mode_config(temp_dir, router, monkeypatch)
 
             setup_done_queue: queue.Queue = queue.Queue()
-            error_queue: queue.Queue = queue.Queue()
             hook_markers: list = []
 
             def run_node():
-                try:
+                async def setup_fn(params, node_runner):
+                    token = node_runner.cancellation_token()
+                    messenger = node_runner.messenger()
 
-                    async def setup_fn(params, node_runner):
-                        token = node_runner.cancellation_token()
-                        messenger = node_runner.messenger()
+                    def first_hook():
+                        hook_markers.append("first")
 
-                        def first_hook():
-                            hook_markers.append("first")
+                    def second_hook_raises():
+                        # The marker proves the hook ran before raising;
+                        # without it, a hook that never executes would be
+                        # indistinguishable from a contained failure.
+                        hook_markers.append("second:raised")
+                        raise RuntimeError("intentional hook failure")
 
-                        def second_hook_raises():
-                            # The marker proves the hook ran before raising;
-                            # without it, a hook that never executes would be
-                            # indistinguishable from a contained failure.
-                            hook_markers.append("second:raised")
-                            raise RuntimeError("intentional hook failure")
+                    async def third_hook():
+                        # The token is already cancelled when hooks run;
+                        # awaiting it proves the py_future bridge still
+                        # works during the hook phase.
+                        await token.cancelled()
+                        port = await messenger.messaging_port()
+                        hook_markers.append(f"third:port_{port != 0}")
 
-                        async def third_hook():
-                            # The token is already cancelled when hooks run;
-                            # awaiting it proves the py_future bridge still
-                            # works during the hook phase.
-                            await token.cancelled()
-                            port = await messenger.messaging_port()
-                            hook_markers.append(f"third:port_{port != 0}")
+                    def fourth_hook_returns_awaitable():
+                        return NonCoroutineAwaitable(hook_markers, "fourth:awaitable")
 
-                        def fourth_hook_returns_awaitable():
-                            return NonCoroutineAwaitable(hook_markers, "fourth:awaitable")
+                    node_runner.on_shutdown(first_hook)
+                    node_runner.on_shutdown(second_hook_raises)
+                    node_runner.on_shutdown(third_hook)
+                    node_runner.on_shutdown(fourth_hook_returns_awaitable)
+                    setup_done_queue.put(True)
 
-                        node_runner.on_shutdown(first_hook)
-                        node_runner.on_shutdown(second_hook_raises)
-                        node_runner.on_shutdown(third_hook)
-                        node_runner.on_shutdown(fourth_hook_returns_awaitable)
-                        setup_done_queue.put(True)
+                NodeBuilder().run(setup_fn)
 
-                    NodeBuilder().run(setup_fn)
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             await asyncio.to_thread(setup_done_queue.get, timeout=5.0)
 
-            # The runner opens its session under the `local` workspace namespace; this
-            # control messenger must too, or its probes never route to it.
-            messenger = await MessengerHandle.from_host_port_with_namespace(
-                router.host, router.port
-            )
+            messenger = await _connect_control_messenger(router)
             await _wait_for_service(
                 messenger,
                 SHUTDOWN_SERVICE,
@@ -1420,16 +1159,7 @@ async def test_daemon_shutdown_hooks_run_lifo_with_messaging(monkeypatch):
                 error_queue,
             )
 
-            await ServiceMessenger.poll(
-                messenger,
-                TEST_CORE_NODE,
-                SHUTDOWN_SENDER_INSTANCE_ID,
-                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-                SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
-                b"shutdown",
-                2.0,
-            )
+            await _poll_test_node(messenger, SHUTDOWN_SERVICE, b"shutdown", 2.0)
             runner_thread.join(timeout=10.0)
 
     assert not runner_thread.is_alive(), "Runner should have exited"
@@ -1461,69 +1191,47 @@ async def test_async_node_shuts_down_promptly_not_at_grace_boundary(monkeypatch)
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
-            peppy_config_path.write_text(PEPPY_CONFIG)
-            create_codegen_fingerprint(str(peppy_config_path), PEPPYGEN_OUTPUT_PATH)
-
-            runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
-            create_runtime_config(
-                runtime_config_path,
-                router.host,
-                router.port,
-                TEST_NODE_NAME,
-                TEST_CORE_NODE,
-                TEST_INSTANCE_ID,
-                {"frequency_hz": TEST_FREQUENCY_HZ},
+            _write_daemon_mode_config(
+                temp_dir,
+                router,
+                monkeypatch,
                 shutdown_grace_secs=DEADLOCK_REGRESSION_GRACE_SECS,
             )
 
-            monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
-            monkeypatch.chdir(temp_dir)
-
             setup_done_queue: queue.Queue = queue.Queue()
-            error_queue: queue.Queue = queue.Queue()
             cleanup_ran = threading.Event()
             background_finally_ran = threading.Event()
 
             def run_node():
-                try:
+                async def setup_fn(_params, node_runner):
+                    async def background_loop():
+                        # A long-lived task like a generated emit loop that
+                        # does NOT poll the token, so the drain hook is what
+                        # cancels it. Its finally must run (cancelled and
+                        # gathered) while the loop is still alive, before
+                        # quiesce stops the loop.
+                        try:
+                            while True:
+                                await asyncio.sleep(0.01)
+                        finally:
+                            background_finally_ran.set()
 
-                    async def setup_fn(_params, node_runner):
-                        async def background_loop():
-                            # A long-lived task like a generated emit loop that
-                            # does NOT poll the token, so the drain hook is what
-                            # cancels it. Its finally must run (cancelled and
-                            # gathered) while the loop is still alive, before
-                            # quiesce stops the loop.
-                            try:
-                                while True:
-                                    await asyncio.sleep(0.01)
-                            finally:
-                                background_finally_ran.set()
+                    async def on_shutdown():
+                        # Cooperative cleanup; proves the hook phase ran
+                        # before the loop was torn down.
+                        cleanup_ran.set()
 
-                        async def on_shutdown():
-                            # Cooperative cleanup; proves the hook phase ran
-                            # before the loop was torn down.
-                            cleanup_ran.set()
+                    node_runner.on_shutdown(on_shutdown)
+                    setup_done_queue.put(True)
+                    return [asyncio.create_task(background_loop())]
 
-                        node_runner.on_shutdown(on_shutdown)
-                        setup_done_queue.put(True)
-                        return [asyncio.create_task(background_loop())]
+                NodeBuilder().run(setup_fn)
 
-                    NodeBuilder().run(setup_fn)
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             await asyncio.to_thread(setup_done_queue.get, timeout=5.0)
 
-            # The runner opens its session under the `local` workspace namespace; this
-            # control messenger must too, or its probes never route to it.
-            messenger = await MessengerHandle.from_host_port_with_namespace(
-                router.host, router.port
-            )
+            messenger = await _connect_control_messenger(router)
             await _wait_for_service(
                 messenger,
                 SHUTDOWN_SERVICE,
@@ -1531,16 +1239,7 @@ async def test_async_node_shuts_down_promptly_not_at_grace_boundary(monkeypatch)
                 error_queue,
             )
 
-            await ServiceMessenger.poll(
-                messenger,
-                TEST_CORE_NODE,
-                SHUTDOWN_SENDER_INSTANCE_ID,
-                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-                SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
-                b"shutdown",
-                2.0,
-            )
+            await _poll_test_node(messenger, SHUTDOWN_SERVICE, b"shutdown", 2.0)
 
             # Well below the grace: a deadlocked drain blocks the full
             # DEADLOCK_REGRESSION_GRACE_SECS and leaves the thread alive here.
@@ -1568,50 +1267,37 @@ async def test_sync_setup_shutdown_hooks_run(monkeypatch):
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
-            standalone_config = (
-                StandaloneConfig()
-                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-            )
+            peppy_config_path = _write_node_config(temp_dir)
+            standalone_config = _standalone_config(router)
 
             token_queue: queue.Queue = queue.Queue()
-            error_queue: queue.Queue = queue.Queue()
             hook_markers: list = []
 
             def run_node():
-                try:
+                def setup_fn(params, node_runner):
+                    def sync_hook():
+                        hook_markers.append("sync")
 
-                    def setup_fn(params, node_runner):
-                        def sync_hook():
-                            hook_markers.append("sync")
+                    async def async_hook():
+                        await asyncio.sleep(0.05)
+                        hook_markers.append("async")
 
-                        async def async_hook():
-                            await asyncio.sleep(0.05)
-                            hook_markers.append("async")
+                    def awaitable_hook():
+                        return NonCoroutineAwaitable(hook_markers, "awaitable")
 
-                        def awaitable_hook():
-                            return NonCoroutineAwaitable(hook_markers, "awaitable")
+                    node_runner.on_shutdown(sync_hook)
+                    node_runner.on_shutdown(async_hook)
+                    node_runner.on_shutdown(awaitable_hook)
+                    token_queue.put(node_runner.cancellation_token())
 
-                        node_runner.on_shutdown(sync_hook)
-                        node_runner.on_shutdown(async_hook)
-                        node_runner.on_shutdown(awaitable_hook)
-                        token_queue.put(node_runner.cancellation_token())
+                (
+                    NodeBuilder()
+                    .with_config_path(peppy_config_path)
+                    .standalone(standalone_config)
+                    .run(setup_fn)
+                )
 
-                    (
-                        NodeBuilder()
-                        .with_config_path(peppy_config_path)
-                        .standalone(standalone_config)
-                        .run(setup_fn)
-                    )
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
+            runner_thread, error_queue = start_runner_thread(run_node)
 
             cancellation_token: CancellationToken = await asyncio.to_thread(
                 token_queue.get, timeout=5.0

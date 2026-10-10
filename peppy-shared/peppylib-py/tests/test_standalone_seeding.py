@@ -15,7 +15,6 @@ peppy-shared/peppylib-rs/src/runtime/processor.rs.
 import asyncio
 import queue
 import tempfile
-import threading
 from pathlib import Path
 
 import pytest
@@ -23,6 +22,8 @@ import pytest
 from peppylib import QoSProfile, ZenohdInstance
 from peppylib.config import NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME
 from peppylib.runtime import NodeBuilder, NodeRunner, StandaloneConfig
+
+from common import start_runner_thread
 
 # Every slot kind a launch would resolve, at the cardinalities whose seeding
 # rules differ. Observer slots must also be consumed, which the manifest parser
@@ -89,28 +90,22 @@ def _seeded_config(router) -> StandaloneConfig:
 def _run_standalone(peppy_config_path: str, standalone_config, setup_fn):
     """Run a node on its own thread and hand back its result and error queues."""
     result_queue: queue.Queue = queue.Queue()
-    error_queue: queue.Queue = queue.Queue()
 
     def run_node():
-        try:
+        def wrapped(params, node_runner):
+            try:
+                setup_fn(params, node_runner, result_queue)
+            finally:
+                result_queue.put(("token", node_runner.cancellation_token()))
 
-            def wrapped(params, node_runner):
-                try:
-                    setup_fn(params, node_runner, result_queue)
-                finally:
-                    result_queue.put(("token", node_runner.cancellation_token()))
+        (
+            NodeBuilder()
+            .with_config_path(peppy_config_path)
+            .standalone(standalone_config)
+            .run(wrapped)
+        )
 
-            (
-                NodeBuilder()
-                .with_config_path(peppy_config_path)
-                .standalone(standalone_config)
-                .run(wrapped)
-            )
-        except Exception as e:  # noqa: BLE001 - surfaced through the queue
-            error_queue.put(e)
-
-    thread = threading.Thread(target=run_node, daemon=True)
-    thread.start()
+    thread, error_queue = start_runner_thread(run_node)
     return thread, result_queue, error_queue
 
 

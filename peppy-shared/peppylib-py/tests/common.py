@@ -7,6 +7,7 @@ import hashlib
 import json
 import queue
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,29 @@ def write_peppygen_stub(root: Path) -> None:
     package_dir.mkdir(parents=True)
     (package_dir / "__init__.py").write_text("")
     (package_dir / "parameters.py").write_text(PARAMETERS_PY)
+
+
+def start_runner_thread(
+    run: Callable[[], None],
+) -> tuple[threading.Thread, queue.Queue]:
+    """Start `run` on a daemon thread and return the thread with the queue that
+    receives the exception `run` raises, if any.
+
+    The node runner blocks its thread, so a test drives it from here and reads
+    a runner failure from the queue (as `wait_for_service` does) instead of
+    losing it with the thread.
+    """
+    error_queue: queue.Queue = queue.Queue()
+
+    def run_and_keep_error() -> None:
+        try:
+            run()
+        except Exception as error:
+            error_queue.put(error)
+
+    runner_thread = threading.Thread(target=run_and_keep_error, daemon=True)
+    runner_thread.start()
+    return runner_thread, error_queue
 
 
 def create_codegen_fingerprint(config_path: str, output_path: str) -> None:
