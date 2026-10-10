@@ -6,14 +6,16 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use config::node::{QoSProfile, TopicRetention};
 use core_node_api::names;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{MessengerHandle, ProducerRef, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, ProducerRef};
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use peppylib::testing::EphemeralRouter;
-use peppylib::types::Payload;
 use tempfile::TempDir;
+
+/// The topic helpers take the target as an argument, so this binary uses the
+/// crate-wide ones; only [`test_node_target`] differs here.
+pub(crate) use crate::shared::{publish_once, wait_for_topic_subscriber};
 
 pub(crate) const CORE_NODE: &str = "standalone-core";
 pub(crate) const CLIENT_INSTANCE: &str = "test_caller";
@@ -24,33 +26,6 @@ pub(crate) const SERVER_INSTANCE: &str = "test_server";
 /// these tests must mirror that tag to actually route through the wire.
 pub(crate) fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, names::CORE_NODE_TAG).expect("test node target")
-}
-
-/// Declares a publisher and publishes a single payload. The publisher is the
-/// only topic-publish path, so a test that publishes once just declares then
-/// publishes; the arguments mirror the old one-shot emit.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn publish_once(
-    messenger: &MessengerHandle,
-    core_node: &str,
-    instance_id: &str,
-    target: SenderTarget,
-    topic_name: &str,
-    qos: QoSProfile,
-    payload: Payload,
-) -> Result<(), peppylib::PeppyError> {
-    let publisher = TopicMessenger::declare_publisher(
-        messenger,
-        core_node,
-        instance_id,
-        target,
-        None,
-        topic_name,
-        qos,
-        TopicRetention::LiveOnly,
-    )
-    .await?;
-    publisher.publish(payload).await
 }
 
 /// Writes a minimal `peppy.json5` into `dir` suitable for
@@ -85,34 +60,6 @@ pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name:
     )
     .await
     .unwrap_or_else(|_| panic!("{service_name} stub did not become reachable within 5s"));
-}
-
-/// Deterministically waits until `publisher`'s session sees a subscriber for
-/// `topic_name` before the test publishes on it, replacing a fixed "settle for
-/// zenoh discovery" sleep. Peer-mode discovery is not instantaneous, so a
-/// publish sent before routing completes can be dropped. The arguments mirror
-/// the subsequent publish. Panics if no subscriber routes within 2s.
-pub(crate) async fn wait_for_topic_subscriber(
-    publisher: &MessengerHandle,
-    core_node: &str,
-    instance_id: &str,
-    target: SenderTarget,
-    topic_name: &str,
-) {
-    let matched = TopicMessenger::wait_for_subscriber(
-        publisher,
-        core_node,
-        instance_id,
-        target,
-        topic_name,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("wait_for_subscriber should not error");
-    assert!(
-        matched,
-        "no subscriber for topic `{topic_name}` routed within 2s"
-    );
 }
 
 /// Starts an ephemeral zenoh router (via `peppylib::testing`, which also
