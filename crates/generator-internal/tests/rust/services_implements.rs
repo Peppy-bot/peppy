@@ -47,7 +47,7 @@ const NODE_CONFIG: &str = r#"{
 ///   4. Per-interface marker fields land in the right file (no cross-wiring).
 #[test]
 fn nests_contract_backed_services_under_link_id() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 

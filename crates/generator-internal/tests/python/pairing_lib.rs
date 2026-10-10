@@ -53,7 +53,7 @@ fn arm_peer_context() -> PeerContext {
 
 #[test]
 fn generated_peer_modules_import_from_venv() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let commands: NativeEmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
@@ -154,7 +154,7 @@ print("peer modules imported")
 /// helpers are absent.
 #[test]
 fn generated_multi_peer_modules_are_cardinality_typed() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let commands: NativeEmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
@@ -247,7 +247,7 @@ print("multi peer modules imported")
 /// list type, so `one_or_more` states its guarantee in the docstring instead.
 #[test]
 fn generated_observer_modules_are_cardinality_typed() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
     let (mut generator, output_dir, user_node, peppy_node_config_path) =

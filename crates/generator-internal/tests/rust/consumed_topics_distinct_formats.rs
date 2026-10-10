@@ -144,8 +144,8 @@ fn read_schema(capnp_dir: &Path, file_stem: &str) -> String {
 }
 
 fn generate_and_build(order: [Slot; 2]) {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let user_node_dir = temp_dir.path().join("user_node");
     fs::create_dir_all(&user_node_dir).expect("failed to create user_node directory");
 

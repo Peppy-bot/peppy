@@ -55,7 +55,7 @@ fn controller_peer_context() -> PeerContext {
 
 #[test]
 fn generated_peer_modules_compile_against_peppylib() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let commands: NativeEmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
@@ -167,7 +167,7 @@ fn main() -> Result<()> {
 /// its peer belongs to.
 #[test]
 fn generated_multi_peer_modules_compile_against_peppylib() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let commands: NativeEmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
@@ -274,7 +274,7 @@ fn commander_observer_context() -> PeerContext {
 
 #[test]
 fn generated_observer_modules_compile_against_peppylib() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
     let (mut generator, output_dir, user_node, peppy_node_config_path) =
@@ -394,7 +394,7 @@ fn main() -> Result<()> {
 /// many, or an empty set the plan said could not happen.
 #[test]
 fn generated_multi_observer_modules_compile_against_peppylib() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
     let (mut generator, output_dir, user_node, peppy_node_config_path) =

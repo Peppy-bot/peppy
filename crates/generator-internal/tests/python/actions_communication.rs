@@ -85,7 +85,7 @@ async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopol
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
@@ -201,7 +201,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -445,7 +445,7 @@ async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::Loc
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
@@ -545,7 +545,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -773,7 +773,7 @@ async fn actions_communication_async_goal_decider(
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
@@ -879,7 +879,7 @@ if __name__ == "__main__":
     // awaits it); after accepting, the worker publishes feedback through the
     // `GoalContext` and completes. See the test docstring above.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -1128,7 +1128,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
@@ -1236,7 +1236,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -1494,7 +1494,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
@@ -1612,7 +1612,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -1882,7 +1882,7 @@ async fn actions_communication_drain_loop_until_end_signal(
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
@@ -1996,7 +1996,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -2242,7 +2242,7 @@ async fn actions_communication_producer_killed_yields_connection_error_and_aband
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
@@ -2354,7 +2354,7 @@ if __name__ == "__main__":
     fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
 
     // --- Exposer (server) project
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -2569,7 +2569,7 @@ async fn actions_communication_via_contract_slot(
 
     // --- Consumer (client) project: one contract slot, bound to the exposer.
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction =
         serde_json5::from_str(CONSUMED_ACTION_CONTRACT_EXAMPLE).unwrap();
@@ -2703,7 +2703,7 @@ if __name__ == "__main__":
     // --- Exposer (server) project: exposes the action through a
     // `manifest.implements`-shaped contract origin.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -2964,7 +2964,7 @@ async fn actions_refined_producer_interoperates_with_generic_consumer() {
     // --- Consumer (client) project: the contract member as written, plus a
     // service whose first call tells the test the flow has run.
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction =
         serde_json5::from_str(r#"{ link_id: "arm", name: "move_arm_joints" }"#).unwrap();
@@ -3075,7 +3075,7 @@ if __name__ == "__main__":
     // --- Exposer (server) project: the same member with the implementer's
     // `refine` block applied, under a `manifest.implements`-shaped origin.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     use config::node::Refines;
     let refinement: config::node::ActionRefinement =

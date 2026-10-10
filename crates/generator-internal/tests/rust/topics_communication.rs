@@ -95,7 +95,7 @@ async fn run_emitter_and_receiver(
 
     // --- Receiver project
     let receiver_instance_id = RECEIVER_INSTANCE_ID;
-    let temp_dir_proj2 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_proj2 = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let consumed_topic: ConsumedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
@@ -169,7 +169,7 @@ fn main() -> Result<()> {
 
     // --- Emitter project
     let emitter_instance_id = EMITTER_INSTANCE_ID;
-    let temp_dir_proj1 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_proj1 = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let emitted_topic = NativeEmittedTopic {
         retention: scenario.retention(),
         ..serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap()

@@ -77,7 +77,7 @@ async fn one_or_more_slot_fans_in_topics_and_directs_services(
 
     // --- Consumer project: one `one_or_more` slot, consumed as a topic
     // and a service.
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let consumed_topic: ConsumedTopic = serde_json5::from_str(MULTI_SUBSCRIBED_TOPIC).unwrap();
     let topic_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
@@ -232,7 +232,7 @@ fn main() -> Result<()> {
     // --- Camera project: emits `video_stream` and exposes
     // `enable_camera`; compiled once, spawned twice as `front_camera` and
     // `rear_camera`.
-    let temp_dir_camera = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_camera = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let emitted_topic: NativeEmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
     let exposed_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();

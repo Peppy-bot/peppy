@@ -13,7 +13,7 @@ use peppylib::{MessengerHandle, ServiceMessenger};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -64,16 +64,6 @@ pub fn contract_dep(
         link_id,
         config::node::Cardinality::One,
     )
-}
-
-/// Root for per-test scratch directories. Thin re-export of the shared
-/// [`config_test_support::test_tmp_root`] so the many generator test files can
-/// keep calling `crate::helpers::test_tmp_root()`.
-///
-/// Note: the shared `peppylib` `.so` cache itself still lives under
-/// [`test_peppy_dirs`] (the global `.peppy`); only the per-test copies move here.
-pub fn test_tmp_root() -> PathBuf {
-    config_test_support::test_tmp_root()
 }
 
 pub const TEST_NODE_TAG: &str = "v1";
@@ -801,9 +791,8 @@ pub fn run_generate_peppygen_lib_test(
     language: PeppygenLanguage,
     json_config_content: &str,
 ) -> (TempDir, std::path::PathBuf) {
-    // Unqualified (not `crate::helpers::`) so this compiles both when helpers.rs
-    // is included as `mod helpers` and when cargo builds it as its own test binary.
-    let temp_dir = TempDir::new_in(test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
     // Write the peppy.json5 config

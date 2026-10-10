@@ -19,7 +19,7 @@
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output,
     init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
-    test_tmp_root, wait_for_child, wait_for_health_service_reachable_or_exit,
+    wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{MessageFormat, TopicRetention};
@@ -335,7 +335,8 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- The generated provider.
-    let temp_dir = TempDir::new_in(test_tmp_root()).expect("temp dir for the stub");
+    let temp_dir =
+        TempDir::new_in(config_test_support::test_tmp_root()).expect("temp dir for the stub");
     let (mut stub_generator, output_dir, user_node, _config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir, STUB_NODE_CONFIG);
     let origin = ContractOrigin {

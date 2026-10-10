@@ -187,8 +187,8 @@ fn generate_peppygen_lib_deploys_standalone_peppylib_project() {
 /// peppylib project each time).
 #[test]
 fn generate_peppygen_lib_python_repeat_generation_is_idempotent() {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
     fs::write(node_dir.join(NODE_CONFIG_FILE), PEPPY_JSON5_CONFIG)
         .expect("failed to write peppy.json5");
@@ -220,8 +220,8 @@ fn generate_peppygen_lib_python_repeat_generation_is_idempotent() {
 /// distribution is the locally deployed one, never a PyPI release.
 #[test]
 fn python_node_venv_installs_local_peppylib() {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let node_dir = temp_dir.path().join("user_node");
     helpers::init_python_user_node(&node_dir);
     fs::write(
@@ -279,8 +279,8 @@ fn python_node_venv_installs_local_peppylib() {
 
 #[test]
 fn generate_peppygen_lib_minimal_config() {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
     // Minimal config with no interfaces
@@ -317,8 +317,8 @@ fn generate_peppygen_lib_minimal_config() {
 
 #[test]
 fn generate_peppygen_lib_missing_config() {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
     // Try to generate without a peppy.json5 - should fail
@@ -340,8 +340,8 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
     const EXPOSED_NODE_NAME: &str = "topic_exposer";
     const CONSUMER_NODE_NAME: &str = "topic_consumer";
 
-    let exposed_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let exposed_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
@@ -395,8 +395,8 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
         exposed_peppygen_dir.display()
     );
 
-    let consumer_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let consumer_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{
@@ -460,8 +460,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
     const EXPOSED_NODE_NAME: &str = "service_exposer";
     const CONSUMER_NODE_NAME: &str = "service_consumer";
 
-    let exposed_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let exposed_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
@@ -518,8 +518,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
         exposed_peppygen_dir.display()
     );
 
-    let consumer_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let consumer_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{
@@ -595,8 +595,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
     const EXPOSED_NODE_NAME: &str = "action_exposer";
     const CONSUMER_NODE_NAME: &str = "action_consumer";
 
-    let exposed_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let exposed_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
@@ -683,8 +683,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
         "goal response schema should exactly match response_message_format"
     );
 
-    let consumer_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let consumer_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{
@@ -767,8 +767,8 @@ fn generate_peppygen_python_lib_renders_optional_accessor_for_a_zero_or_one_cont
     const CONTRACT_NAME: &str = "depth_camera";
     const LINK_ID: &str = "wrist_camera";
 
-    let consumer_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let consumer_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
     fs::write(
         consumer_node_dir.join(NODE_CONFIG_FILE),

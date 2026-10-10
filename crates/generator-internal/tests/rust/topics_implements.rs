@@ -62,7 +62,7 @@ const NODE_CONFIG: &str = r#"{
 ///      four artifacts weren't cross-wired during generation.
 #[test]
 fn nests_contract_backed_topics_under_link_id() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
@@ -226,7 +226,7 @@ fn nests_contract_backed_topics_under_link_id() {
 /// at the wire boundary, so the generator keeps the raw value.
 #[test]
 fn hyphenated_link_id_lands_in_underscore_directory() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 

@@ -183,7 +183,7 @@ async fn actions_preserve_result_field_order() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Producer (server) project
-    let temp_dir_producer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_producer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for producer project");
     let producer_dir = temp_dir_producer.path().join("user_node");
     fs::create_dir_all(&producer_dir).unwrap();
@@ -258,7 +258,7 @@ if __name__ == "__main__":
     fs::write(producer_dir.join("main.py"), producer_main).expect("write producer main.py");
 
     // --- Consumer (client) project
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumer_dir = temp_dir_consumer.path().join("user_node");
     fs::create_dir_all(&consumer_dir).unwrap();
@@ -583,7 +583,7 @@ async fn services_preserve_response_field_order() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Producer (server) project
-    let temp_dir_producer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_producer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for producer project");
     let producer_dir = temp_dir_producer.path().join("user_node");
     fs::create_dir_all(&producer_dir).unwrap();
@@ -640,7 +640,7 @@ if __name__ == "__main__":
     fs::write(producer_dir.join("main.py"), producer_main).expect("write producer main.py");
 
     // --- Consumer (client) project
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumer_dir = temp_dir_consumer.path().join("user_node");
     fs::create_dir_all(&consumer_dir).unwrap();
@@ -937,7 +937,7 @@ async fn topics_preserve_message_field_order() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Producer (emitter) project
-    let temp_dir_producer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_producer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for producer project");
     let producer_dir = temp_dir_producer.path().join("user_node");
     fs::create_dir_all(&producer_dir).unwrap();
@@ -994,7 +994,7 @@ if __name__ == "__main__":
     fs::write(producer_dir.join("main.py"), producer_main).expect("write producer main.py");
 
     // --- Consumer (receiver) project
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumer_dir = temp_dir_consumer.path().join("user_node");
     fs::create_dir_all(&consumer_dir).unwrap();

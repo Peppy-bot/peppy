@@ -248,7 +248,7 @@ pub async fn setup_clock_publisher(
 
 #[test]
 fn generated_mocks_and_fixtures_drive_a_node_end_to_end() {
-    let temp_dir = tempfile::TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = tempfile::TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let (mut generator, output_dir, user_node, _config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir, NODE_CONFIG);
 
