@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from peppylib import ZenohdInstance
+from peppylib import QoSProfile, ZenohdInstance
 from peppylib.config import NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME
-from peppylib.runtime import NodeBuilder, StandaloneConfig
+from peppylib.runtime import NodeBuilder, NodeRunner, StandaloneConfig
 
 # Every slot kind a launch would resolve, at the cardinalities whose seeding
 # rules differ. Observer slots must also be consumed, which the manifest parser
@@ -238,6 +238,27 @@ async def test_standalone_seeds_every_slot_kind(monkeypatch):
     ], "with_observed_source call order must be preserved"
 
     assert seen["spare_arms"] == [], "an unseeded zero_or_more observer sees nothing"
+
+
+@pytest.mark.asyncio
+async def test_standalone_peer_publisher_publish_to_resolves_to_none(monkeypatch):
+    """A publish to one peer of a seeded multi pairing slot resolves to `None`,
+    like every other void async binding."""
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(SEEDED_SLOTS_CONFIG)
+            node_runner = await NodeRunner.new_standalone(
+                peppy_config_path, _seeded_config(router)
+            )
+            publisher = node_runner.declare_peer_publisher(
+                "limbs", "arm_link", "v1", "joint_commands", QoSProfile.Reliable
+            )
+            peers = publisher.peers()
+            assert [peer.producer.instance_id for peer in peers] == ["left_1", "left_2"]
+
+            assert await publisher.publish_to(peers[0], b"cmd") is None
 
 
 @pytest.mark.asyncio

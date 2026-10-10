@@ -1,4 +1,4 @@
-use crate::messaging::{PyBoundMember, PyMessengerHandle, PyProducerRef};
+use crate::messaging::{PyBoundMember, PyMessengerHandle, PyProducerRef, future_into_py_unit};
 use peppylib::runtime::CancellationToken;
 use peppylib::runtime::{NodeBuilder, NodeRunner, Processor, StandaloneConfig};
 use pyo3::exceptions::PyRuntimeError;
@@ -777,7 +777,7 @@ impl PyCancellationToken {
     /// Mirrors the Rust `CancellationToken::cancelled()` awaitable.
     fn cancelled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let token = self.inner.clone();
-        crate::py_future::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             token.cancelled().await;
             Ok(())
         })
@@ -914,7 +914,7 @@ impl PyNodeRunner {
             *slot = Some(running.unbind());
         }
         let runner = Arc::clone(&self.inner);
-        crate::py_future::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             runner.run_shutdown_hooks(grace).await;
             Ok(())
         })

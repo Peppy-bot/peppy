@@ -233,7 +233,7 @@ async def test_a_publisher_reads_its_committed_time_and_its_domain_carries_it(tm
             reader.now_ns()
 
         subscription = await clock.subscribe(node_runner)
-        await publisher.publish(sim_ns)
+        assert await publisher.publish(sim_ns) is None
 
         assert reader.now_ns() == sim_ns, (
             "a source reads its own clock without waiting for a transport echo"

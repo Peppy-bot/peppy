@@ -14,7 +14,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use tokio::sync::Mutex;
 
-use crate::messaging::{decode_err, duration_from_secs_f64, encode_err, to_py_err};
+use crate::messaging::{
+    decode_err, duration_from_secs_f64, encode_err, future_into_py_unit, to_py_err,
+};
 use crate::runtime::PyNodeRunner;
 
 /// Request side of the NTP-style 4-timestamp exchange.
@@ -422,7 +424,7 @@ impl PyClockPublisher {
     /// Commit `time_ns` as the domain's current instant and send it.
     fn publish<'py>(&self, py: Python<'py>, time_ns: u64) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        crate::py_future::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             inner.publish(time_ns).await.map_err(to_py_err)
         })
     }

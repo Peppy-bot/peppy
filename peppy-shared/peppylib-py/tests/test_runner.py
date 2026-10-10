@@ -962,8 +962,11 @@ async def test_cancellation_token_cancelled_awaitable(monkeypatch):
             token.cancel()
             await asyncio.wait_for(waiter, timeout=5.0)
 
-            # An already-cancelled token resolves immediately
-            await asyncio.wait_for(token.cancelled(), timeout=5.0)
+            # An already-cancelled token resolves immediately, to None like
+            # every other void async binding.
+            assert await asyncio.wait_for(token.cancelled(), timeout=5.0) is None
+
+            assert await node_runner.run_shutdown_hooks(1.0) is None
 
 
 @pytest.mark.asyncio
