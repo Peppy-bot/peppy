@@ -61,7 +61,7 @@ def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
     )
 
     with tarfile.open(archive_path, "r:gz") as tar:
-        members = {m.name.lstrip("./"): m for m in tar.getmembers()}
+        members = {m.name.removeprefix("./"): m for m in tar.getmembers()}
         for item in required:
             member = members.get(item)
             if member is None:

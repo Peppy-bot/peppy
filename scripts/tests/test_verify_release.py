@@ -30,6 +30,26 @@ def _binary_for(triple: str) -> bytes:
     return _elf_bytes(ELF_MACHINE_BY_ARCH[triple.split("-")[0]])
 
 
+def _add_member(
+    tar: tarfile.TarFile,
+    name: str,
+    data: bytes,
+    *,
+    uid: int = 0,
+    gid: int = 0,
+    uname: str = "",
+    gname: str = "",
+) -> None:
+    """Add a regular file member, by default with the zeroed ownership."""
+    info = tarfile.TarInfo(name=name)
+    info.size = len(data)
+    info.uid = uid
+    info.gid = gid
+    info.uname = uname
+    info.gname = gname
+    tar.addfile(info, io.BytesIO(data))
+
+
 def _create_archive(
     path: Path,
     members: list[str],
@@ -47,13 +67,9 @@ def _create_archive(
     with tarfile.open(path, "w:gz") as tar:
         for name in members:
             data = overrides.get(name, _binary_for(triple))
-            info = tarfile.TarInfo(name=f"./{name}")
-            info.size = len(data)
-            info.uid = uid
-            info.gid = gid
-            info.uname = uname
-            info.gname = gname
-            tar.addfile(info, io.BytesIO(data))
+            _add_member(
+                tar, f"./{name}", data, uid=uid, gid=gid, uname=uname, gname=gname
+            )
 
 
 def _all_required_members(triple: str) -> list[str]:
@@ -174,9 +190,7 @@ def test_verify_archive_rejects_a_link_member(tmp_path: Path) -> None:
     with tarfile.open(archive, "w:gz") as tar:
         data = _binary_for(triple)
         for name in ("bin/peppy", "bin/zenohd"):
-            info = tarfile.TarInfo(name=f"./{name}")
-            info.size = len(data)
-            tar.addfile(info, io.BytesIO(data))
+            _add_member(tar, f"./{name}", data)
         link = tarfile.TarInfo(name="./bin/apptainer/bin/apptainer")
         link.type = tarfile.SYMTYPE
         link.linkname = "../../peppy"
@@ -225,3 +239,35 @@ def test_verify_archive_rejects_build_host_ownership(tmp_path: Path) -> None:
         "(uid=501, gid=20, uname='builder', gname='staff')"
     )
     assert expected in problems
+
+
+def test_verify_archive_names_a_dot_file_in_full(tmp_path: Path) -> None:
+    triple = "x86_64-unknown-linux-gnu"
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for name in _all_required_members(triple):
+            _add_member(tar, f"./{name}", _binary_for(triple))
+        _add_member(tar, "./.marker", b"x", uid=1000)
+
+    problems = verify_release_archive(archive, triple)
+    expected = (
+        ".marker carries build host ownership "
+        "(uid=1000, gid=0, uname='', gname='')"
+    )
+    assert problems == [expected]
+
+
+def test_verify_archive_ignores_a_binary_outside_the_archive_root(
+    tmp_path: Path,
+) -> None:
+    # A member under ../ points outside the archive root (GNU tar skips it),
+    # so it does not stand in for the required binary of the same path.
+    triple = "x86_64-unknown-linux-gnu"
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    with tarfile.open(archive, "w:gz") as tar:
+        _add_member(tar, "../bin/peppy", _binary_for(triple))
+        for name in ("bin/zenohd", "bin/apptainer/bin/apptainer"):
+            _add_member(tar, f"./{name}", _binary_for(triple))
+
+    problems = verify_release_archive(archive, triple)
+    assert problems == ["missing bin/peppy"]
