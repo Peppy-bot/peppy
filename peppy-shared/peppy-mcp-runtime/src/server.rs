@@ -3141,6 +3141,33 @@ mod tests {
             assert_eq!(gone.code, ErrorCode::RESOURCE_NOT_FOUND);
         }
 
+        /// A second instance filling a once-target of a robot is a conflict
+        /// and attaches nothing; the host still detaches it when it leaves,
+        /// and the first instance keeps publishing to the resource it
+        /// attached.
+        #[test]
+        fn detaching_a_member_that_attached_nothing_leaves_the_resource_of_the_member_it_conflicted_with()
+         {
+            let (server, fleet) = served();
+            let handle = server.fleet().expect("a per-robot server");
+            let backbone = member("status", "alpha", "backbone_inst");
+            let attached = handle.attach(&backbone);
+            assert_eq!(attached.len(), 1);
+            let second = member("status", "alpha", "second_inst");
+            fleet.lock().unwrap().push(second.clone());
+            assert!(
+                handle.attach(&second).is_empty(),
+                "a conflict attaches nothing"
+            );
+
+            fleet.lock().unwrap().retain(|member| member != &second);
+            handle.detach(&second);
+            let state = runtime(&server)
+                .state("peppy://resource/alpha/robot.status")
+                .expect("the resource of the first instance stays");
+            assert!(Arc::ptr_eq(&state, &attached[0].1.state));
+        }
+
         #[tokio::test(start_paused = true)]
         async fn a_picture_tool_answers_for_the_camera_the_call_names() {
             let (server, fleet) = served_bundle(picture_bundle());
