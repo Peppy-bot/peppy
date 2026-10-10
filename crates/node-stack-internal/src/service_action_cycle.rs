@@ -22,7 +22,7 @@
 //! cycle the moment the second node is declared, even when the two nodes are
 //! added in separate invocations.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use config::node::{InterfaceKind, Interfaces, NodeConfig, node_implements};
 use petgraph::algo::tarjan_scc;
@@ -194,8 +194,6 @@ fn cycle_from_component(
     edges: &[Edge],
     nodes: &[CycleCheckNode<'_>],
 ) -> Option<ServiceActionCycle> {
-    let member_set: std::collections::HashSet<usize> = members.iter().copied().collect();
-
     // A single-node component is a cycle only when it has a self-edge (a node
     // consuming its own service/action interface). Multi-node components are
     // always cycles.
@@ -209,14 +207,11 @@ fn cycle_from_component(
 
     // Pick the closing edge deterministically: among edges internal to the
     // component, the one with the smallest (from_label, to_label).
+    let member_set: HashSet<usize> = members.iter().copied().collect();
     let closing = edges
         .iter()
         .filter(|e| member_set.contains(&e.from) && member_set.contains(&e.to))
-        .min_by(|a, b| {
-            let a_key = (label_of(nodes, a.from), label_of(nodes, a.to));
-            let b_key = (label_of(nodes, b.from), label_of(nodes, b.to));
-            a_key.cmp(&b_key)
-        })?;
+        .min_by_key(|e| (label_of(nodes, e.from), label_of(nodes, e.to)))?;
 
     let mut labels: Vec<String> = members.iter().map(|&idx| label_of(nodes, idx)).collect();
     labels.sort();
