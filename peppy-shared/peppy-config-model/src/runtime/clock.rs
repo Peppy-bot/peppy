@@ -24,7 +24,7 @@ use std::num::NonZeroU64;
 /// Zero is not a value: it is the "no tick observed" sentinel the clock cache
 /// uses, and keeping the two apart in the type stops an absent incarnation
 /// from reading as a real one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct ClockIncarnation(NonZeroU64);
 
@@ -72,6 +72,16 @@ impl TryFrom<u64> for ClockIncarnation {
         NonZeroU64::new(value)
             .map(Self)
             .ok_or(InvalidIncarnation::Zero)
+    }
+}
+
+impl<'de> Deserialize<'de> for ClockIncarnation {
+    /// Reads a plain integer and holds it to the [`TryFrom<u64>`] range, so a
+    /// lifetime that arrives in a plan or a runtime config meets the same
+    /// check as one built in code.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = u64::deserialize(deserializer)?;
+        Self::try_from(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -265,6 +275,21 @@ mod tests {
     fn a_zero_incarnation_is_refused() {
         assert_eq!(ClockIncarnation::try_from(0), Err(InvalidIncarnation::Zero));
         assert_eq!(incarnation(1).get(), 1);
+    }
+
+    /// A plan or a runtime config carries the lifetime as a plain number, so
+    /// a deserialized value meets the same range check as one built in code.
+    #[test]
+    fn a_deserialized_lifetime_is_held_to_the_same_range() {
+        let too_large = (ClockIncarnation::MAX + 2).to_string();
+        let error = serde_json::from_str::<ClockIncarnation>(&too_large).expect_err("above MAX");
+        assert!(error.to_string().contains("is above"), "{error}");
+        assert!(serde_json::from_str::<ClockIncarnation>("0").is_err());
+        let largest = ClockIncarnation::MAX.to_string();
+        assert_eq!(
+            serde_json::from_str::<ClockIncarnation>(&largest).expect("inside the range"),
+            incarnation(ClockIncarnation::MAX)
+        );
     }
 
     #[test]
