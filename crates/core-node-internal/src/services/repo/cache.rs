@@ -716,11 +716,11 @@ pub fn load_pairing_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<PairingCacheEntr
 /// Looks up `name` in the launcher cache and resolves it to a concrete
 /// on-disk path that the launch flow can open and parse.
 ///
-/// For Git entries this materializes the repo's checkout via
-/// [`crate::services::node::cache::git::ensure_checkout`] (blocking; wrap
-/// callers in `spawn_blocking` when running inside Tokio). `on_feedback`
-/// receives clone/refresh progress lines. Touches no stack state, so
-/// read-only callers (`stack resolve`) share it with the launch flow.
+/// For Git entries this materializes the checkout of the pinned commit via
+/// `node::cache::git::ensure_checkout_at_commit` (blocking; wrap callers in
+/// `spawn_blocking` when running inside Tokio). `on_feedback` receives clone
+/// and fetch progress lines. Touches no stack state, so read-only callers
+/// (`stack resolve`) share it with the launch flow.
 pub fn resolve_repo_launcher_path(
     name: &str,
     peppy_dirs: &PeppyDirs,
