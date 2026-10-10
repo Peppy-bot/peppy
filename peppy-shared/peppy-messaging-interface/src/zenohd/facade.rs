@@ -805,30 +805,34 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_zenohd_facade_creation_with_config() {
+    /// A `.json5` file holding `contents`. Zenoh's config loader picks its
+    /// parser from the file extension.
+    fn json5_config_file(contents: &str) -> tempfile::NamedTempFile {
         use std::io::Write;
-        use tempfile::Builder;
 
-        let expected_host = "127.0.0.1";
-        let expected_port = 7447u16;
-
-        // Create a minimal zenoh config file with .json5 extension
-        let mut config_file = Builder::new()
+        let mut config_file = tempfile::Builder::new()
             .suffix(".json5")
             .tempfile()
             .expect("Failed to create temp file");
-        writeln!(
-            config_file,
-            r#"{{
-                "listen": {{
-                    "endpoints": {{
-                        "router": ["tcp/{expected_host}:{expected_port}"]
-                    }}
-                }}
-            }}"#
-        )
-        .expect("Failed to write config");
+        config_file
+            .write_all(contents.as_bytes())
+            .expect("Failed to write config");
+        config_file
+    }
+
+    /// A minimal router config that listens on `tcp/127.0.0.1:{port}`, written
+    /// in the per-mode shape peppy renders.
+    fn router_config_file(port: u16) -> tempfile::NamedTempFile {
+        json5_config_file(&format!(
+            r#"{{ "listen": {{ "endpoints": {{ "router": ["tcp/127.0.0.1:{port}"] }} }} }}"#
+        ))
+    }
+
+    #[test]
+    fn test_zenohd_facade_creation_with_config() {
+        let expected_host = "127.0.0.1";
+        let expected_port = 7447u16;
+        let config_file = router_config_file(expected_port);
 
         let facade = ZenohdFacade::managed(config_file.path());
         assert!(facade.is_ok(), "Error creating facade: {:?}", facade.err());
@@ -855,26 +859,7 @@ mod tests {
 
     #[test]
     fn test_stop_router_multiple_times() {
-        use std::io::Write;
-        use tempfile::Builder;
-
-        // Create a config file with .json5 extension
-        let mut config_file = Builder::new()
-            .suffix(".json5")
-            .tempfile()
-            .expect("Failed to create temp file");
-        writeln!(
-            config_file,
-            r#"{{
-                "listen": {{
-                    "endpoints": {{
-                        "router": ["tcp/127.0.0.1:7447"]
-                    }}
-                }}
-            }}"#
-        )
-        .expect("Failed to write config");
-
+        let config_file = router_config_file(7447);
         let mut facade =
             ZenohdFacade::managed(config_file.path()).expect("Failed to create facade");
 
@@ -892,18 +877,7 @@ mod tests {
     /// owner's: the fork neither spawns through it nor stops it on drop.
     #[test]
     fn a_fork_leaves_the_owners_router_alone() {
-        use std::io::Write;
-        use tempfile::Builder;
-
-        let mut config_file = Builder::new()
-            .suffix(".json5")
-            .tempfile()
-            .expect("Failed to create temp file");
-        writeln!(
-            config_file,
-            r#"{{ "listen": {{ "endpoints": {{ "router": ["tcp/127.0.0.1:7447"] }} }} }}"#
-        )
-        .expect("Failed to write config");
+        let config_file = router_config_file(7447);
         let mut facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
         // What a fork of this process reads back from the inherited facade.
         let RouterOwnership::Managed { owner_pid, .. } = &mut facade.ownership else {
@@ -1013,26 +987,10 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_start_keeps_an_existing_unready_managed_child() {
-        use std::io::Write;
-
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
         let port = listener.local_addr().expect("reserved addr").port();
         drop(listener);
-        let mut config_file = tempfile::Builder::new()
-            .suffix(".json5")
-            .tempfile()
-            .expect("create config");
-        writeln!(
-            config_file,
-            r#"{{
-                "listen": {{
-                    "endpoints": {{
-                        "router": ["tcp/127.0.0.1:{port}"]
-                    }}
-                }}
-            }}"#
-        )
-        .expect("write config");
+        let config_file = router_config_file(port);
 
         let mut facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
         let child = Command::new("sleep")
