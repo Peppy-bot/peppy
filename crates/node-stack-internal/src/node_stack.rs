@@ -435,7 +435,7 @@ impl NodeStackInner {
         })
     }
 
-    /// Same filtering rule as [`find_by_instance_id`]: only entities
+    /// Same filtering rule as [`Self::find_by_instance_id`]: only entities
     /// containing a `Running` instance with the given id are returned.
     fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
         self.find_map_entity(|handle, entity| {
