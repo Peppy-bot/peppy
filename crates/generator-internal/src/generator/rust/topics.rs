@@ -143,7 +143,7 @@ pub fn build_topic_publisher(
 /// `build_message(fields…)` for an emitted topic: serializes the message fields
 /// to a wire `peppylib::Payload` with no messenger access, so a publish loop can
 /// build the payload off any lock and hand the finished bytes to
-/// [`peppylib::TopicPublisher::publish`]. Filters the reserved `instance_id`
+/// `peppylib::TopicPublisher::publish`. Filters the reserved `instance_id`
 /// from the params and returns `MessageFormatUnavailable` when the topic has no
 /// serializable message format.
 fn build_topic_build_message(

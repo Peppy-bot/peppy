@@ -375,10 +375,10 @@ impl RustGenerator {
 
     /// Builds the consumed action `get_result` method and its supporting types.
     ///
-    /// `get_result` returns a typed [`ResultResponse`] carrying a `ResultOutcome`
+    /// `get_result` returns a typed `ResultResponse` carrying a `ResultOutcome`
     /// enum (Completed/Cancelled with the decoded result data, or the empty
     /// Abandoned/Expired terminal states). The engine frames the reply as a
-    /// [`peppylib::messaging::ResultStatus`] tag plus the raw body, stripped by
+    /// `peppylib::messaging::ResultStatus` tag plus the raw body, stripped by
     /// `ActionMessenger::request_result` into a typed reply, so this only needs
     /// to decode the body for the data-bearing variants.
     fn build_consumed_action_get_result_method(
