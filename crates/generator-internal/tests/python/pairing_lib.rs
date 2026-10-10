@@ -10,13 +10,9 @@ use config::node::{Cardinality, NativeEmittedTopic};
 use generator::LanguageGenerator;
 use generator::PeerContext;
 use std::fs;
-use std::path::Path;
 use tempfile::TempDir;
 
-use crate::helpers::{
-    STUB_PYTHON_NODE_CONFIG, copy_config_to_output, init_test_env, run_python_check,
-    test_peppy_dirs,
-};
+use crate::helpers::{STUB_PYTHON_NODE_CONFIG, generate_node_project, run_python_check};
 
 const JOINT_COMMANDS: &str = r#"
 {
@@ -57,19 +53,14 @@ fn generated_peer_modules_import_from_venv() {
     let commands: NativeEmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
-    let (mut generator, output_dir, user_node, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir, STUB_PYTHON_NODE_CONFIG);
     let peer = arm_peer_context();
-    generator.add_peer_emitted_topic(&states, &peer).unwrap();
-    generator.add_peer_consumed_topic(&commands, &peer).unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(&output_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir,
+        STUB_PYTHON_NODE_CONFIG,
+        |generator| {
+            generator.add_peer_emitted_topic(&states, &peer).unwrap();
+            generator.add_peer_consumed_topic(&commands, &peer).unwrap();
+        },
     );
 
     let peppygen_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("peppygen");
@@ -145,8 +136,6 @@ fn generated_multi_peer_modules_are_cardinality_typed() {
     let commands: NativeEmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
-    let (mut generator, output_dir, user_node, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir, STUB_PYTHON_NODE_CONFIG);
     let limbs = PeerContext {
         link_id: "limbs".to_string(),
         cardinality: config::node::Cardinality::ZeroOrMore,
@@ -157,19 +146,16 @@ fn generated_multi_peer_modules_are_cardinality_typed() {
         cardinality: config::node::Cardinality::OneOrMore,
         ..arm_peer_context()
     };
-    generator.add_peer_emitted_topic(&states, &limbs).unwrap();
-    generator
-        .add_peer_consumed_topic(&commands, &limbs)
-        .unwrap();
-    generator.add_peer_emitted_topic(&states, &crew).unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(&output_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir,
+        STUB_PYTHON_NODE_CONFIG,
+        |generator| {
+            generator.add_peer_emitted_topic(&states, &limbs).unwrap();
+            generator
+                .add_peer_consumed_topic(&commands, &limbs)
+                .unwrap();
+            generator.add_peer_emitted_topic(&states, &crew).unwrap();
+        },
     );
 
     let check = r#"
@@ -224,56 +210,51 @@ fn generated_observer_modules_are_cardinality_typed() {
     let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
-    let (mut generator, output_dir, user_node, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir, STUB_PYTHON_NODE_CONFIG);
-    generator
-        .add_observed_topic(
-            &states,
-            &PeerContext {
-                link_id: "observed_arm".to_string(),
-                ..arm_peer_context()
-            },
-            Cardinality::One,
-        )
-        .unwrap();
-    generator
-        .add_observed_topic(
-            &states,
-            &PeerContext {
-                link_id: "maybe_observed_arm".to_string(),
-                ..arm_peer_context()
-            },
-            Cardinality::ZeroOrOne,
-        )
-        .unwrap();
-    generator
-        .add_observed_topic(
-            &states,
-            &PeerContext {
-                link_id: "observed_arms".to_string(),
-                ..arm_peer_context()
-            },
-            Cardinality::OneOrMore,
-        )
-        .unwrap();
-    generator
-        .add_observed_topic(
-            &states,
-            &PeerContext {
-                link_id: "spare_arms".to_string(),
-                ..arm_peer_context()
-            },
-            Cardinality::ZeroOrMore,
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(&output_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir,
+        STUB_PYTHON_NODE_CONFIG,
+        |generator| {
+            generator
+                .add_observed_topic(
+                    &states,
+                    &PeerContext {
+                        link_id: "observed_arm".to_string(),
+                        ..arm_peer_context()
+                    },
+                    Cardinality::One,
+                )
+                .unwrap();
+            generator
+                .add_observed_topic(
+                    &states,
+                    &PeerContext {
+                        link_id: "maybe_observed_arm".to_string(),
+                        ..arm_peer_context()
+                    },
+                    Cardinality::ZeroOrOne,
+                )
+                .unwrap();
+            generator
+                .add_observed_topic(
+                    &states,
+                    &PeerContext {
+                        link_id: "observed_arms".to_string(),
+                        ..arm_peer_context()
+                    },
+                    Cardinality::OneOrMore,
+                )
+                .unwrap();
+            generator
+                .add_observed_topic(
+                    &states,
+                    &PeerContext {
+                        link_id: "spare_arms".to_string(),
+                        ..arm_peer_context()
+                    },
+                    Cardinality::ZeroOrMore,
+                )
+                .unwrap();
+        },
     );
 
     let check = r#"

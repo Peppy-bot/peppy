@@ -88,6 +88,9 @@ pub fn contract_dep(
 
 pub const TEST_NODE_TAG: &str = "v1";
 
+/// The core node every node instance of the communication tests runs on.
+pub const TEST_CORE_NODE: &str = "test_core";
+
 /// Re-exported so the communication test files can name the messaging topology
 /// for their `#[case]` parameterization without reaching into the internal path.
 pub use daemon_config::peppy_config::LocalNodesTopology;
@@ -298,6 +301,63 @@ pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::
     let destination = output_dir.join(NODE_CONFIG_FILE);
     fs::copy(&source, &destination).unwrap();
     destination
+}
+
+/// Generates a node's peppygen library with the `G` backend in a new project
+/// under `temp_dir`: writes `node_config` as the node manifest, lets
+/// `register_interfaces` add the node's interfaces, builds the library, and
+/// writes the codegen fingerprint that the runtime checks at boot. Returns the
+/// user node directory.
+pub fn generate_node_project<G: generator::LanguageGenerator + Default>(
+    temp_dir: &TempDir,
+    node_config: &str,
+    register_interfaces: impl FnOnce(&mut G),
+) -> std::path::PathBuf {
+    let (mut generator, output_dir, user_node, node_config_path) =
+        init_test_env::<G>(temp_dir, node_config);
+    register_interfaces(&mut generator);
+    let staged_config = copy_config_to_output(&user_node, &output_dir);
+    generator
+        .build(
+            &output_dir,
+            &test_peppy_dirs(),
+            generator::CrateDeployMode::default(),
+        )
+        .unwrap();
+    fs::remove_file(staged_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+    user_node
+}
+
+/// The runtime config of one test node instance: `node_name` at the test tag,
+/// deployed as `instance_id` on [`TEST_CORE_NODE`] and connected to the test
+/// router. Callers bind its slots and apply the topology before saving it.
+pub fn test_node_runtime_config(
+    router_host: &str,
+    router_port: u16,
+    node_name: &str,
+    instance_id: &str,
+) -> config::runtime::RuntimeConfig {
+    config::runtime::RuntimeConfig::new(
+        router_host,
+        router_port,
+        config::runtime::NodeInstanceConfig::new(config::runtime::Name::new(instance_id).unwrap()),
+        node_name,
+        TEST_NODE_TAG,
+        TEST_CORE_NODE,
+    )
+    .unwrap()
+}
+
+/// Saves `config` as `peppy_runtime.json5` in `dir` and returns its path, the
+/// value a spawned node reads from `RUNTIME_CONFIG_VAR_NAME`.
+pub fn save_runtime_config(config: &config::runtime::RuntimeConfig, dir: &Path) -> String {
+    let path = dir.join("peppy_runtime.json5");
+    config.save_json5_launch_config(&path).unwrap();
+    path.to_str().unwrap().to_owned()
 }
 
 const USER_NODE_LAUNCH_BIN: &str = "user_node";
@@ -659,6 +719,22 @@ fn stdout_contains(buf: &Arc<Mutex<Vec<u8>>>, needle: &[u8]) -> bool {
 
 fn lossy_snapshot(buf: &Arc<Mutex<Vec<u8>>>) -> String {
     String::from_utf8_lossy(&buf.lock().unwrap()).into_owned()
+}
+
+/// Asserts that the process behind `output` exited with success and returns
+/// its stdout and stderr as text for the caller's content checks. `label`
+/// names the process in the failure message.
+pub fn assert_exited_successfully(label: &str, output: &std::process::Output) -> (String, String) {
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "{label} failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        stdout,
+        stderr
+    );
+    (stdout, stderr)
 }
 
 pub fn wait_for_child(

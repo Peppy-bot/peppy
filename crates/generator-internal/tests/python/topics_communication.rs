@@ -1,8 +1,10 @@
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext, bind_slot, copy_config_to_output,
+    DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, TEST_CORE_NODE, WaitContext,
+    assert_exited_successfully, bind_slot, copy_config_to_output, generate_node_project,
     init_python_project_venv, init_python_user_node, init_test_env,
-    python_consumer_stub_node_config, send_shutdown, spawn_python_run, test_peppy_dirs,
-    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    python_consumer_stub_node_config, save_runtime_config, send_shutdown, spawn_python_run,
+    test_node_runtime_config, test_peppy_dirs, wait_for_child,
+    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use crate::helpers::{
     EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, TopicScenario, native_dep,
@@ -19,7 +21,6 @@ use std::{fs, time::Duration};
 use tempfile::TempDir;
 
 // --- Common test constants
-const TEST_CORE_NODE: &str = "test_core";
 const RECEIVER_NODE_NAME: &str = "receiver_node";
 const RECEIVER_INSTANCE_ID: &str = "receiver_instance";
 const EMITTER_INSTANCE_ID: &str = "emitter_instance";
@@ -109,41 +110,30 @@ async fn run_emitter_and_receiver(
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let frame_received_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_FRAME_RECEIVED_SERVICE_EXAMPLE).unwrap();
-    let (mut generator, receiver_dir, user_node_receiver, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(
-            &temp_dir_receiver,
-            &python_consumer_stub_node_config("uvc_camera", "v1", "uvc_camera"),
-        );
-    generator
-        .add_consumed_topic(
-            &consumed_topic,
-            subscribed_format,
-            scenario.retention(),
-            &native_dep("uvc_camera", "v1", "uvc_camera"),
-        )
-        .unwrap();
-    generator
-        .add_exposed_service(&frame_received_service, None)
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_receiver, &receiver_dir);
-    generator
-        .build(&receiver_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_receiver = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_receiver,
+        &python_consumer_stub_node_config("uvc_camera", "v1", "uvc_camera"),
+        |generator| {
+            generator
+                .add_consumed_topic(
+                    &consumed_topic,
+                    subscribed_format,
+                    scenario.retention(),
+                    &native_dep("uvc_camera", "v1", "uvc_camera"),
+                )
+                .unwrap();
+            generator
+                .add_exposed_service(&frame_received_service, None)
+                .unwrap();
+        },
     );
 
-    let receiver_runtime_config = RuntimeConfig::new(
+    let receiver_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(receiver_instance_id).unwrap()),
         RECEIVER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        receiver_instance_id,
+    );
     let receiver_runtime_config = bind_slot(
         receiver_runtime_config,
         "uvc_camera",
@@ -151,10 +141,8 @@ async fn run_emitter_and_receiver(
         EMITTER_INSTANCE_ID,
     );
     let receiver_runtime_config = crate::helpers::apply_topology(receiver_runtime_config, topology);
-    let receiver_runtime_config_path = temp_dir_receiver.path().join("peppy_runtime.json5");
-    receiver_runtime_config
-        .save_json5_launch_config(&receiver_runtime_config_path)
-        .unwrap();
+    let user_node_receiver_config_str =
+        save_runtime_config(&receiver_runtime_config, temp_dir_receiver.path());
 
     init_python_user_node(&user_node_receiver);
     let receiver_main = r#"
@@ -255,10 +243,8 @@ if __name__ == "__main__":
     )
     .unwrap();
     let emitter_runtime_config = crate::helpers::apply_topology(emitter_runtime_config, topology);
-    let emitter_runtime_config_path = temp_dir_emitter.path().join("peppy_runtime.json5");
-    emitter_runtime_config
-        .save_json5_launch_config(&emitter_runtime_config_path)
-        .unwrap();
+    let user_node_emitter_runtime_config_str =
+        save_runtime_config(&emitter_runtime_config, temp_dir_emitter.path());
 
     init_python_user_node(&user_node_emitter);
     let live_emitter_main = r#"
@@ -308,18 +294,14 @@ if __name__ == "__main__":
     let main_file = user_node_emitter.join("main.py");
     fs::write(main_file, emitter_main).expect("failed to write main.py");
 
-    let user_node_receiver_config_str = receiver_runtime_config_path.to_str().unwrap().to_owned();
-    let user_node_emitter_runtime_config_str =
-        emitter_runtime_config_path.to_str().unwrap().to_owned();
-
     println!(
         "User node receiver PEPPY_RUNTIME_CONFIG=\"{}\"",
-        receiver_runtime_config_path.display()
+        user_node_receiver_config_str
     );
     println!("User node receiver = {}", user_node_receiver.display());
     println!(
         "User node emitter PEPPY_RUNTIME_CONFIG=\"{}\"",
-        emitter_runtime_config_path.display()
+        user_node_emitter_runtime_config_str
     );
     println!("User node emitter = {}", user_node_emitter.display());
 
@@ -424,15 +406,8 @@ if __name__ == "__main__":
         &user_node_emitter,
     );
 
-    let receiver_stdout = String::from_utf8_lossy(&receiver_output.stdout).into_owned();
-    let receiver_stderr = String::from_utf8_lossy(&receiver_output.stderr).into_owned();
-    assert!(
-        receiver_output.status.success(),
-        "receiver process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        receiver_output.status.code(),
-        receiver_stdout,
-        receiver_stderr
-    );
+    let (receiver_stdout, receiver_stderr) =
+        assert_exited_successfully("receiver process", &receiver_output);
     assert!(
         receiver_stdout.contains(&format!(
             "got 640x480 frame encoded as rgb8 from {TEST_CORE_NODE}/{EMITTER_INSTANCE_ID}"
@@ -442,13 +417,5 @@ if __name__ == "__main__":
         receiver_stderr
     );
 
-    let emitter_stdout = String::from_utf8_lossy(&emitter_output.stdout).into_owned();
-    let emitter_stderr = String::from_utf8_lossy(&emitter_output.stderr).into_owned();
-    assert!(
-        emitter_output.status.success(),
-        "emitter process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        emitter_output.status.code(),
-        emitter_stdout,
-        emitter_stderr
-    );
+    assert_exited_successfully("emitter process", &emitter_output);
 }
