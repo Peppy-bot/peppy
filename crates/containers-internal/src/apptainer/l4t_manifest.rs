@@ -23,6 +23,7 @@
 
 use super::atomic_file::replace_file;
 use crate::error::{Error, Result};
+use std::collections::HashSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -179,11 +180,12 @@ fn read_manifest(manifest_dir: &Path) -> Result<Option<Vec<ManifestEntry>>> {
 /// order of its first entry.
 fn shared_library_names(entries: &[ManifestEntry]) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     for name in entries
         .iter()
         .filter_map(ManifestEntry::shared_library_name)
     {
-        if !names.iter().any(|known| known == name) {
+        if seen.insert(name) {
             names.push(name.to_string());
         }
     }
