@@ -19,9 +19,8 @@ impl PeppyLauncherParser {
         Self::from_content(&content)
     }
 
-    /// Takes a JSON5 content as parameter
+    /// Takes a JSON5 content string and parses it as a launcher document.
     pub fn from_content(content: &str) -> Result<PeppyLauncher> {
-        // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
         crate::error::deserialize_json5_with_path(content)
     }
 }
@@ -134,10 +133,9 @@ mod tests {
         }
     }
 
-    /// A file declaring `peppy_schema: "node/v1"` is not a launcher.
-    /// The strict deserializer either rejects unexpected node fields or
-    /// the caller can gate on `peppy_schema` after parsing; either way
-    /// node configs do not slip through `from_path`.
+    /// A file declaring `peppy_schema: "node/v1"` is not a launcher. The
+    /// `peppy_schema` check refuses it before `deny_unknown_fields` sees the
+    /// node fields, so a node config never parses as a launcher.
     #[test]
     fn test_from_path_rejects_node_schema() {
         let dir = tempdir().unwrap();
@@ -240,7 +238,7 @@ mod tests {
     }
 
     /// The field is optional: an instance that omits it runs on the
-    /// coordinator, so a single-machine launcher is unchanged.
+    /// coordinator, so a single-machine launcher names no placement.
     #[test]
     fn an_instance_may_omit_its_placement() {
         let launcher = parse_launcher(&split_compute(r#"core_nodes: ["robot_onboard"],"#, ""))
@@ -328,11 +326,11 @@ mod tests {
         assert!(error.contains("reserved"), "got: {error}");
     }
 
-    /// The schema stays `launcher/v1`, so an older daemon rejects these keys
-    /// with its existing unknown-field error, which names the offending key
-    /// and so points at the version gap rather than reading as a typo.
+    /// An unknown top-level key is refused with an error that names it, so a
+    /// misplaced `core_node` reads as the key it is rather than as a silent
+    /// no-op.
     #[test]
-    fn unknown_top_level_keys_are_still_refused() {
+    fn unknown_top_level_keys_are_refused() {
         let error = parse_launcher(
             r#"{ peppy_schema: "launcher/v1", core_node: "oops", deployments: [] }"#,
         )

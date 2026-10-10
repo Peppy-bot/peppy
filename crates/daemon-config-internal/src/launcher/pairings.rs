@@ -106,8 +106,8 @@ type Claims = BTreeMap<(String, String), Vec<(String, String)>>;
 
 /// Speaks a [`CardinalityShapeViolation`] in participant vocabulary, the way
 /// `observations` and `bindings` speak it in theirs. A scalar slot given a set
-/// keeps the existing `LinkTargetNotScalar`, whose message already covers both
-/// the array and the repeated-flag spelling.
+/// is `LinkTargetNotScalar`, whose message covers both the array and the
+/// repeated-flag spelling.
 fn shape_error(violation: CardinalityShapeViolation, owner_id: &str, key: &str) -> ParsingError {
     let owner_instance_id = owner_id.to_string();
     let link = key.to_string();
@@ -172,8 +172,8 @@ fn peer_label(instance_id: &str, link_id: &str) -> String {
 ///    target; an array on it is `LinkTargetNotScalar`. A multi slot's value
 ///    is one target per pair, in the order written.
 /// 2. The target instance exists in the plan/stack (`UnknownInstanceId`).
-/// 3. The target has exactly one available complementary slot — same
-///    pairing `(name, tag)`, opposite role, open to this pair, or the
+/// 3. The target has exactly one available complementary slot (same
+///    pairing `(name, tag)`, opposite role, open to this pair), or the
 ///    declaration names one via the `/<peer_link_id>` suffix
 ///    (`PairingTargetNotComplementary` / `PairingTargetAmbiguous`). A scalar
 ///    slot is open while nothing claims it; a multi slot is open to every
@@ -848,7 +848,7 @@ mod tests {
 
     #[test]
     fn non_complementary_target_is_rejected() {
-        // Target declares the SAME role — never complementary.
+        // Target declares the SAME role, so it is never complementary.
         let other_ctrl_instances = parse_instances(r#"[{ instance_id: "other_ctrl" }]"#);
         let other_ctrl_deps = controller_deps();
         let ctrl_instances =

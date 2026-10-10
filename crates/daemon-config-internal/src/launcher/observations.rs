@@ -47,8 +47,8 @@ pub struct PlannedObservation {
     pub pairing_name: String,
     pub pairing_tag: String,
     pub observed_role: String,
-    /// The observed source instance, stamped with the launching daemon's
-    /// `core_node` exactly as a resolved binding is.
+    /// The observed source instance, stamped with the core node it is placed
+    /// on, exactly as a resolved binding is.
     pub source: ProducerRef,
     /// The producer-side `link_id` of the source's participant slot: the
     /// segment the source publishes its role topics under, and the third
@@ -103,9 +103,10 @@ pub struct ValidatedObservations {
     pub planned: Vec<PlannedObservation>,
 }
 
-/// Run all observation validator rules over the plan. `producer_core_node` is
-/// the launching daemon's core_node, stamped into every resolved source
-/// [`ProducerRef`] exactly as [`super::validate_bindings`] stamps bindings.
+/// Run all observation validator rules over the plan. `placements` says which
+/// core node each source runs on, and that core node is stamped into every
+/// resolved source [`ProducerRef`] exactly as [`super::validate_bindings`]
+/// stamps bindings.
 ///
 /// Rules:
 /// 1. Only `links` keys naming one of this node's observer slots are processed;

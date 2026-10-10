@@ -67,7 +67,7 @@ pub struct PeppyLauncher {
     /// nothing to select there is no selection to refuse.
     pub constraints: Vec<SelectionConstraint>,
     /// Framework configuration for the launch as a whole, separate from the
-    /// deployment structure around it. Today that is the clock domains this
+    /// deployment structure around it. It holds the clock domains this
     /// launcher declares.
     pub framework: LauncherFramework,
 }
@@ -348,9 +348,9 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
 
 /// The whole-document cross-checks of a flat launcher: every `core_node`
 /// names a declared link, no link key is the reserved producer-default
-/// sentinel, and every link target names a known instance. Extracted from
-/// [`PeppyLauncher`]'s deserializer so the composed arm of that deserializer
-/// can defer exactly these checks to the flattened document.
+/// sentinel, and every link target names a known instance. Kept apart from
+/// [`PeppyLauncher`]'s deserializer so a composed launcher can defer exactly
+/// these checks to the flattened document.
 fn cross_check_flat_document(
     deployments: &[Deployment],
     core_nodes: &[String],
@@ -563,8 +563,7 @@ pub enum LinkValue {
     /// an observer slot or a producer-binding slot. A slot the manifest
     /// declares required cannot be vacated at all,
     /// and a multi-cardinality slot writes its emptiness as `[]` or an omitted
-    /// key; [`crate::launcher::links::validate_link_slots`] rejects a vacancy
-    /// on either.
+    /// key; `validate_link_slots` rejects a vacancy on either.
     Vacant(VacantReason),
 }
 
@@ -747,8 +746,8 @@ pub enum CardinalityShapeViolation {
 ///
 /// Takes a [`Selection`] rather than a [`LinkValue`] because a vacant slot
 /// selects nothing and has no shape to size: whether it may be vacant at all is
-/// the legality question [`crate::launcher::links::validate_link_slots`]
-/// answers, before any of this.
+/// the legality question [`super::links::validate_link_slots`] answers,
+/// before any of this.
 ///
 /// The one shape rule, shared by producer-binding slots and observer slots so a
 /// deployment writes `["a", "b"]` for the same reason on both.
@@ -997,8 +996,8 @@ pub struct DeploymentInstance {
     ///
     /// Deliberately a SEPARATE field from `instance_id` rather than a prefix
     /// on it. Identity and placement are two different facts, so they get two
-    /// differently-typed fields: `instance_id` keeps its existing charset
-    /// untouched, nothing anywhere has to split a placement back out of an
+    /// differently-typed fields: `instance_id` keeps the plain identifier
+    /// charset, nothing anywhere has to split a placement back out of an
     /// instance id to use one, and a `links:` target stays a bare instance id
     /// wherever it appears. Placement is declared once, here, and never
     /// repeated at the point of use.
@@ -1657,7 +1656,7 @@ mod tests {
             }
         }"#;
         let instance: DeploymentInstance =
-            serde_json5::from_str(json5).expect("duplicate binding targets should now be accepted");
+            serde_json5::from_str(json5).expect("two keys may name one producer");
         assert_eq!(
             instance.links.get("a"),
             Some(&LinkValue::Bound(Selection::Scalar(
