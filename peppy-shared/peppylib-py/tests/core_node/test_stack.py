@@ -1,6 +1,6 @@
 """Integration tests for `peppylib.stack.list`.
 
-Python equivalent of `crates/peppylib/tests/core_node/stack.rs`.
+Python equivalent of `peppy-shared/peppylib-rs/tests/core_node/stack.rs`.
 """
 
 import json
@@ -87,8 +87,8 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
 
 
 def _mixed_state_graph_json() -> str:
-    """Two-node fixture: one mixed running/starting, one starting-only —
-    covers filtering and warmup-vs-missing."""
+    """Two-node fixture: one mixed running/starting, one starting-only.
+    Covers filtering and warmup-vs-missing."""
     router = {
         "name": "router",
         "tag": "v1",
@@ -141,7 +141,7 @@ async def test_running_instance_ids_by_node_returns_running_only(tmp_path):
 @pytest.mark.asyncio
 async def test_running_instance_ids_by_node_empty_when_all_starting(tmp_path):
     """A present node with only `starting` instances returns an empty list,
-    not a KeyError — that's how callers tell "warming up" from "not in stack"."""
+    not a KeyError: that's how callers tell "warming up" from "not in stack"."""
     result = await _stack_list_with_mixed_state(tmp_path)
     assert result.running_instance_ids_by_node("warming", "v1") == []
 

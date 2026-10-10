@@ -1,9 +1,10 @@
 """
 Tests for `NodeRunner.announce_endpoint` and `NodeRunner.seal_endpoints`.
 
-Python equivalent of the endpoint cases in crates/peppylib/tests/runner.rs:
-a node built from a manifest fixture that declares two endpoints, driven
-through a standalone runner on the test's own event loop.
+Python equivalent of the endpoint cases in
+peppy-shared/peppylib-rs/tests/runner.rs: a node built from a manifest
+fixture that declares two endpoints, driven through a standalone runner on
+the test's own event loop.
 """
 
 import tempfile

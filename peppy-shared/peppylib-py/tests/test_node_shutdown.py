@@ -1,7 +1,7 @@
 """
 Tests for peppylib node shutdown service.
 
-Python equivalent of crates/peppylib/tests/shutdown_node.rs.
+Python equivalent of peppy-shared/peppylib-rs/tests/shutdown_node.rs.
 """
 
 import asyncio

@@ -193,8 +193,8 @@ async def test_messenger_communication():
         await asyncio.sleep(0.05)
 
         # Declare the publisher (the only topic-publish path) and publish a
-        # message. Void async bindings resolve to `None` (not the empty tuple a
-        # bare `Ok(())` would yield under PyO3 0.28).
+        # message. Void async bindings resolve to `None` (not the empty tuple
+        # PyO3 converts a bare `Ok(())` to).
         publisher = await TopicMessenger.declare_publisher(
             sender_handle,
             core_node,
@@ -344,8 +344,8 @@ async def test_subscribe_rejects_producer_list():
     """A list of producers raises `TypeError`.
 
     A slot binds exactly one producer; fan-in is N declared slots. The
-    subscribe seam takes a single `ProducerRef`, so a list — even a
-    single-element one — must fail loudly instead of silently degrading.
+    subscribe seam takes a single `ProducerRef`, so a list (even a
+    single-element one) must fail loudly instead of silently degrading.
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         test_id = uuid.uuid4().hex[:8]

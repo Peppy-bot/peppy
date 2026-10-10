@@ -9,7 +9,7 @@ exposes the same set as Rust, so a node developed in either language runs
 standalone on the same terms.
 
 Python equivalent of the standalone seeding tests in
-crates/peppylib-rs/src/runtime/processor.rs.
+peppy-shared/peppylib-rs/src/runtime/processor.rs.
 """
 
 import asyncio

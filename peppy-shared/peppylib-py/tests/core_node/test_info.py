@@ -1,6 +1,6 @@
 """Integration tests for `peppylib.info`.
 
-Python equivalent of `crates/peppylib/tests/core_node/info.rs`.
+Python equivalent of `peppy-shared/peppylib-rs/tests/core_node/info.rs`.
 """
 
 import pytest

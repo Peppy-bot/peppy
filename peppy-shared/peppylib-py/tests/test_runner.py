@@ -1,7 +1,7 @@
 """
 Tests for peppylib NodeBuilder runner lifecycle.
 
-Python equivalent of crates/peppylib/tests/runner.rs.
+Python equivalent of peppy-shared/peppylib-rs/tests/runner.rs.
 """
 
 import faulthandler
@@ -355,8 +355,8 @@ async def test_returned_task_failure_fails_the_node(monkeypatch, death_delay_s):
     NodeBuilder.run().
 
     The runner holds the returned tasks for the node's lifetime, so asyncio's
-    GC-time "Task exception was never retrieved" report — and with it the
-    loop exception handler — never fires for them; without the runtime's
+    GC-time "Task exception was never retrieved" report (and with it the
+    loop exception handler) never fires for them; without the runtime's
     failure watcher the node would keep answering health probes with its real
     work dead. The re-raise makes the process exit non-zero, which the
     daemon's exit watcher records as a terminal Failed instance. Delay 0 dies
@@ -564,7 +564,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 error_queue,
             )
 
-            # Poll ready service — should echo back
+            # Poll ready service: should echo back
             ready_response = await ServiceMessenger.poll(
                 messenger,
                 TEST_CORE_NODE,
@@ -620,7 +620,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 error_queue,
             )
 
-            # Poll health service — should now succeed
+            # Poll health service: should now succeed
             health_response = await ServiceMessenger.poll(
                 messenger,
                 TEST_CORE_NODE,
@@ -1290,14 +1290,13 @@ async def test_process_exit_with_pending_service_await(tmp_path):
 
     Regression test for a shutdown SIGSEGV (exit 139): the native half of a
     pending ``handle_next_request`` lives on the pyo3-async-runtimes global
-    tokio runtime, and its result delivery used to attach to the interpreter
-    with no shutdown guard. A delivery scheduled by the shutdown cancellation
-    could attach mid-finalization, and CPython 3.13 and older kill such a
-    thread via pthread_exit, segfaulting the process. The fix gates every
-    delivery attach behind run()'s shutdown (see py_future.rs). The race only
-    exists across a real process exit, so the node runs as a subprocess;
-    repetition shakes out the timing, though a pre-fix failure is
-    probabilistic rather than guaranteed.
+    tokio runtime, and a delivery of its result that the shutdown cancellation
+    schedules can try to attach to the interpreter mid-finalization. CPython
+    3.13 and older kill such a thread via pthread_exit, which segfaults the
+    process, so run()'s shutdown gates every delivery attach (see
+    py_future.rs). The race only exists across a real process exit, so the
+    node runs as a subprocess; repetition shakes out the timing, though a
+    regression makes the failure likely rather than guaranteed.
     """
     script_path = tmp_path / "pending_service_node.py"
     script_path.write_text(PENDING_SERVICE_NODE_SCRIPT)
@@ -1451,10 +1450,10 @@ async def test_async_node_shuts_down_promptly_not_at_grace_boundary(monkeypatch)
     """An async-setup node with a live background task must drain and exit
     promptly on a cooperative shutdown, not block until the grace window ends.
 
-    Regression test for the asyncio drain-hook deadlock: the loop-teardown hook
-    awaited a `run_coroutine_threadsafe` future that the drain's final
-    `event_loop.stop()` orphaned, so shutdown hung for the entire grace window
-    and the daemon force-killed the node. We pin a long grace and assert the
+    Regression test for the asyncio drain-hook deadlock: a drain that ends with
+    `event_loop.stop()` orphans the `run_coroutine_threadsafe` future the
+    loop-teardown hook awaits, so shutdown hangs for the entire grace window
+    and the daemon force-kills the node. We pin a long grace and assert the
     node exits well inside it after a real SHUTDOWN_SERVICE request. This runs
     end-to-end through the real `make_loop_teardown` (the drain hook awaits the
     drain future; `quiesce` fires the stop trigger); the asyncio mechanic is

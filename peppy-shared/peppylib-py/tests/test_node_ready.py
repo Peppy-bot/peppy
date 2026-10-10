@@ -1,7 +1,7 @@
 """
 Tests for peppylib node ready service.
 
-Python equivalent of crates/peppylib/tests/ready_node.rs.
+Python equivalent of peppy-shared/peppylib-rs/tests/ready_node.rs.
 """
 
 import asyncio

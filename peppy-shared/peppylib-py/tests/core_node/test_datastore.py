@@ -1,10 +1,10 @@
 """Integration tests for the `peppylib` datastore helpers
 (`datastore.store` / `datastore.get` / `datastore.list` / `datastore.remove`).
 
-Python equivalent of `crates/peppylib/tests/core_node/datastore.rs`. The stub
-listeners reply with canned capnp bytes, so these assert the bindings route,
-encode, and decode correctly (and that `datastore.get` folds the `found` flag
-into `None`); the full round-trip semantics are covered Rust-side.
+Python equivalent of `peppy-shared/peppylib-rs/tests/core_node/datastore.rs`.
+The stub listeners reply with canned capnp bytes, so these assert the bindings
+route, encode, and decode correctly (and that `datastore.get` folds the
+`found` flag into `None`); the full round-trip semantics are covered Rust-side.
 """
 
 import pytest

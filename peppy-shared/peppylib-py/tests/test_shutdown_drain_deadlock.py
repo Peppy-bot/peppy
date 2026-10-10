@@ -1,20 +1,20 @@
 """Regression test for the node-shutdown drain/stop split.
 
 Behavioral mirror of the async event-loop teardown in
-`crates/peppylib-py/src/runtime.rs` (`make_loop_teardown`). On shutdown the
-drain hook schedules `_drain()` with `run_coroutine_threadsafe` and awaits the
-returned `concurrent.futures.Future`; the loop is stopped separately, by the
-stop trigger that `quiesce()` fires from the main thread after the shutdown-hook
-phase has finished.
+`peppy-shared/peppylib-py/src/runtime.rs` (`make_loop_teardown`). On shutdown
+the drain hook schedules `_drain()` with `run_coroutine_threadsafe` and awaits
+the returned `concurrent.futures.Future`; the loop is stopped separately, by
+the stop trigger that `quiesce()` fires from the main thread after the
+shutdown-hook phase has finished.
 
-The original bug (now removed): the drain used to end with `event_loop.stop()`.
-Stopping the loop from inside the very coroutine whose future the hook awaited
-cross-thread orphaned that future, so the hook blocked for the whole grace
-window and the daemon force-killed the node. The fix splits the teardown into a
-drain (cancel + gather, never stops the loop) and a stop (scheduled separately,
-on the loop thread, via `call_soon_threadsafe` so it also wakes an idle loop).
+The drain must not stop the loop. Stopping the loop from inside the very
+coroutine whose future the hook awaits cross-thread orphans that future, so
+the hook blocks for the whole grace window and the daemon force-kills the
+node. The teardown is therefore split into a drain (cancel + gather, never
+stops the loop) and a stop (scheduled separately, on the loop thread, via
+`call_soon_threadsafe` so it also wakes an idle loop).
 
-These tests pin the new shape: the drain completes its awaited future with the
+These tests pin that shape: the drain completes its awaited future with the
 loop still running; the stop trigger brings the loop thread down from another
 thread; and the stop trigger is the grace-timeout backstop that cancels tasks
 the drain hook never reached. Keep this mirror in sync with `make_loop_teardown`
@@ -105,9 +105,9 @@ def _spawn_worker(loop, started, finally_ran):
 
 
 def test_drain_completes_its_future_with_the_loop_still_running():
-    """The fix: the drain cancels + gathers and completes the future the hook
-    awaits THROUGH THE ORDINARY PATH, with the loop still running. Stopping the
-    loop is a separate step owned by quiesce, so the future is never orphaned."""
+    """The drain cancels + gathers and completes the future the hook awaits
+    THROUGH THE ORDINARY PATH, with the loop still running. Stopping the loop
+    is a separate step owned by quiesce, so the future is never orphaned."""
     loop, thread = _start_loop()
     _wait_running(loop)
     drain_trigger, stop_trigger = _make_teardown(loop)
@@ -130,8 +130,7 @@ def test_drain_completes_its_future_with_the_loop_still_running():
     )
     assert finally_ran.is_set(), "cancelled task's finally cleanup did not run"
     # The defining property of the split: draining must NOT stop the loop.
-    # Stopping it from inside the awaited coroutine is exactly what orphaned the
-    # future in the original bug.
+    # Stopping it from inside the awaited coroutine would orphan the future.
     assert loop.is_running(), "drain must leave the loop running; the stop is quiesce's job"
 
     # quiesce stops the loop separately, from another thread.

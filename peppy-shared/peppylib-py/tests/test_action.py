@@ -2,7 +2,7 @@
 Tests for peppylib ActionMessenger.
 
 Python equivalent of `action_messenger_communication` in
-crates/peppylib/tests/actions.rs.
+peppy-shared/peppylib-rs/tests/actions.rs.
 """
 
 import asyncio
@@ -49,7 +49,7 @@ RESULT_PAYLOAD = b"action result"
 
 @pytest.mark.asyncio
 async def test_action_messenger_communication():
-    """Full action lifecycle: goal, feedback, result — driven via ConcurrentAction.
+    """Full action lifecycle (goal, feedback, result) driven via ConcurrentAction.
 
     Using the engine (rather than the raw services) means the result reply is
     framed with the typed result-outcome envelope, so the client gets back a
@@ -104,7 +104,7 @@ async def test_action_messenger_communication():
 
         assert feedback.payload == FEEDBACK_PAYLOAD
 
-        # Client: request result — typed status + raw body.
+        # Client: request result (typed status + raw body).
         result = await ActionMessenger.request_result(
             client_handle,
             goal_handle,
@@ -135,8 +135,8 @@ async def test_cancel_goal_concurrent_with_feedback():
         )
 
 
-        # Server: accept the goal and hold it open — never publish feedback and
-        # never complete — so the client's on_next_feedback stays pending while
+        # Server: accept the goal and hold it open (never publish feedback and
+        # never complete), so the client's on_next_feedback stays pending while
         # we fire a cancel concurrently.
         async def server():
             pending = await action.recv_next_goal()
@@ -157,7 +157,7 @@ async def test_cancel_goal_concurrent_with_feedback():
             QoSProfile.Reliable,
             2.0,)
 
-        # Start waiting for feedback (will block — server never sends any).
+        # Start waiting for feedback (will block: the server never sends any).
         feedback_task = asyncio.ensure_future(goal_handle.on_next_feedback())
 
         # The cancel of a live goal must resolve promptly to the typed Signalled
@@ -184,11 +184,12 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
 
     Python equivalent of
     `concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned`
-    in crates/peppylib/tests/actions.rs. No session teardown is exposed to
-    Python, so death is simulated by dropping the engine — the sole holder of
-    the producer's liveliness token — while its GoalContext stays referenced:
-    the end-of-stream sentinel is never published (the exact race a SIGKILL /
-    OOM loses), so only the token disappearing can unblock the consumer.
+    in peppy-shared/peppylib-rs/tests/actions.rs. No session teardown is
+    exposed to Python, so death is simulated by dropping the engine (the sole
+    holder of the producer's liveliness token) while its GoalContext stays
+    referenced: the end-of-stream sentinel is never published (the exact race
+    a SIGKILL / OOM loses), so only the token disappearing can unblock the
+    consumer.
     """
 
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
@@ -240,7 +241,7 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
         )
         assert feedback.payload == FEEDBACK_PAYLOAD
 
-        # Keep the context alive past the engine drop below — its
+        # Keep the context alive past the engine drop below: its
         # abandon-on-drop sentinel must never fire during this test.
         ctx = await asyncio.wait_for(server_task, timeout=2.0)
 
@@ -251,7 +252,7 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
 
         # The drain must fail over to the typed producer-gone error
         # (liveliness DELETE → confirmation probes), surfaced as
-        # ConnectionError — never hang, never the clean-close RuntimeError.
+        # ConnectionError: never hang, never the clean-close RuntimeError.
         with pytest.raises(ConnectionError):
             await asyncio.wait_for(goal_handle.on_next_feedback(), timeout=15.0)
 
@@ -433,9 +434,9 @@ async def test_reject_then_accept_through_concurrent_action():
     accepted and its typed result routes back by goal_id.
 
     Python mirror of `concurrent_action_reject_then_accept` in
-    crates/peppylib/tests/actions.rs. Guards the binding's accept/reject mapping
-    and the typed-result framing for the engine path, which the Rust-only tests
-    did not cover from Python.
+    peppy-shared/peppylib-rs/tests/actions.rs. Guards the binding's
+    accept/reject mapping and the typed-result framing for the engine path,
+    which the Rust tests do not cover from Python.
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)

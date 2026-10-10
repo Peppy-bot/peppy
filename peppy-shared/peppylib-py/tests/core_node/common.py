@@ -3,7 +3,7 @@ setup, reachability polling, and a minimal `peppy.json5` writer. Per-test
 modules provide their own stub-listener body because request/response types
 differ per service.
 
-Python equivalent of `crates/peppylib/tests/core_node/common.rs`.
+Python equivalent of `peppy-shared/peppylib-rs/tests/core_node/common.rs`.
 """
 
 import asyncio
@@ -22,7 +22,7 @@ from peppylib import (
 )
 
 CORE_NODE = "standalone-core"
-# Mirrors `core_node_api::names::CORE_NODE_TAG` — the core node always uses
+# Mirrors `core_node_api::names::CORE_NODE_TAG`: the core node always uses
 # this tag on the wire, so reachability probes and stub listeners must too.
 CORE_NODE_TAG = "core"
 CLIENT_INSTANCE = "test_caller"
@@ -65,7 +65,7 @@ async def start_router_and_runner(tmp_path: Path):
     caller uses to spawn its stub listener.
 
     Returns `(router, node_runner, server_handle)`. The caller must hold the
-    router and runner for the duration of the test — dropping them tears down
+    router and runner for the duration of the test; dropping them tears down
     the messaging fabric.
     """
     # `peppylib.testing.EphemeralRouter` also serializes meshes within this
@@ -73,8 +73,8 @@ async def start_router_and_runner(tmp_path: Path):
     router = await peppy_testing.EphemeralRouter.start()
     # The node runner opens its session under a workspace namespace; the standalone
     # config carries no workspace id, so it resolves to the `local`
-    # namespace. The stub server must open under that same namespace — zenoh
-    # sessions only interoperate when their namespaces match — or the runner's
+    # namespace. The stub server must open under that same namespace (zenoh
+    # sessions only interoperate when their namespaces match), or the runner's
     # service queries and topic subscriptions never reach the stub. Passing no
     # workspace id resolves to `local`, matching the runner.
     server_handle = await MessengerHandle.from_host_port_with_namespace(

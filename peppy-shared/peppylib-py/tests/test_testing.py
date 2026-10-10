@@ -1,4 +1,4 @@
-"""Suite for ``peppylib.testing`` — the Python twin of the Rust cores behind
+"""Suite for ``peppylib.testing``, the Python twin of the Rust cores behind
 generated per-node mock/fixtures code (mirrors
 ``peppylib-rs/tests/testing.rs`` case for case, so a semantic difference
 between the two languages surfaces here, not in node suites)."""
@@ -130,8 +130,8 @@ async def test_mock_service_core_scripted_then_manual():
 @pytest.mark.asyncio
 async def test_mock_action_stop_yields_producer_gone_deterministically():
     """``stop()`` on a mock action with a live, user-held goal context must
-    surface to the consumer as the producer-gone ``ConnectionError`` — never
-    a clean feedback close and never a hang — because the disarmed context
+    surface to the consumer as the producer-gone ``ConnectionError`` (never
+    a clean feedback close and never a hang), because the disarmed context
     suppresses the drop-time sentinel that would race the liveliness latch."""
     async with await EphemeralRouter.start() as router:
         mock_handle = await router.connect()
@@ -178,7 +178,7 @@ async def test_mock_action_stop_yields_producer_gone_deterministically():
         assert feedback.payload == b"working"
 
         # Stop the mock mid-goal with the context still held (as a test's
-        # MockGoal handle would be) and tear down its session — the
+        # MockGoal handle would be) and tear down its session: the
         # producer-loss shape.
         mock.stop()
         del mock, mock_handle
@@ -188,7 +188,7 @@ async def test_mock_action_stop_yields_producer_gone_deterministically():
             await asyncio.wait_for(goal_handle.on_next_feedback(), timeout=15.0)
 
         # Releasing the disarmed context afterwards is inert: no late
-        # sentinel (nothing to receive it anyway — the session is gone).
+        # sentinel (nothing to receive it anyway: the session is gone).
         del context
         gc.collect()
 
@@ -795,9 +795,8 @@ async def test_connect_messenger_raises_the_last_error_when_every_connect_fails(
 #
 # Both are Python-only members of `peppylib.testing` (the Rust harness resolves
 # its config path at compile time and drops its mock struct), so unlike every
-# case above these have no counterpart in `peppylib-rs/tests/testing.rs`. They
-# used to be re-emitted into every generated harness, where the only thing that
-# could exercise them was a full node sync.
+# case above these have no counterpart in `peppylib-rs/tests/testing.rs`.
+# Testing them here keeps them covered without a full node sync.
 
 
 def test_resolve_node_dir_prefers_the_explicit_argument(tmp_path):

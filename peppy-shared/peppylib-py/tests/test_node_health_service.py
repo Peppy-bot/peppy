@@ -1,7 +1,7 @@
 """
 Tests for peppylib node health service.
 
-Python equivalent of crates/peppylib/tests/node_health_service.rs.
+Python equivalent of peppy-shared/peppylib-rs/tests/node_health_service.rs.
 """
 
 import asyncio

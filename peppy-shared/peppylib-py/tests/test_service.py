@@ -2,7 +2,7 @@
 Tests for peppylib ServiceMessenger.
 
 Python equivalent of `service_messenger_communication` in
-crates/peppylib/tests/services.rs.
+peppy-shared/peppylib-rs/tests/services.rs.
 """
 
 import asyncio
