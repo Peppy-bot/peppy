@@ -19,8 +19,8 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use rmcp::{ClientLifecycleMode, ClientServiceExt};
 use serde_json::json;
 use support::{
-    FRAME_URI, GUARD, STATUS_URI, confirmation_accept, connect, connect_with_tasks, protocol_error,
-    sample_rgb8_frame, start_set, start_task_less_set,
+    FRAME_URI, STATUS_URI, confirmation_accept, connect, connect_with_tasks, next_notification,
+    protocol_error, sample_rgb8_frame, start_set, start_task_less_set,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -317,11 +317,7 @@ async fn subscription_filters_narrow_to_capabilities_and_scope_notifications() {
             .publish(token, json!({ "battery": 42 }))
             .expect("status publishes");
 
-        let notification = tokio::time::timeout(GUARD, subscription.next())
-            .await
-            .expect("a notification arrives")
-            .expect("the subscription stream is healthy")
-            .expect("the stream did not end");
+        let notification = next_notification(&mut subscription).await;
         match notification {
             ServerNotification::ResourceUpdatedNotification(updated) => {
                 assert_eq!(

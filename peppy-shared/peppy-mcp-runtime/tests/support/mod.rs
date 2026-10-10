@@ -18,9 +18,9 @@ use peppy_mcp_runtime::{
 };
 use rmcp::model::{
     ClientCapabilities, ClientConfig, DetailedTask, GetTaskParams, ProgressNotificationParam,
-    ProtocolVersion, TaskStatus, UpdateTaskParams,
+    ProtocolVersion, ServerNotification, TaskStatus, UpdateTaskParams,
 };
-use rmcp::service::{NotificationContext, RunningService, ServiceError};
+use rmcp::service::{NotificationContext, RunningService, ServiceError, Subscription};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt, RoleClient};
@@ -587,6 +587,16 @@ pub async fn poll_task_until(
     })
     .await
     .unwrap_or_else(|_| panic!("task `{task_id}` never reached: {description}"))
+}
+
+/// The next notification `subscription` receives, bounded by [`GUARD`]
+/// and driven by the server's publish, not by elapsed host time.
+pub async fn next_notification(subscription: &mut Subscription) -> ServerNotification {
+    tokio::time::timeout(GUARD, subscription.next())
+        .await
+        .expect("a notification arrives")
+        .expect("the subscription stream is healthy")
+        .expect("the stream did not end")
 }
 
 pub fn confirmation_accept(task_id: &str) -> UpdateTaskParams {

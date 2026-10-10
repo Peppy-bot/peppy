@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
 use support::{
     Client, FRAME_URI, GUARD, STATUS_URI, Streaming, assert_ended_cancelled, confirmation_accept,
-    connect, connect_logging_progress, connect_named, connect_with_tasks, poll_task_until,
-    protocol_error, sample_rgb8_frame, start_set, start_set_with,
+    connect, connect_logging_progress, connect_named, connect_with_tasks, next_notification,
+    poll_task_until, protocol_error, sample_rgb8_frame, start_set, start_set_with,
 };
 
 const MS: u64 = 1_000_000;
@@ -144,11 +144,7 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
             .publish(token, json!({ "battery": 87 }))
             .expect("publishes");
 
-        let notification = tokio::time::timeout(GUARD, subscription.next())
-            .await
-            .expect("a notification arrives")
-            .expect("the subscription stream is healthy")
-            .expect("the stream did not end");
+        let notification = next_notification(&mut subscription).await;
         match notification {
             ServerNotification::ResourceUpdatedNotification(updated) => {
                 assert_eq!(updated.params.uri, STATUS_URI);

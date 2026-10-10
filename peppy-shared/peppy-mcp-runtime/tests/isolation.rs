@@ -14,8 +14,8 @@ use rmcp::model::{
 };
 use serde_json::{Value, json};
 use support::{
-    FRAME_URI, GUARD, STATUS_URI, Streaming, connect, connect_with_tasks, poll_task_until,
-    protocol_error, sample_rgb8_frame, start_set, start_set_with,
+    FRAME_URI, GUARD, STATUS_URI, Streaming, connect, connect_with_tasks, next_notification,
+    poll_task_until, protocol_error, sample_rgb8_frame, start_set, start_set_with,
 };
 use tokio::sync::mpsc::{UnboundedSender, error::TryRecvError, unbounded_channel};
 
@@ -139,11 +139,7 @@ async fn a_subscription_never_sees_another_endpoints_publishes() {
         .publish(token, sample_rgb8_frame())
         .expect("publishes on the subscribed endpoint");
 
-    let notification = tokio::time::timeout(GUARD, subscription.next())
-        .await
-        .expect("a notification arrives")
-        .expect("the subscription stream is healthy")
-        .expect("the stream did not end");
+    let notification = next_notification(&mut subscription).await;
     match notification {
         ServerNotification::ResourceUpdatedNotification(updated) => {
             assert_eq!(
