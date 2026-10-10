@@ -6,6 +6,7 @@ import struct
 import tarfile
 from pathlib import Path
 
+from .build import release_archive_name
 from .cli import RELEASE_TRIPLES, ReleaseError
 
 REQUIRED_ALL = [
@@ -107,7 +108,7 @@ def verify_all_releases(
     errors: list[str] = []
 
     for triple in (triples if triples is not None else RELEASE_TRIPLES):
-        archive = dist_dir / f"peppy-{triple}.tgz"
+        archive = dist_dir / release_archive_name(triple)
 
         if not archive.exists():
             errors.append(f"{triple}: archive not found at {archive}")

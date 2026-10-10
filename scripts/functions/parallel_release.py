@@ -59,6 +59,7 @@ from .build import (
     BuildArtifact,
     _release_rustflags,
     build_and_package,
+    release_archive_name,
     release_dist_dir,
 )
 from .cli import (
@@ -609,7 +610,7 @@ def _stage_archives(archives_dir: Path, dist_dir: Path) -> list[BuildArtifact]:
     dist_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[BuildArtifact] = []
     for triple in RELEASE_TRIPLES:
-        name = f"peppy-{triple}.tgz"
+        name = release_archive_name(triple)
         source = archives_dir / name
         if not source.is_file():
             raise ReleaseError(f"the {triple} archive is missing: {source}")

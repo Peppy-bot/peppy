@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from functions.build import release_dist_dir
+from functions.build import release_archive_name, release_dist_dir
 from functions.cli import get_native_triple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -64,7 +64,7 @@ def release_archive() -> Path:
     CI builds it in a job of its own and hands it over as an artifact; locally
     `./scripts/build_release.sh --local --tag test` writes it.
     """
-    archive = release_dist_dir(REPO_ROOT) / f"peppy-{get_native_triple()}.tgz"
+    archive = release_dist_dir(REPO_ROOT) / release_archive_name(get_native_triple())
     if not archive.is_file():
         pytest.fail(
             f"release archive {archive} not found; build it with "

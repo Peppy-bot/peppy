@@ -212,6 +212,15 @@ def release_dist_dir(repo_root: Path) -> Path:
     return Path(os.environ.get("PEPPY_DIST_DIR", str(repo_root / "dist")))
 
 
+def release_archive_name(target_triple: str) -> str:
+    """The file name of the release archive of *target_triple*.
+
+    install.sh downloads the release asset of this name, and the release
+    workflow hands the archive between its jobs under it.
+    """
+    return f"peppy-{target_triple}.tgz"
+
+
 def _sanitize_tar_member(member: tarfile.TarInfo) -> tarfile.TarInfo:
     """Zero member ownership so the archive never carries the packer's uid,
     gid, or user and group names. A root install restoring them would either
@@ -245,7 +254,7 @@ def package_release(
     dist_dir = release_dist_dir(repo_root)
     dist_dir.mkdir(parents=True, exist_ok=True)
 
-    asset_name = f"peppy-{target_triple}.tgz"
+    asset_name = release_archive_name(target_triple)
     asset_path = dist_dir / asset_name
 
     with tempfile.TemporaryDirectory(prefix="peppy_release_pkg_") as pkg_dir_str:
