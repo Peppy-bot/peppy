@@ -25,7 +25,7 @@ use crate::build_io::StderrTail;
 /// file under `peppy_dirs.runtime_config_dir()`. Using a shared path can cause
 /// cross-test and cross-instance races where a node reads the wrong config
 /// (instance_id/port), leading to hangs waiting for ready/health responses.
-pub(super) static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Writes a runtime config to a unique temp file under
 /// `peppy_dirs.runtime_config_dir()` and returns the path.
@@ -33,10 +33,7 @@ pub(super) static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Used by [`assemble_command`] and [`build_container_command`] to materialize
 /// the runtime config that the spawned child reads via the
 /// `PEPPY_RUNTIME_CONFIG` environment variable.
-pub(super) fn write_runtime_config_temp(
-    peppy_dirs: &PeppyDirs,
-    json5: &str,
-) -> std::io::Result<PathBuf> {
+fn write_runtime_config_temp(peppy_dirs: &PeppyDirs, json5: &str) -> std::io::Result<PathBuf> {
     let runtime_dir = peppy_dirs.runtime_config_dir();
     std::fs::create_dir_all(&runtime_dir)?;
     let counter = RUNTIME_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -302,10 +299,10 @@ fn assemble_command(
 }
 
 /// Describes a bind mount for a container node.
-pub(super) struct ContainerBind {
-    pub(super) src: String,
-    pub(super) dest: Option<String>,
-    pub(super) opts: Option<String>,
+struct ContainerBind {
+    src: String,
+    dest: Option<String>,
+    opts: Option<String>,
 }
 
 /// Collect all bind mounts needed for a container node.
@@ -313,7 +310,7 @@ pub(super) struct ContainerBind {
 /// Always includes the runtime config file as the first entry so it is
 /// accessible inside the container regardless of Apptainer's `$HOME` auto-bind
 /// behavior (which may not cover `~/.peppy/` when running inside a Lima VM).
-pub(super) fn collect_container_binds(
+fn collect_container_binds(
     runtime_config_path: &Path,
     mount_paths: &[String],
 ) -> Vec<ContainerBind> {
@@ -567,10 +564,7 @@ pub(super) async fn build_container_command(
 ///
 /// Returns the underlying `io::Error` (with the offending path embedded in
 /// the message) if a source is missing and cannot be created.
-pub(super) fn ensure_bind_sources(
-    binds: &[ContainerBind],
-    announcer: &Announcer,
-) -> std::io::Result<()> {
+fn ensure_bind_sources(binds: &[ContainerBind], announcer: &Announcer) -> std::io::Result<()> {
     for bind in binds {
         if !containers::ensure_bind_source(Path::new(&bind.src))? {
             continue;
