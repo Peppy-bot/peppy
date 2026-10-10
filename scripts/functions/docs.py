@@ -682,19 +682,25 @@ def _em_dash_lines(repo_root: Path) -> tuple[EmDashLine, ...]:
         ],
         cwd=repo_root,
         capture_output=True,
-        encoding="utf-8",
-        errors="replace",
     )
+    # Decoded here and not in text mode: its newline translation turns a lone
+    # "\r" inside a docs line into a "\n" that git grep did not write.
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
     # git grep exits 1 when nothing matches.
-    if result.returncode == 1 and not result.stderr.strip():
+    if result.returncode == 1 and not stderr.strip():
         return ()
     if result.returncode != 0:
         raise ReleaseError(
             f"git grep for em-dashes under '{DOCS_DIR}/' failed: "
-            f"{result.stderr.strip()}"
+            f"{stderr.strip()}"
         )
     lines: list[EmDashLine] = []
-    for record in result.stdout.splitlines():
+    # git grep ends each record with "\n" alone. str.splitlines would also
+    # split a docs line at a form feed or a Unicode line break inside it.
+    for record in stdout.split("\n"):
+        if not record:
+            continue
         file, line, text = record.split("\0", 2)
         lines.append(EmDashLine(file=file, line=int(line), text=text.strip()))
     return tuple(lines)

@@ -563,6 +563,15 @@ def _claude_answer(structured: object) -> MagicMock:
     return mock
 
 
+def _git_grep_without_a_match() -> MagicMock:
+    """A git grep run that matches nothing: exit status 1, empty bytes."""
+    mock = MagicMock()
+    mock.returncode = 1
+    mock.stdout = b""
+    mock.stderr = b""
+    return mock
+
+
 class _ClaudeCalls:
     """A subprocess.run stand-in answering each claude call in turn.
 
@@ -578,11 +587,7 @@ class _ClaudeCalls:
 
     def __call__(self, cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
         if cmd[:2] == ["git", "grep"]:
-            mock = MagicMock()
-            mock.returncode = 1
-            mock.stdout = ""
-            mock.stderr = ""
-            return mock
+            return _git_grep_without_a_match()
         if cmd and cmd[0] == "claude":
             self.prompts.append(str(kwargs.get("input")))
             structured = next(self._answers, None)
@@ -674,11 +679,7 @@ def _mock_subprocess_run_for_claude(
 
     def _run(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
         if cmd[:2] == ["git", "grep"]:
-            mock = MagicMock()
-            mock.returncode = 1
-            mock.stdout = ""
-            mock.stderr = ""
-            return mock
+            return _git_grep_without_a_match()
         if cmd and cmd[0] == "claude":
             if _is_gap_review(cmd):
                 return _claude_answer(_CONFIRMED)
@@ -1348,6 +1349,20 @@ def test_em_dash_lines_cover_tracked_and_untracked_docs_only(
         EmDashLine(file="docs/new.mdx", line=2, text=f"new {EM_DASH} line"),
         EmDashLine(file=_PAGE, line=3, text=f"An old line {EM_DASH} kept as is."),
     }
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\f", "\x85", "\r"])
+def test_em_dash_lines_keep_a_line_that_holds_a_unicode_line_break(
+    tmp_path: Path, separator: str
+) -> None:
+    # git grep ends a record at "\n" alone; Python's other line breaks are
+    # text of the line.
+    repo = _docs_repo(tmp_path)
+    (repo / _PAGE).write_text(f"# Page\n\nA {EM_DASH} b{separator}c\n")
+
+    assert _em_dash_lines(repo) == (
+        EmDashLine(file=_PAGE, line=3, text=f"A {EM_DASH} b{separator}c"),
+    )
 
 
 def test_em_dash_lines_is_empty_without_a_match(tmp_path: Path) -> None:
