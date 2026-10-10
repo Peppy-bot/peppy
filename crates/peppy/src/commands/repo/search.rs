@@ -199,7 +199,8 @@ fn published_json(doc: &PublishedDoc) -> serde_json::Value {
 }
 
 /// The service values the render tests of both commands feed in: one
-/// repository label per hub, one node, one published contract.
+/// repository label per hub, one node, one published contract, and any
+/// other published document.
 #[cfg(test)]
 pub(super) mod fixtures {
     use core_node::{IndexedNode, MatchedItem, PublishedDoc, SearchQuery, SearchReport};
@@ -230,13 +231,19 @@ pub(super) mod fixtures {
         }
     }
 
-    pub fn contract() -> PublishedDoc {
+    /// A document stored at `path` in the repository `repo_id`, whose
+    /// fingerprint repeats `fill`.
+    pub fn published(repo_id: u32, repo_label: &str, path: &str, fill: char) -> PublishedDoc {
         PublishedDoc {
-            repo_id: 1002,
-            repo_label: CONTRACTS.to_owned(),
-            path: "cameras/rgb_camera.json5".to_owned(),
-            sha256: ManifestFingerprint::parse(&sha('a')).unwrap(),
+            repo_id,
+            repo_label: repo_label.to_owned(),
+            path: path.to_owned(),
+            sha256: ManifestFingerprint::parse(&sha(fill)).unwrap(),
         }
+    }
+
+    pub fn contract() -> PublishedDoc {
+        published(1002, CONTRACTS, "cameras/rgb_camera.json5", 'a')
     }
 
     pub fn matched(
@@ -271,7 +278,6 @@ pub(super) mod fixtures {
 mod tests {
     use super::fixtures::*;
     use super::*;
-    use daemon_config::repository::ManifestFingerprint;
 
     fn multi() -> SearchOutcome {
         SearchOutcome {
@@ -282,12 +288,7 @@ mod tests {
                         RepoItemKind::Launcher,
                         "camera_boot",
                         "",
-                        PublishedDoc {
-                            repo_id: 1001,
-                            repo_label: LAUNCHERS.to_owned(),
-                            path: "camera_boot.json5".to_owned(),
-                            sha256: ManifestFingerprint::parse(&sha('e')).unwrap(),
-                        },
+                        published(1001, LAUNCHERS, "camera_boot.json5", 'e'),
                     )
                 },
                 MatchedItem {
@@ -300,12 +301,7 @@ mod tests {
                         RepoItemKind::Node,
                         "uvc_camera",
                         "v1",
-                        PublishedDoc {
-                            repo_id: 1000,
-                            repo_label: HUB.to_owned(),
-                            path: "uvc_camera/peppy.json5".to_owned(),
-                            sha256: ManifestFingerprint::parse(&sha('b')).unwrap(),
-                        },
+                        published(1000, HUB, "uvc_camera/peppy.json5", 'b'),
                     )
                 },
             ],

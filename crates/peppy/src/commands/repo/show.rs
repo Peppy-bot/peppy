@@ -484,8 +484,7 @@ mod tests {
     use super::super::search::fixtures::*;
     use super::*;
     use config::node::Cardinality;
-    use core_node::{Consumer, Implementer, Observer, Participant, PublishedDoc};
-    use daemon_config::repository::ManifestFingerprint;
+    use core_node::{Consumer, Implementer, Observer, Participant};
 
     fn shown(reports: Vec<SearchReport>, matches: Vec<MatchedItem>) -> ShowOutcome {
         ShowOutcome {
@@ -606,12 +605,7 @@ mod tests {
                 RepoItemKind::Node,
                 "sim_rgb_camera",
                 "v1",
-                PublishedDoc {
-                    repo_id: 1000,
-                    repo_label: HUB.to_owned(),
-                    path: "sim_rgb_camera/peppy.json5".to_owned(),
-                    sha256: ManifestFingerprint::parse(&sha('b')).unwrap(),
-                },
+                published(1000, HUB, "sim_rgb_camera/peppy.json5", 'b'),
             )],
         )
     }
@@ -966,12 +960,7 @@ mod tests {
     /// contract and as a pairing, and a pair nobody uses says so once.
     #[test]
     fn human_output_names_both_published_documents() {
-        let pairing = PublishedDoc {
-            repo_id: 1002,
-            repo_label: CONTRACTS.to_owned(),
-            path: "pairings/rgb_camera.json5".to_owned(),
-            sha256: ManifestFingerprint::parse(&sha('d')).unwrap(),
-        };
+        let pairing = published(1002, CONTRACTS, "pairings/rgb_camera.json5", 'd');
         let outcome = shown(
             vec![empty_report()],
             vec![
@@ -1013,12 +1002,7 @@ mod tests {
                 RepoItemKind::Launcher,
                 "openarm_boot",
                 "",
-                PublishedDoc {
-                    repo_id: 1001,
-                    repo_label: LAUNCHERS.to_owned(),
-                    path: "openarm_boot.json5".to_owned(),
-                    sha256: ManifestFingerprint::parse(&sha('e')).unwrap(),
-                },
+                published(1001, LAUNCHERS, "openarm_boot.json5", 'e'),
             )],
         );
 
@@ -1044,12 +1028,7 @@ mod tests {
             RepoItemKind::Pairing,
             "sim_rgb_camera_link",
             "v1",
-            PublishedDoc {
-                repo_id: 1002,
-                repo_label: CONTRACTS.to_owned(),
-                path: "cameras/sim_rgb_camera_link.json5".to_owned(),
-                sha256: ManifestFingerprint::parse(&sha('d')).unwrap(),
-            },
+            published(1002, CONTRACTS, "cameras/sim_rgb_camera_link.json5", 'd'),
         );
         pairing.exact = false;
         let outcome = shown(
