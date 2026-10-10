@@ -17,6 +17,11 @@ use crate::error::{Error, Result};
 
 const DEVICE_CODE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
+/// The refusal when the flow expires. The identity provider's `expired_token`
+/// and the local deadline are the same event for the person, so they read the
+/// same.
+const LOGIN_TIMED_OUT: &str = "login timed out, run `peppy platform login` again";
+
 /// Tokens obtained from a successful device or refresh grant.
 #[derive(Debug, Clone)]
 pub struct TokenSet {
@@ -188,9 +193,7 @@ fn classify(error: &str) -> PollOutcome {
         "access_denied" => PollOutcome::Fatal(Error::Auth(
             "authorization denied in the browser".to_string(),
         )),
-        "expired_token" => PollOutcome::Fatal(Error::Auth(
-            "login timed out, run `peppy platform login` again".to_string(),
-        )),
+        "expired_token" => PollOutcome::Fatal(Error::Auth(LOGIN_TIMED_OUT.to_string())),
         other => PollOutcome::Fatal(Error::Auth(format!("device login failed: {other}"))),
     }
 }
@@ -273,9 +276,7 @@ pub fn poll(
         }
 
         if now_unix() >= deadline {
-            break Err(Error::Auth(
-                "login timed out, run `peppy platform login` again".to_string(),
-            ));
+            break Err(Error::Auth(LOGIN_TIMED_OUT.to_string()));
         }
         std::thread::sleep(Duration::from_secs(interval));
     }
