@@ -65,14 +65,15 @@ fn cli_auth_config(base: &str, device_verification_uri: Option<&str>) -> serde_j
 }
 
 /// Builds the login mocks for a current platform: one that publishes its own
-/// device page, on a path apart from the identity provider's.
-fn mock_login_endpoints(server: &MockServer, access_token: &str) {
+/// device page, on a path apart from the identity provider's. Returns the
+/// device-authorization mock, as [`mock_login_endpoints_answering`] does.
+fn mock_login_endpoints<'a>(server: &'a MockServer, access_token: &str) -> httpmock::Mock<'a> {
     let base = server.base_url();
     mock_login_endpoints_answering(
         server,
         access_token,
         cli_auth_config(&base, Some(&format!("{base}/app/device"))),
-    );
+    )
 }
 
 /// Builds the cli/auth-config + OIDC discovery + device-authorization + token mocks
@@ -808,14 +809,7 @@ fn login_without_a_running_daemon_fails_before_the_device_flow() {
         ),
     ] {
         let server = MockServer::start();
-        let device_authorization = mock_login_endpoints_answering(
-            &server,
-            "unused-token",
-            cli_auth_config(
-                &server.base_url(),
-                Some(&format!("{}/app/device", server.base_url())),
-            ),
-        );
+        let device_authorization = mock_login_endpoints(&server, "unused-token");
         let dir = tempfile::tempdir().expect("temp dir");
         if let Some(write_state) = write_state {
             write_state(&dir);
@@ -873,14 +867,7 @@ fn login_on_an_enrolled_machine_keeps_the_enrollment() {
 #[test]
 fn login_with_flags_on_an_enrolled_machine_fails_before_the_device_flow() {
     let server = MockServer::start();
-    let device_authorization = mock_login_endpoints_answering(
-        &server,
-        "unused-token",
-        cli_auth_config(
-            &server.base_url(),
-            Some(&format!("{}/app/device", server.base_url())),
-        ),
-    );
+    let device_authorization = mock_login_endpoints(&server, "unused-token");
     let dir = daemon_dir();
     write_enrollment(&dir, "peer-old", "7f3a9c1e");
 
@@ -1378,15 +1365,7 @@ fn peers_and_router_use_the_selected_project_before_the_enrollment() {
         Some((FIELD, "Field")),
     );
 
-    PeersCommand {
-        api_url: Some(server.base_url()),
-        workspace: None,
-        project: None,
-        json: false,
-        peppy_dirs: Some(dirs(&dir)),
-    }
-    .execute(&ctx())
-    .expect("peers");
+    peers_command(&server, &dir, false).expect("peers");
     router_command(&server, &dir, RouterAction::Restart, None).expect("restart");
 
     assert_eq!(field_peers.calls(), 1);
@@ -1414,15 +1393,7 @@ fn a_refusal_on_the_selected_project_names_project_use() {
         Some(("p-gone", "Gone")),
     );
 
-    let err = PeersCommand {
-        api_url: Some(server.base_url()),
-        workspace: None,
-        project: None,
-        json: false,
-        peppy_dirs: Some(dirs(&dir)),
-    }
-    .execute(&ctx())
-    .expect_err("the project is gone");
+    let err = peers_command(&server, &dir, false).expect_err("the project is gone");
     assert_eq!(
         err.to_string(),
         "Not Found. The selected project can be out of date. Run `peppy platform project use`."
@@ -1673,8 +1644,7 @@ fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
     let server = MockServer::start();
     mock_workspaces_and_projects(&server);
     let enroll = mock_enroll(&server, ZID);
-    let dir = authenticated_dir(&server);
-    write_daemon_state(&dir, "local", "7f3a9c1e");
+    let dir = enrollable_dir(&server);
     let stub = stub_restarting_daemon(
         &dir,
         PROJECT,
@@ -2114,6 +2084,23 @@ fn status_without_an_enrollment_or_a_session_still_runs() {
     }
 }
 
+/// `peppy platform peers` against `server` with state under `dir`, with no
+/// workspace or project flag.
+fn peers_command(
+    server: &MockServer,
+    dir: &tempfile::TempDir,
+    json: bool,
+) -> peppy::error::Result<()> {
+    PeersCommand {
+        api_url: Some(server.base_url()),
+        workspace: None,
+        project: None,
+        json,
+        peppy_dirs: Some(dirs(dir)),
+    }
+    .execute(&ctx())
+}
+
 #[test]
 fn peers_default_to_the_enrolled_project() {
     let server = MockServer::start();
@@ -2122,27 +2109,11 @@ fn peers_default_to_the_enrolled_project() {
     write_enrollment(&dir, "peer-1", ZID);
 
     for json in [false, true] {
-        PeersCommand {
-            api_url: Some(server.base_url()),
-            workspace: None,
-            project: None,
-            json,
-            peppy_dirs: Some(dirs(&dir)),
-        }
-        .execute(&ctx())
-        .expect("peers");
+        peers_command(&server, &dir, json).expect("peers");
     }
 
     let unenrolled = authenticated_dir(&server);
-    let err = PeersCommand {
-        api_url: Some(server.base_url()),
-        workspace: None,
-        project: None,
-        json: false,
-        peppy_dirs: Some(dirs(&unenrolled)),
-    }
-    .execute(&ctx())
-    .expect_err("no enrollment and no flags");
+    let err = peers_command(&server, &unenrolled, false).expect_err("no enrollment and no flags");
     assert!(err.to_string().contains("--project"), "{err}");
 }
 
