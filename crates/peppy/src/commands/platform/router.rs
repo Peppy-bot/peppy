@@ -325,15 +325,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_403_is_worded_as_a_missing_permission() {
-        let forbidden = AuthError::Problem(problem(ProblemKind::Other("about:blank".into()), 403));
-        let target = select::Target {
+    fn selected_target() -> select::Target {
+        select::Target {
             workspace_id: "ws-1".into(),
             project_id: "p-1".into(),
             label: "project p-1".into(),
             source: select::TargetSource::Selection,
-        };
+        }
+    }
+
+    #[test]
+    fn a_403_is_worded_as_a_missing_permission() {
+        let forbidden = AuthError::Problem(problem(ProblemKind::Other("about:blank".into()), 403));
+        let target = selected_target();
         let message = refusal(forbidden, RouterAction::Restart, &target).to_string();
         assert!(message.contains("cannot restart"), "{message}");
         assert!(message.contains("manage the infrastructure"), "{message}");
@@ -344,15 +348,6 @@ mod tests {
 
         let other = refusal(AuthError::Http("boom".into()), RouterAction::Start, &target);
         assert_eq!(other.to_string(), "boom");
-    }
-
-    fn selected_target() -> select::Target {
-        select::Target {
-            workspace_id: "ws-1".into(),
-            project_id: "p-1".into(),
-            label: "project p-1".into(),
-            source: select::TargetSource::Selection,
-        }
     }
 
     /// The platform refuses the restart of a stopped router. The error gives
