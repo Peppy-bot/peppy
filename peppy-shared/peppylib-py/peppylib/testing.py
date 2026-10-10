@@ -35,7 +35,8 @@ import weakref
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from types import TracebackType
+from typing import Any, Protocol, Self
 
 from peppylib import (
     ActionMessenger,
@@ -335,10 +336,15 @@ class EphemeralRouter:
         wrapper drops into call sites written against the raw instance."""
         await self.shutdown()
 
-    async def __aenter__(self) -> EphemeralRouter:
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         await self.shutdown()
 
 
