@@ -128,7 +128,7 @@ pub(crate) struct DaemonConnection<'a> {
     pub core_node_name: String,
     /// The core node commands address: the `--core-node` override when one
     /// was given, else the local daemon ([`Self::core_node_name`]). Only the
-    /// *target* of a request follows the override — the connection still
+    /// *target* of a request follows the override: the connection still
     /// dials the local daemon's router and the caller identity stays local.
     pub target_core_node: String,
     /// Whether `target_core_node` came from an explicit `--core-node`

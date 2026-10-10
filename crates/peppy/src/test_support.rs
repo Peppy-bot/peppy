@@ -116,13 +116,13 @@ fn keep_alive_script_for(sentinel: &Path) -> String {
 /// rather than by a duration, and clears `build_cmd`, so the test never spawns
 /// a real binary.
 ///
-/// This replaces the `sleep 4` these tests used to use, which silently made
-/// "the rest of the test finishes within 4 seconds" a precondition. A test that
-/// spawns an instance and then keeps referring to it — a producer named by a
-/// later `--link`, say — passed on an idle machine and failed under load with
-/// `unknown instance_id`, because the daemon reaped the exited process out of
-/// the stack mid-test. Bounding on a sentinel removes the wall-clock
-/// dependency: the instance is alive whenever the test still wants it to be.
+/// A keep-alive bounded by a duration makes "the rest of the test finishes
+/// within that duration" a precondition: a test that spawns an instance and
+/// then keeps referring to it (a producer named by a later `--link`, say)
+/// passes on an idle machine and fails under load with `unknown instance_id`,
+/// because the daemon reaps the exited process out of the stack mid-test.
+/// Bounding on a sentinel removes the wall-clock dependency: the instance is
+/// alive whenever the test still wants it to be.
 ///
 /// Point `sentinel` at a path inside a `TempDir` the test owns. Dropping that
 /// `TempDir` at the end of the test ends the process within one poll interval,
@@ -130,7 +130,7 @@ fn keep_alive_script_for(sentinel: &Path) -> String {
 ///
 /// Neither exit condition is a duration, so there is no window to outgrow:
 ///
-/// 1. the sentinel exists — the normal path, ending at `TempDir` drop; and
+/// 1. the sentinel exists: the normal path, ending at `TempDir` drop; and
 /// 2. the process that spawned it (the test binary, which hosts the daemon)
 ///    is still alive. `$PPID` is captured up front rather than read in the
 ///    loop, because a hard-killed test binary reparents this process to init

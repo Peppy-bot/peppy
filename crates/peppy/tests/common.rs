@@ -533,7 +533,7 @@ pub async fn emulate_startup_services(
 }
 
 /// Installs the shutdown service an emulated instance owes, wired to actually
-/// end the process — the daemon's cooperative request is answered *and* the
+/// end the process: the daemon's cooperative request is answered *and* the
 /// `run_cmd` is killed, so the stop completes at once.
 ///
 /// Without this a stopped instance answers nothing and the daemon falls back to

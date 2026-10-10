@@ -92,7 +92,6 @@ enum Commands {
 }
 
 fn main() {
-    // Set app env based on build profile (release = Prod, debug = Dev)
     let env = if cfg!(debug_assertions) {
         AppEnv::Dev
     } else {
@@ -524,9 +523,10 @@ mod tests {
         }
     }
 
-    /// A malformed `--core-node` must be rejected at parse time — the same
-    /// `Name` rules `service serve --core-node-name` enforces — rather than
-    /// silently becoming an unreachable request target.
+    /// A malformed `--core-node` is rejected at parse time by the
+    /// [`CoreNodeName`] rules that `service serve --core-node-name` and
+    /// `peppy_config.json5` share, rather than becoming an unreachable request
+    /// target.
     #[test]
     fn core_node_flag_rejects_invalid_names() {
         let long = "x".repeat(config::runtime::MAX_CORE_NODE_NAME_LEN + 1);

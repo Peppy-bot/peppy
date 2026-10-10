@@ -1,8 +1,10 @@
 //! The Peppy command-line tool.
 //!
-//! `peppy` is a leaf binary: `main.rs` is the entrypoint and this library half
+//! `peppy` is the CLI binary: `main.rs` is the entrypoint and this library half
 //! exists so the integration test crate can construct and execute command
-//! structs in-process. No other crate depends on it.
+//! structs in-process. The only other crate that depends on it is
+//! `docs-integration-tests`, which boots an emulated daemon through the
+//! `test_support` scaffolding.
 //!
 //! The supported surface is intentionally small:
 //! - [`commands`]: the [`commands::Command`] trait plus the per-group command
