@@ -167,8 +167,8 @@ fn a_launchers_empty_adjustments_list_is_refused() {
     );
 }
 
-/// `null` is neither entries nor absence, under the launcher's own key, a
-/// fragment file's and a copy's alike.
+/// `null` is neither entries nor absence, under the launcher's own key, an
+/// option entry's, a fragment file's and a copy's alike.
 #[test]
 fn a_null_adjustments_key_is_refused_wherever_it_is_written() {
     for (document, site) in [
@@ -177,6 +177,12 @@ fn a_null_adjustments_key_is_refused_wherever_it_is_written() {
                components: [{ name: "a", options: { on: { deployments: [] } } }],
                adjustments: null, deployments: [{ a: "on" }] }"#,
             "the launcher",
+        ),
+        (
+            r#"{ peppy_schema: "launcher/v1",
+               components: [{ name: "a", options: { on: { deployments: [] } } }],
+               deployments: [{ a: "on", adjustments: null }] }"#,
+            "an option entry",
         ),
         (
             r#"{ peppy_schema: "launcher/v1",
@@ -207,6 +213,31 @@ fn a_null_adjustments_key_is_refused_wherever_it_is_written() {
         error.to_string().contains("expected a sequence"),
         "got: {error}"
     );
+}
+
+/// A `null` under an option entry's other keys is no absent key either: the
+/// refusal names the key and the entry.
+#[test]
+fn an_option_entrys_null_key_is_refused_by_name() {
+    for (key, expected) in [
+        ("instances", "expected a sequence"),
+        ("with", "expected a map"),
+        ("arguments", "expected a map"),
+    ] {
+        let error = PeppyLauncherParser::from_content(&format!(
+            r#"{{
+            peppy_schema: "launcher/v1",
+            components: [{{ name: "a", cardinality: "zero_or_more", options: {{ on: {{ deployments: [] }} }} }}],
+            deployments: [{{ a: "on", {key}: null }}]
+        }}"#
+        ))
+        .expect_err(key)
+        .to_string();
+        assert!(
+            error.contains(&format!("`{key}` of `a: on`")) && error.contains(expected),
+            "{key}: {error}"
+        );
+    }
 }
 
 /// An option entry's and a copy's `adjustments` hold to the same rule.
