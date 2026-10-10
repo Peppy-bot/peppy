@@ -21,8 +21,9 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use super::common::{
     build_count, build_logs_for, built_artifacts_for, counting_build_cmd,
     emulate_cooperative_shutdown, emulate_pairing_node_services, emulate_startup_services,
-    install_node_manifest, read_daemon_git_hash, register_repo_caches, serve_app_context,
-    stack_graph, test_node_target, write_minimal_node_config, write_node_config_for_helper,
+    install_node_manifest, node_add_command, read_daemon_git_hash, register_repo_caches,
+    serve_app_context, stack_graph, test_node_target, write_minimal_node_config,
+    write_node_config_for_helper,
 };
 
 /// The budgets these tests launch and build under: idle windows generous
@@ -190,26 +191,9 @@ async fn node_launch_command_succeed() {
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_a_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_a_path)
+        .execute(&ctx)
+        .expect("node add command should succeed");
 
     NodeCommand {
         command: NodeCommands::Init {
@@ -393,26 +377,9 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_a_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_a_path)
+        .execute(&ctx)
+        .expect("node add command should succeed");
 
     let messenger_handle = ctx
         .messenger_handle()

@@ -1,10 +1,10 @@
 use super::common::{
-    read_daemon_git_hash, serve_app_context, stack_graph, write_minimal_node_config,
+    node_add_command, read_daemon_git_hash, serve_app_context, stack_graph,
+    write_minimal_node_config,
 };
 use peppy::test_support::ServeCommandEmulation;
 
 use peppy::commands::Command;
-use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{StackCommand, StackCommands};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -32,26 +32,9 @@ async fn service_reset_command_resets_node_stack() {
 
     let ctx = serve_app_context(&serve, nodes_dir.path());
 
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_path)
+        .execute(&ctx)
+        .expect("node add command should succeed");
 
     let messenger_handle = ctx
         .messenger_handle()

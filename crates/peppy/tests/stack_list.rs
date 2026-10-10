@@ -17,7 +17,8 @@ use peppy::context::AppContext;
 use peppylib::{CoreNodePresenceMessenger, MessengerHandle};
 
 use super::common::{
-    emulate_startup_services, serve_app_context, test_core_node_name, test_node_target,
+    emulate_startup_services, node_add_command, serve_app_context, test_core_node_name,
+    test_node_target,
 };
 
 fn make_consumer_depend_on_provider(
@@ -91,26 +92,9 @@ fn make_consumer_depend_on_provider(
 }
 
 fn add_ready_node(ctx: &Arc<AppContext>, source: &Path) {
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(source.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(ctx)
-    .expect("node add should succeed");
+    node_add_command(source)
+        .execute(ctx)
+        .expect("node add should succeed");
 }
 
 /// A node's row parsed from the rendered stack inventory table.
@@ -210,48 +194,14 @@ async fn node_list_command_succeeds() {
     make_consumer_depend_on_provider(&provider_peppy_json5, &consumer_peppy_json5, provider_name);
 
     // Add the provider
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(provider_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("provider node add command should succeed");
+    node_add_command(&provider_path)
+        .execute(&node_ctx)
+        .expect("provider node add command should succeed");
 
     // Add the consumer, it depends on the provider
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(consumer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("consumer node add command should succeed");
+    node_add_command(&consumer_path)
+        .execute(&node_ctx)
+        .expect("consumer node add command should succeed");
 
     // Run the list command via the testable collecting variant so we can
     // assert on the exact text the CLI would print without capturing stdout.
