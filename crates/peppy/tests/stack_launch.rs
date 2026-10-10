@@ -3358,10 +3358,8 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     // The unbound `zero_or_more` producer slot reaches the node as an explicit
     // empty set, so the panel's "is there a recorder?" branch is a set size and
     // never a missing key.
-    let runtime_config: config::runtime::RuntimeConfig = serde_json5::from_str(
-        &fs::read_to_string(&commander_dump).expect("commander runtime config should be dumped"),
-    )
-    .expect("commander runtime config should parse");
+    let [commander_config] = read_runtime_config_dumps([&commander_dump]).await;
+    let runtime_config = expect_runtime_config(commander_config, "commander", &commander_dump);
     let recorder = runtime_config
         .node_instance
         .slot_bindings
