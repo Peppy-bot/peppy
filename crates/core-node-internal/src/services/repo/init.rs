@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::services::repo::{REPOS_FILE, repository_noun};
+use crate::services::repo::{REPOS_FILE, repository_noun, write_repo_entries};
 use daemon_config::consts::PeppyDirs;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -72,10 +72,7 @@ pub fn ensure_default_repos(peppy_dirs: &PeppyDirs) -> Result<InitOutcome> {
     }
 
     existing.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
-    let serialized = json5_pretty::to_string_pretty(&existing).map_err(|e| {
-        core_node_api::Error::Encoding(format!("failed to serialize repositories: {e}"))
-    })?;
-    std::fs::write(&repos_path, serialized)?;
+    write_repo_entries(&repos_path, &existing, "repositories")?;
     info!(
         "Added {added} missing default {} to repositories.json5",
         repository_noun(added)

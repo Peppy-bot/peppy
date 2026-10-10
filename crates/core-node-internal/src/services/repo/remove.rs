@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::{read_or_create_repos, reindex_after_change};
+use crate::services::repo::write_repo_entries;
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
@@ -100,10 +101,7 @@ fn handle_repo_remove_request_inner(
 
     repos.remove(pos);
 
-    let content = json5_pretty::to_string_pretty(&repos).map_err(|e| {
-        core_node_api::Error::Encoding(format!("failed to serialize repositories: {e}"))
-    })?;
-    std::fs::write(&repos_path, content)?;
+    write_repo_entries(&repos_path, &repos, "repositories")?;
 
     drop(_guard);
 

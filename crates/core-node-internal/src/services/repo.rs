@@ -377,7 +377,7 @@ pub(crate) fn nodes_by_repository<'a>(
 /// Normalize a list of repo JSON entries: auto-assign missing `id` fields,
 /// detect duplicate ids, sort by id, and write back if any ids were assigned.
 pub(crate) fn normalize_repo_entries(
-    repos: &mut Vec<Value>,
+    repos: &mut [Value],
     file_path: &Path,
     desc: &str,
 ) -> crate::Result<()> {
@@ -426,12 +426,24 @@ pub(crate) fn normalize_repo_entries(
     }
 
     if needs_write {
-        let content = json5_pretty::to_string_pretty(repos).map_err(|e| {
-            core_node_api::Error::Encoding(format!("failed to serialize {desc}: {e}"))
-        })?;
-        std::fs::write(file_path, content)?;
+        write_repo_entries(file_path, repos, desc)?;
     }
 
+    Ok(())
+}
+
+/// Writes a user-editable repository list (`repositories.json5` or the
+/// excluded list) to `file_path`. Every handler that rewrites one of these
+/// files goes through here, so they all keep the same format. `desc` names
+/// the list in the serialization error.
+pub(crate) fn write_repo_entries(
+    file_path: &Path,
+    repos: &[Value],
+    desc: &str,
+) -> crate::Result<()> {
+    let content = json5_pretty::to_string_pretty(repos)
+        .map_err(|e| core_node_api::Error::Encoding(format!("failed to serialize {desc}: {e}")))?;
+    std::fs::write(file_path, content)?;
     Ok(())
 }
 

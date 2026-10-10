@@ -2,7 +2,7 @@ use crate::Result;
 use crate::services::repo::refresh::reindex_after_change;
 use crate::services::repo::{
     EXCLUDED_REPOS_FILE, entry_identity, normalize_repo_entries, parse_repo_entry,
-    repo_source_to_json, source_identity,
+    repo_source_to_json, source_identity, write_repo_entries,
 };
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
@@ -204,10 +204,7 @@ fn handle_repo_exclude_request_inner(
 
     repos.push(repo_source_to_json(next_id, &request.source));
     repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
-    let content = json5_pretty::to_string_pretty(&repos).map_err(|e| {
-        core_node_api::Error::Encoding(format!("failed to serialize excluded repositories: {e}"))
-    })?;
-    std::fs::write(&repos_path, content)?;
+    write_repo_entries(&repos_path, &repos, "excluded repositories")?;
 
     drop(_guard);
 
