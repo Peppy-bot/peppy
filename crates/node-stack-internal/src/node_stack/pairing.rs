@@ -158,15 +158,7 @@ impl PairingRegistry {
     /// The first pair `slot` takes part in, which is its only one on a
     /// scalar slot.
     pub(crate) fn find_by_slot(&self, slot: &SlotAddr) -> Option<&Pairing> {
-        self.pairs_of_slot(slot).next()
-    }
-
-    /// Every pair `slot` takes part in, in establishment order.
-    fn pairs_of_slot(&self, slot: &SlotAddr) -> impl Iterator<Item = &Pairing> + '_ {
-        let slot = slot.clone();
-        self.pairs
-            .iter()
-            .filter(move |p| p.endpoint(&slot).is_some())
+        self.pairs.iter().find(|pair| pair.endpoint(slot).is_some())
     }
 
     /// The pair between `a` and `b`, whichever way round it was recorded.
