@@ -1969,20 +1969,21 @@ impl Drop for GoalContext {
 mod envelope_tests {
     use super::*;
 
-    fn assert_envelope_error(result: Result<Payload>) {
+    /// Asserts that `result` is the `InternalEncodingError` of the envelope
+    /// `expected_identifier`, with a reason that contains
+    /// `expected_reason_fragment`.
+    fn assert_encoding_error<T>(
+        result: Result<T>,
+        expected_identifier: &str,
+        expected_reason_fragment: &str,
+    ) {
         match result {
-            Err(Error::InternalEncodingError { identifier, .. }) => {
-                assert_eq!(identifier, "action_goal_envelope");
-            }
-            Err(other) => panic!("expected InternalEncodingError, got {other:?}"),
-            Ok(_) => panic!("expected error, got Ok"),
-        }
-    }
-
-    fn assert_unwrap_error(result: Result<(&str, &[u8])>) {
-        match result {
-            Err(Error::InternalEncodingError { identifier, .. }) => {
-                assert_eq!(identifier, "action_goal_envelope");
+            Err(Error::InternalEncodingError { identifier, reason }) => {
+                assert_eq!(identifier, expected_identifier);
+                assert!(
+                    reason.contains(expected_reason_fragment),
+                    "reason {reason:?} should contain {expected_reason_fragment:?}"
+                );
             }
             Err(other) => panic!("expected InternalEncodingError, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),
@@ -2059,13 +2060,11 @@ mod envelope_tests {
     #[test]
     fn goal_ack_wrap_rejects_oversized_reason() {
         let oversized = "r".repeat(u16::MAX as usize + 1);
-        match wrap_goal_ack(false, Some(&oversized), b"") {
-            Err(Error::InternalEncodingError { identifier, reason }) => {
-                assert_eq!(identifier, "action_goal_ack_envelope");
-                assert!(reason.contains("exceeds wire limit"));
-            }
-            other => panic!("expected InternalEncodingError, got {other:?}"),
-        }
+        assert_encoding_error(
+            wrap_goal_ack(false, Some(&oversized), b""),
+            "action_goal_ack_envelope",
+            "exceeds wire limit",
+        );
     }
 
     #[test]
@@ -2079,16 +2078,11 @@ mod envelope_tests {
     }
 
     fn assert_goal_ack_unwrap_error(wire: &[u8], expected_reason_fragment: &str) {
-        match unwrap_goal_ack(wire) {
-            Err(Error::InternalEncodingError { identifier, reason }) => {
-                assert_eq!(identifier, "action_goal_ack_envelope");
-                assert!(
-                    reason.contains(expected_reason_fragment),
-                    "reason {reason:?} should contain {expected_reason_fragment:?}"
-                );
-            }
-            other => panic!("expected InternalEncodingError, got {other:?}"),
-        }
+        assert_encoding_error(
+            unwrap_goal_ack(wire),
+            "action_goal_ack_envelope",
+            expected_reason_fragment,
+        );
     }
 
     #[test]
@@ -2119,34 +2113,39 @@ mod envelope_tests {
 
     #[test]
     fn unwrap_result_outcome_rejects_empty_wire() {
-        match unwrap_result_outcome(&[]) {
-            Err(Error::InternalEncodingError { identifier, .. }) => {
-                assert_eq!(identifier, "action_result_outcome_envelope");
-            }
-            other => panic!("expected InternalEncodingError, got {other:?}"),
-        }
+        assert_encoding_error(
+            unwrap_result_outcome(&[]),
+            "action_result_outcome_envelope",
+            "wire payload is empty",
+        );
     }
 
     #[test]
     fn unwrap_result_outcome_rejects_unknown_tag() {
-        match unwrap_result_outcome(&[0xFF, 1, 2, 3]) {
-            Err(Error::InternalEncodingError { identifier, reason }) => {
-                assert_eq!(identifier, "action_result_outcome_envelope");
-                assert!(reason.contains("unknown result status tag"));
-            }
-            other => panic!("expected InternalEncodingError, got {other:?}"),
-        }
+        assert_encoding_error(
+            unwrap_result_outcome(&[0xFF, 1, 2, 3]),
+            "action_result_outcome_envelope",
+            "unknown result status tag",
+        );
     }
 
     #[test]
     fn wrap_rejects_empty_goal_id() {
-        assert_envelope_error(wrap_goal_payload("", b"payload"));
+        assert_encoding_error(
+            wrap_goal_payload("", b"payload"),
+            "action_goal_envelope",
+            "goal_id must be non-empty",
+        );
     }
 
     #[test]
     fn wrap_rejects_goal_id_over_255_bytes() {
         let oversized = "a".repeat(256);
-        assert_envelope_error(wrap_goal_payload(&oversized, b"payload"));
+        assert_encoding_error(
+            wrap_goal_payload(&oversized, b"payload"),
+            "action_goal_envelope",
+            "exceeds wire limit",
+        );
     }
 
     #[test]
@@ -2160,24 +2159,40 @@ mod envelope_tests {
 
     #[test]
     fn unwrap_rejects_empty_wire() {
-        assert_unwrap_error(unwrap_goal_payload(&[]));
+        assert_encoding_error(
+            unwrap_goal_payload(&[]),
+            "action_goal_envelope",
+            "wire payload is empty",
+        );
     }
 
     #[test]
     fn unwrap_rejects_zero_length_prefix() {
-        assert_unwrap_error(unwrap_goal_payload(&[0x00]));
+        assert_encoding_error(
+            unwrap_goal_payload(&[0x00]),
+            "action_goal_envelope",
+            "goal_id is empty",
+        );
     }
 
     #[test]
     fn unwrap_rejects_truncated_wire() {
         // Declares a 5-byte goal_id but only provides 1 byte after the length prefix.
-        assert_unwrap_error(unwrap_goal_payload(&[0x05, b'a']));
+        assert_encoding_error(
+            unwrap_goal_payload(&[0x05, b'a']),
+            "action_goal_envelope",
+            "too short for declared goal_id_len",
+        );
     }
 
     #[test]
     fn unwrap_rejects_non_utf8_goal_id() {
         // 0xFF / 0xFE form an invalid UTF-8 sequence.
-        assert_unwrap_error(unwrap_goal_payload(&[0x02, 0xFF, 0xFE, b'p']));
+        assert_encoding_error(
+            unwrap_goal_payload(&[0x02, 0xFF, 0xFE, b'p']),
+            "action_goal_envelope",
+            "not valid UTF-8",
+        );
     }
 
     fn empty_registry() -> GoalRegistry {
