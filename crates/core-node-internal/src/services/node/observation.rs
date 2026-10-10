@@ -392,7 +392,7 @@ impl ObservationCoordinator {
                     .map(|target| {
                         let source = SourceKey::from_producer(&target.source);
                         let (source_generation, source_live) =
-                            self.stamp_source(&registry, &source, &live_instances, &None);
+                            self.stamp_source(&registry, &source, &live_instances, None);
                         config::runtime::ObservationSeedMember {
                             source: target.source.clone(),
                             source_link_id: target.source_link_id.clone(),
@@ -525,7 +525,7 @@ impl ObservationCoordinator {
         registry: &Registry,
         source: &SourceKey,
         live_local_instances: &HashSet<String>,
-        verdict: &Option<LivenessVerdict<'_>>,
+        verdict: Option<&LivenessVerdict<'_>>,
     ) -> (u64, bool) {
         let generation = registry.source_generation.get(source).copied().unwrap_or(0);
         let live =
@@ -542,7 +542,7 @@ impl ObservationCoordinator {
         registry: &Registry,
         source: &SourceKey,
         live_local_instances: &HashSet<String>,
-        verdict: &Option<LivenessVerdict<'_>>,
+        verdict: Option<&LivenessVerdict<'_>>,
     ) -> bool {
         if let Some(verdict) = verdict
             && verdict.source == source
@@ -669,8 +669,12 @@ impl ObservationCoordinator {
                     .filter(|record| record.observer_link_id == slot.observer_link_id)
                     .map(|record| {
                         let source = record.source();
-                        let (source_generation, source_live) =
-                            self.stamp_source(registry, &source, live_local_instances, &verdict);
+                        let (source_generation, source_live) = self.stamp_source(
+                            registry,
+                            &source,
+                            live_local_instances,
+                            verdict.as_ref(),
+                        );
                         ObservedMemberState {
                             source_generation,
                             source_live,
