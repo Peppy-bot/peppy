@@ -538,25 +538,7 @@ async fn spawn_real_running_instance_inner(
     // Tests that want the production stop path to fall through to force-kill
     // (a stuck process) use `spawn_real_stuck_instance`, which skips this.
     let shutdown_listener = if install_shutdown_listener {
-        let shutdown_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-        let (shutdown_task, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
-            &shutdown_handle,
-            &started.core_node_name,
-            instance_id.as_str(),
-            test_node_target(name),
-        )
-        .await
-        .expect("failed to start shutdown listener for test instance");
-        let pid_for_kill = pid;
-        tokio::spawn(async move {
-            if shutdown_rx.await.is_ok() {
-                let _ = std::process::Command::new("kill")
-                    .arg("-KILL")
-                    .arg(pid_for_kill.to_string())
-                    .status();
-            }
-        });
-        Some(AbortOnDrop(shutdown_task))
+        Some(install_kill_on_shutdown_listener(started, name, instance_id, pid).await)
     } else {
         None
     };
