@@ -466,7 +466,7 @@ impl ZenohAdapter {
         let max_attempts = if port.is_some() { 1 } else { 32 };
 
         for attempt in 0..max_attempts {
-            let (port, _reservation) = match port {
+            let (port, reservation) = match port {
                 Some(p) => (p, None),
                 None => {
                     let (p, listener) =
@@ -502,41 +502,38 @@ impl ZenohAdapter {
             let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
 
             // Drop the port reservation before starting the router so zenohd can bind to it
-            drop(_reservation);
+            drop(reservation);
 
             match messenger.start_router().await {
-                Ok(()) => {
-                    // Readiness signal: zenohd's TCP listener can accept before the
-                    // protocol handshake is settled, so a real zenoh::open is the only
-                    // reliable signal that subsequent sessions will succeed. The probe
-                    // session is dropped immediately; the caller opens their own.
-                    match zenoh::open(probe_config).await {
-                        Ok(probe) => {
-                            drop(probe);
-                            return Ok(ZenohdInstance {
-                                messenger: Some(messenger),
-                                host: host.to_string(),
-                                port,
-                                log_path,
-                            });
-                        }
-                        Err(_) if attempt + 1 < max_attempts => {
-                            // Drop messenger to stop the router, then retry on a fresh port.
-                            drop(messenger);
-                            continue;
-                        }
-                        Err(e) => {
-                            return Err(Error::BackendError(format!(
-                                "Zenoh readiness probe failed: {}",
-                                e
-                            )));
-                        }
-                    }
+                Ok(()) => {}
+                Err(Error::BackendError(_)) if attempt + 1 < max_attempts => continue,
+                Err(err) => return Err(err),
+            }
+
+            // Readiness signal: zenohd's TCP listener can accept before the
+            // protocol handshake is settled, so a real zenoh::open is the only
+            // reliable signal that subsequent sessions will succeed. The probe
+            // session is dropped immediately; the caller opens their own.
+            match zenoh::open(probe_config).await {
+                Ok(probe) => {
+                    drop(probe);
+                    return Ok(ZenohdInstance {
+                        messenger: Some(messenger),
+                        host: host.to_string(),
+                        port,
+                        log_path,
+                    });
                 }
-                Err(Error::BackendError(_)) if attempt + 1 < max_attempts => {
+                Err(_) if attempt + 1 < max_attempts => {
+                    // Drop messenger to stop the router, then retry on a fresh port.
+                    drop(messenger);
                     continue;
                 }
-                Err(err) => return Err(err),
+                Err(e) => {
+                    return Err(Error::BackendError(format!(
+                        "Zenoh readiness probe failed: {e}"
+                    )));
+                }
             }
         }
 
