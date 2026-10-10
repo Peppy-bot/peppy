@@ -1402,10 +1402,7 @@ fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), Stri
                         adjustment.target
                     ));
                 }
-                let (instance, link_suffix) = super::types::split_link_target(target);
-                if instance.is_empty()
-                    || link_suffix.is_some_and(|l| l.is_empty() || l.contains('/'))
-                {
+                if super::types::split_well_formed_link_target(target).is_none() {
                     return Err(format!(
                         "adjustment on `{}` in {origin} adds target `{target}` to slot \
                          `{slot}`, which is malformed: expected `<instance>` or \
@@ -2592,9 +2589,13 @@ mod tests {
             .expect_err("a duplicate target is a mistake");
         assert!(error.contains("more than once"), "got: {error}");
 
-        let error = parse_adjustment(r#"{ target: "c", add_links: { cameras: ["a//b"] } }"#)
+        for target in ["a//b", "/b", "a/", "a/b/c"] {
+            let error = parse_adjustment(&format!(
+                r#"{{ target: "c", add_links: {{ cameras: ["{target}"] }} }}"#
+            ))
             .expect_err("a malformed target is refused");
-        assert!(error.contains("malformed"), "got: {error}");
+            assert!(error.contains("malformed"), "target `{target}`: {error}");
+        }
     }
 
     #[test]

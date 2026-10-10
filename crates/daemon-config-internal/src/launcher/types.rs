@@ -1033,8 +1033,7 @@ where
             // producer targets never carry a suffix, pairing/observer
             // targets carry at most one). A bad suffix here would otherwise
             // surface later as a confusing "no complementary slot" error.
-            let (instance, link_suffix) = split_link_target(target);
-            if instance.is_empty() || link_suffix.is_some_and(|l| l.is_empty() || l.contains('/')) {
+            if split_well_formed_link_target(target).is_none() {
                 return Err(de::Error::custom(format!(
                     "link target `{target}` for key `{key}` is malformed: expected \
                      `<instance>` or `<instance>/<link_id>`"
@@ -1070,6 +1069,22 @@ pub fn split_link_target(value: &str) -> (&str, Option<&str>) {
         Some((instance, link)) => (instance, Some(link)),
         None => (value, None),
     }
+}
+
+/// Splits a link target written as `<instance>` or `<instance>/<link_id>`, or
+/// returns `None` when it is malformed: an empty instance, or a `/` followed
+/// by an empty link id or by a second `/`. A launcher `links` value and an
+/// adjustment's `add_links` value fill the same slots, so both follow this
+/// one grammar.
+pub(crate) fn split_well_formed_link_target(target: &str) -> Option<(&str, Option<&str>)> {
+    let (instance, link) = split_link_target(target);
+    if instance.is_empty() {
+        return None;
+    }
+    if link.is_some_and(|link| link.is_empty() || link.contains('/')) {
+        return None;
+    }
+    Some((instance, link))
 }
 
 /// Map visitor for the unified `links` deserializer. Collects into a Vec so
