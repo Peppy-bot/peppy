@@ -50,8 +50,8 @@ struct LaunchGoal {
     # coordinator, whatever it turns out to declare.
     #
     # Cap'n Proto defaults an unset union to its first member, so a goal that
-    # sets neither decodes as an empty `places` — the same "no placement
-    # given" that has always meant.
+    # sets neither decodes as an empty `places`, which means no placement
+    # was given.
     placement :union {
         places @8 :List(CoreNodeLink);
         local @9 :Void;

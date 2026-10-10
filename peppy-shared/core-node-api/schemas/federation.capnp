@@ -36,8 +36,8 @@ struct ParticipantReserveRequest {
     # coordinator resolves the whole launch once and every participant runs
     # exactly those bytes, so a participant's own cache freshness, repository
     # priorities and exclusions never influence a federated launch. The
-    # participant validates each pin here — a refusal costs nothing, since the
-    # reservation is non-destructive — and materializes it at add time,
+    # participant validates each pin here (a refusal costs nothing, since the
+    # reservation is non-destructive) and materializes it at add time,
     # reusing its own copy on a content match and fetching the pinned commit
     # otherwise. It never falls back to resolving a name.
     #

@@ -102,8 +102,8 @@ struct NodeAddGoal {
         # JSON5-encoded pin for the root node of a pinned batch: the exact
         # manifest bytes to run, identified by content fingerprint, plus the
         # git location any machine can fetch them from. The daemon
-        # materializes exactly these bytes — reusing its own copy on a
-        # content match, fetching the pinned commit otherwise — and never
+        # materializes exactly these bytes (reusing its own copy on a
+        # content match, fetching the pinned commit otherwise) and never
         # resolves the name against its own cache. The pin model lives in
         # peppy; it is opaque text here for the same reason
         # `ParticipantReserveRequest.deploymentPinsJson5` is.
@@ -112,7 +112,7 @@ struct NodeAddGoal {
         # (`~/.peppy/cache/nodes.json5`), then continue exactly as a pinned
         # batch: that daemon resolves the transitive closure once, pins every
         # entry, and adds by pin. The entry arm for `peppy node add
-        # <name>:<tag>` — the receiving daemon is the coordinator of its own
+        # <name>:<tag>`: the receiving daemon is the coordinator of its own
         # add.
         resolveRef @10 :NodeAddResolveRefSource;
         # The pins of the `mcp_exposure` documents the built-in MCP server
@@ -197,7 +197,7 @@ struct NodeAddResult {
     nodeTag @4 :Text;
 }
 
-# Node Build Action — drives the build of a previously-added node
+# Node Build Action: drives the build of a previously-added node
 struct NodeBuildGoal {
     nodeName @0 :Text;
     nodeTag @1 :Text;
@@ -367,7 +367,7 @@ struct NodeRunGoal {
 # One instance, addressed the way the whole mesh addresses instances: by the
 # `(coreNode, instanceId)` pair. An `instanceId` alone is unique only within one
 # stack, so every cross-machine reference carries both halves and no daemon ever
-# infers "this must be local" from an absent field — including when the target
+# infers "this must be local" from an absent field, including when the target
 # IS local, where this holds the receiving daemon's own name.
 #
 # Decodes to `config::runtime::ProducerRef`, the same type the validator stamps
@@ -405,7 +405,7 @@ struct PairRequest {
     # rules is not an option and guessing is worse. A federated launch's
     # coordinator does hold every participant's manifests and checks the whole
     # plan (same pairing, complementary roles, matching sha pins) before
-    # anything starts — this carries that verdict to the daemon that commits
+    # anything starts; this carries that verdict to the daemon that commits
     # the local half.
     #
     # Absent for a same-daemon peer, where the local manifests are the
@@ -587,8 +587,7 @@ struct NodeInstanceInfo {
     pairingSlotsJson @4 :Text;
     # JSON-encoded `config::runtime::ClockBinding`: the one clock this instance
     # reads, and its role in that clock's domain. Empty string for wall time,
-    # which is also what a message from a producer that predates clock domains
-    # reads as.
+    # which is also what an absent field reads as.
     clockJson @5 :Text;
     # The endpoints the instance serves, in label order; empty for a node
     # that declares none.
@@ -604,7 +603,7 @@ struct NodeInstanceInfo {
 # to sniff the error-string payload of an `InvalidServiceRequest`.
 struct NodeInfoResponse {
     union {
-        # The node is not in the stack. Carries no payload — the caller
+        # The node is not in the stack. Carries no payload: the caller
         # already knows which `(name, tag)` it asked about.
         notInStack @0 :Void;
         # The node is in the stack. All of the node metadata is grouped
