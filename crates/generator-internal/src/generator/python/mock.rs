@@ -534,9 +534,11 @@ fn render_dep_service(
         builder.blank_line();
     }
 
-    let (response_param, response_payload) = if spec.response.is_some() {
+    // A response-less service takes no `response` parameter at all, so the
+    // parameter list is spliced rather than each signature written twice.
+    let (response_arg, response_payload) = if spec.response.is_some() {
         (
-            format!("response: {alias}.ResponseData"),
+            format!(", response: {alias}.ResponseData"),
             format!("{serialize_fn}(response)"),
         )
     } else {
@@ -545,13 +547,6 @@ fn render_dep_service(
 
     // Responder first, so the Service annotations referencing it resolve at
     // definition time.
-    // A response-less service takes no `response` parameter at all, so the
-    // parameter list is spliced rather than each signature written twice.
-    let response_arg = if response_param.is_empty() {
-        String::new()
-    } else {
-        format!(", {response_param}")
-    };
     builder.block(&format!("class {camel}Responder:"), |builder| {
         builder.docstring("Answers exactly one parked request; consumed by use.");
         builder.blank_line();
@@ -778,9 +773,11 @@ fn render_dep_action(
         builder.blank_line();
     }
 
-    let (complete_param, complete_payload) = if spec.messages.result_response.is_some() {
+    // A result-less action takes no `result` parameter at all, so the
+    // parameter list is spliced rather than each signature written twice.
+    let (complete_arg, complete_payload) = if spec.messages.result_response.is_some() {
         (
-            format!("result: {alias}.ResultResponseData"),
+            format!(", result: {alias}.ResultResponseData"),
             format!("{serialize_result_fn}(result)"),
         )
     } else {
@@ -789,13 +786,6 @@ fn render_dep_action(
 
     // ActiveGoal first, then PendingGoal, then Action: annotations resolve at
     // definition time without forward references.
-    // A result-less action takes no `result` parameter at all, so the
-    // parameter list is spliced rather than each signature written twice.
-    let complete_arg = if complete_param.is_empty() {
-        String::new()
-    } else {
-        format!(", {complete_param}")
-    };
     builder.block(&format!("class {camel}ActiveGoal:"), |builder| {
         builder.docstring("An accepted goal: drives feedback and terminal completion.");
         builder.blank_line();
@@ -828,12 +818,10 @@ def __init__(self, context) -> None:
             builder.line("return self._context.is_cancelled()");
         });
         builder.blank_line();
-        for method in ["complete", "complete_cancelled"] {
-            let doc = if method == "complete" {
-                "Completes the goal successfully."
-            } else {
-                "Completes the goal as cancelled."
-            };
+        for (method, doc) in [
+            ("complete", "Completes the goal successfully."),
+            ("complete_cancelled", "Completes the goal as cancelled."),
+        ] {
             builder.block(
                 &format!("async def {method}(self{complete_arg}) -> None:"),
                 |builder| {
