@@ -505,14 +505,13 @@ fn unknown_selection(
 /// One line per axis naming its options, for the "names no option" refusals:
 /// the fix is picking from the list, so the list is the error.
 pub(super) fn axes_menu<'a>(axes: impl Iterator<Item = &'a ComponentAxis>) -> String {
-    axes.map(|axis| {
+    crate::error::format_bulleted(axes.map(|axis| {
         format!(
-            "\n  - {}: {}",
+            "{}: {}",
             axis.name,
             crate::error::format_quoted_list(axis.options.keys())
         )
-    })
-    .collect()
+    }))
 }
 
 /// A copy's `with` over its option's own axes, with the copy's own axis

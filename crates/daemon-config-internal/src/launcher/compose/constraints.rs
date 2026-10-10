@@ -238,12 +238,10 @@ pub(super) fn render_constraint(in_play: ConstraintInPlay<'_>) -> String {
         ));
     }
     if !constraint.forbids.is_empty() {
-        let entries: Vec<String> = constraint
-            .forbids
-            .iter()
-            .map(|entry| format!("`{}`", render_guard(entry)))
-            .collect();
-        clauses.push(format!("forbids {}", entries.join(", ")));
+        clauses.push(format!(
+            "forbids {}",
+            crate::error::format_quoted_list(constraint.forbids.iter().map(render_guard))
+        ));
     }
     format!("{} {}", render_condition(in_play), clauses.join(" and "))
 }
