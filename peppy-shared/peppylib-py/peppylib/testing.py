@@ -55,8 +55,12 @@ from peppylib import (
     TopicPublisher,
     ZenohdInstance,
 )
-from peppylib.clock import ClockRequest, ClockResponse, ClockTick
-from peppylib.messaging.services import ServiceRequestContext, ServiceResponder
+from peppylib.clock import ClockBinding, ClockRequest, ClockResponse, ClockTick
+from peppylib.messaging.services import (
+    ServiceEndpoint,
+    ServiceRequestContext,
+    ServiceResponder,
+)
 
 #: How long readiness waits (subscriber matching, reachability) may take
 #: before failing loudly. Generous on purpose: every wait returns the moment
@@ -613,7 +617,7 @@ class MockServiceCore:
         core._pump = asyncio.create_task(core._run_pump(endpoint))
         return core
 
-    async def _run_pump(self, endpoint: Any) -> None:
+    async def _run_pump(self, endpoint: ServiceEndpoint) -> None:
         while True:
             # A broken receive stream stops the pump with a warning, as the
             # Rust core logs and stops, so close() still reports what the test
@@ -707,7 +711,7 @@ class MockPendingGoal:
     """A goal received by a :class:`MockActionServerCore`, awaiting the
     test's admission decision."""
 
-    def __init__(self, pending: PendingGoal, live: list[Any]) -> None:
+    def __init__(self, pending: PendingGoal, live: list[weakref.ref[GoalContext]]) -> None:
         self._pending = pending
         self._live = live
 
@@ -749,7 +753,7 @@ class MockActionServerCore:
     def __init__(self, action_name: str, engine: ConcurrentAction) -> None:
         self._action_name = action_name
         self._engine: ConcurrentAction | None = engine
-        self._live: list[Any] = []
+        self._live: list[weakref.ref[GoalContext]] = []
 
     @classmethod
     async def expose(
@@ -900,11 +904,9 @@ class MockClock:
             )
         return self
 
-    def binding(self) -> Any:
+    def binding(self) -> ClockBinding:
         """The binding the node under test boots with, which the generated
         harness hands to ``StandaloneConfig.with_clock``."""
-        from .clock import ClockBinding
-
         if self._clock == "wall":
             return ClockBinding.wall()
         if self._clock == "consumer":
@@ -936,7 +938,7 @@ class MockClock:
         # saturating arithmetic on the unsigned wire type.
         return max(0, time.time_ns() + self._offset_ns)
 
-    async def _run_pump(self, endpoint: Any) -> None:
+    async def _run_pump(self, endpoint: ServiceEndpoint) -> None:
         while True:
             pair = await endpoint.recv_next_request()
             if pair is None:
