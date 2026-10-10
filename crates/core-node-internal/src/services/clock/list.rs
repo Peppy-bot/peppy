@@ -180,7 +180,7 @@ fn domain_listing(
                 domain: hosted.domain.clone(),
                 publisher_instance_id: hosted.publisher_instance_id.as_str().to_owned(),
                 launch: hosted.launch.clone(),
-                ready: seen.is_some_and(|watch| watch.ready),
+                ready: seen.is_some_and(HostedDomain::is_ready),
                 last_tick_ns: seen.and_then(|watch| watch.last_tick_ns),
             }
         })
@@ -235,7 +235,6 @@ mod tests {
         HostedDomain {
             domain: domain.clone(),
             publisher_instance_id: instance_id(publisher_id),
-            ready: last_tick_ns.is_some(),
             last_tick_ns,
         }
     }
