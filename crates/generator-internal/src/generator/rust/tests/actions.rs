@@ -1104,15 +1104,7 @@ fn clippy_single_exposed_action_without_goal_request() {
             &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_clippy(&output_dir);
 
@@ -1190,15 +1182,7 @@ fn compile_lib_with_exposed_and_consumed_actions() {
             &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_cargo_build(&output_dir);
     run_clippy(&output_dir);
@@ -1294,15 +1278,7 @@ fn clippy_consumed_action_empty_goal_request() {
             &native_dep("robot", "v1", "robot"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_clippy(&output_dir);
 }

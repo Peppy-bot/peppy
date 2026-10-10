@@ -490,15 +490,7 @@ fn clippy_single_exposed_service_without_request_body() {
             &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_clippy(&output_dir);
 
@@ -564,15 +556,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_cargo_build(&output_dir);
     run_clippy(&output_dir);
@@ -647,15 +631,7 @@ fn clippy_consumed_service_empty_request_format() {
             &native_dep("sensor", "v1", "sensor"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_clippy(&output_dir);
 }
@@ -686,15 +662,7 @@ fn clippy_consumed_service_empty_response_format() {
             &native_dep("sensor", "v1", "sensor"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_clippy(&output_dir);
 }

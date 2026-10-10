@@ -324,18 +324,6 @@ fn emit_two_topics() {
     assert_artifact_contains(&artifacts, "push_lidar_object_message_capnp");
 }
 
-/// Writes the crate of `generator` into `output_dir`, over whatever an
-/// earlier generation left there.
-fn build_in_place(generator: RustGenerator, output_dir: &std::path::Path) {
-    generator
-        .build(
-            output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-}
-
 /// A node that drops its last message-format interface generates again over
 /// its earlier tree: the capnp module is the placeholder again and the
 /// earlier schemas leave the crate.
@@ -346,14 +334,14 @@ fn regeneration_without_schemas_drops_the_earlier_capnp_modules() {
     generator
         .add_emitted_topic(&parse_emitted_topic(EMITTED_TOPIC_EXAMPLE), None)
         .unwrap();
-    build_in_place(generator, &output_dir);
+    build_crate(generator, &output_dir);
     assert!(
         output_dir
             .join("src/capnp/video_stream_message.capnp")
             .exists()
     );
 
-    build_in_place(RustGenerator::new(), &output_dir);
+    build_crate(RustGenerator::new(), &output_dir);
 
     assert_eq!(
         fs::read_to_string(output_dir.join("src/capnp.rs")).unwrap(),
@@ -373,7 +361,7 @@ fn regeneration_drops_the_capnp_files_of_a_removed_topic() {
     generator
         .add_emitted_topic(&parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2), None)
         .unwrap();
-    build_in_place(generator, &output_dir);
+    build_crate(generator, &output_dir);
     let capnp_dir = output_dir.join("src/capnp");
     let removed_files = [
         capnp_dir.join("push_lidar_object_message.capnp"),
@@ -389,7 +377,7 @@ fn regeneration_drops_the_capnp_files_of_a_removed_topic() {
 
     let mut generator = RustGenerator::new();
     generator.add_emitted_topic(&video_stream, None).unwrap();
-    build_in_place(generator, &output_dir);
+    build_crate(generator, &output_dir);
 
     assert!(capnp_dir.join("video_stream_message.capnp").exists());
     assert!(capnp_dir.join("video_stream_message_capnp.rs").exists());
@@ -972,15 +960,7 @@ fn clippy_single_emitted_topic_without_message_format() {
             &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_clippy(&output_dir);
 
@@ -1027,15 +1007,7 @@ fn compile_lib_with_emitted_and_consumed_topics() {
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_cargo_build(&output_dir);
     run_clippy(&output_dir);
