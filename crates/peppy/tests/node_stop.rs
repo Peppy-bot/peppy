@@ -8,7 +8,9 @@ use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppylib::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 
-use super::common::{emulate_startup_services, serve_app_context, stack_graph, test_node_target};
+use super::common::{
+    emulate_startup_services, node_run_command, serve_app_context, stack_graph, test_node_target,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_command_succeeds() {
@@ -124,25 +126,9 @@ async fn node_stop_command_succeeds() {
     );
 
     // Now run the node using the run command with a deterministic instance id
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(node_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node run command should succeed");
+    node_run_command(instance_id, node_name, Vec::new(), Vec::new())
+        .execute(&node_ctx)
+        .expect("node run command should succeed");
 
     // Verify the node now has 1 instance
     let graph = stack_graph(messenger_handle, &core_node_name).await;

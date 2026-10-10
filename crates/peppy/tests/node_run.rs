@@ -1,5 +1,4 @@
 use config::node::Toolchain;
-use daemon_config::launcher::VacantReason;
 use peppy::test_support::{InstanceLifetime, LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +13,8 @@ use peppylib::MessengerHandle;
 use peppylib::core_node::transport::poll;
 
 use super::common::{
-    CALLER_INSTANCE_ID, emulate_startup_services, serve_app_context, stack_graph, test_node_target,
+    CALLER_INSTANCE_ID, emulate_startup_services, node_run_command, serve_app_context, stack_graph,
+    test_node_target,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -119,25 +119,9 @@ async fn node_run_command_succeeds() {
     emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
 
     // Now run the node using the run command
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(node_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node run command should succeed");
+    node_run_command(instance_id, node_name, Vec::new(), Vec::new())
+        .execute(&node_ctx)
+        .expect("node run command should succeed");
 
     // Verify the logs contain success message
     let logs = log_capture.logs();
@@ -471,25 +455,9 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     .await;
 
     // Now run the node with a custom instance_id
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(node_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(custom_instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node run command with custom instance_id should succeed");
+    node_run_command(custom_instance_id, node_name, Vec::new(), Vec::new())
+        .execute(&node_ctx)
+        .expect("node run command with custom instance_id should succeed");
 
     // Verify the logs contain the custom instance_id
     let logs = log_capture.logs();
@@ -1042,23 +1010,8 @@ async fn node_run_rejects_unbound_slots() {
     )
     .await;
 
-    let result = NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(consumer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx);
+    let result =
+        node_run_command(instance_id, consumer_name, Vec::new(), Vec::new()).execute(&node_ctx);
 
     let msg = result
         .expect_err("node run must fail when declared slots are left unbound")
@@ -1117,41 +1070,16 @@ async fn node_run_bind_rejects_dead_key() {
         producer_instance_id,
     )
     .await;
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(producer_instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer run should succeed");
+    node_run_command(producer_instance_id, producer_name, Vec::new(), Vec::new())
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
 
-    let result = NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(consumer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(consumer_instance_id.to_string()),
-            links: vec![("ghost".to_string(), producer_instance_id.to_string())],
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
+    let result = node_run_command(
+        consumer_instance_id,
+        consumer_name,
+        vec![("ghost".to_string(), producer_instance_id.to_string())],
+        Vec::new(),
+    )
     .execute(&node_ctx);
     let err = match result {
         Err(e) => e,
@@ -1213,24 +1141,9 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
     )
     .await;
     for instance_id in [producer_left_id, producer_right_id] {
-        NodeCommand {
-            command: NodeCommands::Run {
-                clock: None,
-                publish_clock: None,
-                node_ref: None,
-                node_name: Some(producer_name.to_string()),
-                tag: Some("v1".to_string()),
-                args: Vec::new(),
-                instance_id: Some(instance_id.to_string()),
-                links: Vec::new(),
-                vacant_links: Vec::new(),
-                idle_timeout: 60,
-                max_timeout: 3600,
-                build: false,
-            },
-        }
-        .execute(&node_ctx)
-        .expect("producer run should succeed");
+        node_run_command(instance_id, producer_name, Vec::new(), Vec::new())
+            .execute(&node_ctx)
+            .expect("producer run should succeed");
     }
 
     emulate_startup_services(
@@ -1247,25 +1160,15 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            vacant_links: Vec::new(),
-            node_ref: None,
-            node_name: Some(consumer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(consumer_instance_id.to_string()),
-            links: vec![
-                ("wrist_left".to_string(), producer_left_id.to_string()),
-                ("wrist_right".to_string(), producer_right_id.to_string()),
-            ],
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
+    node_run_command(
+        consumer_instance_id,
+        consumer_name,
+        vec![
+            ("wrist_left".to_string(), producer_left_id.to_string()),
+            ("wrist_right".to_string(), producer_right_id.to_string()),
+        ],
+        Vec::new(),
+    )
     .execute(&node_ctx)
     .expect("consumer run should succeed when all pinned deps have binds");
 
@@ -1319,41 +1222,16 @@ async fn node_run_bind_rejects_target_mismatch() {
         wrong_instance_id,
     )
     .await;
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(wrong_producer.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(wrong_instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("wrong-node producer run should succeed");
+    node_run_command(wrong_instance_id, wrong_producer, Vec::new(), Vec::new())
+        .execute(&node_ctx)
+        .expect("wrong-node producer run should succeed");
 
-    let result = NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(consumer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(consumer_instance_id.to_string()),
-            links: vec![("wrist_left".to_string(), wrong_instance_id.to_string())],
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
+    let result = node_run_command(
+        consumer_instance_id,
+        consumer_name,
+        vec![("wrist_left".to_string(), wrong_instance_id.to_string())],
+        Vec::new(),
+    )
     .execute(&node_ctx);
     let err = match result {
         Err(e) => e,
@@ -1429,24 +1307,9 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     )
     .await;
     for instance_id in [producer_left_id, producer_right_id] {
-        NodeCommand {
-            command: NodeCommands::Run {
-                clock: None,
-                publish_clock: None,
-                node_ref: None,
-                node_name: Some(producer_name.to_string()),
-                tag: Some("v1".to_string()),
-                args: Vec::new(),
-                instance_id: Some(instance_id.to_string()),
-                links: Vec::new(),
-                vacant_links: Vec::new(),
-                idle_timeout: 60,
-                max_timeout: 3600,
-                build: false,
-            },
-        }
-        .execute(&node_ctx)
-        .expect("producer run should succeed");
+        node_run_command(instance_id, producer_name, Vec::new(), Vec::new())
+            .execute(&node_ctx)
+            .expect("producer run should succeed");
     }
 
     emulate_startup_services(
@@ -1456,25 +1319,15 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
         consumer_instance_id,
     )
     .await;
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            vacant_links: Vec::new(),
-            node_ref: None,
-            node_name: Some(consumer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(consumer_instance_id.to_string()),
-            links: vec![
-                ("wrist_left".to_string(), producer_left_id.to_string()),
-                ("wrist_right".to_string(), producer_right_id.to_string()),
-            ],
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
+    node_run_command(
+        consumer_instance_id,
+        consumer_name,
+        vec![
+            ("wrist_left".to_string(), producer_left_id.to_string()),
+            ("wrist_right".to_string(), producer_right_id.to_string()),
+        ],
+        Vec::new(),
+    )
     .execute(&node_ctx)
     .expect("consumer run with both pins bound should succeed");
 
@@ -1489,23 +1342,8 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
         producer_extra_id,
     )
     .await;
-    let result = NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(producer_extra_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx);
+    let result = node_run_command(producer_extra_id, producer_name, Vec::new(), Vec::new())
+        .execute(&node_ctx);
 
     if let Err(err) = &result {
         let msg = err.to_string();
@@ -1588,24 +1426,9 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     )
     .await;
     for instance_id in [producer_left_id, producer_right_id] {
-        NodeCommand {
-            command: NodeCommands::Run {
-                clock: None,
-                publish_clock: None,
-                node_ref: None,
-                node_name: Some(producer_name.to_string()),
-                tag: Some("v1".to_string()),
-                args: Vec::new(),
-                instance_id: Some(instance_id.to_string()),
-                links: Vec::new(),
-                vacant_links: Vec::new(),
-                idle_timeout: 60,
-                max_timeout: 3600,
-                build: false,
-            },
-        }
-        .execute(&node_ctx)
-        .expect("producer run should succeed");
+        node_run_command(instance_id, producer_name, Vec::new(), Vec::new())
+            .execute(&node_ctx)
+            .expect("producer run should succeed");
     }
 
     emulate_startup_services(
@@ -1615,47 +1438,27 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
         consumer_a_instance_id,
     )
     .await;
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            vacant_links: Vec::new(),
-            node_ref: None,
-            node_name: Some(consumer_a_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(consumer_a_instance_id.to_string()),
-            links: vec![
-                ("wrist_left".to_string(), producer_left_id.to_string()),
-                ("wrist_right".to_string(), producer_right_id.to_string()),
-            ],
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
+    node_run_command(
+        consumer_a_instance_id,
+        consumer_a_name,
+        vec![
+            ("wrist_left".to_string(), producer_left_id.to_string()),
+            ("wrist_right".to_string(), producer_right_id.to_string()),
+        ],
+        Vec::new(),
+    )
     .execute(&node_ctx)
     .expect("consumer_a run with both pins bound should succeed");
 
     // cons_b has a declared slot but we deliberately omit --link: the
     // preflight must reject the run naming cons_b's own slot, and only
     // that slot — cons_a's bound slots are inert items here.
-    let result = NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(consumer_b_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(consumer_b_instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
+    let result = node_run_command(
+        consumer_b_instance_id,
+        consumer_b_name,
+        Vec::new(),
+        Vec::new(),
+    )
     .execute(&node_ctx);
 
     let msg = result
@@ -1724,24 +1527,9 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     )
     .await;
     for instance_id in [producer_left_id, producer_right_id] {
-        NodeCommand {
-            command: NodeCommands::Run {
-                clock: None,
-                publish_clock: None,
-                node_ref: None,
-                node_name: Some(producer_name.to_string()),
-                tag: Some("v1".to_string()),
-                args: Vec::new(),
-                instance_id: Some(instance_id.to_string()),
-                links: Vec::new(),
-                vacant_links: Vec::new(),
-                idle_timeout: 60,
-                max_timeout: 3600,
-                build: false,
-            },
-        }
-        .execute(&node_ctx)
-        .expect("producer run should succeed");
+        node_run_command(instance_id, producer_name, Vec::new(), Vec::new())
+            .execute(&node_ctx)
+            .expect("producer run should succeed");
     }
 
     // First consumer instance: both pins bound.
@@ -1752,25 +1540,15 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
         consumer_inst_1,
     )
     .await;
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            vacant_links: Vec::new(),
-            node_ref: None,
-            node_name: Some(consumer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(consumer_inst_1.to_string()),
-            links: vec![
-                ("wrist_left".to_string(), producer_left_id.to_string()),
-                ("wrist_right".to_string(), producer_right_id.to_string()),
-            ],
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
+    node_run_command(
+        consumer_inst_1,
+        consumer_name,
+        vec![
+            ("wrist_left".to_string(), producer_left_id.to_string()),
+            ("wrist_right".to_string(), producer_right_id.to_string()),
+        ],
+        Vec::new(),
+    )
     .execute(&node_ctx)
     .expect("first consumer instance with both pins bound should succeed");
 
@@ -1785,25 +1563,15 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
         consumer_inst_2,
     )
     .await;
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            vacant_links: Vec::new(),
-            node_ref: None,
-            node_name: Some(consumer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(consumer_inst_2.to_string()),
-            links: vec![
-                ("wrist_left".to_string(), producer_left_id.to_string()),
-                ("wrist_right".to_string(), producer_right_id.to_string()),
-            ],
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
+    node_run_command(
+        consumer_inst_2,
+        consumer_name,
+        vec![
+            ("wrist_left".to_string(), producer_left_id.to_string()),
+            ("wrist_right".to_string(), producer_right_id.to_string()),
+        ],
+        Vec::new(),
+    )
     .execute(&node_ctx)
     .expect("second consumer instance must succeed when its own binds are valid");
 
@@ -1812,22 +1580,12 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     // expects. The error must name only cons_inst_3's binding, never
     // cons_inst_1 or cons_inst_2 (whose binds were already validated at
     // their own spawn time).
-    let result = NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(consumer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(consumer_inst_3_bad.to_string()),
-            links: vec![("wrist_left".to_string(), consumer_inst_1.to_string())],
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
+    let result = node_run_command(
+        consumer_inst_3_bad,
+        consumer_name,
+        vec![("wrist_left".to_string(), consumer_inst_1.to_string())],
+        Vec::new(),
+    )
     .execute(&node_ctx);
 
     let err =
@@ -1888,53 +1646,21 @@ async fn node_run_covers_a_zero_or_one_slot_by_link_or_vacancy() {
     for instance_id in [producer_instance_id, spare_producer_instance_id] {
         emulate_startup_services(&node_messenger, &core_node_name, producer_name, instance_id)
             .await;
-        NodeCommand {
-            command: NodeCommands::Run {
-                clock: None,
-                publish_clock: None,
-                node_ref: None,
-                node_name: Some(producer_name.to_string()),
-                tag: Some("v1".to_string()),
-                args: Vec::new(),
-                instance_id: Some(instance_id.to_string()),
-                links: Vec::new(),
-                vacant_links: Vec::new(),
-                idle_timeout: 60,
-                max_timeout: 3600,
-                build: false,
-            },
-        }
-        .execute(&node_ctx)
-        .expect("producer run should succeed");
+        node_run_command(instance_id, producer_name, Vec::new(), Vec::new())
+            .execute(&node_ctx)
+            .expect("producer run should succeed");
     }
 
     let vacant_link = |link_id: &str| {
         vec![(
             link_id.to_string(),
-            VacantReason::new("this rig ships without a wrist camera").expect("non-empty reason"),
+            "this rig ships without a wrist camera".to_string(),
         )]
     };
-    let run_consumer = |instance_id: &str,
-                        links: Vec<(String, String)>,
-                        vacant_links: Vec<(String, VacantReason)>| {
-        NodeCommand {
-            command: NodeCommands::Run {
-                clock: None,
-                publish_clock: None,
-                node_ref: None,
-                node_name: Some(consumer_name.to_string()),
-                tag: Some("v1".to_string()),
-                args: Vec::new(),
-                instance_id: Some(instance_id.to_string()),
-                links,
-                vacant_links,
-                idle_timeout: 60,
-                max_timeout: 3600,
-                build: false,
-            },
-        }
-        .execute(&node_ctx)
-    };
+    let run_consumer =
+        |instance_id: &str, links: Vec<(String, String)>, vacant_links: Vec<(String, String)>| {
+            node_run_command(instance_id, consumer_name, links, vacant_links).execute(&node_ctx)
+        };
     let main_bound = || vec![("main_camera".to_string(), producer_instance_id.to_string())];
 
     // 1. The vacancy is legal on the `zero_or_one` slot, so the instance runs.
@@ -2086,24 +1812,9 @@ async fn node_run_prints_the_web_pages_of_a_node_that_declares_a_page() {
     .await
     .expect("node endpoints service should start");
 
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(node_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node run command should succeed");
+    node_run_command(instance_id, node_name, Vec::new(), Vec::new())
+        .execute(&node_ctx)
+        .expect("node run command should succeed");
 
     let logs = log_capture.logs();
     let started = logs
