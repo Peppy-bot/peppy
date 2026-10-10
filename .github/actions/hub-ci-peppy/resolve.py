@@ -942,6 +942,15 @@ def repositories_json(entries: Sequence[dict]) -> str:
     return json.dumps(list(entries), indent=2) + "\n"
 
 
+def repository_entry(resolved: ResolvedHub, hub_path: str) -> dict:
+    """The repositories.json5 entry of a hub of the set: the checkout itself
+    for the hub under test, its git repository pinned at the commit of the set
+    for every other hub."""
+    if resolved.origin is HubOrigin.CHECKOUT:
+        return {"id": resolved.hub.repository_id, "type": "fs", "path": hub_path}
+    return pinned_git_entry(resolved)
+
+
 def repositories_file(hub_set: HubSet, hub_path: str) -> str:
     """The repositories.json5 of the job's daemon, ordered by id.
 
@@ -950,12 +959,7 @@ def repositories_file(hub_set: HubSet, hub_path: str) -> str:
     git repository pinned at the commit of the set.
     """
     return repositories_json(
-        [
-            {"id": resolved.hub.repository_id, "type": "fs", "path": hub_path}
-            if resolved.origin is HubOrigin.CHECKOUT
-            else pinned_git_entry(resolved)
-            for resolved in hub_set.hubs
-        ]
+        [repository_entry(resolved, hub_path) for resolved in hub_set.hubs]
     )
 
 
