@@ -24,7 +24,7 @@
 //!    the JSON shape of every `*_response.graph_json` field, plus query helpers.
 //! 4. **The wire [`Payload`] / [`NonEmptyPayload`] types and the unified
 //!    [`Error`] / [`Result`].**
-//! 5. **Protocol policy constants** ([`env`]): [`FORBIDDEN_ENV_KEYS`], the
+//! 5. **Protocol policy constants** ([`env`](mod@env)): [`FORBIDDEN_ENV_KEYS`], the
 //!    env-var blocklist enforced by the daemon when validating incoming goals
 //!    and by the CLI when filtering the caller environment before sending.
 //!
