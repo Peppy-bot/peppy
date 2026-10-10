@@ -358,27 +358,13 @@ fn generate_object_assignment(
     names: &mut NameGenerator,
 ) -> Result<TokenStream> {
     let builder_ident = names.next("builder");
-    let mut nested = Vec::with_capacity(fields.len());
-
-    for (nested_name, nested_schema) in fields {
-        let nested_ident = Ident::new(
-            &sanitize_rust_identifier(nested_name.as_str()),
-            Span::call_site(),
-        );
-        let nested_value_expr = if value_is_ref {
-            quote!(&(#value_expr).#nested_ident)
-        } else {
-            quote!((#value_expr).#nested_ident)
-        };
-        nested.push(generate_field_assignment_inner(
-            &quote!(#builder_ident),
-            nested_name,
-            nested_schema,
-            &nested_value_expr,
-            names,
-            value_is_ref,
-        )?);
-    }
+    let nested = generate_nested_field_assignments(
+        &builder_ident,
+        &quote!((#value_expr)),
+        fields,
+        names,
+        value_is_ref,
+    )?;
 
     Ok(quote! {
         let mut #builder_ident = #builder_expr.reborrow().#init_method();
@@ -400,26 +386,13 @@ fn generate_object_list_assignment(
     let element_ident = names.next("element");
 
     let element_builder_ident = names.next("builder");
-    let mut nested = Vec::with_capacity(fields.len());
-    for (nested_name, nested_schema) in fields {
-        let nested_ident = Ident::new(
-            &sanitize_rust_identifier(nested_name.as_str()),
-            Span::call_site(),
-        );
-        let nested_value_expr = if value_is_ref {
-            quote!(&#element_ident.#nested_ident)
-        } else {
-            quote!(#element_ident.#nested_ident)
-        };
-        nested.push(generate_field_assignment_inner(
-            &quote!(#element_builder_ident),
-            nested_name,
-            nested_schema,
-            &nested_value_expr,
-            names,
-            value_is_ref,
-        )?);
-    }
+    let nested = generate_nested_field_assignments(
+        &element_builder_ident,
+        &quote!(#element_ident),
+        fields,
+        names,
+        value_is_ref,
+    )?;
 
     Ok(quote! {
         let mut #list_ident = #builder_expr.reborrow().#init_method(#length_expr);
@@ -428,6 +401,39 @@ fn generate_object_list_assignment(
             #(#nested)*
         }
     })
+}
+
+/// Assigns every field of a nested object, read from `parent_expr`, through
+/// `builder_ident`. `parent_expr` must be a single token tree (an ident or a
+/// parenthesized expression) so that `.field` applies to all of it.
+fn generate_nested_field_assignments(
+    builder_ident: &Ident,
+    parent_expr: &TokenStream,
+    fields: &IndexMap<String, SchemaType>,
+    names: &mut NameGenerator,
+    value_is_ref: bool,
+) -> Result<Vec<TokenStream>> {
+    let mut nested = Vec::with_capacity(fields.len());
+    for (nested_name, nested_schema) in fields {
+        let nested_ident = Ident::new(
+            &sanitize_rust_identifier(nested_name.as_str()),
+            Span::call_site(),
+        );
+        let nested_value_expr = if value_is_ref {
+            quote!(&#parent_expr.#nested_ident)
+        } else {
+            quote!(#parent_expr.#nested_ident)
+        };
+        nested.push(generate_field_assignment_inner(
+            &quote!(#builder_ident),
+            nested_name,
+            nested_schema,
+            &nested_value_expr,
+            names,
+            value_is_ref,
+        )?);
+    }
+    Ok(nested)
 }
 
 /// Generates a block expression that serializes fields into a Cap'n Proto message
