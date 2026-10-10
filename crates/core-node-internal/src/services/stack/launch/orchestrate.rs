@@ -572,6 +572,7 @@ pub(in crate::services::stack) async fn teardown_and_reset_stack(ctx: &StackChan
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::stack::fixtures::planned_deployment;
 
     /// The size of the future a function returns, from the function item
     /// alone: nothing is constructed or run.
@@ -603,6 +604,87 @@ mod tests {
             size <= ADD_NODE_DIRECTLY_FUTURE_BUDGET,
             "add_node_directly's future is {size} bytes, over the {ADD_NODE_DIRECTLY_FUTURE_BUDGET} byte budget: \
              the add pipeline must be pinned on the heap before it enters the phase wrappers"
+        );
+    }
+
+    /// The start order of a plan that lists `plan` in that order, where each
+    /// `(node, deps)` pair makes `node` wait for every node of `deps`.
+    fn start_order(plan: &[&str], deps: &[(&str, &[&str])]) -> Result<Vec<String>, String> {
+        let planned: Vec<PlannedDeployment> = plan
+            .iter()
+            .map(|name| planned_deployment(name, &[]))
+            .collect();
+        let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = planned
+            .iter()
+            .map(|item| (item.key(), HashSet::new()))
+            .collect();
+        for (node, node_deps) in deps {
+            deps_for.insert(
+                NodeKey::new(*node, "v1"),
+                node_deps
+                    .iter()
+                    .map(|dep| NodeKey::new(*dep, "v1"))
+                    .collect(),
+            );
+        }
+        topological_sort(&planned, &deps_for)
+            .map(|ordered| ordered.iter().map(NodeKey::label).collect())
+    }
+
+    /// A node starts after every node it depends on, and the nodes that are
+    /// ready together start in the order the plan lists them, whatever order
+    /// that is.
+    #[test]
+    fn a_node_starts_after_its_dependencies_and_ready_nodes_follow_the_plan() {
+        let order = start_order(
+            &["dashboard", "planner", "camera", "driver"],
+            &[
+                ("dashboard", &["planner", "camera"]),
+                ("planner", &["driver"]),
+                ("camera", &["driver"]),
+            ],
+        );
+
+        assert_eq!(
+            order.unwrap(),
+            ["driver:v1", "planner:v1", "camera:v1", "dashboard:v1"]
+        );
+    }
+
+    /// A node that becomes ready starts before a ready node the plan lists
+    /// after it, even when that node was ready first.
+    #[test]
+    fn a_node_that_becomes_ready_takes_its_plan_place_among_the_ready_nodes() {
+        let order = start_order(
+            &["arm_controller", "camera", "arm_driver", "viewer"],
+            &[("arm_controller", &["arm_driver"]), ("viewer", &["camera"])],
+        );
+
+        assert_eq!(
+            order.unwrap(),
+            [
+                "camera:v1",
+                "arm_driver:v1",
+                "arm_controller:v1",
+                "viewer:v1"
+            ]
+        );
+    }
+
+    /// Nodes that wait for each other never become ready, and the refusal
+    /// names each of them in sorted order, leaving out the nodes that
+    /// started.
+    #[test]
+    fn a_dependency_cycle_is_refused_naming_the_nodes_left_waiting() {
+        let order = start_order(
+            &["planner", "driver", "camera"],
+            &[("planner", &["driver"]), ("driver", &["planner"])],
+        );
+
+        assert_eq!(
+            order.unwrap_err(),
+            "unable to resolve dependency order (cycle suspected). Remaining nodes: driver:v1, \
+             planner:v1"
         );
     }
 }
