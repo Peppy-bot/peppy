@@ -18,12 +18,8 @@
 //! segment (which the `{curly}` AsyncAPI parameters are — no `/`, `@`, and
 //! not a reserved `*`/`_` sentinel) renders unchanged.
 
-use super::zenoh_format::{action_root, service_root};
+use super::zenoh_format::{SINGLE_CHUNK_WILDCARD, action_root, service_root};
 use super::{SenderTarget, ServiceKind};
-
-/// Single-chunk wildcard, matching exactly one path segment. Kept as a local
-/// literal (the canonical definition is private to [`super::zenoh_format`]).
-const WILDCARD: &str = "*";
 
 /// Fully-addressed service channel key expression, mirroring
 /// [`super::zenoh_format::ZenohWireFormat::service_reply_keyexpr`]:
@@ -72,7 +68,7 @@ pub fn topic_channel_address(
     topic_name: &str,
 ) -> String {
     format!(
-        "{WILDCARD}/{as_core}/{WILDCARD}/{as_instance}/topic/{}/{}/{}/{link_id}/{topic_name}",
+        "{SINGLE_CHUNK_WILDCARD}/{as_core}/{SINGLE_CHUNK_WILDCARD}/{as_instance}/topic/{}/{}/{}/{link_id}/{topic_name}",
         target.discriminator(),
         target.name(),
         target.tag(),
@@ -94,7 +90,7 @@ pub fn action_feedback_channel_address(
     goal_id: &str,
 ) -> String {
     format!(
-        "{WILDCARD}/{bound_core}/{WILDCARD}/{as_instance}/{}/feedback/{as_instance}/{goal_id}",
+        "{SINGLE_CHUNK_WILDCARD}/{bound_core}/{SINGLE_CHUNK_WILDCARD}/{as_instance}/{}/feedback/{as_instance}/{goal_id}",
         action_root(target, link_id, action_name),
     )
 }

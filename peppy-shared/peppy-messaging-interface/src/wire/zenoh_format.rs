@@ -15,7 +15,7 @@ use crate::wire::{
 use std::fmt;
 
 /// Single-chunk wildcard. Matches exactly one path segment.
-const SINGLE_CHUNK_WILDCARD: &str = "*";
+pub(super) const SINGLE_CHUNK_WILDCARD: &str = "*";
 
 /// The value of an addressing slot the caller pinned, or the single-chunk
 /// wildcard when it left the slot open.
