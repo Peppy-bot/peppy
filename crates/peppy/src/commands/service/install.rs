@@ -77,7 +77,7 @@ pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<Pat
         program_path,
         working_dir,
         service_dir_override.is_none(),
-    )?;
+    );
 
     if let Some(dir) = service_dir_override {
         return write_service_definition(kind, &dir, &ctx);
@@ -102,8 +102,8 @@ fn make_install_context(
     program: PathBuf,
     working_dir: PathBuf,
     autostart: bool,
-) -> Result<ServiceInstallCtx> {
-    Ok(ServiceInstallCtx {
+) -> ServiceInstallCtx {
+    ServiceInstallCtx {
         label,
         program,
         args: vec![OsString::from("service"), OsString::from("serve")],
@@ -135,7 +135,7 @@ fn make_install_context(
             max_retries: None,
             reset_after_secs: None,
         },
-    })
+    }
 }
 
 /// Builds the environment the installed service runs under.
@@ -207,14 +207,6 @@ fn write_launchd_service(target_dir: &Path, ctx: &ServiceInstallCtx) -> Result<P
 }
 
 fn default_service_path(
-    kind: ServiceManagerKind,
-    level: ServiceLevel,
-    label: &ServiceLabel,
-) -> Result<PathBuf> {
-    default_service_path_with_level(kind, level, label)
-}
-
-fn default_service_path_with_level(
     kind: ServiceManagerKind,
     level: ServiceLevel,
     label: &ServiceLabel,
