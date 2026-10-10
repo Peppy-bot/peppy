@@ -178,17 +178,14 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
 }
 "#;
 
-#[test]
-fn generate_parameters_struct() {
+/// Builds the library of `generator` into a temporary directory and returns
+/// the `peppygen/parameters.py` it wrote.
+fn build_parameters_py(generator: PythonGenerator) -> String {
     let temp_dir = TempDir::new().unwrap();
-    let node_config: NodeConfig =
-        serde_json5::from_str(NODE_EXAMPLE).expect("failed to parse NODE_EXAMPLE into NodeConfig");
 
     let output_dir = temp_dir.path().join("output");
     fs::create_dir_all(&output_dir).unwrap();
 
-    let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.execution.parameters);
     generator
         .build(
             &output_dir,
@@ -203,7 +200,17 @@ fn generate_parameters_struct() {
         "Expected parameters.py to be generated"
     );
 
-    let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.py");
+    fs::read_to_string(&parameters_file).expect("failed to read parameters.py")
+}
+
+#[test]
+fn generate_parameters_struct() {
+    let node_config: NodeConfig =
+        serde_json5::from_str(NODE_EXAMPLE).expect("failed to parse NODE_EXAMPLE into NodeConfig");
+
+    let mut generator = PythonGenerator::new();
+    generator.set_parameters(node_config.execution.parameters);
+    let generated = build_parameters_py(generator);
 
     assert_contains_all(
         &generated,
@@ -249,30 +256,12 @@ fn generate_parameters_struct() {
 
 #[test]
 fn generate_parameters_struct_avoids_nested_class_name_collisions() {
-    let temp_dir = TempDir::new().unwrap();
     let node_config: NodeConfig = serde_json5::from_str(NESTED_CLASS_COLLISION_NODE_EXAMPLE)
         .expect("failed to parse NESTED_CLASS_COLLISION_NODE_EXAMPLE into NodeConfig");
 
-    let output_dir = temp_dir.path().join("output");
-    fs::create_dir_all(&output_dir).unwrap();
-
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.execution.parameters);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-
-    let parameters_file = output_dir.join("peppygen").join("parameters.py");
-    assert!(
-        parameters_file.exists(),
-        "Expected parameters.py to be generated"
-    );
-
-    let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.py");
+    let generated = build_parameters_py(generator);
 
     assert_contains_all(
         &generated,
@@ -297,28 +286,8 @@ fn generate_parameters_struct_avoids_nested_class_name_collisions() {
 
 #[test]
 fn generate_empty_parameters_struct() {
-    let temp_dir = TempDir::new().unwrap();
-
-    let output_dir = temp_dir.path().join("output");
-    fs::create_dir_all(&output_dir).unwrap();
-
-    let generator = PythonGenerator::new();
-    // Don't set any parameters - use the default empty parameters
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-
-    let parameters_file = output_dir.join("peppygen").join("parameters.py");
-    assert!(
-        parameters_file.exists(),
-        "Expected parameters.py to be generated"
-    );
-
-    let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.py");
+    // No parameters are set, so the generator uses the default empty ones.
+    let generated = build_parameters_py(PythonGenerator::new());
 
     // Even with no parameters, we should have a valid Parameters dataclass
     // with a from_dict classmethod
