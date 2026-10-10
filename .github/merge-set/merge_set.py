@@ -1265,10 +1265,12 @@ def render_set_dashboard(
         DASHBOARD_MARKER,
         f"### Set `{state.name}`",
         "",
-        f"These pull requests share the branch name `{state.name}`. The CI of "
-        "each hub pull request tests it with the others, so they merge "
-        "together: the `merge-set` check keeps the merge button of each one "
-        "blocked. Tick the first box below to merge all of them.",
+        (
+            f"These pull requests share the branch name `{state.name}`. The CI of "
+            "each hub pull request tests it with the others, so they merge "
+            "together: the `merge-set` check keeps the merge button of each one "
+            "blocked. Tick the first box below to merge all of them."
+        ),
         "",
         "| Repository | Pull request | Head | CI | State |",
         "| --- | --- | --- | --- | --- |",
@@ -1335,14 +1337,18 @@ def readiness_lines(blockers: Sequence[Blocker]) -> list[str]:
     or what blocks it."""
     if not blockers:
         return [
-            "**Ready to merge.** Each pull request is approved, its required "
-            f"checks passed, and {CURRENT_HUB_RUNS}."
+            (
+                "**Ready to merge.** Each pull request is approved, its required "
+                f"checks passed, and {CURRENT_HUB_RUNS}."
+            )
         ]
     hard = blockers_for(blockers, admin=True)
     if not hard:
         return [
-            "**Ready to merge for an admin.** Each required check passed and "
-            f"{CURRENT_HUB_RUNS}, but approvals are missing. {ADMIN_WAIVER}",
+            (
+                "**Ready to merge for an admin.** Each required check passed and "
+                f"{CURRENT_HUB_RUNS}, but approvals are missing. {ADMIN_WAIVER}"
+            ),
             "",
             *(f"- {blocker.text}" for blocker in blockers),
         ]
@@ -1493,8 +1499,10 @@ def render_merge_report(
         return "\n".join(lines) + "\n"
     failure = outcome.failure
     lines = [
-        f"The merge of the set `{set_name}`, which {mention(requesters)} asked "
-        "for, stopped:",
+        (
+            f"The merge of the set `{set_name}`, which {mention(requesters)} asked "
+            "for, stopped:"
+        ),
         "",
         *merged_lines,
         f"- {failure.pull_request.label} did not merge: {failure.reason}",
@@ -1503,9 +1511,11 @@ def render_merge_report(
             for pull_request in outcome.not_tried
         ),
         "",
-        "The pull requests that did not merge are blocked again. Remove the "
-        "cause, then merge the rest: tick the box of their merge-set comment "
-        "again, or, when one pull request is left alone, use its merge button.",
+        (
+            "The pull requests that did not merge are blocked again. Remove the "
+            "cause, then merge the rest: tick the box of their merge-set comment "
+            "again, or, when one pull request is left alone, use its merge button."
+        ),
     ]
     return "\n".join(lines) + "\n"
 
