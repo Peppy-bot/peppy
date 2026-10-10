@@ -292,21 +292,13 @@ fn render_dep_link(
     for topic in &spec.topics {
         let member = dep_member_name(link_id, &topic.module_link, &topic.name);
         let module_ident = claim_member_name(link_id, &member, &mut owners)?;
-        members.push(render_dep_topic(
-            generator,
-            link_id,
-            &spec.producer_name,
-            topic,
-            &target,
-            module_ident,
-        )?);
+        members.push(render_dep_topic(generator, topic, &target, module_ident)?);
     }
     for service in &spec.services {
         let member = dep_member_name(link_id, &service.module_link, &service.name);
         let module_ident = claim_member_name(link_id, &member, &mut owners)?;
         members.push(render_dep_service(
             generator,
-            link_id,
             &spec.producer_name,
             service,
             &target,
@@ -318,7 +310,6 @@ fn render_dep_link(
         let module_ident = claim_member_name(link_id, &member, &mut owners)?;
         members.push(render_dep_action(
             generator,
-            link_id,
             &spec.producer_name,
             action,
             &target,
@@ -415,8 +406,6 @@ fn render_dep_link(
 
 fn render_dep_topic(
     generator: &mut RustGenerator,
-    _link_id: &str,
-    _producer_name: &str,
     spec: &DepTopicSpec,
     target: &TokenStream,
     module_ident: Ident,
@@ -517,7 +506,6 @@ fn render_dep_topic(
 
 fn render_dep_service(
     generator: &mut RustGenerator,
-    _link_id: &str,
     producer_name: &str,
     spec: &DepServiceSpec,
     target: &TokenStream,
@@ -720,7 +708,6 @@ fn render_dep_service(
 
 fn render_dep_action(
     generator: &mut RustGenerator,
-    _link_id: &str,
     producer_name: &str,
     spec: &DepActionSpec,
     target: &TokenStream,
