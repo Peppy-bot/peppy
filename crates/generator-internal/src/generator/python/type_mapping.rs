@@ -195,57 +195,33 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn collect_fields_rejects_python_identifier_collisions() {
-        let format: MessageFormat = serde_json5::from_str(
-            r#"
-            {
+    #[rstest::rstest]
+    #[case::flat(
+        r#"
+        {
+            "foo-bar": "u8",
+            foo_bar: "u8"
+        }
+        "#,
+        "Message"
+    )]
+    #[case::nested(
+        r#"
+        {
+            status: {
+                $type: "object",
                 "foo-bar": "u8",
                 foo_bar: "u8"
             }
-            "#,
-        )
-        .unwrap();
-
-        let mut nested = Vec::new();
-        let err = match collect_fields_from_format(&format, "Message", &mut nested) {
-            Ok(_) => panic!("expected FieldNameNormalizationCollision"),
-            Err(err) => err,
-        };
-        match err {
-            Error::FieldNameNormalizationCollision {
-                language,
-                context,
-                normalization,
-                normalized,
-                first_field,
-                second_field,
-            } => {
-                assert_eq!(language, PeppygenLanguage::Python);
-                assert_eq!(context, "Message");
-                assert_eq!(normalization, "python identifier");
-                assert_eq!(normalized, "foo_bar");
-                assert_eq!(first_field, "foo-bar");
-                assert_eq!(second_field, "foo_bar");
-            }
-            other => panic!("expected FieldNameNormalizationCollision, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn collect_fields_rejects_nested_python_identifier_collisions() {
-        let format: MessageFormat = serde_json5::from_str(
-            r#"
-            {
-                status: {
-                    $type: "object",
-                    "foo-bar": "u8",
-                    foo_bar: "u8"
-                }
-            }
-            "#,
-        )
-        .unwrap();
+        "#,
+        "MessageStatus"
+    )]
+    fn collect_fields_rejects_python_identifier_collisions(
+        #[case] format: &str,
+        #[case] expected_context: &str,
+    ) {
+        let format: MessageFormat = serde_json5::from_str(format).unwrap();
 
         let mut nested = Vec::new();
         let err = match collect_fields_from_format(&format, "Message", &mut nested) {
@@ -262,7 +238,7 @@ mod tests {
                 second_field,
             } => {
                 assert_eq!(language, PeppygenLanguage::Python);
-                assert_eq!(context, "MessageStatus");
+                assert_eq!(context, expected_context);
                 assert_eq!(normalization, "python identifier");
                 assert_eq!(normalized, "foo_bar");
                 assert_eq!(first_field, "foo-bar");

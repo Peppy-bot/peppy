@@ -321,56 +321,33 @@ mod tests {
         map_message_format("test", Some(&format)).expect("optional pointer types generate");
     }
 
-    #[test]
-    fn reject_colliding_normalized_field_names_for_rust() {
-        let format: MessageFormat = serde_json5::from_str(
-            r#"
-            {
+    #[rstest::rstest]
+    #[case::flat(
+        r#"
+        {
+            "foo-bar": "u8",
+            foo_bar: "u8"
+        }
+        "#,
+        "message_format"
+    )]
+    #[case::nested(
+        r#"
+        {
+            status: {
+                $type: "object",
                 "foo-bar": "u8",
                 foo_bar: "u8"
             }
-            "#,
-        )
-        .unwrap();
-
-        let err = match map_message_format("test", Some(&format)) {
-            Ok(_) => panic!("expected FieldNameNormalizationCollision"),
-            Err(err) => err,
-        };
-        match err {
-            Error::FieldNameNormalizationCollision {
-                language,
-                context,
-                normalization,
-                normalized,
-                first_field,
-                second_field,
-            } => {
-                assert_eq!(language, PeppygenLanguage::Rust);
-                assert_eq!(context, "message_format");
-                assert_eq!(normalization, "rust identifier");
-                assert_eq!(normalized, "foo_bar");
-                assert_eq!(first_field, "foo-bar");
-                assert_eq!(second_field, "foo_bar");
-            }
-            other => panic!("expected FieldNameNormalizationCollision, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn reject_nested_colliding_normalized_field_names_for_rust() {
-        let format: MessageFormat = serde_json5::from_str(
-            r#"
-            {
-                status: {
-                    $type: "object",
-                    "foo-bar": "u8",
-                    foo_bar: "u8"
-                }
-            }
-            "#,
-        )
-        .unwrap();
+        "#,
+        "message_format.status"
+    )]
+    fn reject_colliding_normalized_field_names_for_rust(
+        #[case] format: &str,
+        #[case] expected_context: &str,
+    ) {
+        let format: MessageFormat = serde_json5::from_str(format).unwrap();
 
         let err = match map_message_format("test", Some(&format)) {
             Ok(_) => panic!("expected FieldNameNormalizationCollision"),
@@ -386,7 +363,7 @@ mod tests {
                 second_field,
             } => {
                 assert_eq!(language, PeppygenLanguage::Rust);
-                assert_eq!(context, "message_format.status");
+                assert_eq!(context, expected_context);
                 assert_eq!(normalization, "rust identifier");
                 assert_eq!(normalized, "foo_bar");
                 assert_eq!(first_field, "foo-bar");
