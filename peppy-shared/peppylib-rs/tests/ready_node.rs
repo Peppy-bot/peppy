@@ -9,7 +9,6 @@ use peppylib::{
     types::Payload,
 };
 use std::sync::Arc;
-use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ready_node() {
@@ -24,9 +23,6 @@ async fn ready_node() {
     )
     .await
     .expect("failed to start ready service");
-
-    // Allow the service to fully establish its listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let request_payload = Payload::from_static(b"ready");
 

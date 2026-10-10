@@ -9,7 +9,6 @@ use peppylib::{
     services::health::listen_for_node_health,
 };
 use std::sync::Arc;
-use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_health_request_response_roundtrip() {
@@ -25,9 +24,6 @@ async fn node_health_request_response_roundtrip() {
     )
     .await
     .expect("failed to start health service");
-
-    // Allow the service to fully establish its listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let request = NodeHealthRequest::new();
     let request_payload = request.encode().expect("failed to encode health request");

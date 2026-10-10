@@ -10,7 +10,6 @@ use peppylib::{
     services::endpoints::listen_for_node_endpoints,
 };
 use std::sync::Arc;
-use std::time::Duration;
 
 fn announced(label: &str, scheme: &str, address: &str, path: &str) -> AnnouncedEndpoint {
     AnnouncedEndpoint {
@@ -43,9 +42,6 @@ async fn node_endpoints_request_response_roundtrip() {
     )
     .await
     .expect("failed to start endpoints service");
-
-    // Allow the service to fully establish its listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let request_payload = NodeEndpointsRequest::new()
         .encode()

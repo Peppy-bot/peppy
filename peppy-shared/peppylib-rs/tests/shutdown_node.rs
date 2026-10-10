@@ -26,9 +26,6 @@ async fn shutdown_node() {
     .await
     .expect("failed to start shutdown service");
 
-    // Allow the service to fully establish its listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     // Send a shutdown request (payload can be empty or contain shutdown info)
     let request_payload = Payload::from_static(b"shutdown");
 
