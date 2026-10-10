@@ -5,7 +5,7 @@ use peppygen::emitted_topics::message_stream;
 use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
 use peppylib::runtime::CancellationToken;
 
-/// Emits a "hello world count X" message every 3 seconds, starting immediately.
+/// Emits a "hello {name} count X" message every 3 seconds, starting immediately.
 /// The loop runs until the cancellation token is triggered.
 async fn emit_hello_world_loop(runner: Arc<NodeRunner>, token: CancellationToken, name: String) {
     // Declare the publisher once; every publish below is then lock-free.
