@@ -392,6 +392,18 @@ mod tests {
     }
 
     #[test]
+    fn a_ranged_integer_refusal_names_the_field_and_the_range() {
+        assert_eq!(
+            value_u16(&json!(-1), "gain").unwrap_err(),
+            "`gain` is not an integer between 0 and 65535"
+        );
+        assert_eq!(
+            value_i32(&json!("1"), "offset").unwrap_err(),
+            "`offset` is not an integer between -2147483648 and 2147483647"
+        );
+    }
+
+    #[test]
     fn non_finite_floats_have_no_json_rendering() {
         assert_eq!(float_to_json(1.5).expect("finite"), json!(1.5));
         assert!(float_to_json(f64::NAN).is_err());
