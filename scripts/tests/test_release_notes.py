@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -11,6 +14,7 @@ import respx
 from functions.github import RepoSlug
 from functions.release_notes import (
     ReleaseNotesInput,
+    extract_release_date,
     fetch_release_body_html,
     generate_release_notes_file,
     release_notes_file,
@@ -96,3 +100,54 @@ def test_fetch_release_body_html_falls_back_to_the_markdown_body(
     body_html = fetch_release_body_html(github_client, 42, SLUG, markdown_body=body)
 
     assert body_html == expected
+
+
+@pytest.mark.parametrize(
+    ("details", "expected"),
+    [
+        pytest.param(
+            {
+                "published_at": "2026-09-25T10:00:00Z",
+                "created_at": "2026-09-24T09:00:00Z",
+            },
+            datetime.date(2026, 9, 25),
+            id="published",
+        ),
+        # A draft has no publication date yet.
+        pytest.param(
+            {"published_at": None, "created_at": "2026-09-24T09:00:00Z"},
+            datetime.date(2026, 9, 24),
+            id="created",
+        ),
+        pytest.param(
+            {"published_at": "not a date", "created_at": "2026-09-24T09:00:00Z"},
+            datetime.date(2026, 9, 24),
+            id="unreadable-published",
+        ),
+    ],
+)
+def test_extract_release_date_reads_the_first_usable_date(
+    details: dict[str, object], expected: datetime.date
+) -> None:
+    assert extract_release_date(details) == expected
+
+
+class _FrozenDate(datetime.date):
+    @classmethod
+    def today(cls) -> _FrozenDate:
+        return cls(2026, 10, 10)
+
+
+class _FrozenDateTime(datetime.datetime):
+    @classmethod
+    def now(cls, tz: datetime.tzinfo | None = None) -> _FrozenDateTime:
+        return cls(2026, 10, 10, 12, 0, tzinfo=tz)
+
+
+def test_extract_release_date_falls_back_to_the_local_date_of_today() -> None:
+    # The clock the module reads is frozen, so the date of today is known.
+    frozen = SimpleNamespace(date=_FrozenDate, datetime=_FrozenDateTime)
+    with patch("functions.release_notes.datetime", frozen):
+        found = extract_release_date({"published_at": None, "created_at": "nope"})
+
+    assert found == datetime.date(2026, 10, 10)
