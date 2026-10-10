@@ -414,16 +414,8 @@ pub(crate) fn normalize_repo_entries(
         }
     }
 
-    let ids_before: Vec<u64> = repos
-        .iter()
-        .map(|e| repo_entry_id(e).unwrap_or(0))
-        .collect();
-    repos.sort_by_key(|e| repo_entry_id(e).unwrap_or(0));
-    let ids_after: Vec<u64> = repos
-        .iter()
-        .map(|e| repo_entry_id(e).unwrap_or(0))
-        .collect();
-    if ids_before != ids_after {
+    if !repos.is_sorted_by_key(|e| repo_entry_id(e).unwrap_or(0)) {
+        repos.sort_by_key(|e| repo_entry_id(e).unwrap_or(0));
         needs_write = true;
     }
 
