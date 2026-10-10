@@ -597,3 +597,33 @@ async fn discovery_and_the_user_request_share_the_tokio_budget() {
     assert_deadline_error(result, false);
     assert_eq!(Instant::now(), started + BUDGET);
 }
+
+#[tokio::test(start_paused = true)]
+async fn discovery_that_spends_the_whole_budget_times_out_without_a_user_request() {
+    let handle = mock_handle().await;
+    let queryable = listen(&handle).await;
+    let started = Instant::now();
+    let wake = Arc::new(CallWake::default());
+    let mut call = Box::pin(ServiceMessenger::poll(
+        &handle,
+        CORE,
+        "deadline_caller",
+        target(),
+        SERVICE,
+        ServiceTarget::Any,
+        Payload::new(),
+        BUDGET,
+    ));
+    assert!(poll_once(call.as_mut(), &wake).is_pending());
+    // The transport answers the discovery probe. The caller resumes with that
+    // reply in hand only once its whole budget has passed, so discovery wins
+    // the pin but leaves nothing for the user request.
+    wake.0.notified().await;
+    advance(BUDGET).await;
+    let Poll::Ready(result) = poll_once(call.as_mut(), &wake) else {
+        panic!("a spent budget must end the call after discovery");
+    };
+    assert_deadline_error(result, true);
+    assert_eq!(Instant::now(), started + BUDGET);
+    assert_no_request(&handle, &queryable).await;
+}

@@ -1,5 +1,5 @@
-use super::discovery::discover_producer;
-use super::{DISCOVERY_TIMEOUT, MessengerHandle, generate_short_id};
+use super::discovery::{budget_left_after_discovery, discover_producer};
+use super::{MessengerHandle, generate_short_id};
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;
 use crate::runtime::{TaskHandle, spawn};
@@ -421,35 +421,13 @@ impl ServiceMessenger {
                     to_target.clone(),
                     to_service_name,
                 )?;
-                // Discovery is capped at DISCOVERY_TIMEOUT or the caller's
-                // response budget, whichever is shorter; a tight
-                // `response_timeout` still fails fast against unreachable
-                // targets, while a generous one lets peer-mode gossip discovery
-                // settle (see `discover_producer`).
-                let discovery_timeout = response_timeout
-                    .map(|t| t.min(DISCOVERY_TIMEOUT))
-                    .unwrap_or(DISCOVERY_TIMEOUT);
-                discover_producer(messenger, &probe_sender, discovery_timeout).await?
+                discover_producer(messenger, &probe_sender, response_timeout).await?
             }
         };
 
-        // Discovery counts against the caller's single end-to-end budget;
-        // pass only the remaining slice to `poll_service` so a tight
-        // `response_timeout` can't be silently doubled by a slow probe.
-        let elapsed = started_at.elapsed();
-        let remaining_budget = match response_timeout {
-            Some(total) => {
-                let remaining = total.saturating_sub(elapsed);
-                if remaining.is_zero() {
-                    return Err(Error::ServiceTimeout {
-                        instance_id: Some(resolved.instance_id.clone()),
-                        service_name: to_service_name.to_string(),
-                    });
-                }
-                Some(remaining)
-            }
-            None => None,
-        };
+        let remaining_budget = response_timeout
+            .map(|total| budget_left_after_discovery(total, started_at, &resolved, to_service_name))
+            .transpose()?;
 
         let sender = ServiceTarget::Producer(&resolved).wire_sender(
             bound_core_node,

@@ -1,4 +1,4 @@
-use super::{MessengerHandle, PROBE_TIMEOUT};
+use super::{DISCOVERY_TIMEOUT, MessengerHandle, PROBE_TIMEOUT};
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;
 use crate::types::Payload;
@@ -29,11 +29,19 @@ use tokio::time::{Duration, Instant};
 /// real-world safety hazard (e.g. two manipulators both executing the same
 /// goal). Discovery pins the consumer to one producer so only that
 /// producer's handler runs.
+///
+/// Discovery is capped at [`DISCOVERY_TIMEOUT`] or `caller_budget`,
+/// whichever is shorter: a tight caller budget still fails fast against
+/// unreachable targets, while a generous one lets peer-mode gossip discovery
+/// settle. A caller with no budget of its own (`None`) gets the whole
+/// [`DISCOVERY_TIMEOUT`].
 pub(super) async fn discover_producer(
     messenger: &MessengerHandle,
     probe_sender: &ServiceWireSender,
-    discovery_timeout: Duration,
+    caller_budget: Option<Duration>,
 ) -> Result<ProducerRef> {
+    let discovery_timeout =
+        caller_budget.map_or(DISCOVERY_TIMEOUT, |budget| budget.min(DISCOVERY_TIMEOUT));
     // `poll_service` itself retries on a peer-mode cold-start miss (the probe's
     // `QueryTarget::All` finalizing with no reply before discovery has settled),
     // bounded by `discovery_timeout`, so a single probe call here waits for a
@@ -51,6 +59,27 @@ pub(super) async fn discover_producer(
         response.core_node(),
         response.instance_id(),
     ))
+}
+
+/// Returns the part of the caller's end-to-end budget `total` that is left
+/// for the real request after a discovery that started at `started_at`.
+/// Discovery counts against that single budget, so a slow probe cannot
+/// silently double a tight one. A spent budget is a [`Error::ServiceTimeout`]
+/// that names the producer discovery resolved.
+pub(super) fn budget_left_after_discovery(
+    total: Duration,
+    started_at: Instant,
+    resolved: &ProducerRef,
+    service_name: &str,
+) -> Result<Duration> {
+    let remaining = total.saturating_sub(started_at.elapsed());
+    if remaining.is_zero() {
+        return Err(Error::ServiceTimeout {
+            instance_id: Some(resolved.instance_id.clone()),
+            service_name: service_name.to_string(),
+        });
+    }
+    Ok(remaining)
 }
 
 /// Probe `sender` once and classify reachability. The probe is auto-answered by

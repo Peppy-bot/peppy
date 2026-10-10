@@ -1,9 +1,7 @@
-use super::discovery::discover_producer;
+use super::discovery::{budget_left_after_discovery, discover_producer};
 use super::generate_short_id;
 use super::topics::Subscription;
-use super::{
-    DISCOVERY_TIMEOUT, MessengerHandle, ServiceEndpoint, ServiceResponder, TopicPublisher,
-};
+use super::{MessengerHandle, ServiceEndpoint, ServiceResponder, TopicPublisher};
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;
 use crate::runtime::{CancellationToken, TaskHandle, spawn};
@@ -814,12 +812,7 @@ impl ActionMessenger {
                     to_target.clone(),
                     to_action_name,
                 )?;
-                // Cap discovery at DISCOVERY_TIMEOUT or the caller's goal budget,
-                // whichever is shorter: a tight `goal_timeout` still fails fast
-                // against unreachable producers, while a generous one lets
-                // peer-mode gossip discovery settle (see `discover_producer`).
-                let discovery_timeout = goal_timeout.min(DISCOVERY_TIMEOUT);
-                discover_producer(messenger, &probe_sender.goal_service(), discovery_timeout)
+                discover_producer(messenger, &probe_sender.goal_service(), Some(goal_timeout))
                     .await?
             }
         };
@@ -847,16 +840,8 @@ impl ActionMessenger {
         let producer_gone =
             ProducerGoneWatch::spawn(liveliness_watch, messenger.clone(), sender.clone());
 
-        // Discovery counts against the caller's single end-to-end budget;
-        // pass only the remaining slice to `poll_service` so a tight
-        // `goal_timeout` can't be silently doubled by a slow probe.
-        let remaining_goal_budget = goal_timeout.saturating_sub(started_at.elapsed());
-        if remaining_goal_budget.is_zero() {
-            return Err(Error::ServiceTimeout {
-                instance_id: Some(resolved.instance_id.clone()),
-                service_name: to_action_name.to_string(),
-            });
-        }
+        let remaining_goal_budget =
+            budget_left_after_discovery(goal_timeout, started_at, &resolved, to_action_name)?;
         let goal_response = messenger
             .poll_service(
                 &sender.goal_service(),
