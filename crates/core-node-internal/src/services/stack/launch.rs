@@ -397,7 +397,6 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         launch_id: goal.launch_id.clone(),
         rebuild: goal.rebuild,
     };
-    // Build lookup map
     let planned_by_key: HashMap<NodeKey, PlannedDeployment> = planned
         .into_iter()
         .map(|item| (NodeKey::new(&item.node_name, &item.node_tag), item))

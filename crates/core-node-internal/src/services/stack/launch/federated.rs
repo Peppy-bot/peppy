@@ -1,6 +1,7 @@
-//! Coordinator side of a federated launch: preflight, partitioning, and the
-//! wave dispatch that keeps consumers starting after their producers across
-//! machine boundaries.
+//! Coordinator side of a federated stack change: the preflight that reserves
+//! every participant and hands each the pins of its deployments, the release
+//! of those reservations, and, in `dispatch`, the goals and slice requests
+//! that drive each participant's share.
 //!
 //! # Reserve, do not poll
 //!

@@ -184,9 +184,8 @@ pub(in crate::services::stack) async fn start_node_instances(
         // coordinator holds both and has already checked them against each
         // other, so it sends that verdict along with the request. A
         // same-daemon pair carries none, and the receiver's own manifests
-        // decide as before.
-        // `host` is the machine running the instance that receives the goal;
-        // `peer` is the endpoint on the other end of the pair.
+        // decide it. `host` is the endpoint whose instance receives the
+        // goal; `peer` is the endpoint on the other end of the pair.
         let pair_target =
             |host: &daemon_config::launcher::PlannedPairEndpoint,
              peer: &daemon_config::launcher::PlannedPairEndpoint| {

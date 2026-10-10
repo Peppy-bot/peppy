@@ -70,7 +70,7 @@ impl<'a> MakeWriter<'a> for LogCapture {
 /// `tracing-core`'s callsite-interest cache computed over ALL registered
 /// subscribers. With exactly one registered dispatcher, its `has_just_one`
 /// fast path resolves a newly-hit callsite's interest against the *hitting
-/// thread's* default instead — so a subscriber-less worker thread that fires
+/// thread's* default instead, so a subscriber-less worker thread that fires
 /// a shared callsite first would cache it never-enabled and silence a
 /// concurrently-running test's `LogCapture` of that same callsite.
 pub fn quiet_subscriber_guard() -> tracing::subscriber::DefaultGuard {

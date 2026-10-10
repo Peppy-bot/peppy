@@ -262,13 +262,11 @@ pub(in crate::services::stack) async fn fail_and_clear_stack(
     reason
 }
 
-/// Output of [`validate_and_order_dependencies`]: a topological order
-/// of deployments to spawn, plus the resolved per-instance slot
-/// producers produced by the launcher's binding validator. The map is
-/// keyed by `consumer_instance_id`; each inner map is keyed by the
-/// consumer's manifest `link_id` and carries the slot's bound producers
-/// (validation guarantees every declared slot is bound, so an inner
-/// entry is never empty).
+/// The bound producers of every consumer instance's slots, keyed by
+/// `consumer_instance_id` and then by the consumer's manifest `link_id`, as
+/// the launcher's binding validator resolves them. Every declared slot of an
+/// instance appears: a `zero_or_more` slot with no binding and a vacant
+/// `zero_or_one` slot appear with an empty set.
 type ResolvedSlotBindings = std::collections::BTreeMap<String, config::runtime::SlotBindings>;
 
 /// Validates dependencies and computes a stable topological order.

@@ -105,7 +105,7 @@ where
 }
 
 /// Timeout behavior for phases whose futures are cancellation-safe via `Drop`
-/// (currently: add, build).
+/// (add and build).
 async fn run_phase_drop_on_timeout<F, T>(
     phase: Pin<Box<F>>,
     activity_notify: Arc<Notify>,
@@ -151,8 +151,8 @@ pub(super) async fn run_phase_cancel_on_timeout<F, T>(
 where
     F: std::future::Future<Output = T> + ?Sized,
 {
-    // `sleep_until(past-instant)` resolves immediately, so we model "no
-    // deadline" as a far-future sleep and let idle/phase race win.
+    // With no deadline this arm waits on a future that never resolves, so
+    // only the idle watcher or the phase can end the race.
     let deadline_sleep = async {
         match change_deadline {
             Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -170,9 +170,8 @@ where
 
     // Timeout fired. Ask the phase to tear itself down, then drive it to
     // completion so its cleanup (kill child, remove `Starting` entry, delete
-    // instance dir) actually runs. If cleanup stalls past the budget we drop
-    // the future as a last resort; still strictly better than today, since
-    // the run phase would have been dropped immediately in that branch.
+    // instance dir) actually runs. If cleanup stalls past the budget, the
+    // future is dropped as a last resort.
     cancel_token.cancel();
     let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, phase.as_mut()).await;
 

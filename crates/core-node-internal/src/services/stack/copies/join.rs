@@ -152,12 +152,13 @@ async fn join_inner(
     .into_iter()
     .map(|item| (NodeKey::new(&item.node_name, &item.node_tag), item))
     .collect();
+    // `copy` is held past the record's move into the launch: a failed
+    // delivery puts the sets this copy's instances joined back the way they
+    // were.
     let record = StackCopy {
         record: copy_in_start_order(copy.clone(), &planned, &ordered),
         core_node: host,
     };
-    // Held past the record's move into the launch: a failed delivery puts the
-    // sets this copy's instances joined back the way they were.
     let phase = PhaseGoal {
         launch_id: active.launch_id.clone(),
         rebuild: false,

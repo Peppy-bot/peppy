@@ -130,9 +130,9 @@ pub(in crate::services::stack) async fn parse_launcher_config(
 /// asked for, then resolves every instance to the core node it runs on.
 ///
 /// The coordinator owns this, not the CLI, and it owns the EXPANSION as well as
-/// the check. Only the daemon has the resolved document — a `Repository`
+/// the check. Only the daemon has the resolved document: a `Repository`
 /// launcher (the shape every hub launcher uses) is read from the daemon's own
-/// repo cache and the CLI may never have seen it — so `--local` arrives as an
+/// repo cache, and the CLI may never have seen it. So `--local` arrives as an
 /// intent and is expanded here against what the document actually declares.
 /// Expanding it caller-side would work for a file launcher and silently do
 /// nothing for a repository one.
@@ -195,7 +195,7 @@ pub(in crate::services::stack) fn resolve_placements(
 ///
 /// The `--place` targets are VALIDATED here, not taken on trust. They arrived
 /// on the wire, and while the CLI checks what a user types, a daemon cannot
-/// assume its caller was the CLI — this is where an unchecked name would
+/// assume its caller was the CLI: this is where an unchecked name would
 /// otherwise enter the plan and be stamped onto every producer address.
 fn wire_core_node_links<'a>(
     placement: &PlacementSpec,
@@ -276,11 +276,10 @@ fn wire_core_node_links<'a>(
 ///
 /// `Fs` is a no-op; `Repository` looks up the launcher in the cache and, for git-sourced
 /// entries, materializes the checkout via `ensure_checkout`. Progress lines emitted by the
-/// (blocking) checkout STREAM to the launch feedback topic as they happen — a slow clone
-/// used to buffer them until the checkout returned, leaving the CLI watchdog staring at
-/// silence for the whole download. `activity_notify: None` is correct here: no daemon
-/// idle watcher runs during resolve; the streaming exists for the CLI watchdog, which
-/// resets on any published feedback.
+/// (blocking) checkout STREAM to the launch feedback topic as they happen, so a slow clone
+/// keeps the CLI watchdog fed for the whole download. `activity_notify: None` is correct
+/// here: no daemon idle watcher runs during resolve; the streaming exists for the CLI
+/// watchdog, which resets on any published feedback.
 async fn resolve_launcher_origin(
     ctx: &StackChangeContext,
     origin: &LauncherOrigin,
@@ -375,8 +374,8 @@ pub(in crate::services::stack) async fn resolve_deployments(
         // `resolve_launcher_origin` uses) so a slow clone shows live progress
         // instead of a silent stretch that trips the CLI watchdog. The
         // forwarder is drained before the "resolved" line below is published,
-        // preserving the old per-deployment ordering. Single channel, single
-        // consumer: lines stay in emission order.
+        // so each deployment's progress lines come before its "resolved"
+        // line. Single channel, single consumer: lines stay in emission order.
         let (feedback_tx, forwarder) = spawn_feedback_forwarder(
             &ctx.feedback_publisher,
             LaunchFeedbackStep::LauncherStep,
@@ -760,7 +759,7 @@ mod tests {
 
     /// The case the CLI cannot serve: `--local` against a launcher whose
     /// document only the coordinator has read. Expanding here is what makes
-    /// `peppy stack launch --local <name>` work at all — a repository launcher
+    /// `peppy stack launch --local <name>` work at all: a repository launcher
     /// is the shape every hub launcher uses, and the CLI never sees it.
     #[test]
     fn local_wires_every_declared_link_to_the_coordinator() {
@@ -820,7 +819,7 @@ mod tests {
     }
 
     /// Every declared link is wired here, so the only thing left to object to
-    /// is the extra one — which is what isolates this rule from the
+    /// is the extra one, which is what isolates this rule from the
     /// unwired-link check that runs before it.
     #[test]
     fn placing_a_link_the_launcher_does_not_declare_is_refused() {

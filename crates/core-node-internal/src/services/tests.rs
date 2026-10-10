@@ -194,7 +194,7 @@ async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
     );
 }
 
-/// Verifies the explicit `node_name` override still wins over the machine-uid default.
+/// Verifies the explicit `node_name` override wins over the machine-uid default.
 #[tokio::test]
 async fn core_node_explicit_name_overrides_machine_uid() {
     let messenger = create_mock_messenger().await;
@@ -284,7 +284,7 @@ async fn start_with_ready_rejects_a_second_start() {
 
 /// Boot refuses with `CoreNodeNameTaken` when a foreign daemon presence token
 /// already claims the same core-node name. The refusal must also happen before
-/// any destructive setup — the instances dir survives.
+/// any destructive setup: the instances dir survives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_refuses_to_boot_when_name_already_claimed() {
     let messenger = create_mock_messenger().await;
