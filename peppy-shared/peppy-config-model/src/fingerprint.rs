@@ -122,17 +122,8 @@ pub fn verify_codegen_fingerprint(
 /// 1. The config fingerprint (`peppy.json5.sha256`) in the peppygen output directory
 #[cfg(feature = "fingerprint_test_helpers")]
 pub fn create_codegen_fingerprint(peppy_config_path: &Path, output_path: &Path) {
-    let fingerprint_path = node_config_fingerprint_path(peppy_config_path, output_path);
-    if let Some(dir) = fingerprint_path.parent() {
-        fs::create_dir_all(dir).expect("fingerprint dir should be created");
-    }
-
-    // Create config fingerprint in peppygen output directory
-    let fingerprint = fingerprint_for_bytes(
-        &fs::read(peppy_config_path).expect("peppy config should be readable"),
-    );
-    fs::write(&fingerprint_path, format!("{fingerprint}\n"))
-        .expect("fingerprint should be written");
+    generate_node_config_fingerprint(peppy_config_path, output_path)
+        .expect("codegen fingerprint should be written");
 }
 
 /// Creates a config fingerprint file with incorrect content to test mismatch errors.
