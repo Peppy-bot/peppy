@@ -573,6 +573,46 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     );
 }
 
+/// An `--instance-id` that is not a valid name is refused with the config
+/// error of the name check. The node does not need to be in the stack: the
+/// preflight reaches the name check after it finds no such node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_refuses_an_instance_id_that_is_not_a_valid_name() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), serve.messenger())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let msg = NodeCommand {
+        command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
+            node_ref: Some(("absent_node".to_string(), "v1".to_string())),
+            node_name: None,
+            tag: None,
+            args: Vec::new(),
+            instance_id: Some("bad id".to_string()),
+            links: Vec::new(),
+            vacant_links: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect_err("node run must refuse an instance id that is not a valid name")
+    .to_string();
+
+    assert!(
+        msg.contains("Config error:") && msg.contains("Invalid name: bad id"),
+        "the refusal should be the config error of the name check. Got: {msg}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     // Mock messaging is sufficient: we run in-process node services for health/ready.
