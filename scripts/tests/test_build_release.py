@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -114,6 +116,61 @@ def test_run_local_with_an_empty_tag_raises_without_prompting(
     ):
         _run_local("")
     mock_prompt.assert_not_called()
+
+
+@contextmanager
+def _patched_dirty_local_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: bool
+) -> Iterator[tuple[MagicMock, MagicMock]]:
+    """Stand in for the collaborators of a local build in a checkout that has
+    uncommitted changes, where the user gives *answer* to the question.
+
+    Yields the prompt_yn and _build_all_targets mocks.
+    """
+    # The build changes into the checkout; undone after the test.
+    monkeypatch.chdir(tmp_path)
+    with (
+        patch("functions.build_release.need_cmd"),
+        patch("functions.build_release.get_repo_root", return_value=tmp_path),
+        patch("functions.build_release.has_uncommitted_changes", return_value=True),
+        patch("functions.build_release.prompt_yn", return_value=answer) as ask,
+        patch(
+            "functions.build_release.get_targets_for_platform",
+            return_value=["x86_64-unknown-linux-gnu"],
+        ),
+        patch("functions.build_release._build_all_targets", return_value=[]) as build,
+    ):
+        yield ask, build
+
+
+def test_run_local_builds_uncommitted_changes_the_user_accepts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _patched_dirty_local_build(tmp_path, monkeypatch, answer=True) as (
+        ask,
+        build,
+    ):
+        _run_local("v0.1.0")
+
+    ask.assert_called_once_with("Working tree has uncommitted changes. Continue?")
+    build.assert_called()
+
+
+def test_run_local_exits_before_building_uncommitted_changes_the_user_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with (
+        _patched_dirty_local_build(tmp_path, monkeypatch, answer=False) as (
+            ask,
+            build,
+        ),
+        pytest.raises(SystemExit) as exited,
+    ):
+        _run_local("v0.1.0")
+
+    assert exited.value.code == 1
+    ask.assert_called_once_with("Working tree has uncommitted changes. Continue?")
+    build.assert_not_called()
 
 
 # --- the command line ---
