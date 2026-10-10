@@ -63,7 +63,7 @@ use topics::{
     build_peer_topic_publisher, build_peer_topic_subscription, build_topic_publisher,
     consumed_to_target_expression,
 };
-use type_mapping::{render_tokens, unused_params_stmt};
+use type_mapping::render_tokens;
 
 /// Rust-specific implementation of the interface generator.
 #[derive(Default)]
@@ -1353,10 +1353,7 @@ impl LanguageGenerator for RustGenerator {
             );
             quote! { let request_payload = #serialize_block; }
         } else {
-            let suppress_unused = unused_params_stmt(&params);
-
             quote! {
-                #suppress_unused
                 let request_payload = peppylib::Payload::new();
             }
         };
