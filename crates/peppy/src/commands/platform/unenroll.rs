@@ -55,16 +55,13 @@ impl Command for UnenrollCommand {
         }
 
         if !self.local_only {
-            let mut api = session.api().map_err(|e| {
-                match e {
-                Error::AuthEngine(auth::AuthError::NotAuthenticated) => Error::Auth(
+            let Some(mut api) = session.signed_in_api()? else {
+                return Err(Error::Auth(
                     "not signed in; run `peppy platform login` to remove the peer on the platform, \
                      or pass --local-only to only delete the local enrollment"
                         .to_string(),
-                ),
-                other => other,
-            }
-            })?;
+                ));
+            };
             let removal = api.remove_peer(
                 &document.workspace_id,
                 &document.project_id,

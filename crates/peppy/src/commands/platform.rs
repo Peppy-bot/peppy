@@ -170,6 +170,17 @@ impl PlatformSession {
         Ok(PlatformApi::new(&self.http, &self.api_url, credential))
     }
 
+    /// The platform API as [`Self::api`] builds it, or `None` when there is
+    /// no session to sign it with. Any other failure stays an error, so a
+    /// session that cannot be read is never mistaken for the absence of one.
+    pub(crate) fn signed_in_api(&self) -> Result<Option<PlatformApi>> {
+        match self.api() {
+            Ok(api) => Ok(Some(api)),
+            Err(Error::AuthEngine(auth::AuthError::NotAuthenticated)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// This machine's enrollment, `None` when it is not enrolled. A present
     /// enrollment that cannot be read is an error that names `peppy platform
     /// enroll`.

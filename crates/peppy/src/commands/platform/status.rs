@@ -14,7 +14,7 @@ use crate::commands::platform::router::pending_change_lines;
 use crate::commands::platform::selection::{enrollment_note, selection_json};
 use crate::commands::platform::{PlatformSession, date_of, federation_is_managed};
 use crate::context::AppContext;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use auth::client::{PeerStatus, RouterPhase, RouterStatus};
 use auth::enrollment::Enrollment;
 use auth::{CertificateValidity, FederationIdentity, storage};
@@ -147,10 +147,8 @@ fn platform_report(
     session: &PlatformSession,
     enrollment: &Enrollment,
 ) -> Result<Option<PlatformReport>> {
-    let mut api = match session.api() {
-        Ok(api) => api,
-        Err(Error::AuthEngine(auth::AuthError::NotAuthenticated)) => return Ok(None),
-        Err(e) => return Err(e),
+    let Some(mut api) = session.signed_in_api()? else {
+        return Ok(None);
     };
     let document = &enrollment.document;
     let router = api.router_status(&document.workspace_id, &document.project_id)?;
@@ -497,5 +495,36 @@ mod tests {
         assert!(lines[2].contains("peppy service serve"), "{lines:?}");
         assert_eq!(nothing.absent_names(), ["no_session", "daemon_not_running"]);
         assert!(ALL_MEANS.absent_names().is_empty());
+    }
+
+    /// A session over `dir` whose platform API no test reaches: every test
+    /// below stops at the credentials file.
+    fn session_in(dir: &tempfile::TempDir) -> PlatformSession {
+        PlatformSession::resolve(Some(PeppyDirs::new(dir.path())), Some("http://127.0.0.1:9"))
+            .expect("session")
+    }
+
+    #[test]
+    fn the_platform_view_is_absent_without_a_session() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let report = platform_report(&session_in(&dir), &auth::test_support::enrollment());
+        assert!(matches!(report, Ok(None)));
+    }
+
+    /// A credentials file that cannot be read is not the absence of a
+    /// session, so the platform view is an error instead of left out.
+    #[test]
+    fn an_unreadable_session_is_an_error_of_the_platform_view() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let session = session_in(&dir);
+        let creds_dir = session.creds_path.parent().expect("credentials dir");
+        std::fs::create_dir_all(creds_dir).expect("mkdir conf");
+        std::fs::write(
+            &session.creds_path,
+            r#"{ session: { api_url: "http://x" } }"#,
+        )
+        .expect("write malformed creds");
+        let report = platform_report(&session, &auth::test_support::enrollment());
+        assert!(report.is_err());
     }
 }

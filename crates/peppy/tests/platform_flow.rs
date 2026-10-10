@@ -1505,13 +1505,10 @@ fn logout_clears_the_session_when_revocation_fails() {
     assert!(storage::load(&creds_path(&dir)).unwrap().session.is_none());
 }
 
-#[test]
-fn logout_heals_a_malformed_credentials_file() {
-    // A malformed (unversioned) credentials file fails to parse with
-    // `AuthError::Auth`. Logout treats that as "already logged out", but it must
-    // still rewrite the file to a clean default so the bad file does not linger.
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = creds_path(&dir);
+/// Writes a malformed (unversioned) credentials file under `dir`, which fails
+/// to parse with `AuthError::Auth`.
+fn write_malformed_credentials(dir: &tempfile::TempDir) {
+    let path = creds_path(dir);
     std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir conf");
     std::fs::write(
         &path,
@@ -1520,6 +1517,16 @@ fn logout_heals_a_malformed_credentials_file() {
             scope: "openid" } }"#,
     )
     .expect("write malformed creds");
+}
+
+#[test]
+fn logout_heals_a_malformed_credentials_file() {
+    // Logout treats a malformed credentials file as "already logged out", but it
+    // must still rewrite the file to a clean default so the bad file does not
+    // linger.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    write_malformed_credentials(&dir);
 
     LogoutCommand {
         // Never contacted: the malformed path returns "Not logged in" before any
@@ -1551,6 +1558,40 @@ fn whoami_runs_against_a_seeded_session() {
         }
         .execute(&ctx())
         .expect("whoami");
+    }
+}
+
+#[test]
+fn whoami_without_a_session_is_not_an_error() {
+    let server = MockServer::start();
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    // Both formats say "not authenticated" and succeed.
+    for json in [false, true] {
+        WhoamiCommand {
+            api_url: Some(server.base_url()),
+            json,
+            peppy_dirs: Some(dirs(&dir)),
+        }
+        .execute(&ctx())
+        .expect("whoami without a session");
+    }
+}
+
+#[test]
+fn whoami_with_a_malformed_credentials_file_is_an_error() {
+    let server = MockServer::start();
+    let dir = tempfile::tempdir().expect("temp dir");
+    write_malformed_credentials(&dir);
+
+    for json in [false, true] {
+        WhoamiCommand {
+            api_url: Some(server.base_url()),
+            json,
+            peppy_dirs: Some(dirs(&dir)),
+        }
+        .execute(&ctx())
+        .expect_err("an unreadable session is not the absence of one");
     }
 }
 

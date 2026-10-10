@@ -27,35 +27,30 @@ impl Command for WhoamiCommand {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
         let env_name = profile::build_env_name();
 
-        match session.api() {
-            Ok(mut api) => {
-                let principal = api.get_me()?;
-                // Read after the resolution of the credential, which refreshes
-                // and persists a token that is about to expire.
-                let expires_at = session.cached_session().map(|pc| pc.expires_at);
-                let now = storage::now_unix();
-                if self.json {
-                    print_json(env_name, &session.api_url, &principal, expires_at, now);
-                } else {
-                    print_human(env_name, &session.api_url, &principal, expires_at, now);
-                }
-                Ok(())
+        let Some(mut api) = session.signed_in_api()? else {
+            if self.json {
+                let doc = serde_json::json!({
+                    "authenticated": false,
+                    "profile": env_name,
+                    "api_url": session.api_url,
+                });
+                println!("{doc}");
+            } else {
+                println!("Not authenticated ({env_name}). Run `peppy platform login`.");
             }
-            Err(crate::error::Error::AuthEngine(auth::AuthError::NotAuthenticated)) => {
-                if self.json {
-                    let doc = serde_json::json!({
-                        "authenticated": false,
-                        "profile": env_name,
-                        "api_url": session.api_url,
-                    });
-                    println!("{doc}");
-                } else {
-                    println!("Not authenticated ({env_name}). Run `peppy platform login`.");
-                }
-                Ok(())
-            }
-            Err(e) => Err(e),
+            return Ok(());
+        };
+        let principal = api.get_me()?;
+        // Read after the resolution of the credential, which refreshes and
+        // persists a token that is about to expire.
+        let expires_at = session.cached_session().map(|pc| pc.expires_at);
+        let now = storage::now_unix();
+        if self.json {
+            print_json(env_name, &session.api_url, &principal, expires_at, now);
+        } else {
+            print_human(env_name, &session.api_url, &principal, expires_at, now);
         }
+        Ok(())
     }
 }
 
