@@ -281,10 +281,7 @@ impl ZenohWireFormat {
     /// Caller-side attachment bytes for a service query. Carries the request
     /// kind (UserRequest vs Probe) so probes can be discriminated from real
     /// requests without smuggling sentinels through the payload.
-    pub(crate) fn service_get_selector_attachment(
-        _s: &ServiceWireSender,
-        kind: ServiceQueryKind,
-    ) -> bytes::Bytes {
+    pub(crate) fn service_get_selector_attachment(kind: ServiceQueryKind) -> bytes::Bytes {
         ServiceQueryAttachment { kind }.encode()
     }
 

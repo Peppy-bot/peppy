@@ -867,7 +867,7 @@ impl MessengerBackend for ZenohAdapter {
         // refuses queries with no attachment, which is what makes the
         // mid-rollout failure mode loud (consumer sees ServiceUnreachable
         // instead of misclassifying the request as a default).
-        let attachment = ZenohWireFormat::service_get_selector_attachment(sender, kind);
+        let attachment = ZenohWireFormat::service_get_selector_attachment(kind);
 
         // The zenoh-side `.timeout(...)` is the query's wire lifetime, not
         // the caller's deadline; see `service_query_lifetime`.

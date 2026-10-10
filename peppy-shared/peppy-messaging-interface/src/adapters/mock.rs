@@ -301,7 +301,7 @@ impl MessengerBackend for MockAdapter {
         }
 
         let selector = ZenohWireFormat::service_get_selector(sender);
-        let attachment = ZenohWireFormat::service_get_selector_attachment(sender, kind);
+        let attachment = ZenohWireFormat::service_get_selector_attachment(kind);
         let timeout = service_query_lifetime(timeout);
 
         let (reply_tx, mut reply_rx) = mpsc::channel::<ServiceReply>(
