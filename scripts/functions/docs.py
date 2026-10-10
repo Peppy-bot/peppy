@@ -45,6 +45,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import TypeVar
@@ -114,14 +115,27 @@ _DIFF_HEADER = re.compile(r'^diff --git "?a/.*? "?b/(.*?)"?$', re.MULTILINE)
 EM_DASH = "\u2014"
 _NO_EM_DASH_PATTERN = f"^[^{EM_DASH}]*$"
 
-SEVERITY_BLOCKING = "blocking"
-SEVERITY_MINOR = "minor"
 
-STATUS_IMPLEMENTED = "implemented"
-STATUS_ALREADY_COVERED = "already_covered"
+class Severity(StrEnum):
+    """How much a docs gap weighs: only a blocking gap can stop a release."""
 
-VERDICT_CONFIRMED = "confirmed"
-VERDICT_REFUTED = "refuted"
+    BLOCKING = "blocking"
+    MINOR = "minor"
+
+
+class UpdateStatus(StrEnum):
+    """What the updater did about one gap."""
+
+    IMPLEMENTED = "implemented"
+    ALREADY_COVERED = "already_covered"
+
+
+class Verdict(StrEnum):
+    """The second opinion on one blocking gap."""
+
+    CONFIRMED = "confirmed"
+    REFUTED = "refuted"
+
 
 # Schema for the check verdict, enforced CLI-side via --json-schema. There is
 # deliberately no up-to-date boolean: pass/fail is derived from the list, so
@@ -137,7 +151,7 @@ _CHECK_SCHEMA: dict = {
                 "properties": {
                     "file": {"type": "string"},
                     "change": {"type": "string", "pattern": _NO_EM_DASH_PATTERN},
-                    "severity": {"enum": [SEVERITY_BLOCKING, SEVERITY_MINOR]},
+                    "severity": {"enum": list(Severity)},
                 },
                 "required": ["file", "change", "severity"],
                 "additionalProperties": False,
@@ -153,7 +167,7 @@ _CHECK_SCHEMA: dict = {
 _CONFIRM_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "verdict": {"enum": [VERDICT_CONFIRMED, VERDICT_REFUTED]},
+        "verdict": {"enum": list(Verdict)},
         "evidence": {"type": "string"},
     },
     "required": ["verdict", "evidence"],
@@ -172,9 +186,7 @@ _UPDATE_SCHEMA: dict = {
                 "properties": {
                     "file": {"type": "string"},
                     "change": {"type": "string"},
-                    "status": {
-                        "enum": [STATUS_IMPLEMENTED, STATUS_ALREADY_COVERED]
-                    },
+                    "status": {"enum": list(UpdateStatus)},
                 },
                 "required": ["file", "change", "status"],
                 "additionalProperties": False,
@@ -200,7 +212,7 @@ _REWORD_SCHEMA: dict = {
 class RequiredChange:
     file: str
     change: str
-    severity: str
+    severity: Severity
     # 1-based number of the code diff part (`split_diff`) showing the change
     # this gap covers; the updater hands Claude that part when closing it.
     diff_part: int = 1
@@ -212,11 +224,11 @@ class CheckResult:
 
     @property
     def blocking(self) -> tuple[RequiredChange, ...]:
-        return tuple(c for c in self.changes if c.severity == SEVERITY_BLOCKING)
+        return tuple(c for c in self.changes if c.severity == Severity.BLOCKING)
 
     @property
     def minor(self) -> tuple[RequiredChange, ...]:
-        return tuple(c for c in self.changes if c.severity == SEVERITY_MINOR)
+        return tuple(c for c in self.changes if c.severity == Severity.MINOR)
 
 
 @dataclass(frozen=True)
@@ -231,7 +243,7 @@ class GapReview:
 class UpdateOutcome:
     file: str
     change: str
-    status: str
+    status: UpdateStatus
 
 
 @dataclass(frozen=True)
@@ -247,7 +259,7 @@ class UpdateResult:
         otherwise a malfunctioning run would read as a clean verdict.
         """
         return bool(self.results) and all(
-            r.status == STATUS_ALREADY_COVERED for r in self.results
+            r.status == UpdateStatus.ALREADY_COVERED for r in self.results
         )
 
 
@@ -584,15 +596,16 @@ def _parse_check_response(payload: dict, diff_part: int = 1) -> CheckResult:
             )
         file = item.get("file")
         change = item.get("change")
-        severity = item.get("severity")
         if not isinstance(file, str) or not isinstance(change, str):
             raise ReleaseError(
                 f"claude verdict change entry missing file/change: {item!r}"
             )
-        if severity not in (SEVERITY_BLOCKING, SEVERITY_MINOR):
+        try:
+            severity = Severity(item.get("severity"))
+        except ValueError as err:
             raise ReleaseError(
                 f"claude verdict change entry has unknown severity: {item!r}"
-            )
+            ) from err
         if EM_DASH in change:
             raise ReleaseError(
                 f"claude verdict change entry holds an em-dash: {item!r}"
@@ -607,15 +620,18 @@ def _parse_check_response(payload: dict, diff_part: int = 1) -> CheckResult:
 
 def _parse_confirm_response(payload: dict) -> GapReview:
     """Validate the second opinion on a gap into a GapReview."""
-    verdict = payload.get("verdict")
-    if verdict not in (VERDICT_CONFIRMED, VERDICT_REFUTED):
-        raise ReleaseError(f"claude gap review has unknown verdict: {payload!r}")
+    try:
+        verdict = Verdict(payload.get("verdict"))
+    except ValueError as err:
+        raise ReleaseError(
+            f"claude gap review has unknown verdict: {payload!r}"
+        ) from err
     evidence = payload.get("evidence")
     if not isinstance(evidence, str):
         raise ReleaseError(
             f"claude gap review missing string 'evidence': {payload!r}"
         )
-    return GapReview(confirmed=verdict == VERDICT_CONFIRMED, evidence=evidence)
+    return GapReview(confirmed=verdict is Verdict.CONFIRMED, evidence=evidence)
 
 
 def _parse_update_response(payload: dict) -> UpdateResult:
@@ -638,15 +654,16 @@ def _parse_update_response(payload: dict) -> UpdateResult:
             )
         file = item.get("file")
         change = item.get("change")
-        status = item.get("status")
         if not isinstance(file, str) or not isinstance(change, str):
             raise ReleaseError(
                 f"claude update report entry missing file/change: {item!r}"
             )
-        if status not in (STATUS_IMPLEMENTED, STATUS_ALREADY_COVERED):
+        try:
+            status = UpdateStatus(item.get("status"))
+        except ValueError as err:
             raise ReleaseError(
                 f"claude update report entry has unknown status: {item!r}"
-            )
+            ) from err
         results.append(UpdateOutcome(file=file, change=change, status=status))
     return UpdateResult(results=tuple(results), summary=summary)
 
@@ -872,7 +889,7 @@ def _confirm_blocking(
     opinion on them would only spend Claude's time.
     """
     blocking = tuple(
-        dict.fromkeys(c for c in changes if c.severity == SEVERITY_BLOCKING)
+        dict.fromkeys(c for c in changes if c.severity == Severity.BLOCKING)
     )
     if not blocking:
         return changes
