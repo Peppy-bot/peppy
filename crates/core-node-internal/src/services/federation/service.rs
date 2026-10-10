@@ -157,27 +157,12 @@ fn admit_slice_change(
         .stack
         .try_begin_change()
         .map_err(|busy| FederationVerdict::refused(busy.to_string()))?;
-    if !holds_launch_slice(context, launch_id) {
+    if !context.ownership.holds_slice_of(launch_id) {
         return Err(FederationVerdict::refused(refuse_outside_slice(
             context, launch_id, undone,
         )));
     }
     Ok(mutation)
-}
-
-/// Whether this daemon's reservation and its current stack slice both belong
-/// to `launch_id`, driven by the coordinator holding the reservation.
-fn holds_launch_slice(context: &FederationServiceContext, launch_id: &str) -> bool {
-    let reserved = context.ownership.held_reservation();
-    let slice = context.ownership.slice();
-    reserved
-        .as_ref()
-        .zip(slice.as_ref())
-        .is_some_and(|((launch, coordinator), slice)| {
-            launch.as_str() == launch_id
-                && slice.launch_id == *launch
-                && slice.coordinator_core_node == *coordinator
-        })
 }
 
 /// Replaces set slots of instances this daemon runs, on behalf of the
