@@ -116,8 +116,8 @@ impl Ord for Name {
 }
 
 /// Fully-qualified producer address. The wire addresses a producer by the
-/// `(core_node, instance_id)` pair — `instance_id` alone is only unique
-/// within one stack, while the pair is unique across the whole mesh — so
+/// `(core_node, instance_id)` pair (`instance_id` alone is only unique
+/// within one stack, while the pair is unique across the whole mesh), so
 /// every reference to a producer below the validator carries both halves.
 /// The validator stamps `core_node` when it materializes bindings (the
 /// `validate_bindings` pass in the peppy `daemon-config` crate); after
@@ -428,8 +428,8 @@ pub struct NodeInstanceConfig {
     pub framework: ResolvedFramework,
     /// The pre-resolved producer for every `link_id` declared in the
     /// consumer manifest's `depends_on.{nodes,contracts}`. Built by the
-    /// validator from the launcher / CLI binding map — each target stamped
-    /// with the launching daemon's `core_node` — so the spawned node does
+    /// validator from the launcher / CLI binding map, each target stamped
+    /// with the launching daemon's `core_node`, so the spawned node does
     /// no re-resolution work and always holds a wire-complete producer
     /// address. Empty when the manifest has no `depends_on` entries.
     /// Read by the generated subscribe / poll / send_goal call sites via
@@ -578,7 +578,7 @@ fn default_shutdown_grace_secs() -> u64 {
 /// Node lifecycle settings the daemon resolves once (from `peppy_config.json5`)
 /// and ships to each spawned node. `daemon_grace_secs` is the grace period the
 /// node's daemon-liveness watchdog waits, after the daemon's heartbeat goes
-/// silent, before shutting itself down — the uncatchable-death safety net.
+/// silent, before shutting itself down: the uncatchable-death safety net.
 /// `shutdown_grace_secs` is the cooperative-shutdown window: the daemon waits
 /// this long for a stopping node to exit before SIGKILL, and the node runtime
 /// bounds its registered shutdown hooks by the same window so cleanup can never

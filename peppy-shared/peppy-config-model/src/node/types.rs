@@ -484,8 +484,8 @@ pub type LinkedAction = LinkedEntry<Box<ActionRefinement>>;
 
 // Every refinement block is boxed. A block holds one `IndexMap` per format it
 // names, which is wider than the whole entry it hangs off, and it is absent on
-// nearly every entry: inlining it would grow each of these entries — resident
-// per node config and cloned per dependency lookup — several times over to
+// nearly every entry: inlining it would grow each of these entries (resident
+// per node config and cloned per dependency lookup) several times over to
 // carry a `None`. `ExposedAction::Native` is boxed for the same reason.
 
 /// One document-backed produced entry, tagged with the section it is
@@ -595,7 +595,7 @@ pub enum ExposedAction {
 
 /// Generates the shared surface of one produced-entry enum: accessors,
 /// `Serialize`, and the discriminating `Deserialize`. The native shape
-/// fields are declared once here — the raw mirror struct, the
+/// fields are declared once here: the raw mirror struct, the
 /// inline-shape reject list, and the `Native` constructor are all derived
 /// from that single list, so they cannot drift apart. Each field's mode
 /// picks how a missing value materializes on a native entry: `default`
@@ -1202,7 +1202,8 @@ pub struct ContractDependency {
 /// `depends_on.{nodes,contracts,pairings}` link_ids. `sha256` optionally pins
 /// the contract document, with the same semantics as
 /// [`ContractDependency::sha256`]. Shape-identical to [`ContractDependency`]
-/// but deliberately a distinct type — the two point in opposite directions.
+/// but deliberately a distinct type, because the two point in opposite
+/// directions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ImplementsEntry {
@@ -1674,7 +1675,7 @@ impl ContainerConfig {
             return Ok(());
         };
         for mount in mount_paths {
-            // Parse "host_path:container_path[:options]" — only validate the source (host) path.
+            // Parse "host_path:container_path[:options]" and validate only the source (host) path.
             let src = mount.split(':').next().unwrap_or(mount);
             // Skip blocked-path check when the source contains parameter references
             // (the actual path is resolved at runtime).
@@ -1715,7 +1716,7 @@ impl ContainerConfig {
                         kind: TypeToken::String,
                         ..
                     }) => {
-                        // Valid — string-typed parameter.
+                        // Valid: a string-typed parameter.
                     }
                     Some(spec) => {
                         return Err((
@@ -1755,7 +1756,7 @@ pub struct Interfaces {
 
 impl Interfaces {
     /// The produced (emits/exposes) entries of `kind`, projected to
-    /// `(link_id, name)` pairs — the shared traversal used by parse-time
+    /// `(link_id, name)` pairs: the shared traversal used by parse-time
     /// and plan-phase validation. Only the requested kind's section
     /// contributes entries; the chain over all three exists to give the
     /// arms a single concrete iterator type.
@@ -1792,7 +1793,7 @@ impl Interfaces {
     }
 
     /// The consumed entries of `kind`, projected to `(link_id, name,
-    /// refines)` — `refines` says the entry carries a `refine` block, which
+    /// refines)`, where `refines` says the entry carries a `refine` block, which
     /// parse-time validation checks against the slot it names. Same shape as
     /// [`Interfaces::produced`].
     pub fn consumed(&self, kind: InterfaceKind) -> impl Iterator<Item = (&str, &str, bool)> {
@@ -1836,7 +1837,7 @@ impl Interfaces {
     }
 
     /// The natively-declared entries of `topics.emits`: the node owns these
-    /// shapes. Document-backed entries are skipped — their shapes live in the
+    /// shapes. Document-backed entries are skipped: their shapes live in the
     /// contract or pairing document the entry's slot resolves to.
     pub fn native_emits(&self) -> impl Iterator<Item = &NativeEmittedTopic> {
         self.topics
@@ -2242,9 +2243,10 @@ mod tests {
 
     #[test]
     fn consumed_topic_rejects_external_shape() {
-        // External consumed topics were removed. An entry with an inline
-        // message_format and no link_id must fail to parse as a consumed topic
-        // (message_format is an unknown field, link_id is required).
+        // A consumed topic always names the slot it consumes from. An entry
+        // with an inline message_format and no link_id must fail to parse as
+        // a consumed topic (message_format is an unknown field, link_id is
+        // required).
         let external_shape =
             r#"{ name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
         assert!(
@@ -3478,8 +3480,9 @@ mod tests {
 
     #[test]
     fn interfaces_rejects_conforms_to_as_unknown_field() {
-        // The old field is not recognized at all — plain serde unknown-field
-        // rejection is the intended UX (no alias, no friendlier error).
+        // `conforms_to` is not a field of `interfaces`: plain serde
+        // unknown-field rejection is the intended UX (no alias, no friendlier
+        // error).
         let json5 = r#"{
             conforms_to: [
                 { name: "depth_camera", tag: "v1" }
@@ -3662,7 +3665,7 @@ mod tests {
     }
 
     /// A node-shaped document that mislabels itself as a launcher must
-    /// be rejected — the schema field is the source of truth, not just
+    /// be rejected: the schema field is the source of truth, not just
     /// the field names.
     #[test]
     fn node_config_rejects_non_node_schema() {

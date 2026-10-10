@@ -4,7 +4,7 @@
 //! node stack, code-generation) can run the same checks without
 //! depending on a runtime crate.
 //!
-//! The validator is structural — it does not care which crate orchestrates
+//! The validator is structural: it does not care which crate orchestrates
 //! the lookup. Callers supply a closure that resolves a `(name, tag)`
 //! pair to a [`NodeConfig`] from whatever store they own (an in-memory
 //! graph, a working stack snapshot, a parsed launcher batch, etc.).
@@ -55,7 +55,7 @@ pub fn node_implements(node: &NodeConfig, name: &str, tag: &str) -> bool {
 /// One resolved contract-implementation dependency edge: `consumer` declares
 /// `depends_on.contracts` for `contract`, and `provider` declares that
 /// contract in `manifest.implements`. Distinct from a direct node dependency
-/// (captured by [`collect_dependency_specs`]) — contract deps are deliberately
+/// (captured by [`collect_dependency_specs`]): contract deps are deliberately
 /// kept out of the node-dependency DAG, so this is the only place they surface
 /// for display/measurement purposes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,7 +209,7 @@ pub fn validate_dependency_specs(
         .map(|d| d.pairing_link_ids().collect())
         .unwrap_or_default();
 
-    // Implements slots are produced, not consumed — a consumed item naming
+    // Implements slots are produced, not consumed, so a consumed item naming
     // one gets a dedicated error too. Parse-time validation already rejects
     // this for configs that went through `NodeConfigParser`, but this
     // validator also runs on programmatically assembled configs.
