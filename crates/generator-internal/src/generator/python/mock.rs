@@ -203,7 +203,6 @@ struct MockMember {
 }
 
 /// Emits the shared `Mock` aggregate class from its member list.
-#[allow(clippy::too_many_arguments)]
 fn emit_mock_class(
     builder: &mut PythonCodeBuilder,
     doc: &str,
@@ -323,7 +322,6 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
             generator,
             &mut builder,
             &mut loaders,
-            link_id,
             topic,
             &target,
             attr,
@@ -336,7 +334,6 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
             generator,
             &mut builder,
             &mut loaders,
-            link_id,
             &spec.producer_name,
             service,
             &target,
@@ -350,7 +347,6 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
             generator,
             &mut builder,
             &mut loaders,
-            link_id,
             &spec.producer_name,
             action,
             &target,
@@ -386,12 +382,10 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
     Ok(format!("\"\"\"{module_doc}\"\"\"\n\n{}", builder.build()))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_dep_topic(
     generator: &mut PythonGenerator,
     builder: &mut PythonCodeBuilder,
     loaders: &mut HashSet<String>,
-    _link_id: &str,
     spec: &DepTopicSpec,
     target: &str,
     attr: String,
@@ -491,12 +485,10 @@ def __init__(self, core) -> None:
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_dep_service(
     generator: &mut PythonGenerator,
     builder: &mut PythonCodeBuilder,
     loaders: &mut HashSet<String>,
-    _link_id: &str,
     producer_name: &str,
     spec: &DepServiceSpec,
     target: &str,
@@ -707,12 +699,10 @@ def __init__(self, core) -> None:
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_dep_action(
     generator: &mut PythonGenerator,
     builder: &mut PythonCodeBuilder,
     loaders: &mut HashSet<String>,
-    _link_id: &str,
     producer_name: &str,
     spec: &DepActionSpec,
     target: &str,

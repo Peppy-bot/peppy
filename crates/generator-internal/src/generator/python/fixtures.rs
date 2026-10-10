@@ -824,7 +824,6 @@ fn emit_namespace_class(
     builder.blank_line();
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_harness(
     parameters: &config::ParameterSchema,
     registry: &TestGenRegistry,
