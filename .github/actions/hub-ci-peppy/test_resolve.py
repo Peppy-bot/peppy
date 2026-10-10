@@ -1509,6 +1509,20 @@ class ActionCommand(unittest.TestCase):
             str(refused.exception), "`wait-only` must be `true` or `false`, got `yes`"
         )
 
+    def test_a_peppy_run_id_is_ascii_digits(self):
+        self.assertIsNone(resolve.parse_release_run_id(""))
+        self.assertEqual(resolve.parse_release_run_id("123"), 123)
+        # str.isdigit also holds for a superscript, which int() refuses, and
+        # for the digits of other scripts, which int() reads.
+        for text in ("12a", "-1", "\u00b2", "\u0661\u0662"):
+            with self.subTest(text=text):
+                with self.assertRaises(ResolveError) as refused:
+                    resolve.parse_release_run_id(text)
+                self.assertEqual(
+                    str(refused.exception),
+                    f"`peppy-run-id` must be a workflow run id, got `{text}`",
+                )
+
     def test_a_wait_only_job_waits_and_installs_nothing(self):
         for wait_only, called, not_called in (
             (True, "wait_for_peppy", "run"),

@@ -1482,7 +1482,7 @@ def parse_hub_path(text: str) -> str:
 def parse_release_run_id(text: str) -> int | None:
     if not text:
         return None
-    if not text.isdigit():
+    if not (text.isascii() and text.isdigit()):
         raise ResolveError(f"`peppy-run-id` must be a workflow run id, got `{text}`")
     return int(text)
 
