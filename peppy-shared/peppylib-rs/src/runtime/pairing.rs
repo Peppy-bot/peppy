@@ -60,17 +60,12 @@ impl PeerSlot {
     /// Panics if the slot holds more than one pair, which a scalar slot
     /// cannot: reading a multi slot through this accessor is stale codegen.
     pub fn paired_member(&self) -> Option<PeerMember> {
-        let state = self.watch_rx.borrow();
-        match state.members.as_slice() {
-            [] => None,
-            [sole] => Some(sole.clone()),
-            _ => pairing_shape_panic(&self.link_id, "paired()", self.cardinality.as_str()),
-        }
+        self.sole_member("paired_member()")
     }
 
     /// The currently paired peer, or `None` while the slot is unpaired.
     pub fn paired(&self) -> Option<PeerInfo> {
-        self.paired_member().map(|member| member.info)
+        self.sole_member("paired()").map(|member| member.info)
     }
 
     /// Waits until the slot is paired and returns the peer. Returns
@@ -78,13 +73,25 @@ impl PeerSlot {
     /// down while waiting (the slot channel closed).
     pub async fn wait_paired(&mut self) -> Result<PeerInfo> {
         loop {
-            if let Some(peer) = self.paired() {
-                return Ok(peer);
+            if let Some(member) = self.sole_member("wait_paired()") {
+                return Ok(member.info);
             }
             self.watch_rx
                 .changed()
                 .await
                 .map_err(|_| Error::PairingSlotClosed)?;
+        }
+    }
+
+    /// The one pair the slot holds, or `None` while unpaired. A slot holding
+    /// several pairs panics with the name of the `accessor` the caller used,
+    /// so the message points at the call that read the slot.
+    fn sole_member(&self, accessor: &str) -> Option<PeerMember> {
+        let state = self.watch_rx.borrow();
+        match state.members.as_slice() {
+            [] => None,
+            [sole] => Some(sole.clone()),
+            _ => pairing_shape_panic(&self.link_id, accessor, self.cardinality.as_str()),
         }
     }
 }
@@ -462,6 +469,22 @@ mod tests {
         tx.send(state(1, vec![member("arm_1"), member("arm_2")]))
             .unwrap();
         let _ = slot.paired();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "which `paired_member()` cannot read")]
+    async fn paired_member_on_a_slot_holding_several_pairs_names_itself() {
+        let (_tx, rx) = watch::channel(state(1, vec![member("arm_1"), member("arm_2")]));
+        let slot = PeerSlot::new("arms", Cardinality::ZeroOrMore, rx);
+        let _ = slot.paired_member();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "which `wait_paired()` cannot read")]
+    async fn wait_paired_on_a_slot_holding_several_pairs_names_itself() {
+        let (_tx, rx) = watch::channel(state(1, vec![member("arm_1"), member("arm_2")]));
+        let mut slot = PeerSlot::new("arms", Cardinality::ZeroOrMore, rx);
+        let _ = slot.wait_paired().await;
     }
 
     #[tokio::test]
