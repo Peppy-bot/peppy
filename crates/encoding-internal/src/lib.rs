@@ -98,9 +98,6 @@ impl MessageFormatMapper {
         let mut schema = String::new();
         let mut schema_id =
             MessageFormatMapper::compute_schema_id(&self.schema_name, &self.message_format.0);
-        if schema_id == 0 {
-            schema_id = 1;
-        }
         schema_id |= 1; // ensure odd
         schema_id |= 1 << 63; // high bit set per capnp id recommendations
 
@@ -185,55 +182,55 @@ impl MessageFormatMapper {
         const FNV_OFFSET: u64 = 0xcbf29ce484222325;
         const FNV_PRIME: u64 = 0x100000001b3;
 
-        fn update(mut hash: u64, bytes: &[u8], prime: u64) -> u64 {
+        fn update(mut hash: u64, bytes: &[u8]) -> u64 {
             for byte in bytes {
                 hash ^= u64::from(*byte);
-                hash = hash.wrapping_mul(prime);
+                hash = hash.wrapping_mul(FNV_PRIME);
             }
             hash
         }
 
-        fn hash_usize(hash: u64, value: usize, prime: u64) -> u64 {
-            update(hash, &(value as u64).to_le_bytes(), prime)
+        fn hash_usize(hash: u64, value: usize) -> u64 {
+            update(hash, &(value as u64).to_le_bytes())
         }
 
-        fn hash_schema(mut hash: u64, schema: &SchemaType, prime: u64) -> u64 {
+        fn hash_schema(mut hash: u64, schema: &SchemaType) -> u64 {
             match schema {
                 SchemaType::Type(token) => {
-                    hash = update(hash, b"type", prime);
+                    hash = update(hash, b"type");
                     let (capnp_discriminant, _) = type_token_strings(token);
-                    hash = update(hash, capnp_discriminant.as_bytes(), prime);
+                    hash = update(hash, capnp_discriminant.as_bytes());
                 }
                 SchemaType::Primitive(schema) => {
-                    hash = update(hash, b"type", prime);
+                    hash = update(hash, b"type");
                     let (capnp_discriminant, _) = type_token_strings(&schema.kind);
-                    hash = update(hash, capnp_discriminant.as_bytes(), prime);
+                    hash = update(hash, capnp_discriminant.as_bytes());
                 }
                 SchemaType::Array(array) => {
-                    hash = update(hash, b"array", prime);
-                    hash = hash_schema(hash, array.items.as_ref(), prime);
+                    hash = update(hash, b"array");
+                    hash = hash_schema(hash, array.items.as_ref());
                     if let Some(len) = array.length {
-                        hash = hash_usize(hash, len, prime);
+                        hash = hash_usize(hash, len);
                     }
                 }
                 SchemaType::Object(object) => {
-                    hash = update(hash, b"object", prime);
-                    hash = hash_fields(hash, &object.fields, prime);
+                    hash = update(hash, b"object");
+                    hash = hash_fields(hash, &object.fields);
                 }
             }
             hash
         }
 
-        fn hash_fields(mut hash: u64, fields: &IndexMap<String, SchemaType>, prime: u64) -> u64 {
+        fn hash_fields(mut hash: u64, fields: &IndexMap<String, SchemaType>) -> u64 {
             for (key, value) in fields {
-                hash = update(hash, key.as_bytes(), prime);
-                hash = hash_schema(hash, value, prime);
+                hash = update(hash, key.as_bytes());
+                hash = hash_schema(hash, value);
             }
             hash
         }
 
-        let hash = update(FNV_OFFSET, schema_name.as_bytes(), FNV_PRIME);
-        hash_fields(hash, fields, FNV_PRIME)
+        let hash = update(FNV_OFFSET, schema_name.as_bytes());
+        hash_fields(hash, fields)
     }
 }
 
