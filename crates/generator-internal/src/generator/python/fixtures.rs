@@ -792,6 +792,14 @@ fn python_json_literal(value: &serde_json::Value) -> String {
     }
 }
 
+/// A string as a Python string literal. Every JSON string escape (`\"`,
+/// `\\`, `\n`, `\uXXXX`) is valid in Python, while Rust's `{:?}` writes
+/// non-printable and grapheme-extending characters as `\u{...}`, which
+/// Python rejects.
+fn python_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("a str always serializes to a JSON string")
+}
+
 /// Emits a namespace class holding one attribute per link.
 fn emit_namespace_class(
     builder: &mut PythonCodeBuilder,
@@ -1104,7 +1112,7 @@ fn render_harness(
     builder.line(&format!("NODE_TAG = {node_tag:?}"));
     builder.line("_NODE_CONFIG_FILE = \"peppy.json5\"");
     builder.line(&match node_dir {
-        Some(node_dir) => format!("_SYNC_TIME_NODE_DIR = {node_dir:?}"),
+        Some(node_dir) => format!("_SYNC_TIME_NODE_DIR = {}", python_string_literal(node_dir)),
         None => "_SYNC_TIME_NODE_DIR = None".to_string(),
     });
     match default_parameters_literal(parameters) {

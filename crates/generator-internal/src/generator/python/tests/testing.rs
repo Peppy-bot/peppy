@@ -9,6 +9,7 @@ use crate::generator::testgen::{
     DepLinkSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
 use config::node::{Cardinality, MessageFormat, NativeEmittedTopic, TopicRetention};
+use std::path::Path;
 use tempfile::TempDir;
 
 fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
@@ -28,9 +29,13 @@ fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
 }
 
 fn rendered_harness(registry: &TestGenRegistry) -> String {
-    let mut generator = PythonGenerator::new();
     let node_dir = TempDir::new().unwrap();
-    super::super::fixtures::render(&mut generator, registry, node_dir.path()).unwrap();
+    rendered_harness_in(registry, node_dir.path())
+}
+
+fn rendered_harness_in(registry: &TestGenRegistry, node_dir: &Path) -> String {
+    let mut generator = PythonGenerator::new();
+    super::super::fixtures::render(&mut generator, registry, node_dir).unwrap();
     generator
         .into_artifacts()
         .into_iter()
@@ -237,4 +242,30 @@ fn an_emitted_topic_named_after_a_rust_keyword_shares_its_production_schema() {
         "the fixture codec must reuse the production schema, got: {rendered:?}"
     );
     assert_eq!(generator.schemas.len(), 1);
+}
+
+/// The baked node directory is the one arbitrary user string in the harness.
+/// A path holding a combining character (an NFD name, common on macOS) must
+/// still be a valid Python string literal: Rust's `{:?}` writes it as
+/// `\u{301}`, an escape Python rejects with a SyntaxError.
+#[test]
+fn a_node_directory_with_a_combining_character_bakes_as_a_python_literal() {
+    let mut registry = TestGenRegistry::default();
+    registry.record_node_identity("relay_node", "v1");
+    let temp = TempDir::new().unwrap();
+    let node_dir = temp.path().join("jose\u{301}");
+    std::fs::create_dir(&node_dir).unwrap();
+    let canonical = std::fs::canonicalize(&node_dir).unwrap();
+
+    let rendered = rendered_harness_in(&registry, &node_dir);
+
+    let expected = format!("_SYNC_TIME_NODE_DIR = \"{}\"", canonical.display());
+    assert!(
+        rendered.contains(&expected),
+        "the raw path must be baked verbatim, expected `{expected}` in:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("\\u{"),
+        "no Rust-only `\\u{{...}}` escape may reach the Python source"
+    );
 }
