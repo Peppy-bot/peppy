@@ -378,6 +378,12 @@ class ChangedFiles(unittest.TestCase):
             ["crates/a/fixture.json", "docs/fixture.json"],
         )
 
+    def test_a_path_git_would_quote_is_read_as_it_is(self):
+        # git quotes a path with a byte outside printable ASCII, and the
+        # quoted form matches no glob and no crate directory.
+        self.commit_new_file("docs/café.md")
+        self.assertEqual(self.changed_files(), ["docs/café.md"])
+
 
 if __name__ == "__main__":
     unittest.main()

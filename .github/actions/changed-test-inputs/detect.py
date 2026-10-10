@@ -184,7 +184,8 @@ def changed_files(base):
     """Files changed on this branch relative to base; None when unknowable.
 
     A moved file counts at both of its paths, because the suite that read it
-    at the old path lost an input.
+    at the old path lost an input. The paths come NUL-separated, which git
+    never quotes: a quoted path would match no input of any suite.
     """
     if not base or set(base) == {"0"}:
         return None
@@ -197,9 +198,10 @@ def changed_files(base):
     if reachable.returncode != 0:
         return None
     out = subprocess.check_output(
-        ["git", "diff", "--name-only", "--no-renames", base + "...HEAD"], text=True
+        ["git", "diff", "--name-only", "--no-renames", "-z", base + "...HEAD"],
+        text=True,
     )
-    return [line for line in out.splitlines() if line]
+    return [path for path in out.split("\0") if path]
 
 
 @functools.cache
