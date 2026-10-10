@@ -16,6 +16,13 @@ from functions.cli import ReleaseError
 from .helpers import unwrapped
 
 
+@pytest.fixture(autouse=True)
+def _restore_the_working_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A local build changes into its checkout; go back after each test, so
+    no later test runs in the temporary directory of this one."""
+    monkeypatch.chdir(Path.cwd())
+
+
 @patch("functions.build_release._build_all_targets")
 @patch(
     "functions.build_release.get_targets_for_platform",
@@ -120,15 +127,13 @@ def test_run_local_with_an_empty_tag_raises_without_prompting(
 
 @contextmanager
 def _patched_dirty_local_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: bool
+    tmp_path: Path, answer: bool
 ) -> Iterator[tuple[MagicMock, MagicMock]]:
     """Stand in for the collaborators of a local build in a checkout that has
     uncommitted changes, where the user gives *answer* to the question.
 
     Yields the prompt_yn and _build_all_targets mocks.
     """
-    # The build changes into the checkout; undone after the test.
-    monkeypatch.chdir(tmp_path)
     with (
         patch("functions.build_release.need_cmd"),
         patch("functions.build_release.get_repo_root", return_value=tmp_path),
@@ -143,13 +148,8 @@ def _patched_dirty_local_build(
         yield ask, build
 
 
-def test_run_local_builds_uncommitted_changes_the_user_accepts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    with _patched_dirty_local_build(tmp_path, monkeypatch, answer=True) as (
-        ask,
-        build,
-    ):
+def test_run_local_builds_uncommitted_changes_the_user_accepts(tmp_path: Path) -> None:
+    with _patched_dirty_local_build(tmp_path, answer=True) as (ask, build):
         _run_local("v0.1.0")
 
     ask.assert_called_once_with("Working tree has uncommitted changes. Continue?")
@@ -157,13 +157,10 @@ def test_run_local_builds_uncommitted_changes_the_user_accepts(
 
 
 def test_run_local_exits_before_building_uncommitted_changes_the_user_refuses(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     with (
-        _patched_dirty_local_build(tmp_path, monkeypatch, answer=False) as (
-            ask,
-            build,
-        ),
+        _patched_dirty_local_build(tmp_path, answer=False) as (ask, build),
         pytest.raises(SystemExit) as exited,
     ):
         _run_local("v0.1.0")
