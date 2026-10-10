@@ -46,7 +46,6 @@ async def test_service_messenger_communication():
             SERVICE_NAME,
         )
 
-
         # Spawn the handler so we can poll concurrently
         async def handle():
             await service.handle_next_request(lambda _request: RESPONSE_PAYLOAD)
@@ -62,7 +61,8 @@ async def test_service_messenger_communication():
             SERVICE_NAME,
             ProducerRef(CORE_NODE, INSTANCE_ID),
             REQUEST_PAYLOAD,
-            2.0,)
+            2.0,
+        )
 
         await handler
 
@@ -154,7 +154,8 @@ async def test_service_poll_rejects_invalid_timeout():
                 SERVICE_NAME,
                 ProducerRef(CORE_NODE, INSTANCE_ID),
                 REQUEST_PAYLOAD,
-                -1.0,)
+                -1.0,
+            )
 
 
 @pytest.mark.asyncio
@@ -172,7 +173,6 @@ async def test_service_handler_exception_returns_service_error():
             SERVICE_NAME,
         )
 
-
         def failing_handler(_request):
             raise RuntimeError("handler boom")
 
@@ -187,7 +187,8 @@ async def test_service_handler_exception_returns_service_error():
                 SERVICE_NAME,
                 ProducerRef(CORE_NODE, INSTANCE_ID),
                 REQUEST_PAYLOAD,
-                2.0,)
+                2.0,
+            )
 
         handled = await asyncio.wait_for(handler, timeout=2.0)
         assert handled is True
@@ -213,7 +214,9 @@ async def _return_text_from_async_handler(_request):
     ],
     ids=["raises", "returns_text"],
 )
-async def test_async_service_handler_failure_returns_service_error(async_handler, reason):
+async def test_async_service_handler_failure_returns_service_error(
+    async_handler, reason
+):
     """An async handler that raises, or resolves to something other than
     bytes, answers the caller with a service error carrying the reason, as a
     synchronous handler does."""
@@ -277,7 +280,6 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
         iface_handler = asyncio.ensure_future(
             iface_service.handle_next_request(lambda _req: iface_response)
         )
-
 
         # Native poll → native handler.
         from_native = await ServiceMessenger.poll(

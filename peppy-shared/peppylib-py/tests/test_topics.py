@@ -113,8 +113,7 @@ def test_peer_info_is_structured_and_hashable():
     assert state_by_peer[same] == "paired"
 
     assert repr(peer) == (
-        'PeerInfo(producer=ProducerRef("core_a", "arm_1"), '
-        'peer_link_id="controller")'
+        'PeerInfo(producer=ProducerRef("core_a", "arm_1"), peer_link_id="controller")'
     )
 
 
@@ -241,7 +240,9 @@ def test_topic_retention_states_a_policy():
     assert repr(TopicRetention.latest(3)) == "TopicRetention.latest(3)"
     assert TopicRetention.latest(0) == TopicRetention.live_only()
 
-    with pytest.raises(ValueError, match="`latest` keeps from 0 to 1024 messages, got 1025"):
+    with pytest.raises(
+        ValueError, match="`latest` keeps from 0 to 1024 messages, got 1025"
+    ):
         TopicRetention.latest(1025)
 
 

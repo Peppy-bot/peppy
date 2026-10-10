@@ -234,9 +234,7 @@ prepare_test_process()
 # tests never overlap meshes anyway; the lock exists for tests that start
 # several routers/harnesses concurrently on one loop. One mesh at a time
 # keeps gossip discovery fast and deterministic.
-_MESH_SERIAL_LOCKS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
-    weakref.WeakKeyDictionary()
-)
+_MESH_SERIAL_LOCKS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
 
 
 def _mesh_serial_lock() -> asyncio.Lock:
@@ -359,7 +357,14 @@ async def _wait_for_matching_subscriber(
     if peer is not None and link_id is not None:
         return bool(
             await TopicMessenger.wait_for_pairing_subscriber(
-                messenger, as_core_node, as_instance_id, as_target, link_id, topic, peer, timeout
+                messenger,
+                as_core_node,
+                as_instance_id,
+                as_target,
+                link_id,
+                topic,
+                peer,
+                timeout,
             )
         )
     return bool(
@@ -425,7 +430,14 @@ class TestTopicPublisher:
         readiness_timeout: float = READINESS_TIMEOUT,
     ) -> "TestTopicPublisher":
         publisher = await TopicMessenger.declare_publisher(
-            messenger, as_core_node, as_instance_id, as_target, topic, qos, retention, link_id
+            messenger,
+            as_core_node,
+            as_instance_id,
+            as_target,
+            topic,
+            qos,
+            retention,
+            link_id,
         )
         return cls(
             publisher,
@@ -455,7 +467,14 @@ class TestTopicPublisher:
         ``peer`` (the node under test, on its slot), for a mock playing the
         other end of a pair."""
         publisher = await TopicMessenger.declare_pairing_publisher(
-            messenger, as_core_node, as_instance_id, as_target, link_id, topic, qos, peer
+            messenger,
+            as_core_node,
+            as_instance_id,
+            as_target,
+            link_id,
+            topic,
+            qos,
+            peer,
         )
         return cls(
             publisher,
@@ -488,7 +507,9 @@ class TestTopicPublisher:
         return matched
 
     async def publish(self, payload: bytes) -> None:
-        if not self._matched and not await self.wait_for_subscriber(self.readiness_timeout):
+        if not self._matched and not await self.wait_for_subscriber(
+            self.readiness_timeout
+        ):
             raise RuntimeError(
                 f"no subscriber for topic `{self._topic}` (link_id {self._link_id!r}) "
                 f"appeared within {self.readiness_timeout}s: the node under test never "
@@ -561,10 +582,16 @@ async def _wait_reachable(
     """The shared probe loop behind the two ``wait_*_reachable`` helpers:
     poll the matching ``is_reachable`` probe until it answers or ``timeout``
     expires."""
-    probe = ActionMessenger.is_reachable if kind == "action" else ServiceMessenger.is_reachable
+    probe = (
+        ActionMessenger.is_reachable
+        if kind == "action"
+        else ServiceMessenger.is_reachable
+    )
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
-        if await probe(messenger, bound_core_node, as_instance_id, to_target, name, producer):
+        if await probe(
+            messenger, bound_core_node, as_instance_id, to_target, name, producer
+        ):
             return
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError(
@@ -594,9 +621,9 @@ class MockServiceCore:
 
     def __init__(self, service_name: str) -> None:
         self._service_name = service_name
-        self._requests: asyncio.Queue[tuple[ServiceRequestContext, ServiceResponder]] = (
-            asyncio.Queue()
-        )
+        self._requests: asyncio.Queue[
+            tuple[ServiceRequestContext, ServiceResponder]
+        ] = asyncio.Queue()
         self._scripted: deque[bytes] = deque()
         self._captured: list[CapturedServiceRequest] = []
         self._pump: asyncio.Task[None] | None = None
@@ -711,7 +738,9 @@ class MockPendingGoal:
     """A goal received by a :class:`MockActionServerCore`, awaiting the
     test's admission decision."""
 
-    def __init__(self, pending: PendingGoal, live: list[weakref.ref[GoalContext]]) -> None:
+    def __init__(
+        self, pending: PendingGoal, live: list[weakref.ref[GoalContext]]
+    ) -> None:
         self._pending = pending
         self._live = live
 
@@ -766,7 +795,12 @@ class MockActionServerCore:
         has_feedback: bool,
     ) -> "MockActionServerCore":
         engine = await ConcurrentAction.expose(
-            messenger, bound_core_node, as_instance_id, as_identity, as_action_name, has_feedback
+            messenger,
+            bound_core_node,
+            as_instance_id,
+            as_identity,
+            as_action_name,
+            has_feedback,
         )
         return cls(as_action_name, engine)
 
@@ -990,7 +1024,7 @@ class MockClock:
         """
         if self._domain_publisher is None:
             raise RuntimeError(
-                "tick() drives a node booted clock=\"consumer\"; this harness booted "
+                'tick() drives a node booted clock="consumer"; this harness booted '
                 f'clock="{self._clock}". A wall-time clock ticks itself, and a '
                 "publisher node supplies its own domain"
             )
@@ -1055,7 +1089,9 @@ async def _send_clock_reply(reply: Awaitable[None]) -> None:
     try:
         await reply
     except _MESSAGING_ERRORS as error:
-        warnings.warn(f"mock clock failed to send a clock response: {error}", stacklevel=1)
+        warnings.warn(
+            f"mock clock failed to send a clock response: {error}", stacklevel=1
+        )
 
 
 @dataclass

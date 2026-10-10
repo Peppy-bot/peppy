@@ -144,7 +144,9 @@ async def test_standalone_bound_members_carry_their_copy(monkeypatch):
                 results.put(("producers", node_runner.bound_producers("spare_cameras")))
                 results.put(("members", node_runner.bound_members("spare_cameras")))
 
-            thread, results, errors = _run_standalone(peppy_config_path, seeded, setup_fn)
+            thread, results, errors = _run_standalone(
+                peppy_config_path, seeded, setup_fn
+            )
             seen = await _collect(thread, results)
 
     assert errors.empty(), f"Runner error: {errors.get_nowait()}"
@@ -182,8 +184,12 @@ async def test_standalone_seeds_every_slot_kind(monkeypatch):
                 results.put(
                     ("wrist", node_runner.optional_bound_producer("wrist_camera"))
                 )
-                results.put(("spare_cams", node_runner.bound_producers("spare_cameras")))
-                results.put(("spare_members", node_runner.bound_members("spare_cameras")))
+                results.put(
+                    ("spare_cams", node_runner.bound_producers("spare_cameras"))
+                )
+                results.put(
+                    ("spare_members", node_runner.bound_members("spare_cameras"))
+                )
 
                 # Observer slots, each through the accessor its cardinality
                 # declares. A `one` slot answers without an Option.
@@ -277,7 +283,9 @@ async def test_standalone_unseeded_floored_observer_fails_startup(monkeypatch):
                 .with_peer_pin("arm", "core_x", "arm_1", "controller")
                 .with_bound_producer("main", "core_x", "camera_1")
                 .with_vacant_producer_slot("wrist_camera")
-                .with_observed_source("watched_arms", "core_x", "right_arm", "commander")
+                .with_observed_source(
+                    "watched_arms", "core_x", "right_arm", "commander"
+                )
             )
 
             def setup_fn(params, node_runner, results):  # pragma: no cover

@@ -485,7 +485,8 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 NODE_HEALTH_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),)
+                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+            )
             assert not health_reachable, (
                 "Health service should not be reachable while setup is blocked"
             )
@@ -739,8 +740,8 @@ async def test_node_runner_exposes_messenger_and_metadata(monkeypatch):
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
             peppy_config_path = _write_node_config(temp_dir)
-            standalone_config = (
-                _standalone_config(router).with_node_name(TEST_NODE_NAME)
+            standalone_config = _standalone_config(router).with_node_name(
+                TEST_NODE_NAME
             )
 
             result_queue: queue.Queue = queue.Queue()
@@ -807,8 +808,8 @@ async def test_shutdown_joins_event_loop_thread(monkeypatch):
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
             peppy_config_path = _write_node_config(temp_dir)
-            standalone_config = (
-                _standalone_config(router).with_node_name(TEST_NODE_NAME)
+            standalone_config = _standalone_config(router).with_node_name(
+                TEST_NODE_NAME
             )
 
             for iteration in range(SHUTDOWN_REPEAT):
@@ -908,8 +909,8 @@ async def test_failed_async_setup_does_not_leak_event_loop_thread(monkeypatch):
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
             peppy_config_path = _write_node_config(temp_dir)
-            standalone_config = (
-                _standalone_config(router).with_node_name(TEST_NODE_NAME)
+            standalone_config = _standalone_config(router).with_node_name(
+                TEST_NODE_NAME
             )
 
             lingering_queue: queue.Queue = queue.Queue()
@@ -957,7 +958,7 @@ async def test_failed_async_setup_does_not_leak_event_loop_thread(monkeypatch):
     )
 
 
-PENDING_SERVICE_NODE_SCRIPT = '''\
+PENDING_SERVICE_NODE_SCRIPT = """\
 import asyncio
 import sys
 
@@ -1007,7 +1008,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-'''
+"""
 
 PENDING_AWAIT_EXIT_REPEAT = 5
 
@@ -1051,7 +1052,9 @@ async def test_process_exit_with_pending_service_await(tmp_path):
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=30.0
+                )
             except TimeoutError:
                 proc.kill()
                 await proc.communicate()
@@ -1129,7 +1132,12 @@ async def test_daemon_shutdown_hooks_run_lifo_with_messaging(monkeypatch):
     assert not runner_thread.is_alive(), "Runner should have exited"
     assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
     # Reverse registration order; the raising hook runs, its error contained.
-    assert hook_markers == ["fourth:awaitable", "third:port_True", "second:raised", "first"]
+    assert hook_markers == [
+        "fourth:awaitable",
+        "third:port_True",
+        "second:raised",
+        "first",
+    ]
 
 
 # A grace far larger than the join bound below: a node whose drain hook

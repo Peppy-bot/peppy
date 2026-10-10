@@ -42,7 +42,6 @@ async def test_ready_node():
             SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
         )
 
-
         request_payload = b"ready"
 
         # The ready service should accept both valid targeting modes
@@ -69,7 +68,8 @@ async def test_ready_node():
                     NODE_READY_SERVICE,
                     target,
                     request_payload,
-                    2.0,)
+                    2.0,
+                )
             except RuntimeError as exc:
                 pytest.fail(f"[{label}] poll failed: {exc}")
 

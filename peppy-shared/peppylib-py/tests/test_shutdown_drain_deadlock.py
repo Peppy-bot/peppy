@@ -131,7 +131,9 @@ def test_drain_completes_its_future_with_the_loop_still_running():
     assert finally_ran.is_set(), "cancelled task's finally cleanup did not run"
     # The defining property of the split: draining must NOT stop the loop.
     # Stopping it from inside the awaited coroutine would orphan the future.
-    assert loop.is_running(), "drain must leave the loop running; the stop is quiesce's job"
+    assert loop.is_running(), (
+        "drain must leave the loop running; the stop is quiesce's job"
+    )
 
     # quiesce stops the loop separately, from another thread.
     stop_trigger()
@@ -181,7 +183,9 @@ def test_stop_trigger_cancels_tasks_the_drain_hook_never_reached():
     _wait_running(loop)
     _drain_trigger, stop_trigger = _make_teardown(loop)
     started, finally_ran = threading.Event(), threading.Event()
-    _spawn_worker(loop, started, finally_ran)  # a live task the drain hook never reached
+    _spawn_worker(
+        loop, started, finally_ran
+    )  # a live task the drain hook never reached
     assert started.wait(timeout=2.0)
 
     stop_trigger()

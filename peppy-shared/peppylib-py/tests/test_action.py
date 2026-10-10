@@ -45,7 +45,12 @@ def wrap_goal_ack(body: bytes, accepted: bool = True, reason: str = "") -> bytes
     Mirrors peppylib's Rust wrap_goal_ack and independently pins the layout.
     """
     reason_bytes = reason.encode()
-    return bytes([1 if accepted else 0]) + len(reason_bytes).to_bytes(2, "big") + reason_bytes + body
+    return (
+        bytes([1 if accepted else 0])
+        + len(reason_bytes).to_bytes(2, "big")
+        + reason_bytes
+        + body
+    )
 
 
 async def _expose_test_action(server_handle: MessengerHandle) -> ConcurrentAction:
@@ -98,7 +103,6 @@ async def test_action_messenger_communication():
 
         action = await _expose_test_action(server_handle)
 
-
         async def server():
             pending = await action.recv_next_goal()
             assert pending is not None
@@ -146,7 +150,6 @@ async def test_cancel_goal_concurrent_with_feedback():
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
         action = await _expose_test_action(server_handle)
-
 
         # Server: accept the goal and hold it open (never publish feedback and
         # never complete), so the client's on_next_feedback stays pending while
@@ -201,7 +204,6 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
         action = await _expose_test_action(server_handle)
-
 
         # Server: accept the goal, emit one feedback, and hand the live
         # GoalContext out. The engine is passed as a parameter (not captured
@@ -281,7 +283,6 @@ async def test_send_goal_honors_target_pair():
 
         action = await _expose_test_action(server_handle)
 
-
         async def server():
             pending = await action.recv_next_goal()
             assert pending is not None
@@ -339,7 +340,11 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             captured = [None]
 
             async def on_goal(req):
-                publisher, _goal_id, _user_payload = await action.feedback_publisher_factory.declare_from_wire(
+                (
+                    publisher,
+                    _goal_id,
+                    _user_payload,
+                ) = await action.feedback_publisher_factory.declare_from_wire(
                     req.link_id,
                     bytes(req.message.payload),
                 )
@@ -349,9 +354,12 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             await action.goal_service.handle_next_request(on_goal)
             return captured[0]
 
-        native_task = asyncio.ensure_future(goal_handler(native_action, native_goal_response))
-        iface_task = asyncio.ensure_future(goal_handler(iface_action, iface_goal_response))
-
+        native_task = asyncio.ensure_future(
+            goal_handler(native_action, native_goal_response)
+        )
+        iface_task = asyncio.ensure_future(
+            goal_handler(iface_action, iface_goal_response)
+        )
 
         native_goal = await ActionMessenger.send_goal(
             caller_handle,

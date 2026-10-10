@@ -77,7 +77,9 @@ def write_pyproject_with_version(version: str) -> None:
             f"Expected exactly one occurrence of {DYNAMIC_VERSION_LINE!r} in "
             f"{PYPROJECT_FILE.name}; cannot safely patch."
         )
-    PYPROJECT_FILE.write_text(text.replace(DYNAMIC_VERSION_LINE, f'version = "{version}"'))
+    PYPROJECT_FILE.write_text(
+        text.replace(DYNAMIC_VERSION_LINE, f'version = "{version}"')
+    )
 
 
 def raise_fd_limit() -> None:

@@ -38,7 +38,6 @@ async def test_shutdown_node():
             SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
         )
 
-
         # Send a shutdown request
         request_payload = b"shutdown"
 
@@ -50,7 +49,8 @@ async def test_shutdown_node():
             SHUTDOWN_SERVICE,
             ProducerRef(TEST_CORE_NODE_NAME, TEST_INSTANCE_ID),
             request_payload,
-            2.0,)
+            2.0,
+        )
 
         # Verify the response echoes back the payload
         assert response.payload == request_payload

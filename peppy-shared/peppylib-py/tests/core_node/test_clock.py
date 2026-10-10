@@ -138,8 +138,12 @@ async def test_a_consumer_reads_the_ticks_of_its_domain(tmp_path):
     sim_ns = 42_000_000_000
     router = await peppy_testing.EphemeralRouter.start()
     try:
-        observer = await MessengerHandle.from_host_port_with_namespace(router.host, router.port)
-        binding = clock.ClockBinding.consumer(DOMAIN, CORE_NODE, 1, CORE_NODE, SOURCE_INSTANCE)
+        observer = await MessengerHandle.from_host_port_with_namespace(
+            router.host, router.port
+        )
+        binding = clock.ClockBinding.consumer(
+            DOMAIN, CORE_NODE, 1, CORE_NODE, SOURCE_INSTANCE
+        )
         node_runner = await _runner_with_clock(router, tmp_path, binding)
 
         node_clock = await clock.for_node(node_runner)
@@ -168,21 +172,29 @@ async def test_a_consumer_reads_the_ticks_of_its_domain(tmp_path):
                 break
             except RuntimeError:
                 if asyncio.get_running_loop().time() >= deadline:
-                    raise AssertionError("the domain's tick never reached the node") from None
+                    raise AssertionError(
+                        "the domain's tick never reached the node"
+                    ) from None
                 await asyncio.sleep(0.01)
     finally:
         await router.stop()
 
 
 @pytest.mark.asyncio
-async def test_a_consumer_of_an_earlier_lifetime_reads_nothing_from_the_replacement(tmp_path):
+async def test_a_consumer_of_an_earlier_lifetime_reads_nothing_from_the_replacement(
+    tmp_path,
+):
     """Reusing a domain name mints a new lifetime, whose ticks address a
     stream the old consumer never subscribed to. This is what stops a
     replacement from silently rebinding the consumers it replaces."""
     router = await peppy_testing.EphemeralRouter.start()
     try:
-        observer = await MessengerHandle.from_host_port_with_namespace(router.host, router.port)
-        binding = clock.ClockBinding.consumer(DOMAIN, CORE_NODE, 1, CORE_NODE, SOURCE_INSTANCE)
+        observer = await MessengerHandle.from_host_port_with_namespace(
+            router.host, router.port
+        )
+        binding = clock.ClockBinding.consumer(
+            DOMAIN, CORE_NODE, 1, CORE_NODE, SOURCE_INSTANCE
+        )
         node_runner = await _runner_with_clock(router, tmp_path, binding)
         node_clock = await clock.for_node(node_runner)
 
@@ -253,7 +265,9 @@ async def test_a_consumer_cannot_publish_its_domain(tmp_path):
     """A consumer is bound to a domain, not granted authority over it."""
     router = await peppy_testing.EphemeralRouter.start()
     try:
-        binding = clock.ClockBinding.consumer(DOMAIN, CORE_NODE, 1, CORE_NODE, SOURCE_INSTANCE)
+        binding = clock.ClockBinding.consumer(
+            DOMAIN, CORE_NODE, 1, CORE_NODE, SOURCE_INSTANCE
+        )
         node_runner = await _runner_with_clock(router, tmp_path, binding)
         assert await clock.ClockPublisher.for_node(node_runner) is None
     finally:

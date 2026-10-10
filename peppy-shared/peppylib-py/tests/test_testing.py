@@ -138,7 +138,12 @@ async def test_mock_action_stop_yields_producer_gone_deterministically():
         client_handle = await router.connect()
 
         mock = await MockActionServerCore.expose(
-            mock_handle, MOCK_CORE, MOCK_INSTANCE, _node_target("arm_node"), "move_arm", True
+            mock_handle,
+            MOCK_CORE,
+            MOCK_INSTANCE,
+            _node_target("arm_node"),
+            "move_arm",
+            True,
         )
 
         producer = ProducerRef(MOCK_CORE, MOCK_INSTANCE)
@@ -278,7 +283,9 @@ async def test_topic_publisher_on_a_retaining_topic_serves_a_late_subscription()
 
         late_subscription = await subscribe()
         for subscription in (first_subscription, late_subscription):
-            received = await asyncio.wait_for(subscription.on_next_message(), timeout=5.0)
+            received = await asyncio.wait_for(
+                subscription.on_next_message(), timeout=5.0
+            )
             assert received is not None
             assert received.payload == b"ready"
 
@@ -352,7 +359,9 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
             .with_messaging(router.host, router.port)
             .with_instance_id(instance_id)
         )
-        readiness = [PublisherReadiness(target=_node_target("test_node"), topic="status")]
+        readiness = [
+            PublisherReadiness(target=_node_target("test_node"), topic="status")
+        ]
 
         hook_ran = asyncio.Event()
         async_hook_finished = asyncio.Event()
@@ -421,7 +430,9 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
         assert first.payload == b"alive"
 
         await harness.shutdown()
-        assert hook_ran.is_set(), "shutdown() must run the node's registered shutdown hooks"
+        assert hook_ran.is_set(), (
+            "shutdown() must run the node's registered shutdown hooks"
+        )
         assert async_hook_finished.is_set(), (
             "async shutdown hooks must run on the setup loop, where setup's tasks live"
         )
@@ -443,7 +454,9 @@ async def test_harness_core_shutdown_propagates_setup_error(tmp_path):
         async def setup(params, node_runner):
             raise RuntimeError("setup boom")
 
-        harness = await HarnessCore.start(peppy_config_path, standalone_config, [], setup)
+        harness = await HarnessCore.start(
+            peppy_config_path, standalone_config, [], setup
+        )
         with pytest.raises(RuntimeError, match="setup boom"):
             await harness.shutdown()
 
@@ -507,7 +520,9 @@ async def test_mock_clock_wall_serves_synchronize_ticks_and_scripted_skew(tmp_pa
             # the assertion cannot flake on a slow host.
             hour_ns = 3_600_000_000_000
             clock.set_offset_ns(hour_ns)
-            skewed = await peppy_clock.synchronize(node_runner, response_timeout_secs=5.0)
+            skewed = await peppy_clock.synchronize(
+                node_runner, response_timeout_secs=5.0
+            )
             assert abs(skewed.offset_ns - hour_ns) < hour_ns / 2, (
                 f"expected ~1h offset, got {skewed.offset_ns} ns"
             )
@@ -570,7 +585,9 @@ async def test_mock_clock_consumer_drives_the_nodes_own_clock(tmp_path):
                     # while waiting, so chaining it onto the deadline failure
                     # only buries the message that matters.
                     if asyncio.get_running_loop().time() >= deadline:
-                        raise AssertionError("the tick never reached PeppyClock") from None
+                        raise AssertionError(
+                            "the tick never reached PeppyClock"
+                        ) from None
                     await asyncio.sleep(0.01)
 
             # `0` is the wire's not-ready sentinel; ticking it stores the
@@ -761,7 +778,9 @@ def _fake_connect_attempts(monkeypatch, failures: int) -> tuple[list, list]:
         sleeps.append(delay)
 
     monkeypatch.setattr(peppy_testing, "MessengerHandle", _FlakyMessengerHandle)
-    monkeypatch.setattr(peppy_testing, "asyncio", types.SimpleNamespace(sleep=record_sleep))
+    monkeypatch.setattr(
+        peppy_testing, "asyncio", types.SimpleNamespace(sleep=record_sleep)
+    )
     return attempts, sleeps
 
 
@@ -829,7 +848,9 @@ def test_resolve_node_dir_walks_up_from_the_working_directory(tmp_path, monkeypa
     (node / "peppy.json5").write_text("{}")
     monkeypatch.chdir(nested)
 
-    resolved = peppy_testing.resolve_node_dir(None, str(tmp_path / "gone"), "peppy.json5")
+    resolved = peppy_testing.resolve_node_dir(
+        None, str(tmp_path / "gone"), "peppy.json5"
+    )
 
     assert Path(resolved).resolve() == node.resolve()
 
@@ -854,7 +875,9 @@ def test_resolve_node_dir_falls_back_to_the_sync_time_path(tmp_path, monkeypatch
     assert resolved == str(node)
 
 
-def test_resolve_node_dir_names_all_three_sources_when_none_resolve(tmp_path, monkeypatch):
+def test_resolve_node_dir_names_all_three_sources_when_none_resolve(
+    tmp_path, monkeypatch
+):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(peppy_testing.os.path, "isfile", lambda path: False)
 
@@ -867,7 +890,9 @@ def test_resolve_node_dir_names_all_three_sources_when_none_resolve(tmp_path, mo
     assert "/gone/node" in message
 
 
-def test_resolve_node_dir_without_a_sync_time_path_still_walks_up(tmp_path, monkeypatch):
+def test_resolve_node_dir_without_a_sync_time_path_still_walks_up(
+    tmp_path, monkeypatch
+):
     node = tmp_path / "node"
     (node / "src").mkdir(parents=True)
     (node / "peppy.json5").write_text("{}")

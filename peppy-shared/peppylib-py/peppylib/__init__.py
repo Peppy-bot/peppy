@@ -38,7 +38,27 @@ sys.modules["peppylib._peppylib.core_node"] = _peppylib.core_node
 messaging = _peppylib.messaging
 
 # Re-export the Rust-implemented functions/types from the native module
-from ._peppylib.messaging import SenderTarget, ProducerRef, MessengerHandle, TopicMessenger, TopicPublisher, BoundSetSubscription, BoundMember, CopyTag, ZenohdInstance, PeerInfo, PeerMember, PeerSlot, PeerSlotSet, PeerSubscription, PeerPublisher, ObservedSource, ObservationSlot, ObservationSlotSet, ObservedSubscription  # noqa: E402  # type: ignore[import-not-found]
+from ._peppylib.messaging import (
+    SenderTarget,
+    ProducerRef,
+    MessengerHandle,
+    TopicMessenger,
+    TopicPublisher,
+    BoundSetSubscription,
+    BoundMember,
+    CopyTag,
+    ZenohdInstance,
+    PeerInfo,
+    PeerMember,
+    PeerSlot,
+    PeerSlotSet,
+    PeerSubscription,
+    PeerPublisher,
+    ObservedSource,
+    ObservationSlot,
+    ObservationSlotSet,
+    ObservedSubscription,
+)  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.config import QoSProfile, TopicRetention  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.messaging.services import ServiceMessenger  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.messaging.actions import (  # noqa: E402  # type: ignore[import-not-found]
@@ -53,6 +73,7 @@ from ._peppylib.runtime import (  # noqa: E402  # type: ignore[import-not-found]
     NodeRunner,
     CancellationToken,
 )
+
 # `info` is the one core-node helper that stays flat (a single verb-less call),
 # so it and its response types live at the top level. The datastore, clock, and
 # stack helpers are namespaced in their own submodules (imported below).

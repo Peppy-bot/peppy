@@ -39,7 +39,7 @@ PEPPY_CONFIG = """{
 # The runtime hydrates the parameters dict into this class via
 # ``peppygen.parameters.Parameters.from_dict``, so any interpreter that calls
 # ``NodeBuilder().run(setup_fn)`` needs a peppygen package containing it.
-PARAMETERS_PY = '''\
+PARAMETERS_PY = """\
 from dataclasses import dataclass
 
 
@@ -52,7 +52,7 @@ class Parameters:
         return cls(
             frequency_hz=data["frequency_hz"],
         )
-'''
+"""
 
 
 def write_peppygen_stub(root: Path) -> None:
