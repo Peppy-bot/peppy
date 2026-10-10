@@ -115,17 +115,14 @@ pub fn new_test_data_dir() -> TempDir {
 /// machine. Contents are wiped on entry so runs stay independent.
 pub async fn start_core_node_with_mock_messenger_outside_home() -> StartedCoreNode {
     let root = std::env::temp_dir().join("peppy-test-outside-home-root");
-    if root.exists() {
-        for entry in std::fs::read_dir(&root).expect("read stable outside-home test root") {
-            let path = entry.expect("read dir entry").path();
-            if path.is_dir() {
-                std::fs::remove_dir_all(&path).expect("wipe stale test root subdir");
-            } else {
-                std::fs::remove_file(&path).expect("wipe stale test root file");
-            }
+    std::fs::create_dir_all(&root).expect("create stable outside-home test root");
+    for entry in std::fs::read_dir(&root).expect("read stable outside-home test root") {
+        let path = entry.expect("read dir entry").path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).expect("wipe stale test root subdir");
+        } else {
+            std::fs::remove_file(&path).expect("wipe stale test root file");
         }
-    } else {
-        std::fs::create_dir_all(&root).expect("create stable outside-home test root");
     }
     let peppy_dirs = PeppyDirs::new(&root);
     let shared_messenger = create_mock_messenger().await;
