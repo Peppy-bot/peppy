@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::ZenohEndpoint;
+use super::{ZenohEndpoint, unbracket_host};
 
 /// How often the probe re-reads the admin space while links are still
 /// pending. Establishment is normally a few tens of milliseconds after
@@ -62,7 +62,7 @@ impl ConfiguredEndpoint {
         Some(Self {
             raw: locator.to_string(),
             protocol: parsed.protocol().to_string(),
-            host: unbracket(parsed.host()).to_ascii_lowercase(),
+            host: unbracket_host(parsed.host()).to_ascii_lowercase(),
             port: parsed.port(),
             ips: Vec::new(),
         })
@@ -79,7 +79,7 @@ impl ConfiguredEndpoint {
         if parsed.protocol().to_string() != self.protocol || parsed.port() != self.port {
             return false;
         }
-        let dst_host = unbracket(parsed.host()).to_ascii_lowercase();
+        let dst_host = unbracket_host(parsed.host()).to_ascii_lowercase();
         if dst_host == self.host {
             return true;
         }
@@ -87,12 +87,6 @@ impl ConfiguredEndpoint {
             .parse::<IpAddr>()
             .is_ok_and(|ip| self.ips.contains(&ip))
     }
-}
-
-fn unbracket(host: &str) -> &str {
-    host.strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host)
 }
 
 /// Extracts every transport link destination from a router admin-space reply

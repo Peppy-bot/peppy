@@ -53,7 +53,7 @@ use config::node::{RetentionDepth, TopicRetention};
 use crate::zenoh_config::render_probe_config;
 #[cfg(feature = "router")]
 use crate::zenohd;
-use crate::zenohd::{ZenohEndpoint, ZenohNetProtocol};
+use crate::zenohd::{ZenohEndpoint, ZenohNetProtocol, unbracket_host};
 #[cfg(feature = "router")]
 use crate::{Messenger, MessengerAdapter};
 use crate::{MessengerBackend, Subscription};
@@ -1151,11 +1151,7 @@ impl MessengerBackend for ZenohAdapter {
         // `IpAddr::from_str` expects the bare address, so the brackets come
         // off before parsing. `client_locator()` is the complete endpoint,
         // protocol included.
-        let ip_host = host
-            .strip_prefix('[')
-            .and_then(|host| host.strip_suffix(']'))
-            .unwrap_or(host);
-        let ip = ip_host
+        let ip = unbracket_host(host)
             .parse()
             .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
         SocketAddr::new(ip, port)
