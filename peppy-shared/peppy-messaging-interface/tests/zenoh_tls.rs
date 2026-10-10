@@ -40,8 +40,7 @@ mod zenoh_tls_tests {
     /// config takes filesystem paths, so the embedded fixtures are written out.
     struct Certs {
         // Held only for its `Drop` (cleans up the tempdir at end of test).
-        #[allow(dead_code)]
-        dir: tempfile::TempDir,
+        _dir: tempfile::TempDir,
         ca: PathBuf,
         cert: PathBuf,
         key: PathBuf,
@@ -63,7 +62,7 @@ mod zenoh_tls_tests {
         let client_cert = put("client.pem", CLIENT_CERT_PEM);
         let client_key = put("client.key", CLIENT_KEY_PEM);
         Certs {
-            dir,
+            _dir: dir,
             ca,
             cert,
             key,
@@ -118,26 +117,34 @@ mod zenoh_tls_tests {
     }
 
     async fn start_router_with_tls(tls: TlsConfig) -> (Messenger, u16) {
+        start_router(ZenohNetProtocol::Tls, Vec::new(), tls).await
+    }
+
+    /// Starts a `zenohd` router listening on `<protocol>/127.0.0.1:<port>` that
+    /// dials `connect_endpoints` and carries `tls`. Returns the owning
+    /// `Messenger` (drop it to stop zenohd) and the port.
+    async fn start_router(
+        protocol: ZenohNetProtocol,
+        connect_endpoints: Vec<String>,
+        tls: TlsConfig,
+    ) -> (Messenger, u16) {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
         let port = listener.local_addr().expect("local addr").port();
         drop(listener);
 
         let adapter = ZenohAdapter::with_router(
-            ZenohNetProtocol::Tls,
+            protocol,
             "127.0.0.1",
             port,
             false,
             SubscriberBufferSizes::default(),
-            Vec::new(),
+            connect_endpoints,
             Some(tls),
             RouterId::generate(),
         )
-        .expect("build tls router adapter");
+        .expect("build router adapter");
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-        messenger
-            .start_router()
-            .await
-            .expect("start tls zenohd router");
+        messenger.start_router().await.expect("start zenohd router");
         (messenger, port)
     }
 
@@ -157,27 +164,12 @@ mod zenoh_tls_tests {
     /// enrolled in a platform project: local nodes speak plaintext loopback, and
     /// only the inter-router hop is encrypted.
     async fn start_federated_router(remote_port: u16, upstream_tls: TlsConfig) -> (Messenger, u16) {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
-        let port = listener.local_addr().expect("local addr").port();
-        drop(listener);
-
-        let adapter = ZenohAdapter::with_router(
+        start_router(
             ZenohNetProtocol::Tcp,
-            "127.0.0.1",
-            port,
-            false,
-            SubscriberBufferSizes::default(),
             vec![format!("tls/127.0.0.1:{remote_port}")],
-            Some(upstream_tls),
-            RouterId::generate(),
+            upstream_tls,
         )
-        .expect("build federated router adapter");
-        let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-        messenger
-            .start_router()
-            .await
-            .expect("start federated zenohd router");
-        (messenger, port)
+        .await
     }
 
     /// Opens a plaintext `tcp/` client session to a local router, retrying while
