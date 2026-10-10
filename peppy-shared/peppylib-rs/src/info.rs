@@ -9,27 +9,13 @@ use std::time::Duration;
 
 use core_node_api::encoding::{InfoRequest, InfoResponse};
 
-use crate::core_node::transport::poll;
+use crate::core_node::poll_bound_core_node;
 use crate::error::Result;
 use crate::runtime::NodeRunner;
-
-const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn info(
     node_runner: &NodeRunner,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<InfoResponse> {
-    let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
-    let processor = node_runner.processor();
-    let core_node = processor.bound_core_node();
-
-    poll(
-        &InfoRequest::new(),
-        node_runner.messenger(),
-        core_node,
-        processor.bound_instance_id(),
-        core_node,
-        timeout,
-    )
-    .await
+    poll_bound_core_node(node_runner, &InfoRequest::new(), response_timeout.into()).await
 }

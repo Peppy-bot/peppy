@@ -14,11 +14,9 @@ use core_node_api::encoding::{
     DatastoreGetRequest, DatastoreListRequest, DatastoreRemoveRequest, DatastoreStoreRequest,
 };
 
-use crate::core_node::transport::poll;
+use crate::core_node::poll_bound_core_node;
 use crate::error::Result;
 use crate::runtime::NodeRunner;
-
-const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A Zenoh-style content-type tag describing how a datastore value's bytes
 /// should be interpreted (e.g. `text/plain`, `application/json`).
@@ -123,21 +121,9 @@ pub async fn store(
     encoding: impl Into<Encoding>,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<()> {
-    let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
     let encoding: Encoding = encoding.into();
     let request = DatastoreStoreRequest::new(key, value, encoding)?;
-    let processor = node_runner.processor();
-    let core_node = processor.bound_core_node();
-
-    poll(
-        &request,
-        node_runner.messenger(),
-        core_node,
-        processor.bound_instance_id(),
-        core_node,
-        timeout,
-    )
-    .await?;
+    poll_bound_core_node(node_runner, &request, response_timeout.into()).await?;
 
     Ok(())
 }
@@ -152,20 +138,8 @@ pub async fn get(
     key: impl Into<String>,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<Option<StoredValue>> {
-    let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
     let request = DatastoreGetRequest::new(key)?;
-    let processor = node_runner.processor();
-    let core_node = processor.bound_core_node();
-
-    let response = poll(
-        &request,
-        node_runner.messenger(),
-        core_node,
-        processor.bound_instance_id(),
-        core_node,
-        timeout,
-    )
-    .await?;
+    let response = poll_bound_core_node(node_runner, &request, response_timeout.into()).await?;
 
     Ok(response.found.then_some(StoredValue {
         value: response.value,
@@ -182,17 +156,10 @@ pub async fn list(
     node_runner: &NodeRunner,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<Vec<DatastoreEntry>> {
-    let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
-    let processor = node_runner.processor();
-    let core_node = processor.bound_core_node();
-
-    let response = poll(
+    let response = poll_bound_core_node(
+        node_runner,
         &DatastoreListRequest::new(),
-        node_runner.messenger(),
-        core_node,
-        processor.bound_instance_id(),
-        core_node,
-        timeout,
+        response_timeout.into(),
     )
     .await?;
 
@@ -217,20 +184,8 @@ pub async fn remove(
     key: impl Into<String>,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<bool> {
-    let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
     let request = DatastoreRemoveRequest::new(key)?;
-    let processor = node_runner.processor();
-    let core_node = processor.bound_core_node();
-
-    let response = poll(
-        &request,
-        node_runner.messenger(),
-        core_node,
-        processor.bound_instance_id(),
-        core_node,
-        timeout,
-    )
-    .await?;
+    let response = poll_bound_core_node(node_runner, &request, response_timeout.into()).await?;
 
     Ok(response.removed)
 }

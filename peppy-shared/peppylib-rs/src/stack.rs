@@ -11,11 +11,9 @@ use std::time::Duration;
 use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::{CopyInfo, StackListRequest};
 
-use crate::core_node::transport::poll;
+use crate::core_node::poll_bound_core_node;
 use crate::error::{Error, Result};
 use crate::runtime::NodeRunner;
-
-const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Deserialized form of `StackListResponse`: `graph_json` parsed into a
 /// `SerializedNodeGraph`, with the serving daemon's identity preserved.
@@ -39,17 +37,10 @@ pub async fn list(
     node_runner: &NodeRunner,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<StackList> {
-    let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
-    let processor = node_runner.processor();
-    let core_node = processor.bound_core_node();
-
-    let response = poll(
+    let response = poll_bound_core_node(
+        node_runner,
         &StackListRequest::new(),
-        node_runner.messenger(),
-        core_node,
-        processor.bound_instance_id(),
-        core_node,
-        timeout,
+        response_timeout.into(),
     )
     .await?;
 

@@ -20,15 +20,13 @@ use config::runtime::{ClockBinding, ClockDomainId, ClockRole, ProducerRef};
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
 use core_node_api::{TopicId, names};
 
-use crate::core_node::transport::poll;
+use crate::core_node::poll_bound_core_node;
 use crate::error::{Error, Result};
 use crate::messaging::{
     SenderTarget, ServiceRequestContext, Subscription, TopicMessenger, TopicPublisher,
 };
 use crate::runtime::{NodeRunner, TaskHandle, spawn};
 use crate::types::Payload;
-
-const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Failures observable from a [`ClockSource`]. Wall mode propagates a system
 /// clock error; sim mode reports a missing first tick.
@@ -147,20 +145,9 @@ pub async fn synchronize(
     node_runner: &NodeRunner,
     response_timeout: Option<Duration>,
 ) -> Result<ClockSync> {
-    let timeout = response_timeout.unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
-    let processor = node_runner.processor();
-    let core_node = processor.bound_core_node();
-
     let t0 = wall_now_ns()?;
-    let response = poll(
-        &ClockRequest::new(t0),
-        node_runner.messenger(),
-        core_node,
-        processor.bound_instance_id(),
-        core_node,
-        timeout,
-    )
-    .await?;
+    let response =
+        poll_bound_core_node(node_runner, &ClockRequest::new(t0), response_timeout).await?;
     let t3 = wall_now_ns()?;
 
     let (offset_ns, round_trip_delay_ns) =
