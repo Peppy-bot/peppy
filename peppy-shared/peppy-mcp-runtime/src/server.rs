@@ -285,21 +285,13 @@ impl ExposureServerBuilder {
 
         let mut names = HashSet::new();
         for entry in &bundle.resources {
-            if !names.insert(entry.name.clone()) {
-                return Err(BuildError::DuplicateName {
-                    name: entry.name.clone(),
-                });
-            }
+            claim_name(&mut names, &entry.name)?;
         }
 
         let mut tools = HashMap::new();
         let mut tool_list = Vec::new();
         for entry in &bundle.tools {
-            if !names.insert(entry.name.clone()) {
-                return Err(BuildError::DuplicateName {
-                    name: entry.name.clone(),
-                });
-            }
+            claim_name(&mut names, &entry.name)?;
             let handler =
                 handlers
                     .remove(&entry.name)
@@ -329,11 +321,7 @@ impl ExposureServerBuilder {
 
         let mut tasks = HashMap::new();
         for entry in &bundle.tasks {
-            if !names.insert(entry.name.clone()) {
-                return Err(BuildError::DuplicateName {
-                    name: entry.name.clone(),
-                });
-            }
+            claim_name(&mut names, &entry.name)?;
             let handler = task_handlers.remove(&entry.name).ok_or_else(|| {
                 BuildError::MissingTaskHandler {
                     name: entry.name.clone(),
@@ -362,11 +350,7 @@ impl ExposureServerBuilder {
 
         let mut pictures = HashMap::new();
         for entry in &bundle.pictures {
-            if !names.insert(entry.name.clone()) {
-                return Err(BuildError::DuplicateName {
-                    name: entry.name.clone(),
-                });
-            }
+            claim_name(&mut names, &entry.name)?;
             if !bundle
                 .resources
                 .iter()
@@ -397,11 +381,7 @@ impl ExposureServerBuilder {
 
         let record = match &bundle.call_record {
             Some(entry) => {
-                if !names.insert(entry.name.clone()) {
-                    return Err(BuildError::DuplicateName {
-                        name: entry.name.clone(),
-                    });
-                }
+                claim_name(&mut names, &entry.name)?;
                 let record = CallRecord::new(
                     entry.name.clone(),
                     entry.description.clone(),
@@ -425,11 +405,7 @@ impl ExposureServerBuilder {
             }
             (BundleSurface::PerRobot { .. }, None) => return Err(BuildError::MissingFleetSource),
             (BundleSurface::PerRobot { robots, contracts }, Some(source)) => {
-                if !names.insert(robots.list.name.clone()) {
-                    return Err(BuildError::DuplicateName {
-                        name: robots.list.name.clone(),
-                    });
-                }
+                claim_name(&mut names, &robots.list.name)?;
                 let fleet = Arc::new(FleetRuntime::new(
                     &bundle,
                     robots.clone(),
@@ -458,6 +434,18 @@ impl ExposureServerBuilder {
             }),
         })
     }
+}
+
+/// Claims `name` for one catalog entry, refusing a name an earlier entry
+/// of the bundle already claimed: resources, tools, tasks, picture tools,
+/// the record tool and the listing tool share one namespace.
+fn claim_name(names: &mut HashSet<String>, name: &str) -> Result<(), BuildError> {
+    if names.insert(name.to_string()) {
+        return Ok(());
+    }
+    Err(BuildError::DuplicateName {
+        name: name.to_string(),
+    })
 }
 
 /// Measures the compact serialized size of a value without materializing
