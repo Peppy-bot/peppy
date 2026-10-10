@@ -14,6 +14,7 @@ pub use search::search_rendered;
 pub use show::show_rendered;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Subcommand;
 use core_node_api::encoding::{GitRepoRef, RepoSource};
@@ -22,6 +23,10 @@ use std::path::PathBuf;
 
 use super::Command;
 use crate::{context::AppContext, error::Result};
+
+/// How long the daemon has to answer one repository request of `repo add`,
+/// `repo exclude`, `repo remove` or `repo list`.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Human-readable label for a repository source as this binary reads it
 /// (used in CLI output).
