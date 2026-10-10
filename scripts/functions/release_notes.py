@@ -48,7 +48,8 @@ class ReleaseNotesInput:
 def extract_release_date(details: dict[str, Any]) -> datetime.date:
     """Extract the release date from the GitHub release details JSON.
 
-    Uses published_at or created_at, falling back to today's date.
+    Uses published_at or created_at, falling back to today's date in the
+    local time zone of the host.
     """
     for field in ("published_at", "created_at"):
         dt = details.get(field)
@@ -57,7 +58,7 @@ def extract_release_date(details: dict[str, Any]) -> datetime.date:
                 return datetime.date.fromisoformat(dt[:10])
             except ValueError:
                 continue
-    return datetime.date.today()
+    return datetime.datetime.now().astimezone().date()
 
 
 def build_article_html(
