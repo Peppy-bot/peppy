@@ -70,6 +70,28 @@ def test_get_docker_hub_username_invalid_json(tmp_path: Path) -> None:
         assert _get_docker_hub_username() is None
 
 
+@pytest.mark.parametrize(
+    "auth",
+    [
+        "not-base64!",
+        "caf\u00e9",
+        base64.b64encode(b"\xff\xfe:tok").decode(),
+        12345,
+        ["peppybot:tok"],
+    ],
+    ids=["bad-padding", "not-ascii", "not-utf8", "number", "list"],
+)
+def test_get_docker_hub_username_undecodable_auth(
+    tmp_path: Path, auth: object
+) -> None:
+    docker_dir = tmp_path / ".docker"
+    docker_dir.mkdir()
+    config = {"auths": {DOCKER_HUB_REGISTRY: {"auth": auth}}}
+    (docker_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    with patch("functions.docker.Path.home", return_value=tmp_path):
+        assert _get_docker_hub_username() is None
+
+
 def test_get_docker_hub_username_creds_store_fallback(tmp_path: Path) -> None:
     """When auth entry is empty but credsStore is set, delegate to helper."""
     docker_dir = tmp_path / ".docker"

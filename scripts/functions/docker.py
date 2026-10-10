@@ -62,7 +62,9 @@ def _get_docker_hub_username() -> str | None:
     if auth_entry:
         try:
             decoded = base64.b64decode(auth_entry).decode("utf-8")
-        except Exception:
+        except (TypeError, ValueError):
+            # TypeError: an entry that is not a string. ValueError: bad
+            # base64 (binascii.Error) or bytes that are not UTF-8.
             return None
         username, _, _ = decoded.partition(":")
         return username or None
@@ -93,7 +95,7 @@ def _get_username_from_cred_store(creds_store: str) -> str | None:
 
     try:
         cred = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return None
 
     return cred.get("Username") or None
