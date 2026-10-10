@@ -23,10 +23,10 @@ use super::scaffold::sanitize_rust_module_name;
 use super::topics::{qos_profile_tokens, retention_tokens};
 use super::{
     GenerationContext, RustGenerator, build_deserialize_fn, collect_function_params,
-    deserialize_format_fields, map_message_format, prefixed_ident, render_tokens,
+    deserialize_format_fields, identifiers, map_message_format, render_tokens,
 };
 use crate::error::Result;
-use crate::generator::naming::{non_empty_str, to_camel_case};
+use crate::generator::naming::to_camel_case;
 use crate::generator::types::{InterfaceArtifact, InterfaceKind, scoped_schema_key};
 use config::node::Cardinality;
 use proc_macro2::{Ident, Span, TokenStream};
@@ -111,7 +111,7 @@ fn render_emitted_topic(
     spec: &EmittedSpec,
 ) -> Result<(InterfaceArtifact, EmittedMember)> {
     let topic_name = spec.name.as_str();
-    let fn_name = prefixed_ident("", non_empty_str(topic_name), "topic").to_string();
+    let fn_name = identifiers::rust_identifier_or(topic_name, "topic");
     let schema_key = scoped_schema_key(spec.origin.as_ref(), &fn_name);
     let schema_prefix = to_camel_case(&fn_name);
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
@@ -230,7 +230,7 @@ fn render_exposed_service(
     spec: &ExposedServiceSpec,
 ) -> Result<InterfaceArtifact> {
     let service_name = spec.name.as_str();
-    let fn_name = prefixed_ident("", non_empty_str(service_name), "service").to_string();
+    let fn_name = identifiers::rust_identifier_or(service_name, "service");
     let request_key = scoped_schema_key(spec.origin.as_ref(), &fn_name);
     let response_key = scoped_schema_key(spec.origin.as_ref(), &format!("{fn_name}_response"));
     let schema_prefix = to_camel_case(&fn_name);
@@ -377,7 +377,7 @@ fn render_exposed_action(
     spec: &ExposedActionSpec,
 ) -> Result<InterfaceArtifact> {
     let action_name = spec.name.as_str();
-    let base_name = prefixed_ident("", non_empty_str(action_name), "action").to_string();
+    let base_name = identifiers::rust_identifier_or(action_name, "action");
     let goal_key = scoped_schema_key(spec.origin.as_ref(), &format!("{base_name}_goal"));
     let goal_response_key =
         scoped_schema_key(spec.origin.as_ref(), &format!("{base_name}_goal_response"));

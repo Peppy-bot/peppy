@@ -41,15 +41,6 @@ pub(crate) fn sanitize_contract_tag(raw: &str) -> String {
     raw.replace('-', "_")
 }
 
-/// Returns `None` when the trimmed string is empty, otherwise `Some(value)`.
-pub(crate) fn non_empty_str(value: &str) -> Option<&str> {
-    if value.trim().is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
 /// Converts a CamelCase or mixed-case string to snake_case.
 pub(crate) fn normalize_snake_case(input: &str) -> String {
     let mut result = String::new();

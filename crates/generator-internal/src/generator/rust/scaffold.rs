@@ -1,4 +1,4 @@
-use super::identifiers::is_rust_keyword;
+use super::identifiers::rust_identifier_or;
 use crate::generator::common::{
     CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfig, EmbeddedCoreNodeApi,
     EmbeddedPeppyMessagingInterface, EmbeddedPeppylib, WorkspacePackageMetadata,
@@ -7,7 +7,6 @@ use crate::generator::common::{
 use crate::{
     error::{Error, Result},
     generator::{
-        naming::sanitize_component,
         scaffold_tree::{
             ModuleEntry, TreeWriter, build_module_tree, group_artifacts_by_category,
             write_module_tree,
@@ -688,14 +687,7 @@ fn as_function_item(item: ImplItem) -> Option<Item> {
 }
 
 pub(super) fn sanitize_rust_module_name(raw: &str) -> String {
-    let mut out = sanitize_component(raw);
-    if out.is_empty() {
-        return "node".to_string();
-    }
-    if is_rust_keyword(&out) {
-        out.push('_');
-    }
-    out
+    rust_identifier_or(raw, "node")
 }
 
 #[cfg(test)]

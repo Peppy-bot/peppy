@@ -24,8 +24,7 @@ use super::types::{
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
-    non_empty_str, resolve_schema_file_stem, sanitize_component, sanitize_node_display_name,
-    to_camel_case,
+    resolve_schema_file_stem, sanitize_component, sanitize_node_display_name, to_camel_case,
 };
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
@@ -796,8 +795,7 @@ impl LanguageGenerator for RustGenerator {
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         self.testgen.record_emitted_topic(topic, origin);
-        let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
-        let fn_name_str = fn_name.to_string();
+        let fn_name_str = identifiers::rust_identifier_or(topic.name.as_str(), "topic");
 
         let schema_prefix = to_camel_case(&fn_name_str);
         let struct_prefix = String::from("Message");
@@ -848,8 +846,8 @@ impl LanguageGenerator for RustGenerator {
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         self.testgen.record_exposed_service(service, origin);
-        let fn_name = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
-        let fn_name_str = fn_name.to_string();
+        let fn_name_str = identifiers::rust_identifier_or(service.name.as_str(), "service");
+        let fn_name = Ident::new(&fn_name_str, Span::call_site());
         let struct_prefix = to_camel_case(&fn_name_str);
         let generic_response_ident = Ident::new("Response", Span::call_site());
         let generic_handler_ident = Ident::new("handle_next_request", Span::call_site());
@@ -962,8 +960,7 @@ impl LanguageGenerator for RustGenerator {
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         self.testgen.record_exposed_action(action, origin);
-        let base_ident = prefixed_ident("", non_empty_str(&action.name), "action");
-        let base_name = base_ident.to_string();
+        let base_name = identifiers::rust_identifier_or(&action.name, "action");
         let action_prefix = to_camel_case(&base_name);
 
         let mut context = GenerationContext::default();
@@ -1796,11 +1793,6 @@ impl LanguageGenerator for RustGenerator {
         scaffold::add_parameters_to_lib(&to_path, &self.parameters)?;
         Ok(())
     }
-}
-
-fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Ident {
-    let name = identifiers::prefixed_name(prefix, candidate, fallback);
-    Ident::new(&name, Span::call_site())
 }
 
 /// One `#[doc = "..."]` attribute per pre-wrapped doc line (the renderer

@@ -1,6 +1,6 @@
-use crate::generator::naming::{non_empty_str, sanitize_component, to_camel_case};
+use crate::generator::naming::{sanitize_component, to_camel_case};
 
-pub(crate) fn is_rust_keyword(ident: &str) -> bool {
+fn is_rust_keyword(ident: &str) -> bool {
     matches!(
         ident,
         "as" | "break"
@@ -68,36 +68,23 @@ pub(crate) fn sanitize_rust_identifier(raw: &str) -> String {
     ident
 }
 
-/// Builds a prefixed name from an optional candidate, falling back to `fallback`.
-pub(crate) fn prefixed_name(prefix: &str, candidate: Option<&str>, fallback: &str) -> String {
-    let fallback_component = match sanitize_rust_identifier(fallback) {
-        component if component.is_empty() => "item".to_string(),
-        component => component,
-    };
-
-    let maybe_component = candidate.and_then(|value| {
-        let sanitized = sanitize_rust_identifier(value);
-        if sanitized.is_empty() {
-            None
-        } else {
-            Some(sanitized)
-        }
-    });
-
-    let component = maybe_component.unwrap_or(fallback_component);
-
-    if prefix.is_empty() {
-        component
-    } else {
-        format!("{prefix}_{component}")
+/// Converts `raw` into a Rust identifier like [`sanitize_rust_identifier`],
+/// and returns `fallback` when no identifier character of `raw` survives (an
+/// empty, blank or all-punctuation name). The fallback is returned unchanged,
+/// so the caller passes a valid Rust identifier that is not a keyword.
+pub(crate) fn rust_identifier_or(raw: &str, fallback: &str) -> String {
+    let identifier = sanitize_rust_identifier(raw);
+    if identifier.is_empty() {
+        return fallback.to_string();
     }
+    identifier
 }
 
 /// The camel-case struct prefix of a consumed service's generated
 /// request/response types. Every renderer that names these types derives
 /// them from this one rule.
 pub(crate) fn consumed_service_struct_prefix(service_name: &str) -> String {
-    to_camel_case(&prefixed_name("", non_empty_str(service_name), "service"))
+    to_camel_case(&rust_identifier_or(service_name, "service"))
 }
 
 /// The camel-case prefix of a consumed action's generated types, derived
