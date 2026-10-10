@@ -364,19 +364,19 @@ mod tests {
     }
 
     #[test]
-    fn request_decode_rejects_legacy_nonempty_struct() {
-        // The old schema encoded a removed boolean in a one-data-word root
-        // struct. Build both possible framed messages directly so this
-        // regression fixture needs no legacy generated API.
-        for legacy_flag in [false, true] {
+    fn request_decode_rejects_a_struct_that_carries_data() {
+        // A request is an empty struct, so a root struct with one data word
+        // is refused whatever the word holds. The schema has no field to
+        // set, so both framed messages are built by hand.
+        for flag in [false, true] {
             let mut payload = Vec::new();
             payload.extend_from_slice(&0_u32.to_le_bytes()); // one segment
             payload.extend_from_slice(&2_u32.to_le_bytes()); // two words
             payload.extend_from_slice(&(1_u64 << 32).to_le_bytes()); // struct: data=1, ptrs=0
-            payload.extend_from_slice(&u64::from(legacy_flag).to_le_bytes());
+            payload.extend_from_slice(&u64::from(flag).to_le_bytes());
 
             let error = StackListRequest::decode(&payload)
-                .expect_err("legacy request shape must not decode as the new empty request");
+                .expect_err("a request that carries data must not decode");
             assert!(
                 error.to_string().contains("must be an empty struct"),
                 "got: {error}"
@@ -537,10 +537,10 @@ mod tests {
     }
 
     /// The unions carry "part of a launch or not" and "held by a launch or
-    /// not" in their discriminants, so the two halves can no longer be sent
-    /// apart. What remains decodable-but-wrong is an identity arm with a blank
-    /// half, and that is still refused: a launch nobody can name is no better
-    /// than no launch at all, whichever field carried it.
+    /// not" in their discriminants, so the two halves cannot be sent apart.
+    /// What remains decodable-but-wrong is an identity arm with a blank half,
+    /// and that is still refused: a launch nobody can name is no better than
+    /// no launch at all, whichever field carried it.
     #[test]
     fn response_decode_rejects_a_blank_half_of_the_identity() {
         for (launch_id, coordinator, expected) in [
