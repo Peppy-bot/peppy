@@ -1023,12 +1023,7 @@ pub(crate) fn resolve_pin_to_bytes<E: RepoCacheEntry>(
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<(PathBuf, Vec<u8>), String> {
     if let Some(entry) = lookup_by_content(entries, pin) {
-        match resolve_cached_artifact_path(peppy_dirs, entry.origin(), on_feedback).and_then(
-            |path| match std::fs::read(&path) {
-                Ok(bytes) => Ok((path, bytes)),
-                Err(e) => Err(format!("failed to read {}: {e}", path.display())),
-            },
-        ) {
+        match read_cached_artifact(peppy_dirs, entry.origin(), on_feedback) {
             Ok((path, bytes)) if ManifestFingerprint::of_bytes(&bytes) == pin.sha256 => {
                 return Ok((path, bytes));
             }
@@ -1043,6 +1038,19 @@ pub(crate) fn resolve_pin_to_bytes<E: RepoCacheEntry>(
         }
     }
     resolve_pinned_bytes(peppy_dirs, pin, on_feedback)
+}
+
+/// The on-disk path of a cached artifact and the bytes it holds there,
+/// through [`resolve_cached_artifact_path`] (blocking for a git origin).
+fn read_cached_artifact(
+    peppy_dirs: &PeppyDirs,
+    origin: &EntryOrigin,
+    on_feedback: &dyn Fn(Report<'_>),
+) -> std::result::Result<(PathBuf, Vec<u8>), String> {
+    let path = resolve_cached_artifact_path(peppy_dirs, origin, on_feedback)?;
+    let bytes =
+        std::fs::read(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    Ok((path, bytes))
 }
 
 /// Resolves a pinned contract or pairing document to a parsed value, through
