@@ -94,8 +94,8 @@ from .lima import (
     GO_LINUX_AMD64_SHA256,
     GO_LINUX_ARM64_SHA256,
     GO_VERSION,
-    RELEASE_PLATFORM_SO,
-    SO_BUILD_STATE_MARKER,
+    PREBUILT_SO_FILES,
+    missing_prebuilt_so_files,
     require_prebuilt_peppylib_so,
 )
 from .release_docs_gate import verify_docs_gate
@@ -423,7 +423,7 @@ def run_bindings(output_dir: Path) -> None:
         output_dir / BINDINGS_ARCHIVE,
         [
             (so_dir / name, f"{BINDINGS_DIR_NAME}/{name}")
-            for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)
+            for name in PREBUILT_SO_FILES
         ],
     )
 
@@ -541,11 +541,7 @@ def _seed_apptainer_cache(provisioned_dir: Path, arch: str) -> Path:
 def _unpack_bindings(provisioned_dir: Path, destination: Path) -> Path:
     """Unpack the provisioned bindings and return the directory holding them."""
     so_dir = _extract_tree(provisioned_dir / BINDINGS_ARCHIVE, destination)
-    missing = [
-        name
-        for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)
-        if not (so_dir / name).is_file()
-    ]
+    missing = missing_prebuilt_so_files(so_dir)
     if missing:
         raise ReleaseError(
             f"the provisioned bindings lack {', '.join(missing)}"

@@ -56,6 +56,8 @@ RELEASE_PLATFORM_SO = (
     "_peppylib.abi3.macos-aarch64.so",
 )
 SO_BUILD_STATE_MARKER = ".so-build-state"
+# The files a complete peppylib bindings directory holds.
+PREBUILT_SO_FILES = (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)
 
 # Build artifacts the host packaging step reads, as glob patterns relative to
 # {target_dir}/{target_triple}/release/. The in-VM build compiles on the
@@ -333,6 +335,11 @@ def _prebuilt_peppylib_so_dir() -> Path:
     return build_cache_root() / "peppylib-py" / "so" / "release"
 
 
+def missing_prebuilt_so_files(so_dir: Path) -> list[str]:
+    """The files of PREBUILT_SO_FILES that *so_dir* lacks, in their order."""
+    return [name for name in PREBUILT_SO_FILES if not (so_dir / name).is_file()]
+
+
 def require_prebuilt_peppylib_so() -> Path:
     """Return the prebuilt .so dir, failing loudly if the host build has not run.
 
@@ -342,11 +349,7 @@ def require_prebuilt_peppylib_so() -> Path:
     an opaque failure deep inside cargo.
     """
     so_dir = _prebuilt_peppylib_so_dir()
-    missing = [
-        name
-        for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)
-        if not (so_dir / name).is_file()
-    ]
+    missing = missing_prebuilt_so_files(so_dir)
     if missing:
         raise ReleaseError(
             f"prebuilt peppylib bindings missing from {so_dir}: "

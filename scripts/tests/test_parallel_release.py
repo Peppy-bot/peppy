@@ -600,6 +600,29 @@ def test_build_embeds_the_provisioned_bindings_and_apptainer(
     )
 
 
+def test_build_refuses_provisioned_bindings_that_lack_a_file(
+    tmp_path: Path, build_mocks: MagicMock
+) -> None:
+    provisioned = _provisioned(tmp_path, ("aarch64",))
+    bindings = _fake_bindings_dir(tmp_path / "incomplete" / "so")
+    _write_tarball(
+        provisioned / BINDINGS_ARCHIVE,
+        [(bindings / name, f"so/{name}") for name in RELEASE_PLATFORM_SO],
+    )
+
+    with pytest.raises(
+        ReleaseError,
+        match=f"the provisioned bindings lack {re.escape(SO_BUILD_STATE_MARKER)}$",
+    ):
+        run_build(
+            plan_path=build_mocks.plan_path,
+            target="aarch64-unknown-linux-gnu",
+            provisioned_dir=provisioned,
+        )
+
+    build_mocks.build.assert_not_called()
+
+
 def test_build_refuses_a_target_this_host_does_not_build(
     tmp_path: Path, build_mocks: MagicMock
 ) -> None:
