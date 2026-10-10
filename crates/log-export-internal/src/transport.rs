@@ -117,16 +117,14 @@ fn reason(error: &reqwest::Error) -> String {
     if error.is_timeout() {
         return "the request timed out".to_owned();
     }
-    let causes: Vec<String> =
-        std::iter::successors(std::error::Error::source(error), |cause| cause.source())
-            .map(ToString::to_string)
-            .collect();
+    let deepest_cause =
+        std::iter::successors(std::error::Error::source(error), |cause| cause.source()).last();
     let kind = if error.is_connect() {
         "cannot connect"
     } else {
         "the request failed"
     };
-    match causes.last() {
+    match deepest_cause {
         Some(cause) => format!("{kind} ({cause})"),
         None => kind.to_owned(),
     }
