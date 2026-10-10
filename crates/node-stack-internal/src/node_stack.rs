@@ -650,18 +650,18 @@ impl NodeStackInner {
     /// single graph pass (vs one [`Self::instance_is_live_for_pairing`]
     /// scan per id).
     fn live_instance_ids_for_pairing(&self) -> std::collections::HashSet<String> {
-        self.graph
-            .node_weights()
-            .flat_map(|handle| {
-                let guard = handle.read();
-                guard
+        let mut live = std::collections::HashSet::new();
+        for handle in self.graph.node_weights() {
+            let entity = handle.read();
+            live.extend(
+                entity
                     .instances()
                     .iter()
                     .filter(|inst| !inst.state().is_terminal())
-                    .map(|inst| inst.instance_id().as_str().to_string())
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+                    .map(|inst| inst.instance_id().as_str().to_string()),
+            );
+        }
+        live
     }
 
     /// Live pairs, liveness-filtered without mutating the registry (for
@@ -1529,8 +1529,8 @@ impl NodeStack {
     pub fn live_container_instance_ids(&self) -> Vec<String> {
         let guard = self.shared.read();
         guard
-            .entities_snapshot()
-            .iter()
+            .graph
+            .node_weights()
             .flat_map(|handle| {
                 let entity = handle.read();
                 live_container_instances_of(entity.config(), entity.instances())
@@ -1764,6 +1764,62 @@ mod live_container_instances_tests {
         let process = config_of(r#"{ language: "rust", run_cmd: ["recon"] }"#);
         let instances = [instance("running_inst", InstanceState::Running)];
         assert!(live_container_instances_of(&process, &instances).is_empty());
+    }
+
+    /// The stack walk applies the rule to every entity and keeps the instances
+    /// of each entity in start order.
+    #[test]
+    fn the_stack_names_the_live_instances_of_its_container_nodes() {
+        let root = NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "root", tag: "v1" },
+                execution: { language: "rust", run_cmd: ["root"] },
+            }"#,
+        )
+        .expect("valid root config");
+        let stack = NodeStack::new(root, None, PathBuf::from("/tmp/root"));
+        let process = NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "helper", tag: "v1" },
+                execution: { language: "rust", run_cmd: ["helper"] },
+                interfaces: {},
+            }"#,
+        )
+        .expect("valid process node config");
+        let nodes = [
+            (
+                container_config(),
+                vec![
+                    instance("running_inst", InstanceState::Running),
+                    instance("finished_inst", InstanceState::Finished),
+                    instance("starting_inst", InstanceState::Starting),
+                ],
+            ),
+            (
+                process,
+                vec![instance("process_inst", InstanceState::Running)],
+            ),
+        ];
+        for (config, instances) in nodes {
+            let entity = NodeEntity::from_snapshot(
+                config,
+                PathBuf::from("/tmp/node"),
+                Some(PathBuf::from("/tmp/node/artifact")),
+                instances,
+            );
+            stack
+                .shared
+                .write()
+                .push_entity(entity, false)
+                .expect("the node joins the stack");
+        }
+
+        assert_eq!(
+            stack.live_container_instance_ids(),
+            vec!["running_inst".to_string(), "starting_inst".to_string()]
+        );
     }
 }
 
