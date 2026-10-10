@@ -395,114 +395,79 @@ impl RustGenerator {
             }
         };
 
-        let method_tokens = if let Some(result_artifacts) = result_artifacts {
-            // Defines `ResultResponseData` (+ ctor) in the context.
-            let _params = collect_function_params(
-                None,
-                Some(&result_artifacts),
-                &format!("{action_struct_name}ResultResponse"),
-                context,
-                Some(&data_ident),
-            )?;
+        let decoder = match result_artifacts {
+            Some(result_artifacts) => {
+                // Defines `ResultResponseData` (+ ctor) in the context.
+                let _params = collect_function_params(
+                    None,
+                    Some(&result_artifacts),
+                    &format!("{action_struct_name}ResultResponse"),
+                    context,
+                    Some(&data_ident),
+                )?;
 
-            let response_schema = self.register_schema(
-                result_schema_key,
-                "ResultResponseMessage",
-                &result_artifacts,
-            )?;
-            let reader_type = response_schema.reader_type_tokens();
-            let response_format = result_artifacts.message_format();
-            let context_expr = quote!(format!(
-                "{} {} {}",
-                TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse"
-            ));
-            let (statements, inits, _) =
-                deserialize_format_fields(response_format, "ResultResponseData", &context_expr)?;
-            helper_items.push(build_deserialize_fn(
-                &Ident::new("deserialize_result_response", Span::call_site()),
-                &reader_type,
-                &context_expr,
-                &quote!(#data_ident),
-                &statements,
-                &quote!(#data_ident { #( #inits ),* }),
-            ));
-
-            helper_items.push(quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub enum #outcome_ident {
-                    Completed(#data_ident),
-                    Cancelled(#data_ident),
-                    Abandoned,
-                    Expired,
-                }
-            });
-            helper_items.push(response_struct);
-
-            quote! {
-                pub async fn get_result(
-                    &self,
-                    timeout: std::time::Duration,
-                ) -> crate::Result<#response_ident> {
-                    let reply = peppylib::ActionMessenger::request_result(
-                        &self.messenger,
-                        &self.inner,
-                        timeout,
-                    )
-                    .await?;
-                    let outcome = match reply.status {
-                        peppylib::messaging::ResultStatus::Completed => {
-                            #outcome_ident::Completed(deserialize_result_response(reply.body.as_ref())?)
-                        }
-                        peppylib::messaging::ResultStatus::Cancelled => {
-                            #outcome_ident::Cancelled(deserialize_result_response(reply.body.as_ref())?)
-                        }
-                        peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
-                        peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
-                    };
-                    Ok(#response_ident {
-                        instance_id: reply.instance_id,
-                        core_node: reply.core_node,
-                        outcome,
-                    })
-                }
+                let response_schema = self.register_schema(
+                    result_schema_key,
+                    "ResultResponseMessage",
+                    &result_artifacts,
+                )?;
+                let reader_type = response_schema.reader_type_tokens();
+                let response_format = result_artifacts.message_format();
+                let context_expr = quote!(format!(
+                    "{} {} {}",
+                    TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse"
+                ));
+                let (statements, inits, _) = deserialize_format_fields(
+                    response_format,
+                    "ResultResponseData",
+                    &context_expr,
+                )?;
+                let deserialize_fn_ident =
+                    Ident::new("deserialize_result_response", Span::call_site());
+                helper_items.push(build_deserialize_fn(
+                    &deserialize_fn_ident,
+                    &reader_type,
+                    &context_expr,
+                    &quote!(#data_ident),
+                    &statements,
+                    &quote!(#data_ident { #( #inits ),* }),
+                ));
+                Some(ResultDecoder {
+                    data_ident,
+                    deserialize_fn_ident,
+                })
             }
-        } else {
-            helper_items.push(quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub enum #outcome_ident {
-                    Completed,
-                    Cancelled,
-                    Abandoned,
-                    Expired,
-                }
-            });
-            helper_items.push(response_struct);
+            None => None,
+        };
 
-            quote! {
-                pub async fn get_result(
-                    &self,
-                    timeout: std::time::Duration,
-                ) -> crate::Result<#response_ident> {
-                    let reply = peppylib::ActionMessenger::request_result(
-                        &self.messenger,
-                        &self.inner,
-                        timeout,
-                    )
-                    .await?;
-                    let outcome = match reply.status {
-                        peppylib::messaging::ResultStatus::Completed => #outcome_ident::Completed,
-                        peppylib::messaging::ResultStatus::Cancelled => #outcome_ident::Cancelled,
-                        peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
-                        peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
-                    };
-                    Ok(#response_ident {
-                        instance_id: reply.instance_id,
-                        core_node: reply.core_node,
-                        outcome,
-                    })
-                }
+        let ResultOutcomeTokens { variants, decode } =
+            build_result_outcome(&outcome_ident, decoder.as_ref());
+        helper_items.push(quote! {
+            #[derive(Debug, Clone)]
+            #[allow(dead_code)]
+            pub enum #outcome_ident {
+                #variants
+            }
+        });
+        helper_items.push(response_struct);
+
+        let method_tokens = quote! {
+            pub async fn get_result(
+                &self,
+                timeout: std::time::Duration,
+            ) -> crate::Result<#response_ident> {
+                let reply = peppylib::ActionMessenger::request_result(
+                    &self.messenger,
+                    &self.inner,
+                    timeout,
+                )
+                .await?;
+                #decode
+                Ok(#response_ident {
+                    instance_id: reply.instance_id,
+                    core_node: reply.core_node,
+                    outcome,
+                })
             }
         };
 
@@ -657,6 +622,73 @@ impl RustGenerator {
         };
 
         Ok((method_tokens, vec![helper_tokens]))
+    }
+}
+
+/// The struct an action's result reply decodes into and the generated
+/// function that decodes it from the reply body.
+struct ResultDecoder {
+    data_ident: Ident,
+    deserialize_fn_ident: Ident,
+}
+
+/// The variants of a `ResultOutcome` enum and the `let outcome = match ...;`
+/// statement that maps a result reply's `ResultStatus` onto them.
+struct ResultOutcomeTokens {
+    variants: TokenStream,
+    decode: TokenStream,
+}
+
+/// Builds the `ResultOutcome` mapping shared by the production `get_result`
+/// and the fixture caller of an exposed action. With a `decoder`, the
+/// completed and cancelled outcomes carry the decoded result data; without
+/// one, every outcome is a unit variant. Abandoned and expired outcomes
+/// never carry data.
+fn build_result_outcome(
+    outcome_ident: &Ident,
+    decoder: Option<&ResultDecoder>,
+) -> ResultOutcomeTokens {
+    let Some(ResultDecoder {
+        data_ident,
+        deserialize_fn_ident,
+    }) = decoder
+    else {
+        return ResultOutcomeTokens {
+            variants: quote! {
+                Completed,
+                Cancelled,
+                Abandoned,
+                Expired,
+            },
+            decode: quote! {
+                let outcome = match reply.status {
+                    peppylib::messaging::ResultStatus::Completed => #outcome_ident::Completed,
+                    peppylib::messaging::ResultStatus::Cancelled => #outcome_ident::Cancelled,
+                    peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
+                    peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
+                };
+            },
+        };
+    };
+    ResultOutcomeTokens {
+        variants: quote! {
+            Completed(#data_ident),
+            Cancelled(#data_ident),
+            Abandoned,
+            Expired,
+        },
+        decode: quote! {
+            let outcome = match reply.status {
+                peppylib::messaging::ResultStatus::Completed => {
+                    #outcome_ident::Completed(#deserialize_fn_ident(reply.body.as_ref())?)
+                }
+                peppylib::messaging::ResultStatus::Cancelled => {
+                    #outcome_ident::Cancelled(#deserialize_fn_ident(reply.body.as_ref())?)
+                }
+                peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
+                peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
+            };
+        },
     }
 }
 

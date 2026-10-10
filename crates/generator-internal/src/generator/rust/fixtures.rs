@@ -22,8 +22,9 @@ use super::mock::{
 use super::scaffold::sanitize_rust_module_name;
 use super::topics::{qos_profile_tokens, retention_tokens};
 use super::{
-    GenerationContext, RustGenerator, build_deserialize_fn, collect_function_params,
-    deserialize_format_fields, identifiers, map_message_format, render_tokens,
+    GenerationContext, ResultDecoder, ResultOutcomeTokens, RustGenerator, build_deserialize_fn,
+    build_result_outcome, collect_function_params, deserialize_format_fields, identifiers,
+    map_message_format, render_tokens,
 };
 use crate::error::Result;
 use crate::generator::naming::to_camel_case;
@@ -523,7 +524,7 @@ fn render_exposed_action(
     };
 
     // Result: fixtures deserialize; production defines no struct.
-    let (outcome_variants, decode_result) = match &spec.result {
+    let result_decoder = match &spec.result {
         Some(format) => {
             let fn_ident = Ident::new("deserialize_result", Span::call_site());
             let artifacts = map_message_format(&result_key, Some(format))?
@@ -536,7 +537,7 @@ fn render_exposed_action(
                 .iter()
                 .map(|param| (param.ident.clone(), param.ty.clone()))
                 .collect();
-            context.add_struct(result_ident, fields);
+            context.add_struct(result_ident.clone(), fields);
             extra_items.extend(context.into_tokens());
 
             let info = generator.register_schema(
@@ -561,44 +562,20 @@ fn render_exposed_action(
                 &field_statements,
                 &result_expr,
             ));
-            (
-                quote! {
-                    Completed(ResultData),
-                    Cancelled(ResultData),
-                    Abandoned,
-                    Expired,
-                },
-                quote! {
-                    let outcome = match reply.status {
-                        peppylib::messaging::ResultStatus::Completed => {
-                            ResultOutcome::Completed(deserialize_result(reply.body.as_ref())?)
-                        }
-                        peppylib::messaging::ResultStatus::Cancelled => {
-                            ResultOutcome::Cancelled(deserialize_result(reply.body.as_ref())?)
-                        }
-                        peppylib::messaging::ResultStatus::Abandoned => ResultOutcome::Abandoned,
-                        peppylib::messaging::ResultStatus::Expired => ResultOutcome::Expired,
-                    };
-                },
-            )
+            Some(ResultDecoder {
+                data_ident: result_ident,
+                deserialize_fn_ident: fn_ident,
+            })
         }
-        None => (
-            quote! {
-                Completed,
-                Cancelled,
-                Abandoned,
-                Expired,
-            },
-            quote! {
-                let outcome = match reply.status {
-                    peppylib::messaging::ResultStatus::Completed => ResultOutcome::Completed,
-                    peppylib::messaging::ResultStatus::Cancelled => ResultOutcome::Cancelled,
-                    peppylib::messaging::ResultStatus::Abandoned => ResultOutcome::Abandoned,
-                    peppylib::messaging::ResultStatus::Expired => ResultOutcome::Expired,
-                };
-            },
-        ),
+        None => None,
     };
+    let ResultOutcomeTokens {
+        variants: outcome_variants,
+        decode: decode_result,
+    } = build_result_outcome(
+        &Ident::new("ResultOutcome", Span::call_site()),
+        result_decoder.as_ref(),
+    );
 
     let doc = format!(
         "Identity-explicit caller for the node's exposed action `{action_name}`: drives \
