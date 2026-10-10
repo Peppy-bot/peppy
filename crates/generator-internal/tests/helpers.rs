@@ -1058,18 +1058,13 @@ pub async fn send_shutdown(
     target_instance_id: &str,
     timeout: Duration,
 ) {
-    let payload = peppylib::types::Payload::from_static(b"shutdown");
-    ServiceMessenger::poll(
+    poll_shutdown(
         messenger,
         bound_core_node,
         sender_instance_id,
-        test_node_target(to_node_name),
-        SHUTDOWN_SERVICE,
-        ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
-            target_core_node,
-            target_instance_id,
-        )),
-        payload,
+        to_node_name,
+        target_core_node,
+        target_instance_id,
         timeout,
     )
     .await
@@ -1092,8 +1087,31 @@ pub async fn try_send_shutdown(
     target_instance_id: &str,
     timeout: Duration,
 ) {
+    let _ = poll_shutdown(
+        messenger,
+        bound_core_node,
+        sender_instance_id,
+        to_node_name,
+        target_core_node,
+        target_instance_id,
+        timeout,
+    )
+    .await;
+}
+
+/// Polls the shutdown service of one instance of `to_node_name`, the request
+/// both `send_shutdown` and `try_send_shutdown` send.
+async fn poll_shutdown(
+    messenger: &MessengerHandle,
+    bound_core_node: &str,
+    sender_instance_id: &str,
+    to_node_name: &str,
+    target_core_node: &str,
+    target_instance_id: &str,
+    timeout: Duration,
+) -> peppylib::PeppyResult<peppylib::Message> {
     let payload = peppylib::types::Payload::from_static(b"shutdown");
-    let _ = ServiceMessenger::poll(
+    ServiceMessenger::poll(
         messenger,
         bound_core_node,
         sender_instance_id,
@@ -1106,7 +1124,7 @@ pub async fn try_send_shutdown(
         payload,
         timeout,
     )
-    .await;
+    .await
 }
 
 // ---------------------------------------------------------------------------
