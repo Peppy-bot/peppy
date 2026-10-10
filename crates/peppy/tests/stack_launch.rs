@@ -4049,6 +4049,15 @@ fn stack_resolve_never_reads_a_bare_name_from_the_current_directory() {
 const CACHED_NODE_NAME: &str = "cached_launch_node";
 const CACHED_INSTANCE_ID: &str = "cached_launch_inst";
 
+/// Whether a [`CountedLaunch`] launch or build may reuse the artifact a
+/// previous build of identical sources stored.
+enum BuildCache {
+    /// Reuses a cached artifact when one fits.
+    Reuse,
+    /// Builds again despite a cached artifact, as `--rebuild` does.
+    Rebuild,
+}
+
 /// One Cargo-scaffolded node named by a launcher, whose `build_cmd` counts
 /// its runs and whose instance is a keep-alive the test can end at once.
 /// Every launch goes through the same daemon and the same repo cache entry,
@@ -4154,9 +4163,12 @@ impl CountedLaunch {
     }
 
     /// What every `stack launch` and `stack build` of this launcher takes.
-    fn launcher_args(&self, rebuild: bool) -> LauncherArgs {
+    fn launcher_args(&self, build_cache: BuildCache) -> LauncherArgs {
         LauncherArgs {
-            rebuild,
+            rebuild: match build_cache {
+                BuildCache::Reuse => false,
+                BuildCache::Rebuild => true,
+            },
             ..launcher_args(self.launcher_path.clone(), Some(3600))
         }
     }
@@ -4166,9 +4178,9 @@ impl CountedLaunch {
     /// and goes away with it, so each launch installs its own: the next
     /// launch's teardown then ends the instance at once instead of waiting
     /// out the force-kill deadline.
-    async fn launch(&self, rebuild: bool) {
+    async fn launch(&self, build_cache: BuildCache) {
         StackCommand {
-            command: StackCommands::Launch(self.launcher_args(rebuild)),
+            command: StackCommands::Launch(self.launcher_args(build_cache)),
         }
         .execute(&self.ctx)
         .expect("launch command should succeed");
@@ -4183,15 +4195,15 @@ impl CountedLaunch {
     }
 
     /// Builds the launcher's node and starts no instance of it.
-    fn build(&self, rebuild: bool) {
-        self.run_build(self.launcher_args(rebuild));
+    fn build(&self, build_cache: BuildCache) {
+        self.run_build(self.launcher_args(build_cache));
     }
 
     /// Builds `launcher`, whichever launcher that is.
     fn build_launcher(&self, launcher: &Path) {
         self.run_build(LauncherArgs {
             launcher_config_path: launcher.to_path_buf(),
-            ..self.launcher_args(false)
+            ..self.launcher_args(BuildCache::Reuse)
         });
     }
 
@@ -4263,7 +4275,7 @@ impl CountedLaunch {
 async fn stack_launch_twice_reuses_the_cached_build() {
     let launch = CountedLaunch::start().await;
 
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(launch.builds(), 1);
     let artifacts = launch.artifacts();
     assert_eq!(artifacts.len(), 1, "got {artifacts:?}");
@@ -4276,7 +4288,7 @@ async fn stack_launch_twice_reuses_the_cached_build() {
     );
     assert_eq!(launch.instance_count().await, 1);
 
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(
         launch.builds(),
         1,
@@ -4299,12 +4311,12 @@ async fn stack_launch_twice_reuses_the_cached_build() {
 async fn stack_launch_rebuild_flag_builds_again_after_a_hit() {
     let launch = CountedLaunch::start().await;
 
-    launch.launch(false).await;
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(launch.builds(), 1);
     let artifacts = launch.artifacts();
 
-    launch.launch(true).await;
+    launch.launch(BuildCache::Rebuild).await;
     assert_eq!(
         launch.builds(),
         2,
@@ -4337,7 +4349,7 @@ async fn stack_launch_rebuild_flag_builds_again_after_a_hit() {
 async fn stack_build_starts_nothing_and_a_launch_reuses_its_build() {
     let launch = CountedLaunch::start().await;
 
-    launch.build(false);
+    launch.build(BuildCache::Reuse);
     assert_eq!(launch.builds(), 1);
     assert_eq!(launch.artifacts().len(), 1);
     assert_eq!(
@@ -4346,7 +4358,7 @@ async fn stack_build_starts_nothing_and_a_launch_reuses_its_build() {
         "a build leaves the node built in the stack with no instance"
     );
 
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(
         launch.builds(),
         1,
@@ -4369,10 +4381,10 @@ async fn stack_build_starts_nothing_and_a_launch_reuses_its_build() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_build_replaces_the_running_stack() {
     let launch = CountedLaunch::start().await;
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(launch.instance_count().await, 1);
 
-    launch.build(false);
+    launch.build(BuildCache::Reuse);
 
     assert_eq!(
         launch.stack_entry().await,
@@ -4395,11 +4407,11 @@ async fn stack_build_replaces_the_running_stack() {
 async fn stack_build_rebuild_flag_builds_again_after_a_hit() {
     let launch = CountedLaunch::start().await;
 
-    launch.build(false);
-    launch.build(false);
+    launch.build(BuildCache::Reuse);
+    launch.build(BuildCache::Reuse);
     assert_eq!(launch.builds(), 1);
 
-    launch.build(true);
+    launch.build(BuildCache::Rebuild);
     assert_eq!(
         launch.builds(),
         2,
@@ -4419,7 +4431,7 @@ async fn stack_build_rebuild_flag_builds_again_after_a_hit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_join_and_remove_after_a_build_are_refused() {
     let launch = CountedLaunch::start().await;
-    launch.build(false);
+    launch.build(BuildCache::Reuse);
 
     let refusal = join_copy(&launch.ctx)
         .expect_err("a join needs a launched stack")
@@ -4621,7 +4633,7 @@ async fn stack_build_builds_the_nodes_the_selection_runs() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_build_of_a_launcher_that_deploys_nothing_builds_nothing() {
     let launch = CountedLaunch::start().await;
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(launch.instance_count().await, 1);
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
