@@ -204,20 +204,12 @@ impl StackListResponse {
             }
             let mut launch = response.reborrow().init_launch();
             match &self.launch {
-                Some(identity) => {
-                    let mut wire = launch.init_identity();
-                    wire.set_launch_id(&identity.launch_id);
-                    wire.set_coordinator_core_node(&identity.coordinator_core_node);
-                }
+                Some(identity) => write_identity(launch.init_identity(), identity),
                 None => launch.set_standalone(()),
             }
             let mut reservation = response.reborrow().init_reservation();
             match &self.reservation {
-                Some(identity) => {
-                    let mut wire = reservation.init_identity();
-                    wire.set_launch_id(&identity.launch_id);
-                    wire.set_coordinator_core_node(&identity.coordinator_core_node);
-                }
+                Some(identity) => write_identity(reservation.init_identity(), identity),
                 None => reservation.set_none(()),
             }
         }
@@ -298,6 +290,12 @@ impl StackListResponse {
             reservation,
         })
     }
+}
+
+/// Writes one launch identity, for either union that carries one.
+fn write_identity(mut wire: node_capnp::launch_identity::Builder<'_>, identity: &LaunchIdentity) {
+    wire.set_launch_id(&identity.launch_id);
+    wire.set_coordinator_core_node(&identity.coordinator_core_node);
 }
 
 /// Decodes one wire launch identity, refusing a blank half: a launch nobody
