@@ -32,7 +32,7 @@ pub fn extract_tar_zst(archive_path: &Path, destination: &Path) -> std::result::
 
     let mut directories = Vec::new();
     for entry in entries {
-        let mut entry = entry.map_err(|e| {
+        let entry = entry.map_err(|e| {
             format!(
                 "Failed to read archive entry from {}: {}",
                 archive_path.display(),
@@ -57,66 +57,55 @@ pub fn extract_tar_zst(archive_path: &Path, destination: &Path) -> std::result::
                 Component::ParentDir | Component::RootDir | Component::Prefix(..)
             )
         }) {
-            return Err(format!(
-                "Archive {} contains unsafe path: {}",
-                archive_path.display(),
-                entry_path.display()
-            ));
+            return Err(unsafe_path_error(archive_path, &entry_path));
         }
 
         if entry.header().entry_type().is_dir() {
-            directories.push(entry);
-        } else {
-            let unpacked = entry.unpack_in(destination).map_err(|e| {
-                format!(
-                    "Failed to unpack entry {} from {}: {}",
-                    entry_path.display(),
-                    archive_path.display(),
-                    e
-                )
-            })?;
-            if !unpacked {
-                return Err(format!(
-                    "Archive {} contains unsafe path: {}",
-                    archive_path.display(),
-                    entry_path.display()
-                ));
-            }
+            directories.push((entry_path, entry));
+            continue;
         }
+        unpack_entry(entry, &entry_path, destination, archive_path)?;
     }
 
     // Apply directory entries at the end, matching tar::Archive::unpack behavior (avoids
     // directory permissions interfering with descendant extraction).
-    directories.sort_by(|a, b| b.path_bytes().cmp(&a.path_bytes()));
-    for mut dir in directories {
-        let entry_path = dir
-            .path()
-            .map_err(|e| {
-                format!(
-                    "Failed to read entry path from {}: {}",
-                    archive_path.display(),
-                    e
-                )
-            })?
-            .into_owned();
-        let unpacked = dir.unpack_in(destination).map_err(|e| {
-            format!(
-                "Failed to unpack entry {} from {}: {}",
-                entry_path.display(),
-                archive_path.display(),
-                e
-            )
-        })?;
-        if !unpacked {
-            return Err(format!(
-                "Archive {} contains unsafe path: {}",
-                archive_path.display(),
-                entry_path.display()
-            ));
-        }
+    directories.sort_by(|(_, a), (_, b)| b.path_bytes().cmp(&a.path_bytes()));
+    for (entry_path, dir) in directories {
+        unpack_entry(dir, &entry_path, destination, archive_path)?;
     }
 
     Ok(())
+}
+
+/// Unpacks `entry`, whose path is `entry_path`, under `destination`.
+/// `unpack_in` refuses an entry whose path would leave `destination`, which
+/// is an unsafe path too.
+fn unpack_entry<R: std::io::Read>(
+    mut entry: tar::Entry<'_, R>,
+    entry_path: &Path,
+    destination: &Path,
+    archive_path: &Path,
+) -> std::result::Result<(), String> {
+    let unpacked = entry.unpack_in(destination).map_err(|e| {
+        format!(
+            "Failed to unpack entry {} from {}: {}",
+            entry_path.display(),
+            archive_path.display(),
+            e
+        )
+    })?;
+    if !unpacked {
+        return Err(unsafe_path_error(archive_path, entry_path));
+    }
+    Ok(())
+}
+
+fn unsafe_path_error(archive_path: &Path, entry_path: &Path) -> String {
+    format!(
+        "Archive {} contains unsafe path: {}",
+        archive_path.display(),
+        entry_path.display()
+    )
 }
 
 #[cfg(test)]
@@ -201,6 +190,44 @@ mod tests {
         assert!(
             err.contains("unsafe path"),
             "expected an unsafe-path rejection, got: {err}"
+        );
+    }
+
+    /// A directory entry is applied after the files under it, which still
+    /// land inside it.
+    #[test]
+    fn extracts_a_directory_entry_and_its_file() {
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut dir_header = tar::Header::new_gnu();
+        dir_header.set_entry_type(tar::EntryType::Directory);
+        dir_header.set_mode(0o755);
+        dir_header.set_size(0);
+        builder
+            .append_data(&mut dir_header, "sub/", std::io::empty())
+            .expect("append the directory entry");
+        let mut file_header = tar::Header::new_gnu();
+        file_header.set_mode(0o644);
+        file_header.set_size(5);
+        builder
+            .append_data(&mut file_header, "sub/file.txt", &b"hello"[..])
+            .expect("append the file entry");
+        let tar_bytes = builder.into_inner().expect("finish the tar");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let archive = tmp.path().join("dir.tar.zst");
+        write_archive(&archive, &tar_bytes);
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir(&dest).expect("mkdir dest");
+
+        extract_tar_zst(&archive, &dest).expect("a safe archive should extract");
+        assert!(
+            dest.join("sub").is_dir(),
+            "the directory entry is a directory"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("sub").join("file.txt"))
+                .expect("read extracted file"),
+            "hello",
         );
     }
 
