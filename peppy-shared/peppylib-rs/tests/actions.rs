@@ -297,8 +297,8 @@ async fn action_feedback_publish_end_signals_channel_closed() {
 }
 
 /// Same end-of-stream contract as above, but exercises the non-blocking
-/// `try_next_feedback` path — it has its own `is_end_sentinel` branch in
-/// actions.rs that's easy to miss in a refactor.
+/// `try_next_feedback` path, which has its own `is_end_sentinel` branch in
+/// actions.rs that is easy to miss in a refactor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn action_feedback_publish_end_signals_channel_closed_via_try_next() {
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -321,8 +321,8 @@ async fn action_feedback_publish_end_signals_channel_closed_via_try_next() {
         .await
         .expect("publish_end should succeed");
 
-    // Scaffold lives until the loop below confirms the close signal — keep
-    // the binding alive past the loop with `let _ = scaffold...`.
+    // Bind the scaffold to `_scaffold` so that it lives until the loop below
+    // sees the close signal.
     let _scaffold = scaffold;
 
     // Poll until the sentinel reaches the client. Bound the wait so a
@@ -486,8 +486,8 @@ async fn concurrent_action_two_goals_independent() {
 }
 
 /// A cancel must fire only the targeted goal's signal. Goal A is cancelled
-/// immediately after `fire_goal` returns — exercising the register-before-respond
-/// ordering, since the slot must already exist for the cancel to match — and
+/// immediately after `fire_goal` returns (exercising the register-before-respond
+/// ordering, since the slot must already exist for the cancel to match) and
 /// reports its cancelled result, while goal B finishes normally, untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_action_cancel_targets_one_goal() {
@@ -688,7 +688,7 @@ async fn concurrent_action_reject_then_accept() {
 /// stream and transition the goal to a typed `Abandoned` terminal state. A
 /// client draining feedback breaks out with `ActionFeedbackChannelClosed`
 /// instead of hanging, and a prompt `get_result` resolves to
-/// `ResultStatus::Abandoned` (parking first if it raced the transition) — never
+/// `ResultStatus::Abandoned` (parking first if it raced the transition), never
 /// a bare "no active goal" error, never a hang.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_action_abandoned_goal_yields_typed_abandoned() {
@@ -771,13 +771,13 @@ async fn concurrent_action_abandoned_goal_yields_typed_abandoned() {
 }
 
 /// Hard producer death mid-goal: the producer's session is torn down while a
-/// goal is in flight, with its `GoalContext` still alive — so the
+/// goal is in flight, with its `GoalContext` still alive, so the
 /// end-of-stream sentinel is never published (the exact race a SIGKILL /
 /// OOM / runtime teardown loses). The consumer's feedback drain must fail
 /// over to the producer's liveliness token disappearing:
 /// `on_next_feedback` (and `try_next_feedback`) resolve to a typed
 /// `ActionFeedbackProducerGone` instead of blocking forever, and
-/// `get_result` resolves to `ResultStatus::Abandoned` — both via the goal
+/// `get_result` resolves to `ResultStatus::Abandoned`, both via the goal
 /// handle's confirmed-gone fast path and via the sender-only probe path the
 /// Python binding uses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -796,7 +796,7 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
 
     // The producer's messenger is built by hand (instead of
     // `MessengerHandle::connect`) so the test retains the `Arc` and can close the
-    // session deterministically mid-goal — `stop_session` is the in-process
+    // session deterministically mid-goal. `stop_session` is the in-process
     // stand-in for hard process death: liveliness tokens are removed
     // identically on session close and on transport loss.
     //
@@ -832,7 +832,7 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
     .expect("expose should succeed");
 
     // The server accepts the goal, emits one feedback, then hands the live
-    // `GoalContext` out to the test body — it is deliberately NOT dropped
+    // `GoalContext` out to the test body. It is deliberately NOT dropped
     // before the session dies, so the graceful abandon-on-drop path can
     // never publish the sentinel.
     let (ctx_tx, ctx_rx) = tokio::sync::oneshot::channel();
@@ -848,7 +848,7 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
             .expect("feedback publish should succeed");
             let _ = ctx_tx.send(ctx);
         }
-        // Keep `action` — and with it the liveliness token — alive until the
+        // Keep `action`, and with it the liveliness token, alive until the
         // session teardown below removes the token out from under it.
         std::future::pending::<()>().await;
     });
@@ -878,7 +878,7 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
     let ctx = ctx_rx.await.expect("server should hand out the context");
 
     // Kill the producer. The context is still alive, so no sentinel is ever
-    // published — only the liveliness token disappearing tells the consumer.
+    // published: only the liveliness token disappearing tells the consumer.
     producer_messenger
         .lock()
         .await
@@ -941,8 +941,8 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
 }
 
 /// A `get_result` issued before the worker completes must PARK and then resolve
-/// to the typed outcome — never error with "no active goal". This is the core
-/// of the fix: a prompt poll on a live goal waits for a definitive answer.
+/// to the typed outcome, never error with "no active goal": a prompt poll on a
+/// live goal waits for a definitive answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_action_result_parks_until_complete() {
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -973,7 +973,7 @@ async fn concurrent_action_result_parks_until_complete() {
     .await
     .expect("expose should succeed");
 
-    // Accept, wait, then complete — so the client's prompt poll parks first.
+    // Accept, wait, then complete, so the client's prompt poll parks first.
     let server = tokio::spawn(async move {
         while let Ok(Some(pending)) = action.recv_next_goal().await {
             let request = pending.request_bytes().to_vec();
@@ -1017,7 +1017,7 @@ async fn concurrent_action_result_parks_until_complete() {
 }
 
 /// Several concurrent `get_result` polls for the same goal must all resolve once
-/// the goal completes — the slot parks a `Vec` of responders, not just one, so a
+/// the goal completes: the slot parks a `Vec` of responders, not just one, so a
 /// relay that retries its poll never loses an earlier waiter.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_action_multiple_polls_one_goal_all_resolve() {
@@ -1099,9 +1099,9 @@ async fn concurrent_action_multiple_polls_one_goal_all_resolve() {
 
 /// A completed goal's result survives the worker dropping its context (a
 /// slightly late `get_result` still resolves to the typed result) and can be
-/// fetched more than once within the retention window (relay-retry safe — there
+/// fetched more than once within the retention window (relay-retry safe: there
 /// is no deliver-once). A result never fetched within the window is evicted and
-/// a later poll resolves to a typed `Expired` outcome — never a bare error,
+/// a later poll resolves to a typed `Expired` outcome, never a bare error,
 /// never a leaked slot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_action_completed_result_expires_after_grace() {
@@ -1500,7 +1500,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
                     }
                 }
                 _ = shutdown.changed() => {
-                    // Loser of the discovery race — released without a goal.
+                    // Loser of the discovery race: released without a goal.
                 }
             }
         })
@@ -1551,7 +1551,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     // send_goal performs a wildcard discover-then-pin internally. In peer mode
     // discover_producer re-probes within its budget until the producers'
     // queryables propagate to this freshly-connected caller, so no external
-    // readiness gate is needed — this exercises that cold-start retry directly.
+    // readiness gate is needed: this exercises that cold-start retry directly.
     let goal_handle = ActionMessenger::send_goal(
         &caller_handle,
         "caller_core",

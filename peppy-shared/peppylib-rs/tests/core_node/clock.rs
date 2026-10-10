@@ -77,7 +77,7 @@ async fn synchronize_returns_typed_clock_sync() {
 async fn subscribe_clock_yields_typed_ticks() {
     let (_router, _temp_dir, node_runner, server) = start_router_and_runner().await;
 
-    // Subscribe via the high-level helper *before* publishing — otherwise the
+    // Subscribe via the high-level helper *before* publishing. Otherwise the
     // first tick can land before zenoh discovery routes the subscription, and
     // the test races against propagation. With the subscription up first, any
     // tick published after the await point is delivered.

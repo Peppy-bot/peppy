@@ -66,16 +66,16 @@ pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name:
 /// `NodeRunner` pointed at it, and returns the router, the temp dir holding
 /// `peppy.json5`, the runner, and a server-side `MessengerHandle` the caller
 /// uses to spawn its stub listener. The router and temp dir must be held for
-/// the duration of the test — dropping them tears down the messaging fabric
+/// the duration of the test. Dropping them tears down the messaging fabric
 /// and config file.
 pub(crate) async fn start_router_and_runner()
 -> (EphemeralRouter, TempDir, NodeRunner, MessengerHandle) {
     let router = EphemeralRouter::start().await.expect("start zenoh router");
-    // The node runner opens its session under an workspace namespace
+    // The node runner opens its session under a workspace namespace
     // (`connect(..).reconnecting().scope(SessionScope::Discovery(..))`); the standalone config
     // carries no workspace id, so it resolves to the `local` namespace. The
-    // stub server must open under that same namespace — zenoh sessions only
-    // interoperate when their namespaces match — or the runner's service
+    // stub server must open under that same namespace (zenoh sessions only
+    // interoperate when their namespaces match), or the runner's service
     // queries and topic subscriptions never reach the stub.
     let server = router.connect().await.expect("server handle");
 

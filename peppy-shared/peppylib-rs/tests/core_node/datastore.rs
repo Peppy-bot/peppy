@@ -58,7 +58,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
                 let store_map = Arc::clone(&store_map);
                 async move {
                     // The writer's instance_id rides in the wire envelope, not
-                    // the payload — read it the same way the real daemon does.
+                    // the payload: read it the same way the real daemon does.
                     let last_modified_by = request.message().instance_id().to_owned();
                     let payload = request.message().payload();
                     let req = DatastoreStoreRequest::decode(payload.as_ref())
