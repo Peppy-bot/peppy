@@ -181,68 +181,43 @@ async fn wait_for_build_to_finish(
 /// - Integer strings -> Int
 /// - Float strings -> Float
 /// - Everything else -> String
-pub fn args_to_node_arguments(args: &[(String, String)]) -> BTreeMap<String, AnyType> {
+fn args_to_node_arguments(args: &[(String, String)]) -> BTreeMap<String, AnyType> {
     let mut result: BTreeMap<String, AnyType> = BTreeMap::new();
 
     for (key, value) in args {
-        let parsed_value = parse_value(value);
-        insert_nested_value(&mut result, key, parsed_value);
+        let path: Vec<&str> = key.split('.').collect();
+        insert_at_path(&mut result, &path, parse_value(value));
     }
 
     result
 }
 
-/// Inserts a value at a dot-separated path into a nested BTreeMap structure.
-/// For example, path "device.physical" with value "foo" creates:
-/// {"device": {"physical": "foo"}}
-fn insert_nested_value(
-    root: &mut std::collections::BTreeMap<String, AnyType>,
-    path: &str,
-    value: AnyType,
-) {
-    let parts: Vec<&str> = path.split('.').collect();
-
-    if parts.len() == 1 {
-        // Simple key, insert directly
-        root.insert(path.to_string(), value);
+/// Inserts a value at a dot-separated path, given as its parts, into a nested
+/// BTreeMap structure. For example, the parts `["device", "physical"]` with
+/// value "foo" create: {"device": {"physical": "foo"}}
+fn insert_at_path(current: &mut BTreeMap<String, AnyType>, path: &[&str], value: AnyType) {
+    let Some((key, rest)) = path.split_first() else {
         return;
-    }
+    };
 
-    // For nested paths, we need to navigate/create the path
-    insert_at_path(root, &parts, value);
-}
-
-/// Recursively inserts a value at the given path parts.
-fn insert_at_path(
-    current: &mut std::collections::BTreeMap<String, AnyType>,
-    parts: &[&str],
-    value: AnyType,
-) {
-    if parts.is_empty() {
-        return;
-    }
-
-    let key = parts[0].to_string();
-
-    if parts.len() == 1 {
-        // Last part - insert the actual value
-        current.insert(key, value);
+    if rest.is_empty() {
+        current.insert((*key).to_owned(), value);
         return;
     }
 
     // Intermediate part - ensure an Object exists at this key
     let entry = current
-        .entry(key)
-        .or_insert_with(|| AnyType::Object(std::collections::BTreeMap::new()));
+        .entry((*key).to_owned())
+        .or_insert_with(|| AnyType::Object(BTreeMap::new()));
 
     // If the entry isn't an object, make it one
     if !matches!(entry, AnyType::Object(_)) {
-        *entry = AnyType::Object(std::collections::BTreeMap::new());
+        *entry = AnyType::Object(BTreeMap::new());
     }
 
     // Navigate into the object and recurse
     if let AnyType::Object(obj) = entry {
-        insert_at_path(obj, &parts[1..], value);
+        insert_at_path(obj, rest, value);
     }
 }
 
