@@ -56,6 +56,27 @@ pub fn publish_and_commit_repo_index(root: &Path) -> String {
     head.shorthand().expect("HEAD is on a branch").to_owned()
 }
 
+/// Stages the work-tree file at `path` (relative to the repository root) and
+/// commits the index on HEAD with `parents`, returning the new commit so a
+/// fixture can tag it or build on it.
+pub fn commit_path<'repo>(
+    repo: &'repo git2::Repository,
+    signature: &git2::Signature<'_>,
+    path: &Path,
+    message: &str,
+    parents: &[&git2::Commit<'_>],
+) -> git2::Commit<'repo> {
+    let mut index = repo.index().expect("open index");
+    index.add_path(path).expect("stage the fixture file");
+    index.write().expect("write index");
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    let commit_id = repo
+        .commit(Some("HEAD"), signature, signature, message, &tree, parents)
+        .expect("commit the fixture file");
+    repo.find_commit(commit_id).expect("find the new commit")
+}
+
 /// Writes a node config file and the corresponding fingerprint file expected by `node_add`.
 pub fn write_peppy_json5(dir: &Path, content: &str) {
     let config_path = dir.join(NODE_CONFIG_FILE);

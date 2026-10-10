@@ -2,8 +2,8 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, add_and_build_forking_node,
-    build_staged_node, create_tar_zst_from_dir, entity_artifact_path, is_process_running,
-    poll_until, send_node_add_and_wait, send_node_add_and_wait_with_force,
+    build_staged_node, commit_path, create_tar_zst_from_dir, entity_artifact_path,
+    is_process_running, poll_until, send_node_add_and_wait, send_node_add_and_wait_with_force,
     spawn_real_stuck_instance, start_core_node_with_mock_messenger, wait_until_action_completes,
     wait_until_service_reachable, write_peppy_json5,
 };
@@ -182,27 +182,13 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     )
     .expect("failed to write uvc node v0.1.0");
 
-    let mut index = repo.index().expect("failed to open index");
-    index
-        .add_path(&rel_config_path)
-        .expect("failed to add uvc node");
-    index.write().expect("failed to write index");
-
-    let tree_id = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_id).expect("failed to find tree");
-    let commit_v1 = repo
-        .commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "uvc_camera v0.1.0",
-            &tree,
-            &[],
-        )
-        .expect("failed to commit v0.1.0");
-    let commit_v1 = repo
-        .find_commit(commit_v1)
-        .expect("failed to find v0.1.0 commit");
+    let commit_v1 = commit_path(
+        &repo,
+        &signature,
+        &rel_config_path,
+        "uvc_camera v0.1.0",
+        &[],
+    );
     repo.tag("v0.1.0", commit_v1.as_object(), &signature, "v0.1.0", false)
         .expect("failed to create v0.1.0 tag");
 
@@ -229,27 +215,13 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     )
     .expect("failed to write uvc node v0.2.0");
 
-    let mut index = repo.index().expect("failed to open index");
-    index
-        .add_path(&rel_config_path)
-        .expect("failed to add uvc node");
-    index.write().expect("failed to write index");
-
-    let tree_id = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_id).expect("failed to find tree");
-    let commit_v2 = repo
-        .commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "uvc_camera v0.2.0",
-            &tree,
-            &[&commit_v1],
-        )
-        .expect("failed to commit v0.2.0");
-    let commit_v2 = repo
-        .find_commit(commit_v2)
-        .expect("failed to find v0.2.0 commit");
+    let commit_v2 = commit_path(
+        &repo,
+        &signature,
+        &rel_config_path,
+        "uvc_camera v0.2.0",
+        &[&commit_v1],
+    );
     repo.tag("v0.2.0", commit_v2.as_object(), &signature, "v0.2.0", false)
         .expect("failed to create v0.2.0 tag");
 
@@ -281,21 +253,7 @@ fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
     )
     .expect("write invalid config");
 
-    let mut index = repo.index().expect("open index");
-    index.add_path(config_rel).expect("add config");
-    index.write().expect("write index");
-
-    let tree_id = index.write_tree().expect("write tree");
-    let tree = repo.find_tree(tree_id).expect("find tree");
-    repo.commit(
-        Some("HEAD"),
-        &signature,
-        &signature,
-        "initial commit",
-        &tree,
-        &[],
-    )
-    .expect("commit");
+    commit_path(&repo, &signature, config_rel, "initial commit", &[]);
 
     repo_path
 }

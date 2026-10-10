@@ -23,8 +23,8 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 use crate::common::{
-    StartedCoreNode, TestPackagesCache, TestRunningInstance, build_staged_node, is_process_running,
-    poll_until, send_node_add_and_wait, spawn_real_running_instance,
+    StartedCoreNode, TestPackagesCache, TestRunningInstance, build_staged_node, commit_path,
+    is_process_running, poll_until, send_node_add_and_wait, spawn_real_running_instance,
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
 
@@ -345,25 +345,13 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
     )
     .expect("failed to write uvc_camera peppy.json5");
 
-    let mut index = repo.index().expect("failed to open index");
-    index
-        .add_path(&rel_config_path)
-        .expect("failed to add uvc config");
-    index.write().expect("failed to write index");
-
-    let tree_id = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_id).expect("failed to find tree");
-    let commit_id = repo
-        .commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "uvc_camera initial",
-            &tree,
-            &[],
-        )
-        .expect("failed to commit");
-    let commit = repo.find_commit(commit_id).expect("failed to find commit");
+    let commit = commit_path(
+        &repo,
+        &signature,
+        &rel_config_path,
+        "uvc_camera initial",
+        &[],
+    );
 
     // Tag the commit so deployments can reference it via `tag`.
     repo.tag(node_tag, commit.as_object(), &signature, node_tag, false)
