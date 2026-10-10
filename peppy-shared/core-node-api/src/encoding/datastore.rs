@@ -594,32 +594,28 @@ mod tests {
         );
     }
 
-    #[test]
-    fn store_request_new_rejects_empty_key() {
-        let err = DatastoreStoreRequest::new("", b"v".to_vec(), "text/plain")
-            .expect_err("empty key should be rejected");
+    /// Asserts that building or decoding the `request` failed on its
+    /// datastore key.
+    fn assert_invalid_datastore_key<T: std::fmt::Debug>(request: &str, result: crate::Result<T>) {
+        let err = result.expect_err(&format!("the {request} request should refuse an empty key"));
         assert!(
             matches!(err, crate::Error::InvalidDatastoreKey(_)),
-            "expected InvalidDatastoreKey, got {err:?}"
+            "{request} request: expected InvalidDatastoreKey, got {err:?}"
         );
     }
 
     #[test]
-    fn get_request_new_rejects_empty_key() {
-        let err = DatastoreGetRequest::new("").expect_err("empty key should be rejected");
-        assert!(
-            matches!(err, crate::Error::InvalidDatastoreKey(_)),
-            "expected InvalidDatastoreKey, got {err:?}"
-        );
-    }
-
-    #[test]
-    fn remove_request_new_rejects_empty_key() {
-        let err = DatastoreRemoveRequest::new("").expect_err("empty key should be rejected");
-        assert!(
-            matches!(err, crate::Error::InvalidDatastoreKey(_)),
-            "expected InvalidDatastoreKey, got {err:?}"
-        );
+    fn requests_new_reject_an_empty_key() {
+        for (request, result) in [
+            (
+                "store",
+                DatastoreStoreRequest::new("", b"v".to_vec(), "text/plain").map(drop),
+            ),
+            ("get", DatastoreGetRequest::new("").map(drop)),
+            ("remove", DatastoreRemoveRequest::new("").map(drop)),
+        ] {
+            assert_invalid_datastore_key(request, result);
+        }
     }
 
     #[test]
@@ -666,12 +662,7 @@ mod tests {
         }
         let payload = encode_message(&builder).expect("encode raw request");
 
-        let err = DatastoreStoreRequest::decode(payload.as_ref())
-            .expect_err("empty wire key should be rejected at decode");
-        assert!(
-            matches!(err, crate::Error::InvalidDatastoreKey(_)),
-            "expected InvalidDatastoreKey, got {err:?}"
-        );
+        assert_invalid_datastore_key("store", DatastoreStoreRequest::decode(payload.as_ref()));
     }
 
     #[test]
@@ -684,12 +675,7 @@ mod tests {
         }
         let payload = encode_message(&builder).expect("encode raw request");
 
-        let err = DatastoreGetRequest::decode(payload.as_ref())
-            .expect_err("empty wire key should be rejected at decode");
-        assert!(
-            matches!(err, crate::Error::InvalidDatastoreKey(_)),
-            "expected InvalidDatastoreKey, got {err:?}"
-        );
+        assert_invalid_datastore_key("get", DatastoreGetRequest::decode(payload.as_ref()));
     }
 
     #[test]
@@ -702,11 +688,6 @@ mod tests {
         }
         let payload = encode_message(&builder).expect("encode raw request");
 
-        let err = DatastoreRemoveRequest::decode(payload.as_ref())
-            .expect_err("empty wire key should be rejected at decode");
-        assert!(
-            matches!(err, crate::Error::InvalidDatastoreKey(_)),
-            "expected InvalidDatastoreKey, got {err:?}"
-        );
+        assert_invalid_datastore_key("remove", DatastoreRemoveRequest::decode(payload.as_ref()));
     }
 }
