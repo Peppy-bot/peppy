@@ -1,7 +1,7 @@
 //! End-to-end TLS transport tests: a real `zenohd` router listening on `tls/`
 //! and a `connect_to_tls` client completing a TLS handshake and a pub/sub
 //! round-trip. This is the *authoritative* check that the `transport.link.tls`
-//! block pmi renders is actually accepted by zenoh — a wrong key would be
+//! block pmi renders is actually accepted by zenoh: a wrong key would be
 //! silently dropped at config parse, so only a live handshake proves it.
 //!
 //! Gated behind `build_zenoh` like the other integration tests (it needs the
@@ -72,7 +72,7 @@ mod zenoh_tls_tests {
     }
 
     /// The server leaf's SAN is `localhost`, but we dial `127.0.0.1` (no DNS
-    /// resolution ambiguity), so name verification is off — exactly how zenoh's
+    /// resolution ambiguity), so name verification is off, exactly how zenoh's
     /// own TLS test uses these fixtures. The CA-trust check stays on, which is
     /// what the negative test below exercises.
     fn trusting_client_tls(certs: &Certs) -> TlsConfig {
@@ -225,7 +225,7 @@ mod zenoh_tls_tests {
 
     /// Negative path: a client that does NOT trust the router's CA (no
     /// `root_ca_certificate`, so zenoh falls back to system WebPKI roots, which
-    /// do not include the private `minica` CA) cannot establish a usable link —
+    /// do not include the private `minica` CA) cannot establish a usable link:
     /// it must receive nothing, while a properly-trusting publisher's message
     /// flows. Proves cert validation is actually enforced (not bypassed).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -245,7 +245,7 @@ mod zenoh_tls_tests {
         // Confirm the router's TLS listener is actually up *first* (a trusting
         // client opens, retrying while it settles, then is dropped). Otherwise a
         // `start_session` error below could be the router still starting rather
-        // than the untrusted CA being rejected — making a readiness failure look
+        // than the untrusted CA being rejected, making a readiness failure look
         // like the intended negative result. Same retry pattern as the trusted
         // and plaintext opens in this file.
         drop(open_tls_client(port, &trusting_client_tls(&certs)).await);
@@ -253,9 +253,9 @@ mod zenoh_tls_tests {
         let mut subscriber =
             ZenohAdapter::connect_to_tls("127.0.0.1", port, untrusted).expect("build adapter");
         // In client mode `zenoh::open` succeeds even if the link can't be
-        // validated (the failure is async — no data ever flows). The router is
-        // now known to be up, so an error here can only be the untrusted CA — a
-        // strictly stronger negative result.
+        // validated (the failure is async: no data ever flows). The router is
+        // known to be up at this point, so an error here can only be the
+        // untrusted CA, a strictly stronger negative result.
         if subscriber.start_session().await.is_err() {
             return;
         }
@@ -269,7 +269,7 @@ mod zenoh_tls_tests {
             .expect("subscribe (local declare succeeds even with a dead link)");
 
         // A correctly-trusting publisher proves traffic *is* flowing on the
-        // router — so a no-delivery result is the untrusted link's fault, not a
+        // router, so a no-delivery result is the untrusted link's fault, not a
         // dead test.
         let mut publisher = open_tls_client(port, &trusting_client_tls(&certs)).await;
         wait_for_subscriber_discovery().await;

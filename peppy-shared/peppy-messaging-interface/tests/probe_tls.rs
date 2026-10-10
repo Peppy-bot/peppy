@@ -71,7 +71,7 @@ mod probe_tls_tests {
                 };
                 let acceptor = acceptor.clone();
                 tokio::spawn(async move {
-                    // Complete the handshake, then drop — the probe only needs the
+                    // Complete the handshake, then drop: the probe only needs the
                     // handshake to finish to consider the link validated.
                     let _ = acceptor.accept(stream).await;
                 });
@@ -132,7 +132,7 @@ mod probe_tls_tests {
             .await
             .expect("bind stalling listener");
         let port = listener.local_addr().expect("local addr").port();
-        // Accept connections but never perform the TLS handshake — hold the raw
+        // Accept connections but never perform the TLS handshake: hold the raw
         // TCP streams open so the probe's handshake phase stalls to its deadline.
         tokio::spawn(async move {
             let mut held = Vec::new();

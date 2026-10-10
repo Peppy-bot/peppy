@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 
 /// Each integration test spawns a zenohd process. Their transient handshakes
 /// step on each other when run in parallel, so each test takes this mutex
-/// before starting its router. Within-binary serialization only — cargo test
+/// before starting its router. Within-binary serialization only: cargo test
 /// already runs different test binaries sequentially.
 pub static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
 
@@ -105,7 +105,7 @@ pub async fn start_session_with_retry(
 }
 
 /// Sleeps long enough for zenoh's subscriber discovery to propagate before
-/// publishing. The value is empirical — shorter sleeps surface as missed
+/// publishing. The value is empirical: shorter sleeps surface as missed
 /// first messages in CI.
 pub async fn wait_for_subscriber_discovery() {
     tokio::time::sleep(Duration::from_millis(500)).await;

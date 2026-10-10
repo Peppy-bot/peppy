@@ -65,16 +65,16 @@ mod zenoh_tests {
 
     /// Proves the daemon's in-process recovery path: a reconnecting subscriber
     /// session keeps working after its router process is killed and respawned on
-    /// the same port — i.e. the session reconnects *and re-declares* its
-    /// subscription. This is the half of the router-watchdog fix that the unit
-    /// tests can't cover.
+    /// the same port, i.e. the session reconnects *and re-declares* its
+    /// subscription. The unit tests cannot cover this half of the router
+    /// watchdog's recovery.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn reconnecting_subscriber_recovers_after_router_restart() {
         const TOPIC: &str = "reconnect_topic";
         let _lock = ZENOH_SERIAL.lock().await;
 
         // `instance` owns the zenohd process so we can respawn it on the same
-        // port mid-test. We never open a session on it — only use it to drive
+        // port mid-test. We never open a session on it; we only use it to drive
         // the router lifecycle (stop_router / start_router).
         let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
@@ -83,7 +83,7 @@ mod zenoh_tests {
         let port = instance.port;
 
         // The subscriber session uses the SAME reconnecting config the daemon
-        // uses (`with_session_reconnect`) — this is the behaviour under test.
+        // uses (`with_session_reconnect`): this is the behaviour under test.
         let mut subscriber = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port)
             .expect("subscriber adapter")
             .with_session_reconnect();
@@ -117,7 +117,7 @@ mod zenoh_tests {
             assert_eq!(got.payload(), &Bytes::from_static(b"before-restart"));
         }
 
-        // Respawn zenohd on the same port — exactly what the watchdog does when
+        // Respawn zenohd on the same port, exactly what the watchdog does when
         // it finds the router wedged.
         instance
             .messenger()
@@ -250,7 +250,7 @@ mod zenoh_tests {
     /// router mode. The benchmark's `delivery` measurement reads
     /// `source_timestamp_nanos()` off each sample, so a session that fails to
     /// stamp its outgoing data silently zeroes those rows. `gossip=true`
-    /// exercises the direct peer path (the regression); `gossip=false` the
+    /// exercises the direct peer path; `gossip=false` the
     /// router relay.
     async fn assert_topic_carries_source_timestamp(gossip: bool) {
         const TOPIC: &str = "source_timestamp_topic";
@@ -322,10 +322,9 @@ mod zenoh_tests {
         drop(instance);
     }
 
-    /// Peer mode (gossip on → direct peer links) stamps outgoing samples. This is
-    /// the regression guard for the peer-mode timestamping fix: before it, the
-    /// peer session enabled timestamping under the wrong role and samples arrived
-    /// unstamped.
+    /// Peer mode (gossip on → direct peer links) stamps outgoing samples under
+    /// the peer role. A peer session that enables timestamping under another
+    /// role delivers unstamped samples, which this test catches.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn peer_mode_samples_carry_source_timestamp() {
         assert_topic_carries_source_timestamp(true).await;
@@ -416,7 +415,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start zenohd process");
 
-        // No start_session — publish should fail.
+        // No start_session: publish should fail.
         let payload = Payload::from_bytes(Bytes::from_static(b"This should fail"));
         let result = instance
             .messenger()
@@ -647,8 +646,8 @@ mod zenoh_tests {
     /// Action-producer liveliness over real zenoh: a token declared by the
     /// producer session replays as an initial `Alive` to a late watch
     /// (history), a one-shot probe sees it, and closing the producer session
-    /// — the in-process stand-in for hard producer death, since tokens are
-    /// removed identically on close and on transport loss — surfaces as a
+    /// (the in-process stand-in for hard producer death, since tokens are
+    /// removed identically on close and on transport loss) surfaces as a
     /// `Gone` event and an absent probe.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn action_liveliness_token_observed_across_sessions() {
@@ -809,7 +808,7 @@ mod zenoh_tests {
     /// Probe hardening over real zenoh: `ServiceQueryKind::Probe` queries
     /// are answered by the adapter's query dispatch (one Response-kind
     /// reply; sized probes get the requested byte count) and never reach
-    /// the producer's endpoint channel — so a producer whose task is busy
+    /// the producer's endpoint channel, so a producer whose task is busy
     /// in user code (nobody draining the channel) still answers discovery
     /// and liveness probes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -862,7 +861,7 @@ mod zenoh_tests {
             .listen_service(&receiver)
             .await
             .expect("queryable declare should succeed");
-        // Nobody drains `queryable.rx` — the producer is "busy" in user code.
+        // Nobody drains `queryable.rx`: the producer is "busy" in user code.
         wait_for_subscriber_discovery().await;
 
         // Plain (empty-body) probe: one empty Response-kind reply.
@@ -1415,7 +1414,7 @@ mod zenoh_tests {
         );
     }
 
-    /// A logged-out (`local`) session and an workspace session sharing one router are
+    /// A logged-out (`local`) session and a workspace session sharing one router are
     /// routing-isolated: `local`'s keys are rewritten to `local/<key>` and the
     /// workspace's to `<workspace>/<key>`, which never intersect. Closes the LAN cross-tenant
     /// leak a "no namespace when logged out" model would leave open.
@@ -1456,7 +1455,7 @@ mod zenoh_tests {
             assert_eq!(got.payload(), &Bytes::from_static(b"local-payload"));
         }
 
-        // An workspace publisher must NOT reach the `local` subscriber.
+        // A workspace publisher must NOT reach the `local` subscriber.
         {
             let mut workspace_pub = open_namespaced(&host, port, "workspace-x").await;
             wait_for_subscriber_discovery().await;

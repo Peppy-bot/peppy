@@ -1,4 +1,4 @@
-//! End-to-end collision safety tests for the wire refactor. Validates that a
+//! End-to-end collision safety tests for the wire format. Validates that a
 //! publisher emitting as `SenderTarget::Node(name, tag)` is never matched by a
 //! subscriber pinned on `SenderTarget::Contract(name, tag)` (or vice-versa),
 //! even when both share the same name and tag. The `contract` / `node`
@@ -44,7 +44,7 @@ async fn expect_payload(sub: &Subscription, expected: &Bytes, label: &str) {
 async fn expect_no_payload(sub: &mut Subscription, label: &str) {
     match tokio::time::timeout(NO_MESSAGE_TIMEOUT, sub.rx.recv_async()).await {
         Err(_) => {
-            // Timed out — no payload arrived, which is the success case.
+            // Timed out: no payload arrived, which is the success case.
         }
         Ok(Ok(msg)) => {
             panic!(
@@ -53,7 +53,7 @@ async fn expect_no_payload(sub: &mut Subscription, label: &str) {
             );
         }
         Ok(Err(_)) => {
-            // Channel closed — also acceptable, no payload arrived.
+            // Channel closed: also acceptable, no payload arrived.
         }
     }
 }
@@ -234,7 +234,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_contract() {
         .await
         .unwrap();
 
-    // Collect both payloads (in either order — both publishers race).
+    // Collect both payloads (in either order: both publishers race).
     let mut seen = Vec::with_capacity(2);
     for _ in 0..2 {
         let msg = next_message(&sub, "both publishers on the untargeted subscriber").await;
@@ -250,7 +250,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_contract() {
     );
 }
 
-/// Two service servers bind to the same name+tag — one as Node, one as
+/// Two service servers bind to the same name+tag, one as Node, one as
 /// Contract. A caller targeting Node must reach only the node server, and a
 /// caller targeting Contract must reach only the contract server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -312,7 +312,7 @@ async fn service_node_vs_contract_no_collision() {
     )
     .unwrap();
 
-    // Issue one get through each target — held alive for the duration of the
+    // Issue one get through each target, held alive for the duration of the
     // test so dropping the reply stream doesn't cancel the query before the
     // server side has a chance to observe it.
     let node_request_payload = Bytes::from_static(b"to_node_server");

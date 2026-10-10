@@ -231,14 +231,14 @@ async fn run_service_roundtrip(sender: ServiceWireSender) {
         .await
         .unwrap();
 
-    // Client: drain replies until the user payload arrives (Zenoh delivers
-    // every reply with `ConsolidationMode::None`, but in this test only one
-    // reply is sent — no ACK because the adapter no longer auto-ACKs.)
+    // Client: read the user payload. (Zenoh delivers every reply with
+    // `ConsolidationMode::None`; this test sends one reply and the adapter
+    // adds no ACK.)
     let response = recv_reply(&mut reply_stream, "service reply_stream").await;
     assert_eq!(response.payload(), &response_body);
 }
 
-// Only two target shapes exist on the wire now: a full `(core_node,
+// Two target shapes exist on the wire: a full `(core_node,
 // instance_id)` pin and a full wildcard (the discovery probe shape).
 // Half-pinned selectors are unrepresentable at the constructor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -343,7 +343,7 @@ async fn action_goal_feedback_result() {
         .unwrap();
     wait_for_subscriber_discovery().await;
 
-    // Client subscribes to feedback BEFORE sending the goal — otherwise early
+    // Client subscribes to feedback BEFORE sending the goal: otherwise early
     // feedback can be lost in tight in-process tests.
     let feedback_sub = instance
         .messenger()
@@ -357,7 +357,7 @@ async fn action_goal_feedback_result() {
         .unwrap();
     wait_for_subscriber_discovery().await;
 
-    // Client sends the goal — the reply stream stays alive until we've
+    // Client sends the goal; the reply stream stays alive until we've
     // received the goal response.
     let goal_payload = Payload::from_bytes(Bytes::from_static(b"goal_data"));
     let mut goal_replies = instance
