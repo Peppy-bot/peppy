@@ -21,7 +21,7 @@
 //! kept valid by [`super::certificate_renewal`].
 
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
-use auth::{Enrollment, FederationIdentity};
+use auth::{AuthError, Enrollment, FederationIdentity};
 use daemon_config::consts::PeppyDirs;
 use std::future::Future;
 use std::pin::Pin;
@@ -56,6 +56,36 @@ type Prober = Arc<dyn Fn(String, u16, pmi::TlsConfig, Duration) -> ProbeFuture +
 /// The current unix time. Injected so the expiry check is testable without
 /// depending on the host clock.
 pub(crate) type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+/// Runs a blocking call (an [`EnrollmentReader`], a renewal) off the async
+/// workers. A call that panics is a failure with the panic as its reason.
+pub(crate) async fn run_blocking<T: Send + 'static>(
+    call: impl FnOnce() -> auth::Result<T> + Send + 'static,
+) -> std::result::Result<T, BlockingCallFailure> {
+    match tokio::task::spawn_blocking(call).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(BlockingCallFailure::Refused(error)),
+        Err(panic) => Err(BlockingCallFailure::Panicked(panic.to_string())),
+    }
+}
+
+/// Why a blocking call did not complete.
+#[derive(Debug)]
+pub(crate) enum BlockingCallFailure {
+    /// The call returned an error.
+    Refused(AuthError),
+    /// The call panicked, with the panic as text.
+    Panicked(String),
+}
+
+impl std::fmt::Display for BlockingCallFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(error) => write!(f, "{error}"),
+            Self::Panicked(panic) => write!(f, "the call panicked: {panic}"),
+        }
+    }
+}
 
 /// The real prober: a raw TLS handshake against the cloud router (see
 /// [`pmi::probe_tls_reachable`]).
@@ -198,15 +228,15 @@ async fn reconcile(
 ) -> FederationOutcome {
     // The read is file-backed; keep it off the async worker.
     let reader = deps.enrollment.clone();
-    let enrollment = match tokio::task::spawn_blocking(move || reader()).await {
-        Ok(Ok(enrollment)) => enrollment,
-        Ok(Err(error)) => {
+    let enrollment = match run_blocking(move || reader()).await {
+        Ok(enrollment) => enrollment,
+        Err(BlockingCallFailure::Refused(error)) => {
             warn!(error = %error, "router federation: the enrollment could not be read");
             return FederationOutcome::Failed(error.to_string());
         }
-        Err(error) => {
-            warn!(error = %error, "router federation: the enrollment read panicked");
-            return FederationOutcome::Failed(format!("enrollment read panicked: {error}"));
+        Err(BlockingCallFailure::Panicked(panic)) => {
+            warn!(error = %panic, "router federation: the enrollment read panicked");
+            return FederationOutcome::Failed(format!("enrollment read panicked: {panic}"));
         }
     };
 
