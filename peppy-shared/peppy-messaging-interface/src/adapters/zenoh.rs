@@ -1528,21 +1528,18 @@ fn process_inbound_query(
         }
     };
 
-    let chosen_link_id = match parsed.claim() {
-        Some(l) => l.to_string(),
-        None => {
-            tracing::trace!(
-                query_keyexpr = %query.key_expr().as_str(),
-                parsed_link_id = %parsed.link_id,
-                "dropping inbound query: link_id slot is neither '*' nor '_'",
-            );
-            return;
-        }
+    let Some(chosen_link_id) = parsed.claim() else {
+        tracing::trace!(
+            query_keyexpr = %query.key_expr().as_str(),
+            parsed_link_id = %parsed.link_id,
+            "dropping inbound query: link_id slot is neither '*' nor '_'",
+        );
+        return;
     };
 
     let reply_keyexpr = ZenohWireFormat::service_reply_keyexpr(
         recv,
-        &chosen_link_id,
+        chosen_link_id,
         &parsed.caller_core,
         &parsed.caller_inst,
     );
@@ -1575,7 +1572,7 @@ fn process_inbound_query(
     let request = IncomingRequest {
         payload,
         kind: parsed.kind,
-        link_id: chosen_link_id,
+        link_id: chosen_link_id.to_string(),
         caller_core: parsed.caller_core,
         caller_inst: parsed.caller_inst,
         token,

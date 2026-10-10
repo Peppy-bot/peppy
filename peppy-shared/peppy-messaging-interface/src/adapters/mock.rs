@@ -898,21 +898,18 @@ async fn handle_mock_queryable(
             }
         };
 
-        let chosen_link_id = match parsed.claim() {
-            Some(l) => l.to_string(),
-            None => {
-                tracing::trace!(
-                    selector = %mock_query.selector_keyexpr,
-                    parsed_link_id = %parsed.link_id,
-                    "mock queryable: dropping query with link_id slot neither '*' nor '_'",
-                );
-                continue;
-            }
+        let Some(chosen_link_id) = parsed.claim() else {
+            tracing::trace!(
+                selector = %mock_query.selector_keyexpr,
+                parsed_link_id = %parsed.link_id,
+                "mock queryable: dropping query with link_id slot neither '*' nor '_'",
+            );
+            continue;
         };
 
         let reply_keyexpr = ZenohWireFormat::service_reply_keyexpr(
             &recv,
-            &chosen_link_id,
+            chosen_link_id,
             &parsed.caller_core,
             &parsed.caller_inst,
         );
@@ -935,7 +932,7 @@ async fn handle_mock_queryable(
         let request = IncomingRequest {
             payload: mock_query.payload,
             kind: parsed.kind,
-            link_id: chosen_link_id,
+            link_id: chosen_link_id.to_string(),
             caller_core: parsed.caller_core,
             caller_inst: parsed.caller_inst,
             token,
