@@ -251,17 +251,11 @@ fn live_instance_count(core_node: &str, live: Vec<pmi::CoreNodePresence>) -> usi
         .len()
 }
 
+/// Orders the daemon's own Root node first, then every node and edge by its
+/// `name:tag` label. The keys are cached because `label` allocates.
 fn sort_graph(nodes: &mut [SerializedNode], edges: &mut [SerializedEdge]) {
-    nodes.sort_by(|a, b| {
-        let a_is_daemon = a.stage == NodeStage::Root;
-        let b_is_daemon = b.stage == NodeStage::Root;
-        match (a_is_daemon, b_is_daemon) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.label().cmp(&b.label()),
-        }
-    });
-    edges.sort_by_key(|edge| (edge.from.label(), edge.to.label()));
+    nodes.sort_by_cached_key(|node| (node.stage != NodeStage::Root, node.label()));
+    edges.sort_by_cached_key(|edge| (edge.from.label(), edge.to.label()));
 }
 
 /// Pure multi-core-node formatter for `peppy stack list`. Each distinct name
@@ -926,11 +920,7 @@ fn format_instances_compact(node: &SerializedNode) -> String {
 /// locator; otherwise fall back to the source config path. The home directory
 /// is collapsed to `~` to keep the column narrow.
 fn display_path(node: &SerializedNode) -> String {
-    let path = node
-        .artifact_path
-        .clone()
-        .unwrap_or_else(|| node.config_path.clone());
-    shorten_home(&path)
+    shorten_home(node.artifact_path.as_deref().unwrap_or(&node.config_path))
 }
 
 /// Collapses a leading home-directory prefix to `~`, matching shell display.
@@ -1707,6 +1697,46 @@ mod tests {
         );
     }
 
+    /// The daemon's own Root node leads the table, and every other node and
+    /// edge follows in the byte order of its `name:tag` label, so `a-b:v1`
+    /// sorts before `a:v1` (`-` is below `:`).
+    #[test]
+    fn sort_graph_puts_the_root_first_then_orders_by_label() {
+        let short = node("a", "v1", NodeStage::Ready, vec![]);
+        let dashed = node("a-b", "v1", NodeStage::Ready, vec![]);
+        let root = node("z", "v1", NodeStage::Root, vec![]);
+        let edge = |from: &SerializedNode, to: &SerializedNode| SerializedEdge {
+            from: from.clone(),
+            to: to.clone(),
+            via_contract: None,
+        };
+        let mut nodes = vec![short.clone(), dashed.clone(), root.clone()];
+        let mut edges = vec![
+            edge(&short, &root),
+            edge(&root, &short),
+            edge(&dashed, &root),
+            edge(&dashed, &short),
+        ];
+
+        sort_graph(&mut nodes, &mut edges);
+
+        let node_labels: Vec<String> = nodes.iter().map(SerializedNode::label).collect();
+        assert_eq!(node_labels, ["z:v1", "a-b:v1", "a:v1"]);
+        let edge_labels: Vec<(String, String)> = edges
+            .iter()
+            .map(|edge| (edge.from.label(), edge.to.label()))
+            .collect();
+        assert_eq!(
+            edge_labels,
+            [
+                ("a-b:v1".to_string(), "a:v1".to_string()),
+                ("a-b:v1".to_string(), "z:v1".to_string()),
+                ("a:v1".to_string(), "z:v1".to_string()),
+                ("z:v1".to_string(), "a:v1".to_string()),
+            ]
+        );
+    }
+
     #[test]
     fn contract_implementation_edge_renders_annotation() {
         let consumer = node("brain", "v1", NodeStage::Ready, vec![]);
@@ -2269,6 +2299,20 @@ mod tests {
         assert_eq!(shorten_home_with("/etc/passwd", "/"), "/etc/passwd");
         // A trailing slash on the resolved home is tolerated.
         assert_eq!(shorten_home_with("/home/user/x", "/home/user/"), "~/x");
+    }
+
+    /// A built node is located by its artifact, a node that is not built by
+    /// its config file.
+    #[test]
+    fn display_path_prefers_the_artifact_over_the_config_path() {
+        let unbuilt = node("arm", "v1", NodeStage::Ready, vec![]);
+        assert_eq!(display_path(&unbuilt), shorten_home("/tmp/arm.json5"));
+
+        let built = SerializedNode {
+            artifact_path: Some("/opt/artifacts/arm.sif".to_string()),
+            ..unbuilt
+        };
+        assert_eq!(display_path(&built), shorten_home("/opt/artifacts/arm.sif"));
     }
 
     #[test]
