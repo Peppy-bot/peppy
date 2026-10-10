@@ -682,9 +682,11 @@ def release_set_summary(version: str, hub_set: HubSet) -> str:
     lines = [
         f"### The hub commits peppy {version} tests and tags",
         "",
-        f"Each hub is at `{hub_release_tag(version)}` where it carries that tag, "
-        f"and at the head of `{HUB_MAIN_BRANCH}` where it does not. Every later "
-        "job of this release uses these commits.",
+        (
+            f"Each hub is at `{hub_release_tag(version)}` where it carries that tag, "
+            f"and at the head of `{HUB_MAIN_BRANCH}` where it does not. Every later "
+            "job of this release uses these commits."
+        ),
         "",
         *hub_table(hub_set),
     ]
@@ -721,10 +723,11 @@ def choose_peppy_build(
 
 def peppy_build_notes(kind: PeppyBuildKind, from_fork: bool) -> tuple[str, ...]:
     if from_fork and kind is PeppyBuildKind.LATEST_RELEASE:
-        return (
+        note = (
             "A pull request from a fork gets no secrets, so it always runs the "
-            "latest release of peppy.",
+            "latest release of peppy."
         )
+        return (note,)
     return ()
 
 
@@ -1044,8 +1047,10 @@ def summary_markdown(
         "",
         heading,
         "",
-        f"**peppy**: `{peppy.version}`, {peppy.build.description} "
-        f"({peppy.build.source})",
+        (
+            f"**peppy**: `{peppy.version}`, {peppy.build.description} "
+            f"({peppy.build.source})"
+        ),
         "",
         *hub_table(hub_set),
     ]
