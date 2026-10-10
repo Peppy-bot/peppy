@@ -29,6 +29,7 @@ use pmi::{
     SubscriberBufferSizes, SubscriberQoS, Subscription, TopicWireSender, ZenohAdapter,
     ZenohNetProtocol, ZenohdInstance,
 };
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -179,72 +180,91 @@ async fn routed(router: &ZenohdInstance, topology: Topology, topic: &str, latest
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_late_subscriber_reads_the_retained_value_then_live_values() {
-    let _lock = ZENOH_SERIAL.lock().await;
-    let router = start_router().await;
+/// A subscriber that joins a retaining topic after a publication.
+struct LateJoin {
+    /// Names the case's topic.
+    case: &'static str,
+    /// The depth the publisher keeps.
+    publisher_depth: usize,
+    /// The values published before the subscriber joins.
+    published: RangeInclusive<u64>,
+    /// The depth the subscriber asks for.
+    subscriber_depth: usize,
+    /// The retained values the subscriber reads first, oldest first.
+    retained: &'static [u64],
+    /// The values published after the subscriber joins, which it reads live.
+    live: &'static [u64],
+}
+
+/// Runs `join` in every topology: the publisher publishes before the
+/// subscriber joins, then the subscriber reads the retained values and the
+/// live ones.
+async fn assert_late_join_reads(router: &ZenohdInstance, join: &LateJoin) {
     for topology in TOPOLOGIES {
-        let topic = topic_in(topology, "late_join");
-        let publisher_session = open_session(&router, topology).await;
+        let topic = topic_in(topology, join.case);
+        let publisher_session = open_session(router, topology).await;
         let publisher = declare(
             &publisher_session,
             &sender(&topic),
             PublisherQoS::Standard,
-            latest(1),
+            latest(join.publisher_depth),
         )
         .expect("declare the retaining publisher");
-        publish(&publisher, 1..=3).await;
-        routed(&router, topology, &topic, &[3]).await;
+        publish(&publisher, join.published.clone()).await;
+        routed(router, topology, &topic, &[*join.published.end()]).await;
 
-        let subscriber_session = open_session(&router, topology).await;
-        let subscription = subscribe(&subscriber_session, &topic, latest(1)).await;
+        let subscriber_session = open_session(router, topology).await;
+        let subscription =
+            subscribe(&subscriber_session, &topic, latest(join.subscriber_depth)).await;
         assert_eq!(
-            next(&subscription, "the retained value").await,
-            3,
+            next_values(&subscription, join.retained.len(), "the retained values").await,
+            join.retained,
             "{topology:?}"
         );
 
-        publish(&publisher, 4..=5).await;
+        publish(&publisher, join.live.iter().copied()).await;
         assert_eq!(
-            next_values(&subscription, 2, "the live values").await,
-            [4, 5],
+            next_values(&subscription, join.live.len(), "the live values").await,
+            join.live,
             "{topology:?}"
         );
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_late_subscriber_reads_the_retained_value_then_live_values() {
+    let _lock = ZENOH_SERIAL.lock().await;
+    let router = start_router().await;
+    assert_late_join_reads(
+        &router,
+        &LateJoin {
+            case: "late_join",
+            publisher_depth: 1,
+            published: 1..=3,
+            subscriber_depth: 1,
+            retained: &[3],
+            live: &[4, 5],
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_retention_depth_replays_that_many_oldest_first() {
     let _lock = ZENOH_SERIAL.lock().await;
     let router = start_router().await;
-    for topology in TOPOLOGIES {
-        let topic = topic_in(topology, "depth");
-        let publisher_session = open_session(&router, topology).await;
-        let publisher = declare(
-            &publisher_session,
-            &sender(&topic),
-            PublisherQoS::Standard,
-            latest(3),
-        )
-        .expect("declare the retaining publisher");
-        publish(&publisher, 1..=5).await;
-        routed(&router, topology, &topic, &[5]).await;
-
-        let subscriber_session = open_session(&router, topology).await;
-        let subscription = subscribe(&subscriber_session, &topic, latest(3)).await;
-        assert_eq!(
-            next_values(&subscription, 3, "the retained values").await,
-            [3, 4, 5],
-            "{topology:?}"
-        );
-
-        publish(&publisher, [6]).await;
-        assert_eq!(
-            next(&subscription, "the live value").await,
-            6,
-            "{topology:?}"
-        );
-    }
+    assert_late_join_reads(
+        &router,
+        &LateJoin {
+            case: "depth",
+            publisher_depth: 3,
+            published: 1..=5,
+            subscriber_depth: 3,
+            retained: &[3, 4, 5],
+            live: &[6],
+        },
+    )
+    .await;
 }
 
 /// A subscription that asks for more than the topic keeps reads what the
@@ -253,34 +273,18 @@ async fn a_retention_depth_replays_that_many_oldest_first() {
 async fn a_topic_keeps_no_more_than_its_depth() {
     let _lock = ZENOH_SERIAL.lock().await;
     let router = start_router().await;
-    for topology in TOPOLOGIES {
-        let topic = topic_in(topology, "depth_bound");
-        let publisher_session = open_session(&router, topology).await;
-        let publisher = declare(
-            &publisher_session,
-            &sender(&topic),
-            PublisherQoS::Standard,
-            latest(1),
-        )
-        .expect("declare the retaining publisher");
-        publish(&publisher, 1..=3).await;
-        routed(&router, topology, &topic, &[3]).await;
-
-        let subscriber_session = open_session(&router, topology).await;
-        let subscription = subscribe(&subscriber_session, &topic, latest(3)).await;
-        assert_eq!(
-            next(&subscription, "the one retained value").await,
-            3,
-            "{topology:?}"
-        );
-
-        publish(&publisher, [4]).await;
-        assert_eq!(
-            next(&subscription, "the live value").await,
-            4,
-            "{topology:?}"
-        );
-    }
+    assert_late_join_reads(
+        &router,
+        &LateJoin {
+            case: "depth_bound",
+            publisher_depth: 1,
+            published: 1..=3,
+            subscriber_depth: 3,
+            retained: &[3],
+            live: &[4],
+        },
+    )
+    .await;
 }
 
 /// A publisher with nothing retained answers the subscriber's history query at
