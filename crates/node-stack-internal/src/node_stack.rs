@@ -150,37 +150,36 @@ impl NodeStackInner {
         };
         // Root node has no dependencies, so this should never fail.
         inner
-            .insert_entity(root, true)
+            .validate_dependencies(&root)
             .expect("root node should have no dependencies");
+        inner.insert_new_entity(root);
         inner
     }
 
-    fn insert_entity(&mut self, entity: NodeEntity, validate: bool) -> Result<()> {
-        if validate {
-            self.validate_dependencies(&entity)?;
-        }
-
+    /// Adds `entity`, whose key is not in the stack yet, and wires its edges
+    /// in both directions. The caller validates it first.
+    fn insert_new_entity(&mut self, entity: NodeEntity) {
         let key = key_from_entity(&entity);
-        let index = if let Some(&existing_index) = self.key_to_index.get(&key) {
-            // Existing entity: replace the inner value while keeping the same Arc.
-            // (No external Arc handles can exist before insert is called for the
-            // first time, but for an existing entity replacement we want to keep
-            // any external handles valid.)
-            if let Some(handle) = self.graph.node_weight(existing_index) {
-                let mut guard = handle.write();
-                *guard = entity;
-            }
-            existing_index
-        } else {
-            let handle: EntityHandle = Arc::new(RwLock::new(entity));
-            let idx = self.graph.add_node(handle);
-            self.key_to_index.insert(key.clone(), idx);
-            idx
-        };
-
+        let index = self.graph.add_node(Arc::new(RwLock::new(entity)));
+        self.key_to_index.insert(key.clone(), index);
         self.rewire_dependencies(index);
         self.resolve_pending_requirements(&key);
-        Ok(())
+    }
+
+    /// Validates a candidate entity before it is added or replaces the entity
+    /// of its key.
+    fn validate_candidate(
+        &self,
+        entity: &NodeEntity,
+        allow_missing_dependencies: bool,
+    ) -> Result<()> {
+        if allow_missing_dependencies {
+            // A permissive (missing-dependency) push skips the full dependency
+            // check, but must still not close a service/action cycle; run the
+            // cycle check on the candidate's incoming config regardless.
+            return self.validate_no_service_action_cycle(entity);
+        }
+        self.validate_dependencies(entity)
     }
 
     fn validate_dependencies(&self, entity: &NodeEntity) -> Result<()> {
@@ -482,102 +481,82 @@ impl NodeStackInner {
     /// Inserts `entity`, or replaces the entity of the same identity in
     /// place under its write lock when it has no instances.
     fn push_entity(&mut self, entity: NodeEntity, allow_missing_dependencies: bool) -> Result<()> {
-        let config = entity.config().clone();
-        let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
+        let key = key_from_entity(&entity);
 
         // The root node cannot be modified
         if self.is_root(&key) {
             return Err(Error::CannotModifyRootNode);
         }
 
-        if let Some(&index) = self.key_to_index.get(&key) {
-            // We must perform the "no live instances" check, the
-            // interfaces/dependency drift checks, AND the wholesale entity
-            // replacement under a *single* held write lock on the entity.
-            // Dropping the lock between the check and the replacement would
-            // let an in-flight `prepare_and_spawn` (which only holds an
-            // `Arc<RwLock<NodeEntity>>` and not the stack lock) append a
-            // `Starting` instance that the replacement would silently orphan.
-            let Some(handle) = self.graph.node_weight(index).cloned() else {
-                return Ok(());
-            };
+        let Some(&index) = self.key_to_index.get(&key) else {
+            self.validate_candidate(&entity, allow_missing_dependencies)?;
+            self.insert_new_entity(entity);
+            return Ok(());
+        };
 
-            let (interfaces_changed, dependencies_changed) = {
-                let mut guard = handle.write();
+        // We must perform the "no live instances" check, the
+        // interfaces/dependency drift checks, AND the wholesale entity
+        // replacement under a *single* held write lock on the entity.
+        // Dropping the lock between the check and the replacement would
+        // let an in-flight `prepare_and_spawn` (which only holds an
+        // `Arc<RwLock<NodeEntity>>` and not the stack lock) append a
+        // `Starting` instance that the replacement would silently orphan.
+        let Some(handle) = self.graph.node_weight(index).cloned() else {
+            return Ok(());
+        };
+        let mut guard = handle.write();
 
-                if !guard.instances().is_empty() {
-                    return Err(Error::CannotOverwriteNodeWithLiveInstances {
-                        node_name: key.name.clone(),
-                        node_tag: key.tag.clone(),
-                    });
-                }
-
-                let interfaces_changed = guard.config().interfaces != config.interfaces;
-                let old_dependency_keys = dependency_keys(guard.config());
-                let new_dependency_keys = dependency_keys(&config);
-                let dependencies_changed = old_dependency_keys != new_dependency_keys;
-
-                // Interface changes can break dependents that consume this
-                // node, so they need an explicit gate. Dependency-spec
-                // changes (e.g. swapping `link_id` of a consumed
-                // topic) only affect *this* node's outbound edges, so they
-                // don't need the dependents check.
-                if interfaces_changed {
-                    let has_dependents = self
-                        .graph
-                        .neighbors_directed(index, Direction::Incoming)
-                        .next()
-                        .is_some()
-                        || self
-                            .pending_requirements
-                            .get(&key)
-                            .is_some_and(|requirements| !requirements.is_empty());
-
-                    if has_dependents {
-                        return Err(Error::CannotOverwriteNodeWithDependents {
-                            node_name: key.name,
-                            node_tag: key.tag,
-                        });
-                    }
-                }
-
-                if interfaces_changed || dependencies_changed {
-                    let candidate = &entity;
-                    if allow_missing_dependencies {
-                        // A permissive (missing-dependency) re-add skips the full
-                        // dependency check, but must still not close a
-                        // service/action cycle; run the cycle check on the
-                        // candidate's incoming config regardless.
-                        self.validate_no_service_action_cycle(candidate)?;
-                    } else {
-                        self.validate_dependencies(candidate)?;
-                    }
-                }
-
-                // Replace the entity in-place under the still-held write
-                // lock. The same `Arc` handle is preserved so any external
-                // readers see the new state.
-                *guard = entity;
-
-                (interfaces_changed, dependencies_changed)
-            };
-
-            if interfaces_changed || dependencies_changed {
-                self.rewire_dependencies(index);
-            }
-
-            Ok(())
-        } else {
-            if allow_missing_dependencies {
-                // `insert_entity` skips dependency validation (and with it the
-                // cycle check) on a permissive add, so run the cycle check
-                // explicitly. The entity is not in the graph yet, so this sees
-                // it as the candidate appended to the live stack.
-                self.validate_no_service_action_cycle(&entity)?;
-            }
-            self.insert_entity(entity, !allow_missing_dependencies)?;
-            Ok(())
+        if !guard.instances().is_empty() {
+            return Err(Error::CannotOverwriteNodeWithLiveInstances {
+                node_name: key.name,
+                node_tag: key.tag,
+            });
         }
+
+        let interfaces_changed = guard.config().interfaces != entity.config().interfaces;
+        let dependencies_changed =
+            dependency_keys(guard.config()) != dependency_keys(entity.config());
+
+        // Interface changes can break dependents that consume this node, so
+        // they need an explicit gate. Dependency-spec changes (e.g. swapping
+        // `link_id` of a consumed topic) only affect *this* node's outbound
+        // edges, so they don't need the dependents check.
+        if interfaces_changed && self.has_dependents(index, &key) {
+            return Err(Error::CannotOverwriteNodeWithDependents {
+                node_name: key.name,
+                node_tag: key.tag,
+            });
+        }
+
+        let needs_rewire = interfaces_changed || dependencies_changed;
+        if needs_rewire {
+            self.validate_candidate(&entity, allow_missing_dependencies)?;
+        }
+
+        // Replace the entity in-place under the still-held write lock. The
+        // same `Arc` handle is preserved so any external readers see the new
+        // state. The lock is released before the rewire, which reads the
+        // entity.
+        *guard = entity;
+        drop(guard);
+
+        if needs_rewire {
+            self.rewire_dependencies(index);
+        }
+        Ok(())
+    }
+
+    /// Whether another node depends on the node at `index`, through an edge
+    /// or as a pending requirement that waits for `key`.
+    fn has_dependents(&self, index: NodeIndex, key: &NodeKey) -> bool {
+        self.graph
+            .neighbors_directed(index, Direction::Incoming)
+            .next()
+            .is_some()
+            || self
+                .pending_requirements
+                .get(key)
+                .is_some_and(|requirements| !requirements.is_empty())
     }
 
     /// Removes an entity entirely from the graph.
