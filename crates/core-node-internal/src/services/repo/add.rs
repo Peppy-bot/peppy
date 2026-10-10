@@ -14,6 +14,7 @@ use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use serde_json::Value;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -67,16 +68,14 @@ fn handle_repo_add_request_inner(
         request.source, request.id
     );
 
-    // An explicit id and top priority answer the same question (which id the
-    // new entry takes) in incompatible ways; deriving one while pinning the
-    // other would silently ignore half the request.
-    if request.id.is_some() && request.top {
-        return RepoAddResponse::failure(
-            "cannot combine an explicit id with top priority: --id pins the id, --top derives one",
-        )
-        .encode()
-        .map_err(Into::into);
-    }
+    let placement = match RepoIdPlacement::from_request(&request) {
+        Ok(placement) => placement,
+        Err(reason) => {
+            return RepoAddResponse::failure(reason)
+                .encode()
+                .map_err(Into::into);
+        }
+    };
 
     let identity = source_identity(&request.source);
     if identity.trim().is_empty() {
@@ -105,51 +104,12 @@ fn handle_repo_add_request_inner(
             .map_err(Into::into);
     }
 
-    let next_id = if let Some(id) = request.id {
-        // The caller pinned this id (typically from the >= 2000 band
-        // reserved for organization-added repositories) so it stays stable
-        // across re-runs of whatever setup registered it. Claiming an id
-        // another entry already holds would merge two repositories' entries
-        // under one owner, so it is a refusal naming the id.
-        if repos
-            .iter()
-            .filter_map(repo_entry_id)
-            .any(|existing| existing == id)
-        {
-            return RepoAddResponse::failure(format!(
-                "repository id {id} is already in use; pick another (ids >= 2000 are reserved \
-                 for manually pinned repositories)"
-            ))
-            .encode()
-            .map_err(Into::into);
-        }
-        id
-    } else if request.top {
-        match repos.iter().filter_map(repo_entry_id).min() {
-            Some(min) => match min.checked_sub(1) {
-                Some(n) => n,
-                None => {
-                    return RepoAddResponse::failure(
-                        "cannot add repo with top priority: existing minimum id is 0 (would underflow)",
-                    )
-                    .encode().map_err(Into::into);
-                }
-            },
-            None => 1000,
-        }
-    } else {
-        match repos.iter().filter_map(repo_entry_id).max() {
-            Some(max) => match max.checked_add(1) {
-                Some(n) => n,
-                None => {
-                    return RepoAddResponse::failure(
-                        "cannot add repo: existing maximum id is u64::MAX (would overflow)",
-                    )
-                    .encode()
-                    .map_err(Into::into);
-                }
-            },
-            None => 1000,
+    let next_id = match next_repo_id(&repos, placement) {
+        Ok(id) => id,
+        Err(reason) => {
+            return RepoAddResponse::failure(reason)
+                .encode()
+                .map_err(Into::into);
         }
     };
 
@@ -159,4 +119,71 @@ fn handle_repo_add_request_inner(
     drop(_guard);
 
     RepoAddResponse::success().encode().map_err(Into::into)
+}
+
+/// The id an auto-assigned entry takes when the list holds no id yet.
+const DEFAULT_FIRST_REPO_ID: u64 = 1000;
+
+/// Which id a new `repositories.json5` entry takes, parsed from the `id`
+/// and `top` fields of a [`RepoAddRequest`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepoIdPlacement {
+    /// The caller pinned this id.
+    Pinned(u64),
+    /// One below the lowest existing id, so the repository takes priority
+    /// over every other one.
+    BeforeAll,
+    /// One above the highest existing id.
+    AfterAll,
+}
+
+impl RepoIdPlacement {
+    /// Refuses a request that both pins an id and asks for top priority:
+    /// the two answer the same question (which id the new entry takes) in
+    /// incompatible ways, and honouring one would silently ignore the other.
+    fn from_request(request: &RepoAddRequest) -> std::result::Result<Self, &'static str> {
+        match (request.id, request.top) {
+            (Some(_), true) => Err(
+                "cannot combine an explicit id with top priority: --id pins the id, --top derives one",
+            ),
+            (Some(id), false) => Ok(Self::Pinned(id)),
+            (None, true) => Ok(Self::BeforeAll),
+            (None, false) => Ok(Self::AfterAll),
+        }
+    }
+}
+
+/// The id the new entry takes in `repos` at `placement`, or the refusal
+/// the caller sends back.
+fn next_repo_id(repos: &[Value], placement: RepoIdPlacement) -> std::result::Result<u64, String> {
+    let mut ids = repos.iter().filter_map(repo_entry_id);
+    match placement {
+        // The caller pinned this id (typically from the >= 2000 band
+        // reserved for organization-added repositories) so it stays stable
+        // across re-runs of whatever setup registered it. Claiming an id
+        // another entry already holds would merge two repositories' entries
+        // under one owner, so it is a refusal naming the id.
+        RepoIdPlacement::Pinned(id) => {
+            if ids.any(|existing| existing == id) {
+                return Err(format!(
+                    "repository id {id} is already in use; pick another (ids >= 2000 are reserved \
+                     for manually pinned repositories)"
+                ));
+            }
+            Ok(id)
+        }
+        RepoIdPlacement::BeforeAll => match ids.min() {
+            None => Ok(DEFAULT_FIRST_REPO_ID),
+            Some(min) => min.checked_sub(1).ok_or_else(|| {
+                "cannot add repo with top priority: existing minimum id is 0 (would underflow)"
+                    .to_owned()
+            }),
+        },
+        RepoIdPlacement::AfterAll => match ids.max() {
+            None => Ok(DEFAULT_FIRST_REPO_ID),
+            Some(max) => max.checked_add(1).ok_or_else(|| {
+                "cannot add repo: existing maximum id is u64::MAX (would overflow)".to_owned()
+            }),
+        },
+    }
 }
