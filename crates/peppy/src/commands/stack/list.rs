@@ -962,6 +962,20 @@ mod tests {
     use core_node_api::{NodeStage, SerializedInstance};
     use unicode_width::UnicodeWidthStr;
 
+    /// A healthy instance on the default clock with no slot bindings,
+    /// pairing slots or endpoints; a test overrides the fields it exercises.
+    fn instance(id: &str, state: InstanceState) -> SerializedInstance {
+        SerializedInstance {
+            clock: Default::default(),
+            instance_id: id.to_string(),
+            state,
+            healthy: true,
+            slot_bindings: std::collections::BTreeMap::new(),
+            pairing_slots: std::collections::BTreeMap::new(),
+            endpoints: Vec::new(),
+        }
+    }
+
     fn node(
         name: &str,
         tag: &str,
@@ -977,15 +991,7 @@ mod tests {
             stage,
             instances: instances
                 .into_iter()
-                .map(|(id, state)| SerializedInstance {
-                    clock: Default::default(),
-                    instance_id: id.to_string(),
-                    state,
-                    healthy: true,
-                    slot_bindings: std::collections::BTreeMap::new(),
-                    pairing_slots: std::collections::BTreeMap::new(),
-                    endpoints: Vec::new(),
-                })
+                .map(|(id, state)| instance(id, state))
                 .collect(),
         }
     }
@@ -1005,12 +1011,7 @@ mod tests {
                 ),
                 ProducerRef::new("core-a", "sim_1"),
             ),
-            instance_id: instance_id.to_string(),
-            state: InstanceState::Running,
-            healthy: true,
-            slot_bindings: std::collections::BTreeMap::new(),
-            pairing_slots: std::collections::BTreeMap::new(),
-            endpoints: Vec::new(),
+            ..instance(instance_id, InstanceState::Running)
         };
         let listing = |instances: Vec<SerializedInstance>| {
             format_stack_body(
@@ -1160,19 +1161,9 @@ mod tests {
     /// exercising the bindings table. Always `Ready`/`v1`.
     fn binding_node(name: &str, instances: Vec<InstanceSpec<'_>>) -> SerializedNode {
         SerializedNode {
-            name: name.to_string(),
-            tag: "v1".to_string(),
-            core_node: "core-a".to_string(),
-            config_path: format!("/tmp/{}.json5", name),
-            artifact_path: None,
-            stage: NodeStage::Ready,
             instances: instances
                 .into_iter()
                 .map(|(id, state, binds)| SerializedInstance {
-                    clock: Default::default(),
-                    instance_id: id.to_string(),
-                    state,
-                    healthy: true,
                     slot_bindings: binds
                         .into_iter()
                         .map(|(slot, producers)| {
@@ -1183,10 +1174,10 @@ mod tests {
                             )
                         })
                         .collect(),
-                    pairing_slots: std::collections::BTreeMap::new(),
-                    endpoints: Vec::new(),
+                    ..instance(id, state)
                 })
                 .collect(),
+            ..node(name, "v1", NodeStage::Ready, Vec::new())
         }
     }
 
@@ -1842,35 +1833,17 @@ mod tests {
 
     #[test]
     fn bindings_table_renders_health_column() {
-        // A node with one healthy and one unhealthy instance, built directly so
-        // both `SerializedInstance::healthy` values are exercised.
+        // A node with one healthy and one unhealthy instance, so both
+        // `SerializedInstance::healthy` values are exercised.
         let nodes = vec![SerializedNode {
-            name: "arm".to_string(),
-            tag: "v1".to_string(),
-            core_node: "core-a".to_string(),
-            config_path: "/tmp/arm.json5".to_string(),
-            artifact_path: None,
-            stage: NodeStage::Ready,
             instances: vec![
+                instance("healthy-1", InstanceState::Running),
                 SerializedInstance {
-                    clock: Default::default(),
-                    instance_id: "healthy-1".to_string(),
-                    state: InstanceState::Running,
-                    healthy: true,
-                    slot_bindings: std::collections::BTreeMap::new(),
-                    pairing_slots: std::collections::BTreeMap::new(),
-                    endpoints: Vec::new(),
-                },
-                SerializedInstance {
-                    clock: Default::default(),
-                    instance_id: "down-1".to_string(),
-                    state: InstanceState::Running,
                     healthy: false,
-                    slot_bindings: std::collections::BTreeMap::new(),
-                    pairing_slots: std::collections::BTreeMap::new(),
-                    endpoints: Vec::new(),
+                    ..instance("down-1", InstanceState::Running)
                 },
             ],
+            ..node("arm", "v1", NodeStage::Ready, Vec::new())
         }];
         let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
@@ -1981,6 +1954,21 @@ mod tests {
         );
     }
 
+    /// A slot of the `arm_link:v1` pairing playing `role`.
+    fn arm_link_slot(
+        role: &str,
+        cardinality: config::node::Cardinality,
+        peers: Vec<config::runtime::PairedPeer>,
+    ) -> core_node_api::SerializedPairingSlot {
+        core_node_api::SerializedPairingSlot {
+            pairing_name: "arm_link".to_string(),
+            pairing_tag: "v1".to_string(),
+            role: role.to_string(),
+            cardinality,
+            peers,
+        }
+    }
+
     #[test]
     fn pairings_table_renders_paired_and_unpaired_rows() {
         let mut arm = node(
@@ -1991,17 +1979,15 @@ mod tests {
         );
         arm.instances[0].pairing_slots.insert(
             "controller".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "arm".to_string(),
-                cardinality: config::node::Cardinality::One,
-                peers: vec![config::runtime::PairedPeer {
+            arm_link_slot(
+                "arm",
+                config::node::Cardinality::One,
+                vec![config::runtime::PairedPeer {
                     peer: ProducerRef::new("core_a", "ctrl_1"),
                     peer_link_id: "arm".to_string(),
                     copy: None,
                 }],
-            },
+            ),
         );
         let mut ctrl = node(
             "arm_controller",
@@ -2011,13 +1997,7 @@ mod tests {
         );
         ctrl.instances[0].pairing_slots.insert(
             "arm".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "controller".to_string(),
-                cardinality: config::node::Cardinality::One,
-                peers: Vec::new(),
-            },
+            arm_link_slot("controller", config::node::Cardinality::One, Vec::new()),
         );
 
         let out = format_stack_body(&[arm, ctrl], &[], false, None);
@@ -2054,13 +2034,11 @@ mod tests {
         );
         engine.instances[0].pairing_slots.insert(
             "limbs".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "arm".to_string(),
-                cardinality: config::node::Cardinality::ZeroOrMore,
-                peers: vec![peer("ctrl_1"), peer("ctrl_2"), peer("ctrl_3")],
-            },
+            arm_link_slot(
+                "arm",
+                config::node::Cardinality::ZeroOrMore,
+                vec![peer("ctrl_1"), peer("ctrl_2"), peer("ctrl_3")],
+            ),
         );
 
         let out = format_stack_body(&[engine], &[], false, None);
@@ -2091,23 +2069,11 @@ mod tests {
         );
         engine.instances[0].pairing_slots.insert(
             "limbs".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "arm".to_string(),
-                cardinality: config::node::Cardinality::ZeroOrMore,
-                peers: Vec::new(),
-            },
+            arm_link_slot("arm", config::node::Cardinality::ZeroOrMore, Vec::new()),
         );
         engine.instances[0].pairing_slots.insert(
             "governor".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "arm".to_string(),
-                cardinality: config::node::Cardinality::One,
-                peers: Vec::new(),
-            },
+            arm_link_slot("arm", config::node::Cardinality::One, Vec::new()),
         );
         let mut robot = node(
             "backbone",
@@ -2117,17 +2083,15 @@ mod tests {
         );
         robot.instances[0].pairing_slots.insert(
             "engine".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "controller".to_string(),
-                cardinality: config::node::Cardinality::One,
-                peers: vec![config::runtime::PairedPeer {
+            arm_link_slot(
+                "controller",
+                config::node::Cardinality::One,
+                vec![config::runtime::PairedPeer {
                     peer: ProducerRef::new("core_a", "engine_1"),
                     peer_link_id: "limbs".to_string(),
                     copy: Some(config::runtime::Name::new("alpha").expect("a name")),
                 }],
-            },
+            ),
         );
 
         let out = format_stack_body(&[engine, robot], &[], false, None);
