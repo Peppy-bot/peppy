@@ -238,6 +238,14 @@ mod tests {
         encoder.finish().unwrap();
     }
 
+    /// The value `env_vars` holds for `key`, if any.
+    fn env_value<'a>(env_vars: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        env_vars
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+    }
+
     #[test]
     fn inject_rust_build_env_skips_python_nodes() {
         let mut env_vars = vec![("FOO".to_string(), "bar".to_string())];
@@ -261,11 +269,7 @@ mod tests {
             "should not duplicate RUSTC_WRAPPER"
         );
         assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == "RUSTC_WRAPPER")
-                .unwrap()
-                .1,
+            env_value(&env_vars, "RUSTC_WRAPPER").unwrap(),
             "custom_wrapper",
             "should keep user-provided RUSTC_WRAPPER value"
         );
@@ -281,10 +285,7 @@ mod tests {
         let mut env_vars = Vec::new();
         inject_node_runtime_env(&mut env_vars, "uvc_camera", "v1");
 
-        let apptainer_bin = env_vars
-            .iter()
-            .find(|(k, _)| k == PEPPY_APPTAINER_BIN_ENV_VAR)
-            .map(|(_, v)| v)
+        let apptainer_bin = env_value(&env_vars, PEPPY_APPTAINER_BIN_ENV_VAR)
             .expect("PEPPY_APPTAINER_BIN should be injected");
         assert!(
             !apptainer_bin.trim().is_empty(),
@@ -292,19 +293,10 @@ mod tests {
         );
 
         assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == PEPPY_NODE_NAME_ENV_VAR)
-                .map(|(_, v)| v.as_str()),
+            env_value(&env_vars, PEPPY_NODE_NAME_ENV_VAR),
             Some("uvc_camera")
         );
-        assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == PEPPY_NODE_TAG_ENV_VAR)
-                .map(|(_, v)| v.as_str()),
-            Some("v1")
-        );
+        assert_eq!(env_value(&env_vars, PEPPY_NODE_TAG_ENV_VAR), Some("v1"));
     }
 
     #[test]
@@ -331,44 +323,25 @@ mod tests {
             1
         );
         assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == PEPPY_APPTAINER_BIN_ENV_VAR)
-                .map(|(_, v)| v.as_str()),
+            env_value(&env_vars, PEPPY_APPTAINER_BIN_ENV_VAR),
             Some("/custom/apptainer")
         );
         assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == PEPPY_NODE_NAME_ENV_VAR)
-                .map(|(_, v)| v.as_str()),
+            env_value(&env_vars, PEPPY_NODE_NAME_ENV_VAR),
             Some("custom_node")
         );
-        assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == PEPPY_NODE_TAG_ENV_VAR)
-                .map(|(_, v)| v.as_str()),
-            Some("v999")
-        );
+        assert_eq!(env_value(&env_vars, PEPPY_NODE_TAG_ENV_VAR), Some("v999"));
     }
 
-    #[test]
-    fn sanitize_repo_path_accepts_relative_path() {
-        let result = sanitize_repo_path("some/path");
-        assert_eq!(result.unwrap(), PathBuf::from("some/path"));
-    }
-
-    #[test]
-    fn sanitize_repo_path_strips_leading_slashes() {
-        let result = sanitize_repo_path("///some/path");
-        assert_eq!(result.unwrap(), PathBuf::from("some/path"));
-    }
-
-    #[test]
-    fn sanitize_repo_path_strips_leading_backslashes() {
-        let result = sanitize_repo_path("\\\\some\\path");
-        assert_eq!(result.unwrap(), PathBuf::from("some\\path"));
+    #[rstest::rstest]
+    #[case::relative("some/path", "some/path")]
+    #[case::leading_slashes("///some/path", "some/path")]
+    #[case::leading_backslashes("\\\\some\\path", "some\\path")]
+    fn sanitize_repo_path_accepts_a_path_inside_the_repository(
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(sanitize_repo_path(input).unwrap(), PathBuf::from(expected));
     }
 
     #[test]
@@ -385,40 +358,19 @@ mod tests {
         assert!(sanitize_repo_path("///").is_err());
     }
 
-    #[test]
-    fn is_supported_http_archive_accepts_tar_zst() {
-        let url = url::Url::parse("https://example.com/bundle.tar.zst").unwrap();
-        assert!(is_supported_http_archive(&url));
-    }
-
-    #[test]
-    fn is_supported_http_archive_accepts_tar_zstd() {
-        let url = url::Url::parse("https://example.com/bundle.tar.zstd").unwrap();
-        assert!(is_supported_http_archive(&url));
-    }
-
-    #[test]
-    fn is_supported_http_archive_accepts_tzst() {
-        let url = url::Url::parse("https://example.com/bundle.tzst").unwrap();
-        assert!(is_supported_http_archive(&url));
-    }
-
-    #[test]
-    fn is_supported_http_archive_rejects_tar_gz() {
-        let url = url::Url::parse("https://example.com/bundle.tar.gz").unwrap();
-        assert!(!is_supported_http_archive(&url));
-    }
-
-    #[test]
-    fn is_supported_http_archive_rejects_plain_url() {
-        let url = url::Url::parse("https://example.com/page").unwrap();
-        assert!(!is_supported_http_archive(&url));
-    }
-
-    #[test]
-    fn is_supported_http_archive_is_case_insensitive() {
-        let url = url::Url::parse("https://example.com/BUNDLE.TAR.ZST").unwrap();
-        assert!(is_supported_http_archive(&url));
+    #[rstest::rstest]
+    #[case::tar_zst("https://example.com/bundle.tar.zst", true)]
+    #[case::tar_zstd("https://example.com/bundle.tar.zstd", true)]
+    #[case::tzst("https://example.com/bundle.tzst", true)]
+    #[case::tar_gz("https://example.com/bundle.tar.gz", false)]
+    #[case::plain_url("https://example.com/page", false)]
+    #[case::upper_case("https://example.com/BUNDLE.TAR.ZST", true)]
+    fn is_supported_http_archive_accepts_only_zstd_tarballs(
+        #[case] url: &str,
+        #[case] expected: bool,
+    ) {
+        let url = url::Url::parse(url).unwrap();
+        assert_eq!(is_supported_http_archive(&url), expected);
     }
 
     #[test]
