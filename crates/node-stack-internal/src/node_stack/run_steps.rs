@@ -632,19 +632,15 @@ pub(super) async fn kill_and_collect_error(
     }
 
     let stderr_output = stderr_buffer.lines().join("\n");
-
-    if !stderr_output.is_empty() {
-        debug!(
-            "Node instance '{}' stderr (tail): {}",
-            instance_id_str, stderr_output
-        );
-    }
-
     if stderr_output.is_empty() {
-        error.to_string()
-    } else {
-        format!("{error}{STDERR_TAIL_HEADER}{stderr_output}")
+        return error.to_string();
     }
+
+    debug!(
+        "Node instance '{}' stderr (tail): {}",
+        instance_id_str, stderr_output
+    );
+    format!("{error}{STDERR_TAIL_HEADER}{stderr_output}")
 }
 
 #[cfg(test)]
