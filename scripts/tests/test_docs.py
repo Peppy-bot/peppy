@@ -137,6 +137,13 @@ def test_truncate_diff_long_truncated() -> None:
     assert "diff truncated" in out
 
 
+def test_truncate_diff_counts_the_original_size_in_characters() -> None:
+    # Each "é" is two bytes in UTF-8, so a size in bytes would read 1000000.
+    diff = "é" * 500_000
+    out = truncate_diff(diff)
+    assert out.endswith("[diff truncated: original size 500000 characters]")
+
+
 # --- get_code_diff / get_docs_diff ---
 
 

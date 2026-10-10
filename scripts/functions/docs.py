@@ -346,7 +346,7 @@ def truncate_diff(diff: str) -> str:
         return diff
     return (
         diff[:_MAX_DIFF_CHARS]
-        + f"\n\n[diff truncated: original size {len(diff)} bytes]"
+        + f"\n\n[diff truncated: original size {len(diff)} characters]"
     )
 
 
