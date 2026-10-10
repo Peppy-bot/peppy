@@ -46,7 +46,7 @@ async fn watch_idle(notify: Arc<Notify>, idle_timeout: Duration) {
 }
 
 /// Outcome of a per-phase operation wrapped with idle + (optional) launch-deadline enforcement.
-pub(super) enum PhaseOutcome<T> {
+enum PhaseOutcome<T> {
     Completed(T),
     IdleTimeout,
     MaxTimeout,
@@ -141,7 +141,7 @@ where
 /// awaits the phase future for up to `COOPERATIVE_TEARDOWN_BUDGET` so it
 /// can run its own teardown (SIGKILL the child, unregister the `Starting`
 /// instance, remove temp files) before we return the timeout outcome.
-pub(super) async fn run_phase_cancel_on_timeout<F, T>(
+async fn run_phase_cancel_on_timeout<F, T>(
     mut phase: Pin<Box<F>>,
     activity_notify: Arc<Notify>,
     idle_timeout: Duration,
