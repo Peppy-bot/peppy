@@ -24,7 +24,7 @@ use super::{
 use crate::error::Result;
 use crate::generator::naming::to_camel_case;
 use crate::generator::types::{InterfaceArtifact, InterfaceKind};
-use config::node::{MessageFormat, QoSProfile};
+use config::node::MessageFormat;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
@@ -237,10 +237,6 @@ pub(super) fn build_local_message_with_deserializer(
         #( #struct_items )*
         #deserializer
     })
-}
-
-pub(super) fn qos_tokens(qos: &QoSProfile) -> TokenStream {
-    qos_profile_tokens(qos)
 }
 
 // ---------------------------------------------------------------------------
@@ -1131,7 +1127,7 @@ fn render_pair_publisher(
     let production = production_module("paired_topics", &[link_id, topic_name]);
     let schema_key = crate::generator::naming::peer_schema_key(link_id, topic_name);
     let schema_prefix = to_camel_case(&schema_key);
-    let qos = qos_tokens(&spec.qos);
+    let qos = qos_profile_tokens(&spec.qos);
     let serialize_ident = Ident::new("serialize_message", Span::call_site());
     let serializer = build_struct_serializer(
         generator,
@@ -1221,7 +1217,7 @@ fn render_pair_subscription(
     let topic_name = spec.name.as_str();
     let schema_key = crate::generator::naming::peer_schema_key(link_id, topic_name);
     let schema_prefix = to_camel_case(&schema_key);
-    let qos = qos_tokens(&spec.qos);
+    let qos = qos_profile_tokens(&spec.qos);
     let deserialize_ident = Ident::new("deserialize_message", Span::call_site());
     // The node-emitted direction has no production consumer struct (the
     // production module only serializes), so the veneer defines its own.
@@ -1437,7 +1433,7 @@ fn render_observed_publisher(
     let production = production_module("paired_topics", &[link_id, topic_name]);
     let schema_key = crate::generator::naming::peer_schema_key(link_id, topic_name);
     let schema_prefix = to_camel_case(&schema_key);
-    let qos = qos_tokens(&spec.qos);
+    let qos = qos_profile_tokens(&spec.qos);
     let serialize_ident = Ident::new("serialize_message", Span::call_site());
     let serializer = build_struct_serializer(
         generator,
