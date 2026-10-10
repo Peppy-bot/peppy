@@ -49,8 +49,9 @@ pub(crate) fn emit_capnp_loader_fn(
     builder.blank_line();
 }
 
-/// Convenience wrapper: emits preamble + a single loader function.
-/// Use this when there is only one schema to load.
+/// Emits the preamble imports and the loader function of one schema. The
+/// preamble only registers deduplicated imports, so a module with several
+/// schemas calls this once per schema.
 pub(crate) fn emit_capnp_schema_loader(
     builder: &mut PythonCodeBuilder,
     schema_info: &PythonSchemaInfo,

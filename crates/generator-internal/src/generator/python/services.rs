@@ -2,7 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass};
 use super::deserialization;
 use super::serialization;
-use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
+use super::topics::{capnp_loader_fn_name, emit_capnp_schema_loader};
 use crate::error::Result;
 use crate::generator::types::{ContractOrigin, non_empty_message_format};
 use config::node::{Cardinality, ConsumedService, MessageFormat, NativeExposedService};
@@ -162,14 +162,11 @@ pub fn build_exposed_service(
     let response_format = non_empty_message_format(service.response_message_format.as_ref());
 
     // Emit capnp schema loaders
-    if request_schema_info.is_some() || response_schema_info.is_some() {
-        emit_capnp_preamble(&mut builder);
-    }
-    if let Some(info) = request_schema_info {
-        emit_capnp_loader_fn(&mut builder, info);
-    }
-    if let Some(info) = response_schema_info {
-        emit_capnp_loader_fn(&mut builder, info);
+    for info in [request_schema_info, response_schema_info]
+        .into_iter()
+        .flatten()
+    {
+        emit_capnp_schema_loader(&mut builder, info);
     }
 
     // Response dataclass
@@ -337,14 +334,11 @@ pub fn build_consumed_service(
     let response_format = non_empty_message_format(Some(response_arguments));
 
     // Capnp schema loaders.
-    if request_schema_info.is_some() || response_schema_info.is_some() {
-        emit_capnp_preamble(&mut builder);
-    }
-    if let Some(info) = request_schema_info {
-        emit_capnp_loader_fn(&mut builder, info);
-    }
-    if let Some(info) = response_schema_info {
-        emit_capnp_loader_fn(&mut builder, info);
+    for info in [request_schema_info, response_schema_info]
+        .into_iter()
+        .flatten()
+    {
+        emit_capnp_schema_loader(&mut builder, info);
     }
 
     // Constants

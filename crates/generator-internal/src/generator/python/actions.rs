@@ -3,7 +3,7 @@ use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass, emit_nest
 use super::deserialization;
 use super::serialization;
 use super::services::sender_target_python_expr;
-use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
+use super::topics::{capnp_loader_fn_name, emit_capnp_schema_loader};
 use super::type_mapping::{collect_fields_from_format, uses_optional};
 use crate::error::Result;
 use crate::generator::types::{ConsumedActionMessage, ContractOrigin, non_empty_message_format};
@@ -32,14 +32,7 @@ pub fn build_exposed_action(
     let has_feedback = action.feedback_topic.is_some();
     let has_result = action.result_service.is_some();
 
-    // Capnp preamble and loader functions.
-    let any_schema = goal_request_schema_info.is_some()
-        || goal_response_schema_info.is_some()
-        || result_response_schema_info.is_some()
-        || feedback_schema_info.is_some();
-    if any_schema {
-        emit_capnp_preamble(&mut builder);
-    }
+    // Capnp loader functions.
     for info in [
         goal_request_schema_info,
         goal_response_schema_info,
@@ -49,7 +42,7 @@ pub fn build_exposed_action(
     .into_iter()
     .flatten()
     {
-        emit_capnp_loader_fn(&mut builder, info);
+        emit_capnp_schema_loader(&mut builder, info);
     }
 
     builder.line(&format!("ACTION_NAME = \"{}\"", action.name));
@@ -406,15 +399,7 @@ pub fn build_consumed_action(
     let feedback_format = non_empty_message_format(messages.feedback.as_ref());
     let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
-    // Capnp preamble and loader functions
-    let any_schema = schema_info.goal_request.is_some()
-        || schema_info.goal_response.is_some()
-        || schema_info.feedback.is_some()
-        || schema_info.result_response.is_some();
-
-    if any_schema {
-        emit_capnp_preamble(&mut builder);
-    }
+    // Capnp loader functions
     for info in [
         schema_info.goal_request,
         schema_info.goal_response,
@@ -424,7 +409,7 @@ pub fn build_consumed_action(
     .into_iter()
     .flatten()
     {
-        emit_capnp_loader_fn(&mut builder, info);
+        emit_capnp_schema_loader(&mut builder, info);
     }
 
     // Constants
