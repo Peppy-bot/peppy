@@ -26,7 +26,7 @@ where
 ///
 /// Direction is explicit data on each topic: a role emits the topics tagged
 /// `emitted_by: <its name>` and consumes every topic tagged with the other
-/// role's name. There is no nesting and no convention — the flat `topics`
+/// role's name. There is no nesting and no convention: the flat `topics`
 /// list with per-topic `emitted_by` is the entire shape.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PeppyPairing {
@@ -100,7 +100,7 @@ impl TryFrom<RawPairingTopic> for PairingTopic {
 /// - a `services` or `actions` key gets a targeted "pairings are
 ///   topics-only" error instead of a generic unknown-field message;
 /// - a non-empty `topics` list (a pairing with no topics carries nothing);
-///   a role with zero topics is fine — that is a strictly one-directional
+///   a role with zero topics is fine: that is a strictly one-directional
 ///   pair;
 /// - every `emitted_by` names one of the two declared roles;
 /// - topic names are unique across the whole flat list.
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_topic_names_across_directions() {
         // The flat-list uniqueness rule: one namespace regardless of which
-        // role emits — this keeps the generated pairings.<link_id>.* module
+        // role emits, which keeps the generated pairings.<link_id>.* module
         // namespace unambiguous.
         let json5 = r#"{
             peppy_schema: "pairing/v1",
