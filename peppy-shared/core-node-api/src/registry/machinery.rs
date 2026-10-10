@@ -192,12 +192,13 @@ macro_rules! pd {
     };
 }
 
-/// Emits the [`ServiceRequest`] impl for one `methods!` service entry — or
-/// nothing, when the generic client transport cannot route the service:
-/// [`Host::SpawnedNode`] queryables don't live under the daemon's service
+/// Emits the [`ServiceRequest`] impl for one `methods!` service entry, or
+/// nothing when the generic client transport cannot route the service:
+/// [`Host::SpawnedNode`] queryables do not live under the daemon's service
 /// root, and `routing: bespoke` entries need discovery scoping no generic
-/// signature can express. The first rule (daemon host, no routing override)
-/// is the only emitting one; everything else falls through to the empty rule.
+/// signature can express. Every host and routing pair has its own rule, so a
+/// misspelled `routing` value or a new [`Host`] variant fails to compile
+/// instead of silently dropping the impl.
 macro_rules! service_request_impl {
     ((CoreNodeDaemon) () $svar:ident, $sreq:ident, $sresp:ident) => {
         impl crate::registry::ServiceRequest for crate::encoding::$sreq {
@@ -211,12 +212,13 @@ macro_rules! service_request_impl {
             }
         }
     };
-    (($shost:ident) ($($srouting:ident)?) $svar:ident, $sreq:ident, $sresp:ident) => {};
+    ((CoreNodeDaemon) (bespoke) $svar:ident, $sreq:ident, $sresp:ident) => {};
+    ((SpawnedNode) ($(bespoke)?) $svar:ident, $sreq:ident, $sresp:ident) => {};
 }
 
 /// Emits the [`LaunchScoped`] impl for an entry declared `scope: launch`,
-/// or nothing when the entry declares no scope. Unlike
-/// [`service_request_impl!`] there is no catch-all rule: a misspelled scope
+/// or nothing when the entry declares no scope. Like
+/// [`service_request_impl!`], it has no catch-all rule: a misspelled scope
 /// matches neither arm and fails to compile, rather than quietly emitting
 /// nothing and leaving the action ungated.
 macro_rules! launch_scoped_impl {
