@@ -1176,14 +1176,7 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
         apptainer_dir: &apptainer_dir,
         fixture: &fixture,
     };
-    let suffix = format!(
-        "{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_millis()
-    );
+    let suffix = unique_container_suffix();
 
     let router_pins = tempfile::tempdir().expect("create pinned router config directory");
     let router_a_pin = router_pins.path().join("router-a.json5");
@@ -1820,6 +1813,20 @@ fn assert_holds_exactly(stack: &str, daemon: &str, expected: &[&str], forbidden:
     }
 }
 
+/// The part of a container name that sets one test run apart from every other
+/// run on the same engine: the test process id and the current time in
+/// milliseconds.
+fn unique_container_suffix() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_millis()
+    )
+}
+
 /// What every set of daemon containers stands on: the built image, the shared
 /// host router, the fixture repository, and the launcher mount. One per test;
 /// every daemon of that test borrows from it, and it is held for their
@@ -1854,14 +1861,7 @@ impl Substrate {
         let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
             .expect("the test-built daemon should have a host Apptainer installation");
         let fixture = FixtureRepository::create();
-        let suffix = format!(
-            "{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_millis()
-        );
+        let suffix = unique_container_suffix();
 
         // Every launcher these tests drive, in one mountable directory: the
         // file the guide documents, plus the probe launchers beside it.
