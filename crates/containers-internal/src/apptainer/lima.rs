@@ -24,7 +24,7 @@ const LIMA_PROBE_POLL: Duration = Duration::from_millis(50);
 /// guest's own tmpfs (alongside the synced apptainer install), never the
 /// virtiofs host-home mount, so the wrapper's pgid write cannot lose a
 /// mount-visibility race the way a path under `$HOME` can.
-pub(crate) const GUEST_PGID_DIR: &str = "/tmp/peppy/pgids";
+const GUEST_PGID_DIR: &str = "/tmp/peppy/pgids";
 
 /// Guest-native path of a guest PGID file, keyed by a unique, filesystem-safe
 /// key (the working-dir basename for a build, the instance id for a run). The
@@ -336,27 +336,40 @@ fn query_instance_status(
         .spawn()
         .map_err(|e| Error::LimaInstanceError(format!("failed to run limactl list: {e}")))?;
 
-    let status = match wait_for_child_bounded(
+    let Some(status) = wait_for_child_bounded(
         &mut child,
         LIMA_PROBE_TIMEOUT,
         LIMA_PROBE_POLL,
         Instant::now,
         std::thread::sleep,
-    )? {
-        Some(status) => status,
-        None => {
-            return Err(Error::LimaInstanceError(format!(
-                "limactl list timed out after {LIMA_PROBE_TIMEOUT:?} for instance '{instance}'"
-            )));
-        }
+    )?
+    else {
+        return Err(Error::LimaInstanceError(format!(
+            "limactl list timed out after {LIMA_PROBE_TIMEOUT:?} for instance '{instance}'"
+        )));
     };
 
+    let stdout = read_child_pipe(child.stdout.take());
+    let stderr = read_child_pipe(child.stderr.take());
+    instance_status_from_exit(instance, status, &stdout, &stderr)
+}
+
+/// Map the exit of `limactl list --format {{.Status}} <instance>` to the
+/// answer of [`query_instance_status`]: the trimmed output on success (`None`
+/// when it is empty), `None` when the failure names a missing instance, and an
+/// error for any other failure. Pure, so tests drive each answer with a fixed
+/// exit status instead of a `limactl` that the host must reap in time.
+fn instance_status_from_exit(
+    instance: &str,
+    status: std::process::ExitStatus,
+    stdout: &str,
+    stderr: &str,
+) -> Result<Option<String>> {
     if status.success() {
-        let s = read_child_pipe(child.stdout.take()).trim().to_string();
-        return Ok(if s.is_empty() { None } else { Some(s) });
+        let answer = stdout.trim();
+        return Ok((!answer.is_empty()).then_some(answer.to_string()));
     }
 
-    let stderr = read_child_pipe(child.stderr.take());
     if stderr.contains("No instance matching") {
         return Ok(None);
     }
@@ -463,14 +476,13 @@ fn is_ssh_alive(limactl: &Path, lima_home: &Path, instance: &str) -> bool {
     // thread, so a timeout is treated as "not reachable" (false) rather than
     // parking the thread; the force phase still SIGKILLs the host-side `limactl`
     // client.
-    let mut child = match lima_shell_cmd(limactl, lima_home, instance)
+    let Ok(mut child) = lima_shell_cmd(limactl, lima_home, instance)
         .arg("true")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return false,
+    else {
+        return false;
     };
     matches!(
         wait_for_child_bounded(
@@ -1217,6 +1229,67 @@ mod tests {
         );
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(args, ["shell", "peppy"]);
+    }
+
+    /// The exit of `limactl list` maps to the instance status: a success
+    /// answers with the trimmed output, or with no instance when the output
+    /// is empty, a failure that names a missing instance answers with no
+    /// instance, and any other failure is an error that carries the trimmed
+    /// stderr. A success ignores stderr and a failure ignores stdout.
+    #[cfg(unix)]
+    #[test]
+    fn instance_status_from_exit_maps_each_limactl_answer() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let success = std::process::ExitStatus::from_raw(0);
+        let failure = std::process::ExitStatus::from_raw(1 << 8);
+        let missing_instance = "No instance matching peppy found.\n";
+        let cases = [
+            (
+                "trimmed output",
+                success,
+                "  Running\n",
+                "a warning\n",
+                Some("Running"),
+            ),
+            ("empty output", success, "\n", "", None),
+            (
+                "missing instance",
+                failure,
+                "Running\n",
+                missing_instance,
+                None,
+            ),
+        ];
+        for (case, status, stdout, stderr, expected) in cases {
+            let answer = instance_status_from_exit("peppy", status, stdout, stderr)
+                .unwrap_or_else(|e| panic!("{case}: unexpected error {e:?}"));
+            assert_eq!(answer.as_deref(), expected, "{case}");
+        }
+
+        match instance_status_from_exit("peppy", failure, "Running\n", "  driver unreachable\n") {
+            Err(Error::LimaInstanceError(msg)) => assert_eq!(
+                msg,
+                "limactl list failed for instance 'peppy': driver unreachable"
+            ),
+            other => panic!("expected LimaInstanceError, got {other:?}"),
+        }
+    }
+
+    /// The SSH probe reads a guest as unreachable when `limactl shell ...
+    /// true` exits non-zero, with `false` from `PATH` in the place of
+    /// `limactl`, and when `limactl` cannot be spawned.
+    #[cfg(unix)]
+    #[test]
+    fn is_ssh_alive_is_false_for_a_limactl_that_fails_or_cannot_run() {
+        let lima_home = Path::new("/nonexistent/lima-home");
+
+        assert!(!is_ssh_alive(Path::new("false"), lima_home, "peppy"));
+        assert!(!is_ssh_alive(
+            Path::new("/nonexistent/bin/limactl"),
+            lima_home,
+            "peppy"
+        ));
     }
 
     // These tests previously spawned fake `limactl` shell scripts via tempdirs
