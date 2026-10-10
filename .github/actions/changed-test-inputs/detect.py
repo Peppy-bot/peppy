@@ -181,7 +181,11 @@ def repo_path(absolute):
 
 
 def changed_files(base):
-    """Files changed on this branch relative to base; None when unknowable."""
+    """Files changed on this branch relative to base; None when unknowable.
+
+    A moved file counts at both of its paths, because the suite that read it
+    at the old path lost an input.
+    """
     if not base or set(base) == {"0"}:
         return None
     # A force push can strand the recorded base; an unreachable base makes
@@ -193,7 +197,7 @@ def changed_files(base):
     if reachable.returncode != 0:
         return None
     out = subprocess.check_output(
-        ["git", "diff", "--name-only", base + "...HEAD"], text=True
+        ["git", "diff", "--name-only", "--no-renames", base + "...HEAD"], text=True
     )
     return [line for line in out.splitlines() if line]
 

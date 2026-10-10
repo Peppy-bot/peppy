@@ -5,11 +5,18 @@ The detection decides which suites a pull request runs, so a defect here is
 wasted compute at best and a silently skipped suite at worst. These cases run
 against this repository's real manifests: what they assert is what the
 selection has to do about the layout, never a second copy of the layout. The
-changes job of tests.yml runs them before it trusts what the detection says.
+cases of the change set run git in a scratch repository instead, because what
+they hold is how the detection reads what git prints. The changes job of
+tests.yml runs them before it trusts what the detection says.
 """
 
+import contextlib
 import os
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import detect
 
@@ -321,6 +328,55 @@ class Detection(unittest.TestCase):
         # empty string, which is how a skipped job is spelled, so the suite is
         # silently gated off and nothing anywhere is red.
         self.assertEqual(sorted(declared_outputs()), sorted(select("Readme.md")))
+
+
+class ChangedFiles(unittest.TestCase):
+    """The change set of a scratch repository whose base commit holds one
+    fixture. git reads no configuration of the host, whose settings would
+    change what `git diff` prints."""
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.repository = Path(scratch.name)
+        hermetic_git = mock.patch.dict(
+            os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        )
+        hermetic_git.start()
+        self.addCleanup(hermetic_git.stop)
+        self.git("init", "--quiet", "--initial-branch=main")
+        self.commit_new_file("crates/a/fixture.json")
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def git(self, *arguments):
+        return subprocess.run(
+            ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", *arguments],
+            cwd=self.repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    def commit_new_file(self, relative):
+        path = self.repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n")
+        self.git("add", relative)
+        self.git("commit", "--quiet", "--message", f"Add {relative}")
+
+    def changed_files(self):
+        with contextlib.chdir(self.repository):
+            return detect.changed_files(self.base)
+
+    def test_a_moved_file_counts_at_both_of_its_paths(self):
+        # The suite that read the file at its old path lost an input.
+        (self.repository / "docs").mkdir()
+        self.git("mv", "crates/a/fixture.json", "docs/fixture.json")
+        self.git("commit", "--quiet", "--message", "Move the fixture")
+        self.assertEqual(
+            sorted(self.changed_files()),
+            ["crates/a/fixture.json", "docs/fixture.json"],
+        )
 
 
 if __name__ == "__main__":
