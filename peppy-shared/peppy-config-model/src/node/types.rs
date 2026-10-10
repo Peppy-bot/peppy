@@ -2882,41 +2882,19 @@ mod tests {
     }
 
     #[test]
-    fn depends_on_contracts_requires_name() {
-        let json5 = r#"{
-            nodes: [],
-            contracts: [{ tag: "v1", link_id: "depth_camera" }]
-        }"#;
-        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
-    }
-
-    #[test]
-    fn depends_on_contracts_requires_tag() {
-        let json5 = r#"{
-            nodes: [],
-            contracts: [{ name: "depth_camera", link_id: "depth_camera" }]
-        }"#;
-        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
-    }
-
-    #[test]
-    fn depends_on_contracts_requires_link_id() {
-        let json5 = r#"{
-            nodes: [],
-            contracts: [{ name: "depth_camera", tag: "v1" }]
-        }"#;
-        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
-    }
-
-    #[test]
-    fn depends_on_contracts_rejects_unknown_fields() {
-        let json5 = r#"{
-            nodes: [],
-            contracts: [
-                { name: "depth_camera", tag: "v1", link_id: "depth_camera", extra: "bad" }
-            ]
-        }"#;
-        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    fn depends_on_contracts_rejects_incomplete_or_unknown_entries() {
+        for entry in [
+            r#"{ tag: "v1", link_id: "depth_camera" }"#,
+            r#"{ name: "depth_camera", link_id: "depth_camera" }"#,
+            r#"{ name: "depth_camera", tag: "v1" }"#,
+            r#"{ name: "depth_camera", tag: "v1", link_id: "depth_camera", extra: "bad" }"#,
+        ] {
+            let json5 = format!(r#"{{ nodes: [], contracts: [{entry}] }}"#);
+            assert!(
+                serde_json5::from_str::<DependsOn>(&json5).is_err(),
+                "contracts entry should be rejected: {entry}"
+            );
+        }
     }
 
     #[test]
@@ -3314,16 +3292,6 @@ mod tests {
     }
 
     #[test]
-    fn manifest_without_depends_on() {
-        let json5 = r#"{
-            name: "simple_node",
-            tag: "v1"
-        }"#;
-        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
-        assert!(manifest.depends_on.is_none());
-    }
-
-    #[test]
     fn manifest_with_implements_full() {
         let json5 = r#"{
             name: "camera_node",
@@ -3351,13 +3319,6 @@ mod tests {
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert!(manifest.implements[0].sha256.is_none());
-    }
-
-    #[test]
-    fn manifest_without_implements_defaults_empty() {
-        let json5 = r#"{ name: "plain_node", tag: "v1" }"#;
-        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
-        assert!(manifest.implements.is_empty());
     }
 
     #[test]
@@ -3658,6 +3619,8 @@ mod tests {
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
     }
 
+    /// A manifest of only a name and a tag parses, with no `depends_on` and an
+    /// empty `implements`.
     #[test]
     fn manifest_parses_minimal() {
         let json5 = r#"{
@@ -3667,6 +3630,8 @@ mod tests {
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert_eq!(manifest.name.as_str(), "simple_node");
         assert_eq!(manifest.tag, "v1");
+        assert!(manifest.depends_on.is_none());
+        assert!(manifest.implements.is_empty());
     }
 
     #[test]
