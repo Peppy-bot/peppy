@@ -19,7 +19,7 @@ use super::topics::{qos_profile_tokens, retention_tokens};
 use super::{
     GenerationContext, RustGenerator, build_deserialize_fn, build_fields_from_params,
     build_serialize_payload, collect_function_params, deserialize_format_fields,
-    generate_assignments_from_struct, identifiers, map_message_format, render_tokens,
+    generate_assignments_from_struct, identifiers, map_declared_message_format, render_tokens,
 };
 use crate::error::Result;
 use crate::generator::naming::to_camel_case;
@@ -122,8 +122,7 @@ pub(super) fn build_struct_serializer(
         format,
         context_label,
     } = spec;
-    let artifacts = map_message_format(schema_key, Some(format))?
-        .expect("non-empty message format maps to schema artifacts");
+    let artifacts = map_declared_message_format(schema_key, format)?;
     let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
     let builder_type = info.builder_type_tokens();
     let builder_ident = Ident::new("root", Span::call_site());
@@ -155,8 +154,7 @@ pub(super) fn build_struct_deserializer(
         format,
         context_label,
     } = spec;
-    let artifacts = map_message_format(schema_key, Some(format))?
-        .expect("non-empty message format maps to schema artifacts");
+    let artifacts = map_declared_message_format(schema_key, format)?;
     let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
     let reader_type = info.reader_type_tokens();
     let context_expr = quote!(String::from(#context_label));
@@ -196,8 +194,7 @@ pub(super) fn build_local_struct_with_deserializer(
         format,
         context_label,
     } = spec;
-    let artifacts = map_message_format(schema_key, Some(format))?
-        .expect("non-empty message format maps to schema artifacts");
+    let artifacts = map_declared_message_format(schema_key, format)?;
     let mut context = GenerationContext::default();
     let struct_ident = Ident::new(struct_name, Span::call_site());
     let params = collect_function_params(Some(&artifacts), struct_name, &mut context)?;

@@ -106,23 +106,31 @@ impl StructDefinition {
     }
 }
 
+/// [`map_declared_message_format`] for a format that may be absent: an
+/// absent format has no schema artifacts.
 pub fn map_message_format(
     schema_name: &str,
     format: Option<&MessageFormat>,
 ) -> Result<Option<CapnpSchemaArtifacts>> {
-    match format {
-        Some(format) => {
-            validate_normalized_field_names_for_rust(format)?;
-            validate_message_format_field_names(format, "message_format")?;
-            validate_fixed_length_array_items(format)?;
-            validate_generated_type_name_collisions(format, "Message")?;
-            MessageFormatMapper::new(schema_name, format.clone())
-                .map_message_format_to_capnpn()
-                .map(Some)
-                .map_err(Error::MessageEncoding)
-        }
-        None => Ok(None),
-    }
+    let Some(format) = format else {
+        return Ok(None);
+    };
+    map_declared_message_format(schema_name, format).map(Some)
+}
+
+/// Validates a declared message format for Rust generation and maps it to
+/// its Cap'n Proto schema artifacts.
+pub fn map_declared_message_format(
+    schema_name: &str,
+    format: &MessageFormat,
+) -> Result<CapnpSchemaArtifacts> {
+    validate_normalized_field_names_for_rust(format)?;
+    validate_message_format_field_names(format, "message_format")?;
+    validate_fixed_length_array_items(format)?;
+    validate_generated_type_name_collisions(format, "Message")?;
+    MessageFormatMapper::new(schema_name, format.clone())
+        .map_message_format_to_capnpn()
+        .map_err(Error::MessageEncoding)
 }
 
 fn validate_normalized_field_names_for_rust(format: &MessageFormat) -> Result<()> {

@@ -45,7 +45,7 @@ use actions::{
 };
 use context::{
     GenerationContext, add_response_struct, build_fields_from_params, collect_function_params,
-    map_message_format,
+    map_declared_message_format, map_message_format,
 };
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
 use serialization::{
@@ -152,6 +152,8 @@ impl RustGenerator {
         })
     }
 
+    /// [`Self::prepare_declared_message_encoding`] for a format that may be
+    /// absent: an absent format has no encoding.
     fn prepare_message_encoding(
         &mut self,
         schema_key: &str,
@@ -162,17 +164,29 @@ impl RustGenerator {
         let Some(artifacts) = artifacts else {
             return Ok(None);
         };
+        self.prepare_declared_message_encoding(schema_key, struct_prefix, artifacts, params)
+            .map(Some)
+    }
 
+    /// Registers the schema of a declared message format and builds the
+    /// assignments that serialize `params` into it.
+    fn prepare_declared_message_encoding(
+        &mut self,
+        schema_key: &str,
+        struct_prefix: &str,
+        artifacts: &CapnpSchemaArtifacts,
+        params: &[FunctionParam],
+    ) -> Result<MessageEncodingSpec> {
         let schema_info = self.register_schema(schema_key, struct_prefix, artifacts)?;
         let builder_ident = Ident::new("root", Span::call_site());
         let assignments =
             generate_assignments_for_format(&builder_ident, artifacts.message_format(), params)?;
 
-        Ok(Some(MessageEncodingSpec {
+        Ok(MessageEncodingSpec {
             builder_type: schema_info.builder_type_tokens(),
             assignments,
             reader_type: schema_info.reader_type_tokens(),
-        }))
+        })
     }
 
     /// Builds the fire_goal method for consumed actions using ActionMessenger::send_goal
@@ -530,8 +544,7 @@ impl RustGenerator {
         action_struct_name: &str,
         schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
-        let format_artifacts = map_message_format(schema_key, Some(format))?
-            .expect("feedback format should always yield encoding artifacts");
+        let format_artifacts = map_declared_message_format(schema_key, format)?;
 
         let struct_prefix = format!("{action_struct_name}Feedback");
         let schema_struct_name = format!("{struct_prefix}Message");
@@ -542,9 +555,12 @@ impl RustGenerator {
 
         context.add_struct(struct_ident.clone(), build_fields_from_params(&params));
 
-        let encoding = self
-            .prepare_message_encoding(schema_key, &struct_prefix, Some(&format_artifacts), &params)?
-            .expect("feedback encoding spec should exist");
+        let encoding = self.prepare_declared_message_encoding(
+            schema_key,
+            &struct_prefix,
+            &format_artifacts,
+            &params,
+        )?;
         let reader_type = encoding.reader_type.clone();
 
         let helper_fn_ident = Ident::new("deserialize_feedback_payload", Span::call_site());
@@ -723,9 +739,12 @@ impl RustGenerator {
         let struct_ident = Ident::new(SUBSCRIBED_MESSAGE_STRUCT_NAME, Span::call_site());
         context.add_struct(struct_ident.clone(), build_fields_from_params(&params));
 
-        let encoding = self
-            .prepare_message_encoding(schema_key, struct_prefix, Some(format_artifacts), &params)?
-            .expect("message encoding spec exists because the format artifacts are given");
+        let encoding = self.prepare_declared_message_encoding(
+            schema_key,
+            struct_prefix,
+            format_artifacts,
+            &params,
+        )?;
         Ok(SubscribedMessage {
             context,
             params,
@@ -1120,22 +1139,15 @@ impl LanguageGenerator for RustGenerator {
             let feedback_schema_key =
                 scoped_schema_key(origin, &format!("emit_{base_name}_feedback"));
             let format_artifacts =
-                map_message_format(&feedback_schema_key, Some(&feedback.message_format))?;
+                map_declared_message_format(&feedback_schema_key, &feedback.message_format)?;
             let params =
-                collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
-            let encoding = self
-                .prepare_message_encoding(
-                    &feedback_schema_key,
-                    &struct_prefix,
-                    format_artifacts.as_ref(),
-                    &params,
-                )?
-                .ok_or_else(|| Error::InvariantViolation {
-                    context: format!(
-                        "feedback topic `{}` parsed with a message format but produced no encoding",
-                        action.name
-                    ),
-                })?;
+                collect_function_params(Some(&format_artifacts), &struct_prefix, &mut context)?;
+            let encoding = self.prepare_declared_message_encoding(
+                &feedback_schema_key,
+                &struct_prefix,
+                &format_artifacts,
+                &params,
+            )?;
 
             goal_context_methods.push(build_goal_context_publish_feedback(
                 &params, &encoding, &label,
@@ -1246,8 +1258,7 @@ impl LanguageGenerator for RustGenerator {
         let schema_key =
             crate::generator::naming::consumed_topic_schema_key(node_name, topic.name.as_str());
 
-        let format_artifacts = map_message_format(&schema_key, Some(&arguments))?
-            .expect("message encoding spec should exist when message format is provided");
+        let format_artifacts = map_declared_message_format(&schema_key, &arguments)?;
 
         let message =
             self.prepare_subscribed_message(&schema_key, &struct_prefix, &format_artifacts)?;
