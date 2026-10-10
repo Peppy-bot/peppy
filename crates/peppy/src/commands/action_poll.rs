@@ -100,6 +100,22 @@ where
 /// re-checked.
 pub(crate) const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 
+/// How far ahead a deadline lies when its budget is too large for the clock to
+/// hold.
+const UNREACHABLE_DEADLINE_DISTANCE: Duration = Duration::from_secs(86_400 * 365 * 30);
+
+/// The instant `budget` after `start`. A budget the clock cannot represent (a
+/// `--max-timeout` near `u64::MAX` seconds) gives an instant no command
+/// reaches, instead of an overflow panic after the goal is already sent.
+pub(crate) fn deadline_after(
+    start: tokio::time::Instant,
+    budget: Duration,
+) -> tokio::time::Instant {
+    start
+        .checked_add(budget)
+        .unwrap_or(start + UNREACHABLE_DEADLINE_DISTANCE)
+}
+
 /// Drives an accepted action goal to completion: drains feedback into the
 /// scrolling output until the server closes the feedback stream (which it does
 /// when the goal `complete`s, or if its worker drops the goal), honoring the
@@ -120,7 +136,10 @@ pub(crate) async fn poll_action_to_completion<R>(
     decode_result: impl Fn(&[u8]) -> std::result::Result<R, String>,
 ) -> Result<R> {
     let idle_timeout = Duration::from_secs(timeouts.idle_secs);
-    let absolute_deadline = tokio::time::Instant::now() + Duration::from_secs(timeouts.max_secs);
+    let absolute_deadline = deadline_after(
+        tokio::time::Instant::now(),
+        Duration::from_secs(timeouts.max_secs),
+    );
     let mut last_activity = tokio::time::Instant::now();
 
     // Drain feedback until the server closes the stream on completion. The
@@ -271,6 +290,20 @@ mod tests {
             idle_secs,
             max_secs,
         }
+    }
+
+    #[test]
+    fn deadline_after_saturates_a_budget_the_clock_cannot_hold() {
+        let start = tokio::time::Instant::now();
+
+        assert!(
+            deadline_after(start, Duration::from_secs(u64::MAX))
+                > start + Duration::from_secs(86_400 * 365)
+        );
+        assert_eq!(
+            deadline_after(start, Duration::from_secs(5)),
+            start + Duration::from_secs(5)
+        );
     }
 
     #[test]

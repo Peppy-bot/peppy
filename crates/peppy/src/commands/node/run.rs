@@ -119,7 +119,10 @@ async fn wait_for_build_to_finish(
         node_name, tag
     );
 
-    let deadline = Instant::now() + Duration::from_secs(timeouts.max_secs);
+    let deadline = crate::commands::action_poll::deadline_after(
+        Instant::now(),
+        Duration::from_secs(timeouts.max_secs),
+    );
 
     loop {
         let response = poll(
