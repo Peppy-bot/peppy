@@ -278,18 +278,22 @@ def test_require_unused_tag_rejects_an_existing_tag(mock_run: MagicMock) -> None
         _require_unused_tag("v0.3.0")
 
 
-def _prepare(tmp_path: Path, **overrides: object) -> Path:
+def _prepare(
+    tmp_path: Path,
+    *,
+    open_minor_docs_pr: bool = False,
+    skip_prod_cert_check: bool = False,
+    skip_docs_check: bool = False,
+) -> Path:
     plan_path = tmp_path / "out" / "release-plan.json"
-    options = {
-        "tag": "v0.3.0",
-        "release_commit": RELEASE_COMMIT,
-        "open_minor_docs_pr": False,
-        "skip_prod_cert_check": False,
-        "skip_docs_check": False,
-        "plan_path": plan_path,
-    }
-    options.update(overrides)
-    run_prepare(**options)  # type: ignore[arg-type]
+    run_prepare(
+        tag="v0.3.0",
+        release_commit=RELEASE_COMMIT,
+        open_minor_docs_pr=open_minor_docs_pr,
+        skip_prod_cert_check=skip_prod_cert_check,
+        skip_docs_check=skip_docs_check,
+        plan_path=plan_path,
+    )
     return plan_path
 
 
