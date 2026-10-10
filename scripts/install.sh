@@ -393,7 +393,7 @@ EOF
                 /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1
             return $?
         fi
-        return 0 # no D-Bus tools — assume OK
+        return 0 # no D-Bus tools, assume OK
     }
 
     # Returns 0 if loginctl linger is enabled for the current user,
@@ -404,7 +404,7 @@ EOF
     }
 
     # Returns 0 if the fuse2fs ext2/3/4 FUSE mount helper is installed. The
-    # bundled rootless apptainer needs it to mount EXT3 filesystem images —
+    # bundled rootless apptainer needs it to mount EXT3 filesystem images;
     # peppy ships squashfuse_ll and gocryptfs next to apptainer, but not this
     # one, so it must come from the distro.
     check_fuse2fs() {
@@ -430,7 +430,7 @@ EOF
     # Checks and installs pre-download dependencies (dbus, linger, curl, fuse2fs).
     # Apptainer setup is handled post-install by `peppy container setup`.
     #
-    # Inside containers (Docker/Podman), D-Bus and linger are irrelevant —
+    # Inside containers (Docker/Podman), D-Bus and linger are irrelevant:
     # the daemon is managed by the container runtime, not systemd.
     # Only curl/wget is still checked (needed to download the archive).
     #
@@ -768,8 +768,8 @@ EOF
         # listener and write its state file before giving up. We probe
         # readiness with `repo list` (a cheap daemon call that fails fast
         # when the listener isn't up) so the actual `repo update` can run
-        # exactly once with its output streamed live to the terminal —
-        # capturing it via $(...) buffers everything until the command
+        # exactly once with its output streamed live to the terminal.
+        # Capturing it via $(...) buffers everything until the command
         # exits, which makes the long refresh look like a hang.
         REPO_READY_DEADLINE_SECS=120
         REPO_READY_ELAPSED_SECS=0
@@ -803,7 +803,7 @@ EOF
         # it can draw its own dim, in-place scrolling window (the same
         # `ScrollingOutput` widget used by `peppy node add`). `flush_progress_line`
         # terminates the `Refreshing repositories` bar with a newline so the
-        # cursor is on a fresh row before peppy's first write — without it,
+        # cursor is on a fresh row before peppy's first write. Without it,
         # peppy's `[INFO]` line writes on top of the progress bar and its
         # subsequent `MoveUp`/`Clear` cursor moves operate on rows we've
         # already drawn into.

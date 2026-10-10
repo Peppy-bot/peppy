@@ -111,7 +111,7 @@ def test_verify_archive_reports_a_missing_binary(
 def test_verify_lima_only_required_for_macos(tmp_path: Path) -> None:
     triple = "x86_64-unknown-linux-gnu"
     members = _all_required_members(triple)
-    # Lima is NOT in the members for Linux — should pass
+    # A Linux archive holds no Lima, and passes without it.
     archive = tmp_path / f"peppy-{triple}.tgz"
     _create_archive(archive, members, triple)
 
@@ -151,8 +151,8 @@ def test_verify_all_releases_missing_binary(tmp_path: Path) -> None:
 
 
 def test_verify_archive_rejects_a_wrong_arch_binary(tmp_path: Path) -> None:
-    # The v0.25.3 x86_64 archive shipped an aarch64 apptainer at the right
-    # path: presence passed, every consumer failed at exec.
+    # An apptainer for another architecture at the right path passes a
+    # presence check and fails at exec on every consumer of the archive.
     triple = "x86_64-unknown-linux-gnu"
     archive = tmp_path / f"peppy-{triple}.tgz"
     _create_archive(
