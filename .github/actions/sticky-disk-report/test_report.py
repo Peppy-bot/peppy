@@ -10,9 +10,9 @@ out, and checks only which directories it reports.
 import contextlib
 import io
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import report

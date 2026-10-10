@@ -50,15 +50,14 @@ the dir stays bounded.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sys
-
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 # `cargo test` builds with the `test` profile, which inherits `dev` and so
 # builds into `debug/`. CI builds for the host only, so no target triple

@@ -12,10 +12,10 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path, PurePosixPath
 import sys
 import tempfile
 import unittest
+from pathlib import Path, PurePosixPath
 
 
 def load_sweep():

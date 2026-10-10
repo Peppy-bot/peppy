@@ -55,11 +55,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from http import HTTPStatus
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
 
 
 class ResolveError(Exception):

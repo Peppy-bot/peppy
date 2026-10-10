@@ -424,8 +424,9 @@ def main() -> None:
     output_file = os.environ.get("GITHUB_OUTPUT")
     if output_file:
         with open(output_file, "a") as handle:
-            for output, value in selection.items():
-                handle.write("%s=%s\n" % (output, value))
+            handle.writelines(
+                "%s=%s\n" % (output, value) for output, value in selection.items()
+            )
     report(selection, base)
 
 
