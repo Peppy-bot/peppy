@@ -151,6 +151,52 @@ fn lima_facade() -> Apptainer {
     }
 }
 
+/// The arguments of an assembled command, as strings.
+fn argv_of(cmd: &Command) -> Vec<String> {
+    cmd.get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The output image and def file paths of a build under `$HOME`, which both
+/// backends accept: Lima mounts the home directory into the guest.
+fn build_paths_under_home() -> (PathBuf, PathBuf) {
+    let home = PathBuf::from(std::env::var("HOME").expect("HOME must be set"));
+    (home.join("test/output.sif"), home.join("test/def.def"))
+}
+
+/// Runs a binary bundled into the apptainer install with `args`, or returns
+/// `None` after printing a SKIPPING diagnostic when the test environment cannot
+/// execute it (a sandbox that hides the file or forbids exec). Any other spawn
+/// failure fails the test.
+#[cfg(target_os = "linux")]
+fn run_bundled_binary_or_skip(binary: &Path, args: &[&str]) -> Option<std::process::Output> {
+    let e = match Command::new(binary)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(output) => return Some(output),
+        Err(e) => e,
+    };
+    if !matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+    ) {
+        panic!(
+            "unexpected error invoking bundled binary at {:?}: {} (kind: {:?})",
+            binary,
+            e,
+            e.kind()
+        );
+    }
+    eprintln!(
+        "SKIPPING: cannot invoke bundled binary at {:?}: {} (likely a sandboxed test env)",
+        binary, e
+    );
+    None
+}
+
 /// Whether this host's kernel restricts unprivileged user namespaces via
 /// AppArmor (raw procfs flag, without the manageability gate production
 /// applies on top). Used to skip the not-restricted setup-status test; the
@@ -197,9 +243,7 @@ fn test_exec_command_builds_correct_args() {
 fn test_build_command_builds_correct_args() {
     let facade = native_facade();
 
-    let home = std::env::var("HOME").unwrap();
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
     let cmd = facade.build(&output, &def);
     let args = cmd.build_args().expect("build_args should succeed");
 
@@ -221,9 +265,7 @@ fn test_build_command_builds_correct_args() {
 fn a_build_flag_for_mksquashfs_comes_after_the_default_compression() {
     let facade = native_facade();
 
-    let home = std::env::var("HOME").unwrap();
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
     let args = facade
         .build(&output, &def)
         .raw_flag("--mksquashfs-args")
@@ -249,18 +291,13 @@ fn a_build_flag_for_mksquashfs_comes_after_the_default_compression() {
 fn a_lima_build_passes_the_compression_as_one_argument() {
     let facade = lima_facade();
 
-    let home = std::env::var("HOME").unwrap();
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
     let std_cmd = facade
         .build(&output, &def)
         .into_std_command()
         .expect("command should assemble");
 
-    let args: Vec<String> = std_cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&std_cmd);
     let flag = args
         .iter()
         .position(|a| a == "--mksquashfs-args")
@@ -272,9 +309,7 @@ fn a_lima_build_passes_the_compression_as_one_argument() {
 fn test_apptainer_env_sets_process_env_on_native_build() {
     let facade = native_facade();
 
-    let home = std::env::var("HOME").unwrap();
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
     let cmd = facade
         .build(&output, &def)
         .apptainer_env("RUSTC_WRAPPER", "/peppy-cache/sccache");
@@ -302,19 +337,14 @@ fn test_apptainer_env_sets_process_env_on_native_build() {
 fn test_apptainer_env_rides_the_guest_argv_on_lima_build() {
     let facade = lima_facade();
 
-    let home = std::env::var("HOME").unwrap();
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
     let std_cmd = facade
         .build(&output, &def)
         .apptainer_env("RUSTC_WRAPPER", "/peppy-cache/sccache")
         .into_std_command()
         .expect("command should assemble");
 
-    let args: Vec<String> = std_cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&std_cmd);
     let env_pos = args
         .iter()
         .position(|a| a == "env")
@@ -502,10 +532,7 @@ fn test_lima_shell_extra_args_reach_limactl_argv_before_separator() {
         .lima_shell_extra_args(&["--timeout".to_string(), "30".to_string()])
         .into_std_command()
         .expect("Lima run command should assemble");
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
 
     let separator = args
         .iter()
@@ -1449,9 +1476,8 @@ fn out_dir_trees_carry_no_build_machine_paths() {
 fn gocryptfs_bundled_in_apptainer_install_dir() {
     let install_dir =
         linux_apptainer_cache_dir().expect("HOME is not set; cannot locate the apptainer cache");
-    let path = install_dir;
 
-    let gocryptfs_bin = path.join("libexec/apptainer/bin/gocryptfs");
+    let gocryptfs_bin = install_dir.join("libexec/apptainer/bin/gocryptfs");
     assert!(
         gocryptfs_bin.exists(),
         "gocryptfs binary missing at {:?}; apptainer encryption support will be disabled",
@@ -1460,7 +1486,7 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
 
     // Bundle the xray helper too; same archive, useful for inspecting
     // encrypted volumes.
-    let gocryptfs_xray = path.join("libexec/apptainer/bin/gocryptfs-xray");
+    let gocryptfs_xray = install_dir.join("libexec/apptainer/bin/gocryptfs-xray");
     assert!(
         gocryptfs_xray.exists(),
         "gocryptfs-xray helper missing at {:?}",
@@ -1468,7 +1494,7 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
     );
 
     // Sentinel encodes the version so a bump invalidates the cache.
-    let sentinel = path.join("libexec/apptainer/bin").join(format!(
+    let sentinel = install_dir.join("libexec/apptainer/bin").join(format!(
         ".peppy-gocryptfs-version-{}",
         crate::GOCRYPTFS_VERSION
     ));
@@ -1489,28 +1515,8 @@ fn gocryptfs_bundled_binary_is_runnable() {
         linux_apptainer_cache_dir().expect("HOME is not set; cannot locate the apptainer cache");
     let gocryptfs_bin = install_dir.join("libexec/apptainer/bin/gocryptfs");
 
-    let output = Command::new(&gocryptfs_bin)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .output();
-
-    let output = match output {
-        Ok(o) => o,
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
-                eprintln!(
-                    "SKIPPING: cannot invoke bundled gocryptfs at {:?}: {} (likely a sandboxed test env)",
-                    gocryptfs_bin, e
-                );
-                return;
-            }
-            _ => panic!(
-                "unexpected error invoking bundled gocryptfs at {:?}: {} (kind: {:?})",
-                gocryptfs_bin,
-                e,
-                e.kind()
-            ),
-        },
+    let Some(output) = run_bundled_binary_or_skip(&gocryptfs_bin, &["--version"]) else {
+        return;
     };
 
     assert!(
@@ -1590,25 +1596,8 @@ fn squashfuse_bundled_binary_is_runnable() {
     // its usage banner carries the version. Apptainer scans the same output for
     // `-o uid=` to decide whether it can map ownership, so this doubles as a
     // check that the multithreaded build really does support it.
-    let output = Command::new(&squashfuse_bin).stdin(Stdio::null()).output();
-
-    let output = match output {
-        Ok(o) => o,
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
-                eprintln!(
-                    "SKIPPING: cannot invoke bundled squashfuse_ll at {:?}: {} (likely a sandboxed test env)",
-                    squashfuse_bin, e
-                );
-                return;
-            }
-            _ => panic!(
-                "unexpected error invoking bundled squashfuse_ll at {:?}: {} (kind: {:?})",
-                squashfuse_bin,
-                e,
-                e.kind()
-            ),
-        },
+    let Some(output) = run_bundled_binary_or_skip(&squashfuse_bin, &[]) else {
+        return;
     };
 
     // The usage banner goes to stderr on some builds and stdout on others;
@@ -1817,9 +1806,7 @@ fn native_build_fails_on_an_invalid_registry_auth_file() {
 #[test]
 fn lima_build_does_not_set_apptainer_auth_file() {
     let facade = lima_facade();
-    let home = std::env::var("HOME").expect("HOME must be set");
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
 
     let cmd = facade
         .build(&output, &def)
@@ -1827,10 +1814,7 @@ fn lima_build_does_not_set_apptainer_auth_file() {
         .expect("lima build command should assemble");
 
     assert_eq!(command_env(&cmd, "APPTAINER_AUTH_FILE"), None);
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
     assert!(
         !args.iter().any(|a| a.contains("APPTAINER_AUTH_FILE")),
         "the guest argv must not carry it either, got: {args:?}"
@@ -2138,10 +2122,7 @@ fn lima_build_wraps_in_setsid_with_guest_native_pgid() {
         .cancel_pgid("buildkey")
         .into_std_command()
         .expect("Lima build command should assemble");
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
 
     assert!(
         args.iter().any(|a| a == "setsid"),
@@ -2183,10 +2164,7 @@ fn lima_run_wraps_in_setsid_with_guest_native_pgid() {
         .cancel_pgid("inst-key")
         .into_std_command()
         .expect("Lima run command should assemble");
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
 
     assert!(
         args.iter().any(|a| a == "setsid"),
@@ -2215,10 +2193,7 @@ fn native_run_is_plain() {
         .cancel_pgid("inst-key")
         .into_std_command()
         .expect("native run command should assemble");
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
 
     assert!(
         !args.iter().any(|a| a == "setsid"),
@@ -2246,10 +2221,7 @@ fn native_build_is_plain_and_kill_is_a_noop() {
         .cancel_pgid("buildkey")
         .into_std_command()
         .expect("native build command should assemble");
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
 
     assert!(
         !args.iter().any(|a| a == "setsid"),
