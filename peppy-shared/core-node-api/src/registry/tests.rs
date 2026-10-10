@@ -25,7 +25,7 @@ fn display_name(pd: &PayloadDescriptor) -> String {
 
 /// Pinned copy of every service wire string. Exhaustive on purpose:
 /// adding a service without pinning its wire string here is a compile
-/// error, so this second copy of the strings cannot be forgotten — its
+/// error, so this second copy of the strings cannot be forgotten; its
 /// only failure mode is a deliberate rename, which is exactly what
 /// [`wire_names_are_pinned`] must force a human to look at (the strings
 /// are the compatibility contract between the daemon and every client;
@@ -196,12 +196,12 @@ fn schema_sources_cover_the_schemas_dir() {
     }
 }
 
-/// Spot-check that, for at least one payload per schema file, the hand-written
-/// codec round-trips *and* the registry's introspected root points at exactly
-/// the same capnp struct the codec name implies. These six are the empty,
-/// trivially-constructible codecs (one per non-derived file plus the two
-/// unions' files), so a codec silently repointing at another root shows up
-/// here as a display-name mismatch.
+/// Spot-check six empty, trivially constructible codecs: each round-trips,
+/// and the registry's introspected root of each is exactly the capnp struct
+/// the codec name implies, so a codec silently repointing at another root
+/// shows up here as a display-name mismatch.
+/// [`payload_descriptors_resolve_and_point_at_their_schema_file`] checks every
+/// payload at the file level.
 #[test]
 fn spot_check_codec_roundtrip_and_registry_root() {
     // Each is an empty unit-struct codec, so the bare type name is also a

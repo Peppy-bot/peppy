@@ -1,7 +1,7 @@
 //! Descriptor types and the macros behind the method registry.
 //!
 //! Everything here is plumbing for the [`methods!`] invocation in
-//! [`crate::registry`] — the manifest lives there; this module only defines
+//! [`crate::registry`]. The manifest lives there; this module only defines
 //! the vocabulary ([`MethodKind`], [`Host`], [`PayloadDescriptor`],
 //! [`Payloads`], [`MethodDescriptor`]) and the [`pd!`] / [`methods!`] macros
 //! that expand it.
@@ -35,7 +35,7 @@ pub enum Host {
 /// implemented by the `methods!` expansion for every daemon-hosted service
 /// with default routing. Client transports (peppylib's generic
 /// `transport::poll`) are bounded on this, so a request/response pairing
-/// declared once in the registry is the only pairing a caller can express —
+/// declared once in the registry is the only pairing a caller can express:
 /// there is no second per-method list to keep in sync.
 ///
 /// Not implemented for [`Host::SpawnedNode`] services (their queryable does
@@ -240,7 +240,7 @@ macro_rules! launch_scoped_impl {
 /// variant, each `topics` entry a [`TopicId`](crate::registry::TopicId)
 /// variant (per-kind enums, so `clock` can be both a service and a topic),
 /// and every entry emits its [`MethodDescriptor`] in
-/// [`METHODS`](crate::registry::METHODS) — in declaration order (services,
+/// [`METHODS`](crate::registry::METHODS), in declaration order (services,
 /// then actions, then topics), which `descriptor()` relies on for indexing
 /// and the AsyncAPI generator relies on for stable document ordering.
 ///
@@ -249,24 +249,24 @@ macro_rules! launch_scoped_impl {
 /// description fed to the AsyncAPI docs and re-emitted as the variant's first
 /// rustdoc line; doc comments on an entry become extended rustdoc on the
 /// variant. Services carry a `host`; actions and topics are always
-/// daemon-hosted today. Payload lines name the codec struct in
+/// daemon-hosted. Payload lines name the codec struct in
 /// [`crate::encoding`]; its Cap'n Proto `Owned` root comes from the codec's
 /// [`Wire`](crate::encoding::Wire) impl (see [`pd!`]).
 ///
 /// Each service entry also emits a [`ServiceRequest`] impl on its request
-/// codec, and each action entry an [`ActionGoal`] impl on its goal codec —
+/// codec, and each action entry an [`ActionGoal`] impl on its goal codec:
 /// the hooks generic client transports are bounded on, so a method declared
 /// here is callable with no per-method wrapper anywhere. A service may opt
 /// out with `routing: bespoke` (after `host`) when daemon-root discovery
-/// alone cannot pin its route — `node_stop`'s listener may be hosted by a
+/// alone cannot pin its route: `node_stop`'s listener may be hosted by a
 /// per-instance node, so its discovery must additionally be scoped to the
 /// hosting core node and its peppylib wrapper stays hand-written. Emission
 /// is gated by [`service_request_impl!`].
 ///
 /// The enums deliberately do **not** get `Display`/`From<..> for &str` impls:
 /// `.name()` at the wire boundary is the only sanctioned way back to a string,
-/// so stringly-typed plumbing cannot quietly reappear. They are also not
-/// `#[non_exhaustive]` — downstream crates matching exhaustively (daemon
+/// so stringly-typed plumbing cannot creep in. They are also not
+/// `#[non_exhaustive]`: downstream crates matching exhaustively (daemon
 /// registration, peppylib coverage) and thus failing to compile when a method
 /// is added is the entire point of this registry.
 macro_rules! methods {
@@ -398,7 +398,7 @@ macro_rules! methods {
         }
 
         /// Every core-node wire method, in declaration order (services, then
-        /// actions, then topics — the order the `descriptor()` index math and
+        /// actions, then topics: the order the `descriptor()` index math and
         /// the generated AsyncAPI document depend on). `clock` appears twice
         /// (service + topic); `(name, kind)` pairs are unique, enforced by the
         /// registry tests.
