@@ -52,8 +52,10 @@ struct ConfiguredEndpoint {
 
 impl ConfiguredEndpoint {
     /// Parses a zenoh endpoint string (`<proto>/<host>:<port>[?config][#meta]`).
-    /// Returns `None` for a form [`ZenohEndpoint`] cannot represent; the caller
-    /// warns and skips it rather than failing the whole probe.
+    /// Returns `None` for a form [`ZenohEndpoint`] cannot represent:
+    /// [`RouterLinksProbe::new`] warns about such an endpoint and skips it
+    /// rather than failing the whole probe, and [`Self::matches_dst`] treats
+    /// such a destination as no match.
     fn parse(endpoint: &str) -> Option<Self> {
         // An `EndPoint` may carry a `?<config>` and/or `#<metadata>` suffix;
         // the locator part before them is what a link destination reports.
@@ -72,18 +74,16 @@ impl ConfiguredEndpoint {
     /// endpoint: same protocol and port, and a host that matches literally or
     /// through one of the resolved addresses.
     fn matches_dst(&self, dst: &str) -> bool {
-        let locator = dst.split(['?', '#']).next().unwrap_or(dst).trim();
-        let Ok(parsed) = ZenohEndpoint::from_str(locator) else {
+        let Some(dst) = Self::parse(dst) else {
             return false;
         };
-        if parsed.protocol().to_string() != self.protocol || parsed.port() != self.port {
+        if dst.protocol != self.protocol || dst.port != self.port {
             return false;
         }
-        let dst_host = unbracket_host(parsed.host()).to_ascii_lowercase();
-        if dst_host == self.host {
+        if dst.host == self.host {
             return true;
         }
-        dst_host
+        dst.host
             .parse::<IpAddr>()
             .is_ok_and(|ip| self.ips.contains(&ip))
     }
