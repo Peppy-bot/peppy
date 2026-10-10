@@ -1,12 +1,11 @@
-//! Thin async wrappers around [`real_lifecycle`] helpers, preserved so test
-//! modules can migrate incrementally.
+//! Helpers over [`real_lifecycle`]: push a config and drive it to `Ready` or
+//! `Running`, or start or stop an instance of an entity that is already in
+//! the stack.
 //!
-//! Every call that formerly produced a `Ready` entity now spawns a real
-//! subprocess (a portable `sh` loop), so callers must hold onto the returned
-//! [`RunningInstanceGuard`] for the duration of the test; dropping it calls
-//! `stop_instance` and SIGTERMs the child.
-
-#![allow(dead_code)] // Some helpers are reserved for future tests.
+//! Each running instance is a real subprocess (a portable `sh` loop), so
+//! callers must hold onto the returned [`RunningInstanceGuard`] for the
+//! duration of the test; dropping it calls `stop_instance` and SIGTERMs the
+//! child.
 
 use config::node::NodeConfig;
 use config::runtime::Name;
@@ -30,8 +29,7 @@ pub async fn push_built(
     real_lifecycle::build_ready(stack, harness, config, config_path).await
 }
 
-/// Pushes a config, builds, and spawns one `Running` instance; the
-/// equivalent of the old `Started` stage with one instance. Returns the
+/// Pushes a config, builds, and spawns one `Running` instance. Returns the
 /// guard; drop it to clean up the child process.
 pub async fn push_started(
     stack: &NodeStack,
