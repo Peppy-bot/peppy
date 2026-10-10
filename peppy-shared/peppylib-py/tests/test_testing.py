@@ -5,6 +5,7 @@ between the two languages surfaces here, not in node suites)."""
 
 import asyncio
 import gc
+import types
 from collections import deque
 from pathlib import Path
 
@@ -739,6 +740,55 @@ async def test_mock_clock_keeps_serving_after_a_failed_response(monkeypatch):
     assert failing.responses == []
     assert len(answering.responses) == 1
     assert ClockResponse.decode(answering.responses[0]).client_send_time == 2
+
+
+def _fake_connect_attempts(monkeypatch, failures: int) -> tuple[list, list]:
+    """Make ``connect_messenger`` connect through a stand-in whose first
+    ``failures`` connects fail, and record its retry sleeps instead of
+    sleeping. Returns the attempt and sleep records."""
+    attempts = []
+    sleeps = []
+
+    class _FlakyMessengerHandle:
+        @staticmethod
+        async def from_host_port(host, port):
+            attempts.append((host, port))
+            if len(attempts) <= failures:
+                raise RuntimeError(f"connect attempt {len(attempts)} failed")
+            return "handle"
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(peppy_testing, "MessengerHandle", _FlakyMessengerHandle)
+    monkeypatch.setattr(peppy_testing, "asyncio", types.SimpleNamespace(sleep=record_sleep))
+    return attempts, sleeps
+
+
+@pytest.mark.asyncio
+async def test_connect_messenger_retries_until_a_connect_succeeds(monkeypatch):
+    attempts, sleeps = _fake_connect_attempts(monkeypatch, failures=4)
+
+    handle = await peppy_testing.connect_messenger("127.0.0.1", 7447)
+
+    assert handle == "handle"
+    assert attempts == [("127.0.0.1", 7447)] * 5
+    assert sleeps == [peppy_testing._CONNECT_RETRY_DELAY] * 4
+
+
+@pytest.mark.asyncio
+async def test_connect_messenger_raises_the_last_error_when_every_connect_fails(
+    monkeypatch,
+):
+    attempts, sleeps = _fake_connect_attempts(monkeypatch, failures=5)
+
+    with pytest.raises(RuntimeError, match="^connect attempt 5 failed$"):
+        await peppy_testing.connect_messenger("127.0.0.1", 7447)
+
+    assert len(attempts) == 5
+    assert sleeps == [peppy_testing._CONNECT_RETRY_DELAY] * 4, (
+        "no sleep follows the last attempt"
+    )
 
 
 # --- resolve_node_dir / Mocks ------------------------------------------------

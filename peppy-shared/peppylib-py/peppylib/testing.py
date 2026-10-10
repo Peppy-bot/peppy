@@ -256,16 +256,12 @@ async def acquire_mesh_serial() -> asyncio.Lock:
 async def connect_messenger(host: str, port: int) -> MessengerHandle:
     """Open a gossip-peer session against ``host:port``, retrying the
     first-connect races a just-ready router can still lose."""
-    last_error: Exception | None = None
-    for attempt in range(_CONNECT_RETRIES):
+    for _ in range(_CONNECT_RETRIES - 1):
         try:
             return await MessengerHandle.from_host_port(host, port)
-        except Exception as error:  # noqa: BLE001 — retried, then re-raised
-            last_error = error
-            if attempt + 1 < _CONNECT_RETRIES:
-                await asyncio.sleep(_CONNECT_RETRY_DELAY)
-    assert last_error is not None
-    raise last_error
+        except Exception:  # noqa: BLE001, retried; the final attempt below raises
+            await asyncio.sleep(_CONNECT_RETRY_DELAY)
+    return await MessengerHandle.from_host_port(host, port)
 
 
 class EphemeralRouter:
