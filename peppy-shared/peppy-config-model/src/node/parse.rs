@@ -260,43 +260,49 @@ fn validate_produced_section<'a>(
     let mut seen_native: HashSet<&str> = HashSet::new();
     let mut seen_linked: HashSet<(&str, &str)> = HashSet::new();
     for (link_id, name) in entries {
-        match link_id {
-            Some(link_id) => {
-                if !allowed_link_ids.contains(link_id) {
-                    if let Some(found_in) = depends_list_containing(depends_on, link_id) {
-                        return Err(ParsingError::EmitsLinkIdNotImplements {
-                            section: section.to_owned(),
-                            link_id: link_id.to_owned(),
-                            found_in: found_in.key().to_owned(),
-                        }
-                        .into());
-                    }
-                    return Err(ParsingError::UndeclaredEmitsLinkId {
-                        section: section.to_owned(),
-                        link_id: link_id.to_owned(),
-                    }
-                    .into());
+        let Some(link_id) = link_id else {
+            if !seen_native.insert(name) {
+                return Err(ParsingError::DuplicateInterfaceEntry {
+                    section: section.to_owned(),
+                    key: name.to_owned(),
                 }
-                if !seen_linked.insert((link_id, name)) {
-                    return Err(ParsingError::DuplicateInterfaceEntry {
-                        section: section.to_owned(),
-                        key: format!("{link_id}:{name}"),
-                    }
-                    .into());
-                }
+                .into());
             }
-            None => {
-                if !seen_native.insert(name) {
-                    return Err(ParsingError::DuplicateInterfaceEntry {
-                        section: section.to_owned(),
-                        key: name.to_owned(),
-                    }
-                    .into());
-                }
+            continue;
+        };
+        if !allowed_link_ids.contains(link_id) {
+            return Err(disallowed_produced_link_id(section, link_id, depends_on).into());
+        }
+        if !seen_linked.insert((link_id, name)) {
+            return Err(ParsingError::DuplicateInterfaceEntry {
+                section: section.to_owned(),
+                key: format!("{link_id}:{name}"),
             }
+            .into());
         }
     }
     Ok(())
+}
+
+/// The error for a document-backed produced entry whose `link_id` names no
+/// slot its section may reference: a dedicated error when a `depends_on`
+/// list declares the slot, an undeclared-slot error otherwise.
+fn disallowed_produced_link_id(
+    section: &'static str,
+    link_id: &str,
+    depends_on: Option<&DependsOn>,
+) -> ParsingError {
+    match depends_list_containing(depends_on, link_id) {
+        Some(found_in) => ParsingError::EmitsLinkIdNotImplements {
+            section: section.to_owned(),
+            link_id: link_id.to_owned(),
+            found_in: found_in.key().to_owned(),
+        },
+        None => ParsingError::UndeclaredEmitsLinkId {
+            section: section.to_owned(),
+            link_id: link_id.to_owned(),
+        },
+    }
 }
 
 /// A pairing slot link_id travels the wire as a keyexpr segment, so it must
