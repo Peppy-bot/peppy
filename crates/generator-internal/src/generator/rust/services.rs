@@ -242,10 +242,9 @@ pub fn build_exposed_service_method(
     Ok((method, helper_tokens))
 }
 
-pub fn build_request_struct_with_name_and_impl(
+pub fn build_request_struct(
     struct_name: &str,
     params: &[FunctionParam],
-    with_impl: bool,
 ) -> Option<(Ident, TokenStream)> {
     if params.is_empty() {
         return None;
@@ -261,45 +260,11 @@ pub fn build_request_struct_with_name_and_impl(
         })
         .collect();
 
-    let tokens = if with_impl {
-        let ctor_params: Vec<TokenStream> = params
-            .iter()
-            .map(|param| {
-                let ident = &param.ident;
-                let ty = &param.ty;
-                quote!(#ident: #ty)
-            })
-            .collect();
-        let ctor_bindings: Vec<TokenStream> = params
-            .iter()
-            .map(|param| {
-                let ident = &param.ident;
-                quote!(#ident)
-            })
-            .collect();
-
-        quote! {
-            #[derive(Debug, Clone)]
-            #[allow(dead_code)]
-            pub struct #ident {
-                #( #field_tokens ),*
-            }
-
-            impl #ident {
-                pub fn new(#(#ctor_params),*) -> Self {
-                    Self {
-                        #( #ctor_bindings ),*
-                    }
-                }
-            }
-        }
-    } else {
-        quote! {
-            #[derive(Debug, Clone)]
-            #[allow(dead_code)]
-            pub struct #ident {
-                #( #field_tokens ),*
-            }
+    let tokens = quote! {
+        #[derive(Debug, Clone)]
+        #[allow(dead_code)]
+        pub struct #ident {
+            #( #field_tokens ),*
         }
     };
 

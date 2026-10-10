@@ -51,8 +51,7 @@ use serialization::{
 };
 use services::{
     ExposedServiceMethodSpec, ServiceResponseSpec, build_exposed_service_method,
-    build_request_struct_with_name_and_impl, build_response_payload_tokens,
-    deserialize_fields_from_format,
+    build_request_struct, build_response_payload_tokens, deserialize_fields_from_format,
 };
 use topics::{
     ConsumedTopicSubscriptionSpec, PeerTopicSubscriptionSpec, build_consumed_topic_subscription,
@@ -934,14 +933,13 @@ impl LanguageGenerator for RustGenerator {
 
         let handler_params = wire_params.clone();
 
-        let request_data_struct_ident = if let Some((ident, tokens)) =
-            build_request_struct_with_name_and_impl("RequestData", &handler_params, false)
-        {
-            context.add_private_struct(tokens);
-            Some(ident)
-        } else {
-            None
-        };
+        let request_data_struct_ident =
+            if let Some((ident, tokens)) = build_request_struct("RequestData", &handler_params) {
+                context.add_private_struct(tokens);
+                Some(ident)
+            } else {
+                None
+            };
 
         let request_struct_ident = Ident::new("Request", Span::call_site());
         context.add_metadata_struct(
@@ -1064,7 +1062,7 @@ impl LanguageGenerator for RustGenerator {
             )?;
 
             let goal_request_data_struct = if let Some((ident, tokens)) =
-                build_request_struct_with_name_and_impl("GoalRequestData", &goal_data_params, false)
+                build_request_struct("GoalRequestData", &goal_data_params)
             {
                 context.add_private_struct(tokens);
                 Some(ident)
