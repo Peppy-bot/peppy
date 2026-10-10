@@ -233,13 +233,16 @@ enum MessengerInstance {
     Zenoh(ZenohdInstance),
 }
 
+/// The core node name of an emulated daemon that a test does not name.
+const DEFAULT_CORE_NODE_NAME: &str = "test-core-node";
+
 pub struct ServeCommandEmulation {
     /// The daemon's data root. Owned when the emulation created it, borrowed
     /// when a test supplied one so that a later emulation can reopen it.
     root: PathBuf,
     _temp_dir: Option<TempDir>,
     _instance: Option<MessengerInstance>,
-    _core_node_task: JoinHandle<core_node::Result<()>>,
+    core_node_task: JoinHandle<core_node::Result<()>>,
     shutdown_token: tokio_util::sync::CancellationToken,
     shared_messenger: Arc<TokioMutex<Messenger>>,
     daemon_state_path: PathBuf,
@@ -248,7 +251,7 @@ pub struct ServeCommandEmulation {
 
 impl ServeCommandEmulation {
     pub async fn with_mock() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        Self::with_mock_named("test-core-node").await
+        Self::with_mock_named(DEFAULT_CORE_NODE_NAME).await
     }
 
     /// Starts a named daemon on a fresh mock router.
@@ -269,7 +272,7 @@ impl ServeCommandEmulation {
     /// one left behind. The caller owns `root`; two emulations may use it in
     /// sequence, never at once.
     pub async fn with_mock_in(root: &Path) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        Self::with_mock_named_in("test-core-node", root.to_path_buf(), None).await
+        Self::with_mock_named_in(DEFAULT_CORE_NODE_NAME, root.to_path_buf(), None).await
     }
 
     async fn with_mock_named_in(
@@ -321,9 +324,11 @@ impl ServeCommandEmulation {
         // `SessionScope::Namespace(local)`; zenoh sessions interoperate only when
         // their namespaces are equal, so a namespace-free router would leave
         // `node_init` (and every other core-node service) unreachable from the
-        // CLI. The other arguments mirror `start_router_ephemeral`'s defaults.
+        // CLI. The router listens on the host `setup` records in the daemon
+        // state for the CLI to dial. The other arguments mirror
+        // `start_router_ephemeral`'s defaults.
         let mut instance = ZenohAdapter::start_router_ephemeral_in_mode(
-            "127.0.0.1",
+            config::consts::DEFAULT_MESSAGING_HOST,
             None,
             true,
             pmi::SubscriberBufferSizes::default(),
@@ -338,7 +343,7 @@ impl ServeCommandEmulation {
             Arc::new(TokioMutex::new(messenger)),
             port,
             Some(MessengerInstance::Zenoh(instance)),
-            "test-core-node",
+            DEFAULT_CORE_NODE_NAME,
             temp_dir.path().to_path_buf(),
             Some(temp_dir),
         )
@@ -429,7 +434,7 @@ impl ServeCommandEmulation {
             root,
             _temp_dir: owned,
             _instance: instance,
-            _core_node_task: core_node_task,
+            core_node_task,
             shutdown_token,
             shared_messenger,
             daemon_state_path,
@@ -457,6 +462,6 @@ impl ServeCommandEmulation {
 impl Drop for ServeCommandEmulation {
     fn drop(&mut self) {
         self.shutdown_token.cancel();
-        self._core_node_task.abort();
+        self.core_node_task.abort();
     }
 }
