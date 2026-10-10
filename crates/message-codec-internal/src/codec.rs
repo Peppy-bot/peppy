@@ -28,6 +28,8 @@ use peppy_mcp_runtime::bridge;
 use peppylib::encoding::{CapnpTimestamp, convert_time, convert_time_from_capnp};
 use serde_json::{Map, Value};
 
+const NANOS_PER_SECOND: u32 = 1_000_000_000;
+
 /// Building a codec failed: the message format could not be laid out.
 #[derive(Debug, thiserror::Error)]
 #[error("cannot lay out `{schema_name}` on the wire: {source}")]
@@ -402,7 +404,7 @@ fn decode_pointer(
             Ok(Value::String(bridge::bytes_to_base64(bytes)))
         }
         PointerTarget::Time(timestamp) => {
-            let time = decode_time(pointer, timestamp)?;
+            let time = decode_time(pointer, timestamp, name)?;
             Ok(Value::String(bridge::time_to_rfc3339(time)))
         }
         PointerTarget::Struct(layout) => decode_struct(pointer.get_struct(None)?, layout),
@@ -421,15 +423,23 @@ fn decode_pointer(
     }
 }
 
+/// Reads a wire timestamp. Any producer can send one, so a `nsec` of a
+/// second or more is refused as malformed: converting it would carry into
+/// the seconds, and overflow near the end of the time range.
 fn decode_time(
     pointer: PointerReader<'_>,
     timestamp: &TimestampLayout,
+    name: &str,
 ) -> Result<std::time::SystemTime, ConversionError> {
     let reader = pointer.get_struct(None)?;
-    Ok(convert_time_from_capnp(CapnpTimestamp {
-        sec: reader.get_data_field::<i64>(timestamp.sec as usize),
-        nsec: reader.get_data_field::<u32>(timestamp.nsec as usize),
-    }))
+    let sec = reader.get_data_field::<i64>(timestamp.sec as usize);
+    let nsec = reader.get_data_field::<u32>(timestamp.nsec as usize);
+    if nsec >= NANOS_PER_SECOND {
+        return Err(ConversionError(format!(
+            "invalid timestamp for field '{name}': nanoseconds {nsec} are not below one second"
+        )));
+    }
+    Ok(convert_time_from_capnp(CapnpTimestamp { sec, nsec }))
 }
 
 fn decode_text(text: text::Reader<'_>, name: &str) -> Result<String, ConversionError> {
@@ -770,6 +780,33 @@ mod tests {
             .expect("encodes");
         let error = variable.decode(&bytes).expect_err("0xff is not UTF-8");
         assert!(error.0.starts_with("field 'name' is not UTF-8"), "{error}");
+    }
+
+    #[test]
+    fn decoding_refuses_a_timestamp_with_a_second_or_more_of_nanoseconds() {
+        // An object of an `i64` and a `u32` lays out like the struct a `time`
+        // field points to, so it writes the raw seconds and nanoseconds that
+        // a producer puts on the wire, valid or not.
+        let raw = codec(r#"{ stamp: { $type: "object", sec: "i64", nsec: "u32" } }"#);
+        let time = codec(r#"{ stamp: "time" }"#);
+        let valid = raw
+            .encode(&json!({ "stamp": { "sec": "5", "nsec": 7 } }))
+            .expect("encodes");
+        assert_eq!(
+            time.decode(&valid).expect("decodes"),
+            json!({ "stamp": "1970-01-01T00:00:05.000000007Z" })
+        );
+
+        let carried = raw
+            .encode(&json!({ "stamp": { "sec": "0", "nsec": 1_000_000_000u32 } }))
+            .expect("encodes");
+        let error = time
+            .decode(&carried)
+            .expect_err("a second of nanoseconds is not a timestamp");
+        assert_eq!(
+            error.0,
+            "invalid timestamp for field 'stamp': nanoseconds 1000000000 are not below one second"
+        );
     }
 
     #[test]
