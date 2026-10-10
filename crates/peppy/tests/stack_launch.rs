@@ -3828,17 +3828,7 @@ fn peppy_root_with_git_pairing_node()
 fn stack_resolve_fails_a_zero_or_one_pairing_slot_left_uncovered() {
     let (dirs, root) = peppy_root_with_pairing_node();
     let launcher = root.path().join("solo.json5");
-    fs::write(
-        &launcher,
-        r#"{
-            peppy_schema: "launcher/v1",
-            deployments: [
-                { source: { name: "viewer", tag: "v1" },
-                  instances: [{ instance_id: "viewer_inst" }] },
-            ],
-        }"#,
-    )
-    .expect("launcher");
+    fs::write(&launcher, UNCOVERED_VIEWER_LAUNCHER).expect("launcher");
 
     let err = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
         .expect_err("an uncovered zero_or_one pairing slot must not resolve");
@@ -3945,17 +3935,7 @@ fn stack_resolve_reports_the_check_skipped_on_a_mislabeled_manifest() {
     )
     .expect("replacement manifest");
     let launcher = root.path().join("solo.json5");
-    fs::write(
-        &launcher,
-        r#"{
-            peppy_schema: "launcher/v1",
-            deployments: [
-                { source: { name: "viewer", tag: "v1" },
-                  instances: [{ instance_id: "viewer_inst" }] },
-            ],
-        }"#,
-    )
-    .expect("launcher");
+    fs::write(&launcher, UNCOVERED_VIEWER_LAUNCHER).expect("launcher");
 
     let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
         .expect("a mislabeled manifest skips the link check");
@@ -3980,17 +3960,7 @@ fn stack_resolve_reports_the_check_skipped_on_a_mislabeled_manifest() {
 fn stack_resolve_reports_the_check_skipped_on_an_empty_cache() {
     let dir = tempfile::tempdir().expect("temp dir");
     let launcher = dir.path().join("solo.json5");
-    fs::write(
-        &launcher,
-        r#"{
-            peppy_schema: "launcher/v1",
-            deployments: [
-                { source: { name: "viewer", tag: "v1" },
-                  instances: [{ instance_id: "viewer_inst" }] },
-            ],
-        }"#,
-    )
-    .expect("launcher");
+    fs::write(&launcher, UNCOVERED_VIEWER_LAUNCHER).expect("launcher");
 
     let (_document, report) =
         peppy::commands::stack::resolve_rendered(&empty_peppy_dirs(), launcher, &[], &[])
