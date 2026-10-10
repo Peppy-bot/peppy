@@ -15,10 +15,10 @@ use thiserror::Error;
 config::validated_identity!(
     /// A repository-relative path to the file that declares one item.
     ///
-    /// Every path peppy resolved from used to be produced by its own directory
-    /// walk. An index path arrives instead from a file somebody merged, so it is
-    /// untrusted input and the rules below are enforced at parse time: a value of
-    /// this type is already known to stay inside the repository.
+    /// An index path arrives from a file somebody merged, not from a directory
+    /// walk of peppy's own, so it is untrusted input and the rules below are
+    /// enforced at parse time: a value of this type is already known to stay
+    /// inside the repository.
     ///
     /// Parsing is canonical, which is what lets `peppy repo index --check`
     /// compare a committed path against a freshly generated one with `==`

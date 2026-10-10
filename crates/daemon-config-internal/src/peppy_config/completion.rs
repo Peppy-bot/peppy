@@ -1124,7 +1124,7 @@ mod tests {
     /// JSON5 ends a `//` comment at any LineTerminator (LF, CR, U+2028,
     /// U+2029). A scanner that only honors LF reads code that hides between a
     /// lone CR and the next LF differently from serde_json5; two such comments
-    /// used to rotate brace pairings and splice into the wrong user object.
+    /// make it rotate brace pairings and splice into the wrong user object.
     #[test]
     fn lone_cr_terminates_line_comments_like_serde() {
         let content = "{\nzenoh: { managed: { subscriber_buffers: { standard_buffer_size: 1 // X\r } } },\njunk: // Y\r {\nb: 2 },\ncore_node_name: null\n}\n";

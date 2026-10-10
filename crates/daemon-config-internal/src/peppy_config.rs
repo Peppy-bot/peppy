@@ -736,10 +736,6 @@ where
 /// default on upgrade. Required fields that exist only in a non-default tagged
 /// variant (currently `zenoh.external.endpoint`) are pinned separately and
 /// deliberately are not invented by completion.
-///
-/// Not `Copy`: `resource_servers` owns heap strings. The daemon reads this once
-/// and moves it into the core node, and the CLI clones it field-by-field, so the
-/// lost `Copy` costs nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PeppyConfig {
     /// Fixed core-node name for this daemon; `None` (the template's explicit
