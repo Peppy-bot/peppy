@@ -271,13 +271,20 @@ mod tests {
         );
     }
 
+    /// The refusal text of a deployment source `body` that must not parse.
+    fn deployment_source_refusal(body: &str) -> String {
+        let Err(err) = serde_json5::from_str::<DeploymentSource>(body) else {
+            panic!("the deployment source {body} must be refused");
+        };
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource for {body}");
+        };
+        msg
+    }
+
     #[test]
     fn deployment_source_rejects_name_without_tag() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\" }").unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo\" }");
         assert!(msg.contains("non-empty `tag`"), "unexpected: {msg}");
     }
 
@@ -300,64 +307,37 @@ mod tests {
             );
         }
 
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"  \" }")
-                .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo\", tag: \"  \" }");
         assert!(msg.contains("non-empty `tag`"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_rejects_empty_name() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"\", tag: \"v1\" }").unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"\", tag: \"v1\" }");
         assert_eq!(msg, "deployment source name cannot be empty");
     }
 
     #[test]
     fn deployment_source_rejects_missing_name() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ tag: \"v1\" }").unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ tag: \"v1\" }");
         assert!(msg.contains("requires `name`"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_rejects_combined_with_separate_tag() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:v1\", tag: \"v1\" }")
-                .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo:v1\", tag: \"v1\" }");
         assert!(msg.contains("cannot combine"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_rejects_multiple_colons() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:v1:extra\" }").unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo:v1:extra\" }");
         assert!(msg.contains("at most one ':'"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_rejects_dot_in_tag() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"v1.2\" }")
-                .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo\", tag: \"v1.2\" }");
         assert!(
             msg.contains("disallowed character") && msg.contains("'.'"),
             "unexpected: {msg}"
@@ -366,12 +346,7 @@ mod tests {
 
     #[test]
     fn deployment_source_rejects_tag_not_starting_with_letter() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"0.1.0\" }")
-                .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo\", tag: \"0.1.0\" }");
         assert!(
             msg.contains("must start with an ASCII letter"),
             "unexpected: {msg}"
@@ -380,12 +355,7 @@ mod tests {
 
     #[test]
     fn deployment_source_rejects_invalid_name_char() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo/bar\", tag: \"v1\" }")
-                .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo/bar\", tag: \"v1\" }");
         assert!(
             msg.contains("invalid deployment source name"),
             "unexpected: {msg}"
@@ -404,11 +374,7 @@ mod tests {
             ("url", "{ url: \"https://example.com/node.tar.zst\" }"),
             ("repo", "{ repo: \"uvc_camera:v1\" }"),
         ] {
-            let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(body)
-                .expect_err("a retired source key must be rejected");
-            let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-                panic!("expected InvalidDeploymentSource for `{key}`");
-            };
+            let msg = deployment_source_refusal(body);
             assert!(msg.contains(key), "error should name `{key}`: {msg}");
             assert!(
                 msg.contains("peppy repo add") && msg.contains("peppy repo refresh"),
@@ -472,24 +438,15 @@ mod tests {
         assert_eq!(back, src);
     }
 
-    fn exposures_error(body: &str) -> String {
-        let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(body)
-            .expect_err("the exposure list must be refused");
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
-        msg
-    }
-
     #[test]
     fn deployment_source_refuses_an_empty_exposure_list() {
-        let msg = exposures_error("{ exposures: [] }");
+        let msg = deployment_source_refusal("{ exposures: [] }");
         assert!(msg.contains("at least one exposure"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_refuses_an_exposure_listed_twice() {
-        let msg = exposures_error("{ exposures: [\"a:v1\", \"b:v1\", \"a:v1\"] }");
+        let msg = deployment_source_refusal("{ exposures: [\"a:v1\", \"b:v1\", \"a:v1\"] }");
         assert!(
             msg.contains("lists exposure `a:v1` twice"),
             "unexpected: {msg}"
@@ -498,17 +455,17 @@ mod tests {
 
     #[test]
     fn deployment_source_refuses_a_malformed_exposure_reference() {
-        let msg = exposures_error("{ exposures: [\"camera_and_recording\"] }");
+        let msg = deployment_source_refusal("{ exposures: [\"camera_and_recording\"] }");
         assert!(msg.contains("`<name>:<tag>`"), "unexpected: {msg}");
-        let msg = exposures_error("{ exposures: [\"camera:1v\"] }");
+        let msg = deployment_source_refusal("{ exposures: [\"camera:1v\"] }");
         assert!(msg.contains("exposure tag"), "unexpected: {msg}");
-        let msg = exposures_error("{ exposures: [\"cam era:v1\"] }");
+        let msg = deployment_source_refusal("{ exposures: [\"cam era:v1\"] }");
         assert!(msg.contains("exposure name"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_refuses_exposures_beside_a_node_reference() {
-        let msg = exposures_error("{ name: \"camera:v1\", exposures: [\"a:v1\"] }");
+        let msg = deployment_source_refusal("{ name: \"camera:v1\", exposures: [\"a:v1\"] }");
         assert!(msg.contains("not both"), "unexpected: {msg}");
     }
 
