@@ -245,7 +245,7 @@ fn generate_time_reader(
     result_var
 }
 
-/// Reads an array of primitives into `container` — `bytes` for `u8` items,
+/// Reads an array of primitives into `container`: `bytes` for `u8` items,
 /// a `list` otherwise.
 fn generate_array_reader(
     builder: &mut PythonCodeBuilder,

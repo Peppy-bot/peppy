@@ -33,10 +33,10 @@ pub(crate) fn sanitize_component(raw: &str) -> String {
 }
 
 /// Sanitizes a contract tag for use as a generated module segment and as a
-/// Zenoh wire-path segment. Currently this is just a hyphen→underscore
-/// conversion; the rest of [`sanitize_component`]'s heuristics would lose
-/// information (e.g. case) without buying us anything, since interface tags
-/// are already constrained to letters/digits/underscores/hyphens.
+/// Zenoh wire-path segment: it converts hyphens to underscores and nothing
+/// else. The rest of [`sanitize_component`]'s heuristics would lose
+/// information (e.g. case) for no gain, since interface tags are constrained
+/// to letters, digits, underscores and hyphens.
 pub(crate) fn sanitize_contract_tag(raw: &str) -> String {
     raw.replace('-', "_")
 }

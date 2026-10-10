@@ -85,11 +85,11 @@ impl PythonCodeBuilder {
 
     /// Emits `header`, runs `body` one level deeper, then dedents.
     ///
-    /// Exactly the sequence it replaces — `line(header); indent(); body;
-    /// dedent();` — so not a byte of output moves. What it buys is that the
-    /// pair can no longer be left unbalanced: written by hand, a `dedent()`
-    /// ends up dozens of lines below its `indent()`, and a suite closed with a
-    /// bare `dedent(); dedent();` is only checkable by counting upwards.
+    /// Writes the same bytes as `line(header); indent(); body; dedent();`, and
+    /// keeps the indent and its dedent in one call: written by hand, a
+    /// `dedent()` ends up dozens of lines below its `indent()`, and a suite
+    /// closed with a bare `dedent(); dedent();` is only checkable by counting
+    /// upwards.
     ///
     /// Generic over the body's result so a block can propagate an error with
     /// `?` at the call site, or hand back a value it computed while emitting.
@@ -159,8 +159,8 @@ impl PythonCodeBuilder {
     ///
     /// Deliberately takes no interpolation. The emitted Python is full of
     /// f-strings whose literal braces would every one need `{{`/`}}` doubling
-    /// under `format!` — precisely in the lines whose readability matters most
-    /// — and a placeholder syntax of our own would trade `format!`'s
+    /// under `format!`, precisely in the lines whose readability matters most,
+    /// and a placeholder syntax of our own would trade `format!`'s
     /// compile-time argument checking for a runtime panic. Anything dynamic
     /// stays on [`Self::line`] with `format!`; `py` is for the static runs,
     /// which is most of what these renderers emit.
@@ -171,8 +171,8 @@ impl PythonCodeBuilder {
     ///
     /// Panics on a tab or on trailing whitespace. Both are invisible in a Rust
     /// source file and would silently rewrite the generated Python, so they are
-    /// rejected rather than repaired — which also means a blank line inside a
-    /// block must be genuinely empty, not indented to match its neighbours.
+    /// rejected rather than repaired. A blank line inside a block must
+    /// therefore be genuinely empty, not indented to match its neighbours.
     pub fn py(&mut self, source: &str) {
         let mut source_lines: Vec<&str> = source.split('\n').collect();
         assert!(
@@ -291,8 +291,8 @@ pub fn emit_fixed_length_check(
 mod tests {
     use super::PythonCodeBuilder;
 
-    /// `block` is the `line`/`indent`/`dedent` sequence it replaces, byte for
-    /// byte, and hands back what its body computed.
+    /// `block` writes the same bytes as the `line`/`indent`/`dedent`
+    /// sequence, and hands back what its body computed.
     #[test]
     fn block_emits_the_header_then_the_body_one_level_deeper() {
         let mut builder = PythonCodeBuilder::new();

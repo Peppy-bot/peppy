@@ -10,7 +10,7 @@
 //! Mirrors `rust/mock.rs` semantically; the flat-file shape (Python has no
 //! nested modules inside one file) flattens the Rust sub-modules into
 //! `<Camel(member)>Publisher` / `Service` / `Action` classes and
-//! member-prefixed codec/​re-export names.
+//! member-prefixed codec/re-export names.
 
 use super::super::naming::to_camel_case;
 use super::super::testgen::{
