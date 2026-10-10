@@ -133,6 +133,22 @@ fn shape_error(violation: CardinalityShapeViolation, owner_id: &str, key: &str) 
     }
 }
 
+/// `instance_id` -> the item that deploys it, preexisting items included so
+/// a running instance resolves as a target. The pairing and the observation
+/// validators resolve their targets through this one map, so a target one of
+/// them finds the other finds too. The first item listing an id wins.
+pub(super) fn build_instance_lookup<'a>(
+    items: &'a [PairingValidationItem<'a>],
+) -> BTreeMap<&'a str, &'a PairingValidationItem<'a>> {
+    let mut lookup = BTreeMap::new();
+    for item in items {
+        for instance in item.instances {
+            lookup.entry(instance.instance_id.as_str()).or_insert(item);
+        }
+    }
+    lookup
+}
+
 /// How a peer slot is named in an error: `<instance>:<link_id>`.
 fn peer_label(instance_id: &str, link_id: &str) -> String {
     format!("{instance_id}:{link_id}")
@@ -170,15 +186,7 @@ pub fn validate_pairings(
     externally_covered: &ExternallyCoveredSlots,
 ) -> ValidatedPairings {
     let mut out = ValidatedPairings::default();
-
-    // instance_id → owning item.
-    let mut lookup: BTreeMap<&str, &PairingValidationItem<'_>> = BTreeMap::new();
-    for item in items {
-        for instance in item.instances {
-            lookup.entry(instance.instance_id.as_str()).or_insert(item);
-        }
-    }
-
+    let lookup = build_instance_lookup(items);
     let mut claims: Claims = BTreeMap::new();
 
     // Deterministic processing order: declarations sorted by owner

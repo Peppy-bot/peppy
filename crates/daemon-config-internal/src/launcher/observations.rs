@@ -27,7 +27,9 @@ use config::runtime::{ObservedPeer, ProducerRef};
 use core_node_api::encoding::ObservationTarget;
 use std::collections::{BTreeMap, HashSet};
 
-use super::pairings::{AlreadyPairedSlots, PairingValidationItem, PlannedPairing};
+use super::pairings::{
+    AlreadyPairedSlots, PairingValidationItem, PlannedPairing, build_instance_lookup,
+};
 use super::types::{
     CardinalityShapeViolation, Selection, check_cardinality_shape, split_link_target,
 };
@@ -140,14 +142,7 @@ pub fn validate_observations(
     pairs: &ObservablePairs,
 ) -> ValidatedObservations {
     let mut out = ValidatedObservations::default();
-
-    // instance_id → owning item (any state, so a preexisting source resolves).
-    let mut lookup: BTreeMap<&str, &PairingValidationItem<'_>> = BTreeMap::new();
-    for item in items {
-        for instance in item.instances {
-            lookup.entry(instance.instance_id.as_str()).or_insert(item);
-        }
-    }
+    let lookup = build_instance_lookup(items);
 
     for item in items.iter().filter(|i| !i.preexisting) {
         let observers_by_link: BTreeMap<&str, &PairingObserverDependency> = item
