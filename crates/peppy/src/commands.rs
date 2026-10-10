@@ -14,6 +14,7 @@ pub mod stack;
 mod table;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -124,12 +125,6 @@ impl DomainLabels {
 /// contrast. Coloring is purely additive, the padding is measured on the
 /// plain labels, so a colored block lines up exactly like its plain form.
 fn render_endpoints(entries: &[InstanceEndpoints], colorize: bool) -> String {
-    use std::fmt::Write as _;
-
-    use colors::{
-        CORE_NODE_COLOR, ENDPOINT_LABEL_COLOR, HEADING_STYLE, INSTANCE_COLOR, NODE_COLOR, paint,
-    };
-
     let mut out = String::new();
     let mut ordered: Vec<&InstanceEndpoints> = entries.iter().collect();
     ordered.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
@@ -138,61 +133,94 @@ fn render_endpoints(entries: &[InstanceEndpoints], colorize: bool) -> String {
         (EndpointKind::Page, "Web pages:"),
         (EndpointKind::Mcp, "MCP endpoints:"),
     ] {
-        let block: Vec<(&InstanceEndpoints, Vec<&InstanceEndpoint>)> = ordered
-            .iter()
-            .map(|entry| {
-                let mut endpoints: Vec<&InstanceEndpoint> = entry
-                    .endpoints
-                    .iter()
-                    .filter(|endpoint| endpoint.kind == kind)
-                    .collect();
-                endpoints.sort_by(|a, b| a.label.cmp(&b.label));
-                (*entry, endpoints)
-            })
-            .filter(|(_, endpoints)| !endpoints.is_empty())
-            .collect();
+        let block = endpoints_of_kind(&ordered, kind);
         if block.is_empty() {
             continue;
         }
-        let label_width = block
-            .iter()
-            .flat_map(|(_, endpoints)| endpoints.iter().map(|endpoint| endpoint.label.len()))
-            .max()
-            .unwrap_or(0);
-        let _ = writeln!(&mut out, "{}", paint(colorize, HEADING_STYLE, heading));
-        for (entry, endpoints) in block {
-            let _ = writeln!(
-                &mut out,
-                "  {} ({}) @{}",
-                paint(colorize, INSTANCE_COLOR, &entry.instance_id),
-                paint(colorize, NODE_COLOR, &entry.node_label),
-                paint(colorize, CORE_NODE_COLOR, &entry.core_node)
-            );
-            for endpoint in endpoints {
-                // The label heads its first URL; the rest sit under it in a
-                // blank column. An endpoint the daemon expanded to no URL at
-                // all contributes no line.
-                for (index, url) in endpoint.urls.iter().enumerate() {
-                    let label = if index == 0 {
-                        endpoint.label.as_str()
-                    } else {
-                        ""
-                    };
-                    // The column is padded on the plain label and the tint
-                    // applied to it alone: padding a painted label would count
-                    // its zero-width escapes as columns and pull the URLs out
-                    // of line.
-                    let padding = " ".repeat(label_width - label.len());
-                    let _ = writeln!(
-                        &mut out,
-                        "    {}{padding}  {url}",
-                        paint(colorize, ENDPOINT_LABEL_COLOR, label)
-                    );
-                }
-            }
-        }
+        write_endpoint_block(&mut out, colorize, heading, &block);
     }
     out
+}
+
+/// The instances of `ordered` that declare at least one endpoint of `kind`,
+/// in their given order, each with its endpoints of that kind in label order.
+fn endpoints_of_kind<'a>(
+    ordered: &[&'a InstanceEndpoints],
+    kind: EndpointKind,
+) -> Vec<(&'a InstanceEndpoints, Vec<&'a InstanceEndpoint>)> {
+    ordered
+        .iter()
+        .map(|entry| {
+            let mut endpoints: Vec<&InstanceEndpoint> = entry
+                .endpoints
+                .iter()
+                .filter(|endpoint| endpoint.kind == kind)
+                .collect();
+            endpoints.sort_by(|a, b| a.label.cmp(&b.label));
+            (*entry, endpoints)
+        })
+        .filter(|(_, endpoints)| !endpoints.is_empty())
+        .collect()
+}
+
+/// Writes one block of [`render_endpoints`]: its heading, then each instance
+/// with its endpoints under it, the label column padded to the longest label
+/// of the block.
+fn write_endpoint_block(
+    out: &mut String,
+    colorize: bool,
+    heading: &str,
+    block: &[(&InstanceEndpoints, Vec<&InstanceEndpoint>)],
+) {
+    use colors::{CORE_NODE_COLOR, HEADING_STYLE, INSTANCE_COLOR, NODE_COLOR, paint};
+
+    let label_width = block
+        .iter()
+        .flat_map(|(_, endpoints)| endpoints.iter().map(|endpoint| endpoint.label.len()))
+        .max()
+        .unwrap_or(0);
+    let _ = writeln!(out, "{}", paint(colorize, HEADING_STYLE, heading));
+    for (entry, endpoints) in block {
+        let _ = writeln!(
+            out,
+            "  {} ({}) @{}",
+            paint(colorize, INSTANCE_COLOR, &entry.instance_id),
+            paint(colorize, NODE_COLOR, &entry.node_label),
+            paint(colorize, CORE_NODE_COLOR, &entry.core_node)
+        );
+        for endpoint in endpoints {
+            write_endpoint_urls(out, colorize, endpoint, label_width);
+        }
+    }
+}
+
+/// Writes the lines of one endpoint. The label heads its first URL; the rest
+/// sit under it in a blank column. An endpoint the daemon expanded to no URL
+/// at all contributes no line.
+fn write_endpoint_urls(
+    out: &mut String,
+    colorize: bool,
+    endpoint: &InstanceEndpoint,
+    label_width: usize,
+) {
+    use colors::{ENDPOINT_LABEL_COLOR, paint};
+
+    for (index, url) in endpoint.urls.iter().enumerate() {
+        let label = if index == 0 {
+            endpoint.label.as_str()
+        } else {
+            ""
+        };
+        // The column is padded on the plain label and the tint applied to it
+        // alone: padding a painted label would count its zero-width escapes
+        // as columns and pull the URLs out of line.
+        let padding = " ".repeat(label_width - label.len());
+        let _ = writeln!(
+            out,
+            "    {}{padding}  {url}",
+            paint(colorize, ENDPOINT_LABEL_COLOR, label)
+        );
+    }
 }
 
 /// The blocks [`render_endpoints`] produces, on the node log, for the
