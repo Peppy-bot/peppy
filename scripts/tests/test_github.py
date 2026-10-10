@@ -25,9 +25,7 @@ from functions.github import (
 )
 
 SLUG = RepoSlug(owner="test-owner", repo="test-repo")
-UPLOAD_URL = (
-    "https://uploads.github.com/repos/test-owner/test-repo/releases/1/assets"
-)
+UPLOAD_URL = "https://uploads.github.com/repos/test-owner/test-repo/releases/1/assets"
 API_BASE = "https://api.github.com/repos/test-owner/test-repo"
 
 
@@ -202,17 +200,29 @@ def test_upload_progress_line_reports_the_rate_since_the_previous_line() -> None
     progress = UploadProgress("peppy.tgz", 100 * 1024 * 1024, started_at=0.0)
 
     progress.sent_bytes = 40 * 1024 * 1024
-    assert progress.progress_line(10.0) == "  peppy.tgz: 40.0 MiB of 100.0 MiB (40%), 4.0 MiB/s"
+    assert (
+        progress.progress_line(10.0)
+        == "  peppy.tgz: 40.0 MiB of 100.0 MiB (40%), 4.0 MiB/s"
+    )
     progress.sent_bytes = 50 * 1024 * 1024
-    assert progress.progress_line(20.0) == "  peppy.tgz: 50.0 MiB of 100.0 MiB (50%), 1.0 MiB/s"
+    assert (
+        progress.progress_line(20.0)
+        == "  peppy.tgz: 50.0 MiB of 100.0 MiB (50%), 1.0 MiB/s"
+    )
     # A stalled connection shows as lines that stop moving.
-    assert progress.progress_line(30.0) == "  peppy.tgz: 50.0 MiB of 100.0 MiB (50%), 0.0 MiB/s"
+    assert (
+        progress.progress_line(30.0)
+        == "  peppy.tgz: 50.0 MiB of 100.0 MiB (50%), 0.0 MiB/s"
+    )
 
 
 def test_upload_progress_handles_an_empty_file_and_no_elapsed_time() -> None:
     progress = UploadProgress("empty.tgz", 0, started_at=5.0)
 
-    assert progress.progress_line(5.0) == "  empty.tgz: 0.0 MiB of 0.0 MiB (100%), 0.0 MiB/s"
+    assert (
+        progress.progress_line(5.0)
+        == "  empty.tgz: 0.0 MiB of 0.0 MiB (100%), 0.0 MiB/s"
+    )
     assert progress.summary_line(5.0) == "Uploaded empty.tgz in 0s (0.0 MiB/s)."
 
 
@@ -233,7 +243,9 @@ def test_upload_progress_summary_reports_the_average_rate() -> None:
         pytest.param(
             httpx.ReadError("[Errno 54] Connection reset by peer"), id="read-reset"
         ),
-        pytest.param(httpx.WriteError("[Errno 32] Broken pipe"), id="write-broken-pipe"),
+        pytest.param(
+            httpx.WriteError("[Errno 32] Broken pipe"), id="write-broken-pipe"
+        ),
         pytest.param(httpx.ConnectError("connection refused"), id="connect-refused"),
         pytest.param(
             httpx.RemoteProtocolError("server disconnected without sending a response"),
@@ -389,9 +401,7 @@ def test_upload_asset_cleans_partial_before_retry(
         github_client, 1, "peppy-test.tgz", asset_file, SLUG, max_attempts=2
     )
 
-    mock_delete_asset.assert_called_once_with(
-        github_client, 1, "peppy-test.tgz", SLUG
-    )
+    mock_delete_asset.assert_called_once_with(github_client, 1, "peppy-test.tgz", SLUG)
 
 
 # --- delete_draft_release ---
@@ -612,7 +622,10 @@ def test_github_api_still_raises_on_404_by_default(
     ("answer", "body_line"),
     [
         (httpx.Response(500, text=""), "Body: (empty)"),
-        (httpx.Response(200, text="<html>not json</html>"), "Body: <html>not json</html>"),
+        (
+            httpx.Response(200, text="<html>not json</html>"),
+            "Body: <html>not json</html>",
+        ),
     ],
     ids=["status-without-body", "not-json"],
 )

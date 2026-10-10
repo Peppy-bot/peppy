@@ -120,7 +120,9 @@ def release_notes_file(tag: str) -> Path:
     return RELEASE_NOTES_DIR / f"{tag}.html"
 
 
-def generate_release_notes_file(notes_input: ReleaseNotesInput, repo_root: Path) -> Path:
+def generate_release_notes_file(
+    notes_input: ReleaseNotesInput, repo_root: Path
+) -> Path:
     """Write the release notes HTML/Atom entry file of the release.
 
     The file is `release_notes_file` of the tag under *repo_root*, written

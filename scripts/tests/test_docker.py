@@ -81,9 +81,7 @@ def test_get_docker_hub_username_invalid_json(tmp_path: Path) -> None:
     ],
     ids=["bad-padding", "not-ascii", "not-utf8", "number", "list"],
 )
-def test_get_docker_hub_username_undecodable_auth(
-    tmp_path: Path, auth: object
-) -> None:
+def test_get_docker_hub_username_undecodable_auth(tmp_path: Path, auth: object) -> None:
     docker_dir = tmp_path / ".docker"
     docker_dir.mkdir()
     config = {"auths": {DOCKER_HUB_REGISTRY: {"auth": auth}}}
@@ -101,8 +99,12 @@ def test_get_docker_hub_username_creds_store_fallback(tmp_path: Path) -> None:
         "credsStore": "osxkeychain",
     }
     (docker_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
-    with patch("functions.docker.Path.home", return_value=tmp_path), \
-         patch("functions.docker._get_username_from_cred_store", return_value="peppybot") as mock_helper:
+    with (
+        patch("functions.docker.Path.home", return_value=tmp_path),
+        patch(
+            "functions.docker._get_username_from_cred_store", return_value="peppybot"
+        ) as mock_helper,
+    ):
         assert _get_docker_hub_username() == "peppybot"
     mock_helper.assert_called_once_with("osxkeychain")
 
@@ -155,10 +157,12 @@ def test_get_username_from_cred_store_invalid_json() -> None:
 
 def test_validate_docker_environment_success(tmp_path: Path) -> None:
     home = _write_docker_config(tmp_path, DOCKER_HUB_ACCOUNT)
-    with patch("functions.docker.need_cmd") as mock_need, \
-         patch("functions.docker.subprocess.run") as mock_run, \
-         patch("functions.docker.Path.home", return_value=home), \
-         patch("functions.docker._ensure_buildx_builder"):
+    with (
+        patch("functions.docker.need_cmd") as mock_need,
+        patch("functions.docker.subprocess.run") as mock_run,
+        patch("functions.docker.Path.home", return_value=home),
+        patch("functions.docker._ensure_buildx_builder"),
+    ):
         mock_run.return_value = MagicMock(returncode=0)  # docker buildx version
         validate_docker_environment()
 
@@ -167,23 +171,30 @@ def test_validate_docker_environment_success(tmp_path: Path) -> None:
 
 
 def test_validate_docker_environment_missing_docker() -> None:
-    with patch("functions.docker.need_cmd", side_effect=ReleaseError("missing required command: docker")):
+    with patch(
+        "functions.docker.need_cmd",
+        side_effect=ReleaseError("missing required command: docker"),
+    ):
         with pytest.raises(ReleaseError, match="missing required command: docker"):
             validate_docker_environment()
 
 
 def test_validate_docker_environment_no_buildx() -> None:
-    with patch("functions.docker.need_cmd"), \
-         patch("functions.docker.subprocess.run") as mock_run:
+    with (
+        patch("functions.docker.need_cmd"),
+        patch("functions.docker.subprocess.run") as mock_run,
+    ):
         mock_run.return_value = MagicMock(returncode=1)
         with pytest.raises(ReleaseError, match="docker buildx is not available"):
             validate_docker_environment()
 
 
 def test_validate_docker_environment_not_logged_in(tmp_path: Path) -> None:
-    with patch("functions.docker.need_cmd"), \
-         patch("functions.docker.subprocess.run") as mock_run, \
-         patch("functions.docker.Path.home", return_value=tmp_path):
+    with (
+        patch("functions.docker.need_cmd"),
+        patch("functions.docker.subprocess.run") as mock_run,
+        patch("functions.docker.Path.home", return_value=tmp_path),
+    ):
         mock_run.return_value = MagicMock(returncode=0)  # docker buildx version
         with pytest.raises(ReleaseError, match="not logged into Docker Hub"):
             validate_docker_environment()
@@ -191,9 +202,11 @@ def test_validate_docker_environment_not_logged_in(tmp_path: Path) -> None:
 
 def test_validate_docker_environment_wrong_account(tmp_path: Path) -> None:
     home = _write_docker_config(tmp_path, "wrong_user")
-    with patch("functions.docker.need_cmd"), \
-         patch("functions.docker.subprocess.run") as mock_run, \
-         patch("functions.docker.Path.home", return_value=home):
+    with (
+        patch("functions.docker.need_cmd"),
+        patch("functions.docker.subprocess.run") as mock_run,
+        patch("functions.docker.Path.home", return_value=home),
+    ):
         mock_run.return_value = MagicMock(returncode=0)  # docker buildx version
         with pytest.raises(ReleaseError, match="logged in as 'wrong_user'"):
             validate_docker_environment()
@@ -298,7 +311,9 @@ def test_inspect_builder_platforms_parses_both() -> None:
 
 
 def test_inspect_builder_platforms_skips_an_entry_without_an_architecture() -> None:
-    stdout = "Name:          peppy-multiplatform\nPlatforms:     linux/amd64, unknown,\n"
+    stdout = (
+        "Name:          peppy-multiplatform\nPlatforms:     linux/amd64, unknown,\n"
+    )
     with patch("functions.docker.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout=stdout)
         platforms = _inspect_builder_platforms(BUILDX_BUILDER_NAME)
@@ -328,8 +343,10 @@ def test_ensure_buildx_builder_exists_with_platforms() -> None:
 
 def test_ensure_buildx_builder_creates_when_missing() -> None:
     """Builder doesn't exist, creation succeeds, re-inspect shows platforms."""
-    with patch("functions.docker._inspect_builder_platforms") as mock_inspect, \
-         patch("functions.docker.subprocess.run") as mock_run:
+    with (
+        patch("functions.docker._inspect_builder_platforms") as mock_inspect,
+        patch("functions.docker.subprocess.run") as mock_run,
+    ):
         mock_inspect.side_effect = [
             set(),  # first inspect: builder doesn't exist
             {"linux/amd64", "linux/arm64"},  # re-inspect after creation
@@ -348,8 +365,10 @@ def test_ensure_buildx_builder_creates_when_missing() -> None:
 
 def test_ensure_buildx_builder_create_failure() -> None:
     """Builder creation fails -- raises ReleaseError."""
-    with patch("functions.docker._inspect_builder_platforms") as mock_inspect, \
-         patch("functions.docker.subprocess.run") as mock_run:
+    with (
+        patch("functions.docker._inspect_builder_platforms") as mock_inspect,
+        patch("functions.docker.subprocess.run") as mock_run,
+    ):
         mock_inspect.return_value = set()
         mock_run.return_value = MagicMock(returncode=1)
 
@@ -370,16 +389,20 @@ def test_ensure_buildx_builder_missing_qemu() -> None:
 
 
 def test_run_empty_tag_raises() -> None:
-    with patch("functions.docker.validate_docker_environment"), \
-         patch("functions.docker.prompt", return_value=""):
+    with (
+        patch("functions.docker.validate_docker_environment"),
+        patch("functions.docker.prompt", return_value=""),
+    ):
         with pytest.raises(ReleaseError, match="tag cannot be empty"):
             _run()
 
 
 def test_run_calls_build_all_with_tag() -> None:
-    with patch("functions.docker.validate_docker_environment") as mock_validate, \
-         patch("functions.docker.prompt", return_value="v1.0.0"), \
-         patch("functions.docker.build_all_base_images") as mock_build:
+    with (
+        patch("functions.docker.validate_docker_environment") as mock_validate,
+        patch("functions.docker.prompt", return_value="v1.0.0"),
+        patch("functions.docker.build_all_base_images") as mock_build,
+    ):
         _run()
 
     mock_validate.assert_called_once()

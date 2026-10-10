@@ -444,8 +444,7 @@ def find_draft_releases(
         releases = github_api(
             client,
             "GET",
-            f"{slug.api_url}/releases"
-            f"?per_page={_RELEASES_PAGE_SIZE}&page={page}",
+            f"{slug.api_url}/releases?per_page={_RELEASES_PAGE_SIZE}&page={page}",
         )
         if not isinstance(releases, list):
             raise ReleaseError(

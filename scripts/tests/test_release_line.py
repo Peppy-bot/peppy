@@ -254,8 +254,9 @@ def test_verify_publish_branch_state_refuses_dev_without_the_release_commit(
         verify_publish_branch_state(RELEASE_COMMIT)
 
     message = unwrapped(str(excinfo.value))
-    assert f"'dev' is at {DEV_COMMIT[:12]}, which does not hold {RELEASE_COMMIT[:12]}" in (
-        message
+    assert (
+        f"'dev' is at {DEV_COMMIT[:12]}, which does not hold {RELEASE_COMMIT[:12]}"
+        in (message)
     )
     assert "This publish stops before it writes anything" in message
 
@@ -287,4 +288,3 @@ def test_latest_release_tag_is_none_without_a_published_release(
     assert latest_release_tag(MagicMock(), RepoSlug("o", "r")) is None
 
     mock_fetch.assert_not_called()
-

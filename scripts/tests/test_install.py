@@ -149,9 +149,9 @@ def test_install_skips_container_setup_with_env_var() -> None:
     result = login_shell(install_cmd(home, extra_env="PEPPY_NO_CONTAINER_SETUP=1"))
 
     assert_installed(result)
-    assert "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)" in result.stdout, (
-        f"Missing env var skip message{diagnostic(result)}"
-    )
+    assert (
+        "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)" in result.stdout
+    ), f"Missing env var skip message{diagnostic(result)}"
     check = login_shell(f"test -x {home}/bin/peppy")
     assert check.returncode == 0, f"peppy binary not found at {home}/bin/peppy"
 
@@ -200,7 +200,9 @@ def test_container_node_build() -> None:
         login_shell(install_cmd(home, skip_service_install=False), timeout=600)
     )
 
-    init = login_shell(f"{env_preamble} && cd {home} && peppy node init --container test-node")
+    init = login_shell(
+        f"{env_preamble} && cd {home} && peppy node init --container test-node"
+    )
     assert init.returncode == 0, f"node init failed{diagnostic(init)}"
 
     # Builds the node's Apptainer container.

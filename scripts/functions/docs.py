@@ -427,8 +427,7 @@ def split_diff(diff: str, cap: int) -> tuple[DiffPart, ...]:
             size += len(section)
             continue
         parts.extend(
-            DiffPart(text=piece, paths=(path,))
-            for piece in _cut_section(section, cap)
+            DiffPart(text=piece, paths=(path,)) for piece in _cut_section(section, cap)
         )
     if pending:
         parts.append(_part_of(pending))
@@ -628,9 +627,7 @@ def _parse_confirm_response(payload: dict) -> GapReview:
         ) from err
     evidence = payload.get("evidence")
     if not isinstance(evidence, str):
-        raise ReleaseError(
-            f"claude gap review missing string 'evidence': {payload!r}"
-        )
+        raise ReleaseError(f"claude gap review missing string 'evidence': {payload!r}")
     return GapReview(confirmed=verdict is Verdict.CONFIRMED, evidence=evidence)
 
 
@@ -700,8 +697,7 @@ def _em_dash_lines(repo_root: Path) -> tuple[EmDashLine, ...]:
         return ()
     if result.returncode != 0:
         raise ReleaseError(
-            f"git grep for em-dashes under '{DOCS_DIR}/' failed: "
-            f"{stderr.strip()}"
+            f"git grep for em-dashes under '{DOCS_DIR}/' failed: {stderr.strip()}"
         )
     lines: list[EmDashLine] = []
     # git grep ends each record with "\n" alone. str.splitlines would also
@@ -734,14 +730,10 @@ def _added_em_dash_lines(
 
 
 def _render_em_dash_lines(lines: tuple[EmDashLine, ...]) -> str:
-    return "\n".join(
-        f"- `{line.file}` line {line.line}: {line.text}" for line in lines
-    )
+    return "\n".join(f"- `{line.file}` line {line.line}: {line.text}" for line in lines)
 
 
-def _reword_added_em_dashes(
-    before: tuple[EmDashLine, ...], repo_root: Path
-) -> None:
+def _reword_added_em_dashes(before: tuple[EmDashLine, ...], repo_root: Path) -> None:
     """Remove the em-dashes an edit added under ``docs/``, or stop.
 
     The update prompt already forbids them; this is what guarantees none
@@ -828,20 +820,14 @@ def _run_at_once(jobs: Sequence[Callable[[], _Result]]) -> list[_Result]:
 
     with ThreadPoolExecutor(max_workers=_CHECK_CONCURRENCY) as pool:
         futures = [pool.submit(run, job) for job in jobs]
-    errors = [
-        error for future in futures if (error := future.exception()) is not None
-    ]
+    errors = [error for future in futures if (error := future.exception()) is not None]
     if errors:
         raise errors[0]
     # No job failed, so none was skipped.
-    return [
-        result for future in futures if (result := future.result()) is not None
-    ]
+    return [result for future in futures if (result := future.result()) is not None]
 
 
-def _judge_parts(
-    parts: tuple[DiffPart, ...], repo_root: Path
-) -> list[CheckResult]:
+def _judge_parts(parts: tuple[DiffPart, ...], repo_root: Path) -> list[CheckResult]:
     """Judge every part, several at once (`_run_at_once`); verdicts in part order."""
     return _run_at_once(
         [
@@ -995,8 +981,7 @@ def print_minor_changes(minor: tuple[RequiredChange, ...]) -> None:
     if not minor:
         return
     console.print(
-        f"[dim]{len(minor)} minor doc suggestion(s) noted "
-        f"(never block anything):[/dim]"
+        f"[dim]{len(minor)} minor doc suggestion(s) noted (never block anything):[/dim]"
     )
     for change in minor:
         console.print(f"  [dim]{change.file}: {change.change}[/dim]")

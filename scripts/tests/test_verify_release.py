@@ -238,8 +238,7 @@ def test_verify_archive_names_a_dot_file_in_full(tmp_path: Path) -> None:
 
     problems = verify_release_archive(archive, triple)
     expected = (
-        ".marker carries build host ownership "
-        "(uid=1000, gid=0, uname='', gname='')"
+        ".marker carries build host ownership (uid=1000, gid=0, uname='', gname='')"
     )
     assert problems == [expected]
 

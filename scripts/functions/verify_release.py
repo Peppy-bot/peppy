@@ -107,7 +107,7 @@ def verify_all_releases(
     """
     errors: list[str] = []
 
-    for triple in (triples if triples is not None else RELEASE_TRIPLES):
+    for triple in triples if triples is not None else RELEASE_TRIPLES:
         archive = dist_dir / release_archive_name(triple)
 
         if not archive.exists():
@@ -119,6 +119,4 @@ def verify_all_releases(
 
     if errors:
         summary = "\n  ".join(errors)
-        raise ReleaseError(
-            f"Release verification failed:\n  {summary}"
-        )
+        raise ReleaseError(f"Release verification failed:\n  {summary}")

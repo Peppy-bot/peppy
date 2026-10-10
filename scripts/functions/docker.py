@@ -143,14 +143,16 @@ def _ensure_buildx_builder() -> None:
         return
 
     if not platforms:
-        console.print(
-            f"Creating buildx builder [bold]{BUILDX_BUILDER_NAME}[/bold]..."
-        )
+        console.print(f"Creating buildx builder [bold]{BUILDX_BUILDER_NAME}[/bold]...")
         result = subprocess.run(
             [
-                "docker", "buildx", "create",
-                "--name", BUILDX_BUILDER_NAME,
-                "--driver", "docker-container",
+                "docker",
+                "buildx",
+                "create",
+                "--name",
+                BUILDX_BUILDER_NAME,
+                "--driver",
+                "docker-container",
                 "--bootstrap",
             ],
         )
@@ -193,9 +195,7 @@ def validate_docker_environment() -> None:
 
     logged_in_user = _get_docker_hub_username()
     if logged_in_user is None:
-        raise ReleaseError(
-            "not logged into Docker Hub. Run 'docker login' first."
-        )
+        raise ReleaseError("not logged into Docker Hub. Run 'docker login' first.")
 
     if logged_in_user != DOCKER_HUB_ACCOUNT:
         raise ReleaseError(
@@ -224,9 +224,13 @@ def build_and_push_base_image(
     context_dir = base_images_dir / image.dockerfile_dir
 
     cmd: list[str] = [
-        "docker", "buildx", "build",
-        "--builder", BUILDX_BUILDER_NAME,
-        "--platform", ",".join(DOCKER_PLATFORMS),
+        "docker",
+        "buildx",
+        "build",
+        "--builder",
+        BUILDX_BUILDER_NAME,
+        "--platform",
+        ",".join(DOCKER_PLATFORMS),
         "--push",
     ]
     for tag in tags:
@@ -234,15 +238,13 @@ def build_and_push_base_image(
     cmd.append(str(context_dir))
 
     console.print(
-        f"Building and pushing [bold]{image.repo}[/bold] "
-        f"(tags: {', '.join(tags)})..."
+        f"Building and pushing [bold]{image.repo}[/bold] (tags: {', '.join(tags)})..."
     )
 
     result = subprocess.run(cmd)
     if result.returncode != 0:
         raise ReleaseError(
-            f"docker buildx build failed for {image.repo} "
-            f"(exit {result.returncode})"
+            f"docker buildx build failed for {image.repo} (exit {result.returncode})"
         )
 
 

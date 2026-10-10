@@ -72,9 +72,7 @@ def _captured_cmd(tmp_path: Path, **overrides: Any) -> list[str]:
 
 
 def test_run_claude_returns_structured_output(tmp_path: Path) -> None:
-    with patch(
-        "functions.claude.subprocess.run", side_effect=_mock_run({"ok": True})
-    ):
+    with patch("functions.claude.subprocess.run", side_effect=_mock_run({"ok": True})):
         out = run_claude(
             "prompt",
             allowed_tools="Read",
@@ -252,9 +250,7 @@ def recorded_threads() -> list[_RecordedThread]:
 def test_run_claude_keeps_a_heartbeat_only_while_the_cli_runs(
     tmp_path: Path, recorded_threads: list[_RecordedThread]
 ) -> None:
-    with patch(
-        "functions.claude.subprocess.run", side_effect=_mock_run({"ok": True})
-    ):
+    with patch("functions.claude.subprocess.run", side_effect=_mock_run({"ok": True})):
         run_claude(
             "p",
             allowed_tools="Read",

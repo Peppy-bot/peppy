@@ -44,8 +44,7 @@ def _describe_release_branch_drift(local_commit: str, remote_commit: str) -> str
             f"Run `git push {GIT_REMOTE} {RELEASE_BRANCH}` and retry."
         )
     return (
-        f"'{RELEASE_BRANCH}' and {remote_ref} have diverged. "
-        f"Reconcile them and retry."
+        f"'{RELEASE_BRANCH}' and {remote_ref} have diverged. Reconcile them and retry."
     )
 
 

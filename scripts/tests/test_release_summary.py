@@ -185,9 +185,7 @@ def test_parse_release_content_requires_a_boolean_verdict(verdict: object) -> No
     payload: dict[str, object] = {**DRAFTED, "has_user_facing_changes": verdict}
     if verdict is None:
         del payload["has_user_facing_changes"]
-    with pytest.raises(
-        ReleaseError, match="missing boolean 'has_user_facing_changes'"
-    ):
+    with pytest.raises(ReleaseError, match="missing boolean 'has_user_facing_changes'"):
         _parse_release_content(payload, TAG)
 
 
@@ -251,7 +249,9 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
     prompt = captured["prompt"]
     assert isinstance(prompt, str)
     assert "release\nv0.12.0; the previous release is v0.11.1." in prompt
-    assert "- fix(apptainer): pre-flight bind mounts\n- refactor: extract helper" in prompt
+    assert (
+        "- fix(apptainer): pre-flight bind mounts\n- refactor: extract helper" in prompt
+    )
     # Claude can report that no change is user-facing instead of drafting.
     assert '"has_user_facing_changes": true when the notes list' in prompt
 
@@ -379,16 +379,20 @@ def test_has_code_or_docs_changes_without_a_previous_release() -> None:
 def test_collect_release_changes_gathers_subjects_and_both_diffs(
     tmp_path: Path,
 ) -> None:
-    with patch(
-        "functions.release_summary.get_commit_subjects",
-        return_value=["feat: b", "fix: a"],
-    ) as subjects, patch(
-        "functions.release_summary.get_code_diff",
-        return_value=("CODE", ["crates/peppy/src/main.rs"]),
-    ) as code, patch(
-        "functions.release_summary.get_docs_diff",
-        return_value=("DOCS", ["docs/src/content/docs/x.mdx"]),
-    ) as docs:
+    with (
+        patch(
+            "functions.release_summary.get_commit_subjects",
+            return_value=["feat: b", "fix: a"],
+        ) as subjects,
+        patch(
+            "functions.release_summary.get_code_diff",
+            return_value=("CODE", ["crates/peppy/src/main.rs"]),
+        ) as code,
+        patch(
+            "functions.release_summary.get_docs_diff",
+            return_value=("DOCS", ["docs/src/content/docs/x.mdx"]),
+        ) as docs,
+    ):
         changes = collect_release_changes("v0.11.1", "abc123", tmp_path)
 
     assert changes == ReleaseChanges(
@@ -409,14 +413,14 @@ def test_collect_release_changes_gathers_subjects_and_both_diffs(
 def test_collect_release_changes_skips_diffs_without_a_previous_release(
     tmp_path: Path,
 ) -> None:
-    with patch(
-        "functions.release_summary.get_commit_subjects",
-        return_value=["initial commit"],
-    ) as subjects, patch(
-        "functions.release_summary.get_code_diff"
-    ) as code, patch(
-        "functions.release_summary.get_docs_diff"
-    ) as docs:
+    with (
+        patch(
+            "functions.release_summary.get_commit_subjects",
+            return_value=["initial commit"],
+        ) as subjects,
+        patch("functions.release_summary.get_code_diff") as code,
+        patch("functions.release_summary.get_docs_diff") as docs,
+    ):
         changes = collect_release_changes(None, "abc123", tmp_path)
 
     assert changes == ReleaseChanges(commit_subjects=("initial commit",), diffs=None)

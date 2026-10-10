@@ -59,9 +59,7 @@ def test_get_commit_subjects_full_history_when_base_none() -> None:
 
 
 def test_get_commit_subjects_skips_blank_lines() -> None:
-    with patch(
-        "functions.repo.subprocess.run", return_value=_mock_git("a\n\n  \nb\n")
-    ):
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("a\n\n  \nb\n")):
         assert get_commit_subjects("v0.1.0") == ["a", "b"]
 
 
@@ -364,7 +362,15 @@ def test_detached_worktree_is_removed_when_its_body_fails() -> None:
                 raise ReleaseError("the body failed")
 
     add_cmd, remove_cmd = (c.args[0] for c in run.call_args_list)
-    assert add_cmd == ["git", "worktree", "add", "--quiet", "--detach", str(tree), "abc123"]
+    assert add_cmd == [
+        "git",
+        "worktree",
+        "add",
+        "--quiet",
+        "--detach",
+        str(tree),
+        "abc123",
+    ]
     assert remove_cmd == ["git", "worktree", "remove", "--force", str(tree)]
     # The temporary directory that held it is gone too.
     assert not tree.parent.exists()

@@ -333,9 +333,7 @@ def test_cargo_build_survives_output_that_is_not_utf8(tmp_path: Path) -> None:
     stop the release with a traceback and leave cargo running.
     """
     real_popen = subprocess.Popen
-    child = (
-        "import sys; sys.stdout.buffer.write(b'bad \\xff byte\\n'); sys.exit(3)"
-    )
+    child = "import sys; sys.stdout.buffer.write(b'bad \\xff byte\\n'); sys.exit(3)"
 
     def popen_a_cargo_that_prints_invalid_utf8(
         _args: list[str], **kwargs: object
@@ -404,9 +402,7 @@ def test_build_and_package_with_lima_calls_lima_build(
     mock_build_dir.return_value = tmp_path / "apptainer"
     mock_package.return_value = MagicMock()
 
-    build_and_package(
-        "v0.1.0", "x86_64-unknown-linux-gnu", tmp_path, limactl=limactl
-    )
+    build_and_package("v0.1.0", "x86_64-unknown-linux-gnu", tmp_path, limactl=limactl)
 
     mock_lima_build.assert_called_once_with(
         limactl, "v0.1.0", "x86_64-unknown-linux-gnu", tmp_path, target_dir=ANY

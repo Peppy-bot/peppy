@@ -74,9 +74,7 @@ pytestmark = pytest.mark.usefixtures("no_prompts")
 
 
 @pytest.fixture(autouse=True)
-def _isolated_host(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _isolated_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep every stage off the real home, dist directory and working directory."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("PEPPY_DIST_DIR", raising=False)
@@ -112,11 +110,16 @@ def _provisioned(tmp_path: Path, arches: tuple[str, ...]) -> Path:
     bindings = _fake_bindings_dir(tmp_path / "producer" / "so")
     _write_tarball(
         provisioned / BINDINGS_ARCHIVE,
-        [(bindings / name, f"so/{name}") for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)],
+        [
+            (bindings / name, f"so/{name}")
+            for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)
+        ],
     )
     for arch in arches:
         cache = _fake_apptainer_cache(tmp_path / "producer" / arch, arch)
-        _write_tarball(provisioned / apptainer_archive_name(arch), [(cache, cache.name)])
+        _write_tarball(
+            provisioned / apptainer_archive_name(arch), [(cache, cache.name)]
+        )
     return provisioned
 
 
@@ -133,7 +136,12 @@ def test_release_plan_round_trips(tmp_path: Path) -> None:
 
 def test_release_plan_rejects_a_missing_field(tmp_path: Path) -> None:
     path = tmp_path / "release-plan.json"
-    payload = {"tag": "v0.3.0", "release_commit": RELEASE_COMMIT, "title": "T", "description": "D"}
+    payload = {
+        "tag": "v0.3.0",
+        "release_commit": RELEASE_COMMIT,
+        "title": "T",
+        "description": "D",
+    }
     path.write_text(json.dumps(payload))
 
     with pytest.raises(ReleaseError, match="no usable 'notes'"):
@@ -210,7 +218,15 @@ def test_prepare_takes_every_answer_up_front() -> None:
     [
         # The minor-docs offer has no default: it must be answered.
         ["--tag", "v1", "--release-commit", RELEASE_COMMIT, "--plan", "p"],
-        ["--tag", "  ", "--release-commit", RELEASE_COMMIT, "--minor-docs-pr", "--plan", "p"],
+        [
+            "--tag",
+            "  ",
+            "--release-commit",
+            RELEASE_COMMIT,
+            "--minor-docs-pr",
+            "--plan",
+            "p",
+        ],
         ["--tag", "v1", "--release-commit", "abc123", "--minor-docs-pr", "--plan", "p"],
     ],
 )
@@ -247,7 +263,17 @@ def test_hub_launch_refuses_a_run_id_that_is_no_run(run_id: str) -> None:
 
 def test_build_accepts_release_targets_only() -> None:
     with pytest.raises(SystemExit):
-        _parse_args(["build", "--plan", "p", "--target", "riscv64gc-unknown-linux-gnu", "--provisioned", "d"])
+        _parse_args(
+            [
+                "build",
+                "--plan",
+                "p",
+                "--target",
+                "riscv64gc-unknown-linux-gnu",
+                "--provisioned",
+                "d",
+            ]
+        )
 
 
 def test_the_macos_build_needs_apptainer_of_both_linux_architectures() -> None:
@@ -312,30 +338,29 @@ class PrepareMocks:
 
 @pytest.fixture
 def prepare_mocks(tmp_path: Path) -> Iterator[PrepareMocks]:
-    with patch(
-        "functions.parallel_release.validate_release_environment", return_value="token"
-    ) as validate, patch(
-        "functions.parallel_release.get_repo_root", return_value=tmp_path
-    ), patch(
-        "functions.parallel_release.verify_release_branch_state",
-        return_value=RELEASE_COMMIT,
-    ) as branch_state, patch(
-        "functions.parallel_release._require_unused_tag"
-    ) as unused_tag, patch(
-        "functions.parallel_release.github_repo_slug", return_value=SLUG
-    ), patch(
-        "functions.parallel_release.build_github_client"
-    ) as client, patch(
-        "functions.parallel_release.verify_docs_gate"
-    ) as docs_gate, patch(
-        "functions.release_line.get_latest_release",
-        return_value={"tag_name": "v0.2.0"},
-    ), patch(
-        "functions.release_line.fetch_tag"
-    ) as fetch_tag, patch(
-        "functions.parallel_release.collect_release_changes"
-    ) as collect, patch(
-        "functions.parallel_release.generate_release_content", return_value=CONTENT
+    with (
+        patch(
+            "functions.parallel_release.validate_release_environment",
+            return_value="token",
+        ) as validate,
+        patch("functions.parallel_release.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.parallel_release.verify_release_branch_state",
+            return_value=RELEASE_COMMIT,
+        ) as branch_state,
+        patch("functions.parallel_release._require_unused_tag") as unused_tag,
+        patch("functions.parallel_release.github_repo_slug", return_value=SLUG),
+        patch("functions.parallel_release.build_github_client") as client,
+        patch("functions.parallel_release.verify_docs_gate") as docs_gate,
+        patch(
+            "functions.release_line.get_latest_release",
+            return_value={"tag_name": "v0.2.0"},
+        ),
+        patch("functions.release_line.fetch_tag") as fetch_tag,
+        patch("functions.parallel_release.collect_release_changes") as collect,
+        patch(
+            "functions.parallel_release.generate_release_content", return_value=CONTENT
+        ),
     ):
         yield PrepareMocks(
             validate=validate,
@@ -401,7 +426,9 @@ def test_prepare_skips_the_docs_gate_when_asked(
 
 
 @patch("functions.parallel_release.is_macos_arm64", return_value=False)
-def test_bindings_refuse_to_build_off_macos(mock_macos: MagicMock, tmp_path: Path) -> None:
+def test_bindings_refuse_to_build_off_macos(
+    mock_macos: MagicMock, tmp_path: Path
+) -> None:
     with pytest.raises(ReleaseError, match="macOS ARM64 only"):
         run_bindings(tmp_path / "out")
 
@@ -490,16 +517,23 @@ def test_install_pinned_go_reuses_the_installed_toolchain(tmp_path: Path) -> Non
 
 
 @patch("functions.parallel_release.is_linux", return_value=False)
-def test_apptainer_refuses_to_build_off_linux(mock_linux: MagicMock, tmp_path: Path) -> None:
+def test_apptainer_refuses_to_build_off_linux(
+    mock_linux: MagicMock, tmp_path: Path
+) -> None:
     with pytest.raises(ReleaseError, match="Linux only"):
         run_apptainer(tmp_path / "out")
 
 
-@patch("functions.parallel_release._install_pinned_go", return_value=Path("/pinned/go/bin"))
+@patch(
+    "functions.parallel_release._install_pinned_go", return_value=Path("/pinned/go/bin")
+)
 @patch("functions.parallel_release.need_cmd")
 @patch("functions.parallel_release.subprocess.run")
 @patch("functions.parallel_release.get_repo_root")
-@patch("functions.parallel_release.get_native_triple", return_value="x86_64-unknown-linux-gnu")
+@patch(
+    "functions.parallel_release.get_native_triple",
+    return_value="x86_64-unknown-linux-gnu",
+)
 @patch("functions.parallel_release.is_linux", return_value=True)
 def test_apptainer_packs_the_cache_the_build_left(
     mock_linux: MagicMock,
@@ -529,11 +563,16 @@ def test_apptainer_packs_the_cache_the_build_left(
     assert binary.mode & 0o111
 
 
-@patch("functions.parallel_release._install_pinned_go", return_value=Path("/pinned/go/bin"))
+@patch(
+    "functions.parallel_release._install_pinned_go", return_value=Path("/pinned/go/bin")
+)
 @patch("functions.parallel_release.need_cmd")
 @patch("functions.parallel_release.subprocess.run")
 @patch("functions.parallel_release.get_repo_root")
-@patch("functions.parallel_release.get_native_triple", return_value="x86_64-unknown-linux-gnu")
+@patch(
+    "functions.parallel_release.get_native_triple",
+    return_value="x86_64-unknown-linux-gnu",
+)
 @patch("functions.parallel_release.is_linux", return_value=True)
 def test_apptainer_fails_when_the_build_left_no_cache(
     mock_linux: MagicMock,
@@ -570,18 +609,19 @@ class BuildMocks:
 def build_mocks(tmp_path: Path) -> Iterator[BuildMocks]:
     plan_path = tmp_path / "release-plan.json"
     PLAN.write(plan_path)
-    with patch("functions.parallel_release.need_cmd"), patch(
-        "functions.parallel_release.get_repo_root", return_value=tmp_path
-    ), patch(
-        "functions.parallel_release.get_commit", return_value=RELEASE_COMMIT
-    ) as get_commit, patch(
-        "functions.parallel_release.get_native_triple",
-        return_value="aarch64-unknown-linux-gnu",
-    ) as native, patch(
-        "functions.parallel_release.build_and_package"
-    ) as build, patch(
-        "functions.parallel_release.verify_all_releases"
-    ) as verify:
+    with (
+        patch("functions.parallel_release.need_cmd"),
+        patch("functions.parallel_release.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.parallel_release.get_commit", return_value=RELEASE_COMMIT
+        ) as get_commit,
+        patch(
+            "functions.parallel_release.get_native_triple",
+            return_value="aarch64-unknown-linux-gnu",
+        ) as native,
+        patch("functions.parallel_release.build_and_package") as build,
+        patch("functions.parallel_release.verify_all_releases") as verify,
+    ):
         yield BuildMocks(
             plan_path=plan_path,
             get_commit=get_commit,
@@ -616,7 +656,10 @@ def test_build_embeds_the_provisioned_bindings_and_apptainer(
     )
     assert embedded["so"] == sorted((*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER))
     seeded = (
-        _cache_root(tmp_path) / APPTAINER_CACHE.format(arch="aarch64") / "bin" / "apptainer"
+        _cache_root(tmp_path)
+        / APPTAINER_CACHE.format(arch="aarch64")
+        / "bin"
+        / "apptainer"
     )
     assert seeded.is_file()
     assert seeded.stat().st_mode & 0o111
@@ -911,7 +954,9 @@ class FakeGitHub:
             target = tags.get(name[1])
             if target is None:
                 return httpx.Response(404, json={"message": "Not Found"})
-            return httpx.Response(200, json={"ref": f"refs/tags/{name[1]}", "object": target})
+            return httpx.Response(
+                200, json={"ref": f"refs/tags/{name[1]}", "object": target}
+            )
         if method == "GET" and (sha := re.fullmatch(r"tags/([0-9a-f]{40})", path)):
             return httpx.Response(200, json=self.tag_objects[sha[1]])
         if method == "POST" and path == "tags":
@@ -932,7 +977,9 @@ class FakeGitHub:
                 return httpx.Response(422, json={"message": "Reference already exists"})
             self.events.append(f"tag {hub}")
             tags[name] = {"type": "tag", "sha": payload["sha"]}
-            return httpx.Response(201, json={"ref": payload["ref"], "object": tags[name]})
+            return httpx.Response(
+                201, json={"ref": payload["ref"], "object": tags[name]}
+            )
         raise AssertionError(f"unexpected GitHub request: {method} {request.url}")
 
     def add_release(self, tag: str, *, draft: bool) -> dict:
@@ -1094,15 +1141,19 @@ def publish(
     hub_set_path.write_text(_hub_set_text())
 
     def run() -> None:
-        with patch(
-            "functions.parallel_release.verify_all_releases",
-            side_effect=lambda dist_dir: events.append("verify the archives"),
-        ), patch(
-            "functions.parallel_release.check_release_install",
-            side_effect=install_check,
-        ), patch(
-            "functions.parallel_release.get_native_triple",
-            return_value="x86_64-unknown-linux-gnu",
+        with (
+            patch(
+                "functions.parallel_release.verify_all_releases",
+                side_effect=lambda dist_dir: events.append("verify the archives"),
+            ),
+            patch(
+                "functions.parallel_release.check_release_install",
+                side_effect=install_check,
+            ),
+            patch(
+                "functions.parallel_release.get_native_triple",
+                return_value="x86_64-unknown-linux-gnu",
+            ),
         ):
             run_publish(
                 plan_path=plan_path, archives_dir=archives, hub_set_path=hub_set_path
@@ -1146,9 +1197,12 @@ def test_publish_releases_then_commits_the_notes_and_aligns_main(
     # `dev` fast-forwarded to the notes commit, and `main` followed it.
     dev = release_repo.remote_commit("dev")
     assert _parents(release_repo, dev) == [release_repo.release_commit]
-    assert _git(
-        release_repo.origin, "diff", "--name-only", release_repo.release_commit, dev
-    ) == NOTES_FILE
+    assert (
+        _git(
+            release_repo.origin, "diff", "--name-only", release_repo.release_commit, dev
+        )
+        == NOTES_FILE
+    )
     assert _git(release_repo.origin, "log", "-1", "--format=%s", dev) == (
         "docs: add release notes for v0.3.0"
     )
@@ -1196,22 +1250,25 @@ def test_publish_does_its_steps_in_order(
         events.append("merge the notes")
         real_merge(commit, message)
 
-    with patch(
-        "functions.parallel_release.push_branch", side_effect=recorded_push
-    ), patch(
-        "functions.parallel_release.commit_paths", side_effect=recorded_commit
-    ), patch(
-        "functions.parallel_release.verify_publish_branch_state",
-        side_effect=recorded_branch_check,
-    ), patch(
-        "functions.parallel_release._find_release_notes_commit",
-        side_effect=recorded_notes_lookup,
-    ), patch(
-        "functions.parallel_release.update_release_branch",
-        side_effect=recorded_update,
-    ), patch(
-        "functions.parallel_release.merge_into_current_branch",
-        side_effect=recorded_merge,
+    with (
+        patch("functions.parallel_release.push_branch", side_effect=recorded_push),
+        patch("functions.parallel_release.commit_paths", side_effect=recorded_commit),
+        patch(
+            "functions.parallel_release.verify_publish_branch_state",
+            side_effect=recorded_branch_check,
+        ),
+        patch(
+            "functions.parallel_release._find_release_notes_commit",
+            side_effect=recorded_notes_lookup,
+        ),
+        patch(
+            "functions.parallel_release.update_release_branch",
+            side_effect=recorded_update,
+        ),
+        patch(
+            "functions.parallel_release.merge_into_current_branch",
+            side_effect=recorded_merge,
+        ),
     ):
         publish()
 
@@ -1297,11 +1354,15 @@ def test_publish_rerun_does_not_push_main_already_aligned(
     notes_commit = release_repo.commit_release_notes()
     release_repo.align_main()
 
-    with patch(
-        "functions.parallel_release.push_branch", side_effect=AssertionError("pushed")
-    ), patch(
-        "functions.parallel_release.commit_paths",
-        side_effect=AssertionError("committed"),
+    with (
+        patch(
+            "functions.parallel_release.push_branch",
+            side_effect=AssertionError("pushed"),
+        ),
+        patch(
+            "functions.parallel_release.commit_paths",
+            side_effect=AssertionError("committed"),
+        ),
     ):
         publish()
 
@@ -1333,9 +1394,10 @@ def _assert_released_the_built_commit(
         "Merge the release notes of v0.3.0 into 'dev'"
     )
     assert _parents(repo, notes_commit) == [repo.release_commit]
-    assert _git(
-        repo.origin, "diff", "--name-only", repo.release_commit, notes_commit
-    ) == NOTES_FILE
+    assert (
+        _git(repo.origin, "diff", "--name-only", repo.release_commit, notes_commit)
+        == NOTES_FILE
+    )
     assert repo.remote_commit("main") == notes_commit
     assert _git(repo.origin, "show", "main:code.rs") == _git(
         repo.origin, "show", f"{repo.release_commit}:code.rs"
@@ -1388,9 +1450,13 @@ def test_publish_rerun_finds_the_notes_merged_into_dev_that_moved(
 ) -> None:
     release_repo.merge_elsewhere(MERGED_SINCE, "merged since the build")
 
-    with patch(
-        "functions.parallel_release.push_branch", side_effect=_reject_the_push_to_main
-    ), pytest.raises(ReleaseError, match="Re-run the failed publish job"):
+    with (
+        patch(
+            "functions.parallel_release.push_branch",
+            side_effect=_reject_the_push_to_main,
+        ),
+        pytest.raises(ReleaseError, match="Re-run the failed publish job"),
+    ):
         publish()
 
     merged_notes = release_repo.remote_commit("dev")
@@ -1537,7 +1603,9 @@ def test_publish_publishes_nothing_when_the_install_check_fails(
     events: list[str],
     install_check: InstallCheck,
 ) -> None:
-    install_check.failure = ReleaseError("`peppy repo refresh --strict` failed (exit 1)")
+    install_check.failure = ReleaseError(
+        "`peppy repo refresh --strict` failed (exit 1)"
+    )
 
     with pytest.raises(ReleaseError, match="repo refresh --strict"):
         publish()
@@ -1644,9 +1712,13 @@ def test_publish_rerun_after_a_failed_upload_publishes_the_release(
 def test_publish_rerun_after_a_failed_push_finishes_only_the_git_side(
     publish, release_repo: ReleaseRepo, github: FakeGitHub
 ) -> None:
-    with patch(
-        "functions.parallel_release.push_branch", side_effect=_reject_the_push_to_main
-    ), pytest.raises(ReleaseError) as excinfo:
+    with (
+        patch(
+            "functions.parallel_release.push_branch",
+            side_effect=_reject_the_push_to_main,
+        ),
+        pytest.raises(ReleaseError) as excinfo,
+    ):
         publish()
 
     # The release is live, so the failure points at the re-run, which does
@@ -1671,10 +1743,13 @@ def test_publish_rerun_after_a_failed_push_finishes_only_the_git_side(
 def test_publish_removes_the_notes_worktree_when_the_commit_fails(
     publish, release_repo: ReleaseRepo, github: FakeGitHub
 ) -> None:
-    with patch(
-        "functions.parallel_release.commit_paths",
-        side_effect=ReleaseError("failed to commit the notes"),
-    ), pytest.raises(ReleaseError, match="Re-run the failed publish job"):
+    with (
+        patch(
+            "functions.parallel_release.commit_paths",
+            side_effect=ReleaseError("failed to commit the notes"),
+        ),
+        pytest.raises(ReleaseError, match="Re-run the failed publish job"),
+    ):
         publish()
 
     assert release_repo.worktrees() == [str(release_repo.path)]
@@ -1687,7 +1762,9 @@ def test_publish_stops_when_an_archive_is_missing(
 ) -> None:
     (tmp_path / "archives" / "peppy-x86_64-unknown-linux-gnu.tgz").unlink()
 
-    with pytest.raises(ReleaseError, match="x86_64-unknown-linux-gnu archive is missing"):
+    with pytest.raises(
+        ReleaseError, match="x86_64-unknown-linux-gnu archive is missing"
+    ):
         publish()
 
     assert "create the draft" not in events
@@ -1846,7 +1923,9 @@ UNTAGGED_DRAFT_URL = "https://github.com/t/releases/tag/untagged-1"
 
 @patch("functions.parallel_release.delete_draft_release", return_value=True)
 @patch("functions.parallel_release.publish_release")
-@patch("functions.parallel_release.replace_and_upload_asset", side_effect=KeyboardInterrupt)
+@patch(
+    "functions.parallel_release.replace_and_upload_asset", side_effect=KeyboardInterrupt
+)
 def test_upload_interrupt_deletes_the_draft(
     mock_upload: MagicMock,
     mock_publish: MagicMock,

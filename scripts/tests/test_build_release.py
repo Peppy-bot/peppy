@@ -42,7 +42,11 @@ def test_run_local_on_linux_builds_native_only(
     ]
     _run_local()
     # A local build publishes nothing, so it needs the build tools and no token.
-    assert [c.args[0] for c in mock_need_cmd.call_args_list] == ["git", "cargo", "rustc"]
+    assert [c.args[0] for c in mock_need_cmd.call_args_list] == [
+        "git",
+        "cargo",
+        "rustc",
+    ]
     mock_build_all.assert_called_once_with(
         "v0.1.0",
         ["x86_64-unknown-linux-gnu"],
@@ -104,12 +108,12 @@ def test_run_local_with_an_empty_tag_raises_without_prompting(
     tmp_path: Path,
 ) -> None:
     mock_repo_root.return_value = tmp_path
-    with patch(
-        "functions.build_release.has_uncommitted_changes", return_value=False
-    ), pytest.raises(ReleaseError, match="release tag cannot be empty"):
+    with (
+        patch("functions.build_release.has_uncommitted_changes", return_value=False),
+        pytest.raises(ReleaseError, match="release tag cannot be empty"),
+    ):
         _run_local("")
     mock_prompt.assert_not_called()
-
 
 
 # --- the command line ---
@@ -132,13 +136,13 @@ def test_main_prompts_for_the_local_tag_without_the_option(
 
 
 def test_tag_without_local_is_rejected(capsys: pytest.CaptureFixture[str]) -> None:
-    with patch(
-        "sys.argv", ["build-release", "--base-images", "--tag", "test"]
-    ), pytest.raises(SystemExit) as exited:
+    with (
+        patch("sys.argv", ["build-release", "--base-images", "--tag", "test"]),
+        pytest.raises(SystemExit) as exited,
+    ):
         main()
     assert exited.value.code == 2
     assert "--tag applies to --local only" in capsys.readouterr().err
-
 
 
 @pytest.mark.parametrize(
@@ -154,11 +158,12 @@ def test_main_refuses_to_run_without_a_mode(
 ) -> None:
     # Releases publish from the workflow alone; without --local or
     # --base-images there is nothing this script may do.
-    with patch("sys.argv", argv), patch(
-        "functions.build_release._run_local"
-    ) as mock_run_local, patch(
-        "functions.build_release.build_base_images_main"
-    ) as mock_base_images, pytest.raises(SystemExit) as exited:
+    with (
+        patch("sys.argv", argv),
+        patch("functions.build_release._run_local") as mock_run_local,
+        patch("functions.build_release.build_base_images_main") as mock_base_images,
+        pytest.raises(SystemExit) as exited,
+    ):
         main()
 
     assert exited.value.code == 2
@@ -173,9 +178,11 @@ def test_main_refuses_to_run_without_a_mode(
 
 
 def test_main_refuses_both_modes_at_once(capsys: pytest.CaptureFixture[str]) -> None:
-    with patch("sys.argv", ["build-release", "--local", "--base-images"]), patch(
-        "functions.build_release._run_local"
-    ) as mock_run_local, pytest.raises(SystemExit) as exited:
+    with (
+        patch("sys.argv", ["build-release", "--local", "--base-images"]),
+        patch("functions.build_release._run_local") as mock_run_local,
+        pytest.raises(SystemExit) as exited,
+    ):
         main()
 
     assert exited.value.code == 2
@@ -303,4 +310,3 @@ def test_build_all_targets_stops_vm_when_linux_build_fails(
     # The VM was started for the linux target, so it must be stopped even though
     # the build raised: cleanup runs in `finally`.
     mock_stop.assert_called_once_with(limactl)
-

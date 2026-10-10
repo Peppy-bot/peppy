@@ -42,7 +42,10 @@ LATEST_TAG = "v0.29.0"
 def test_last_shipped_commit_is_origin_main_without_a_published_release(
     mock_tag: MagicMock, mock_is_ancestor: MagicMock
 ) -> None:
-    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    assert (
+        _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT)
+        == "origin/main"
+    )
 
     mock_is_ancestor.assert_not_called()
 
@@ -57,7 +60,10 @@ def test_last_shipped_commit_is_origin_main_once_aligned_to_the_latest_release(
         {(LATEST_TAG, "origin/main"): True}
     )
 
-    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    assert (
+        _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT)
+        == "origin/main"
+    )
 
 
 @patch("functions.release_docs_gate.is_ancestor")
@@ -77,7 +83,9 @@ def test_last_shipped_commit_is_the_latest_release_tag_when_main_lags_it(
         }
     )
 
-    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == LATEST_TAG
+    assert (
+        _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == LATEST_TAG
+    )
 
     err = unwrapped(capfd.readouterr().err)
     assert f"origin/main is behind the latest release {LATEST_TAG}" in err
@@ -108,7 +116,10 @@ def test_last_shipped_commit_stays_origin_main_when_the_tag_is_off_the_release_l
 ) -> None:
     mock_is_ancestor.side_effect = ancestry_resolver(ancestry)
 
-    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    assert (
+        _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT)
+        == "origin/main"
+    )
 
 
 # --- the commit a merged docs pull request settled ---
@@ -154,7 +165,10 @@ _ON_THE_RELEASE_LINE = {
 
 
 @patch("functions.release_docs_gate.is_ancestor")
-@patch("functions.release_docs_gate.find_commit", _known_commits(JUDGED_COMMIT, JUDGED_MERGE))
+@patch(
+    "functions.release_docs_gate.find_commit",
+    _known_commits(JUDGED_COMMIT, JUDGED_MERGE),
+)
 def test_judged_commit_of_a_merged_docs_sync_pull_request(
     mock_is_ancestor: MagicMock,
 ) -> None:
@@ -181,7 +195,10 @@ def test_judged_commit_of_a_merged_docs_sync_pull_request(
     ],
 )
 @patch("functions.release_docs_gate.is_ancestor")
-@patch("functions.release_docs_gate.find_commit", _known_commits(JUDGED_COMMIT, JUDGED_MERGE))
+@patch(
+    "functions.release_docs_gate.find_commit",
+    _known_commits(JUDGED_COMMIT, JUDGED_MERGE),
+)
 def test_judged_commit_of_is_none_for_a_pull_request_that_settles_nothing(
     mock_is_ancestor: MagicMock, pull: object
 ) -> None:
@@ -206,7 +223,10 @@ def test_judged_commit_of_is_none_for_a_pull_request_that_settles_nothing(
     ],
 )
 @patch("functions.release_docs_gate.is_ancestor")
-@patch("functions.release_docs_gate.find_commit", _known_commits(JUDGED_COMMIT, JUDGED_MERGE))
+@patch(
+    "functions.release_docs_gate.find_commit",
+    _known_commits(JUDGED_COMMIT, JUDGED_MERGE),
+)
 def test_judged_commit_of_is_none_off_the_way_to_the_release(
     mock_is_ancestor: MagicMock, ancestry: dict[tuple[str, str], bool]
 ) -> None:
@@ -290,7 +310,9 @@ def test_last_judged_commit_is_none_without_a_merged_docs_pull_request(
 def test_docs_check_base_is_the_last_shipped_commit_when_nothing_was_judged_since(
     mock_shipped: MagicMock, mock_judged: MagicMock
 ) -> None:
-    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    assert (
+        _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    )
 
     assert mock_judged.call_args.args[2:] == ("origin/main", DEV_COMMIT)
 
@@ -307,7 +329,9 @@ def test_docs_check_base_is_the_commit_a_merged_docs_pull_request_settled(
 ) -> None:
     # The rerun after the merge: the code up to the judged commit is settled,
     # so the check starts there instead of drawing new gaps from the same code.
-    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == JUDGED_COMMIT
+    assert (
+        _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == JUDGED_COMMIT
+    )
 
     err = unwrapped(capfd.readouterr().err)
     assert f"was already judged up to {JUDGED_COMMIT[:12]}" in err
@@ -542,9 +566,7 @@ def test_docs_gate_feeds_only_blocking_changes_to_the_update_and_pr(
     with pytest.raises(SystemExit):
         _docs_gate(open_minor_docs_pr=True)
 
-    gate.update.assert_called_once_with(
-        "origin/main", DEV_COMMIT, (_BLOCKING_CHANGE,)
-    )
+    gate.update.assert_called_once_with("origin/main", DEV_COMMIT, (_BLOCKING_CHANGE,))
     body = gate.open_pr.call_args.args[4]
     assert "docs/x.mdx" in body
     assert "reword the intro" not in body
@@ -639,7 +661,10 @@ def test_push_docs_branch_pushes_without_force_and_returns_to_dev(
 
 
 @patch("functions.release_docs_gate.switch_branch")
-@patch("functions.release_docs_gate.push_branch", side_effect=ReleaseError("non-fast-forward"))
+@patch(
+    "functions.release_docs_gate.push_branch",
+    side_effect=ReleaseError("non-fast-forward"),
+)
 @patch("functions.release_docs_gate.commit_paths")
 @patch("functions.release_docs_gate.switch_to_new_branch")
 def test_push_docs_branch_explains_a_rejected_push_and_returns_to_dev(
@@ -719,4 +744,3 @@ def test_find_open_docs_pr_returns_none_when_there_is_no_pr(
         )
         is None
     )
-

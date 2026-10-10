@@ -231,7 +231,9 @@ def test_diff_getters_skip_the_diff_when_nothing_matches(
 
 def test_get_code_diff_raises_when_git_fails(tmp_path: Path) -> None:
     with patch("functions.docs.subprocess.run", _mock_git_diff("", returncode=128)):
-        with pytest.raises(ReleaseError, match="git diff --name-only v9.9.9..HEAD failed"):
+        with pytest.raises(
+            ReleaseError, match="git diff --name-only v9.9.9..HEAD failed"
+        ):
             get_code_diff("v9.9.9", "HEAD", tmp_path)
 
 
@@ -465,8 +467,7 @@ def test_parse_update_response_unknown_status() -> None:
 def _diff_of(*paths: str, body: str = "-old\n+new\n") -> str:
     """A unified diff changing each of *paths*, *body* being the hunk lines."""
     return "".join(
-        f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
-        f"@@ -1 +1 @@\n{body}"
+        f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n{body}"
         for path in paths
     )
 
@@ -681,9 +682,11 @@ def _mock_subprocess_run_for_claude(
 
 
 def test_check_docs_short_circuits_on_no_code_changes(tmp_path: Path) -> None:
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch("functions.docs.get_code_diff", return_value=("", [])), \
-         patch("functions.claude.subprocess.run") as mock_run:
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch("functions.docs.get_code_diff", return_value=("", [])),
+        patch("functions.claude.subprocess.run") as mock_run,
+    ):
         result = check_docs("BASE", "HEAD")
     assert result == CheckResult(changes=())
     mock_run.assert_not_called()
@@ -695,30 +698,32 @@ def test_check_docs_parses_claude_verdict(tmp_path: Path) -> None:
             {"file": "docs/x.mdx", "change": "add flag", "severity": "blocking"}
         ]
     }
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude(verdict),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude(verdict),
+        ),
+    ):
         result = check_docs("BASE", "HEAD")
     assert result.blocking == (_blocking(),)
     assert result.minor == ()
 
 
-def _check_docs_with_diff(
-    tmp_path: Path, diff: str, paths: list[str]
-) -> CheckResult:
+def _check_docs_with_diff(tmp_path: Path, diff: str, paths: list[str]) -> CheckResult:
     """Run the check on a canned diff with Claude answering that all is covered."""
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch("functions.docs.get_code_diff", return_value=(diff, paths)), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude({"required_changes": []}),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch("functions.docs.get_code_diff", return_value=(diff, paths)),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude({"required_changes": []}),
+        ),
+    ):
         return check_docs("BASE", "HEAD")
 
 
@@ -742,12 +747,14 @@ def test_check_docs_keeps_the_whole_diff_in_one_run_when_it_fits(
 ) -> None:
     calls = _ClaudeCalls({"required_changes": []})
     diff = _diff_of("crates/a.rs", "crates/b.rs")
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(diff, ["crates/a.rs", "crates/b.rs"]),
-         ), \
-         patch("functions.claude.subprocess.run", calls):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(diff, ["crates/a.rs", "crates/b.rs"]),
+        ),
+        patch("functions.claude.subprocess.run", calls),
+    ):
         check_docs("BASE", "HEAD")
 
     (prompt,) = calls.prompts
@@ -784,7 +791,9 @@ def test_check_docs_judges_a_large_diff_in_parts(
 ) -> None:
     calls = _ClaudeByPath(
         {
-            "crates/a.rs": {"required_changes": [_gap("docs/a.mdx", "say a", "blocking")]},
+            "crates/a.rs": {
+                "required_changes": [_gap("docs/a.mdx", "say a", "blocking")]
+            },
             "crates/b.rs": {"required_changes": [_gap("docs/b.mdx", "say b", "minor")]},
         }
     )
@@ -930,7 +939,9 @@ def test_check_docs_confirms_a_gap_from_the_repository_not_the_diff(
 def test_check_docs_asks_no_second_opinion_on_minor_gaps(tmp_path: Path) -> None:
     calls = _ClaudeByPath(
         {
-            "crates/a.rs": {"required_changes": [_gap("docs/a.mdx", "reword", "minor")]},
+            "crates/a.rs": {
+                "required_changes": [_gap("docs/a.mdx", "reword", "minor")]
+            },
             "crates/b.rs": _NO_GAP,
         }
     )
@@ -938,7 +949,9 @@ def test_check_docs_asks_no_second_opinion_on_minor_gaps(tmp_path: Path) -> None
     with repo, diff, cap, claude:
         result = check_docs("BASE", "HEAD")
 
-    assert result.minor == (RequiredChange("docs/a.mdx", "reword", "minor", diff_part=1),)
+    assert result.minor == (
+        RequiredChange("docs/a.mdx", "reword", "minor", diff_part=1),
+    )
     assert calls.review_prompts == []
 
 
@@ -970,12 +983,14 @@ def test_check_docs_confirms_gaps_with_the_schema_and_readonly_tools(
         reviews.append(cmd)
         return claude_answer(_CONFIRMED)
 
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch("functions.claude.subprocess.run", MagicMock(side_effect=_run)):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch("functions.claude.subprocess.run", MagicMock(side_effect=_run)),
+    ):
         check_docs("BASE", "HEAD")
 
     (cmd,) = reviews
@@ -1062,15 +1077,17 @@ def test_update_docs_refuses_a_gap_naming_a_part_the_diff_lacks(
 def test_check_docs_enforces_schema_and_readonly_tools(tmp_path: Path) -> None:
     capture: dict[str, Any] = {}
     verdict: dict = {"required_changes": []}
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude(verdict, capture=capture),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude(verdict, capture=capture),
+        ),
+    ):
         check_docs("BASE", "HEAD")
     cmd = capture["cmd"]
     # The verdict shape is enforced CLI-side, so prose answers cannot crash
@@ -1088,12 +1105,14 @@ def test_check_docs_raises_on_claude_nonzero(tmp_path: Path) -> None:
     mock.returncode = 2
     mock.stdout = ""
     mock.stderr = "boom"
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch("functions.claude.subprocess.run", return_value=mock):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch("functions.claude.subprocess.run", return_value=mock),
+    ):
         with pytest.raises(ReleaseError, match="claude CLI failed"):
             check_docs("BASE", "HEAD")
 
@@ -1104,19 +1123,23 @@ def test_check_docs_raises_on_missing_structured_output(tmp_path: Path) -> None:
     mock.returncode = 0
     mock.stdout = json.dumps({"type": "result", "result": "The docs are fine."})
     mock.stderr = ""
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch("functions.claude.subprocess.run", return_value=mock):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch("functions.claude.subprocess.run", return_value=mock),
+    ):
         with pytest.raises(ReleaseError, match="missing 'structured_output'"):
             check_docs("BASE", "HEAD")
 
 
 def test_update_docs_rejects_an_empty_change_list(tmp_path: Path) -> None:
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch("functions.claude.subprocess.run") as mock_run:
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch("functions.claude.subprocess.run") as mock_run,
+    ):
         with pytest.raises(ReleaseError, match="no changes to implement"):
             update_docs("BASE", "HEAD", ())
     mock_run.assert_not_called()
@@ -1133,18 +1156,20 @@ def test_update_docs_scopes_the_prompt_to_the_requested_changes(
         "summary": "edited 1 file",
     }
     changes = (_blocking(), _blocking("docs/z.mdx", "document subcommand"))
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(
-                 _diff_of("crates/foo.rs", body="+THE-CODE-DIFF\n"),
-                 ["crates/foo.rs"],
-             ),
-         ), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude(report, capture=capture),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(
+                _diff_of("crates/foo.rs", body="+THE-CODE-DIFF\n"),
+                ["crates/foo.rs"],
+            ),
+        ),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude(report, capture=capture),
+        ),
+    ):
         result = update_docs("BASE", "HEAD", changes)
 
     assert result.summary == "edited 1 file"
@@ -1161,15 +1186,17 @@ def test_update_docs_scopes_the_prompt_to_the_requested_changes(
 def test_update_docs_invokes_claude_with_edit_permissions(tmp_path: Path) -> None:
     capture: dict[str, Any] = {}
     report: dict = {"results": [], "summary": "edited 3 files"}
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude(report, capture=capture),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude(report, capture=capture),
+        ),
+    ):
         result = update_docs("BASE", "HEAD", (_blocking(),))
 
     assert result.summary == "edited 3 files"
@@ -1185,20 +1212,20 @@ def test_update_docs_invokes_claude_with_edit_permissions(tmp_path: Path) -> Non
 # --- pinned model / effort (reproducibility) ---
 
 
-def _capture_claude_cmd(
-    fn, tmp_path: Path, structured: object
-) -> list[str]:
+def _capture_claude_cmd(fn, tmp_path: Path, structured: object) -> list[str]:
     """Invoke ``fn()`` with claude mocked and return its argv."""
     capture: dict[str, Any] = {}
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude(structured, capture=capture),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude(structured, capture=capture),
+        ),
+    ):
         fn()
     return capture["cmd"]
 
@@ -1304,12 +1331,14 @@ def _replace(relative: str, old: str, new: str) -> Callable[[Path], None]:
 
 
 def _update(repo: Path, edits: list[Callable[[Path], None]], prompts: list[str]):
-    with patch("functions.docs.get_repo_root", return_value=repo), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch("subprocess.run", _claude_edits(repo, edits, prompts)):
+    with (
+        patch("functions.docs.get_repo_root", return_value=repo),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch("subprocess.run", _claude_edits(repo, edits, prompts)),
+    ):
         return update_docs("BASE", "HEAD", (_blocking(),))
 
 
@@ -1321,9 +1350,7 @@ def test_em_dash_lines_cover_tracked_and_untracked_docs_only(
     ignored = repo / "docs" / "node_modules" / "dep.js"
     ignored.parent.mkdir()
     ignored.write_text(f"// ignored {EM_DASH} line\n")
-    (repo / "docs" / "image.bin").write_bytes(
-        b"\x00binary " + EM_DASH.encode() + b"\n"
-    )
+    (repo / "docs" / "image.bin").write_bytes(b"\x00binary " + EM_DASH.encode() + b"\n")
     (repo / "README.md").write_text(f"outside {EM_DASH} docs\n")
 
     assert set(_em_dash_lines(repo)) == {

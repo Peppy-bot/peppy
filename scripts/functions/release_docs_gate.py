@@ -173,9 +173,7 @@ def _last_judged_commit(
     return latest
 
 
-def _docs_check_base(
-    client: httpx.Client, slug: RepoSlug, release_commit: str
-) -> str:
+def _docs_check_base(client: httpx.Client, slug: RepoSlug, release_commit: str) -> str:
     """The commit the docs check diffs the release from.
 
     The last shipped commit (`_last_shipped_commit`), or past it the latest
@@ -499,7 +497,5 @@ def verify_docs_gate(
         return
 
     if result.minor and open_minor_docs_pr:
-        _open_minor_docs_pr(
-            client, slug, release_commit, docs_dir, result.minor, base
-        )
+        _open_minor_docs_pr(client, slug, release_commit, docs_dir, result.minor, base)
     console.print(f"[green]'{DOCS_DIR}/' is up to date.[/green]")

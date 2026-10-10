@@ -82,8 +82,10 @@ def test_find_limactl_from_build_output(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}), \
-         patch("functions.lima.Path.home", return_value=home):
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}),
+        patch("functions.lima.Path.home", return_value=home),
+    ):
         result = find_limactl(tmp_path)
     assert result == limactl
 
@@ -119,15 +121,19 @@ def test_find_limactl_fallback_to_cache(tmp_path: Path) -> None:
     stale.mkdir(parents=True)
     (stale / "limactl").write_bytes(b"stale build output limactl")
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target_dir)}), \
-         patch("functions.lima.Path.home", return_value=home):
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target_dir)}),
+        patch("functions.lima.Path.home", return_value=home),
+    ):
         result = find_limactl(tmp_path)
     assert result == limactl
 
 
 def test_find_limactl_not_found(tmp_path: Path) -> None:
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}), \
-         patch("functions.lima.Path.home", return_value=tmp_path):
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}),
+        patch("functions.lima.Path.home", return_value=tmp_path),
+    ):
         (tmp_path / "target").mkdir()
         with pytest.raises(ReleaseError, match="limactl not found"):
             find_limactl(tmp_path)
@@ -160,8 +166,10 @@ def test_ensure_lima_vm_starts_stopped_instance(tmp_path: Path) -> None:
 def test_ensure_lima_vm_creates_when_not_found(tmp_path: Path) -> None:
     limactl = tmp_path / "limactl"
 
-    with patch("functions.lima._run_limactl") as mock_run, \
-         patch("functions.lima._vm_resources", return_value=(8, 12)):
+    with (
+        patch("functions.lima._run_limactl") as mock_run,
+        patch("functions.lima._vm_resources", return_value=(8, 12)),
+    ):
         # First call: list (empty = not found), second call: start/create (success)
         mock_run.side_effect = [
             MagicMock(stdout=""),
@@ -189,22 +197,28 @@ def test_ensure_lima_vm_creates_when_not_found(tmp_path: Path) -> None:
 
 def test_vm_resources_leaves_host_headroom() -> None:
     """A 10-core, 32 GiB host gets 8 vCPUs and 12 GiB (1.5 GiB per vCPU)."""
-    with patch("functions.lima.os.cpu_count", return_value=10), \
-         patch("functions.lima._host_memory_gib", return_value=32):
+    with (
+        patch("functions.lima.os.cpu_count", return_value=10),
+        patch("functions.lima._host_memory_gib", return_value=32),
+    ):
         assert lima._vm_resources() == (8, 12)
 
 
 def test_vm_resources_floors_memory_for_lto_link() -> None:
     """A small host still gets 8 GiB so the serial LTO link is not starved."""
-    with patch("functions.lima.os.cpu_count", return_value=4), \
-         patch("functions.lima._host_memory_gib", return_value=32):
+    with (
+        patch("functions.lima.os.cpu_count", return_value=4),
+        patch("functions.lima._host_memory_gib", return_value=32),
+    ):
         assert lima._vm_resources() == (2, 8)
 
 
 def test_vm_resources_caps_memory_at_half_host_ram() -> None:
     """The guest never claims more than half the host's RAM, even below the floor."""
-    with patch("functions.lima.os.cpu_count", return_value=10), \
-         patch("functions.lima._host_memory_gib", return_value=8):
+    with (
+        patch("functions.lima.os.cpu_count", return_value=10),
+        patch("functions.lima._host_memory_gib", return_value=8),
+    ):
         assert lima._vm_resources() == (8, 4)
 
 
@@ -215,8 +229,10 @@ def test_ensure_lima_vm_create_failure_raises(tmp_path: Path) -> None:
     # stubs it: it reads the host's RAM through `sysctl`, which exists only on
     # macOS, so the real one raises its own ReleaseError on the Linux CI runner
     # before the create call under test is ever reached.
-    with patch("functions.lima._run_limactl") as mock_run, \
-         patch("functions.lima._vm_resources", return_value=(8, 12)):
+    with (
+        patch("functions.lima._run_limactl") as mock_run,
+        patch("functions.lima._vm_resources", return_value=(8, 12)),
+    ):
         # First call: list (empty = not found), second call: create fails
         mock_run.side_effect = [
             MagicMock(stdout=""),
@@ -273,20 +289,22 @@ def test_cargo_build_in_lima_builds_on_guest_disk_and_copies_back(
     # Everything the host packaging step globs for is copied back.
     for pattern in GUEST_COPY_BACK_ARTIFACTS:
         assert pattern in script
-    assert (
-        f"host_release={target_dir}/aarch64-unknown-linux-gnu/release" in script
-    )
+    assert f"host_release={target_dir}/aarch64-unknown-linux-gnu/release" in script
 
 
 def test_cargo_build_in_lima_quotes_the_tag_and_host_paths(tmp_path: Path) -> None:
     """A typed tag, a checkout or a home directory with a space stays one word."""
     limactl = tmp_path / "limactl"
     repo_root = tmp_path / "my repo"
-    target_dir = repo_root / "target" / ".peppy-release-aarch64-unknown-linux-gnu-abc123"
+    target_dir = (
+        repo_root / "target" / ".peppy-release-aarch64-unknown-linux-gnu-abc123"
+    )
     so_dir = _populate_so_dir(tmp_path / "home dir")
 
-    with patch("functions.lima._lima_shell") as mock_shell, \
-         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
+    with (
+        patch("functions.lima._lima_shell") as mock_shell,
+        patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir),
+    ):
         mock_shell.return_value = MagicMock(returncode=0)
         cargo_build_in_lima(
             limactl,
@@ -372,8 +390,10 @@ def test_cargo_build_in_lima_requires_prebuilt_so(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     so_dir = tmp_path / "so"  # never created: every binding is missing
 
-    with patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir), \
-         patch("functions.lima._lima_shell") as mock_shell:
+    with (
+        patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir),
+        patch("functions.lima._lima_shell") as mock_shell,
+    ):
         with pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"):
             cargo_build_in_lima(
                 limactl,

@@ -295,6 +295,4 @@ def set_fuse2fs_installed(installed: bool) -> None:
             f"|| {{ {APT_GET} update -qq && {APT_GET} install -y -qq fuse2fs; }}"
         )
         return
-    run_as_root(
-        f"! dpkg -s fuse2fs >/dev/null 2>&1 || {APT_GET} remove -y -qq fuse2fs"
-    )
+    run_as_root(f"! dpkg -s fuse2fs >/dev/null 2>&1 || {APT_GET} remove -y -qq fuse2fs")

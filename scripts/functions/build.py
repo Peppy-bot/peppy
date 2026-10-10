@@ -97,9 +97,7 @@ def cargo_build(
             f"Failed to start cargo build for {target_triple}: {exc}"
         ) from exc
     if proc.stdout is None:
-        raise ReleaseError(
-            "cargo process started but stdout is not available"
-        )
+        raise ReleaseError("cargo process started but stdout is not available")
     tail: deque[str] = deque(maxlen=200)
     for line in proc.stdout:
         sys.stdout.write(line)
@@ -109,8 +107,7 @@ def cargo_build(
     if returncode != 0:
         raise ReleaseError(
             f"cargo build failed (exit {returncode})\n"
-            f"--- last {len(tail)} lines of cargo output ---\n"
-            + "".join(tail)
+            f"--- last {len(tail)} lines of cargo output ---\n" + "".join(tail)
         )
 
 
@@ -350,12 +347,8 @@ def build_and_package(
                 target_dir=target_dir,
             )
 
-        peppy_bin = find_peppy_binary(
-            target_triple, repo_root, target_dir=target_dir
-        )
-        zenohd_bin = find_zenohd_binary(
-            target_triple, repo_root, target_dir=target_dir
-        )
+        peppy_bin = find_peppy_binary(target_triple, repo_root, target_dir=target_dir)
+        zenohd_bin = find_zenohd_binary(target_triple, repo_root, target_dir=target_dir)
 
         apptainer_dir = find_build_dir(
             target_triple,

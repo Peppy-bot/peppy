@@ -130,9 +130,7 @@ def test_container_setup_has_nothing_to_do_inside_a_container() -> None:
 
     result = _run_in_container(UBUNTU_IMAGE, script)
 
-    assert result.returncode == 0, (
-        f"peppy container setup failed{diagnostic(result)}"
-    )
+    assert result.returncode == 0, f"peppy container setup failed{diagnostic(result)}"
     assert "AppArmor is not manageable on this system" in result.stdout, (
         f"setup should detect the missing AppArmor security filesystem{diagnostic(result)}"
     )

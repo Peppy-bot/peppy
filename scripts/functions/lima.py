@@ -142,9 +142,7 @@ def _host_memory_gib() -> int:
         text=True,
     )
     if result.returncode != 0 or not result.stdout.strip().isdigit():
-        raise ReleaseError(
-            "failed to read host memory size via 'sysctl -n hw.memsize'"
-        )
+        raise ReleaseError("failed to read host memory size via 'sysctl -n hw.memsize'")
     return int(result.stdout.strip()) // (1024**3)
 
 
@@ -201,8 +199,7 @@ def ensure_lima_vm(limactl: Path) -> None:
         )
         if create.returncode != 0:
             raise ReleaseError(
-                f"failed to create Lima VM '{LIMA_INSTANCE}' "
-                f"(exit {create.returncode})"
+                f"failed to create Lima VM '{LIMA_INSTANCE}' (exit {create.returncode})"
             )
         return
 
@@ -218,9 +215,7 @@ def ensure_lima_vm(limactl: Path) -> None:
             )
         return
 
-    raise ReleaseError(
-        f"Lima VM '{LIMA_INSTANCE}' is in unexpected state: {status}"
-    )
+    raise ReleaseError(f"Lima VM '{LIMA_INSTANCE}' is in unexpected state: {status}")
 
 
 def stop_lima_vm(limactl: Path) -> None:
@@ -395,9 +390,7 @@ def cargo_build_in_lima(
     host_release_dir = target_dir / target_triple / "release"
     copy_back_patterns = " ".join(GUEST_COPY_BACK_ARTIFACTS)
 
-    console.print(
-        f"Building peppy for [bold]{target_triple}[/bold] in Lima VM..."
-    )
+    console.print(f"Building peppy for [bold]{target_triple}[/bold] in Lima VM...")
     build_script = f"""\
 set -eu
 export RUSTUP_HOME={GUEST_RUSTUP_HOME}

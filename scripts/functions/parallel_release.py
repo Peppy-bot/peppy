@@ -324,7 +324,9 @@ def _draft_release_content(
     """
     previous_tag = latest_release_tag(client, slug)
     if previous_tag:
-        console.print(f"Listing changes since last release [bold]{previous_tag}[/bold]...")
+        console.print(
+            f"Listing changes since last release [bold]{previous_tag}[/bold]..."
+        )
     else:
         console.print(
             "[yellow]No previous published release found; "
@@ -422,10 +424,7 @@ def run_bindings(output_dir: Path) -> None:
     so_dir = require_prebuilt_peppylib_so()
     _write_tarball(
         output_dir / BINDINGS_ARCHIVE,
-        [
-            (so_dir / name, f"{BINDINGS_DIR_NAME}/{name}")
-            for name in PREBUILT_SO_FILES
-        ],
+        [(so_dir / name, f"{BINDINGS_DIR_NAME}/{name}") for name in PREBUILT_SO_FILES],
     )
 
 
@@ -544,9 +543,7 @@ def _unpack_bindings(provisioned_dir: Path, destination: Path) -> Path:
     so_dir = _extract_tree(provisioned_dir / BINDINGS_ARCHIVE, destination)
     missing = missing_prebuilt_so_files(so_dir)
     if missing:
-        raise ReleaseError(
-            f"the provisioned bindings lack {', '.join(missing)}"
-        )
+        raise ReleaseError(f"the provisioned bindings lack {', '.join(missing)}")
     return so_dir
 
 
@@ -587,7 +584,9 @@ def run_build(*, plan_path: Path, target: str, provisioned_dir: Path) -> None:
         artifact = build_and_package(plan.tag, target, repo_root)
 
     verify_all_releases(artifact.asset_path.parent, [target])
-    console.print(f"[green]Built and verified:[/green] {artifact.asset_path}", soft_wrap=True)
+    console.print(
+        f"[green]Built and verified:[/green] {artifact.asset_path}", soft_wrap=True
+    )
 
 
 # --- publish ---
