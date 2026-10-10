@@ -21,6 +21,7 @@ use peppylib::messaging::{MessengerHandle, SessionScope};
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -89,11 +90,18 @@ pub(crate) fn optional_duration_from_secs_f64(
         .transpose()
 }
 
-/// Wrap a `core_node_api::Error` from an `encode()` call as a Python
-/// `RuntimeError` — encode failures indicate an internal/wire-shape bug, not
-/// caller misuse.
-pub(crate) fn encode_err(what: &str, err: core_node_api::Error) -> PyErr {
-    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("failed to encode {what}: {err}"))
+/// Turn the result of an `encode()` call into Python `bytes`. A failure is
+/// raised as a Python `RuntimeError`, because encode failures indicate an
+/// internal or wire-shape bug, not caller misuse.
+pub(crate) fn encoded_to_py_bytes<'py>(
+    py: Python<'py>,
+    what: &str,
+    encoded: core_node_api::Result<core_node_api::Payload>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let payload = encoded.map_err(|err| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("failed to encode {what}: {err}"))
+    })?;
+    Ok(PyBytes::new(py, payload.as_ref()))
 }
 
 /// Wrap a `core_node_api::Error` from a `decode()` call as a Python

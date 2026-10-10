@@ -15,7 +15,8 @@ use pyo3::types::PyBytes;
 use tokio::sync::Mutex;
 
 use crate::messaging::{
-    decode_err, encode_err, future_into_py_unit, optional_duration_from_secs_f64, to_py_err,
+    decode_err, encoded_to_py_bytes, future_into_py_unit, optional_duration_from_secs_f64,
+    to_py_err,
 };
 use crate::runtime::PyNodeRunner;
 
@@ -51,11 +52,7 @@ impl PyClockRequest {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("ClockRequest", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "ClockRequest", self.inner.encode())
     }
 
     #[staticmethod]
@@ -108,11 +105,7 @@ impl PyClockResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("ClockResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "ClockResponse", self.inner.encode())
     }
 
     #[staticmethod]
@@ -155,11 +148,7 @@ impl PyClockTick {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("ClockTick", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "ClockTick", self.inner.encode())
     }
 
     #[staticmethod]

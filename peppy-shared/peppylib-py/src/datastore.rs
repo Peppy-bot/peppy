@@ -17,7 +17,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use crate::messaging::{
-    encode_err, future_into_py_unit, optional_duration_from_secs_f64, to_py_err,
+    encoded_to_py_bytes, future_into_py_unit, optional_duration_from_secs_f64, to_py_err,
 };
 use crate::runtime::PyNodeRunner;
 
@@ -35,10 +35,11 @@ impl PyDatastoreStoreResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = DatastoreStoreResponse::new()
-            .encode()
-            .map_err(|e| encode_err("DatastoreStoreResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(
+            py,
+            "DatastoreStoreResponse",
+            DatastoreStoreResponse::new().encode(),
+        )
     }
 }
 
@@ -85,11 +86,7 @@ impl PyDatastoreGetResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("DatastoreGetResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "DatastoreGetResponse", self.inner.encode())
     }
 }
 
@@ -120,11 +117,7 @@ impl PyDatastoreListResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("DatastoreListResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "DatastoreListResponse", self.inner.encode())
     }
 }
 
@@ -151,11 +144,7 @@ impl PyDatastoreRemoveResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("DatastoreRemoveResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "DatastoreRemoveResponse", self.inner.encode())
     }
 }
 

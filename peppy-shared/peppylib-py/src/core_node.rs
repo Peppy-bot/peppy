@@ -11,7 +11,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pythonize::pythonize;
 
-use crate::messaging::{encode_err, optional_duration_from_secs_f64, to_py_err};
+use crate::messaging::{encoded_to_py_bytes, optional_duration_from_secs_f64, to_py_err};
 use crate::runtime::PyNodeRunner;
 
 /// Python wrapper for `core_node_api::encoding::ContainerInfo`.
@@ -133,11 +133,7 @@ impl PyInfoResponse {
     /// Capnp-encode this response into bytes suitable for replying from a stub
     /// service listener.
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("InfoResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "InfoResponse", self.inner.encode())
     }
 }
 
@@ -199,11 +195,7 @@ impl PyStackListResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("StackListResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "StackListResponse", self.inner.encode())
     }
 }
 
