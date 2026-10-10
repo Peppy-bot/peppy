@@ -209,11 +209,7 @@ async fn handle_node_sync_request_inner(
                         sorted_deps.sort();
                         errors.push(format!(
                             "depends on {}, but {} not exist in the stack",
-                            sorted_deps
-                                .iter()
-                                .map(|d| format!("`{}`", d))
-                                .collect::<Vec<_>>()
-                                .join(", "),
+                            daemon_config::format_quoted_list(&sorted_deps),
                             if missing_dependencies.len() == 1 {
                                 "it does"
                             } else {
