@@ -228,6 +228,12 @@ pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
 
+/// Parses a `--core-node` target. Panics on an invalid name; tests use
+/// known-good values only.
+pub fn test_core_node_name(name: &str) -> config::runtime::CoreNodeName {
+    config::runtime::CoreNodeName::parse(name).expect("test core node name")
+}
+
 pub fn read_daemon_git_hash(daemon_state_path: &std::path::Path) -> String {
     let contents =
         std::fs::read_to_string(daemon_state_path).expect("daemon state file should be readable");

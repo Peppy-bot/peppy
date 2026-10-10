@@ -1,4 +1,5 @@
 use crate::error::Error;
+use config::runtime::CoreNodeName;
 use daemon::state::DaemonState;
 use peppylib::{MessengerHandle, SessionScope};
 use pmi::Messenger;
@@ -11,7 +12,7 @@ pub struct AppContext {
     daemon_state_path: Option<PathBuf>,
     /// `--core-node` override: the core node daemon-scoped commands address
     /// instead of the local daemon. `None` targets the local daemon.
-    core_node_override: Option<String>,
+    core_node_override: Option<CoreNodeName>,
     messenger_handle: OnceCell<MessengerHandle>,
 }
 
@@ -51,7 +52,7 @@ impl AppContext {
     /// default (the local daemon). Only the *target* of each request changes;
     /// the CLI still connects to the local daemon's router, whose federation
     /// carries the traffic to the remote core node.
-    pub fn with_core_node_override(mut self, core_node: Option<String>) -> Self {
+    pub fn with_core_node_override(mut self, core_node: Option<CoreNodeName>) -> Self {
         self.core_node_override = core_node;
         self
     }
@@ -59,7 +60,7 @@ impl AppContext {
     /// The `--core-node` target, when one was given. Read by command groups
     /// that cannot honor it, so they can refuse rather than silently ignore it.
     pub(crate) fn core_node_override(&self) -> Option<&str> {
-        self.core_node_override.as_deref()
+        self.core_node_override.as_ref().map(CoreNodeName::as_str)
     }
 
     pub(crate) fn read_daemon_state(&self) -> crate::error::Result<DaemonState> {
@@ -153,10 +154,10 @@ impl AppContext {
             )
             .await?;
         let target_is_override = self.core_node_override.is_some();
-        let target_core_node = self
-            .core_node_override
-            .clone()
-            .unwrap_or_else(|| daemon_state.core_node_name.clone());
+        let target_core_node = match &self.core_node_override {
+            Some(core_node) => core_node.as_str().to_owned(),
+            None => daemon_state.core_node_name.clone(),
+        };
         Ok(DaemonConnection {
             messenger,
             core_node_name: daemon_state.core_node_name,
@@ -204,6 +205,10 @@ mod tests {
         (ctx, instance)
     }
 
+    fn core_node(name: &str) -> CoreNodeName {
+        CoreNodeName::parse(name).expect("a valid core node name")
+    }
+
     #[test]
     fn target_core_node_defaults_to_the_local_daemon() {
         crate::commands::block_on(async {
@@ -226,7 +231,7 @@ mod tests {
         crate::commands::block_on(async {
             let dir = tempfile::tempdir().expect("tempdir");
             let (ctx, _router) = context_with_state(dir.path()).await;
-            let ctx = ctx.with_core_node_override(Some("robot-7".to_string()));
+            let ctx = ctx.with_core_node_override(Some(core_node("robot-7")));
             let conn = ctx.connect_to_daemon().await?;
             // The caller identity stays the local daemon; only the target moves.
             assert_eq!(conn.core_node_name, "local-daemon");
@@ -256,7 +261,7 @@ mod tests {
         crate::commands::block_on(async {
             let dir = tempfile::tempdir().expect("tempdir");
             let (ctx, _router) = context_with_state(dir.path()).await;
-            let ctx = ctx.with_core_node_override(Some("local-daemon".to_string()));
+            let ctx = ctx.with_core_node_override(Some(core_node("local-daemon")));
             let conn = ctx.connect_to_daemon().await?;
             assert_eq!(conn.target_core_node, conn.core_node_name);
             assert!(conn.target_is_override);

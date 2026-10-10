@@ -16,7 +16,9 @@ use peppy::commands::node::{
 use peppy::context::AppContext;
 use peppylib::{CoreNodePresenceMessenger, MessengerHandle};
 
-use super::common::{emulate_startup_services, serve_app_context, test_node_target};
+use super::common::{
+    emulate_startup_services, serve_app_context, test_core_node_name, test_node_target,
+};
 
 fn make_consumer_depend_on_provider(
     provider_peppy_json5: &Path,
@@ -510,7 +512,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     let targeted_ctx = Arc::new(
         AppContext::with_messenger(local.temp_dir(), shared_messenger)
             .with_daemon_state_file(local.daemon_state_path())
-            .with_core_node_override(Some("a-remote".to_string())),
+            .with_core_node_override(Some(test_core_node_name("a-remote"))),
     );
     let targeted_report = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false, None)
         .await
@@ -559,7 +561,7 @@ async fn stack_list_warns_when_multiple_live_tokens_claim_one_name() {
     let targeted_ctx = Arc::new(
         AppContext::with_messenger(daemon.temp_dir(), daemon.messenger())
             .with_daemon_state_file(daemon.daemon_state_path())
-            .with_core_node_override(Some("claimed-core".to_string())),
+            .with_core_node_override(Some(test_core_node_name("claimed-core"))),
     );
     let targeted = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false, None)
         .await

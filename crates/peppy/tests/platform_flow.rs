@@ -2350,7 +2350,7 @@ fn every_platform_command_refuses_a_core_node_override() {
     let redirected = Arc::new(
         AppContext::from_current_dir()
             .expect("cwd is readable")
-            .with_core_node_override(Some("robot-7".to_string())),
+            .with_core_node_override(Some(super::common::test_core_node_name("robot-7"))),
     );
     let api_url = Some(server.base_url());
 

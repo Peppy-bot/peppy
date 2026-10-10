@@ -1,4 +1,4 @@
-use super::common::serve_app_context;
+use super::common::{serve_app_context, test_core_node_name};
 use std::sync::Arc;
 
 use peppy::commands::Command;
@@ -32,7 +32,7 @@ async fn info_command_fails_when_the_target_core_node_does_not_answer() {
     let ctx = Arc::new(
         AppContext::with_messenger(serve.temp_dir(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path())
-            .with_core_node_override(Some("absent-core".to_string())),
+            .with_core_node_override(Some(test_core_node_name("absent-core"))),
     );
 
     let err = InfoCommand
