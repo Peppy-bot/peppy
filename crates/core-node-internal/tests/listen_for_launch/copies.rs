@@ -1,7 +1,9 @@
 use super::*;
 use config::node::Cardinality;
-use core_node_api::encoding::{StackJoinGoal, StackListRequest, StackRemoveGoal};
-use peppylib::core_node::transport::{poll, send_goal};
+use core_node_api::encoding::{
+    NodeStopRequest, NodeStopResponse, StackJoinGoal, StackListRequest, StackRemoveGoal,
+};
+use peppylib::core_node::transport::{poll, poll_node_stop, send_goal};
 use peppylib::services::slot_update::SlotChannel;
 
 async fn participant_request<R: core_node_api::ServiceRequest>(
@@ -70,18 +72,37 @@ fn robot_goal(name: &str, option: &str) -> StackJoinGoal {
     StackJoinGoal::new(Name::new(name).unwrap(), option, StackBudgets::default())
 }
 
+fn remove_goal(name: &str) -> StackRemoveGoal {
+    StackRemoveGoal::new(Name::new(name).unwrap())
+}
+
+/// A launch of the fleet `launcher` under `launch_id`, with the budgets every
+/// copies test gives its launch.
+fn fleet_launch(launcher: PathBuf, launch_id: &str) -> LaunchGoal {
+    LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        launch_id,
+        StackBudgets::new(30, 30, 30, Some(120)),
+    )
+}
+
+/// Stops `instance_id` through the daemon's `node_stop` service.
+async fn stop_instance(started: &StartedCoreNode, instance_id: &str) -> NodeStopResponse {
+    poll_node_stop(
+        &NodeStopRequest::new(instance_id),
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        common::core_node_target(&started.core_node_name),
+        &started.core_node_name,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .unwrap()
+}
+
 fn robot_pid(started: &StartedCoreNode, name: &str) -> u32 {
-    let node = started
-        .node_stack
-        .find("named_robot", "v1")
-        .expect("robot node");
-    node.read()
-        .instances()
-        .iter()
-        .find(|instance| instance.instance_id().as_str() == format!("{name}_arm_inst"))
-        .expect("robot instance")
-        .pid()
-        .expect("running process")
+    instance_pid(started, "named_robot", &format!("{name}_arm_inst"))
 }
 
 #[tokio::test]
@@ -90,13 +111,11 @@ async fn appended_remote_watchers_receive_existing_source_stop_notifications() {
     use core_node_api::{
         ServiceId,
         encoding::{
-            NodeStopRequest, ParticipantReleaseRequest, ParticipantReserveRequest,
-            ParticipantSliceBeginRequest, RelationshipEvent, RelationshipNotification,
-            RelationshipNotificationAck,
+            ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantSliceBeginRequest,
+            RelationshipEvent, RelationshipNotification, RelationshipNotificationAck,
         },
     };
     use peppylib::ServiceMessenger;
-    use peppylib::core_node::transport::poll_node_stop;
 
     let started = start_core_node_with_mock_messenger().await;
     let launch_id = "watcher-join-test";
@@ -156,17 +175,7 @@ async fn appended_remote_watchers_receive_existing_source_stop_notifications() {
         pid,
     )
     .await;
-    let stopped = poll_node_stop(
-        &NodeStopRequest::new("arm_inst"),
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        common::core_node_target(&started.core_node_name),
-        &started.core_node_name,
-        GOAL_TIMEOUT,
-    )
-    .await
-    .unwrap();
+    let stopped = stop_instance(&started, "arm_inst").await;
     assert!(stopped.success, "{:?}", stopped.error_message);
     let event = tokio::time::timeout(GOAL_TIMEOUT, received.recv())
         .await
@@ -209,11 +218,7 @@ async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() 
             broken: { deployments: [{ source: { name: "broken_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] }
         } }]
     }"#).unwrap();
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher.clone()),
-        "named-fragment-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher.clone(), "named-fragment-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
     assert_eq!(
@@ -261,7 +266,7 @@ async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() 
         assert!(is_process_running(*pid));
     }
 
-    let result = execute(&started, &StackRemoveGoal::new(Name::new("bravo").unwrap())).await;
+    let result = execute(&started, &remove_goal("bravo")).await;
     assert!(result.success, "{:?}", result.error_message);
     assert!(
         !is_process_running(pids.remove("bravo").unwrap()),
@@ -291,17 +296,7 @@ async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() 
         assert!(copy.selections.is_empty());
     }
     // A stopped, unrelated recorded member does not participate in this join.
-    let stopped = peppylib::core_node::transport::poll_node_stop(
-        &core_node_api::encoding::NodeStopRequest::new("charlie_arm_inst"),
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        common::core_node_target(&started.core_node_name),
-        &started.core_node_name,
-        GOAL_TIMEOUT,
-    )
-    .await
-    .unwrap();
+    let stopped = stop_instance(&started, "charlie_arm_inst").await;
     assert!(stopped.success, "{:?}", stopped.error_message);
     assert!(!is_process_running(pids.remove("charlie").unwrap()));
     let result = execute(&started, &robot_goal("bravo", "real")).await;
@@ -317,7 +312,7 @@ async fn join_and_remove_require_an_active_launcher() {
     let started = start_core_node_with_mock_messenger().await;
     for result in [
         execute(&started, &robot_goal("alpha", "real")).await,
-        execute(&started, &StackRemoveGoal::new(Name::new("alpha").unwrap())).await,
+        execute(&started, &remove_goal("alpha")).await,
     ] {
         assert!(!result.success);
         assert!(result.error_message.unwrap().contains("stack launch"));
@@ -360,11 +355,7 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
     }"#,
     )
     .unwrap();
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "reset-join",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "reset-join");
     assert!(execute(&started, &launch).await.success);
     let join = robot_goal("alpha", "simulated");
     let (result, ()) = tokio::join!(execute(&started, &join), async {
@@ -380,7 +371,7 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
                 .await
                 .contains(busy)
         );
-        let remove = StackRemoveGoal::new(Name::new("alpha").unwrap());
+        let remove = remove_goal("alpha");
         assert!(refusal(&started, &remove).await.contains(busy));
         assert!(is_process_running(pid), "refusals leave the build running");
         let response =
@@ -451,11 +442,7 @@ async fn a_copy_the_file_deploys_launches_with_the_stack_and_removal_keeps_the_s
     responders.extend(answer_readiness(&started, "named_robot", "alpha_arm_inst").await);
     responders.extend(answer_readiness(&started, "named_robot", "bravo_arm_inst").await);
 
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "file-copy-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "file-copy-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
     let shared_pid = instance_pid(&started, "shared_node", "shared_inst");
@@ -472,14 +459,14 @@ async fn a_copy_the_file_deploys_launches_with_the_stack_and_removal_keeps_the_s
     assert!(list.copies[0].selections.is_empty());
 
     let alpha_pid = instance_pid(&started, "named_robot", "alpha_arm_inst");
-    let result = execute(&started, &StackRemoveGoal::new(Name::new("alpha").unwrap())).await;
+    let result = execute(&started, &remove_goal("alpha")).await;
     assert!(result.success, "{:?}", result.error_message);
     assert!(!is_process_running(alpha_pid));
     assert_eq!(
         instance_pid(&started, "shared_node", "shared_inst"),
         shared_pid
     );
-    let again = execute(&started, &StackRemoveGoal::new(Name::new("alpha").unwrap())).await;
+    let again = execute(&started, &remove_goal("alpha")).await;
     assert!(!again.success);
     assert!(again.error_message.unwrap().contains("absent"));
 
@@ -539,11 +526,7 @@ async fn a_joined_copy_starts_from_the_launchers_entry_for_its_option() {
         responders.extend(answer_readiness(&started, "named_robot", instance_id).await);
     }
 
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "entry-settings-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "entry-settings-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
 
@@ -609,11 +592,7 @@ async fn a_join_refuses_a_name_whose_instance_already_runs_on_the_host() {
     let started = start_core_node_with_mock_messenger().await;
     let (_directory, launcher) = fleet_with_a_shared_node(&started, "");
     let _responders = answer_readiness(&started, "shared_node", "shared_inst").await;
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "taken-name-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "taken-name-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
     let shared_pid = instance_pid(&started, "shared_node", "shared_inst");
@@ -643,11 +622,7 @@ async fn a_join_refuses_a_node_running_instances_outside_the_launcher() {
     let started = start_core_node_with_mock_messenger().await;
     let (_directory, launcher) = fleet_with_a_shared_node(&started, "");
     let _responders = answer_readiness(&started, "shared_node", "shared_inst").await;
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "stray-instance-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "stray-instance-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
     let (_source, _stray, stray_pid) =
@@ -673,11 +648,7 @@ async fn a_coordinator_refuses_to_append_another_launch_onto_its_own_stack() {
     let (_directory, launcher) = fleet_with_a_shared_node(&started, "");
     let mut responders = answer_readiness(&started, "shared_node", "shared_inst").await;
     responders.extend(answer_readiness(&started, "named_robot", "alpha_arm_inst").await);
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "own-stack-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "own-stack-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
 
@@ -790,11 +761,7 @@ async fn removing_the_last_copy_leaves_the_launcher_active_on_an_empty_stack() {
     let (_directory, launcher) = fleet_of_copies_only(&started);
     let mut responders = answer_readiness(&started, "named_robot", "alpha_arm_inst").await;
     responders.extend(answer_readiness(&started, "named_robot", "bravo_arm_inst").await);
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "last-copy-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "last-copy-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
 
@@ -802,7 +769,7 @@ async fn removing_the_last_copy_leaves_the_launcher_active_on_an_empty_stack() {
     assert!(result.success, "{:?}", result.error_message);
     let alpha_pid = instance_pid(&started, "named_robot", "alpha_arm_inst");
 
-    let result = execute(&started, &StackRemoveGoal::new(Name::new("alpha").unwrap())).await;
+    let result = execute(&started, &remove_goal("alpha")).await;
     assert!(result.success, "{:?}", result.error_message);
     assert!(!is_process_running(alpha_pid));
     let list = participant_request(&started, &StackListRequest::new()).await;
@@ -1037,11 +1004,7 @@ async fn a_monitor_holding_a_later_set_keeps_its_record_through_a_join() {
         },
     )
     .await;
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "stale-set-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "stale-set-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
     let _responders = answer_readiness(&started, "named_robot", "alpha_arm_inst").await;
@@ -1083,11 +1046,7 @@ async fn joins_grow_and_removals_shrink_a_running_monitors_sets() {
     let started = start_core_node_with_mock_messenger().await;
     let (_directory, launcher) = fleet_with_a_monitor(&started, "zero_or_more", "");
     let monitor = MonitorSlots::serve(&started, Cardinality::ZeroOrMore).await;
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "growing-sets-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "growing-sets-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
     assert!(
@@ -1156,7 +1115,7 @@ async fn joins_grow_and_removals_shrink_a_running_monitors_sets() {
         ]
     );
 
-    let result = execute(&started, &StackRemoveGoal::new(Name::new("alpha").unwrap())).await;
+    let result = execute(&started, &remove_goal("alpha")).await;
     assert!(result.success, "{:?}", result.error_message);
     assert_eq!(monitor.robots(), ["bravo_arm_inst:bravo/arm_inst"]);
     assert_eq!(monitor.fleet(), ["bravo_arm_inst/controller"]);
@@ -1201,11 +1160,7 @@ async fn a_joined_member_reads_as_not_live_while_its_source_is_down() {
     let started = start_core_node_with_mock_messenger().await;
     let (_directory, launcher) = fleet_with_a_monitor(&started, "zero_or_more", "");
     let monitor = MonitorSlots::serve(&started, Cardinality::ZeroOrMore).await;
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "joined-member-liveness-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "joined-member-liveness-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
     let _responders = answer_readiness(&started, "named_robot", "alpha_arm_inst").await;
@@ -1239,17 +1194,7 @@ async fn a_joined_member_reads_as_not_live_while_its_source_is_down() {
         "a joined member carries its source's incarnation"
     );
 
-    let stopped = peppylib::core_node::transport::poll_node_stop(
-        &core_node_api::encoding::NodeStopRequest::new("alpha_arm_inst"),
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        common::core_node_target(&started.core_node_name),
-        &started.core_node_name,
-        GOAL_TIMEOUT,
-    )
-    .await
-    .unwrap();
+    let stopped = stop_instance(&started, "alpha_arm_inst").await;
     assert!(stopped.success, "{:?}", stopped.error_message);
     tokio::time::timeout(
         GOAL_TIMEOUT,
@@ -1284,11 +1229,7 @@ async fn the_last_copy_of_a_one_or_more_axis_stays_until_the_stack_goes() {
     )
     .unwrap();
     let _alpha = answer_readiness(&started, "named_robot", "alpha_arm_inst").await;
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "one-or-more-axis-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "one-or-more-axis-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
     let pid = robot_pid(&started, "alpha");
@@ -1296,10 +1237,10 @@ async fn the_last_copy_of_a_one_or_more_axis_stays_until_the_stack_goes() {
     let _bravo = answer_readiness(&started, "named_robot", "bravo_arm_inst").await;
     let joined = execute(&started, &robot_goal("bravo", "real")).await;
     assert!(joined.success, "{:?}", joined.error_message);
-    let above_floor = execute(&started, &StackRemoveGoal::new(Name::new("bravo").unwrap())).await;
+    let above_floor = execute(&started, &remove_goal("bravo")).await;
     assert!(above_floor.success, "{:?}", above_floor.error_message);
 
-    let refused = execute(&started, &StackRemoveGoal::new(Name::new("alpha").unwrap())).await;
+    let refused = execute(&started, &remove_goal("alpha")).await;
     assert!(
         !refused.success,
         "the last copy of a one_or_more axis stays"
@@ -1339,16 +1280,12 @@ async fn a_removal_cannot_empty_a_running_one_or_more_set() {
     );
     let _monitor = MonitorSlots::serve(&started, Cardinality::OneOrMore).await;
     let _first = answer_readiness(&started, "named_robot", "first_arm_inst").await;
-    let launch = LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        "one-or-more-set-test",
-        StackBudgets::new(30, 30, 30, Some(120)),
-    );
+    let launch = fleet_launch(launcher, "one-or-more-set-test");
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
     let pid = instance_pid(&started, "named_robot", "first_arm_inst");
 
-    let refused = execute(&started, &StackRemoveGoal::new(Name::new("first").unwrap())).await;
+    let refused = execute(&started, &remove_goal("first")).await;
     assert!(
         !refused.success,
         "the last member of a one_or_more set cannot leave"
