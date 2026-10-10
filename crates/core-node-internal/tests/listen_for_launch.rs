@@ -14,7 +14,6 @@ use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
 use peppylib::messaging::{MessengerHandle, ResultStatus};
-use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,9 +22,9 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 use crate::common::{
-    StartedCoreNode, TestPackagesCache, TestRunningInstance, build_staged_node, commit_path,
-    is_process_running, poll_until, send_node_add_and_wait, spawn_real_running_instance,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    StartedCoreNode, TestPackagesCache, TestRunningInstance, answer_readiness, build_staged_node,
+    commit_path, is_process_running, poll_until, send_node_add_and_wait,
+    spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 
 struct NodeConfigOptions<'a> {
@@ -487,8 +486,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
     let peppy_dirs = started_core_node.peppy_dirs.clone();
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
 
     // Copy launch assets to a temp directory. The stack_launch process will generate
     // peppygen files (including git.hash) automatically using the "stack-launch" marker.
@@ -513,86 +510,15 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     cache.write(&peppy_dirs);
 
     // Set up ready/health responders for all instances in the launcher config.
-    let _ready_camera_front = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_front",
-            common::test_node_target(FAKE_UVC_CAMERA),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_camera_front = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_front",
-            common::test_node_target(FAKE_UVC_CAMERA),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_camera_rear = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_rear",
-            common::test_node_target(FAKE_UVC_CAMERA),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_camera_rear = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_rear",
-            common::test_node_target(FAKE_UVC_CAMERA),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_brain = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_brain",
-            common::test_node_target(FAKE_ROBOT_BRAIN),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_brain = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_brain",
-            common::test_node_target(FAKE_ROBOT_BRAIN),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_controller = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_nervous_system",
-            common::test_node_target(FAKE_OPENARM01_CONTROLLER),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_controller = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_nervous_system",
-            common::test_node_target(FAKE_OPENARM01_CONTROLLER),
-        )
-        .await
-        .expect("health service should start"),
-    );
+    let mut responders = Vec::new();
+    for (node, instance_id) in [
+        (FAKE_UVC_CAMERA, "camera_front"),
+        (FAKE_UVC_CAMERA, "camera_rear"),
+        (FAKE_ROBOT_BRAIN, "the_brain"),
+        (FAKE_OPENARM01_CONTROLLER, "the_nervous_system"),
+    ] {
+        responders.extend(answer_readiness(&started_core_node, node, instance_id).await);
+    }
 
     // Allow listeners to establish.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -671,68 +597,14 @@ async fn listen_for_launch_configuration_succeed() {
     );
 
     // Set up ready/health responders for all instances in LAUNCHER_EXAMPLE1.
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready_front = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_front",
-            common::test_node_target(UVC_NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_front = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_front",
-            common::test_node_target(UVC_NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_rear = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_rear",
-            common::test_node_target(UVC_NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_rear = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_rear",
-            common::test_node_target(UVC_NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_brain = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "main_robot_brain",
-            common::test_node_target(ROBOT_NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_brain = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "main_robot_brain",
-            common::test_node_target(ROBOT_NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
+    let mut responders = Vec::new();
+    for (node, instance_id) in [
+        (UVC_NODE_NAME, "camera_front"),
+        (UVC_NODE_NAME, "camera_rear"),
+        (ROBOT_NODE_NAME, "main_robot_brain"),
+    ] {
+        responders.extend(answer_readiness(&started_core_node, node, instance_id).await);
+    }
 
     // Allow listeners to establish.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -931,8 +803,6 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
     let peppy_dirs = started_core_node.peppy_dirs.clone();
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
 
     // On-disk node configs referenced by the packages cache.
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
@@ -947,46 +817,8 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
         .fs_entry(ARM_NODE, NODE_TAG, &arm_dir)
         .write(&peppy_dirs);
 
-    let _ready_brain = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_brain",
-            common::test_node_target(BRAIN_NODE),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_brain = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_brain",
-            common::test_node_target(BRAIN_NODE),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_arm = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_arm",
-            common::test_node_target(ARM_NODE),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_arm = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_arm",
-            common::test_node_target(ARM_NODE),
-        )
-        .await
-        .expect("health service should start"),
-    );
+    let mut responders = answer_readiness(&started_core_node, BRAIN_NODE, "the_brain").await;
+    responders.extend(answer_readiness(&started_core_node, ARM_NODE, "the_arm").await);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Real peppy_launcher.json5 file exercising both the long-form and the
@@ -1305,48 +1137,8 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     let node_a_path = write_node_config(nodes_dir.path(), "node_a", NODE_TAG, &["sleep", "60"]);
     let node_b_path = write_node_config(nodes_dir.path(), "node_b", NODE_TAG, &["sleep", "60"]);
 
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready_a = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "a1",
-            common::test_node_target("node_a"),
-        )
-        .await
-        .expect("ready should start"),
-    );
-    let _health_a = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "a1",
-            common::test_node_target("node_a"),
-        )
-        .await
-        .expect("health should start"),
-    );
-    let _ready_b = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "b1",
-            common::test_node_target("node_b"),
-        )
-        .await
-        .expect("ready should start"),
-    );
-    let _health_b = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "b1",
-            common::test_node_target("node_b"),
-        )
-        .await
-        .expect("health should start"),
-    );
+    let mut responders = answer_readiness(&started_core_node, "node_a", "a1").await;
+    responders.extend(answer_readiness(&started_core_node, "node_b", "b1").await);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let launch_a = r#"
@@ -1847,28 +1639,7 @@ sleep \"${1:-60}\"
     }
 
     // Set up ready/health responders for the instance
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
+    let _responders = answer_readiness(&started_core_node, NODE_NAME, INSTANCE_ID).await;
 
     // Allow listeners to establish.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1936,28 +1707,7 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
         .fs_entry(NODE_NAME, NODE_TAG, &node_path)
         .write(&started_core_node.peppy_dirs);
 
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
+    let _responders = answer_readiness(&started_core_node, NODE_NAME, INSTANCE_ID).await;
 
     // Allow listeners to establish.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2006,8 +1756,6 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
     let peppy_dirs = started_core_node.peppy_dirs.clone();
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
     let brain_path = write_node_config(
@@ -2017,26 +1765,8 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
         &["sleep", "60"],
     );
 
-    let _ready_brain = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "main_robot_brain",
-            common::test_node_target(ROBOT_NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_brain = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "main_robot_brain",
-            common::test_node_target(ROBOT_NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
+    let _responders =
+        answer_readiness(&started_core_node, ROBOT_NODE_NAME, "main_robot_brain").await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Launcher file references the node by its `name:tag` in the nodes cache.

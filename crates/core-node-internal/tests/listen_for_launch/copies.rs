@@ -222,31 +222,11 @@ async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() 
         "the fleet starts with no robot"
     );
 
-    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let mut responders = Vec::new();
     let mut pids = std::collections::BTreeMap::new();
     for name in ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"] {
         let id = format!("{name}_arm_inst");
-        responders.push(AbortOnDrop(
-            listen_for_node_ready(
-                &messenger,
-                &started.core_node_name,
-                &id,
-                common::test_node_target("named_robot"),
-            )
-            .await
-            .unwrap(),
-        ));
-        responders.push(AbortOnDrop(
-            listen_for_node_health(
-                &messenger,
-                &started.core_node_name,
-                &id,
-                common::test_node_target("named_robot"),
-            )
-            .await
-            .unwrap(),
-        ));
+        responders.extend(answer_readiness(&started, "named_robot", &id).await);
         let result = execute(&started, &robot_goal(name, "real")).await;
         assert!(result.success, "{name}: {:?}", result.error_message);
         pids.insert(name, robot_pid(&started, name));
@@ -444,36 +424,6 @@ fn fleet_with_a_shared_node(
         }} }}]
     }}"#)).unwrap();
     (directory, launcher)
-}
-
-async fn answer_readiness(
-    started: &StartedCoreNode,
-    node: &str,
-    instance_id: &str,
-) -> Vec<AbortOnDrop<peppylib::PeppyResult<()>>> {
-    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    vec![
-        AbortOnDrop(
-            listen_for_node_ready(
-                &messenger,
-                &started.core_node_name,
-                instance_id,
-                common::test_node_target(node),
-            )
-            .await
-            .unwrap(),
-        ),
-        AbortOnDrop(
-            listen_for_node_health(
-                &messenger,
-                &started.core_node_name,
-                instance_id,
-                common::test_node_target(node),
-            )
-            .await
-            .unwrap(),
-        ),
-    ]
 }
 
 fn instance_pid(started: &StartedCoreNode, node: &str, instance_id: &str) -> u32 {

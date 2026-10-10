@@ -545,6 +545,39 @@ pub async fn spawn_real_stuck_instance(
     }
 }
 
+/// Answers the ready and health probes the daemon sends to `instance_id` of
+/// `node`, standing in for a node process that reports healthy, until the
+/// returned guards drop.
+pub async fn answer_readiness(
+    started: &StartedCoreNode,
+    node: &str,
+    instance_id: &str,
+) -> Vec<AbortOnDrop<peppylib::PeppyResult<()>>> {
+    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    vec![
+        AbortOnDrop(
+            peppylib::services::ready::listen_for_node_ready(
+                &messenger,
+                &started.core_node_name,
+                instance_id,
+                test_node_target(node),
+            )
+            .await
+            .expect("ready service should start"),
+        ),
+        AbortOnDrop(
+            peppylib::services::health::listen_for_node_health(
+                &messenger,
+                &started.core_node_name,
+                instance_id,
+                test_node_target(node),
+            )
+            .await
+            .expect("health service should start"),
+        ),
+    ]
+}
+
 /// Installs a messenger-side shutdown listener that SIGKILLs `pid` when the
 /// daemon fires a cooperative `SHUTDOWN_SERVICE` signal at `(name,
 /// instance_id)`. A node started through the real `node_run` service path gets a
