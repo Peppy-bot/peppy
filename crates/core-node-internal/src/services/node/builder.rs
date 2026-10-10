@@ -526,3 +526,73 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use log_export::{LogExporter, LogKind};
+
+    const ROOT_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: { name: "core_root", tag: "v1" },
+        execution: { language: "rust", run_cmd: ["true"] },
+    }"#;
+
+    const UNSTAGED_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: { name: "unstaged", tag: "v1" },
+        execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] },
+    }"#;
+
+    /// Runs a build of `name:tag` in a stack rooted at `core_root:v1` that
+    /// also holds `unstaged:v1`, pushed without the working dir an add
+    /// stages for it.
+    async fn build_entity(name: &str, tag: &str) -> NodeBuildResult {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root_config =
+            config::node::NodeConfigParser::from_content(ROOT_CONFIG).expect("root config parses");
+        let node_stack = Arc::new(NodeStack::new(root_config, None, dir.path()));
+        let unstaged = config::node::NodeConfigParser::from_content(UNSTAGED_CONFIG)
+            .expect("node config parses");
+        node_stack
+            .push_config(unstaged, false, dir.path().join("unstaged"))
+            .expect("push the unstaged node");
+        let (exporter, _records) = LogExporter::channel(None);
+        let log = ActionLog::create(dir.path(), "build.log", LogKind::Build, exporter)
+            .expect("create the build log");
+        let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
+        let action_context = NodeBuildActionContext {
+            node_stack,
+            peppy_dirs: PeppyDirs::new(dir.path()),
+        };
+        run_node_build_for_entity(
+            name.to_owned(),
+            tag.to_owned(),
+            Vec::new(),
+            false,
+            action_context,
+            Announcer::new(log, feedback_tx),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_node_in_another_stage_than_added_is_not_built() {
+        let result = build_entity("core_root", "v1").await;
+        assert!(!result.success);
+        assert_eq!(
+            result.error_message.as_deref(),
+            Some("node `core_root:v1` is in stage `Root`; cannot build")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_without_a_staged_working_dir_is_not_built() {
+        let result = build_entity("unstaged", "v1").await;
+        assert!(!result.success);
+        assert_eq!(
+            result.error_message.as_deref(),
+            Some("node `unstaged:v1` has no staged working directory")
+        );
+    }
+}

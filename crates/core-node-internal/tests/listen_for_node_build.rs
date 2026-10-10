@@ -160,6 +160,84 @@ async fn listen_for_node_build_runs_build_cmd() {
     );
 }
 
+/// Only a node in `Added` is built. The core node is the root of the stack,
+/// so a build of it is rejected before anything runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_build_of_a_node_in_another_stage_than_added_is_rejected() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let build_result = send_node_build_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        &started_core_node.core_node_name,
+        &started_core_node.core_node_tag,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Vec::new(),
+        None,
+    )
+    .await
+    .expect("node_build request should succeed");
+
+    assert!(!build_result.success);
+    assert_eq!(
+        build_result.error_message,
+        Some(format!(
+            "node `{}:{}` is in stage `Root`; cannot build",
+            started_core_node.core_node_name, started_core_node.core_node_tag
+        ))
+    );
+}
+
+/// A node in the stack without the working dir `peppy node add` stages is
+/// rejected with the command that stages one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_build_of_a_node_without_a_staged_working_dir_is_rejected() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    write_peppy_json5(
+        source_dir.path(),
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "unstaged_node", tag: "v1" },
+            execution: {
+                language: "rust",
+                build_cmd: ["true"],
+                run_cmd: ["sleep", "10"]
+            }
+        }"#,
+    );
+    let config = config::node::NodeConfigParser::from_path(source_dir.path().join("peppy.json5"))
+        .expect("parse config");
+    started_core_node
+        .node_stack
+        .push_config(config, false, source_dir.path())
+        .expect("push_config should succeed");
+
+    let build_result = send_node_build_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        "unstaged_node",
+        "v1",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Vec::new(),
+        None,
+    )
+    .await
+    .expect("node_build request should succeed");
+
+    assert!(!build_result.success);
+    assert_eq!(
+        build_result.error_message.as_deref(),
+        Some(
+            "node `unstaged_node:v1` has no staged working directory; re-run `peppy node add` \
+             to stage one"
+        )
+    );
+}
+
 /// The daemon hands the PyPI mirror of its config to every build: a Python
 /// node build points the locked files the mirror has at it, keeps the other
 /// one on PyPI, and says so in its log.
