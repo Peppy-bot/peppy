@@ -255,7 +255,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         );
         publish_stdout(
             &ctx,
-            "Launcher active; add copies with peppy stack join OPTION:NAME".to_owned(),
+            "Launcher active; add copies with peppy stack join OPTION:NAME",
             LaunchFeedbackStep::LauncherStep,
         )
         .await;
@@ -377,10 +377,8 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // self-describing from here on and `stack reset` / a relaunch can
     // rediscover the whole launch by query. Each participant recorded its own
     // when it began its slice.
-    ctx.slice_ownership.record_slice(LaunchIdentity::new(
-        goal.launch_id.clone(),
-        ctx.bound_core_node.as_str(),
-    ));
+    ctx.slice_ownership
+        .record_slice(LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node));
 
     let mut active = ActiveLaunch::new(
         &goal.launch_id,
@@ -392,7 +390,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     )
     .with_clocks(clocks.clone(), incarnations)
     .with_watchers(watchers);
-    active.record_copies(copies.clone(), &ordered);
+    active.record_copies(copies, &ordered);
     let phase = PhaseGoal {
         launch_id: goal.launch_id.clone(),
         rebuild: goal.rebuild,
