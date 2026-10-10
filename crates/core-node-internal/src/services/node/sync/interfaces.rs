@@ -749,6 +749,7 @@ mod implements_tests {
     //! `crates/generator-internal/tests/{rust,python}/`.
 
     use super::*;
+    use crate::services::repo::cache::test_support::{init_repo_with_file, peppy_dirs_with_cache};
     use config::node::{Interfaces, Manifest};
     use generator::InterfaceVariant;
     use std::fs;
@@ -775,20 +776,6 @@ mod implements_tests {
             origin: repo_cache::EntryOrigin::Fs { path: path.clone() },
             repo_id: 0,
         }
-    }
-
-    /// Builds a contracts.json5 cache + dir-rooted `PeppyDirs` from a set of
-    /// seeded entries.
-    fn make_peppy_dirs_with_cache(
-        entries: &[repo_cache::ContractCacheEntry],
-    ) -> (TempDir, PeppyDirs) {
-        let tmp = TempDir::new().expect("temp dir");
-        let dirs = PeppyDirs::new(tmp.path().to_path_buf());
-        fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
-        let cache_path = repo_cache::contracts_repo_cache_path(&dirs);
-        let json = serde_json5::to_string(&entries.to_vec()).expect("serialize cache");
-        fs::write(&cache_path, json).expect("write cache file");
-        (tmp, dirs)
     }
 
     const DEPTH_V1_BODY: &str = r#"{
@@ -840,7 +827,7 @@ mod implements_tests {
                 }
             }"#,
         );
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
         let manifest =
             manifest_with_implements(r#"{ name: "robot_state", tag: "v1", link_id: "robot" }"#);
         let interfaces =
@@ -869,7 +856,7 @@ mod implements_tests {
     fn resolves_full_coverage_with_origin() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
         let manifest =
             manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
@@ -909,7 +896,7 @@ mod implements_tests {
         }"#;
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "uvc_camera", "v1", UVC_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
         let manifest =
             manifest_with_implements(r#"{ name: "uvc_camera", tag: "v1", link_id: "cam" }"#);
@@ -948,7 +935,7 @@ mod implements_tests {
     fn wrong_kind_entry_reported_in_diff() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
         let manifest =
             manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
@@ -982,7 +969,7 @@ mod implements_tests {
         let tmp = TempDir::new().unwrap();
         let depth = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
         let imu = seed_contract(tmp.path(), "imu", "v1", IMU_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[depth, imu]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[depth, imu]);
 
         let manifest = manifest_with_implements(
             r#"{ name: "depth_camera", tag: "v1", link_id: "cam" },
@@ -1016,7 +1003,7 @@ mod implements_tests {
         }"#;
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "empty_contract", "v1", EMPTY_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
         let manifest =
             manifest_with_implements(r#"{ name: "empty_contract", tag: "v1", link_id: "noop" }"#);
@@ -1028,7 +1015,7 @@ mod implements_tests {
     #[test]
     fn cache_miss_suggests_repo_refresh() {
         // Empty cache; any lookup misses.
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache::<repo_cache::ContractCacheEntry>(&[]);
         let manifest =
             manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
 
@@ -1055,7 +1042,7 @@ mod implements_tests {
         }"#;
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "arm", "v1", ARM_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
         let manifest = manifest_with_implements(r#"{ name: "arm", tag: "v1", link_id: "arm" }"#);
         let interfaces = interfaces_from(
@@ -1152,7 +1139,7 @@ mod implements_tests {
     fn refine_pins_generic_arrays_of_the_resolved_member() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "limb_motion", "v1", LIMB_MOTION_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
         let manifest =
             manifest_with_implements(r#"{ name: "limb_motion", tag: "v1", link_id: "moves" }"#);
@@ -1227,7 +1214,7 @@ mod implements_tests {
 
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "limb_motion", "v1", LIMB_MOTION_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
         let manifest =
             manifest_with_implements(r#"{ name: "limb_motion", tag: "v1", link_id: "moves" }"#);
@@ -1304,7 +1291,7 @@ mod implements_tests {
     fn coverage_is_reported_before_refinement_problems() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "limb_motion", "v1", LIMB_MOTION_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
         let manifest =
             manifest_with_implements(r#"{ name: "limb_motion", tag: "v1", link_id: "moves" }"#);
@@ -1348,7 +1335,7 @@ mod implements_tests {
         .unwrap();
         // Keep the stale (pre-rewrite) sha256 in the cache entry. We need to
         // ensure load_contract_cache trusts it.
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
         let manifest =
             manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
@@ -1363,73 +1350,27 @@ mod implements_tests {
         );
     }
 
-    /// Seeds a local git repository at `repo_dir` with a single file at the
-    /// given repo-relative path, then returns the branch name (e.g. "main"
-    /// or "master") that `ensure_checkout` can target.
-    fn init_git_repo_with_contract(
-        repo_dir: &std::path::Path,
-        repo_relative_path: &str,
-        body: &str,
-    ) -> (String, daemon_config::repository::GitCommit) {
-        let repo = git2::Repository::init(repo_dir).expect("git init");
-        let abs = repo_dir.join(repo_relative_path);
-        if let Some(parent) = abs.parent() {
-            fs::create_dir_all(parent).expect("create parent dirs");
-        }
-        fs::write(&abs, body).expect("write contract file");
-
-        let mut index = repo.index().expect("open index");
-        index
-            .add_path(std::path::Path::new(repo_relative_path))
-            .expect("add path");
-        index.write().expect("write index");
-        let tree_id = index.write_tree().expect("write tree");
-        let tree = repo.find_tree(tree_id).expect("find tree");
-        let sig = git2::Signature::now("Peppy", "peppy@example.com").expect("signature");
-        let oid = repo
-            .commit(Some("HEAD"), &sig, &sig, "seed contract", &tree, &[])
-            .expect("commit");
-        let branch = repo
-            .head()
-            .expect("head")
-            .shorthand()
-            .expect("shorthand")
-            .to_owned();
-        (
-            branch,
-            daemon_config::repository::GitCommit::parse(&oid.to_string())
-                .expect("a real commit is a full hash"),
-        )
-    }
-
-    /// A `manifest.implements` slot whose cache record is git-sourced (so
-    /// `entry.path` is repo-relative) must materialize the checkout via
-    /// `ensure_checkout` and read from the joined absolute path, not from
-    /// CWD.
-    #[test]
-    fn resolve_implements_git_sourced_contract_reads_from_checkout() {
-        let peppy_tmp = TempDir::new().unwrap();
-        let dirs = PeppyDirs::new(peppy_tmp.path().to_path_buf());
-        fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
-
+    /// A contract cache holding `depth_camera:v1` with fingerprint `sha256`,
+    /// sourced from a local git repository that commits [`DEPTH_V1_BODY`] at
+    /// `cameras/depth_camera.json5`. Returns the peppy root after the temp
+    /// dirs that hold it and the repository, which must outlive the test.
+    fn git_sourced_depth_camera(
+        sha256: daemon_config::repository::ManifestFingerprint,
+    ) -> (TempDir, TempDir, PeppyDirs) {
         let source_parent = TempDir::new().unwrap();
         let source_repo_dir = source_parent.path().join("contracts_hub");
         fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let (branch, commit) = init_git_repo_with_contract(
+        let (branch, commit) = init_repo_with_file(
             &source_repo_dir,
             "cameras/depth_camera.json5",
             DEPTH_V1_BODY,
         );
-        let repo_url = source_repo_dir.display().to_string();
-
         let entry = repo_cache::ContractCacheEntry {
             contract_name: daemon_config::repository::ItemName::parse("depth_camera").unwrap(),
             tag: daemon_config::repository::ItemTag::parse("v1").unwrap(),
-            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(
-                DEPTH_V1_BODY.as_bytes(),
-            ),
+            sha256,
             origin: repo_cache::EntryOrigin::Git {
-                repo_url,
+                repo_url: source_repo_dir.display().to_string(),
                 read_ref: Some(core_node_api::encoding::ReadRef::Named(branch.clone())),
                 repo_ref: Some(branch),
                 commit,
@@ -1440,12 +1381,19 @@ mod implements_tests {
             },
             repo_id: 0,
         };
-        let cache_path = repo_cache::contracts_repo_cache_path(&dirs);
-        fs::write(
-            &cache_path,
-            serde_json5::to_string(&vec![entry]).expect("serialize cache"),
-        )
-        .expect("write cache file");
+        let (peppy_tmp, dirs) = peppy_dirs_with_cache(&[entry]);
+        (peppy_tmp, source_parent, dirs)
+    }
+
+    /// A `manifest.implements` slot whose cache record is git-sourced (so
+    /// `entry.path` is repo-relative) must materialize the checkout via
+    /// `ensure_checkout` and read from the joined absolute path, not from
+    /// CWD.
+    #[test]
+    fn resolve_implements_git_sourced_contract_reads_from_checkout() {
+        let (_peppy_tmp, _source_parent, dirs) = git_sourced_depth_camera(
+            daemon_config::repository::ManifestFingerprint::of_bytes(DEPTH_V1_BODY.as_bytes()),
+        );
 
         let manifest =
             manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
@@ -1475,43 +1423,10 @@ mod implements_tests {
     /// git checkout the resolver has to materialize first.
     #[test]
     fn resolve_implements_git_sourced_drift_detected() {
-        let peppy_tmp = TempDir::new().unwrap();
-        let dirs = PeppyDirs::new(peppy_tmp.path().to_path_buf());
-        fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
-
-        let source_parent = TempDir::new().unwrap();
-        let source_repo_dir = source_parent.path().join("contracts_hub");
-        fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let (branch, commit) = init_git_repo_with_contract(
-            &source_repo_dir,
-            "cameras/depth_camera.json5",
-            DEPTH_V1_BODY,
+        // Deliberately wrong fingerprint; must trigger drift detection.
+        let (_peppy_tmp, _source_parent, dirs) = git_sourced_depth_camera(
+            daemon_config::repository::ManifestFingerprint::parse(&"0".repeat(64)).unwrap(),
         );
-        let repo_url = source_repo_dir.display().to_string();
-
-        let entry = repo_cache::ContractCacheEntry {
-            contract_name: daemon_config::repository::ItemName::parse("depth_camera").unwrap(),
-            tag: daemon_config::repository::ItemTag::parse("v1").unwrap(),
-            // Deliberately wrong fingerprint; must trigger drift detection.
-            sha256: daemon_config::repository::ManifestFingerprint::parse(&"0".repeat(64)).unwrap(),
-            origin: repo_cache::EntryOrigin::Git {
-                repo_url,
-                read_ref: Some(core_node_api::encoding::ReadRef::Named(branch.clone())),
-                repo_ref: Some(branch),
-                commit,
-                path: daemon_config::repository::RepoRelativePath::parse(
-                    "cameras/depth_camera.json5",
-                )
-                .unwrap(),
-            },
-            repo_id: 0,
-        };
-        let cache_path = repo_cache::contracts_repo_cache_path(&dirs);
-        fs::write(
-            &cache_path,
-            serde_json5::to_string(&vec![entry]).expect("serialize cache"),
-        )
-        .expect("write cache file");
 
         let manifest =
             manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
@@ -1548,7 +1463,7 @@ mod implements_tests {
 
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "uvc_camera", "v1", UVC_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
         let manifest: Manifest = serde_json5::from_str(
             r#"{
@@ -1629,7 +1544,7 @@ mod implements_tests {
         // can resolve the contract and the pairing document in one pass.
         let tmp = TempDir::new().unwrap();
         let contract = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[contract]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[contract]);
         let pairing_path = tmp.path().join("arm_link_v1.json5");
         fs::write(&pairing_path, ARM_LINK_BODY).expect("write pairing doc");
         let pairing_entry = repo_cache::PairingCacheEntry {
@@ -1643,11 +1558,7 @@ mod implements_tests {
             },
             repo_id: 0,
         };
-        fs::write(
-            repo_cache::pairings_repo_cache_path(&dirs),
-            serde_json5::to_string(&vec![pairing_entry]).expect("serialize pairing cache"),
-        )
-        .expect("write pairing cache");
+        repo_cache::write_repo_cache(&dirs, &[pairing_entry]).expect("write pairing cache");
 
         // The relay shape plus a pairing: one implements slot, one contract
         // dependency on the same contract, and one pairing slot. All three
@@ -1724,7 +1635,7 @@ mod implements_tests {
     fn consumed_entry_absent_from_contract_is_rejected() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
         let manifest: Manifest = serde_json5::from_str(
             r#"{
@@ -1775,7 +1686,7 @@ mod implements_tests {
                 }
             }"#,
         );
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
         let arm: config::node::NodeConfig = config::node::NodeConfigParser::from_content(
             r#"{
                 peppy_schema: "node/v1",
@@ -1884,17 +1795,9 @@ mod implements_tests {
     fn consumed_action_via_contract_resolves() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "arm_actions", "v1", ARM_ACTIONS_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
-        let manifest: Manifest = serde_json5::from_str(
-            r#"{
-                name: "arm_consumer", tag: "v1",
-                depends_on: {
-                    contracts: [{ name: "arm_actions", tag: "v1", link_id: "arm" }]
-                }
-            }"#,
-        )
-        .expect("manifest parses");
+        let manifest = arm_actions_consumer_manifest();
         let cfg =
             interfaces_from(r#"{ actions: { consumes: [{ link_id: "arm", name: "move_arm" }] } }"#);
 
@@ -1937,6 +1840,18 @@ mod implements_tests {
         }
     }
 
+    fn arm_actions_consumer_manifest() -> Manifest {
+        serde_json5::from_str(
+            r#"{
+                name: "arm_consumer", tag: "v1",
+                depends_on: {
+                    contracts: [{ name: "arm_actions", tag: "v1", link_id: "arm" }]
+                }
+            }"#,
+        )
+        .expect("manifest parses")
+    }
+
     fn limb_motion_consumer_manifest() -> Manifest {
         serde_json5::from_str(
             r#"{
@@ -1956,7 +1871,7 @@ mod implements_tests {
     fn consumed_contract_entries_apply_their_refine_blocks() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "limb_motion", "v1", LIMB_MOTION_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
         let cfg = interfaces_from(
             r#"{
                 topics: { consumes: [
@@ -2010,7 +1925,7 @@ mod implements_tests {
     fn consumed_contract_entry_with_inadmissible_refine_is_rejected() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "limb_motion", "v1", LIMB_MOTION_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
         let cfg = interfaces_from(
             r#"{ topics: { consumes: [
                 { link_id: "arm", name: "joint_states", refine: { message_format: { positions: { $length: 7 }, nope: { $length: 1 } } } },
@@ -2042,17 +1957,9 @@ mod implements_tests {
     fn consumed_feedbackless_action_via_contract_resolves_without_feedback() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "arm_actions", "v1", ARM_ACTIONS_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
-        let manifest: Manifest = serde_json5::from_str(
-            r#"{
-                name: "arm_consumer", tag: "v1",
-                depends_on: {
-                    contracts: [{ name: "arm_actions", tag: "v1", link_id: "arm" }]
-                }
-            }"#,
-        )
-        .expect("manifest parses");
+        let manifest = arm_actions_consumer_manifest();
         let cfg =
             interfaces_from(r#"{ actions: { consumes: [{ link_id: "arm", name: "wave" }] } }"#);
 
@@ -2087,17 +1994,9 @@ mod implements_tests {
     fn consumed_action_absent_from_contract_is_rejected() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "arm_actions", "v1", ARM_ACTIONS_V1_BODY);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache(&[entry]);
 
-        let manifest: Manifest = serde_json5::from_str(
-            r#"{
-                name: "arm_consumer", tag: "v1",
-                depends_on: {
-                    contracts: [{ name: "arm_actions", tag: "v1", link_id: "arm" }]
-                }
-            }"#,
-        )
-        .expect("manifest parses");
+        let manifest = arm_actions_consumer_manifest();
         let cfg =
             interfaces_from(r#"{ actions: { consumes: [{ link_id: "arm", name: "move_leg" }] } }"#);
 
@@ -2116,7 +2015,7 @@ mod implements_tests {
     /// the user does not see it twice.
     #[test]
     fn unknown_node_dep_name_is_left_to_the_upstream_reporter() {
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache::<repo_cache::ContractCacheEntry>(&[]);
 
         let producer: config::node::NodeConfig = config::node::NodeConfigParser::from_content(
             r#"{
@@ -2171,7 +2070,7 @@ mod implements_tests {
     /// contract-addressed.
     #[test]
     fn node_dep_consumption_is_native_only() {
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[]);
+        let (_tmp_dirs, dirs) = peppy_dirs_with_cache::<repo_cache::ContractCacheEntry>(&[]);
 
         let producer: config::node::NodeConfig = config::node::NodeConfigParser::from_content(
             r#"{

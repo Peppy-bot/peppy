@@ -1301,12 +1301,61 @@ pub(crate) mod test_support {
         entry.repo_id = repo_id;
         entry
     }
+
+    /// A peppy root in a fresh temp dir whose `E` cache holds `entries`. The
+    /// temp dir deletes the root when it drops.
+    pub(crate) fn peppy_dirs_with_cache<E: RepoCacheEntry>(
+        entries: &[E],
+    ) -> (tempfile::TempDir, PeppyDirs) {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let dirs = PeppyDirs::new(tmp.path().to_path_buf());
+        write_repo_cache(&dirs, entries).expect("write the repo cache");
+        (tmp, dirs)
+    }
+
+    /// Initializes a bare-bones git repository at `repo_dir` and writes a
+    /// single committed file at the given repo-relative path. Returns the
+    /// branch name resolved from HEAD and the commit it created.
+    pub(crate) fn init_repo_with_file(
+        repo_dir: &Path,
+        file_path: &str,
+        contents: &str,
+    ) -> (String, GitCommit) {
+        let repo = git2::Repository::init(repo_dir).expect("git init");
+        let abs = repo_dir.join(file_path);
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        std::fs::write(&abs, contents).expect("write committed file");
+
+        let rel = Path::new(file_path);
+        let mut index = repo.index().expect("open index");
+        index.add_path(rel).expect("add file");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let sig = git2::Signature::now("Peppy", "peppy@example.com").expect("signature");
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
+            .expect("commit");
+
+        let branch = repo
+            .head()
+            .expect("head")
+            .shorthand()
+            .expect("shorthand")
+            .to_owned();
+        (
+            branch,
+            GitCommit::parse(&oid.to_string()).expect("a real commit is a full hash"),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daemon_config::repository::{GitCommit, RepoRelativePath};
+    use daemon_config::repository::RepoRelativePath;
 
     use super::test_support::*;
 
@@ -1714,44 +1763,6 @@ mod tests {
     }
 
     // -- resolve_cached_artifact_path tests --
-
-    /// Initializes a bare-bones git repository at `repo_dir` and writes a
-    /// single committed file at the given repo-relative path. Returns the
-    /// branch name resolved from HEAD and the commit it created.
-    fn init_repo_with_file(
-        repo_dir: &Path,
-        file_path: &str,
-        contents: &str,
-    ) -> (String, GitCommit) {
-        let repo = git2::Repository::init(repo_dir).expect("git init");
-        let abs = repo_dir.join(file_path);
-        if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent).expect("create parent dirs");
-        }
-        std::fs::write(&abs, contents).expect("write committed file");
-
-        let rel = Path::new(file_path);
-        let mut index = repo.index().expect("open index");
-        index.add_path(rel).expect("add file");
-        index.write().expect("write index");
-        let tree_id = index.write_tree().expect("write tree");
-        let tree = repo.find_tree(tree_id).expect("find tree");
-        let sig = git2::Signature::now("Peppy", "peppy@example.com").expect("signature");
-        let oid = repo
-            .commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
-            .expect("commit");
-
-        let branch = repo
-            .head()
-            .expect("head")
-            .shorthand()
-            .expect("shorthand")
-            .to_owned();
-        (
-            branch,
-            GitCommit::parse(&oid.to_string()).expect("a real commit is a full hash"),
-        )
-    }
 
     /// `Fs` entries are already absolute on disk; the helper returns the
     /// recorded path verbatim without touching the git checkout cache.

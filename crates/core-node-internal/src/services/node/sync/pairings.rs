@@ -564,6 +564,7 @@ fn duplicated_consumes(coverage: &SlotCoverage) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::repo::cache::test_support::peppy_dirs_with_cache;
     use std::fs;
     use tempfile::TempDir;
 
@@ -594,20 +595,6 @@ mod tests {
         }
     }
 
-    fn make_peppy_dirs_with_cache(
-        entries: &[repo_cache::PairingCacheEntry],
-    ) -> (TempDir, PeppyDirs) {
-        let tmp = TempDir::new().expect("temp dir");
-        let dirs = PeppyDirs::new(tmp.path().to_path_buf());
-        fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
-        fs::write(
-            repo_cache::pairings_repo_cache_path(&dirs),
-            serde_json5::to_string(&entries.to_vec()).expect("serialize cache"),
-        )
-        .expect("write cache file");
-        (tmp, dirs)
-    }
-
     fn manifest(json5: &str) -> config::node::Manifest {
         serde_json5::from_str(json5).expect("manifest parses")
     }
@@ -632,7 +619,7 @@ mod tests {
     fn seeded_dirs() -> (TempDir, TempDir, PeppyDirs) {
         let tmp = TempDir::new().expect("temp dir");
         let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (cache_tmp, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (cache_tmp, dirs) = peppy_dirs_with_cache(&[entry]);
         (tmp, cache_tmp, dirs)
     }
 
@@ -734,7 +721,7 @@ mod tests {
     fn joint_link_dirs() -> (TempDir, TempDir, PeppyDirs) {
         let tmp = TempDir::new().expect("temp dir");
         let entry = seed_pairing(tmp.path(), "joint_link", "v1", JOINT_LINK_BODY);
-        let (cache_tmp, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (cache_tmp, dirs) = peppy_dirs_with_cache(&[entry]);
         (tmp, cache_tmp, dirs)
     }
 
@@ -1128,7 +1115,7 @@ mod tests {
 
     #[test]
     fn cache_miss_suggests_repo_refresh() {
-        let (_t, dirs) = make_peppy_dirs_with_cache(&[]);
+        let (_t, dirs) = peppy_dirs_with_cache::<repo_cache::PairingCacheEntry>(&[]);
         let m = arm_manifest();
         let err = validate_pairing_specs(&m, &dirs, None, &|_| {}).expect_err("miss must error");
         assert!(
@@ -1143,7 +1130,7 @@ mod tests {
         let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
         let good_sha = entry.sha256.clone();
         let path = entry.origin.path_str().to_owned();
-        let (_t, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_t, dirs) = peppy_dirs_with_cache(&[entry]);
 
         // Pin to a sha not in the cache.
         let err = resolve_pairing_doc(&dirs, "arm_link", "v1", Some("beef"), &|_| {})
