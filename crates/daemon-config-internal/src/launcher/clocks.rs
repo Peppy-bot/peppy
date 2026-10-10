@@ -310,9 +310,8 @@ mod tests {
     #[test]
     fn every_minted_lifetime_is_distinct_and_rising() {
         let minted: Vec<u64> = (0..1_000).map(|_| mint_incarnation().get()).collect();
-        let mut sorted = minted.clone();
-        sorted.dedup();
-        assert_eq!(sorted.len(), minted.len(), "a lifetime is never reused");
+        let distinct: BTreeSet<u64> = minted.iter().copied().collect();
+        assert_eq!(distinct.len(), minted.len(), "a lifetime is never reused");
         assert!(
             minted.windows(2).all(|pair| pair[0] < pair[1]),
             "each lifetime exceeds the one before it"
