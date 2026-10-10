@@ -74,8 +74,8 @@ pub(crate) fn resolve_session(
 }
 
 /// Builds a refreshable session [`Credential`] from the cached `pc`. Public
-/// for the one caller outside the resolver: `peppy platform login`, which builds
-/// the credential from tokens it minted seconds ago instead of re-resolving.
+/// for `peppy platform login`, which builds the credential from tokens it
+/// minted seconds ago instead of re-resolving.
 pub fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
     Credential {
         token: storage::secret(pc.access_token.expose_secret().to_string()),

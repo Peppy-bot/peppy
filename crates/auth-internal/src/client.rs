@@ -23,7 +23,7 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use super::http::{HttpClient, HttpResponse};
-use super::resolver::{Credential, SessionContext, refresh_and_persist};
+use super::resolver::{Credential, refresh_and_persist, session_credential};
 use super::storage::{self, ProfileCreds};
 use crate::enrollment::RouterEndpoint;
 use crate::error::{Error, Problem, ProblemKind, Result};
@@ -520,14 +520,7 @@ fn refresh_in_place(http: &HttpClient, cred: &mut Credential) -> Result<()> {
     }
 
     let updated = refresh_and_persist(http, &cred.session.creds_path, pc)?;
-
-    cred.token = storage::secret(updated.access_token.expose_secret().to_string());
-    cred.session = SessionContext {
-        issuer: updated.issuer.clone(),
-        client_id: updated.client_id.clone(),
-        refresh_token: storage::secret(updated.refresh_token.expose_secret().to_string()),
-        creds_path: cred.session.creds_path.clone(),
-    };
+    *cred = session_credential(&cred.session.creds_path, &updated);
     Ok(())
 }
 
