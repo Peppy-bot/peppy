@@ -200,7 +200,7 @@ pub(super) fn build_local_struct_with_deserializer(
         .expect("non-empty message format maps to schema artifacts");
     let mut context = GenerationContext::default();
     let struct_ident = Ident::new(struct_name, Span::call_site());
-    let params = collect_function_params(Some(&artifacts), None, struct_name, &mut context, None)?;
+    let params = collect_function_params(Some(&artifacts), struct_name, &mut context)?;
     let fields: Vec<(Ident, TokenStream)> = params
         .iter()
         .map(|param| (param.ident.clone(), param.ty.clone()))

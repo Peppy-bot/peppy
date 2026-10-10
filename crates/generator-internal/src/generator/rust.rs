@@ -43,7 +43,9 @@ use actions::{
     build_goal_context_publish_feedback, build_goal_context_struct, build_goal_decision_enum,
     build_handle_goal_next_request,
 };
-use context::{GenerationContext, collect_function_params, map_message_format};
+use context::{
+    GenerationContext, add_response_struct, collect_function_params, map_message_format,
+};
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
 use serialization::{
     MessageEncodingSpec, build_serialize_payload, generate_assignments_for_format,
@@ -196,10 +198,8 @@ impl RustGenerator {
                 let goal_request_ident = Ident::new("GoalRequest", Span::call_site());
                 let params = collect_function_params(
                     Some(artifacts),
-                    None,
                     &format!("{action_struct_name}Goal"),
                     context,
-                    None,
                 )?;
                 let fields: Vec<(Ident, TokenStream)> = params
                     .iter()
@@ -249,13 +249,7 @@ impl RustGenerator {
         let mut helper_items = Vec::new();
         let (data_binding, data_field) = match &response_artifacts {
             Some(response_artifacts) => {
-                let _response_params = collect_function_params(
-                    None,
-                    Some(response_artifacts),
-                    &format!("{action_struct_name}GoalResponse"),
-                    context,
-                    Some(&goal_response_data_ident),
-                )?;
+                add_response_struct(context, response_artifacts, &goal_response_data_ident)?;
 
                 // Build deserializer helper
                 let response_schema_key = format!("{schema_key}_response");
@@ -375,7 +369,6 @@ impl RustGenerator {
     fn build_consumed_action_get_result_method(
         &mut self,
         context: &mut GenerationContext,
-        action_struct_name: &str,
         result_artifacts: Option<CapnpSchemaArtifacts>,
         result_schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
@@ -396,14 +389,7 @@ impl RustGenerator {
 
         let decoder = match result_artifacts {
             Some(result_artifacts) => {
-                // Defines `ResultResponseData` (+ ctor) in the context.
-                let _params = collect_function_params(
-                    None,
-                    Some(&result_artifacts),
-                    &format!("{action_struct_name}ResultResponse"),
-                    context,
-                    Some(&data_ident),
-                )?;
+                add_response_struct(context, &result_artifacts, &data_ident)?;
 
                 let response_schema = self.register_schema(
                     result_schema_key,
@@ -551,13 +537,8 @@ impl RustGenerator {
         let schema_struct_name = format!("{struct_prefix}Message");
         let struct_ident = Ident::new("FeedbackMessage", Span::call_site());
 
-        let params = collect_function_params(
-            Some(&format_artifacts),
-            None,
-            &schema_struct_name,
-            context,
-            None,
-        )?;
+        let params =
+            collect_function_params(Some(&format_artifacts), &schema_struct_name, context)?;
 
         let fields: Vec<(Ident, TokenStream)> = params
             .iter()
@@ -739,10 +720,8 @@ impl RustGenerator {
         let mut context = GenerationContext::default();
         let params = collect_function_params(
             Some(format_artifacts),
-            None,
             SUBSCRIBED_MESSAGE_STRUCT_NAME,
             &mut context,
-            None,
         )?;
 
         let struct_ident = Ident::new(SUBSCRIBED_MESSAGE_STRUCT_NAME, Span::call_site());
@@ -857,13 +836,8 @@ impl LanguageGenerator for RustGenerator {
         let mut context = GenerationContext::default();
         let scoped_key = scoped_schema_key(origin, &fn_name_str);
         let format_artifacts = map_message_format(&scoped_key, topic.message_format.as_ref())?;
-        let params = collect_function_params(
-            format_artifacts.as_ref(),
-            None,
-            &struct_prefix,
-            &mut context,
-            None,
-        )?;
+        let params =
+            collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
         let encoding = self.prepare_message_encoding(
             &scoped_key,
             &schema_prefix,
@@ -917,12 +891,13 @@ impl LanguageGenerator for RustGenerator {
             &scoped_response_key,
             service.response_message_format.as_ref(),
         )?;
+        if let Some(response_artifacts) = response_artifacts.as_ref() {
+            add_response_struct(&mut context, response_artifacts, &generic_response_ident)?;
+        }
         let wire_params = collect_function_params(
             request_wire_artifacts.as_ref(),
-            response_artifacts.as_ref(),
             &struct_prefix,
             &mut context,
-            Some(&generic_response_ident),
         )?;
         let encoding = self.prepare_message_encoding(
             &scoped_request_key,
@@ -1050,15 +1025,20 @@ impl LanguageGenerator for RustGenerator {
             )?;
 
             // Generates `GoalResponse` (+ `new`) when there is a response, and
-            // returns the request params used to build `GoalRequestData`. The
+            // collects the request params used to build `GoalRequestData`. The
             // request's nested message structs are defined under this prefix.
             let goal_struct_prefix = "Goal";
+            if let Some(response_artifacts) = response_artifacts.as_ref() {
+                add_response_struct(
+                    &mut context,
+                    response_artifacts,
+                    &Ident::new("GoalResponse", Span::call_site()),
+                )?;
+            }
             let goal_data_params = collect_function_params(
                 request_artifacts.as_ref(),
-                response_artifacts.as_ref(),
                 goal_struct_prefix,
                 &mut context,
-                None,
             )?;
 
             let goal_request_data_struct = if let Some((ident, tokens)) =
@@ -1149,13 +1129,8 @@ impl LanguageGenerator for RustGenerator {
                 scoped_schema_key(origin, &format!("emit_{base_name}_feedback"));
             let format_artifacts =
                 map_message_format(&feedback_schema_key, Some(&feedback.message_format))?;
-            let params = collect_function_params(
-                format_artifacts.as_ref(),
-                None,
-                &struct_prefix,
-                &mut context,
-                None,
-            )?;
+            let params =
+                collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
             let encoding = self
                 .prepare_message_encoding(
                     &feedback_schema_key,
@@ -1187,10 +1162,8 @@ impl LanguageGenerator for RustGenerator {
             // The result-response fields become `complete(fields…)` parameters.
             let result_params = collect_function_params(
                 response_artifacts.as_ref(),
-                None,
                 &schema_struct_prefix,
                 &mut context,
-                None,
             )?;
             let encoding = self.prepare_message_encoding(
                 &scoped_result_key,
@@ -1350,13 +1323,11 @@ impl LanguageGenerator for RustGenerator {
         let mut context = GenerationContext::default();
         let response_data_ident = Ident::new("ResponseData", Span::call_site());
 
-        let params = collect_function_params(
-            request_artifacts.as_ref(),
-            response_artifacts.as_ref(),
-            &struct_prefix,
-            &mut context,
-            Some(&response_data_ident),
-        )?;
+        if let Some(response_artifacts) = response_artifacts.as_ref() {
+            add_response_struct(&mut context, response_artifacts, &response_data_ident)?;
+        }
+        let params =
+            collect_function_params(request_artifacts.as_ref(), &struct_prefix, &mut context)?;
 
         let instance_id_ident = Ident::new("instance_id", Span::call_site());
         let instance_id_param_index = params
@@ -1567,13 +1538,8 @@ impl LanguageGenerator for RustGenerator {
 
         let mut context = GenerationContext::default();
         let format_artifacts = map_message_format(&schema_key, topic.message_format.as_ref())?;
-        let params = collect_function_params(
-            format_artifacts.as_ref(),
-            None,
-            &struct_prefix,
-            &mut context,
-            None,
-        )?;
+        let params =
+            collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
         let encoding = self.prepare_message_encoding(
             &schema_key,
             &schema_prefix,
@@ -1705,7 +1671,6 @@ impl LanguageGenerator for RustGenerator {
             map_message_format(&action_schema_keys.result_response, result_response_format)?;
         let (result_method, mut result_helpers) = self.build_consumed_action_get_result_method(
             &mut context,
-            &action_struct_name,
             result_artifacts,
             &action_schema_keys.result_response,
         )?;

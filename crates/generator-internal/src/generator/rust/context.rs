@@ -203,34 +203,39 @@ fn insert_lookup_entry<'a>(
     Ok(())
 }
 
-pub fn collect_function_params(
-    accept_format_artifacts: Option<&CapnpSchemaArtifacts>,
-    return_format_artifacts: Option<&CapnpSchemaArtifacts>,
-    struct_prefix: &str,
+/// Registers the `response_ident` struct of a response format, with a `new`
+/// constructor that takes every field. Its nested structs take the
+/// response struct's own name as their prefix.
+pub fn add_response_struct(
     context: &mut GenerationContext,
-    response_struct_name_override: Option<&Ident>,
-) -> Result<Vec<FunctionParam>> {
-    if let Some(return_artifacts) = return_format_artifacts {
-        let response_struct_name = response_struct_name_override
-            .map(|ident| ident.to_string())
-            .unwrap_or_else(|| format!("{struct_prefix}Response"));
-        let response_ident = Ident::new(&response_struct_name, Span::call_site());
-        let mut fields = Vec::new();
+    artifacts: &CapnpSchemaArtifacts,
+    response_ident: &Ident,
+) -> Result<()> {
+    let response_struct_name = response_ident.to_string();
+    let mut fields = Vec::new();
 
-        for (field_name, schema) in &return_artifacts.message_format().0 {
-            let field_ident = Ident::new(
-                &sanitize_rust_identifier(field_name.as_str()),
-                Span::call_site(),
-            );
-            let field_ty =
-                schema_type_to_tokens(schema, &response_struct_name, field_name, context)?;
-            fields.push((field_ident, field_ty));
-        }
-
-        context.add_struct_with_constructor(response_ident, fields);
+    for (field_name, schema) in &artifacts.message_format().0 {
+        let field_ident = Ident::new(
+            &sanitize_rust_identifier(field_name.as_str()),
+            Span::call_site(),
+        );
+        let field_ty = schema_type_to_tokens(schema, &response_struct_name, field_name, context)?;
+        fields.push((field_ident, field_ty));
     }
 
-    let Some(artifacts) = accept_format_artifacts else {
+    context.add_struct_with_constructor(response_ident.clone(), fields);
+    Ok(())
+}
+
+/// The function parameters of a message format, one per field, with the
+/// structs nested in it registered in `context` under `struct_prefix`. An
+/// absent format has no parameters.
+pub fn collect_function_params(
+    format_artifacts: Option<&CapnpSchemaArtifacts>,
+    struct_prefix: &str,
+    context: &mut GenerationContext,
+) -> Result<Vec<FunctionParam>> {
+    let Some(artifacts) = format_artifacts else {
         return Ok(Vec::new());
     };
 
