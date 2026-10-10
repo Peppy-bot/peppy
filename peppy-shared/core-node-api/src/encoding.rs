@@ -259,10 +259,15 @@ pub(crate) fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
 }
 
 /// Encode a Cap'n Proto message builder into a `Payload`.
+///
+/// `write_message_to_words` sizes its buffer once from the segment table, so
+/// the bytes land in one allocation whose length equals its capacity, and
+/// `Bytes::from(Vec<u8>)` takes that buffer over without allocating a shared
+/// header for it. Serializing into a `Vec` cannot fail; the function returns
+/// a `Result` so that every codec calls it the same way as the fallible encode
+/// steps around it.
 pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
-    let mut buffer = Vec::new();
-    serialize::write_message(&mut buffer, message)?;
-    Ok(Payload::from(buffer))
+    Ok(Payload::from(serialize::write_message_to_words(message)))
 }
 
 /// Encode a Cap'n Proto message builder into a [`NonEmptyPayload`].
@@ -271,13 +276,14 @@ pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload
 /// header, so the produced payload is non-empty by construction. The
 /// `NonEmptyPayload::try_new` here is therefore infallible in practice and
 /// the `expect` documents that invariant; if it ever fires it indicates a
-/// `capnp::serialize::write_message` regression rather than a caller bug.
+/// `capnp::serialize::write_message_to_words` regression rather than a caller
+/// bug.
 pub(crate) fn encode_message_non_empty(
     message: &Builder<HeapAllocator>,
 ) -> Result<crate::NonEmptyPayload> {
     let payload = encode_message(message)?;
     Ok(crate::NonEmptyPayload::try_new(payload)
-        .expect("capnp serialize::write_message always emits a non-empty framed buffer"))
+        .expect("capnp serialize::write_message_to_words always emits a non-empty framed buffer"))
 }
 
 /// Decode bytes into a Cap'n Proto message reader over `data` itself: the
@@ -401,6 +407,31 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("MyField"), "got: {msg}");
         assert!(msg.contains("exceeds"), "got: {msg}");
+    }
+
+    /// The payload is the standard framed stream that `write_message` writes,
+    /// for a one-segment message and for one that spills into more segments.
+    #[test]
+    fn encode_message_writes_the_framed_stream_bytes() {
+        for pin_count in [1_u32, 4096] {
+            let mut message = Builder::new_default();
+            {
+                let request = message
+                    .init_root::<crate::federation_capnp::participant_reserve_request::Builder>();
+                let mut pins = request.init_deployment_pins_json5(pin_count);
+                for index in 0..pin_count {
+                    pins.set(index, "{ node: 'pinned' }");
+                }
+            }
+            let mut framed = Vec::new();
+            serialize::write_message(&mut framed, &message).expect("write to a Vec");
+            assert!(
+                pin_count == 1 || message.get_segments_for_output().len() > 1,
+                "the large message spans several segments"
+            );
+            let payload = encode_message(&message).expect("encode");
+            assert_eq!(payload.as_ref(), framed.as_slice());
+        }
     }
 
     #[test]
