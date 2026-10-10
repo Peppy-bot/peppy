@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use config::runtime::ClockBinding;
 use core_node_api::names;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{MessengerHandle, ProducerRef};
@@ -17,7 +18,9 @@ use tempfile::TempDir;
 /// crate-wide ones; only [`test_node_target`] differs here.
 pub(crate) use crate::shared::{publish_once, wait_for_topic_subscriber};
 
-pub(crate) const CORE_NODE: &str = "standalone-core";
+/// The core node the stubs serve as: the one a standalone runner talks to, so
+/// its service calls and topic subscriptions reach them.
+pub(crate) const CORE_NODE: &str = peppylib::runtime::STANDALONE_CORE_NODE;
 pub(crate) const CLIENT_INSTANCE: &str = "test_caller";
 pub(crate) const SERVER_INSTANCE: &str = "test_server";
 
@@ -70,6 +73,15 @@ pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name:
 /// and config file.
 pub(crate) async fn start_router_and_runner()
 -> (EphemeralRouter, TempDir, NodeRunner, MessengerHandle) {
+    start_router_and_runner_with_clock(ClockBinding::Wall).await
+}
+
+/// [`start_router_and_runner`] with the runner bound to `clock`, the
+/// daemon-less spelling of the binding a launch or a `peppy node run` would
+/// have stamped on it.
+pub(crate) async fn start_router_and_runner_with_clock(
+    clock: ClockBinding,
+) -> (EphemeralRouter, TempDir, NodeRunner, MessengerHandle) {
     let router = EphemeralRouter::start().await.expect("start zenoh router");
     // The node runner opens its session under a workspace namespace
     // (`connect(..).reconnecting().scope(SessionScope::Discovery(..))`); the standalone config
@@ -83,7 +95,8 @@ pub(crate) async fn start_router_and_runner()
     let peppy_config_path = write_standalone_peppy_config(&temp_dir);
     let standalone_config = StandaloneConfig::new()
         .with_messaging(router.host(), router.port())
-        .with_instance_id(CLIENT_INSTANCE);
+        .with_instance_id(CLIENT_INSTANCE)
+        .with_clock(clock);
     let processor = Processor::new_standalone(&peppy_config_path, &standalone_config)
         .expect("standalone processor");
     let node_runner = NodeRunner::new(processor).await.expect("node runner");
