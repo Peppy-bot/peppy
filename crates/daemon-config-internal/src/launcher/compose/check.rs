@@ -17,7 +17,7 @@ use super::select::{
     CopyOrigin, SelectionEntry, SelectionSource, UnitSelection, check_reach, resolve_copy,
 };
 use config::runtime::Name;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 
 /// The ceiling on the selection space [`check_composition`] enumerates.
@@ -225,9 +225,9 @@ fn check_file_copies_over(
         };
         let mut taken = bare.core_nodes.clone();
         let mut copies = Vec::new();
-        // A copy whose `one` axis the file leaves for a launch word, once
-        // per option the word may name; each runs beside the file's other
-        // copies.
+        // A copy whose `one` axes the file leaves for launch words, once
+        // per combination of options the words may name; each runs beside
+        // the file's other copies.
         let mut variants: Vec<(String, ComposedCopy)> = Vec::new();
         for entry in &launcher.option_deployments {
             let loaded = prepared.loaded.option(&entry.axis, &entry.option);
@@ -243,6 +243,11 @@ fn check_file_copies_over(
                 arguments: ArgumentOverrides::default(),
                 adjustments: Vec::new(),
             });
+            let origin = if launch_joined.is_some() {
+                CopyOrigin::LaunchJoin
+            } else {
+                CopyOrigin::File
+            };
             for instance in entry.instances.iter().chain(launch_joined.iter()) {
                 let settings = entry.settings_for(instance);
                 let file_copy = if launch_joined.is_some() {
@@ -255,31 +260,15 @@ fn check_file_copies_over(
                 } else {
                     format!("{} + file copy `{}`", stack.echo(), instance.instance_id)
                 };
-                let attempts: Vec<(String, BTreeMap<String, String>)> = match resolve_copy(
+                let attempts = match launch_word_completions(
                     loaded,
                     &entry.axis,
                     instance.instance_id.as_str(),
                     &settings.with,
-                    if launch_joined.is_some() {
-                        CopyOrigin::LaunchJoin
-                    } else {
-                        CopyOrigin::File
-                    },
+                    origin,
+                    &file_copy,
                 ) {
-                    Ok(_) => vec![(file_copy.clone(), settings.with.clone())],
-                    Err(CompositionError::UnresolvedCopyAxis(unresolved)) => {
-                        let axis = unresolved.axis;
-                        loaded
-                            .axis(&axis)
-                            .into_iter()
-                            .flat_map(|left| left.options.keys())
-                            .map(|option| {
-                                let mut with = settings.with.clone();
-                                with.insert(axis.clone(), option.clone());
-                                (format!("{file_copy} ({axis}={option})"), with)
-                            })
-                            .collect()
-                    }
+                    Ok(attempts) => attempts,
                     Err(e) => {
                         problems.push(format!("{label} ({file_copy}): {e}"));
                         continue;
@@ -293,22 +282,12 @@ fn check_file_copies_over(
                 let admitted_here = admitted
                     .entry(instance.instance_id.to_string())
                     .or_insert(false);
-                for (echo, with) in &attempts {
+                for LaunchWordCompletion { echo, with, own } in &attempts {
                     // The copy's constraints, judged over the stack as the
                     // join path judges them: a refused selection is refused
                     // by design and composes nothing.
-                    let refused = resolve_copy(
-                        loaded,
-                        &entry.axis,
-                        instance.instance_id.as_str(),
-                        with,
-                        CopyOrigin::File,
-                    )
-                    .is_ok_and(|own| {
-                        let over = copy_over_stack(launcher, stack, loaded, &entry.axis, &own);
-                        ledger.judge(&over.in_play, &over.selection)
-                    });
-                    if refused {
+                    let over = copy_over_stack(launcher, stack, loaded, &entry.axis, own);
+                    if ledger.judge(&over.in_play, &over.selection) {
                         continue;
                     }
                     *admitted_here = true;
@@ -363,6 +342,52 @@ fn check_file_copies_over(
         }
     }
     problems
+}
+
+/// One way a launch fills a file copy: the `with` map the copy composes
+/// under, the copy's selection under it, and the label its problems carry.
+struct LaunchWordCompletion {
+    echo: String,
+    with: BTreeMap<String, String>,
+    own: UnitSelection,
+}
+
+/// Every `with` map under which a file copy resolves: the copy's own
+/// `with` when it fills every `one` axis, else one completion per
+/// combination of options of the `one` axes it leaves for launch words.
+/// Every unfilled axis is expanded in turn, as a launch fills each of them
+/// with a word of its own.
+fn launch_word_completions(
+    loaded: &LoadedOption,
+    axis: &str,
+    copy: &str,
+    with: &BTreeMap<String, String>,
+    origin: CopyOrigin,
+    echo: &str,
+) -> Result<Vec<LaunchWordCompletion>, CompositionError> {
+    let mut completions = Vec::new();
+    // Each `with` map still to resolve, with the label its problems carry.
+    let mut pending = VecDeque::from([(echo.to_owned(), with.clone())]);
+    while let Some((echo, with)) = pending.pop_front() {
+        let unfilled = match resolve_copy(loaded, axis, copy, &with, origin) {
+            Ok(own) => {
+                completions.push(LaunchWordCompletion { echo, with, own });
+                continue;
+            }
+            Err(CompositionError::UnresolvedCopyAxis(unresolved)) => unresolved.axis,
+            Err(e) => return Err(e),
+        };
+        let options = loaded
+            .axis(&unfilled)
+            .into_iter()
+            .flat_map(|left| left.options.keys());
+        for option in options {
+            let mut filled = with.clone();
+            filled.insert(unfilled.clone(), option.clone());
+            pending.push_back((format!("{echo} ({unfilled}={option})"), filled));
+        }
+    }
+    Ok(completions)
 }
 
 /// Every copy every legal stack can run: as a launch of one copy, and as a

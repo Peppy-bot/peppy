@@ -3493,6 +3493,69 @@ fn a_file_copy_may_leave_an_axis_for_a_launch_word() {
     );
 }
 
+/// A file copy may leave several `one` axes for launch words, and the
+/// repository check judges it on every combination the words can fill,
+/// each under a label that names the options of that combination.
+#[test]
+fn a_file_copy_may_leave_two_axes_for_launch_words() {
+    let document = |alpha: &str| {
+        format!(
+            r#"{{
+        peppy_schema: "launcher/v1",
+        components: [{{ name: "robot", cardinality: "zero_or_more", options: {{ real: {{
+            deployments: [{{ source: {{ name: "arm", tag: "v1" }}, instances: [{{ instance_id: "arm_inst" }}] }}],
+            components: [
+                {{ name: "commander", options: {{
+                    web: {{ deployments: [{{ source: {{ name: "commander", tag: "v1" }}, instances: [{{ instance_id: "commander_inst" }}] }}] }},
+                    xr: {{ deployments: [{{ source: {{ name: "headset", tag: "v1" }}, instances: [{{ instance_id: "headset_inst" }}] }}] }},
+                }} }},
+                {{ name: "camera", options: {{
+                    usb: {{ deployments: [{{ source: {{ name: "usb_camera", tag: "v1" }}, instances: [{{ instance_id: "camera_inst" }}] }}] }},
+                    ip: {{ deployments: [{{ source: {{ name: "ip_camera", tag: "v1" }}, instances: [{{ instance_id: "camera_inst" }}] }}] }},
+                }} }},
+            ],
+        }} }} }}],
+        deployments: [{{ robot: "real", instances: [{{ instance_id: "alpha"{alpha} }}] }}],
+    }}"#
+        )
+    };
+    let launched = load(&document(""))
+        .launch(&words(&["alpha.commander=web", "alpha.camera=usb"]), &[])
+        .unwrap();
+    assert_eq!(
+        launched.copies()[0].selection.echo(),
+        "robot=real  commander=web  camera=usb"
+    );
+    let parsed = PeppyLauncherParser::from_content(&document("")).unwrap();
+    let problems = daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"));
+    assert!(problems.is_empty(), "{problems:?}");
+
+    // An override of an instance only one commander defines is reported for
+    // each camera the other commander runs beside.
+    let parsed = PeppyLauncherParser::from_content(&document(
+        r#", arguments: { headset_inst: { fov: 1 } }"#,
+    ))
+    .unwrap();
+    let problems = daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"));
+    for combination in [
+        "(commander=web) (camera=usb)",
+        "(commander=web) (camera=ip)",
+    ] {
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains(combination) && problem.contains("headset_inst")),
+            "{combination}: {problems:?}"
+        );
+    }
+    assert!(
+        problems
+            .iter()
+            .all(|problem| !problem.contains("commander=xr")),
+        "{problems:?}"
+    );
+}
+
 /// Refusals of copy adjustments and scoped words: conflicting words for one
 /// copy, a guard on a copy axis, a stack instance as target, a word with no
 /// copy before the dot, and settings on a `one` axis entry.
