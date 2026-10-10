@@ -80,16 +80,22 @@ impl LoadedOption {
     }
 
     /// Every instance id this option can define, its own axes' options
+    /// included, once for each fragment that defines it.
+    fn iter_definable_ids(&self) -> impl Iterator<Item = &str> {
+        node_ids(self.all_fragments())
+    }
+
+    /// Every instance id this option can define, its own axes' options
     /// included.
     pub(super) fn definable_ids(&self) -> HashSet<&str> {
-        self.own_ids()
-            .chain(
-                self.nested
-                    .values()
-                    .flat_map(|options| options.values())
-                    .flat_map(|fragments| node_ids(fragments.iter())),
-            )
-            .collect()
+        self.iter_definable_ids().collect()
+    }
+
+    /// Whether this option, its own axes' options included, can define the
+    /// instance `id`. Answers without the set [`Self::definable_ids`]
+    /// builds, for the callers that ask about one id.
+    pub(super) fn can_define(&self, id: &str) -> bool {
+        self.iter_definable_ids().any(|defined| defined == id)
     }
 
     pub(super) fn all_fragments(&self) -> impl Iterator<Item = &LoadedFragment> {
@@ -301,7 +307,7 @@ fn option_defining<'a>(
                 .options_of(&axis.name)
                 .map(move |(option, loaded)| (axis.name.as_str(), option.as_str(), loaded))
         })
-        .find(|(_, _, option)| option.definable_ids().contains(target))
+        .find(|(_, _, option)| option.can_define(target))
         .map(|(axis, option, _)| (axis, option))
 }
 
@@ -588,7 +594,7 @@ fn check_routed_adjustment_copy_axes(
     // write, whichever other options define the id.
     let own_write = entry
         .under
-        .is_some_and(|(axis, option)| loaded.option(axis, option).definable_ids().contains(target));
+        .is_some_and(|(axis, option)| loaded.option(axis, option).can_define(target));
     if !own_write
         && named.is_empty()
         && let Some((stack_axis, stack_option)) = stack_option_defining(launcher, loaded, entry)
@@ -657,9 +663,7 @@ fn check_copy_adjustment_target_defined(
     let named = entry.options_named_on(copy_axis);
     let defining: Vec<&str> = loaded
         .options_of(copy_axis)
-        .filter(|(option, loaded)| {
-            !named.contains(&option.as_str()) && loaded.definable_ids().contains(target)
-        })
+        .filter(|(option, loaded)| !named.contains(&option.as_str()) && loaded.can_define(target))
         .map(|(option, _)| option.as_str())
         .collect();
     let reach: Vec<&str> = defined.iter().chain(stack_ids.iter()).copied().collect();
