@@ -190,6 +190,56 @@ fn a_401_refreshes_once_and_retries() {
     assert_eq!(persisted.refresh_token.expose_secret(), "rotated-refresh");
 }
 
+/// A `401` after a login at another platform replaced the session in the file
+/// does not refresh that session: its bearer never reaches the API the
+/// credential was built for, and the refusal stands.
+#[test]
+fn a_401_does_not_refresh_the_session_of_another_platform() {
+    let server = MockServer::start();
+    let other_platform = MockServer::start();
+    let other_token = mock_discovery_and_refresh(&other_platform);
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/workspaces")
+            .header("authorization", "Bearer seeded-access");
+        then.status(401);
+    });
+    let leaked = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/workspaces")
+            .header("authorization", "Bearer refreshed-access");
+        then.status(200).json_body(json!([]));
+    });
+    let (dir, mut api) = seeded_api(&server);
+    let other_session = ProfileCreds {
+        access_token: storage::secret("other-platform-access".to_string()),
+        refresh_token: storage::secret("other-platform-refresh".to_string()),
+        ..seeded_creds(&other_platform, storage::now_unix() + 3600)
+    };
+    storage::save(
+        &creds_path(&dir),
+        &Credentials {
+            session: Some(other_session),
+            ..Default::default()
+        },
+    )
+    .expect("log in at the other platform");
+
+    let Err(err) = api.list_workspaces() else {
+        panic!("the session of another platform must not answer the 401");
+    };
+
+    assert!(matches!(err, AuthError::NotAuthenticated), "{err}");
+    assert_eq!(other_token.calls(), 0);
+    assert_eq!(leaked.calls(), 0);
+    let stored = storage::load(&creds_path(&dir)).unwrap().session.unwrap();
+    assert_eq!(stored.issuer, other_platform.base_url());
+    assert_eq!(
+        stored.refresh_token.expose_secret(),
+        "other-platform-refresh"
+    );
+}
+
 #[test]
 fn projects_list_marks_archived_ones() {
     let server = MockServer::start();

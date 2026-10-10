@@ -75,7 +75,10 @@ fn load_enrolled(dirs: &PeppyDirs) -> Result<Enrollment> {
 
 /// The bearer of the cached session, when that session is one of the platform
 /// API the machine is enrolled at. A token of another platform cannot renew
-/// the peer, so it is not sent there.
+/// the peer, so it is not sent there. The first request carries the bearer of
+/// the session that passed the check, and the refresh after a `401` takes the
+/// session in the credentials file only when it has the issuer and client of
+/// that session.
 fn credential_for(
     dirs: &PeppyDirs,
     http: &HttpClient,
@@ -93,7 +96,7 @@ fn credential_for(
              {enrolled_origin}; run `peppy platform login --api-url {enrolled_origin}`"
         )));
     }
-    resolver::resolve(&creds_path, http)
+    resolver::resolve_session(&creds_path, http, &session)
 }
 
 #[cfg(test)]
