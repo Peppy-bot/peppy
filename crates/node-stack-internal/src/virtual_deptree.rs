@@ -66,32 +66,24 @@ impl VirtualDeptree {
         let mut graph: StableDiGraph<NodeKey, ()> = StableDiGraph::new();
         let mut by_key: HashMap<NodeKey, NodeIndex> = HashMap::with_capacity(nodes.len());
         let mut infos: HashMap<NodeIndex, VirtualNodeInfo> = HashMap::with_capacity(nodes.len());
-        let mut origin_paths: HashMap<NodeKey, PathBuf> = HashMap::with_capacity(nodes.len());
 
         // First pass: register every input node and detect duplicates.
         for (root_dir, config) in nodes {
-            let key = (
-                config.manifest.name.as_str().to_owned(),
-                config.manifest.tag.clone(),
-            );
+            let info = VirtualNodeInfo { root_dir, config };
+            let key = info.key();
 
-            if let Some(first) = origin_paths.get(&key) {
+            if let Some(first) = by_key.get(&key) {
                 return Err(Error::DuplicateLocalNode {
                     name: key.0,
                     tag: key.1,
-                    first: first.clone(),
-                    second: root_dir,
+                    first: infos[first].root_dir.clone(),
+                    second: info.root_dir,
                 });
             }
 
-            let info = VirtualNodeInfo {
-                root_dir: root_dir.clone(),
-                config,
-            };
             let idx = graph.add_node(key.clone());
-            by_key.insert(key.clone(), idx);
+            by_key.insert(key, idx);
             infos.insert(idx, info);
-            origin_paths.insert(key, root_dir);
         }
 
         // Second pass: add edges from each declared dependency that is also
