@@ -77,16 +77,6 @@ impl RustGenerator {
         Self::default()
     }
 
-    fn make_artifact(
-        &self,
-        leaf_name: &str,
-        origin: Option<&ContractOrigin>,
-        kind: InterfaceKind,
-        code_output: String,
-    ) -> InterfaceArtifact {
-        InterfaceArtifact::for_leaf(origin, leaf_name, kind, code_output)
-    }
-
     /// Sets the node parameters for code generation.
     pub fn set_parameters(&mut self, parameters: config::ParameterSchema) {
         self.parameters = parameters;
@@ -843,9 +833,9 @@ impl LanguageGenerator for RustGenerator {
             module_label = String::from("topic");
         }
 
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&module_label),
+        self.push_section(InterfaceArtifact::for_leaf(
             origin,
+            &sanitize_node_display_name(&module_label),
             InterfaceKind::EmittedTopic,
             rendered,
         ));
@@ -957,9 +947,9 @@ impl LanguageGenerator for RustGenerator {
             #( #service_tokens )*
         };
         let rendered = render_tokens(tokens);
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&module_label),
+        self.push_section(InterfaceArtifact::for_leaf(
             origin,
+            &sanitize_node_display_name(&module_label),
             InterfaceKind::ExposedService,
             rendered,
         ));
@@ -1204,9 +1194,9 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&action.name),
+        self.push_section(InterfaceArtifact::for_leaf(
             origin,
+            &sanitize_node_display_name(&action.name),
             InterfaceKind::ExposedAction,
             rendered,
         ));
