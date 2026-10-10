@@ -21,6 +21,7 @@
 
 use super::facade::{Apptainer, Backend};
 use super::lima;
+use daemon_config::consts::non_empty_env_path;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::num::NonZeroU64;
@@ -53,11 +54,10 @@ pub(crate) fn effective_host_cache_dir_from(
     cachedir_env: Option<OsString>,
     home: Option<OsString>,
 ) -> Option<PathBuf> {
-    if let Some(dir) = cachedir_env.filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(dir));
+    if let Some(dir) = non_empty_env_path(cachedir_env) {
+        return Some(dir);
     }
-    home.filter(|v| !v.is_empty())
-        .map(|home| PathBuf::from(home).join(".apptainer/cache"))
+    non_empty_env_path(home).map(|home| home.join(".apptainer/cache"))
 }
 
 /// One reading of the work a build has done so far.
