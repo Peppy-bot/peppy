@@ -1462,6 +1462,59 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
     );
 }
 
+/// The start path feeds the child's stderr, and not its stdout, into the
+/// tail that `abort_started` quotes after the original error.
+#[tokio::test]
+async fn abort_started_quotes_the_stderr_of_the_child_and_not_its_stdout() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let (instance_id, h) = start_harness("test-inst-stderr");
+    let mut config = real_lifecycle::override_execution_for_fixture(long_running_sensor_config());
+    config.execution.run_cmd = Some(
+        ["sh", "-c", "echo on-stdout; echo on-stderr >&2"]
+            .map(String::from)
+            .to_vec(),
+    );
+    let config_path = h.peppy_root.path().join("printing_sensor.json5");
+    let handle = real_lifecycle::build_ready_as_is(&stack, &h, config, config_path).await;
+
+    let (mut child, started_ctx) = NodeEntity::prepare_and_spawn(
+        &handle,
+        node_stack::StartContext {
+            instance_id: &instance_id,
+            runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
+            clock: Default::default(),
+            launch: None,
+            copy: None,
+            env_vars: &[],
+            mount_paths_resolved: &[],
+            peppy_dirs: &h.peppy_dirs,
+            output_sinks: h.output_sinks(),
+        },
+    )
+    .await
+    .expect("prepare_and_spawn should succeed");
+    // Waiting for the child to exit puts both lines in the pipes before
+    // abort_started kills it, so the readers it drains have seen them.
+    child
+        .wait()
+        .await
+        .expect("the child should exit on its own");
+
+    let msg = NodeEntity::abort_started(
+        &handle,
+        child,
+        started_ctx,
+        "synthetic failure".to_string(),
+        &instance_id,
+    )
+    .await;
+    assert_eq!(
+        msg,
+        "synthetic failure\n\n--- stderr (last lines) ---\non-stderr"
+    );
+}
+
 #[tokio::test]
 async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     // This is the multi-instance launch case: a node is already running and

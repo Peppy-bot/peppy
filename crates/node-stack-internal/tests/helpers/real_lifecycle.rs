@@ -122,7 +122,28 @@ pub async fn build_ready(
     config: NodeConfig,
     config_path: impl Into<PathBuf>,
 ) -> EntityHandle {
-    let config = override_execution_for_fixture(config);
+    build_ready_as_is(
+        stack,
+        harness,
+        override_execution_for_fixture(config),
+        config_path,
+    )
+    .await
+}
+
+/// Pushes `config` into `stack` with its execution fields as they are, then
+/// drives the real `NodeEntity::build` to produce a `Ready` entity. The
+/// config must build without apptainer or a user build_cmd; a test that
+/// needs its own `run_cmd` starts from [`override_execution_for_fixture`]
+/// and replaces it.
+///
+/// Returns the `Ready` entity handle.
+pub async fn build_ready_as_is(
+    stack: &NodeStack,
+    harness: &LifecycleHarness,
+    config: NodeConfig,
+    config_path: impl Into<PathBuf>,
+) -> EntityHandle {
     let config_path = config_path.into();
     let name = config.manifest.name.as_str().to_owned();
     let tag = config.manifest.tag.clone();
