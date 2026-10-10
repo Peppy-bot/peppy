@@ -17,8 +17,8 @@ from the mount table.
 
 The sizes at the restore come from a record that this script writes at the
 root of the disk at the end of each job, and that the snapshot keeps for the
-next job of the lineage. A disk without a record started blank, or came from
-a snapshot taken before the report existed.
+next job of the lineage. A disk without a record started blank, or no job of
+its lineage before this one ran this report.
 
 The script only reports. Anything it cannot read becomes a note in the
 report, and the post step turns a crash into a warning, so the job result
@@ -286,7 +286,7 @@ def render_report(
         restored = f"From the snapshot left by [{record.job}]({record.run_url}) at {record.written_at}"
         used += f", {format_change(record.disk_used_bytes, disk.used_bytes)} since the restore"
     else:
-        restored = "No record of an earlier job: the disk started blank, or from a snapshot taken before this report existed"
+        restored = "No record of an earlier job: the disk started blank, or no job before this one ran this report"
     lines = [
         f"### Sticky disk `{name}`",
         "",
