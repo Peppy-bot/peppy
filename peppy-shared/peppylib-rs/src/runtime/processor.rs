@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::sync::watch;
 
-use super::builder::{BoundPin, PinnedInstance, StandaloneConfig};
+use super::builder::{BoundPin, PeerPin, PinnedInstance, StandaloneConfig};
 use crate::services::binding_update::BindingSlotChannels;
 use crate::services::observation_update::ObservationSlotChannels;
 use crate::services::peer_update::PairingSlotChannels;
@@ -216,103 +216,9 @@ impl Processor {
                 reason: e.to_string(),
             })?;
 
-        // Daemon-less development: `StandaloneConfig::with_bound_producer`
-        // seeds a consumer slot's producer set, standing in for the
-        // launcher's validated binding map. Undeclared link_ids are ignored
-        // with a warning (mirroring `peer_pins` below); a declared slot
-        // whose seeded set violates its cardinality fails
-        // `build_bound_slots`, exactly like a daemon boot config with a
-        // bad binding. Duplicate seeded producers are rejected here, where
-        // `BoundProducers::try_from` mirrors the boot-config parse rule.
-        let mut slot_bindings = config::runtime::SlotBindings::new();
-        let declared_slots: BTreeSet<&str> = consumer_slots(&node_config)
-            .map(|(link_id, _)| link_id)
-            .collect();
-        for (link_id, pins) in &config.bound_producers {
-            if !declared_slots.contains(link_id.as_str()) {
-                tracing::warn!(
-                    link_id = %link_id,
-                    "StandaloneConfig bound producer names an undeclared consumer slot; ignoring"
-                );
-                continue;
-            }
-            let members = pins
-                .iter()
-                .map(|pin| seed_bound_member(link_id, pin))
-                .collect::<Result<Vec<_>>>()?;
-            let bound = config::runtime::BoundProducers::try_from(members)
-                .map_err(config::ConfigError::from)?;
-            slot_bindings.insert(link_id.clone(), bound);
-        }
-
-        // Daemon-less development: `StandaloneConfig::with_observed_source`
-        // seeds an observer slot's member set, standing in for the set the
-        // daemon stamps into a spawned node's boot config. Undeclared link_ids
-        // are ignored with a warning, on the same terms as `bound_producers`
-        // above; a declared slot whose seeded set violates its cardinality, or
-        // that repeats a pairing, fails `build_observation_slots`, exactly like
-        // a daemon boot config with a bad seed. Members boot live at generation
-        // zero: standalone has no daemon to report an incarnation change or a
-        // source going down.
-        let observation_cardinalities = build_observer_cardinalities(&node_config);
-        let mut observation_seeds = config::runtime::ObservationSeeds::new();
-        for (link_id, sources) in &config.observed_sources {
-            if !observation_cardinalities.contains_key(link_id) {
-                tracing::warn!(
-                    link_id = %link_id,
-                    "StandaloneConfig observed source names an undeclared observer slot; ignoring"
-                );
-                continue;
-            }
-            observation_seeds.insert(
-                link_id.clone(),
-                sources
-                    .iter()
-                    .map(|source| config::runtime::ObservationSeedMember {
-                        source: source.producer.clone(),
-                        source_link_id: source.source_link_id.clone(),
-                        peer: source
-                            .peer
-                            .as_ref()
-                            .map(config::runtime::ObservedPeer::from),
-                        source_generation: 0,
-                        source_live: true,
-                    })
-                    .collect(),
-            );
-        }
-
-        // Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a
-        // pairing slot's pairs, standing in for the set the daemon stamps
-        // into a spawned node's boot config. Undeclared link_ids are ignored
-        // with a warning, on the same terms as `bound_producers` above; a
-        // scalar slot seeded with two pairs fails `build_pairing_slots`.
-        let pairing_cardinalities = build_pairing_cardinalities(&node_config);
-        let mut pairing_slots_seed = config::runtime::PairingSlots::new();
-        for (link_id, pins) in &config.peer_pins {
-            if !pairing_cardinalities.contains_key(link_id) {
-                tracing::warn!(
-                    link_id = %link_id,
-                    "StandaloneConfig peer pin names an undeclared pairing slot; ignoring"
-                );
-                continue;
-            }
-            let pairs = pins
-                .iter()
-                .map(|pin| {
-                    Ok(config::runtime::PairedPeer {
-                        peer: pin.info.producer.clone(),
-                        peer_link_id: pin.info.peer_link_id.clone(),
-                        copy: pin
-                            .copy
-                            .as_deref()
-                            .map(|copy| seed_copy_name(link_id, copy))
-                            .transpose()?,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
-            pairing_slots_seed.insert(link_id.clone(), pairs);
-        }
+        let slot_bindings = seed_slot_bindings(&node_config, &config.bound_producers)?;
+        let observation_seeds = seed_observations(&node_config, &config.observed_sources);
+        let pairing_slots_seed = seed_pairing_slots(&node_config, &config.peer_pins)?;
 
         let runtime_config = RuntimeConfig::new(
             &messaging_host,
@@ -335,8 +241,10 @@ impl Processor {
             STANDALONE_CORE_NODE,
         )?;
 
+        let pairing_cardinalities = build_pairing_cardinalities(&node_config);
         let pairing_slots = build_pairing_slots(&runtime_config, &pairing_cardinalities)?;
         let bound_slots = build_bound_slots(&runtime_config, &node_config)?;
+        let observation_cardinalities = build_observer_cardinalities(&node_config);
         let observation_slots =
             build_observation_slots(&runtime_config, &observation_cardinalities)?;
 
@@ -771,9 +679,9 @@ fn build_observation_slots(
         .map(Arc::new)
 }
 
-/// Each observer slot's declared `cardinality`, keyed by link_id. Built once
-/// per processor and handed to [`build_observation_slots`], which seeds a
-/// channel for exactly these link_ids.
+/// Each observer slot's declared `cardinality`, keyed by link_id: the link_ids
+/// [`build_observation_slots`] seeds a channel for, and the ones
+/// [`seed_observations`] accepts a standalone seed on.
 fn build_observer_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Cardinality> {
     node_config
         .manifest
@@ -943,6 +851,121 @@ fn one_or_more_slot_is_empty(link_id: &str) -> ! {
          cardinality `one_or_more`: {}",
         super::RESYNC_REMEDY
     )
+}
+
+/// Daemon-less development: `StandaloneConfig::with_bound_producer` seeds a
+/// consumer slot's producer set, standing in for the launcher's validated
+/// binding map. Undeclared link_ids are ignored with a warning (as
+/// [`seed_observations`] and [`seed_pairing_slots`] do); a declared slot
+/// whose seeded set violates its cardinality fails [`build_bound_slots`],
+/// exactly like a daemon boot config with a bad binding. Duplicate seeded
+/// producers are rejected here, where `BoundProducers::try_from` mirrors the
+/// boot-config parse rule.
+fn seed_slot_bindings(
+    node_config: &NodeConfig,
+    bound_producers: &BTreeMap<String, Vec<BoundPin>>,
+) -> Result<config::runtime::SlotBindings> {
+    let declared_slots: BTreeSet<&str> = consumer_slots(node_config)
+        .map(|(link_id, _)| link_id)
+        .collect();
+    let mut slot_bindings = config::runtime::SlotBindings::new();
+    for (link_id, pins) in bound_producers {
+        if !declared_slots.contains(link_id.as_str()) {
+            tracing::warn!(
+                link_id = %link_id,
+                "StandaloneConfig bound producer names an undeclared consumer slot; ignoring"
+            );
+            continue;
+        }
+        let members = pins
+            .iter()
+            .map(|pin| seed_bound_member(link_id, pin))
+            .collect::<Result<Vec<_>>>()?;
+        let bound = config::runtime::BoundProducers::try_from(members)
+            .map_err(config::ConfigError::from)?;
+        slot_bindings.insert(link_id.clone(), bound);
+    }
+    Ok(slot_bindings)
+}
+
+/// Daemon-less development: `StandaloneConfig::with_observed_source` seeds an
+/// observer slot's member set, standing in for the set the daemon stamps into
+/// a spawned node's boot config. Undeclared link_ids are ignored with a
+/// warning, on the same terms as [`seed_slot_bindings`]; a declared slot whose
+/// seeded set violates its cardinality, or that repeats a pairing, fails
+/// [`build_observation_slots`], exactly like a daemon boot config with a bad
+/// seed. Members boot live at generation zero: standalone has no daemon to
+/// report an incarnation change or a source going down.
+fn seed_observations(
+    node_config: &NodeConfig,
+    observed_sources: &BTreeMap<String, Vec<crate::messaging::ObservedSource>>,
+) -> config::runtime::ObservationSeeds {
+    let cardinalities = build_observer_cardinalities(node_config);
+    let mut observation_seeds = config::runtime::ObservationSeeds::new();
+    for (link_id, sources) in observed_sources {
+        if !cardinalities.contains_key(link_id) {
+            tracing::warn!(
+                link_id = %link_id,
+                "StandaloneConfig observed source names an undeclared observer slot; ignoring"
+            );
+            continue;
+        }
+        observation_seeds.insert(
+            link_id.clone(),
+            sources
+                .iter()
+                .map(|source| config::runtime::ObservationSeedMember {
+                    source: source.producer.clone(),
+                    source_link_id: source.source_link_id.clone(),
+                    peer: source
+                        .peer
+                        .as_ref()
+                        .map(config::runtime::ObservedPeer::from),
+                    source_generation: 0,
+                    source_live: true,
+                })
+                .collect(),
+        );
+    }
+    observation_seeds
+}
+
+/// Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a pairing
+/// slot's pairs, standing in for the set the daemon stamps into a spawned
+/// node's boot config. Undeclared link_ids are ignored with a warning, on the
+/// same terms as [`seed_slot_bindings`]; a scalar slot seeded with two pairs
+/// fails [`build_pairing_slots`].
+fn seed_pairing_slots(
+    node_config: &NodeConfig,
+    peer_pins: &BTreeMap<String, Vec<PeerPin>>,
+) -> Result<config::runtime::PairingSlots> {
+    let cardinalities = build_pairing_cardinalities(node_config);
+    let mut pairing_slots = config::runtime::PairingSlots::new();
+    for (link_id, pins) in peer_pins {
+        if !cardinalities.contains_key(link_id) {
+            tracing::warn!(
+                link_id = %link_id,
+                "StandaloneConfig peer pin names an undeclared pairing slot; ignoring"
+            );
+            continue;
+        }
+        let pairs = pins
+            .iter()
+            .map(|pin| {
+                Ok(config::runtime::PairedPeer {
+                    peer: pin.info.producer.clone(),
+                    peer_link_id: pin.info.peer_link_id.clone(),
+                    copy: pin
+                        .copy
+                        .as_deref()
+                        .map(|copy| seed_copy_name(link_id, copy))
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        pairing_slots.insert(link_id.clone(), pairs);
+    }
+    Ok(pairing_slots)
 }
 
 /// The member a standalone seed pins to slot `link_id`: an instance under
