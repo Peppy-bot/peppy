@@ -1420,6 +1420,63 @@ async fn act_on_slot(slot: &GoalSlot, responder: ServiceResponder) -> ResultAct 
     }
 }
 
+/// Where [`route_result_poll`] sends a result poll.
+enum ResultPollRoute {
+    /// The goal has a slot: [`act_on_slot`] answers or parks the poll.
+    Slot(GoalSlot, ServiceResponder),
+    /// The goal was evicted: the poll gets `Expired` now.
+    Expired(ServiceResponder),
+    /// The poll waits in `PendingWaiters` until `accept` adopts it, or was
+    /// dropped because they are full.
+    ParkedOrDropped,
+}
+
+/// Routes a result poll for `goal_id` under the `std` locks. It is
+/// synchronous, so the caller can only await on the route after every `std`
+/// lock is released.
+fn route_result_poll(
+    goal_id: &str,
+    responder: ServiceResponder,
+    registry: &GoalRegistry,
+    pending_waiters: &PendingWaiters,
+    tombstones: &Tombstones,
+) -> ResultPollRoute {
+    // Clone the slot out under the std lock (dropped at the `;`): the registry
+    // lock is released before `pending_waiters` is taken below.
+    let slot = registry.lock().unwrap().get(goal_id).cloned();
+    if let Some(slot) = slot {
+        return ResultPollRoute::Slot(slot, responder);
+    }
+
+    // No slot: the poll beat `accept`, is for an evicted goal (tombstone), or
+    // for a never-existed goal_id. Decide while holding `pending_waiters`,
+    // re-reading the registry under it so a concurrent `accept` that just
+    // inserted the slot (and whose adoption pass therefore missed this poll)
+    // cannot orphan it.
+    let mut pending = pending_waiters.lock().unwrap();
+    let slot_now = registry.lock().unwrap().get(goal_id).cloned();
+    if let Some(slot) = slot_now {
+        return ResultPollRoute::Slot(slot, responder);
+    }
+    if tombstones.lock().unwrap().contains(goal_id) {
+        return ResultPollRoute::Expired(responder);
+    }
+    let total: usize = pending.values().map(Vec::len).sum();
+    if total >= PENDING_WAITERS_CAP {
+        // Overflow: drop the responder; the client falls back to its own
+        // timeout.
+        return ResultPollRoute::ParkedOrDropped;
+    }
+    pending
+        .entry(goal_id.to_string())
+        .or_default()
+        .push(PendingWaiter {
+            responder,
+            deadline: Instant::now() + PENDING_WAITER_MAX_PARK,
+        });
+    ResultPollRoute::ParkedOrDropped
+}
+
 /// Background loop: routes each incoming result request to the matching goal.
 /// A `Pending` goal parks the responder until it reaches a terminal state; a
 /// `Terminal` goal replies inline with its typed outcome; a poll that arrived
@@ -1437,44 +1494,19 @@ async fn run_result_loop(
     while let Some((goal_id, responder)) =
         next_goal_request(&mut result_service, &stop, GoalRequestService::Result).await
     {
-        // Clone the slot out under the std lock (dropped at the `;`); never hold
-        // the registry lock across `.await`.
-        let slot = registry.lock().unwrap().get(&goal_id).cloned();
-
-        let act = match slot {
-            Some(slot) => act_on_slot(&slot, responder).await,
-            None => {
-                // No slot: the poll beat `accept`, is for an evicted goal
-                // (tombstone), or for a never-existed goal_id. Decide while
-                // holding `pending_waiters`, re-reading the registry under it so
-                // a concurrent `accept` that just inserted the slot (and whose
-                // adoption pass therefore missed this poll) cannot orphan it.
-                let pending = pending_waiters.lock().unwrap();
-                let slot_now = registry.lock().unwrap().get(&goal_id).cloned();
-                if let Some(slot) = slot_now {
-                    drop(pending);
-                    act_on_slot(&slot, responder).await
-                } else if tombstones.lock().unwrap().contains(&goal_id) {
-                    Some((responder, wrap_result_outcome(ResultStatus::Expired, &[])))
-                } else {
-                    let mut pending = pending;
-                    let total: usize = pending.values().map(Vec::len).sum();
-                    if total >= PENDING_WAITERS_CAP {
-                        // Overflow: drop the responder; the client falls back to
-                        // its own timeout.
-                        None
-                    } else {
-                        pending
-                            .entry(goal_id.clone())
-                            .or_default()
-                            .push(PendingWaiter {
-                                responder,
-                                deadline: Instant::now() + PENDING_WAITER_MAX_PARK,
-                            });
-                        None
-                    }
-                }
+        let route = route_result_poll(
+            &goal_id,
+            responder,
+            &registry,
+            &pending_waiters,
+            &tombstones,
+        );
+        let act = match route {
+            ResultPollRoute::Slot(slot, responder) => act_on_slot(&slot, responder).await,
+            ResultPollRoute::Expired(responder) => {
+                Some((responder, wrap_result_outcome(ResultStatus::Expired, &[])))
             }
+            ResultPollRoute::ParkedOrDropped => None,
         };
 
         if let Some((responder, payload)) = act {
@@ -2295,6 +2327,7 @@ mod envelope_tests {
 #[cfg(test)]
 mod engine_tests {
     use super::*;
+    use futures::poll;
     use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 
     const CORE: &str = "engine_core";
@@ -2400,5 +2433,47 @@ mod engine_tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_result_poll_that_arrives_before_accept_resolves_with_the_goal() {
+        let (handle, mut action, sender) = expose_mock_action().await;
+        let result_service = sender.result_service();
+        let goal_service = sender.goal_service();
+        let goal_id = "early_goal";
+        let mut early_poll = Box::pin(handle.poll_service(
+            &result_service,
+            wrap_goal_payload(goal_id, &[]).unwrap(),
+            ServiceQueryKind::UserRequest,
+            None,
+        ));
+        assert!(poll!(early_poll.as_mut()).is_pending());
+        // The result loop routes requests in order, so the answer to a later
+        // request proves that it has routed the early poll.
+        send_malformed_request(&handle, &result_service).await;
+        assert!(action.pending_waiters.lock().unwrap().contains_key(goal_id));
+
+        let mut goal_call = Box::pin(handle.poll_service(
+            &goal_service,
+            wrap_goal_payload(goal_id, &[]).unwrap(),
+            ServiceQueryKind::UserRequest,
+            None,
+        ));
+        assert!(poll!(goal_call.as_mut()).is_pending());
+        let pending = action.recv_next_goal().await.unwrap().unwrap();
+        assert_eq!(pending.goal_id(), goal_id);
+        let context = pending.accept(Payload::new()).await.unwrap();
+        assert!(!action.pending_waiters.lock().unwrap().contains_key(goal_id));
+        goal_call.await.unwrap();
+        context
+            .complete(Payload::from_static(b"early result"))
+            .await
+            .unwrap();
+
+        let reply = early_poll.await.unwrap();
+        let reply_bytes = reply.payload_bytes();
+        let (status, body) = unwrap_result_outcome(reply_bytes.as_ref()).unwrap();
+        assert_eq!(status, ResultStatus::Completed);
+        assert_eq!(body, b"early result");
     }
 }
