@@ -455,12 +455,19 @@ fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
     // formula sums two such differences before halving — we need headroom.
     // t1/t2 come from an unauthenticated peer, so saturate (don't wrap) on the
     // narrow back to i64/u64 — a misbehaving server could otherwise flip signs.
-    let i = |x: u64| x as i128;
-    let offset = ((i(t1) - i(t0)) + (i(t2) - i(t3))) / 2;
-    let delay = (i(t3) - i(t0)) - (i(t2) - i(t1));
+    let (t0, t1, t2, t3) = (
+        i128::from(t0),
+        i128::from(t1),
+        i128::from(t2),
+        i128::from(t3),
+    );
+    let offset = ((t1 - t0) + (t2 - t3)) / 2;
+    let delay = (t3 - t0) - (t2 - t1);
 
-    let offset = i64::try_from(offset).unwrap_or(if offset > 0 { i64::MAX } else { i64::MIN });
-    let delay = u64::try_from(delay.max(0)).unwrap_or(u64::MAX);
+    // Each clamp bounds its value to the range of the target type, so the
+    // casts that follow are lossless.
+    let offset = offset.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+    let delay = delay.clamp(0, i128::from(u64::MAX)) as u64;
     (offset, delay)
 }
 
@@ -718,5 +725,21 @@ mod compute_sync_tests {
         // in i128 — exceeds u64::MAX, so saturate rather than wrap.
         let (_, delay) = compute_sync(0, u64::MAX, 0, u64::MAX);
         assert_eq!(delay, u64::MAX);
+    }
+
+    #[test]
+    fn compute_sync_clamps_negative_offset_overflow() {
+        // A peer stamping t1 = t2 = 0 against a local clock at u64::MAX gives
+        // a raw offset of -u64::MAX, below i64::MIN.
+        let (offset, _) = compute_sync(u64::MAX, 0, 0, u64::MAX);
+        assert_eq!(offset, i64::MIN);
+    }
+
+    #[test]
+    fn compute_sync_clamps_negative_delay_to_zero() {
+        // A peer claiming more processing time (t2 - t1) than the whole round
+        // trip (t3 - t0) gives a negative raw delay.
+        let (_, delay) = compute_sync(0, 0, u64::MAX, 0);
+        assert_eq!(delay, 0);
     }
 }
