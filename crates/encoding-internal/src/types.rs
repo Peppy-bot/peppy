@@ -10,12 +10,4 @@ impl FunctionParam {
     pub fn new(ident: Ident, ty: TokenStream) -> Self {
         Self { ident, ty }
     }
-
-    pub fn ident(&self) -> &Ident {
-        &self.ident
-    }
-
-    pub fn ty(&self) -> &TokenStream {
-        &self.ty
-    }
 }

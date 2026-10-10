@@ -5,8 +5,8 @@
 //! binary needed to do so (see `build.rs` and `tools/`). It lives outside
 //! `peppy-shared` because only `peppy`'s code generator depends on it.
 
-pub mod facade;
-pub mod types;
+mod facade;
+mod types;
 pub mod wire_layout;
 
 pub use types::FunctionParam;
@@ -24,8 +24,6 @@ use capnpc::codegen_types::{Leaf, RustTypeInfo};
 use proc_macro2::{Ident, Span, TokenStream};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
 use std::str::FromStr;
 use tempfile::tempdir;
 
@@ -635,6 +633,7 @@ mod tests {
     use super::*;
     use config::node::MessageFormat;
     use proc_macro2::TokenStream;
+    use std::path::PathBuf;
 
     fn canonicalize_tokens(tokens: &TokenStream) -> String {
         tokens
@@ -651,7 +650,7 @@ mod tests {
     fn params_to_map(params: &[FunctionParam]) -> std::collections::HashMap<String, String> {
         params
             .iter()
-            .map(|param| (param.ident().to_string(), canonicalize_tokens(param.ty())))
+            .map(|param| (param.ident.to_string(), canonicalize_tokens(&param.ty)))
             .collect()
     }
 
