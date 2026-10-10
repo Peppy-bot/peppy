@@ -19,8 +19,8 @@
 //! absolute paths, before anything is created or registered.
 
 use super::action::StackChangeContext;
+use super::launch::PlannedDeployment;
 use super::launch::feedback::{publish_stdout, publish_warning};
-use super::launch::{NodeKey, PlannedDeployment};
 use crate::services::node::resolve_mount_path_parameters;
 use config::apply_parameter_defaults;
 use containers::{Apptainer, is_host_provided_mount_source};
@@ -253,7 +253,7 @@ pub(super) fn container_mount_sources_by_machine(
         if raw_mount_paths.is_empty() {
             continue;
         }
-        let label = NodeKey::new(&item.node_name, &item.node_tag).label();
+        let label = item.key().label();
 
         for instance in &item.deployment.instances {
             let machine = placements.of(instance.instance_id.as_str());

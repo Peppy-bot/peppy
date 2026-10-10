@@ -173,6 +173,14 @@ pub(super) struct PlannedDeployment {
     pub(super) addressing: daemon_config::launcher::MemberAddressing,
 }
 
+impl PlannedDeployment {
+    /// The node this deployment runs, under the resolved name and tag that
+    /// every plan order and lookup keys it by.
+    pub(super) fn key(&self) -> NodeKey {
+        NodeKey::new(&self.node_name, &self.node_tag)
+    }
+}
+
 /// Process a stack launch request.
 ///
 /// This function orchestrates the complete launch sequence:
@@ -395,10 +403,8 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         launch_id: goal.launch_id.clone(),
         rebuild: goal.rebuild,
     };
-    let planned_by_key: HashMap<NodeKey, PlannedDeployment> = planned
-        .into_iter()
-        .map(|item| (NodeKey::new(&item.node_name, &item.node_tag), item))
-        .collect();
+    let planned_by_key: HashMap<NodeKey, PlannedDeployment> =
+        planned.into_iter().map(|item| (item.key(), item)).collect();
 
     let mut add_log_paths: Vec<NodeAddLogEntry> = Vec::new();
     let mut build_log_paths: Vec<NodeBuildLogEntry> = Vec::new();

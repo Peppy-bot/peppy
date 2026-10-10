@@ -127,8 +127,7 @@ pub(super) async fn check_live_stack(
                     item.node_name, item.node_tag
                 ));
             }
-            let response =
-                node_info_on(ctx, host, &NodeKey::new(&item.node_name, &item.node_tag)).await?;
+            let response = node_info_on(ctx, host, &item.key()).await?;
             if !matches!(response, core_node_api::encoding::NodeInfoResponse::Found(info) if info.config_integrity == item.config_sha256)
             {
                 return Err(format!(
@@ -137,7 +136,7 @@ pub(super) async fn check_live_stack(
                 ));
             }
             reusable.insert(HostedNode {
-                node: NodeKey::new(&item.node_name, &item.node_tag),
+                node: item.key(),
                 core_node: config::runtime::CoreNodeName::new(host)
                     .map_err(|error| error.to_string())?,
             });

@@ -14,7 +14,7 @@ use super::super::launch::preflight::preflight_change;
 use super::super::launch::start::start_node_instances;
 use super::super::launch::watchers::{lifecycle_watchers, watchers_replacing};
 use super::super::launch::{
-    HostedNode, JoinScope, NodeKey, PhaseChange, PhaseGoal, UnresolvedAdd, federated,
+    HostedNode, JoinScope, PhaseChange, PhaseGoal, UnresolvedAdd, federated,
 };
 use super::super::state::{ActiveLaunch, StackCopy, copy_in_start_order};
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
@@ -150,7 +150,7 @@ async fn join_inner(
         new_ids.contains(instance.instance_id.as_str())
     })
     .into_iter()
-    .map(|item| (NodeKey::new(&item.node_name, &item.node_tag), item))
+    .map(|item| (item.key(), item))
     .collect();
     // `copy` is held past the record's move into the launch: a failed
     // delivery puts the sets this copy's instances joined back the way they
@@ -201,7 +201,7 @@ async fn join_inner(
             .values()
             .flat_map(|item| {
                 item.deployment.instances.iter().map(|instance| HostedNode {
-                    node: NodeKey::new(&item.node_name, &item.node_tag),
+                    node: item.key(),
                     core_node: placements
                         .core_node_of(instance.instance_id.as_str())
                         .clone(),
@@ -457,6 +457,7 @@ async fn remove_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::stack::launch::NodeKey;
     use config::runtime::CoreNodeName;
     use std::path::PathBuf;
 

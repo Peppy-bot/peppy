@@ -307,16 +307,10 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     let mut configs_by_key: HashMap<NodeKey, config::node::NodeConfig> = HashMap::new();
     configs_by_key.insert(root_key.clone(), root_config.clone());
     for item in planned {
-        configs_by_key.insert(
-            NodeKey::new(&item.node_name, &item.node_tag),
-            item.config.clone(),
-        );
+        configs_by_key.insert(item.key(), item.config.clone());
     }
 
-    let planned_keys: HashSet<NodeKey> = planned
-        .iter()
-        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
-        .collect();
+    let planned_keys: HashSet<NodeKey> = planned.iter().map(PlannedDeployment::key).collect();
 
     // Validate all dependencies exist and expose the required interfaces.
     // An empty-admitting slot's dependency may be missing from the plan
@@ -439,7 +433,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     // Build the dependency graph for topological ordering.
     let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
     for item in planned {
-        let dependant_key = NodeKey::new(&item.node_name, &item.node_tag);
+        let dependant_key = item.key();
         let mut deps = HashSet::new();
         for spec in config::node::collect_dependency_specs(&item.config) {
             let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag);
@@ -483,10 +477,7 @@ fn topological_sort(
     let mut in_degree: HashMap<NodeKey, usize> = HashMap::new();
     let mut dependents: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
 
-    for key in planned
-        .iter()
-        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
-    {
+    for key in planned.iter().map(PlannedDeployment::key) {
         in_degree.entry(key.clone()).or_insert(0);
         dependents.entry(key).or_default();
     }
@@ -504,7 +495,7 @@ fn topological_sort(
     let order_index: HashMap<NodeKey, usize> = planned
         .iter()
         .enumerate()
-        .map(|(idx, p)| (NodeKey::new(&p.node_name, &p.node_tag), idx))
+        .map(|(idx, p)| (p.key(), idx))
         .collect();
 
     let mut ready: Vec<NodeKey> = in_degree
