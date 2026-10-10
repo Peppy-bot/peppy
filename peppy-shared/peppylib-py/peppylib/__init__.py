@@ -3,7 +3,6 @@ peppylib - The Peppy control library
 """
 
 import sys
-from ._version import __version__
 from . import encoding
 
 # Force line-buffered stdout/stderr when not connected to a TTY (e.g., when
@@ -17,6 +16,8 @@ if hasattr(sys.stderr, "reconfigure") and not sys.stderr.isatty():
 # Import the native module and register submodules in sys.modules
 # This is required for PyO3 submodules to be importable with dot notation
 from . import _peppylib  # type: ignore[import-not-found]
+
+__version__ = _peppylib.__version__
 
 # Public module aliases
 sys.modules["peppylib.messaging"] = _peppylib.messaging

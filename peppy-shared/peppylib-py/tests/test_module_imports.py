@@ -14,3 +14,11 @@ def test_public_messaging_module_is_importable():
     assert ZenohdInstance is not None
     assert ServiceMessenger is not None
     assert ActionMessenger is not None
+
+
+def test_version_comes_from_the_native_module():
+    """`peppylib.__version__` is the version the native extension was built
+    with."""
+    import peppylib
+
+    assert peppylib.__version__ == peppylib._peppylib.__version__
