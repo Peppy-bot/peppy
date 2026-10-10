@@ -32,7 +32,8 @@ Three commands, each on the paths as the host sees them:
     sweep <target dir>
         Removes every unit the record does not list, which cleans up after
         a run that stopped before its `record`. A target dir without a
-        record is cleared: nothing in it is known to be live.
+        record is cleared: nothing in it is known to be live. A record this
+        script cannot read counts as no record.
 
     prune <target root> <live dir>...
         Removes every entry of <target root> that is not a live dir, inside
@@ -216,11 +217,18 @@ def inode_index(directory: Path) -> dict[tuple[int, int], str]:
 
 
 def read_record(target_dir: Path) -> LiveUnits | None:
+    """The live units the record lists; None when there is no record, or one
+    this script cannot read, since nothing in the dir is then known to be
+    live."""
     record = target_dir / RECORD_NAME
     if not record.exists():
         return None
-    content = json.loads(record.read_text())
-    return LiveUnits(frozenset(content["hashes"]), frozenset(content["copies"]))
+    try:
+        content = json.loads(record.read_text())
+        return LiveUnits(frozenset(content["hashes"]), frozenset(content["copies"]))
+    except (OSError, ValueError, KeyError, TypeError) as unreadable:
+        print(f"::warning::the record of {target_dir} is unreadable ({unreadable!r}); it counts as absent")
+        return None
 
 
 def write_record(target_dir: Path, live: LiveUnits) -> None:

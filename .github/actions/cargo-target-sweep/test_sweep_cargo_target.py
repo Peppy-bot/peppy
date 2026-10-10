@@ -154,6 +154,10 @@ class TargetDir:
         return path
 
 
+# Records the sweep cannot read: cut short, without a field, of another shape.
+UNREADABLE_RECORDS = ("{", '{"hashes": []}', "[]")
+
+
 def old_build(target):
     """Lays out the units of a build before serde changed, and lists them."""
     return [
@@ -295,6 +299,24 @@ class SweepTest(SweepTestCase):
         self.assertEqual(list(self.target.root.iterdir()), [])
         self.assertEqual(removed.entries, 2)
 
+    def test_an_unreadable_record_clears_the_target_dir(self):
+        for content in UNREADABLE_RECORDS:
+            with self.subTest(record=content):
+                old_build(self.target)
+                (self.target.root / sweep.RECORD_NAME).write_text(content)
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    sweep.sweep(self.target.root)
+                self.assertEqual(list(self.target.root.iterdir()), [])
+                self.assertIn("::warning::", output.getvalue())
+
+    def test_a_record_it_cannot_open_clears_the_target_dir(self):
+        old_build(self.target)
+        (self.target.root / sweep.RECORD_NAME).mkdir()
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            sweep.sweep(self.target.root)
+        self.assertEqual(list(self.target.root.iterdir()), [])
+        self.assertIn("::warning::", output.getvalue())
+
     def test_removes_every_unit_and_copy_the_record_does_not_list(self):
         old_build(self.target)
         sweep.write_record(
@@ -400,6 +422,14 @@ class RecordTest(SweepTestCase):
         self.assertEqual(self.target.entries(), before)
         self.assertIsNone(self.recorded())
         self.assertIn("::warning::", self.output)
+
+    def test_replaces_an_unreadable_record_with_the_units_the_build_used(self):
+        for content in UNREADABLE_RECORDS:
+            with self.subTest(record=content):
+                (self.target.root / sweep.RECORD_NAME).write_text(content)
+                self.record([self.target.library("serde", NEW_SERDE), build_finished(False)])
+                self.assertEqual(self.recorded(), sweep.LiveUnits(frozenset({NEW_SERDE}), frozenset()))
+                self.assertIn("::warning::", self.output)
 
     def test_replaces_the_record_in_place(self):
         self.record(old_build(self.target))
