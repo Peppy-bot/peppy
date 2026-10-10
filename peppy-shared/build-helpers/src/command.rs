@@ -45,7 +45,7 @@ const FAILURE_TAIL_LINES: usize = 40;
 /// reporting.
 ///
 /// Any stdout/stderr configuration already set on `command` is overridden
-/// with `Stdio::piped()`; stdin is left inherited — pass
+/// with `Stdio::piped()`; stdin is left inherited, so pass
 /// `.stdin(Stdio::null())` for tools that might prompt for input.
 pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutput {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());

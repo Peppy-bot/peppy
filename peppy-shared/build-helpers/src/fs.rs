@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 /// current user. Suffixes must therefore be unique across consumer crates and
 /// version-keyed when their contents are version-specific (existing
 /// convention: `ruff-{version}`, `lima-{version}-{os}-{arch}`). Nothing ever
-/// cleans the cache — stale entries persist until removed manually with
+/// cleans the cache: stale entries persist until removed manually with
 /// `rm -rf ~/.peppy/tmp/<suffix>`. In production runs the peppy runtime's
 /// `PeppyDirs::tmp_dir()` (peppy `daemon-config`) resolves to the same
 /// `~/.peppy/tmp`, so neither side may ever bulk-clean the directory.
@@ -224,7 +224,7 @@ fn move_file_with(src: &Path, dst: &Path, rename: impl Fn(&Path, &Path) -> std::
 /// Acquire an exclusive file lock for serializing concurrent build invocations.
 ///
 /// Creates the lock directory if needed, opens the lock file, and acquires
-/// an exclusive lock. Returns the `File` handle — the lock is held as long
+/// an exclusive lock. Returns the `File` handle; the lock is held as long
 /// as the handle is alive.
 pub fn acquire_file_lock(lock_path: &Path) -> std::fs::File {
     let lock_dir = lock_path
