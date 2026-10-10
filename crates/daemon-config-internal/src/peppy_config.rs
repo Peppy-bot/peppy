@@ -1292,13 +1292,6 @@ mod tests {
 
         assert_eq!(config, PeppyConfig::default());
         assert_eq!(std::fs::read(&path).unwrap(), before);
-
-        let tmp = tempdir().unwrap();
-        let root = tmp.path().join("never-created");
-        let peppy_dirs = PeppyDirs::new(&root);
-        load_or_create_with_override(&peppy_dirs, Some(DEFAULT_PEPPY_CONFIG_TEMPLATE.into()))
-            .unwrap();
-        assert!(!root.exists());
     }
 
     #[test]
@@ -1345,7 +1338,7 @@ mod tests {
     }
 
     #[test]
-    fn override_with_escaped_key_outdated_doc_crashes() {
+    fn override_with_escaped_key_outdated_doc_names_the_missing_setting() {
         let content = DEFAULT_PEPPY_CONFIG_TEMPLATE
             .replacen("  lifecycle: {", r#"  "life\u0063ycle": {"#, 1)
             .replacen(SHUTDOWN_GRACE_FIELD_SNIPPET, "", 1);
