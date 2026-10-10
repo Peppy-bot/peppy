@@ -2,15 +2,17 @@
 //! its discovery must be scoped to `scope_core_node` (the core node hosting
 //! the instance to stop), not to the caller's `bound_core_node` identity.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use peppylib::core_node::transport::poll_node_stop;
-use peppylib::messaging::{MessengerHandle, SenderTarget, ServiceMessenger, ServiceTarget};
-use pmi::ZenohAdapter;
+use peppylib::messaging::{MessengerHandle, ProducerRef, SenderTarget, ServiceMessenger};
+use peppylib::testing::{EphemeralRouter, wait_service_reachable};
 
 const BOUND_CORE: &str = "local-core";
+/// The instance hosting the `node_stop` listener on the bound core node.
+const BOUND_DAEMON_INSTANCE: &str = "local_daemon";
 const SCOPE_CORE: &str = "remote-core";
 const CLIENT_INSTANCE: &str = "test_caller";
 const NODE_NAME: &str = "worker_node";
@@ -61,24 +63,16 @@ async fn spawn_node_stop_stub_listener(
 /// `bound_core_node` (the old behavior) the decoy would answer instead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_discovery_scopes_to_scope_core_node_not_bound() {
-    let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("start zenoh router");
+    let router = EphemeralRouter::start().await.expect("start zenoh router");
 
-    let decoy_server = MessengerHandle::connect(&router.host, router.port)
-        .await
-        .expect("decoy server handle");
-    let remote_server = MessengerHandle::connect(&router.host, router.port)
-        .await
-        .expect("remote server handle");
-    let client = MessengerHandle::connect(&router.host, router.port)
-        .await
-        .expect("client handle");
+    let decoy_server = router.connect().await.expect("decoy server handle");
+    let remote_server = router.connect().await.expect("remote server handle");
+    let client = router.connect().await.expect("client handle");
 
     spawn_node_stop_stub_listener(
         decoy_server,
         BOUND_CORE,
-        "local_daemon",
+        BOUND_DAEMON_INSTANCE,
         NodeStopResponse::failure("listener on the bound core node answered"),
     )
     .await;
@@ -117,47 +111,32 @@ async fn node_stop_discovery_scopes_to_scope_core_node_not_bound() {
 /// back to the bound core node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_does_not_fall_back_to_bound_core_node() {
-    let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("start zenoh router");
+    let router = EphemeralRouter::start().await.expect("start zenoh router");
 
-    let server = MessengerHandle::connect(&router.host, router.port)
-        .await
-        .expect("server handle");
-    let client = MessengerHandle::connect(&router.host, router.port)
-        .await
-        .expect("client handle");
+    let server = router.connect().await.expect("server handle");
+    let client = router.connect().await.expect("client handle");
 
     spawn_node_stop_stub_listener(
         server,
         BOUND_CORE,
-        "local_daemon",
+        BOUND_DAEMON_INSTANCE,
         NodeStopResponse::success(),
     )
     .await;
 
     // Deterministically wait until the bound-core listener is discoverable so
     // the failure below can only mean "wrong scope", never "not yet routed".
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if ServiceMessenger::is_reachable(
-            &client,
-            BOUND_CORE,
-            CLIENT_INSTANCE,
-            stop_target(),
-            ServiceId::NodeStop.name(),
-            ServiceTarget::CoreNode(BOUND_CORE),
-        )
-        .await
-        .expect("reachability check should succeed")
-        {
-            break;
-        }
-        if Instant::now() >= deadline {
-            panic!("node_stop stub did not become reachable within 5s");
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    wait_service_reachable(
+        &client,
+        BOUND_CORE,
+        CLIENT_INSTANCE,
+        stop_target(),
+        ServiceId::NodeStop.name(),
+        &ProducerRef::new(BOUND_CORE, BOUND_DAEMON_INSTANCE),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_stop stub did not become reachable within 5s");
 
     poll_node_stop(
         &NodeStopRequest::new("instance-42"),
