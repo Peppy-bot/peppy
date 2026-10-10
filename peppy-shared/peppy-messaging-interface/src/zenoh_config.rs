@@ -171,30 +171,21 @@ pub async fn probe_tls_reachable(
     // call to ~2x `timeout` — the total stays bounded by `timeout`.
     let deadline = tokio::time::Instant::now() + timeout;
 
-    let tcp = match tokio::time::timeout_at(deadline, tokio::net::TcpStream::connect((host, port)))
+    let tcp = tokio::time::timeout_at(deadline, tokio::net::TcpStream::connect((host, port)))
         .await
-    {
-        Err(_) => {
-            return Err(format!(
-                "connect to {host}:{port} timed out after {timeout:?}"
-            ));
-        }
-        Ok(Err(e)) => return Err(format!("connect to {host}:{port} failed: {e}")),
-        Ok(Ok(tcp)) => tcp,
-    };
+        .map_err(|_| format!("connect to {host}:{port} timed out after {timeout:?}"))?
+        .map_err(|e| format!("connect to {host}:{port} failed: {e}"))?;
 
     // Finish the handshake under the same deadline. tokio-rustls surfaces
     // validation failures (UnknownIssuer / unknown CA / bad server name) as an
     // io::Error whose message contains the rustls reason, so `{e}` carries the
     // cause.
     let connector = TlsConnector::from(Arc::new(config));
-    match tokio::time::timeout_at(deadline, connector.connect(server_name, tcp)).await {
-        Err(_) => Err(format!(
-            "TLS handshake to {host}:{port} timed out after {timeout:?}"
-        )),
-        Ok(Err(e)) => Err(format!("TLS handshake to {host}:{port} failed: {e}")),
-        Ok(Ok(_stream)) => Ok(()),
-    }
+    tokio::time::timeout_at(deadline, connector.connect(server_name, tcp))
+        .await
+        .map_err(|_| format!("TLS handshake to {host}:{port} timed out after {timeout:?}"))?
+        .map_err(|e| format!("TLS handshake to {host}:{port} failed: {e}"))?;
+    Ok(())
 }
 
 /// Every certificate of the PEM bundle at `path`, in the order written. An
