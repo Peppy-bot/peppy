@@ -173,14 +173,23 @@ pub(super) fn build_struct_deserializer(
     ))
 }
 
-/// A locally-defined `Message` struct (plus nested companions) and its
-/// deserializer, for directions where production defines no struct (topics
-/// the node emits: the producer side only serializes).
-pub(super) fn build_local_message_with_deserializer(
+/// A locally-defined struct (plus its nested companions) and the
+/// deserializer that constructs it.
+pub(super) struct LocalStructCodec {
+    pub struct_items: Vec<TokenStream>,
+    pub deserializer: TokenStream,
+}
+
+/// A locally-defined `struct_name` struct (plus nested companions, prefixed
+/// by `struct_name`) and its deserializer, for directions where production
+/// defines no struct: topics the node emits (the producer side only
+/// serializes) and the feedback and result of an action the node exposes.
+pub(super) fn build_local_struct_with_deserializer(
     generator: &mut RustGenerator,
     spec: CodecSpec<'_>,
+    struct_name: &str,
     fn_ident: &Ident,
-) -> Result<TokenStream> {
+) -> Result<LocalStructCodec> {
     let CodecSpec {
         schema_key,
         struct_prefix,
@@ -190,22 +199,22 @@ pub(super) fn build_local_message_with_deserializer(
     let artifacts = map_message_format(schema_key, Some(format))?
         .expect("non-empty message format maps to schema artifacts");
     let mut context = GenerationContext::default();
-    let message_ident = Ident::new("Message", Span::call_site());
-    let params = collect_function_params(Some(&artifacts), None, "Message", &mut context, None)?;
+    let struct_ident = Ident::new(struct_name, Span::call_site());
+    let params = collect_function_params(Some(&artifacts), None, struct_name, &mut context, None)?;
     let fields: Vec<(Ident, TokenStream)> = params
         .iter()
         .map(|param| (param.ident.clone(), param.ty.clone()))
         .collect();
-    context.add_struct(message_ident, fields);
-    let struct_tokens = context.into_tokens();
+    context.add_struct(struct_ident.clone(), fields);
+    let struct_items = context.into_tokens();
 
     let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
     let reader_type = info.reader_type_tokens();
     let context_expr = quote!(String::from(#context_label));
     let (field_statements, field_inits, _) =
-        deserialize_format_fields(format, "Message", &context_expr)?;
-    let return_ty = quote!(Message);
-    let result_expr = quote!(Message { #(#field_inits),* });
+        deserialize_format_fields(format, struct_name, &context_expr)?;
+    let return_ty = quote!(#struct_ident);
+    let result_expr = quote!(#struct_ident { #(#field_inits),* });
     let deserializer = build_deserialize_fn(
         fn_ident,
         &reader_type,
@@ -214,8 +223,25 @@ pub(super) fn build_local_message_with_deserializer(
         &field_statements,
         &result_expr,
     );
+    Ok(LocalStructCodec {
+        struct_items,
+        deserializer,
+    })
+}
+
+/// The local `Message` struct of a topic the node emits and its
+/// deserializer, as one item list.
+pub(super) fn build_local_message_with_deserializer(
+    generator: &mut RustGenerator,
+    spec: CodecSpec<'_>,
+    fn_ident: &Ident,
+) -> Result<TokenStream> {
+    let LocalStructCodec {
+        struct_items,
+        deserializer,
+    } = build_local_struct_with_deserializer(generator, spec, "Message", fn_ident)?;
     Ok(quote! {
-        #( #struct_tokens )*
+        #( #struct_items )*
         #deserializer
     })
 }

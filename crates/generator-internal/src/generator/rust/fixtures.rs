@@ -16,15 +16,14 @@ use super::super::testgen::{
     FIXTURE_INSTANCE_ID, TargetSpec, TestGenRegistry, claim_sanitized_name,
 };
 use super::mock::{
-    CodecSpec, build_local_message_with_deserializer, build_struct_deserializer,
-    build_struct_serializer, production_module, target_expr,
+    CodecSpec, build_local_message_with_deserializer, build_local_struct_with_deserializer,
+    build_struct_deserializer, build_struct_serializer, production_module, target_expr,
 };
 use super::scaffold::sanitize_rust_module_name;
 use super::topics::{qos_profile_tokens, retention_tokens};
 use super::{
-    GenerationContext, ResultDecoder, ResultOutcomeTokens, RustGenerator, build_deserialize_fn,
-    build_result_outcome, collect_function_params, deserialize_format_fields, identifiers,
-    map_message_format, render_tokens,
+    ResultDecoder, ResultOutcomeTokens, RustGenerator, build_result_outcome, identifiers,
+    render_tokens,
 };
 use crate::error::Result;
 use crate::generator::naming::to_camel_case;
@@ -470,42 +469,19 @@ fn render_exposed_action(
     // Feedback: fixtures deserialize; production defines no struct.
     let feedback_method = match &spec.feedback {
         Some(format) => {
-            let fn_ident = Ident::new("deserialize_feedback", Span::call_site());
-            let artifacts = map_message_format(&feedback_key, Some(format))?
-                .expect("non-empty message format maps to schema artifacts");
-            let mut context = GenerationContext::default();
-            let feedback_ident = Ident::new("Feedback", Span::call_site());
-            let params =
-                collect_function_params(Some(&artifacts), None, "Feedback", &mut context, None)?;
-            let fields: Vec<(Ident, TokenStream)> = params
-                .iter()
-                .map(|param| (param.ident.clone(), param.ty.clone()))
-                .collect();
-            context.add_struct(feedback_ident, fields);
-            extra_items.extend(context.into_tokens());
-
-            let info = generator.register_schema(
-                &feedback_key,
-                &format!("{action_prefix}Feedback"),
-                &artifacts,
+            let feedback = build_local_struct_with_deserializer(
+                generator,
+                CodecSpec {
+                    schema_key: &feedback_key,
+                    struct_prefix: &format!("{action_prefix}Feedback"),
+                    format,
+                    context_label: &format!("fixtures {action_name} feedback"),
+                },
+                "Feedback",
+                &Ident::new("deserialize_feedback", Span::call_site()),
             )?;
-            let reader_type = info.reader_type_tokens();
-            let context_expr = {
-                let label = format!("fixtures {action_name} feedback");
-                quote!(String::from(#label))
-            };
-            let (field_statements, field_inits, _) =
-                deserialize_format_fields(format, "Feedback", &context_expr)?;
-            let return_ty = quote!(Feedback);
-            let result_expr = quote!(Feedback { #(#field_inits),* });
-            codecs.push(build_deserialize_fn(
-                &fn_ident,
-                &reader_type,
-                &context_expr,
-                &return_ty,
-                &field_statements,
-                &result_expr,
-            ));
+            extra_items.extend(feedback.struct_items);
+            codecs.push(feedback.deserializer);
             quote! {
                 /// Receives the next decoded feedback message for this goal.
                 ///
@@ -526,44 +502,23 @@ fn render_exposed_action(
     // Result: fixtures deserialize; production defines no struct.
     let result_decoder = match &spec.result {
         Some(format) => {
+            let data_name = "ResultData";
             let fn_ident = Ident::new("deserialize_result", Span::call_site());
-            let artifacts = map_message_format(&result_key, Some(format))?
-                .expect("non-empty message format maps to schema artifacts");
-            let mut context = GenerationContext::default();
-            let result_ident = Ident::new("ResultData", Span::call_site());
-            let params =
-                collect_function_params(Some(&artifacts), None, "ResultData", &mut context, None)?;
-            let fields: Vec<(Ident, TokenStream)> = params
-                .iter()
-                .map(|param| (param.ident.clone(), param.ty.clone()))
-                .collect();
-            context.add_struct(result_ident.clone(), fields);
-            extra_items.extend(context.into_tokens());
-
-            let info = generator.register_schema(
-                &result_key,
-                &format!("{action_prefix}ResultResponse"),
-                &artifacts,
-            )?;
-            let reader_type = info.reader_type_tokens();
-            let context_expr = {
-                let label = format!("fixtures {action_name} result");
-                quote!(String::from(#label))
-            };
-            let (field_statements, field_inits, _) =
-                deserialize_format_fields(format, "ResultData", &context_expr)?;
-            let return_ty = quote!(ResultData);
-            let result_expr = quote!(ResultData { #(#field_inits),* });
-            codecs.push(build_deserialize_fn(
+            let result = build_local_struct_with_deserializer(
+                generator,
+                CodecSpec {
+                    schema_key: &result_key,
+                    struct_prefix: &format!("{action_prefix}ResultResponse"),
+                    format,
+                    context_label: &format!("fixtures {action_name} result"),
+                },
+                data_name,
                 &fn_ident,
-                &reader_type,
-                &context_expr,
-                &return_ty,
-                &field_statements,
-                &result_expr,
-            ));
+            )?;
+            extra_items.extend(result.struct_items);
+            codecs.push(result.deserializer);
             Some(ResultDecoder {
-                data_ident: result_ident,
+                data_ident: Ident::new(data_name, Span::call_site()),
                 deserialize_fn_ident: fn_ident,
             })
         }
