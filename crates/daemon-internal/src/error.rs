@@ -15,7 +15,7 @@ pub enum Error {
     )]
     AlreadyRunning,
 
-    // -- serve: a core node was requested without a messaging router
+    // -- serve: a generation was built without a messaging router
     #[error("Missing messaging router")]
     MissingMessagingRouter,
 

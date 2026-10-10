@@ -409,7 +409,7 @@ fn run_one_generation(options: &ServeOptions) -> Result<(ServeOutcome, bool)> {
     )
     .with_peppy_config(peppy_config)
     .with_messaging_router(&options.messaging_engine)?
-    .with_core_node(options.core_node_name.clone())?;
+    .with_core_node_name(options.core_node_name.clone());
 
     if let Some(token) = &options.shutdown_token {
         builder = builder.with_shutdown_token(token.clone());

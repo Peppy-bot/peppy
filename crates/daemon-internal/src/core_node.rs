@@ -56,7 +56,7 @@ pub struct CoreNodeRunner {
     /// boot presence check. Probing is lock-free; the messenger lock is held
     /// only to construct the probe.
     messenger: Arc<Mutex<Messenger>>,
-    messaging_ready: Option<watch::Receiver<bool>>,
+    messaging_ready: watch::Receiver<bool>,
     /// Cancelled at the start of shutdown to stop the core node's clock +
     /// heartbeat publishers before the messaging session is closed. This is the
     /// core node's OWN internal token (publisher-stop), distinct from the shared
@@ -84,7 +84,7 @@ impl CoreNodeRunner {
         node_start_health_timeout: Duration,
         root_dir: PathBuf,
         peppy_dirs: PeppyDirs,
-        messaging_ready: Option<watch::Receiver<bool>>,
+        messaging_ready: watch::Receiver<bool>,
         peppy_config: daemon_config::peppy_config::PeppyConfig,
         namespace: config::namespace::Namespace,
         name_claim_settle: Duration,
@@ -155,17 +155,15 @@ impl ServeAsyncCommand for CoreNodeRunner {
             let teardown = serve_teardown_token.cancelled();
             tokio::pin!(teardown);
 
-            if let Some(mut ready_rx) = messaging_ready.take() {
-                if !*ready_rx.borrow() {
-                    info!("Waiting for messaging session before starting core node...");
-                    ready_rx.changed().await.map_err(|_| {
-                        Error::ExecutionFailed(
-                            "Messaging router exited before session was ready".to_string(),
-                        )
-                    })?;
-                }
-                info!("Messaging session ready. Starting core node...");
+            if !*messaging_ready.borrow() {
+                info!("Waiting for messaging session before starting core node...");
+                messaging_ready.changed().await.map_err(|_| {
+                    Error::ExecutionFailed(
+                        "Messaging router exited before session was ready".to_string(),
+                    )
+                })?;
             }
+            info!("Messaging session ready. Starting core node...");
 
             // A managed router accepts the daemon's session as soon as its
             // listener binds, while its configured `connect` links (the

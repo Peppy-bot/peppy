@@ -29,15 +29,11 @@ const DEFAULT_NODE_START_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
-    messenger: Option<Arc<Mutex<Messenger>>>,
-    messaging_ready: Option<watch::Receiver<bool>>,
-    core_node_requested: bool,
+    /// Set by [`with_messaging_router`](Self::with_messaging_router) and
+    /// handed to the core node runner in [`Self::build`].
+    messaging: Option<MessagingChannels>,
     core_node_name: Option<String>,
     shutdown_token: Option<CancellationToken>,
-    /// Sender the core node runner uses to tell the messaging router that
-    /// teardown is done. Created alongside the messaging router so the router
-    /// holds the receiver; handed to the core node runner in [`Self::build`].
-    core_node_done_tx: Option<watch::Sender<bool>>,
     root_dir: PathBuf,
     /// The binary's compile-time git hash, recorded in the daemon state file.
     /// Passed in by the embedding binary (this crate reads no build-time env).
@@ -70,6 +66,20 @@ pub struct ServeCommandBuilder {
     teardown_token: CancellationToken,
 }
 
+/// The handles [`ServeCommandBuilder::with_messaging_router`] creates for one
+/// messaging router.
+struct MessagingChannels {
+    /// The daemon's shared messenger.
+    messenger: Arc<Mutex<Messenger>>,
+    /// The startup gate the core node waits on: the router sets it once the
+    /// daemon's session is open.
+    messaging_ready: watch::Receiver<bool>,
+    /// The sender the core node runner signals once its teardown is done. The
+    /// messaging router holds the receiver and waits on it before it closes
+    /// the session.
+    core_node_done_tx: watch::Sender<bool>,
+}
+
 /// What [`ServeCommandBuilder::build`] needs to know about a managed zenoh
 /// router.
 struct ManagedRouter {
@@ -90,12 +100,9 @@ impl ServeCommandBuilder {
     ) -> Self {
         Self {
             composite_command: CompositeCommand::default(),
-            messenger: None,
-            messaging_ready: None,
-            core_node_requested: false,
+            messaging: None,
             core_node_name: None,
             shutdown_token: None,
-            core_node_done_tx: None,
             root_dir: root_dir.into(),
             git_hash: git_hash.into(),
             peppy_dirs,
@@ -123,7 +130,9 @@ impl ServeCommandBuilder {
     }
 
     pub(crate) fn messenger_handle(&self) -> Option<Arc<Mutex<Messenger>>> {
-        self.messenger.clone()
+        self.messaging
+            .as_ref()
+            .map(|messaging| Arc::clone(&messaging.messenger))
     }
 
     /// The messaging router (Zenoh/MQTT etc...) is reponsible for message passing between the nodes and between the nodes and the peppy program
@@ -145,9 +154,11 @@ impl ServeCommandBuilder {
         // finishes (cooperative node shutdown rides over it). Derived from the
         // same force_kill_deadline the teardown uses; see `teardown_budget_for`.
         let teardown_budget = teardown_budget_for(self.peppy_config.lifecycle.shutdown_grace_secs);
-        self.messenger = Some(Arc::clone(&messenger));
-        self.messaging_ready = Some(messaging_ready_rx);
-        self.core_node_done_tx = Some(core_node_done_tx);
+        self.messaging = Some(MessagingChannels {
+            messenger: Arc::clone(&messenger),
+            messaging_ready: messaging_ready_rx,
+            core_node_done_tx,
+        });
         self.composite_command =
             self.composite_command
                 .add_async_command(Box::new(MessagingRouter::new(
@@ -250,101 +261,93 @@ impl ServeCommandBuilder {
         Ok(adapter)
     }
 
-    pub fn with_core_node(mut self, core_node_name: Option<String>) -> Result<Self> {
-        self.core_node_requested = true;
+    pub(crate) fn with_core_node_name(mut self, core_node_name: Option<String>) -> Self {
         self.core_node_name = core_node_name;
-        Ok(self)
+        self
     }
 
     pub fn build(mut self) -> Result<Serve> {
-        if self.core_node_requested {
-            if let Some(messenger) = &self.messenger {
-                // Precedence: `--core-node-name` beats the config's
-                // `core_node_name`; both absent ⇒ `None`, and the core node
-                // derives its machine-specific default. Resolved (and an explicit
-                // name validated) here, before `peppy_config` is moved into the
-                // runner.
-                let resolved_core_node_name = resolve_core_node_name(
-                    self.core_node_name.clone(),
-                    self.peppy_config.core_node_name.clone(),
-                )?;
-                // Capture the shutdown grace before `peppy_config` is moved into
-                // the runner, so the daemon state file can advertise it to clients.
-                let shutdown_grace_secs = self.peppy_config.lifecycle.shutdown_grace_secs;
-                // The send half of the router's shutdown handshake, created in
-                // `with_messaging_router`. Present whenever a messaging router
-                // exists, which is required for a core node (checked above).
-                let core_node_done_tx = self
-                    .core_node_done_tx
-                    .take()
-                    .expect("core_node_done channel created in with_messaging_router");
-                // Federated daemons (a managed router with configured
-                // `connect` links — an operator-pinned mesh) hold the boot
-                // presence claim open for the settle window, so the claim
-                // observes an incumbent whose token is still propagating
-                // across the freshly-established links. Standalone routers
-                // (and the mock/external engines) are authoritative
-                // immediately and skip the wait. The probe only reads the
-                // active router config; nothing has started yet.
-                let name_claim_settle = if messenger.blocking_lock().router_links_probe().is_some()
-                {
-                    core_node::NAME_CLAIM_LINKED_SETTLE
-                } else {
-                    Duration::ZERO
-                };
-                let log_export = LogExport::from_config(&self.peppy_config, &self.peppy_dirs)?;
-                let core_node = CoreNodeRunner::new(
-                    Arc::clone(messenger),
-                    resolved_core_node_name,
-                    DEFAULT_NODE_STARTUP_TIMEOUT,
-                    DEFAULT_NODE_START_HEALTH_TIMEOUT,
-                    self.root_dir.clone(),
-                    self.peppy_dirs.clone(),
-                    self.messaging_ready.clone(),
-                    self.peppy_config,
-                    self.identity.namespace.clone(),
-                    name_claim_settle,
-                    self.teardown_token.clone(),
-                    core_node_done_tx,
-                    log_export,
-                );
+        let Some(messaging) = self.messaging else {
+            warn!("Commands listener requires a messaging router");
+            return Err(Error::MissingMessagingRouter);
+        };
+        // Precedence: `--core-node-name` beats the config's
+        // `core_node_name`; both absent ⇒ `None`, and the core node
+        // derives its machine-specific default. Resolved (and an explicit
+        // name validated) here, before `peppy_config` is moved into the
+        // runner.
+        let resolved_core_node_name = resolve_core_node_name(
+            self.core_node_name,
+            self.peppy_config.core_node_name.clone(),
+        )?;
+        // Capture the shutdown grace before `peppy_config` is moved into
+        // the runner, so the daemon state file can advertise it to clients.
+        let shutdown_grace_secs = self.peppy_config.lifecycle.shutdown_grace_secs;
+        // Federated daemons (a managed router with configured
+        // `connect` links — an operator-pinned mesh) hold the boot
+        // presence claim open for the settle window, so the claim
+        // observes an incumbent whose token is still propagating
+        // across the freshly-established links. Standalone routers
+        // (and the mock/external engines) are authoritative
+        // immediately and skip the wait. The probe only reads the
+        // active router config; nothing has started yet.
+        let has_router_links = messaging
+            .messenger
+            .blocking_lock()
+            .router_links_probe()
+            .is_some();
+        let name_claim_settle = if has_router_links {
+            core_node::NAME_CLAIM_LINKED_SETTLE
+        } else {
+            Duration::ZERO
+        };
+        let log_export = LogExport::from_config(&self.peppy_config, &self.peppy_dirs)?;
+        let core_node = CoreNodeRunner::new(
+            Arc::clone(&messaging.messenger),
+            resolved_core_node_name,
+            DEFAULT_NODE_STARTUP_TIMEOUT,
+            DEFAULT_NODE_START_HEALTH_TIMEOUT,
+            self.root_dir.clone(),
+            self.peppy_dirs.clone(),
+            messaging.messaging_ready,
+            self.peppy_config,
+            self.identity.namespace.clone(),
+            name_claim_settle,
+            self.teardown_token.clone(),
+            messaging.core_node_done_tx,
+            log_export,
+        );
 
-                // Write the daemon state file with the core node name. The
-                // namespace and router identity are recorded here, before the
-                // control socket binds (below), so a CLI control session that
-                // reads it never sees a half-set generation.
-                let core_node_name = core_node.node_name().to_string();
-                let daemon_state = {
-                    let messenger = messenger.blocking_lock();
-                    daemon_state_for_messenger(
-                        &messenger,
-                        &core_node_name,
-                        &self.git_hash,
-                        shutdown_grace_secs,
-                        self.identity.namespace.clone(),
-                        self.managed_router
-                            .as_ref()
-                            .map(|router| router.router_id.clone()),
-                    )
-                };
-                let state_path = DaemonState::state_file_in(self.peppy_dirs.root());
-                DaemonState::write_to(&state_path, &daemon_state).map_err(|e| {
-                    Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
-                })?;
-                info!(
-                    "Daemon state written to {} with core_node_name={}",
-                    state_path.display(),
-                    core_node_name
-                );
+        // Write the daemon state file with the core node name. The
+        // namespace and router identity are recorded here, before the
+        // control socket binds (below), so a CLI control session that
+        // reads it never sees a half-set generation.
+        let core_node_name = core_node.node_name().to_string();
+        let daemon_state = {
+            let messenger = messaging.messenger.blocking_lock();
+            daemon_state_for_messenger(
+                &messenger,
+                &core_node_name,
+                &self.git_hash,
+                shutdown_grace_secs,
+                self.identity.namespace.clone(),
+                self.managed_router
+                    .as_ref()
+                    .map(|router| router.router_id.clone()),
+            )
+        };
+        let state_path = DaemonState::state_file_in(self.peppy_dirs.root());
+        DaemonState::write_to(&state_path, &daemon_state)
+            .map_err(|e| Error::ExecutionFailed(format!("Failed to write daemon state: {}", e)))?;
+        info!(
+            "Daemon state written to {} with core_node_name={}",
+            state_path.display(),
+            core_node_name
+        );
 
-                self.composite_command = self
-                    .composite_command
-                    .add_async_command(Box::new(core_node));
-            } else {
-                warn!("Commands listener requires a messaging router");
-                return Err(Error::MissingMessagingRouter);
-            }
-        }
+        self.composite_command = self
+            .composite_command
+            .add_async_command(Box::new(core_node));
 
         // The federation task and its control socket (managed zenoh only). The
         // router already boots federated or standalone from the enrollment; the
