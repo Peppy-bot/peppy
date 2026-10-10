@@ -1,8 +1,10 @@
 //! Same-machine baseline persistence.
 //!
 //! Baselines are keyed by a stable machine id and stored as a small TSV under the
-//! machine-local `target/` directory, so latency numbers are never compared
-//! across machines. Each line is `name<TAB>p50_ns<TAB>p90_ns<TAB>mean_ns`.
+//! machine-local `target/` directory or, for an installed binary with no
+//! `target/` ancestor, under `~/.peppy/tmp/latency-report`, so latency numbers
+//! are never compared across machines. Each line is
+//! `name<TAB>p50_ns<TAB>p90_ns<TAB>mean_ns`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

@@ -1,14 +1,14 @@
 #![forbid(unsafe_code)]
 //! Shared latency-reporting utilities.
 //!
-//! These pieces were originally private to the offline latency benchmark
-//! (`core-node-internal/benches/latency.rs`). They are factored out here so the
-//! offline bench and the live `peppy stack benchmark` command compute and render
-//! latency the same way, from a single source of truth.
+//! The offline latency bench (`core-node-internal/benches/latency.rs`), the
+//! daemon's stack benchmark service and the `peppy stack benchmark` command
+//! compute and render latency with these pieces, so they agree.
 //!
-//! Everything is std-only and deterministic (no I/O except the baseline file and
-//! sysfs reads in [`environment`]), so it is straightforward to unit-test. The
-//! crate holds zero `unsafe` (enforced by `#![forbid(unsafe_code)]`).
+//! Everything is std-only. The only I/O is the baseline file, the machine id
+//! that names it, and the sysfs and procfs reads in [`environment`]; the rest
+//! is deterministic, so it is straightforward to unit-test. The crate holds
+//! zero `unsafe` (enforced by `#![forbid(unsafe_code)]`).
 //!
 //! ## Consumer boundary
 //! Each module is the unit of the public API; reach for types through their

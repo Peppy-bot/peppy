@@ -6,5 +6,6 @@ edition.workspace = true
 
 # Pure, std-only leaf crate: percentile/summary math, duration/table formatting,
 # the machine-id-keyed baseline file, and CPU-turbo environment detection.
-# Shared by the offline latency bench (generator) and `peppy stack benchmark`.
+# Shared by the offline latency bench (core-node), the daemon's stack benchmark
+# service and `peppy stack benchmark`.
 [dependencies]
