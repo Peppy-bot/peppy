@@ -115,12 +115,6 @@ pub(crate) fn consumed_action_type_prefix(producer_name: &str, action_name: &str
     to_camel_case(&base_component)
 }
 
-/// The struct name of a nested object field, continuing its parent's
-/// prefix.
-pub(crate) fn nested_struct_name(struct_prefix: &str, field_name: &str) -> String {
-    format!("{struct_prefix}{}", to_camel_case(field_name))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,13 +154,5 @@ mod tests {
             "VideoStreamInfo"
         );
         assert_eq!(consumed_service_struct_prefix(""), "Service");
-    }
-
-    #[test]
-    fn a_nested_struct_name_continues_its_parent_prefix() {
-        assert_eq!(
-            nested_struct_name("UvcCameraEnableActionGoal", "frame_header"),
-            "UvcCameraEnableActionGoalFrameHeader"
-        );
     }
 }

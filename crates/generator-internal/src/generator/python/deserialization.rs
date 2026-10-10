@@ -4,7 +4,7 @@ use super::code_builder::{
 };
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
 use super::topics::capnp_loader_fn_name;
-use crate::generator::naming::{array_item_type_name, sanitize_capnp_field_name, to_camel_case};
+use crate::generator::naming::{array_item_type_name, nested_type_name, sanitize_capnp_field_name};
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 
@@ -275,7 +275,7 @@ fn generate_object_reader(
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
-    let nested_prefix = format!("{struct_prefix}{}", to_camel_case(field_name));
+    let nested_prefix = nested_type_name(struct_prefix, field_name);
 
     let reader_idx = next_temp_index(counter);
     let sub_reader = format!("reader_{reader_idx}");

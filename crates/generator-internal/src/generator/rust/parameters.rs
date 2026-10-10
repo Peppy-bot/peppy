@@ -1,7 +1,7 @@
 use super::identifiers::sanitize_rust_identifier;
 use super::type_mapping::{primitive_type_token, render_tokens};
 use crate::error::{Error, Result};
-use crate::generator::naming::to_camel_case;
+use crate::generator::naming::{nested_type_name, to_camel_case};
 use config::ParameterSpec;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
@@ -151,7 +151,7 @@ fn generate_parameter_struct(
                 field_tokens.push(quote!(pub #field_ident: #rust_type));
             }
             ParameterSpec::Group(_) => {
-                let nested_struct_name = nested_struct_name(struct_name, field_name);
+                let nested_struct_name = nested_type_name(struct_name, field_name);
                 let nested_struct_ident = Ident::new(&nested_struct_name, Span::call_site());
 
                 generate_parameter_struct(field_spec, &nested_struct_name, &field_path, structs)?;
@@ -172,8 +172,4 @@ fn generate_parameter_struct(
     });
 
     Ok(())
-}
-
-fn nested_struct_name(parent_struct: &str, field_name: &str) -> String {
-    format!("{parent_struct}{}", to_camel_case(field_name))
 }

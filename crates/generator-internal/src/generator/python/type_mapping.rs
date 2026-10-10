@@ -1,6 +1,6 @@
 use super::identifiers::sanitize_python_identifier;
 use crate::error::{Error, Result};
-use crate::generator::naming::{array_item_type_name, to_camel_case};
+use crate::generator::naming::{array_item_type_name, nested_type_name};
 use config::node::{PeppygenLanguage, QoSProfile, SchemaType, TopicRetention, TypeToken};
 use std::collections::HashMap;
 
@@ -85,7 +85,7 @@ pub fn schema_type_to_python(
             }
         },
         SchemaType::Object(object) => {
-            let class_name = format!("{struct_prefix}{}", to_camel_case(field_name));
+            let class_name = nested_type_name(struct_prefix, field_name);
             validate_python_identifier_collisions(object.fields.keys(), &class_name)?;
             let mut fields = Vec::new();
             for (nested_name, nested_schema) in &object.fields {

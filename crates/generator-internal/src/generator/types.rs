@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
-use crate::generator::naming::{array_item_type_name, to_camel_case};
+use crate::generator::naming::{array_item_type_name, nested_type_name};
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, FormatRuleViolation,
     MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, SchemaType,
@@ -987,10 +987,9 @@ fn generated_object_child<'a>(
     schema: &'a SchemaType,
 ) -> Option<(String, &'a IndexMap<String, SchemaType>)> {
     match schema {
-        SchemaType::Object(object) => Some((
-            format!("{struct_prefix}{}", to_camel_case(field_name)),
-            &object.fields,
-        )),
+        SchemaType::Object(object) => {
+            Some((nested_type_name(struct_prefix, field_name), &object.fields))
+        }
         SchemaType::Array(array) => match array.items.as_ref() {
             SchemaType::Object(object) => Some((
                 array_item_type_name(struct_prefix, field_name),

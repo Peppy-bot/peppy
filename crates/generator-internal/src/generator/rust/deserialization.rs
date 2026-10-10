@@ -1,8 +1,8 @@
-use super::identifiers::{nested_struct_name, sanitize_rust_identifier};
+use super::identifiers::sanitize_rust_identifier;
 use super::serialization::NameGenerator;
 use super::type_mapping::primitive_type_token;
 use crate::error::{Error, Result};
-use crate::generator::naming::{array_item_type_name, sanitize_component};
+use crate::generator::naming::{array_item_type_name, nested_type_name, sanitize_component};
 use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -563,7 +563,7 @@ fn generate_object_reader(
     // The struct this reader builds and the prefix its own nested structs
     // continue from are the same name, so it is computed once: the declared
     // type and the constructed type cannot drift apart.
-    let nested_prefix = nested_struct_name(struct_prefix, field_name);
+    let nested_prefix = nested_type_name(struct_prefix, field_name);
 
     for (nested_name, nested_schema) in object {
         let (mut nested_statements, nested_value_ident) = generate_field_reader_statements(

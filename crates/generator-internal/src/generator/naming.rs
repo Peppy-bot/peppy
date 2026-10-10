@@ -137,6 +137,18 @@ pub(crate) fn array_item_type_name(struct_prefix: &str, field_name: &str) -> Str
     )
 }
 
+/// Returns the CamelCase type/class name of a nested object field, which
+/// continues its parent's prefix. E.g. `("Message", "frame_header")` →
+/// `"MessageFrameHeader"`.
+///
+/// The Rust and Python generators name the nested types they emit through
+/// this function, and `types::validate_generated_type_name_collisions`
+/// checks the names it returns, so a name the check accepts is the name the
+/// generated code declares.
+pub(crate) fn nested_type_name(struct_prefix: &str, field_name: &str) -> String {
+    format!("{struct_prefix}{}", to_camel_case(field_name))
+}
+
 /// Converts a snake_case or raw string to CamelCase.
 pub(crate) fn to_camel_case(raw: &str) -> String {
     let sanitized = sanitize_component(raw);
@@ -363,6 +375,14 @@ mod tests {
         assert_eq!(
             array_item_type_name("MessageHeader", "points"),
             "MessageHeaderPointsItem"
+        );
+    }
+
+    #[test]
+    fn a_nested_type_name_continues_its_parent_prefix() {
+        assert_eq!(
+            nested_type_name("UvcCameraEnableActionGoal", "frame_header"),
+            "UvcCameraEnableActionGoalFrameHeader"
         );
     }
 

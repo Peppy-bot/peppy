@@ -2,7 +2,7 @@ use super::code_builder::PythonCodeBuilder;
 use super::identifiers::sanitize_python_identifier;
 use super::type_mapping::primitive_type_str;
 use crate::error::{Error, Result};
-use crate::generator::naming::to_camel_case;
+use crate::generator::naming::{nested_type_name, to_camel_case};
 use crate::generator::rust::validate_parameter_schema as validate_parameters;
 use config::ParameterSpec;
 
@@ -80,7 +80,7 @@ fn emit_nested_parameter_class(
     // Recurse into nested groups first (so they're defined before referenced)
     for (field_name, field_spec) in fields {
         if let ParameterSpec::Group(_) = field_spec {
-            let nested_name = nested_class_name(class_name, field_name);
+            let nested_name = nested_type_name(class_name, field_name);
             let nested_path = format!("{path}.{field_name}");
             emit_nested_parameter_class(builder, field_spec, &nested_name, &nested_path)?;
         }
@@ -99,7 +99,7 @@ fn emit_nested_parameter_class(
                 });
             }
             ParameterSpec::Group(_) => {
-                let nested_name = nested_class_name(class_name, field_name);
+                let nested_name = nested_type_name(class_name, field_name);
                 class_fields.push(ParameterField {
                     original_key: field_name.clone(),
                     field_name: field_ident,
@@ -163,8 +163,4 @@ fn emit_parameter_dataclass(
         });
     });
     builder.blank_line();
-}
-
-fn nested_class_name(parent_class: &str, field_name: &str) -> String {
-    format!("{parent_class}{}", to_camel_case(field_name))
 }
