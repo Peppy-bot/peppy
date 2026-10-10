@@ -359,61 +359,74 @@ fn cross_check_flat_document(
     // whole document is parsed, is what lets the error say WHICH links
     // were available instead of just that this one was not one of them.
     let declared: HashSet<&str> = core_nodes.iter().map(String::as_str).collect();
-    for deployment in deployments {
-        for instance in &deployment.instances {
-            let Some(core_node) = &instance.core_node else {
-                continue;
-            };
-            if declared.contains(core_node.as_str()) {
-                continue;
-            }
-            return Err(undeclared_core_node_message(
-                instance.instance_id.as_str(),
-                core_node,
-                core_nodes,
-            ));
+    for instance in deployments
+        .iter()
+        .flat_map(|deployment| &deployment.instances)
+    {
+        let Some(core_node) = &instance.core_node else {
+            continue;
+        };
+        if declared.contains(core_node.as_str()) {
+            continue;
         }
+        return Err(undeclared_core_node_message(
+            instance.instance_id.as_str(),
+            core_node,
+            core_nodes,
+        ));
     }
 
     let known_ids: HashSet<&str> = deployments
         .iter()
-        .flat_map(|d| d.instances.iter())
-        .map(|i| i.instance_id.as_str())
+        .flat_map(|deployment| &deployment.instances)
+        .map(|instance| instance.instance_id.as_str())
         .collect();
-
-    for deployment in deployments {
-        for instance in &deployment.instances {
-            for (link, value) in &instance.links {
-                if link == DEFAULT_LINK_ID_SENTINEL {
-                    let err = StructuredError::LinkSentinelKey {
-                        owner_instance_id: instance.instance_id.to_string(),
-                        link: link.clone(),
-                    };
-                    return Err(err.json5_message());
-                }
-                // Only the instance part of a target names a deployed
-                // instance; a pairing/observer target's optional
-                // `/<link_id>` suffix selects a slot on that instance and
-                // is resolved (against the manifest) at plan time. A vacant
-                // slot selects nothing, so it names no instance to check.
-                let Some(selection) = value.selection() else {
-                    continue;
-                };
-                for target in selection.targets() {
-                    let (target_instance, _link_suffix) = split_link_target(target);
-                    if !known_ids.contains(target_instance) {
-                        let err = StructuredError::UnknownInstanceId {
-                            owner_instance_id: instance.instance_id.to_string(),
-                            link: link.clone(),
-                            instance_id: target_instance.to_string(),
-                        };
-                        return Err(err.json5_message());
-                    }
-                }
-            }
-        }
+    for instance in deployments
+        .iter()
+        .flat_map(|deployment| &deployment.instances)
+    {
+        check_instance_links(instance, &known_ids)?;
     }
 
+    Ok(())
+}
+
+/// The link checks of one instance of a flat launcher: no link key is the
+/// reserved producer-default sentinel, and every link target names an
+/// instance in `known_ids`.
+fn check_instance_links(
+    instance: &DeploymentInstance,
+    known_ids: &HashSet<&str>,
+) -> Result<(), String> {
+    for (link, value) in &instance.links {
+        if link == DEFAULT_LINK_ID_SENTINEL {
+            let err = StructuredError::LinkSentinelKey {
+                owner_instance_id: instance.instance_id.to_string(),
+                link: link.clone(),
+            };
+            return Err(err.json5_message());
+        }
+        // Only the instance part of a target names a deployed instance; a
+        // pairing/observer target's optional `/<link_id>` suffix selects a
+        // slot on that instance and is resolved (against the manifest) at
+        // plan time. A vacant slot selects nothing, so it names no instance
+        // to check.
+        let Some(selection) = value.selection() else {
+            continue;
+        };
+        for target in selection.targets() {
+            let (target_instance, _link_suffix) = split_link_target(target);
+            if known_ids.contains(target_instance) {
+                continue;
+            }
+            let err = StructuredError::UnknownInstanceId {
+                owner_instance_id: instance.instance_id.to_string(),
+                link: link.clone(),
+                instance_id: target_instance.to_string(),
+            };
+            return Err(err.json5_message());
+        }
+    }
     Ok(())
 }
 
