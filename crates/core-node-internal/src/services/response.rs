@@ -9,16 +9,15 @@ use peppylib::{PeppyError, PeppyResult};
 /// any failure as an `InvalidServiceRequest` attributed to the *sending*
 /// instance (`context.message().instance_id()`).
 ///
-/// Every plain request/response service handler (ping, info, datastore, stack
-/// list/reset, repo list/add/remove/exclude, node init/sync/remove/stop)
-/// funnels its result through this, so the sender's `instance_id` is recorded
-/// consistently and the `Err` mapping lives in exactly one place.
+/// Plain request/response service handlers funnel their result through this,
+/// so the sender's `instance_id` is recorded consistently and the `Err` mapping
+/// lives in exactly one place.
 ///
 /// Generic over the success type so handlers that thread extra state alongside
-/// the payload (e.g. repo remove/exclude returning `(Payload, needs_refresh)`)
-/// can reuse it. Handlers with bespoke error shaping (the clock service's
-/// per-stamp timing errors and the goal-action encoders that attribute failures
-/// to the action name rather than the sender) intentionally do not use this.
+/// the payload (repo remove/exclude return `(response, needs_refresh)`) can
+/// reuse it. A handler whose errors need another shape builds its own: node
+/// info keeps internal faults apart from caller faults, and the goal-action
+/// encoders attribute failures to the action name rather than the sender.
 pub(crate) fn into_service_response<T>(
     context: &ServiceRequestContext,
     result: Result<T>,

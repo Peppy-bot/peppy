@@ -16,7 +16,7 @@
 //! Sources may arrive as raw `~/...` tokens: the coordinator resolves the
 //! plan's mount paths but deliberately leaves `~` alone, because a peer's home
 //! is not the coordinator's. This is the place they become this machine's
-//! absolute paths — before anything is created or registered.
+//! absolute paths, before anything is created or registered.
 
 use super::action::StackChangeContext;
 use super::launch::feedback::{publish_stdout, publish_warning};
@@ -346,12 +346,12 @@ mod tests {
         );
     }
 
-    /// The regression this module's expansion exists for: a `~` source arriving
-    /// from the coordinator must be expanded to this machine's home BEFORE the
-    /// auto-create, not `mkdir -p`'d as a literal relative path. The home
-    /// already exists, so nothing is created and nothing is reported — and in
-    /// particular no stray `~/` directory appears under the process cwd, which
-    /// is exactly what the unexpanded token used to produce.
+    /// What this module's expansion exists for: a `~` source arriving from the
+    /// coordinator is expanded to this machine's home BEFORE the auto-create,
+    /// not `mkdir -p`'d as a literal relative path. The home already exists, so
+    /// nothing is created and nothing is reported. In particular no stray `~/`
+    /// directory appears under the process cwd, which is what an unexpanded
+    /// token produces.
     #[tokio::test]
     async fn prepare_expands_home_relative_sources() {
         let Some(home) = dirs::home_dir() else {
@@ -579,9 +579,6 @@ mod tests {
         assert!(error.contains("robot_inst"), "got: {error}");
     }
 
-    /// One deployment of plain instances, each optionally placed. Enough for
-    /// the placement-derived checks, which read instance ids and nothing else.
-
     #[test]
     fn launch_mount_preflight_resolves_parameterized_sources() {
         let mut video = BTreeMap::new();
@@ -604,9 +601,6 @@ mod tests {
             "/tmp/video_reconstruction"
         );
     }
-
-    /// An instance's `env_vars` are added to the forwarded caller environment
-    /// and win on a shared key, leaving exactly one entry per key so the spawn
 
     #[test]
     fn launch_mount_preflight_rejects_non_string_parameter_sources() {

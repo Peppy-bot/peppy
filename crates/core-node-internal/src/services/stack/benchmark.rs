@@ -50,7 +50,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-/// Gate budget: rejects a concurrent benchmark goal with a remaining-time hint.
+/// Gate budget of one benchmark goal. A concurrent goal is rejected with "a
+/// stack benchmark is already in progress", without the remaining time.
 const BENCHMARK_GATE_TIMEOUT_SECS: u64 = 1800;
 /// Absolute floor below which a measured producer offset is treated as same-host
 /// regardless of the round trip: at this magnitude the clocks share a host and
