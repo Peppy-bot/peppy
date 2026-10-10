@@ -459,13 +459,6 @@ fn category_module_path(src_dir: &Path, category: ModuleCategory) -> PathBuf {
     src_dir.join(format!("{}.rs", category.dir_name()))
 }
 
-/// Walks the module tree, writing a `.rs` file per leaf and a `mod.rs` (or
-/// the category file at the root) listing the modules at each level.
-///
-/// `category_dir` is the on-disk directory under `src/` for this category
-/// (e.g. `src/emitted_topics`). `category_file` is its companion sibling
-/// `src/emitted_topics.rs` that declares `pub mod <subdir>;` for each top
-/// child.
 /// [`TreeWriter`] that renders Rust modules: one `.rs` file per leaf and a
 /// `pub mod ...;` listing per directory, written to `mod.rs` (or, at the root,
 /// to the category's sibling `.rs` companion file). A renamed leaf keeps a
@@ -473,6 +466,8 @@ fn category_module_path(src_dir: &Path, category: ModuleCategory) -> PathBuf {
 /// in the shared [`write_module_tree`] walker.
 struct RustTreeWriter<'a> {
     category: ModuleCategory,
+    /// The category's sibling `src/<category>.rs`, which receives the root
+    /// index.
     category_file: &'a Path,
 }
 
