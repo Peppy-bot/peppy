@@ -33,7 +33,9 @@ async def handle_commands(node_runner: NodeRunner):
     # Optional: block until a controller is paired and log who it is.
     try:
         peer = await joint_commands.wait_paired(node_runner)
-        print(f"paired with controller {peer.producer.core_node}/{peer.producer.instance_id}")
+        print(
+            f"paired with controller {peer.producer.core_node}/{peer.producer.instance_id}"
+        )
     except Exception as e:
         print(f"Failed to wait for a paired controller: {e}", file=sys.stderr)
         return
