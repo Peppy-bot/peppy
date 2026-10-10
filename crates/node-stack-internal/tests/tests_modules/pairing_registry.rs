@@ -14,7 +14,7 @@ const TEST_CORE_NODE: &str = "core";
 
 use crate::helpers::config_common::core_node_config;
 use crate::helpers::fixtures;
-use crate::helpers::real_lifecycle;
+use crate::helpers::real_lifecycle::{self, LifecycleHarness, RunningInstanceGuard};
 
 fn robot_arm_config() -> config::node::NodeConfig {
     serde_json5::from_str(
@@ -58,19 +58,53 @@ fn name(s: &str) -> Name {
     Name::new(s).expect("valid test name")
 }
 
-#[tokio::test]
-async fn pair_clear_repair_lifecycle() {
+/// A stack that runs `robot_arm` as `arm_1` and `arm_controller` as
+/// `ctrl_1`, with their pairing slots unpaired. The fields drop in
+/// declaration order, so the instance guards stop their children before the
+/// harness and the stack go.
+struct ArmAndController {
+    controller: RunningInstanceGuard,
+    _arm: RunningInstanceGuard,
+    harness: LifecycleHarness,
+    stack: NodeStack,
+}
+
+async fn arm_and_controller_running() -> ArmAndController {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let harness = real_lifecycle::lifecycle_harness();
-    let _arm =
+    let arm =
         fixtures::push_started(&stack, &harness, robot_arm_config(), Some(&name("arm_1"))).await;
-    let _ctrl = fixtures::push_started(
+    let controller = fixtures::push_started(
         &stack,
         &harness,
         arm_controller_config(),
         Some(&name("ctrl_1")),
     )
     .await;
+    ArmAndController {
+        controller,
+        _arm: arm,
+        harness,
+        stack,
+    }
+}
+
+/// The slot metadata of a remote `arm_controller` instance, as the
+/// coordinator hands it over with a cross-daemon pair.
+fn remote_controller_meta() -> RemoteSlotMeta {
+    RemoteSlotMeta {
+        pairing_name: "arm_link".to_string(),
+        pairing_tag: "v1".to_string(),
+        role: "controller".to_string(),
+        cardinality: config::node::Cardinality::One,
+        copy: None,
+    }
+}
+
+#[tokio::test]
+async fn pair_clear_repair_lifecycle() {
+    let fixture = arm_and_controller_running().await;
+    let stack = &fixture.stack;
 
     let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
     let ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm");
@@ -95,8 +129,8 @@ async fn pair_clear_repair_lifecycle() {
 
     // The arm's `one` slot holds its pair, so a second controller is refused.
     let _other_ctrl = fixtures::start_instance_in_stack(
-        &stack,
-        &harness,
+        stack,
+        &fixture.harness,
         "arm_controller",
         "v1",
         Some(&name("ctrl_2")),
@@ -123,17 +157,8 @@ async fn pair_clear_repair_lifecycle() {
 
 #[tokio::test]
 async fn pair_slots_validation_matrix() {
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let harness = real_lifecycle::lifecycle_harness();
-    let _arm =
-        fixtures::push_started(&stack, &harness, robot_arm_config(), Some(&name("arm_1"))).await;
-    let _ctrl = fixtures::push_started(
-        &stack,
-        &harness,
-        arm_controller_config(),
-        Some(&name("ctrl_1")),
-    )
-    .await;
+    let fixture = arm_and_controller_running().await;
+    let stack = &fixture.stack;
 
     // Unknown instance.
     let err = stack
@@ -161,8 +186,8 @@ async fn pair_slots_validation_matrix() {
 
     // Same role on both ends: two controllers cannot pair.
     let _ctrl2 = fixtures::start_instance_in_stack(
-        &stack,
-        &harness,
+        stack,
+        &fixture.harness,
         "arm_controller",
         "v1",
         Some(&name("ctrl_2")),
@@ -182,17 +207,8 @@ async fn pair_slots_validation_matrix() {
 
 #[tokio::test]
 async fn death_dissolves_pairs_and_reads_prune_lazily() {
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let harness = real_lifecycle::lifecycle_harness();
-    let _arm =
-        fixtures::push_started(&stack, &harness, robot_arm_config(), Some(&name("arm_1"))).await;
-    let ctrl = fixtures::push_started(
-        &stack,
-        &harness,
-        arm_controller_config(),
-        Some(&name("ctrl_1")),
-    )
-    .await;
+    let fixture = arm_and_controller_running().await;
+    let stack = &fixture.stack;
 
     let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
     let ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm");
@@ -210,7 +226,7 @@ async fn death_dissolves_pairs_and_reads_prune_lazily() {
 
     // Lazy path: re-pair, then stop the controller WITHOUT dissolving.
     stack.pair_slots(&ctrl_slot, &arm_slot).expect("re-pair");
-    drop(ctrl); // stops the instance; nothing calls dissolve
+    drop(fixture.controller); // stops the instance; nothing calls dissolve
     assert!(
         stack.pairs().is_empty(),
         "registry reads must prune pairs whose endpoint died"
@@ -231,15 +247,8 @@ async fn a_remote_pair_survives_reads_and_is_dissolved_only_by_its_owners_notice
 
     let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
     let remote_slot = SlotAddr::new("core_b", "ctrl_remote", "arm");
-    let remote_meta = RemoteSlotMeta {
-        pairing_name: "arm_link".to_string(),
-        pairing_tag: "v1".to_string(),
-        role: "controller".to_string(),
-        cardinality: config::node::Cardinality::One,
-        copy: None,
-    };
     stack
-        .pair_slot_with_remote(&arm_slot, &remote_slot, &remote_meta)
+        .pair_slot_with_remote(&arm_slot, &remote_slot, &remote_controller_meta())
         .expect("the coordinator's verdict authorizes the far half");
 
     // Repeated reads must not prune it: the local endpoint is alive, and the
@@ -277,17 +286,8 @@ async fn a_remote_pair_survives_reads_and_is_dissolved_only_by_its_owners_notice
 /// recorded, leaving dissolution the only thing that removes a pair.
 #[tokio::test]
 async fn reading_pairs_for_notification_does_not_prune_the_dissolution_away() {
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let harness = real_lifecycle::lifecycle_harness();
-    let _arm =
-        fixtures::push_started(&stack, &harness, robot_arm_config(), Some(&name("arm_1"))).await;
-    let _ctrl = fixtures::push_started(
-        &stack,
-        &harness,
-        arm_controller_config(),
-        Some(&name("ctrl_1")),
-    )
-    .await;
+    let fixture = arm_and_controller_running().await;
+    let stack = &fixture.stack;
 
     let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
     let ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm");
@@ -295,7 +295,7 @@ async fn reading_pairs_for_notification_does_not_prune_the_dissolution_away() {
 
     // What `node stop` does before tearing relationships down.
     assert!(fixtures::stop_instance_in_stack(
-        &stack,
+        stack,
         "arm_controller",
         "v1",
         &name("ctrl_1")
@@ -320,17 +320,8 @@ async fn reading_pairs_for_notification_does_not_prune_the_dissolution_away() {
 
 #[tokio::test]
 async fn reset_clears_the_registry() {
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let harness = real_lifecycle::lifecycle_harness();
-    let _arm =
-        fixtures::push_started(&stack, &harness, robot_arm_config(), Some(&name("arm_1"))).await;
-    let _ctrl = fixtures::push_started(
-        &stack,
-        &harness,
-        arm_controller_config(),
-        Some(&name("ctrl_1")),
-    )
-    .await;
+    let fixture = arm_and_controller_running().await;
+    let stack = &fixture.stack;
     stack
         .pair_slots(
             &SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm"),
@@ -343,17 +334,8 @@ async fn reset_clears_the_registry() {
 
 #[tokio::test]
 async fn serialized_graph_overlays_pairing_slots() {
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let harness = real_lifecycle::lifecycle_harness();
-    let _arm =
-        fixtures::push_started(&stack, &harness, robot_arm_config(), Some(&name("arm_1"))).await;
-    let _ctrl = fixtures::push_started(
-        &stack,
-        &harness,
-        arm_controller_config(),
-        Some(&name("ctrl_1")),
-    )
-    .await;
+    let fixture = arm_and_controller_running().await;
+    let stack = &fixture.stack;
 
     // Unpaired: both slots surface holding no pair, with manifest metadata.
     let graph = stack.to_serialized_graph();
@@ -405,15 +387,8 @@ async fn serialized_graph_stamps_a_remote_peer_with_its_own_core_node() {
 
     let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
     let remote_slot = SlotAddr::new("core_b", "ctrl_remote", "arm");
-    let remote_meta = RemoteSlotMeta {
-        pairing_name: "arm_link".to_string(),
-        pairing_tag: "v1".to_string(),
-        role: "controller".to_string(),
-        cardinality: config::node::Cardinality::One,
-        copy: None,
-    };
     stack
-        .pair_slot_with_remote(&arm_slot, &remote_slot, &remote_meta)
+        .pair_slot_with_remote(&arm_slot, &remote_slot, &remote_controller_meta())
         .expect("the coordinator's verdict authorizes the far half");
 
     let graph = stack.to_serialized_graph();
