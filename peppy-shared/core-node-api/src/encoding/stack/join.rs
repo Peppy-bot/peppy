@@ -337,24 +337,41 @@ mod tests {
         assert!(refusal.contains("stray comma"), "{refusal}");
     }
 
+    /// Each refusal of a wire override names what is wrong with it. The goal
+    /// carries valid budgets, so no later field refusal can stand in for the
+    /// override's own.
     #[test]
-    fn wire_arguments_reject_non_finite_numbers_and_invalid_names() {
-        for (instance, key, value) in [
-            ("arm", "gain", "NaN"),
-            ("arm", "gain", "{value: [Infinity]}"),
-            ("bad/name", "gain", "1"),
-            ("arm", "", "1"),
+    fn wire_argument_refusals_name_the_override_field() {
+        for (instance, key, value, expected) in [
+            (
+                "arm",
+                "gain",
+                "NaN",
+                "`arm.gain` contains a non-finite number",
+            ),
+            (
+                "arm",
+                "gain",
+                "{value: [Infinity]}",
+                "`arm.gain` contains a non-finite number",
+            ),
+            ("bad/name", "gain", "1", "`arguments.instance_id`"),
+            ("arm", "", "1", "`arguments.argument`"),
+            ("arm", "gain", "{", "`arguments.value`"),
         ] {
             let mut message = Builder::new_default();
             let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder>();
             goal.set_name("alpha");
             goal.set_option("openarm_real");
-            let mut arguments = goal.init_arguments(1);
-            let mut argument = arguments.reborrow().get(0);
+            goal.set_node_add_idle_timeout_secs(1);
+            goal.set_node_build_idle_timeout_secs(1);
+            goal.set_node_run_idle_timeout_secs(1);
+            let mut argument = goal.init_arguments(1).get(0);
             argument.set_instance_id(instance);
             argument.set_argument(key);
             argument.set_value(value);
-            assert!(StackJoinGoal::decode(&encode_message(&message).unwrap()).is_err());
+            let refusal = decoding_error(StackJoinGoal::decode(&encode_message(&message).unwrap()));
+            assert!(refusal.contains(expected), "{refusal}");
         }
     }
 
