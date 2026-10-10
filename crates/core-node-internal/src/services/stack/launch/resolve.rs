@@ -622,18 +622,20 @@ pub(in crate::services::stack) async fn mint_doc_pins(
     let mut problems: Vec<String> = Vec::new();
     for (item, minted) in planned.iter_mut().zip(minted) {
         let label = item.deployment.source.label();
-        match minted {
-            Ok(doc_pins) => {
-                if has_remote_instances(&item.deployment, placements)
-                    && let Err(reason) = refuse_unportable_pins(&label, doc_pins.iter())
-                {
-                    problems.push(reason);
-                    continue;
-                }
-                item.closure_pins.extend(doc_pins);
+        let doc_pins = match minted {
+            Ok(doc_pins) => doc_pins,
+            Err(reason) => {
+                problems.push(format!("deployment {label}: {reason}"));
+                continue;
             }
-            Err(reason) => problems.push(format!("deployment {label}: {reason}")),
+        };
+        if has_remote_instances(&item.deployment, placements)
+            && let Err(reason) = refuse_unportable_pins(&label, doc_pins.iter())
+        {
+            problems.push(reason);
+            continue;
         }
+        item.closure_pins.extend(doc_pins);
     }
     if !problems.is_empty() {
         let msg = daemon_config::format_bulleted(&problems);
