@@ -25,8 +25,7 @@ pub fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Resul
 
         match spec {
             ParameterSpec::Group(group_fields) => {
-                let module_ident =
-                    Ident::new(&sanitize_rust_identifier(field_name), Span::call_site());
+                let module_ident = &field_ident;
                 let struct_name = to_camel_case(field_name);
                 let struct_ident = Ident::new(&struct_name, Span::call_site());
                 let mut structs = Vec::new();
@@ -59,12 +58,10 @@ pub fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Resul
         }
     };
 
-    let mut all_tokens = main_struct;
-    for module in modules {
-        all_tokens = quote! { #all_tokens #module };
-    }
-
-    Ok(render_tokens(all_tokens))
+    Ok(render_tokens(quote! {
+        #main_struct
+        #( #modules )*
+    }))
 }
 
 /// Validates that parameter field names contain only allowed characters.
