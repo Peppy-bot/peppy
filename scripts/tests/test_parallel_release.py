@@ -598,8 +598,6 @@ def test_build_embeds_the_provisioned_bindings_and_apptainer(
     embedded: dict[str, list[str]] = {}
 
     def fake_build(tag: str, target: str, repo_root: Path) -> BuildArtifact:
-        import os
-
         so_dir = Path(os.environ["PEPPYLIB_PREBUILT_SO_DIR"])
         embedded["so"] = sorted(p.name for p in so_dir.iterdir())
         asset = tmp_path / "dist" / f"peppy-{target}.tgz"
