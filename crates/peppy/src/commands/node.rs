@@ -505,7 +505,7 @@ impl Command for NodeCommand {
                     NodeInitBuilder::new(ctx, node_name, toolchain, with_container);
 
                 if let Some(dir) = to_dir {
-                    node_init_builder = node_init_builder.to_dir(dir);
+                    node_init_builder = node_init_builder.with_dir(dir);
                 }
 
                 node_init_builder.build()

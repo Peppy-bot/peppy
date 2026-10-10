@@ -40,8 +40,7 @@ impl NodeInitBuilder {
         }
     }
 
-    #[allow(clippy::wrong_self_convention)]
-    pub fn to_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+    pub fn with_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.to_dir = dir.into();
         self
     }
