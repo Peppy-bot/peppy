@@ -2,9 +2,12 @@ use super::activity::{
     BuildActivity, BuildActivityProbe, ProcessCpu, build_cpu_time, parse_guest_activity,
     parse_ps_cputime, parse_ps_process_table,
 };
-use super::facade::{Apptainer, Backend, GuestSignal, is_uri, prepare_scratch_dir};
 #[cfg(target_os = "linux")]
-use super::facade::{apparmor_profile_ref, check_setup_status, shell_escape_single_quoted};
+use super::facade::{
+    ApparmorProfileRef, apparmor_profile_ref, check_setup_status, setup_fix_script,
+    shell_escape_single_quoted,
+};
+use super::facade::{Apptainer, Backend, GuestSignal, is_uri, prepare_scratch_dir};
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
 use crate::error::Error;
 use std::fs;
@@ -1284,6 +1287,51 @@ fn shell_escape_single_quoted_survives_embedded_quotes() {
         r"/home/o'\''brien/.peppy/starter"
     );
     assert_eq!(shell_escape_single_quoted("/plain/path"), "/plain/path");
+}
+
+/// The fix script holds one step per failing check, in a fixed order, and is
+/// absent when every check passes. A profile that is missing or stale is
+/// written and loaded in one step, so a profile that only needs loading gets
+/// the load alone.
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_fix_script_holds_a_step_for_each_failing_check() {
+    const INSTALL_UIDMAP: &str = "sudo apt-get install -y uidmap";
+    const INSTALL_PROFILE: &str = "echo 'abi <abi/4.0>,\n\
+         include <tunables/global>\n\
+         \n\
+         profile peppy-apptainer-0000000000000000 /opt/a/libexec/apptainer/bin/starter \
+         flags=(unconfined) {\n  userns,\n}' \
+         | sudo tee /etc/apparmor.d/peppy-apptainer-0000000000000000 > /dev/null \\\n  \
+         && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
+    const LOAD_PROFILE: &str =
+        "sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
+    let profile = ApparmorProfileRef {
+        starter_path: "/opt/a/libexec/apptainer/bin/starter".to_string(),
+        name: "peppy-apptainer-0000000000000000".to_string(),
+        file: PathBuf::from("/etc/apparmor.d/peppy-apptainer-0000000000000000"),
+    };
+    let uidmap_then = |step: &str| format!("{INSTALL_UIDMAP} \\\n  && {step}");
+
+    // (newuidmap_ok, apparmor_ok, apparmor_loaded, script)
+    let cases = [
+        (true, true, true, None),
+        (false, true, true, Some(INSTALL_UIDMAP.to_string())),
+        (true, false, true, Some(INSTALL_PROFILE.to_string())),
+        (true, false, false, Some(INSTALL_PROFILE.to_string())),
+        (true, true, false, Some(LOAD_PROFILE.to_string())),
+        (false, false, true, Some(uidmap_then(INSTALL_PROFILE))),
+        (false, false, false, Some(uidmap_then(INSTALL_PROFILE))),
+        (false, true, false, Some(uidmap_then(LOAD_PROFILE))),
+    ];
+    for (newuidmap_ok, apparmor_ok, apparmor_loaded, script) in cases {
+        assert_eq!(
+            setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile),
+            script,
+            "newuidmap_ok={newuidmap_ok} apparmor_ok={apparmor_ok} \
+             apparmor_loaded={apparmor_loaded}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

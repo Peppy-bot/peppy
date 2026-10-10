@@ -186,7 +186,7 @@ fn which(cmd: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
             let full = dir.join(cmd);
-            if full.is_file() { Some(full) } else { None }
+            full.is_file().then_some(full)
         })
     })
 }
@@ -339,72 +339,11 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
             .unwrap_or(false);
 
     let profile = apparmor_profile_ref(apptainer_dir);
-
-    let apparmor_ok = if apparmor_restricted {
-        // The per-install profile file must exist AND reference the current
-        // starter path. The hashed file name already namespaces installations;
-        // the content check additionally catches a manually edited or
-        // corrupted profile that would not grant the binary namespace
-        // privileges.
-        std::fs::read_to_string(&profile.file)
-            .map(|content| content.contains(&profile.starter_path))
-            .unwrap_or(false)
-    } else {
-        true
-    };
-
-    let apparmor_loaded = if apparmor_restricted {
-        // /sys/kernel/security/apparmor/profiles requires CAP_MAC_ADMIN, so
-        // use the policy directory listing which is world-readable.
-        let kernel_entry_prefix = format!("{}.", profile.name);
-        std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles")
-            .map(|entries| {
-                entries.filter_map(|e| e.ok()).any(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|name| name.starts_with(&kernel_entry_prefix))
-                })
-            })
-            .unwrap_or(false)
-    } else {
-        true
-    };
-
-    let fix_script = if newuidmap_ok && apparmor_ok && apparmor_loaded {
-        None
-    } else {
-        let mut parts: Vec<String> = Vec::new();
-
-        if !newuidmap_ok {
-            parts.push("sudo apt-get install -y uidmap".to_string());
-        }
-
-        if apparmor_restricted && !apparmor_ok {
-            parts.push(format!(
-                "echo 'abi <abi/4.0>,\n\
-                 include <tunables/global>\n\
-                 \n\
-                 profile {profile_name} {starter_path} flags=(unconfined) {{\n\
-                 \x20 userns,\n\
-                 }}' | sudo tee {profile_file} > /dev/null \\\n  \
-                 && sudo apparmor_parser -r {profile_file}",
-                profile_name = profile.name,
-                starter_path = shell_escape_single_quoted(&profile.starter_path),
-                profile_file = profile.file.display(),
-            ));
-        } else if apparmor_restricted && !apparmor_loaded {
-            parts.push(format!(
-                "sudo apparmor_parser -r {}",
-                profile.file.display()
-            ));
-        }
-
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join(" \\\n  && "))
-        }
-    };
+    let apparmor_ok = !apparmor_restricted || profile_references_starter(&profile);
+    let apparmor_loaded = !apparmor_restricted || is_profile_loaded(&profile);
+    // Both AppArmor checks pass on a system that does not restrict user
+    // namespaces, so the fix script needs no restriction flag of its own.
+    let fix_script = setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile);
 
     SetupStatus {
         newuidmap_ok,
@@ -414,6 +353,77 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
         apparmor_manageable,
         fix_script,
     }
+}
+
+/// Whether the profile file of `profile` exists and references its starter
+/// path. The hashed file name already namespaces installations; the content
+/// check additionally catches a manually edited or corrupted profile that
+/// would not grant the binary namespace privileges.
+#[cfg(target_os = "linux")]
+fn profile_references_starter(profile: &ApparmorProfileRef) -> bool {
+    std::fs::read_to_string(&profile.file)
+        .map(|content| content.contains(&profile.starter_path))
+        .unwrap_or(false)
+}
+
+/// Whether the kernel has `profile` loaded. Reads the policy directory
+/// listing, which is world-readable, because
+/// `/sys/kernel/security/apparmor/profiles` requires CAP_MAC_ADMIN.
+#[cfg(target_os = "linux")]
+fn is_profile_loaded(profile: &ApparmorProfileRef) -> bool {
+    let kernel_entry_prefix = format!("{}.", profile.name);
+    std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles")
+        .map(|entries| {
+            entries.filter_map(|e| e.ok()).any(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(&kernel_entry_prefix))
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// The shell script that fixes the failing checks, one step per failure
+/// joined with `&&`, or `None` when every check passes. A profile that is
+/// missing or stale is written and loaded in one step, so the load alone is
+/// for a profile that is in place but not loaded.
+#[cfg(target_os = "linux")]
+pub(crate) fn setup_fix_script(
+    newuidmap_ok: bool,
+    apparmor_ok: bool,
+    apparmor_loaded: bool,
+    profile: &ApparmorProfileRef,
+) -> Option<String> {
+    let mut steps: Vec<String> = Vec::new();
+
+    if !newuidmap_ok {
+        steps.push("sudo apt-get install -y uidmap".to_string());
+    }
+
+    if !apparmor_ok {
+        steps.push(format!(
+            "echo 'abi <abi/4.0>,\n\
+             include <tunables/global>\n\
+             \n\
+             profile {profile_name} {starter_path} flags=(unconfined) {{\n\
+             \x20 userns,\n\
+             }}' | sudo tee {profile_file} > /dev/null \\\n  \
+             && sudo apparmor_parser -r {profile_file}",
+            profile_name = profile.name,
+            starter_path = shell_escape_single_quoted(&profile.starter_path),
+            profile_file = profile.file.display(),
+        ));
+    } else if !apparmor_loaded {
+        steps.push(format!(
+            "sudo apparmor_parser -r {}",
+            profile.file.display()
+        ));
+    }
+
+    if steps.is_empty() {
+        return None;
+    }
+    Some(steps.join(" \\\n  && "))
 }
 
 /// Check that Apptainer's user namespace prerequisites are met.
