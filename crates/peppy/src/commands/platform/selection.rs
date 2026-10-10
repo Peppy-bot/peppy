@@ -99,9 +99,10 @@ pub(crate) fn workspace_json(selection: Option<&PlatformSelection>) -> serde_jso
 /// The selected project with its workspace as JSON, `null` when no project is
 /// selected.
 pub(crate) fn project_json(selection: Option<&PlatformSelection>) -> serde_json::Value {
-    let Some((selection, project)) =
-        selection.and_then(|selection| Some((selection, selection.project.as_ref()?)))
-    else {
+    let Some(selection) = selection else {
+        return serde_json::Value::Null;
+    };
+    let Some(project) = &selection.project else {
         return serde_json::Value::Null;
     };
     serde_json::json!({
