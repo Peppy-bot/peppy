@@ -168,141 +168,18 @@ pub fn validate_bindings(
 
     check_stack_wide_instance_id_uniqueness(items, &mut out.errors);
 
-    let instance_to_item = build_instance_lookup(items);
+    let context = BindingContext {
+        instance_to_item: build_instance_lookup(items),
+        placements,
+        copies,
+    };
 
     for item in items {
         let declared_slots = collect_declared_slots(item.depends_on);
 
         for instance in item.instances {
-            let mut resolved: SlotBindings = BTreeMap::new();
-
-            for (binding_key, value) in &instance.links {
-                // Only producer-binding keys are ours. A key naming a
-                // pairing/observer slot is handled by its own validator, and a
-                // key naming no slot at all is reported once by
-                // `validate_link_slots`; both are skipped here rather than
-                // re-reported per mechanism.
-                let Some(slot) = declared_slots.get(binding_key.as_str()).copied() else {
-                    continue;
-                };
-                // A vacancy is the deployment writing down that this slot runs
-                // empty, so it resolves to an explicit empty set. Only a
-                // `zero_or_one` slot can reach here vacant:
-                // `validate_link_plan` runs `validate_link_slots` first and
-                // returns before this on every other slot's vacancy.
-                let Some(selection) = value.selection() else {
-                    resolved.insert(binding_key.clone(), BoundProducers::default());
-                    continue;
-                };
-
-                // Rule 2: the value's shape (or flag count) must match the
-                // slot's declared cardinality.
-                if let Err(shape_error) =
-                    check_value_matches_cardinality(&slot, selection, binding_key, instance)
-                {
-                    out.errors.push(shape_error);
-                    continue;
-                }
-
-                // Rule 3: every target exists and satisfies the slot
-                // (uniqueness holds by `LinkTargets` construction).
-                // All-or-nothing: a slot with any bad target reports each
-                // offender and resolves nothing.
-                let mut members: Vec<BoundMember> = Vec::with_capacity(selection.targets().len());
-                let mut slot_failed = false;
-                for target_id in selection.targets() {
-                    let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
-                        out.errors.push(ParsingError::UnknownInstanceId {
-                            owner_instance_id: instance.instance_id.to_string(),
-                            link: binding_key.clone(),
-                            instance_id: target_id.clone(),
-                        });
-                        slot_failed = true;
-                        continue;
-                    };
-                    if !slot_matches_producer(&slot, target_item) {
-                        out.errors.push(target_conformance_error(
-                            &slot,
-                            target_item,
-                            binding_key,
-                            target_id,
-                            instance,
-                        ));
-                        slot_failed = true;
-                        continue;
-                    }
-                    // Each member carries its full wire address and the copy
-                    // its instance belongs to, with the id it has inside that
-                    // copy, so what a node reads for a member is settled here
-                    // and nowhere else.
-                    members.push(BoundMember {
-                        producer: ProducerRef::new(placements.of(target_id), target_id.clone()),
-                        copy: copies.tag_of(target_id).cloned(),
-                    });
-                }
-                if slot_failed {
-                    continue;
-                }
-
-                let bound = BoundProducers::try_from(members)
-                    .expect("targets are duplicate-free by LinkTargets construction");
-                resolved.insert(binding_key.clone(), bound);
-            }
-
-            // Rule 5: every declared slot must resolve. Keyed on the
-            // `links` entries, not `resolved`, so a slot whose entry
-            // failed shape or target validation reports only that error,
-            // not a bogus "add a binding" too. A `zero_or_more` slot with
-            // no entry resolves to an explicit empty set.
-            for (slot_link_id, slot) in &declared_slots {
-                if instance.links.contains_key(*slot_link_id) {
-                    continue;
-                }
-                if slot.cardinality.allows_empty() {
-                    resolved.insert((*slot_link_id).to_string(), BoundProducers::default());
-                } else {
-                    out.errors
-                        .push(ParsingError::BindingSlotUnfulfilled(Box::new(
-                            BindingSlotUnfulfilled {
-                                owner_instance_id: instance.instance_id.to_string(),
-                                link_id: (*slot_link_id).to_string(),
-                                slot_kind: slot.kind,
-                                slot_name: slot.name.to_string(),
-                                slot_tag: slot.tag.to_string(),
-                                cardinality: slot.cardinality,
-                            },
-                        )));
-                }
-            }
-
-            // Rule 6: a consumer that addresses its members by copy takes
-            // members that belong to one, and one member per copy on the
-            // slots it fills once.
-            if let MemberAddressing::ByCopy { one_per_copy } = item.addressing {
-                for slot in declared_slots.keys() {
-                    let Some(bound) = resolved.get(*slot) else {
-                        continue;
-                    };
-                    let mut by_copy: BTreeMap<&Name, Vec<&Name>> = BTreeMap::new();
-                    for member in bound.as_slice() {
-                        match &member.copy {
-                            Some(copy) => by_copy
-                                .entry(&copy.name)
-                                .or_default()
-                                .push(&copy.instance_id),
-                            None => out.errors.push(member_outside_copy(instance, slot, member)),
-                        }
-                    }
-                    if !one_per_copy.contains(*slot) {
-                        continue;
-                    }
-                    for (copy, ids) in by_copy.iter().filter(|(_, ids)| ids.len() > 1) {
-                        out.errors
-                            .push(copy_fills_slot_twice(instance, slot, copy, ids));
-                    }
-                }
-            }
-
+            let resolved =
+                resolve_instance_slots(item, instance, &declared_slots, &context, &mut out.errors);
             if !resolved.is_empty() {
                 out.slot_bindings
                     .insert(instance.instance_id.to_string(), resolved);
@@ -311,6 +188,183 @@ pub fn validate_bindings(
     }
 
     out
+}
+
+/// What every slot of every consumer resolves against: the stack's
+/// producers by instance id, where each instance runs, and the copy each
+/// belongs to.
+struct BindingContext<'a> {
+    instance_to_item: BTreeMap<&'a str, &'a BindingValidationItem<'a>>,
+    placements: &'a Placements,
+    copies: &'a CopyMembership,
+}
+
+/// Rules 2, 3, 5 and 6 over one consumer instance, in that order: the
+/// slots its `links` bind, then the declared slots it leaves unbound, then
+/// the per-copy addressing of what resolved. Returns every slot that
+/// resolved and pushes each violation to `errors`.
+fn resolve_instance_slots(
+    item: &BindingValidationItem<'_>,
+    instance: &DeploymentInstance,
+    declared_slots: &DeclaredSlots<'_>,
+    context: &BindingContext<'_>,
+    errors: &mut Vec<ParsingError>,
+) -> SlotBindings {
+    let mut resolved: SlotBindings = BTreeMap::new();
+
+    for (binding_key, value) in &instance.links {
+        // Only producer-binding keys are ours. A key naming a
+        // pairing/observer slot is handled by its own validator, and a
+        // key naming no slot at all is reported once by
+        // `validate_link_slots`; both are skipped here rather than
+        // re-reported per mechanism.
+        let Some(slot) = declared_slots.get(binding_key.as_str()).copied() else {
+            continue;
+        };
+        // A vacancy is the deployment writing down that this slot runs
+        // empty, so it resolves to an explicit empty set. Only a
+        // `zero_or_one` slot can reach here vacant:
+        // `validate_link_plan` runs `validate_link_slots` first and
+        // returns before this on every other slot's vacancy.
+        let Some(selection) = value.selection() else {
+            resolved.insert(binding_key.clone(), BoundProducers::default());
+            continue;
+        };
+        match resolve_linked_slot(&slot, selection, binding_key, instance, context) {
+            Ok(bound) => {
+                resolved.insert(binding_key.clone(), bound);
+            }
+            Err(slot_errors) => errors.extend(slot_errors),
+        }
+    }
+
+    resolve_unlinked_slots(instance, declared_slots, &mut resolved, errors);
+
+    if let MemberAddressing::ByCopy { one_per_copy } = item.addressing {
+        check_copy_addressing(one_per_copy, instance, declared_slots, &resolved, errors);
+    }
+
+    resolved
+}
+
+/// Rules 2 and 3 over one slot the consumer's `links` bind: the bound
+/// producer set, or every violation the slot holds.
+fn resolve_linked_slot(
+    slot: &SlotMeta<'_>,
+    selection: &Selection,
+    binding_key: &str,
+    instance: &DeploymentInstance,
+    context: &BindingContext<'_>,
+) -> Result<BoundProducers, Vec<ParsingError>> {
+    // Rule 2: the value's shape (or flag count) must match the
+    // slot's declared cardinality.
+    check_value_matches_cardinality(slot, selection, binding_key, instance)
+        .map_err(|shape_error| vec![shape_error])?;
+
+    // Rule 3: every target exists and satisfies the slot
+    // (uniqueness holds by `LinkTargets` construction).
+    // All-or-nothing: a slot with any bad target reports each
+    // offender and resolves nothing.
+    let mut members: Vec<BoundMember> = Vec::with_capacity(selection.targets().len());
+    let mut offenders: Vec<ParsingError> = Vec::new();
+    for target_id in selection.targets() {
+        let Some(target_item) = context.instance_to_item.get(target_id.as_str()) else {
+            offenders.push(ParsingError::UnknownInstanceId {
+                owner_instance_id: instance.instance_id.to_string(),
+                link: binding_key.to_string(),
+                instance_id: target_id.clone(),
+            });
+            continue;
+        };
+        if !slot_matches_producer(slot, target_item) {
+            offenders.push(target_conformance_error(
+                slot,
+                target_item,
+                binding_key,
+                target_id,
+                instance,
+            ));
+            continue;
+        }
+        // Each member carries its full wire address and the copy
+        // its instance belongs to, with the id it has inside that
+        // copy, so what a node reads for a member is settled here
+        // and nowhere else.
+        members.push(BoundMember {
+            producer: ProducerRef::new(context.placements.of(target_id), target_id.clone()),
+            copy: context.copies.tag_of(target_id).cloned(),
+        });
+    }
+    if !offenders.is_empty() {
+        return Err(offenders);
+    }
+
+    Ok(BoundProducers::try_from(members)
+        .expect("targets are duplicate-free by LinkTargets construction"))
+}
+
+/// Rule 5: every declared slot must resolve. Keyed on the `links`
+/// entries, not `resolved`, so a slot whose entry failed shape or target
+/// validation reports only that error, not a bogus "add a binding" too. A
+/// `zero_or_more` slot with no entry resolves to an explicit empty set.
+fn resolve_unlinked_slots(
+    instance: &DeploymentInstance,
+    declared_slots: &DeclaredSlots<'_>,
+    resolved: &mut SlotBindings,
+    errors: &mut Vec<ParsingError>,
+) {
+    for (slot_link_id, slot) in declared_slots {
+        if instance.links.contains_key(*slot_link_id) {
+            continue;
+        }
+        if slot.cardinality.allows_empty() {
+            resolved.insert((*slot_link_id).to_string(), BoundProducers::default());
+            continue;
+        }
+        errors.push(ParsingError::BindingSlotUnfulfilled(Box::new(
+            BindingSlotUnfulfilled {
+                owner_instance_id: instance.instance_id.to_string(),
+                link_id: (*slot_link_id).to_string(),
+                slot_kind: slot.kind,
+                slot_name: slot.name.to_string(),
+                slot_tag: slot.tag.to_string(),
+                cardinality: slot.cardinality,
+            },
+        )));
+    }
+}
+
+/// Rule 6: a consumer that addresses its members by copy takes members
+/// that belong to one, and one member per copy on the slots it fills
+/// once.
+fn check_copy_addressing(
+    one_per_copy: &BTreeSet<String>,
+    instance: &DeploymentInstance,
+    declared_slots: &DeclaredSlots<'_>,
+    resolved: &SlotBindings,
+    errors: &mut Vec<ParsingError>,
+) {
+    for slot in declared_slots.keys() {
+        let Some(bound) = resolved.get(*slot) else {
+            continue;
+        };
+        let mut by_copy: BTreeMap<&Name, Vec<&Name>> = BTreeMap::new();
+        for member in bound.as_slice() {
+            match &member.copy {
+                Some(copy) => by_copy
+                    .entry(&copy.name)
+                    .or_default()
+                    .push(&copy.instance_id),
+                None => errors.push(member_outside_copy(instance, slot, member)),
+            }
+        }
+        if !one_per_copy.contains(*slot) {
+            continue;
+        }
+        for (copy, ids) in by_copy.iter().filter(|(_, ids)| ids.len() > 1) {
+            errors.push(copy_fills_slot_twice(instance, slot, copy, ids));
+        }
+    }
 }
 
 /// Rule 2: does the binding selection satisfy the slot's declared cardinality?
