@@ -277,6 +277,55 @@ fn a_pairing_emission_reaches_its_peer_and_its_observers_only() {
 }
 
 #[test]
+fn a_pairing_emission_checks_its_target_then_each_segment_in_order() {
+    use crate::error::Error;
+    use crate::wire::SegmentError;
+
+    type BuildEmission = fn(&str, SenderTarget, &str) -> crate::error::Result<TopicWireSender>;
+    let to_peer: BuildEmission = |core_node, target, link_id| {
+        TopicWireSender::to_peer(
+            core_node,
+            "arm_1",
+            target,
+            link_id,
+            "joint_states",
+            WirePeer::new("core_b", "ctrl_1", "arm").unwrap(),
+        )
+    };
+    let to_sole_peer: BuildEmission = |core_node, target, link_id| {
+        TopicWireSender::to_sole_peer(core_node, "arm_1", target, link_id, "joint_states")
+    };
+
+    for (constructor, build) in [("to_peer", to_peer), ("to_sole_peer", to_sole_peer)] {
+        assert!(
+            matches!(
+                build("core/a", node("uvc_camera", "v1"), "*"),
+                Err(Error::PeerOnNonPairingPublish)
+            ),
+            "{constructor}"
+        );
+        assert!(
+            matches!(
+                build("core/a", pairing("arm_link", "v1"), "*"),
+                Err(Error::InvalidSegment(SegmentError::ContainsSlash(_)))
+            ),
+            "{constructor}"
+        );
+        assert!(
+            matches!(
+                build("core_a", pairing("arm_link", "v1"), "*"),
+                Err(Error::InvalidSegment(SegmentError::ReservedSentinel(_)))
+            ),
+            "{constructor}"
+        );
+        assert!(
+            build("core_a", pairing("arm_link", "v1"), "controller").is_ok(),
+            "{constructor}"
+        );
+    }
+}
+
+#[test]
 fn a_pairing_key_without_its_recipient_is_refused() {
     assert!(matches!(
         TopicWireSender::new(
