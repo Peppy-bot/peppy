@@ -2929,6 +2929,27 @@ mod tests {
             assert_eq!(unexpected, BuildError::UnexpectedFleetSource);
         }
 
+        #[test]
+        fn the_listing_tool_needs_a_name_of_its_own() {
+            let mut bundle = bundle();
+            let BundleSurface::PerRobot { robots, .. } = &mut bundle.surface else {
+                panic!("a per-robot bundle");
+            };
+            robots.list.name = "robot.get_identity".to_string();
+            let error = ExposureServer::builder(bundle)
+                .with_fleet(Vec::new)
+                .with_tool("robot.get_identity", brightness_handler)
+                .with_tool("camera.set_brightness", brightness_handler)
+                .build()
+                .expect_err("the name is the identity tool's");
+            assert_eq!(
+                error,
+                BuildError::DuplicateName {
+                    name: "robot.get_identity".to_string()
+                }
+            );
+        }
+
         #[tokio::test]
         async fn a_call_is_routed_to_the_robots_member_without_its_routing_arguments() {
             let (server, _) = served();
@@ -3439,6 +3460,44 @@ mod tests {
             BuildError::UnknownToolHandler {
                 name: "front_camera.set_gain".to_string()
             }
+        );
+    }
+
+    /// Resources, tools and tasks share one namespace: an entry that
+    /// reuses the name of an earlier one is refused, naming it.
+    #[test]
+    fn a_name_an_earlier_entry_of_the_bundle_took_is_refused() {
+        let refusal = |reuse: fn(&mut ExposureBundle)| {
+            let mut bundle = task_bundle();
+            reuse(&mut bundle);
+            ExposureServer::builder(bundle)
+                .with_tool("front_camera.set_brightness", brightness_handler)
+                .with_task("recorder.record_episode", record_handler)
+                .with_task("recorder.resume_session", resume_handler)
+                .build()
+                .expect_err("a taken name is refused")
+        };
+        let duplicate = |name: &str| BuildError::DuplicateName {
+            name: name.to_string(),
+        };
+
+        let second_resource = refusal(|bundle| {
+            let resource = bundle.resources[0].clone();
+            bundle.resources.push(resource);
+        });
+        assert_eq!(second_resource, duplicate("front_camera.status"));
+
+        let tool_named_as_a_resource = refusal(|bundle| {
+            bundle.tools[0].name = "front_camera.status".to_string();
+        });
+        assert_eq!(tool_named_as_a_resource, duplicate("front_camera.status"));
+
+        let task_named_as_a_tool = refusal(|bundle| {
+            bundle.tasks[1].name = "front_camera.set_brightness".to_string();
+        });
+        assert_eq!(
+            task_named_as_a_tool,
+            duplicate("front_camera.set_brightness")
         );
     }
 
