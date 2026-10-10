@@ -391,3 +391,86 @@ fn reject_python_parameters_with_unknown_type_name_at_parse() {
         "expected error mentioning unknown type name, got: {err}"
     );
 }
+
+/// Pins the whole module: the class of a nested group comes before the class
+/// that references it, sibling groups follow the sorted order of their keys,
+/// not the order the schema declares them in, a nested class continues its
+/// parent's name, and `Parameters` comes last.
+#[test]
+fn generate_python_parameters_renders_each_group_before_its_parent() {
+    let parameters: config::ParameterSchema = serde_json5::from_str(
+        r#"{
+          zoom: "f32",
+          video: { frame_rate: "u16", resolution: { width: "u16" } },
+          audio: { gain: { level: "f64" }, muted: "bool" },
+        }"#,
+    )
+    .expect("the schema parses");
+
+    let rendered =
+        crate::generator::python::parameters::generate_python_parameters(&parameters).unwrap();
+
+    assert_eq!(
+        rendered,
+        r#"from dataclasses import dataclass
+
+@dataclass
+class AudioGain:
+    level: float
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AudioGain":
+        return cls(
+            level=data["level"],
+        )
+
+@dataclass
+class Audio:
+    gain: AudioGain
+    muted: bool
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Audio":
+        return cls(
+            gain=AudioGain.from_dict(data["gain"]),
+            muted=data["muted"],
+        )
+
+@dataclass
+class VideoResolution:
+    width: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "VideoResolution":
+        return cls(
+            width=data["width"],
+        )
+
+@dataclass
+class Video:
+    frame_rate: int
+    resolution: VideoResolution
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Video":
+        return cls(
+            frame_rate=data["frame_rate"],
+            resolution=VideoResolution.from_dict(data["resolution"]),
+        )
+
+@dataclass
+class Parameters:
+    audio: Audio
+    video: Video
+    zoom: float
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Parameters":
+        return cls(
+            audio=Audio.from_dict(data["audio"]),
+            video=Video.from_dict(data["video"]),
+            zoom=data["zoom"],
+        )
+"#
+    );
+}
