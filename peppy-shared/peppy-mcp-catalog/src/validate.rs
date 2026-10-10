@@ -14,8 +14,8 @@ use crate::bundle::{
     ResourcePolicies, RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
 };
 use crate::document::{
-    ArgumentName, ExposureSurface, McpExposure, PictureTool, ROBOT_ARGUMENT, RobotSurface,
-    ServiceExposure, TopicExposure,
+    ActionExposure, ArgumentName, ExposureSurface, McpExposure, PictureTool, ROBOT_ARGUMENT,
+    RobotSurface, ServiceExposure, TopicExposure,
 };
 use crate::policy::{GoalBound, ImageFieldMap, ImageRepresentation};
 use crate::schema::{
@@ -229,20 +229,11 @@ pub fn build_exposure_bundle(
                 ));
                 continue;
             };
-            let Some(mut entry) = check_service(target_name, service, declared, &mut violations)
+            let Some(entry) =
+                check_service(target_name, service, declared, &routing, &mut violations)
             else {
                 continue;
             };
-            let context = format!("target `{target_name}` service `{}`", service.member);
-            if !add_routing_arguments(
-                &context,
-                &routing,
-                declared.request_message_format.as_ref(),
-                &mut entry.input_schema,
-                &mut violations,
-            ) {
-                continue;
-            }
             tools.push(entry);
             tool_members.push(BoundMember::new(&slot, declared));
         }
@@ -258,88 +249,17 @@ pub fn build_exposure_bundle(
                 ));
                 continue;
             };
-            let context = format!("target `{target_name}` action `{}`", action.member);
-            // Recorded here and acted on only before the entry is built: the
-            // schema and routing checks below do not depend on the bound, so
-            // their violations are reported alongside this one.
-            let progress_without_feedback = matches!(action.bound, GoalBound::Progress { .. })
-                && declared.feedback_topic.is_none();
-            if progress_without_feedback {
-                violations.push(format!(
-                    "{context}: `progress_timeout_ms` bounds the goal by the signs of progress its \
-                     feedback carries, and contract `{contract_label}` declares no \
-                     `feedback_topic` for the action; bound the goal with `deadline_ms`"
-                ));
-            }
-            let goal_request = derive_schema(
-                declared
-                    .goal_service
-                    .as_ref()
-                    .and_then(|g| g.request_message_format.as_ref()),
-                &format!("{context} goal request"),
-                &mut violations,
-            );
-            let goal_response = derive_schema(
-                declared
-                    .goal_service
-                    .as_ref()
-                    .and_then(|g| g.response_message_format.as_ref()),
-                &format!("{context} goal response"),
-                &mut violations,
-            );
-            let feedback = declared.feedback_topic.as_ref().map(|feedback_topic| {
-                derive_schema(
-                    Some(&feedback_topic.message_format),
-                    &format!("{context} feedback"),
-                    &mut violations,
-                )
-            });
-            let result = derive_schema(
-                declared
-                    .result_service
-                    .as_ref()
-                    .and_then(|r| r.response_message_format.as_ref()),
-                &format!("{context} result"),
-                &mut violations,
-            );
-            let (Some(mut input_schema), Some(_), Some(output_schema)) =
-                (goal_request, goal_response, result)
-            else {
-                continue;
-            };
-            if !add_routing_arguments(
-                &context,
+            let Some(entry) = check_action(
+                target_name,
+                action,
+                declared,
+                &contract_label,
                 &routing,
-                declared
-                    .goal_service
-                    .as_ref()
-                    .and_then(|g| g.request_message_format.as_ref()),
-                &mut input_schema,
                 &mut violations,
-            ) {
+            ) else {
                 continue;
-            }
-            let feedback_schema = match feedback {
-                Some(Some(schema)) => Some(schema),
-                Some(None) => continue,
-                None => None,
             };
-            if progress_without_feedback {
-                continue;
-            }
-            tasks.push(TaskEntry {
-                name: action.tool.as_str().to_string(),
-                description: action.description.clone(),
-                target: target_name.clone(),
-                member: action.member.clone(),
-                operation: action.operation,
-                safety_sensitive: action.safety_sensitive,
-                confirmation_required: action.confirmation_required,
-                bound: action.bound,
-                input_schema,
-                output_schema,
-                feedback_schema,
-            });
+            tasks.push(entry);
             task_members.push(BoundMember::new(&slot, declared));
         }
         pins.push((slot, argument.map(ToString::to_string)));
@@ -612,13 +532,15 @@ fn check_topic_size_policy(
 }
 
 /// The tool entry of a service that validates; `None` records why it does
-/// not. Under a representation the entry's output schema is the schema of
-/// the answer's document: the response without the member the blob
-/// carries.
+/// not. The entry's input schema is the schema of the request with the
+/// routing arguments of its target added. Under a representation the
+/// entry's output schema is the schema of the answer's document: the
+/// response without the member the blob carries.
 fn check_service(
     target_name: &str,
     service: &ServiceExposure,
     declared: &NativeExposedService,
+    routing: &[&str],
     violations: &mut Vec<String>,
 ) -> Option<ToolEntry> {
     let context = format!("target `{target_name}` service `{}`", service.member);
@@ -657,6 +579,15 @@ fn check_service(
         &mut input_schema,
         violations,
     );
+    if !add_routing_arguments(
+        &context,
+        routing,
+        request_format,
+        &mut input_schema,
+        violations,
+    ) {
+        return None;
+    }
     let output_schema = document_schema(output_schema, service.representation.as_ref());
     Some(ToolEntry {
         name: service.tool.as_str().to_string(),
@@ -670,6 +601,99 @@ fn check_service(
         on_oversize: service.on_oversize,
         input_schema,
         output_schema,
+    })
+}
+
+/// The task entry of an action that validates; `None` records why it does
+/// not. The entry's input schema is the schema of the goal request with the
+/// routing arguments of its target added.
+fn check_action(
+    target_name: &str,
+    action: &ActionExposure,
+    declared: &NativeExposedAction,
+    contract_label: &str,
+    routing: &[&str],
+    violations: &mut Vec<String>,
+) -> Option<TaskEntry> {
+    let context = format!("target `{target_name}` action `{}`", action.member);
+    // Recorded here and acted on only before the entry is built: the
+    // schema and routing checks below do not depend on the bound, so
+    // their violations are reported alongside this one.
+    let progress_without_feedback =
+        matches!(action.bound, GoalBound::Progress { .. }) && declared.feedback_topic.is_none();
+    if progress_without_feedback {
+        violations.push(format!(
+            "{context}: `progress_timeout_ms` bounds the goal by the signs of progress its \
+             feedback carries, and contract `{contract_label}` declares no \
+             `feedback_topic` for the action; bound the goal with `deadline_ms`"
+        ));
+    }
+    let goal_request_format = declared
+        .goal_service
+        .as_ref()
+        .and_then(|goal| goal.request_message_format.as_ref());
+    let goal_request = derive_schema(
+        goal_request_format,
+        &format!("{context} goal request"),
+        violations,
+    );
+    let goal_response = derive_schema(
+        declared
+            .goal_service
+            .as_ref()
+            .and_then(|goal| goal.response_message_format.as_ref()),
+        &format!("{context} goal response"),
+        violations,
+    );
+    let feedback = declared.feedback_topic.as_ref().map(|feedback_topic| {
+        derive_schema(
+            Some(&feedback_topic.message_format),
+            &format!("{context} feedback"),
+            violations,
+        )
+    });
+    let result = derive_schema(
+        declared
+            .result_service
+            .as_ref()
+            .and_then(|r| r.response_message_format.as_ref()),
+        &format!("{context} result"),
+        violations,
+    );
+    let (Some(mut input_schema), Some(_), Some(output_schema)) =
+        (goal_request, goal_response, result)
+    else {
+        return None;
+    };
+    if !add_routing_arguments(
+        &context,
+        routing,
+        goal_request_format,
+        &mut input_schema,
+        violations,
+    ) {
+        return None;
+    }
+    let feedback_schema = match feedback {
+        Some(Some(schema)) => Some(schema),
+        Some(None) => return None,
+        None => None,
+    };
+    if progress_without_feedback {
+        return None;
+    }
+    Some(TaskEntry {
+        name: action.tool.as_str().to_string(),
+        description: action.description.clone(),
+        target: target_name.to_string(),
+        member: action.member.clone(),
+        operation: action.operation,
+        safety_sensitive: action.safety_sensitive,
+        confirmation_required: action.confirmation_required,
+        bound: action.bound,
+        input_schema,
+        output_schema,
+        feedback_schema,
     })
 }
 
