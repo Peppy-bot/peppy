@@ -435,7 +435,7 @@ pub fn declare_peer_publisher_with_watch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use futures::FutureExt;
 
     fn member(instance: &str) -> PeerMember {
         PeerMember {
@@ -520,8 +520,9 @@ mod tests {
     async fn wait_paired_returns_immediately_when_already_paired() {
         let (_tx, rx) = watch::channel(state(1, vec![member("arm_1")]));
         let mut slot = PeerSlot::new("arm", Cardinality::One, rx);
-        let peer = tokio::time::timeout(Duration::from_millis(100), slot.wait_paired())
-            .await
+        let peer = slot
+            .wait_paired()
+            .now_or_never()
             .expect("no wait needed")
             .expect("paired");
         assert_eq!(peer, member("arm_1").info);
