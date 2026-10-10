@@ -535,3 +535,76 @@ async fn listen_for_repo_add_explicit_id_with_top_fails() {
         resp.error_message
     );
 }
+
+/// Reads repositories.json5 back and asserts that it still parses and holds
+/// no entry for `path`: a refused add leaves the file readable and does not
+/// persist the refused entry.
+fn assert_repos_file_lacks_path(started: &StartedCoreNode, path: &str) {
+    let repos_path = repositories_list_path(&started.peppy_dirs);
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("repos file must stay readable");
+    assert!(
+        repos.iter().all(|e| e["path"] != path),
+        "refused entry must not be persisted: {repos:?}"
+    );
+}
+
+/// An id at or above `u32::MAX` names no repository a cache entry can be
+/// attributed to (and one above `i64::MAX` cannot even be read back), so
+/// pinning one is a refusal naming the id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_explicit_id_out_of_range_fails() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    for id in [u64::MAX, u64::from(u32::MAX)] {
+        let resp = send_repo_add(
+            &started,
+            &RepoAddRequest::new_fs("/tmp/far-hub").with_id(id),
+        )
+        .await;
+        assert!(!resp.success, "add pinning id {id} should fail");
+        assert!(
+            resp.error_message
+                .contains(&format!("repository id {id} is out of range")),
+            "error should name the id {id}, got: {}",
+            resp.error_message
+        );
+        assert_repos_file_lacks_path(&started, "/tmp/far-hub");
+    }
+}
+
+/// A derived id that reaches `u32::MAX` is refused as well, whether it
+/// comes after the highest existing id or before the lowest one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_derived_id_out_of_range_fails() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let cases = [
+        (u64::from(u32::MAX) - 1, false),
+        (u64::from(u32::MAX) + 1, true),
+    ];
+    for (existing_id, top) in cases {
+        write_repositories_json5(
+            &started,
+            &format!(r#"[{{ "id": {existing_id}, "type": "fs", "path": "/a" }}]"#),
+        );
+
+        let resp = send_repo_add(
+            &started,
+            &RepoAddRequest::new_fs("/tmp/far-hub").with_top(top),
+        )
+        .await;
+        assert!(
+            !resp.success,
+            "add next to id {existing_id} (top={top}) should fail"
+        );
+        assert!(
+            resp.error_message
+                .contains(&format!("assigned id {} is out of range", u32::MAX)),
+            "error should name the derived id, got: {}",
+            resp.error_message
+        );
+        assert_repos_file_lacks_path(&started, "/tmp/far-hub");
+    }
+}

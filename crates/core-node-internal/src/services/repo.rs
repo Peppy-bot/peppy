@@ -282,6 +282,13 @@ fn canonical_root(configured: &Path) -> PathBuf {
     std::fs::canonicalize(configured).unwrap_or_else(|_| configured.to_path_buf())
 }
 
+/// `id` narrowed to the wire's `u32`, or `None` when no cache entry can be
+/// attributed to a repository with this id: above `u32`, or the id
+/// reserved for unowned entries ([`UNOWNED_REPO_ID`]).
+pub(crate) fn attributable_repo_id(id: u64) -> Option<u32> {
+    u32::try_from(id).ok().filter(|id| *id != UNOWNED_REPO_ID)
+}
+
 /// One configured repository as `repo list` and a search show it.
 pub(crate) struct ListedRepo {
     pub id: u32,
@@ -318,16 +325,13 @@ pub(crate) fn listed_repositories(peppy_dirs: &PeppyDirs) -> crate::Result<Vec<L
         }
 
         let repo_id_u64 = repo_entry_id(entry).unwrap_or(0);
-        let id = match u32::try_from(repo_id_u64) {
-            Ok(id) if id != UNOWNED_REPO_ID => id,
-            _ => {
-                warn!(
-                    "Skipping repository entry with id {} (not a repository id cache entries \
-                     can be attributed to)",
-                    repo_id_u64
-                );
-                continue;
-            }
+        let Some(id) = attributable_repo_id(repo_id_u64) else {
+            warn!(
+                "Skipping repository entry with id {} (not a repository id cache entries \
+                 can be attributed to)",
+                repo_id_u64
+            );
+            continue;
         };
 
         listed.push(ListedRepo {

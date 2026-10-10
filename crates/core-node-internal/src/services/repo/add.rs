@@ -1,9 +1,9 @@
 use crate::Result;
-use crate::services::repo::cache::repositories_list_path;
+use crate::services::repo::cache::{UNOWNED_REPO_ID, repositories_list_path};
 use crate::services::repo::refresh::read_or_create_repos;
 use crate::services::repo::{
-    has_entry_with_identity, repo_entry_id, repo_source_to_json, source_identity,
-    write_repo_entries,
+    attributable_repo_id, has_entry_with_identity, repo_entry_id, repo_source_to_json,
+    source_identity, write_repo_entries,
 };
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
@@ -155,9 +155,15 @@ impl RepoIdPlacement {
 
 /// The id the new entry takes in `repos` at `placement`, or the refusal
 /// the caller sends back.
+///
+/// The id must be one a cache entry can be attributed to (below
+/// [`UNOWNED_REPO_ID`]): `repo list` skips any other repository and its
+/// nodes rank as unowned. Above `i64::MAX` the id would also make
+/// `repositories.json5` unreadable, since serde_json5 reads integers as
+/// `i64`, and every later repo, node and launch command would fail on it.
 fn next_repo_id(repos: &[Value], placement: RepoIdPlacement) -> std::result::Result<u64, String> {
     let mut ids = repos.iter().filter_map(repo_entry_id);
-    match placement {
+    let id = match placement {
         // The caller pinned this id (typically from the >= 2000 band
         // reserved for organization-added repositories) so it stays stable
         // across re-runs of whatever setup registered it. Claiming an id
@@ -170,20 +176,32 @@ fn next_repo_id(repos: &[Value], placement: RepoIdPlacement) -> std::result::Res
                      for manually pinned repositories)"
                 ));
             }
-            Ok(id)
+            id
         }
         RepoIdPlacement::BeforeAll => match ids.min() {
-            None => Ok(DEFAULT_FIRST_REPO_ID),
+            None => DEFAULT_FIRST_REPO_ID,
             Some(min) => min.checked_sub(1).ok_or_else(|| {
                 "cannot add repo with top priority: existing minimum id is 0 (would underflow)"
                     .to_owned()
-            }),
+            })?,
         },
         RepoIdPlacement::AfterAll => match ids.max() {
-            None => Ok(DEFAULT_FIRST_REPO_ID),
+            None => DEFAULT_FIRST_REPO_ID,
             Some(max) => max.checked_add(1).ok_or_else(|| {
                 "cannot add repo: existing maximum id is u64::MAX (would overflow)".to_owned()
-            }),
+            })?,
         },
+    };
+    if attributable_repo_id(id).is_none() {
+        return Err(match placement {
+            RepoIdPlacement::Pinned(_) => {
+                format!("repository id {id} is out of range; pick an id below {UNOWNED_REPO_ID}")
+            }
+            RepoIdPlacement::BeforeAll | RepoIdPlacement::AfterAll => format!(
+                "cannot add repo: the assigned id {id} is out of range; repository ids must be \
+                 below {UNOWNED_REPO_ID}"
+            ),
+        });
     }
+    Ok(id)
 }

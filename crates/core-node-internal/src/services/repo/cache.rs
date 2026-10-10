@@ -28,8 +28,8 @@
 
 use crate::Result;
 use crate::services::node::Report;
-use crate::services::repo::RepoOwners;
 use crate::services::repo::refresh::read_or_create_repos;
+use crate::services::repo::{RepoOwners, attributable_repo_id};
 use crate::source_url::SourceUrl;
 use config::node::Cardinality;
 use core_node_api::encoding::{ReadRef, RepoItemKind};
@@ -621,12 +621,13 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
 /// they kept.
 pub(crate) const UNOWNED_REPO_ID: u32 = u32::MAX;
 
-/// Owning repository id narrowed to the wire's `u32`, falling back to
-/// [`UNOWNED_REPO_ID`] when no repository matches.
+/// Owning repository id narrowed by [`attributable_repo_id`], falling back
+/// to [`UNOWNED_REPO_ID`] when no repository matches or the matching one
+/// has no attributable id.
 fn lookup_repo_id(owners: &RepoOwners, origin: &EntryOrigin) -> u32 {
     owners
         .owner_of(origin)
-        .and_then(|id| u32::try_from(id).ok())
+        .and_then(attributable_repo_id)
         .unwrap_or(UNOWNED_REPO_ID)
 }
 
