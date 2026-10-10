@@ -437,41 +437,11 @@ fn matched_identities<E: RepoCacheEntry>(
     let mut matches = Vec::new();
     for (name, tag) in identities {
         let published = match query.digest() {
-            None => match published_doc(entries, repos, name, tag) {
-                Ok(doc) => doc.expect("the identity came from these entries"),
-                Err(error) => {
-                    contests.push(ContestedIdentity {
-                        name: name.to_owned(),
-                        tag: tag.to_owned(),
-                        error,
-                    });
-                    let copy = entries
-                        .iter()
-                        .filter(|e| e.name() == name && e.tag() == tag)
-                        .min_by_key(|e| (e.repo_id(), e.origin().path_str().to_owned()))
-                        .expect("the identity came from these entries");
-                    PublishedDoc {
-                        repo_id: copy.repo_id(),
-                        repo_label: label_of(repos, copy.repo_id()),
-                        path: copy.origin().path_str().to_owned(),
-                        sha256: copy.sha256().clone(),
-                    }
-                }
-            },
-            Some(digest) => {
-                let carriers = entries
-                    .iter()
-                    .filter(|e| e.name() == name && e.tag() == tag && e.sha256() == digest);
-                let Some(entry) = carriers.min_by_key(|e| e.repo_id()) else {
-                    continue;
-                };
-                PublishedDoc {
-                    repo_id: entry.repo_id(),
-                    repo_label: label_of(repos, entry.repo_id()),
-                    path: entry.origin().path_str().to_owned(),
-                    sha256: entry.sha256().clone(),
-                }
-            }
+            None => Some(referenced_copy(entries, repos, name, tag, contests)),
+            Some(digest) => copy_carrying(entries, repos, name, tag, digest),
+        };
+        let Some(published) = published else {
+            continue;
         };
         matches.push(MatchedItem {
             kind: E::ITEM_KIND,
@@ -482,6 +452,49 @@ fn matched_identities<E: RepoCacheEntry>(
         });
     }
     matches
+}
+
+/// The copy a plain reference to `name:tag` resolves to. When the winning
+/// repository publishes the identity twice, the contest is recorded in
+/// `contests` and that repository's first copy in path order stands in.
+fn referenced_copy<E: RepoCacheEntry>(
+    entries: &[E],
+    repos: &[ListedRepo],
+    name: &str,
+    tag: &str,
+    contests: &mut Vec<ContestedIdentity>,
+) -> PublishedDoc {
+    let error = match published_doc(entries, repos, name, tag) {
+        Ok(doc) => return doc.expect("the identity came from these entries"),
+        Err(error) => error,
+    };
+    contests.push(ContestedIdentity {
+        name: name.to_owned(),
+        tag: tag.to_owned(),
+        error,
+    });
+    let copy = entries
+        .iter()
+        .filter(|e| e.name() == name && e.tag() == tag)
+        .min_by_key(|e| (e.repo_id(), e.origin().path_str().to_owned()))
+        .expect("the identity came from these entries");
+    published_copy(copy, repos)
+}
+
+/// The highest-priority copy of `name:tag` that carries `digest`, or `None`
+/// when no copy does.
+fn copy_carrying<E: RepoCacheEntry>(
+    entries: &[E],
+    repos: &[ListedRepo],
+    name: &str,
+    tag: &str,
+    digest: &ManifestFingerprint,
+) -> Option<PublishedDoc> {
+    entries
+        .iter()
+        .filter(|e| e.name() == name && e.tag() == tag && e.sha256() == digest)
+        .min_by_key(|e| e.repo_id())
+        .map(|entry| published_copy(entry, repos))
 }
 
 /// The order matches are listed in: a name the pattern spells out ranks
@@ -691,12 +704,17 @@ fn published_doc<E: RepoCacheEntry>(
 ) -> Result<Option<PublishedDoc>, String> {
     let winner =
         lookup_repo_entry(entries, name, tag).map_err(|ambiguity| ambiguity.to_string())?;
-    Ok(winner.map(|entry| PublishedDoc {
+    Ok(winner.map(|entry| published_copy(entry, repos)))
+}
+
+/// `entry` as the document an answer points at.
+fn published_copy<E: RepoCacheEntry>(entry: &E, repos: &[ListedRepo]) -> PublishedDoc {
+    PublishedDoc {
         repo_id: entry.repo_id(),
         repo_label: label_of(repos, entry.repo_id()),
         path: entry.origin().path_str().to_owned(),
         sha256: entry.sha256().clone(),
-    }))
+    }
 }
 
 /// What `sha256` does for a claim on `name:tag` at sync time, given the
