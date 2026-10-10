@@ -234,8 +234,8 @@ fn empty_object_schema_accepts_only_the_empty_object() {
 }
 
 #[test]
-fn a_fixed_length_array_of_objects_is_refused() {
-    let format = parse_format(
+fn a_fixed_length_array_of_non_scalars_is_refused() {
+    for source in [
         r#"{
             poses: {
                 $type: "array",
@@ -243,28 +243,19 @@ fn a_fixed_length_array_of_objects_is_refused() {
                 $length: 3,
             },
         }"#,
-    );
-    let err = message_format_to_json_schema(&format).expect_err("fixed arrays hold scalars only");
-    assert!(
-        matches!(
-            err,
-            FormatRuleViolation::UnsupportedFixedArrayItemType { .. }
-        ),
-        "{err}"
-    );
-}
-
-#[test]
-fn a_fixed_length_array_of_strings_is_refused() {
-    let format = parse_format(r#"{ names: { $type: "array", $items: "string", $length: 2 } }"#);
-    let err = message_format_to_json_schema(&format).expect_err("fixed arrays hold scalars only");
-    assert!(
-        matches!(
-            err,
-            FormatRuleViolation::UnsupportedFixedArrayItemType { .. }
-        ),
-        "{err}"
-    );
+        r#"{ names: { $type: "array", $items: "string", $length: 2 } }"#,
+    ] {
+        let Err(err) = message_format_to_json_schema(&parse_format(source)) else {
+            panic!("fixed arrays hold scalars only: {source}");
+        };
+        assert!(
+            matches!(
+                err,
+                FormatRuleViolation::UnsupportedFixedArrayItemType { .. }
+            ),
+            "{source}: {err}"
+        );
+    }
 }
 
 #[test]
