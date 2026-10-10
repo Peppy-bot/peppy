@@ -14,9 +14,8 @@ use rmcp::model::{
 };
 use serde_json::{Value, json};
 use support::{
-    FRAME_URI, GUARD, STATUS_URI, Streaming, connect, connect_with_tasks, fixture_bundle,
-    fixture_exposures, fixture_server, poll_task_until, protocol_error, sample_rgb8_frame,
-    serve_set, start_set,
+    FRAME_URI, GUARD, STATUS_URI, Streaming, connect, connect_with_tasks, poll_task_until,
+    protocol_error, sample_rgb8_frame, start_set, start_set_with,
 };
 use tokio::sync::mpsc::{UnboundedSender, error::TryRecvError, unbounded_channel};
 
@@ -294,13 +293,11 @@ impl Drop for TeardownSignal {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stopping_the_set_aborts_running_tasks_on_every_endpoint() {
-    let mut servers = Vec::new();
     let mut teardowns = Vec::new();
-    for expected in fixture_exposures() {
+    let set = start_set_with(|builder| {
         let (signal, teardown) = unbounded_channel();
         teardowns.push(teardown);
-        let (builder, nanos) = fixture_server(&expected, fixture_bundle(&expected));
-        let server = builder
+        builder
             .with_task(
                 "recorder.record_episode",
                 move |_call: peppy_mcp_runtime::ToolCall,
@@ -313,11 +310,8 @@ async fn stopping_the_set_aborts_running_tasks_on_every_endpoint() {
                 },
             )
             .with_task("recorder.replay_episode", support::replay_episode)
-            .build()
-            .expect("bundle and handlers agree");
-        servers.push((expected, server, nanos));
-    }
-    let set = serve_set(servers).await;
+    })
+    .await;
 
     // Start a goal on each endpoint and confirm it, so both bridges are
     // parked in their (never-ending) operation.
