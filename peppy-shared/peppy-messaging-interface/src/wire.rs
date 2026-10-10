@@ -498,17 +498,14 @@ impl TopicWireSender {
         as_topic_name: &str,
         peer: WirePeer,
     ) -> crate::error::Result<Self> {
-        if !as_target.is_pairing() {
-            return Err(crate::error::Error::PeerOnNonPairingPublish);
-        }
-        Ok(Self {
-            as_core_node: Segment::try_from(as_core_node)?,
-            as_instance_id: Segment::try_from(as_instance_id)?,
+        Self::pairing_emission(
+            as_core_node,
+            as_instance_id,
             as_target,
-            link_id: Segment::try_link_id(link_id)?,
-            as_topic_name: Segment::try_from(as_topic_name)?,
-            to_peer: Some(peer),
-        })
+            link_id,
+            as_topic_name,
+            Some(peer),
+        )
     }
 
     /// A pairing emission from this node's scalar slot `link_id` to the one
@@ -521,6 +518,27 @@ impl TopicWireSender {
         link_id: &str,
         as_topic_name: &str,
     ) -> crate::error::Result<Self> {
+        Self::pairing_emission(
+            as_core_node,
+            as_instance_id,
+            as_target,
+            link_id,
+            as_topic_name,
+            None,
+        )
+    }
+
+    /// A pairing emission from this node's slot `link_id`, to `to_peer` or,
+    /// when `None`, to the one peer holding the slot's pair. Only a pairing
+    /// target has peers.
+    fn pairing_emission(
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_target: SenderTarget,
+        link_id: &str,
+        as_topic_name: &str,
+        to_peer: Option<WirePeer>,
+    ) -> crate::error::Result<Self> {
         if !as_target.is_pairing() {
             return Err(crate::error::Error::PeerOnNonPairingPublish);
         }
@@ -530,7 +548,7 @@ impl TopicWireSender {
             as_target,
             link_id: Segment::try_link_id(link_id)?,
             as_topic_name: Segment::try_from(as_topic_name)?,
-            to_peer: None,
+            to_peer,
         })
     }
 }
