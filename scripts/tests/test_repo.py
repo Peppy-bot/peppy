@@ -240,12 +240,14 @@ def test_commit_paths_commits_in_the_checkout_named() -> None:
 
 
 def test_commit_paths_raises_when_commit_fails() -> None:
-    with patch(
-        "functions.repo.subprocess.run",
-        side_effect=[_mock_git(""), _mock_git("", returncode=1)],
+    with (
+        patch(
+            "functions.repo.subprocess.run",
+            side_effect=[_mock_git(""), _mock_git("", returncode=1)],
+        ),
+        pytest.raises(ReleaseError, match="failed to commit docs/v1.html"),
     ):
-        with pytest.raises(ReleaseError, match="failed to commit docs/v1.html"):
-            commit_paths([Path("docs/v1.html")], "docs: add release notes for v1")
+        commit_paths([Path("docs/v1.html")], "docs: add release notes for v1")
 
 
 def test_commit_paths_raises_when_staging_fails() -> None:

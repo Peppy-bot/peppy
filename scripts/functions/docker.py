@@ -10,7 +10,6 @@ from pathlib import Path
 
 from .cli import ReleaseError, console, need_cmd, prompt, run_with_error_handling
 
-
 DOCKER_HUB_ACCOUNT = "peppybot"
 DOCKER_PLATFORMS: list[str] = ["linux/amd64", "linux/arm64"]
 BUILDX_BUILDER_NAME = "peppy-multiplatform"

@@ -8,8 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from functions.docs import update_main  # noqa: E402
-
+from functions.docs import update_main
 
 if __name__ == "__main__":
     update_main()

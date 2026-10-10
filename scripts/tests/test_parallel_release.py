@@ -47,11 +47,11 @@ from functions.parallel_release import (
     run_prepare,
     run_publish,
 )
-from functions.release_summary import ReleaseContent
 from functions.release_line import update_release_branch as real_update_release_branch
 from functions.release_line import (
     verify_publish_branch_state as real_verify_publish_branch_state,
 )
+from functions.release_summary import ReleaseContent
 from functions.repo import commit_paths as real_commit_paths
 from functions.repo import merge_into_current_branch as real_merge
 from functions.repo import push_branch as real_push_branch
@@ -495,12 +495,14 @@ def test_install_pinned_go_verifies_and_installs_the_toolchain(tmp_path: Path) -
 
 
 def test_install_pinned_go_rejects_a_download_off_its_checksum(tmp_path: Path) -> None:
-    with patch(
-        "functions.parallel_release._download",
-        side_effect=_fake_go_download(tmp_path, "0" * 64),
+    with (
+        patch(
+            "functions.parallel_release._download",
+            side_effect=_fake_go_download(tmp_path, "0" * 64),
+        ),
+        pytest.raises(ReleaseError, match="pinned SHA-256"),
     ):
-        with pytest.raises(ReleaseError, match="pinned SHA-256"):
-            _install_pinned_go("x86_64")
+        _install_pinned_go("x86_64")
 
     assert not (_cache_root(tmp_path) / f"go-{GO_VERSION}-amd64").exists()
 

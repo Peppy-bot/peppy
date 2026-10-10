@@ -54,7 +54,6 @@ from .claude import run_claude
 from .cli import ReleaseError, console, need_cmd, run_with_error_handling
 from .repo import get_repo_root, run_git
 
-
 # The directory the docs check owns end to end: the updater edits it, and the
 # release commits it onto a branch of its own when it finds it stale.
 DOCS_DIR = "docs"

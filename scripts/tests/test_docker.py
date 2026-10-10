@@ -20,10 +20,10 @@ from functions.docker import (
     _get_docker_hub_username,
     _get_username_from_cred_store,
     _inspect_builder_platforms,
+    _run,
     build_all_base_images,
     build_and_push_base_image,
     validate_docker_environment,
-    _run,
 )
 
 
@@ -171,12 +171,14 @@ def test_validate_docker_environment_success(tmp_path: Path) -> None:
 
 
 def test_validate_docker_environment_missing_docker() -> None:
-    with patch(
-        "functions.docker.need_cmd",
-        side_effect=ReleaseError("missing required command: docker"),
+    with (
+        patch(
+            "functions.docker.need_cmd",
+            side_effect=ReleaseError("missing required command: docker"),
+        ),
+        pytest.raises(ReleaseError, match="missing required command: docker"),
     ):
-        with pytest.raises(ReleaseError, match="missing required command: docker"):
-            validate_docker_environment()
+        validate_docker_environment()
 
 
 def test_validate_docker_environment_no_buildx() -> None:

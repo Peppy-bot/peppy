@@ -138,7 +138,7 @@ def generate_release_notes_file(
         release_date.year,
         release_date.month,
         release_date.day,
-        tzinfo=datetime.timezone.utc,
+        tzinfo=datetime.UTC,
     )
     updated_iso = updated_dt.isoformat().replace("+00:00", "Z")
 

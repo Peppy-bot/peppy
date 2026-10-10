@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -188,18 +189,18 @@ def test_run_claude_raises_on_missing_structured_output(tmp_path: Path) -> None:
     mock.returncode = 0
     mock.stdout = json.dumps({"type": "result", "result": "The docs are fine."})
     mock.stderr = ""
-    with patch("functions.claude.subprocess.run", return_value=mock):
-        with pytest.raises(
-            ReleaseError, match="missing 'structured_output'"
-        ) as excinfo:
-            run_claude(
-                "p",
-                allowed_tools="Read",
-                permission_mode="bypassPermissions",
-                cwd=tmp_path,
-                json_schema=_SCHEMA,
-                activity="judging",
-            )
+    with (
+        patch("functions.claude.subprocess.run", return_value=mock),
+        pytest.raises(ReleaseError, match="missing 'structured_output'") as excinfo,
+    ):
+        run_claude(
+            "p",
+            allowed_tools="Read",
+            permission_mode="bypassPermissions",
+            cwd=tmp_path,
+            json_schema=_SCHEMA,
+            activity="judging",
+        )
     assert "The docs are fine." in str(excinfo.value)
 
 
@@ -273,19 +274,21 @@ def test_run_claude_keeps_a_heartbeat_only_while_the_cli_runs(
 def test_run_claude_stops_the_heartbeat_when_the_cli_fails(
     tmp_path: Path, recorded_threads: list[_RecordedThread]
 ) -> None:
-    with patch(
-        "functions.claude.subprocess.run",
-        side_effect=_mock_run({"ok": True}, returncode=2),
+    with (
+        patch(
+            "functions.claude.subprocess.run",
+            side_effect=_mock_run({"ok": True}, returncode=2),
+        ),
+        pytest.raises(ReleaseError, match="claude CLI failed"),
     ):
-        with pytest.raises(ReleaseError, match="claude CLI failed"):
-            run_claude(
-                "p",
-                allowed_tools="Read",
-                permission_mode="default",
-                cwd=tmp_path,
-                json_schema=_SCHEMA,
-                activity="judging the diff",
-            )
+        run_claude(
+            "p",
+            allowed_tools="Read",
+            permission_mode="default",
+            cwd=tmp_path,
+            json_schema=_SCHEMA,
+            activity="judging the diff",
+        )
 
     (thread,) = recorded_threads
     assert thread.args[1].is_set()

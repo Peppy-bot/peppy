@@ -212,12 +212,14 @@ def test_prod_gate_untrusted_cert_raises() -> None:
 
 def test_prod_gate_unreachable_raises() -> None:
     # An unreachable / refused endpoint surfaces as OSError ⇒ "could not verify".
-    with patch(
-        "functions.cli.socket.create_connection",
-        side_effect=OSError("connection refused"),
+    with (
+        patch(
+            "functions.cli.socket.create_connection",
+            side_effect=OSError("connection refused"),
+        ),
+        pytest.raises(ReleaseError, match="could not verify"),
     ):
-        with pytest.raises(ReleaseError, match="could not verify"):
-            _probe_publicly_trusted_tls("health.zenoh.example", 7443)
+        _probe_publicly_trusted_tls("health.zenoh.example", 7443)
 
 
 def test_run_with_error_handling_catches_release_error() -> None:
