@@ -81,9 +81,7 @@ pub(crate) fn resolve_exposure_deployment(
         .map_err(|e| format!("failed to load the contract cache: {e}"))?;
 
     let mut exposures = Vec::with_capacity(references.len());
-    // Contract identity -> (author pin, the exposure that stated it).
-    let mut wanted: BTreeMap<(String, String), (Option<ManifestFingerprint>, String)> =
-        BTreeMap::new();
+    let mut wanted = WantedContracts::new();
     for reference in references {
         let exposure = resolve_cached_document(
             peppy_dirs,
@@ -100,26 +98,7 @@ pub(crate) fn resolve_exposure_deployment(
                 target.contract.name.as_str().to_owned(),
                 target.contract.tag.clone(),
             );
-            match wanted.get_mut(&key) {
-                None => {
-                    wanted.insert(key, (target.contract.sha256.clone(), reference.to_string()));
-                }
-                Some((author, by)) => match (&*author, &target.contract.sha256) {
-                    (Some(first), Some(second)) if first != second => {
-                        return Err(format!(
-                            "exposures `{by}` and `{reference}` pin contract `{}:{}` at different \
-                             bytes (`{first}` and `{second}`); one deployment carries one content \
-                             per contract",
-                            key.0, key.1
-                        ));
-                    }
-                    (None, Some(second)) => {
-                        *author = Some(second.clone());
-                        *by = reference.to_string();
-                    }
-                    _ => {}
-                },
-            }
+            record_contract_pin(&mut wanted, key, target.contract.sha256.as_ref(), reference)?;
         }
         exposures.push(exposure);
     }
@@ -140,6 +119,37 @@ pub(crate) fn resolve_exposure_deployment(
         exposures,
         contracts,
     })
+}
+
+/// Contract identity -> (author pin, the exposure that stated it).
+type WantedContracts = BTreeMap<(String, String), (Option<ManifestFingerprint>, String)>;
+
+/// Records that `reference` asks for the contract `key`, at `pin` when it
+/// states one. The first exposure that pins a contract decides its content,
+/// and an exposure pinning it at other bytes is refused naming both.
+fn record_contract_pin(
+    wanted: &mut WantedContracts,
+    key: (String, String),
+    pin: Option<&ManifestFingerprint>,
+    reference: &ExposureRef,
+) -> Result<(), String> {
+    let Some((author, by)) = wanted.get_mut(&key) else {
+        wanted.insert(key, (pin.cloned(), reference.to_string()));
+        return Ok(());
+    };
+    match (&*author, pin) {
+        (Some(first), Some(second)) if first != second => Err(format!(
+            "exposures `{by}` and `{reference}` pin contract `{}:{}` at different bytes \
+             (`{first}` and `{second}`); one deployment carries one content per contract",
+            key.0, key.1
+        )),
+        (None, Some(second)) => {
+            *author = Some(second.clone());
+            *by = reference.to_string();
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The plan alone, for callers that check a launcher without launching it.
