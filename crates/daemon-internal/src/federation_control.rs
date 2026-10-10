@@ -7,9 +7,10 @@
 //! request to the [`RouterFederation`](super::router_federation) task as a
 //! [`RefederateRequest`]. It waits for the reconcile and writes the resulting
 //! [`ControlResponse`] back. When the enrollment changed this generation's
-//! identity, the handler flushes the `Restarting` ack and only then raises the
-//! in-process restart, so the CLI always reads the ack before the daemon tears
-//! down, which is why the channel is a UDS independent of the router.
+//! identity, the handler writes the `Restarting` ack and only then raises the
+//! in-process restart (also when the client hung up and the write fails), so a
+//! CLI that is still connected reads the ack before the daemon tears down,
+//! which is why the channel is a UDS independent of the router.
 //!
 //! Binding is best-effort: a bind failure is logged and the task idles until
 //! shutdown rather than taking the daemon down; the router still boots from
@@ -57,8 +58,8 @@ pub(crate) struct FederationControl {
     socket_path: PathBuf,
     trigger_tx: TriggerSender,
     /// In-process restart signal. The control handler raises it *after* it has
-    /// flushed a `Restarting` ack (a real happens-before edge), so the CLI always
-    /// reads the ack before teardown can affect the connection.
+    /// written (or failed to write) a `Restarting` ack, so a CLI that is still
+    /// connected reads the ack before teardown can affect the connection.
     restart_tx: watch::Sender<bool>,
     /// Shared coordinator token: the task tears down when it is cancelled. The
     /// coordinator cancels it when the generation stops for any reason.
@@ -241,17 +242,19 @@ async fn handle_conn(
         Err(_elapsed) => ControlResponse::error("timed out verifying federation"),
     };
 
-    // The identity changed: write+flush the `Restarting` ack FIRST, and only
-    // after the flush returns `Ok` (the bytes are in the kernel socket buffer)
-    // raise the in-process restart signal. This is a real happens-before edge:
-    // the CLI always reads the ack before teardown can affect the connection, and
-    // there is no self-SIGTERM and no fire-and-forget oneshot race.
+    // The identity changed: write and flush the `Restarting` ack first, and
+    // only then raise the in-process restart signal. When the write succeeds,
+    // the bytes are in the kernel socket buffer, so the CLI reads the ack
+    // before teardown can affect the connection. When the write fails, the
+    // client is gone, but the enrollment on disk still prescribes the new
+    // identity, so the restart is raised all the same and the write error is
+    // returned after it.
     let trigger_restart = matches!(response, ControlResponse::Restarting);
-    write_response(&mut write_half, response).await?;
+    let written = write_response(&mut write_half, response).await;
     if trigger_restart {
         let _ = restart_tx.send(true);
     }
-    Ok(())
+    written
 }
 
 /// Writes one JSON response line and flushes.
@@ -383,5 +386,35 @@ mod tests {
         // The federation loop was never poked.
         assert!(trigger_rx.try_recv().is_err());
         control.abort();
+    }
+
+    /// A client that hangs up before the `Restarting` ack still gets the
+    /// restart: the enrollment on disk prescribes the new identity whether or
+    /// not the client reads the ack.
+    #[tokio::test]
+    async fn a_restart_is_raised_when_the_client_hung_up_before_the_ack() {
+        let (mut client, server) = UnixStream::pair().expect("socket pair");
+        client
+            .write_all(format!("{REFEDERATE_VERB}\n").as_bytes())
+            .await
+            .expect("send the poke");
+        drop(client);
+
+        // Stand in for the federation loop: the enrollment changed the identity.
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<RefederateRequest>(8);
+        let consumer = tokio::spawn(async move {
+            let req = trigger_rx.recv().await.expect("the poke reaches the loop");
+            let _ = req.ack.send(FederationOutcome::Restart);
+        });
+
+        let (restart_tx, restart_rx) = watch::channel(false);
+        let written = handle_conn(server, trigger_tx, restart_tx).await;
+        consumer.await.expect("the consumer did not panic");
+
+        assert!(written.is_err(), "the ack cannot reach a closed client");
+        assert!(
+            *restart_rx.borrow(),
+            "the generation restarts under the new identity"
+        );
     }
 }

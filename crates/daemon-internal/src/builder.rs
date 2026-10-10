@@ -361,8 +361,9 @@ impl ServeCommandBuilder {
             // Poke channel: the control socket reaches the federation task
             // through it. Bounded + tiny: pokes are rare and serviced one at a time.
             let (trigger_tx, trigger_rx) = tokio::sync::mpsc::channel(8);
-            // Restart signal: the control handler raises it after flushing the
-            // `Restarting` ack; the serve coordinator observes it.
+            // Restart signal: the control handler raises it after it has
+            // written (or failed to write) the `Restarting` ack; the serve
+            // coordinator observes it.
             let (restart_tx, restart_signal_rx) = watch::channel(false);
             restart_rx = Some(restart_signal_rx);
             self.composite_command =

@@ -106,9 +106,10 @@ pub(crate) struct Serve {
     /// fresh one its tasks do not observe.
     teardown_token: CancellationToken,
     /// In-process restart channel: a `true` from [`super::federation_control`]'s
-    /// `handle_conn` (after it flushed the `Restarting` ack) makes the
-    /// coordinator record [`ServeOutcome::Restart`]. `None` when no federation
-    /// control task exists (mock engine).
+    /// `handle_conn` (after it has written, or failed to write, the
+    /// `Restarting` ack) makes the coordinator record
+    /// [`ServeOutcome::Restart`]. `None` when no federation control task exists
+    /// (mock engine).
     restart_rx: Option<watch::Receiver<bool>>,
 }
 
