@@ -6,7 +6,7 @@ use crate::{MessengerHandle, SessionScope};
 use futures::FutureExt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
@@ -73,10 +73,7 @@ impl NodeRunner {
     /// announcement of one label, once setup has returned, and for a scheme
     /// or path that breaks [`EndpointBinding`]'s rules.
     pub fn announce_endpoint(&self, label: &str, binding: EndpointBinding) -> Result<()> {
-        self.endpoints
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .announce(label, binding)
+        self.lock_endpoints().announce(label, binding)
     }
 
     /// Ends the announcement window and checks the set against the
@@ -86,27 +83,26 @@ impl NodeRunner {
     /// core) does the same once its setup returns. Answers the sealed set, in
     /// label order.
     pub fn seal_endpoints(&self) -> Result<Vec<AnnouncedEndpoint>> {
-        self.endpoints
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .seal()
+        self.lock_endpoints().seal()
     }
 
     /// The endpoints announced so far, in label order, sealed or not.
     pub fn announced_endpoints(&self) -> Vec<AnnouncedEndpoint> {
-        self.endpoints
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .snapshot()
+        self.lock_endpoints().snapshot()
     }
 
     /// Whether the manifest declares any endpoint, which is what decides
     /// whether the runtime offers the `node_endpoints` service.
     pub(crate) fn declares_endpoints(&self) -> bool {
+        self.lock_endpoints().declares_any()
+    }
+
+    /// Locks the announced endpoints. A caller that panicked while it held
+    /// the lock does not stop later calls from announcing or reading the set.
+    fn lock_endpoints(&self) -> MutexGuard<'_, AnnouncedEndpoints> {
         self.endpoints
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .declares_any()
     }
 
     /// Get reference to the messenger handle
