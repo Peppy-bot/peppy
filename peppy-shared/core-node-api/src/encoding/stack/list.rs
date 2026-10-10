@@ -244,44 +244,7 @@ impl StackListResponse {
             copies: response
                 .get_copies()?
                 .iter()
-                .map(|copy| {
-                    Ok(CopyInfo {
-                        name: read_name(copy.get_name()?.to_str()?, "copies.name")?,
-                        core_node: read_core_node_name(
-                            copy.get_core_node()?.to_str()?,
-                            "copies.core_node",
-                        )?,
-                        instance_ids: read_name_list(
-                            copy.get_instance_ids()?,
-                            "copies.instance_ids",
-                        )?,
-                        selections: required_text_list(
-                            read_text_list(copy.get_selections()?)?,
-                            "copies.selections",
-                        )?,
-                        option: required_text(copy.get_option()?.to_str()?, "copies.option")?,
-                        set_members: copy
-                            .get_set_members()?
-                            .iter()
-                            .map(|entry| {
-                                Ok(SetMember {
-                                    instance_id: read_name(
-                                        entry.get_instance_id()?.to_str()?,
-                                        "copies.set_members.instance_id",
-                                    )?,
-                                    link_id: required_text(
-                                        entry.get_link_id()?.to_str()?,
-                                        "copies.set_members.link_id",
-                                    )?,
-                                    target: required_text(
-                                        entry.get_target()?.to_str()?,
-                                        "copies.set_members.target",
-                                    )?,
-                                })
-                            })
-                            .collect::<Result<_>>()?,
-                    })
-                })
+                .map(decode_copy)
                 .collect::<Result<_>>()?,
             core_node: response.get_core_node()?.to_str()?.to_owned(),
             instance_id: response.get_instance_id()?.to_str()?.to_owned(),
@@ -290,6 +253,38 @@ impl StackListResponse {
             reservation,
         })
     }
+}
+
+/// Decodes one wire copy, refusing a blank or invalid field of the copy or of
+/// any of its set members.
+fn decode_copy(copy: node_capnp::copy_info::Reader<'_>) -> Result<CopyInfo> {
+    Ok(CopyInfo {
+        name: read_name(copy.get_name()?.to_str()?, "copies.name")?,
+        core_node: read_core_node_name(copy.get_core_node()?.to_str()?, "copies.core_node")?,
+        instance_ids: read_name_list(copy.get_instance_ids()?, "copies.instance_ids")?,
+        selections: required_text_list(
+            read_text_list(copy.get_selections()?)?,
+            "copies.selections",
+        )?,
+        option: required_text(copy.get_option()?.to_str()?, "copies.option")?,
+        set_members: copy
+            .get_set_members()?
+            .iter()
+            .map(decode_set_member)
+            .collect::<Result<_>>()?,
+    })
+}
+
+/// Decodes one member a copy added to a set slot; every field is required.
+fn decode_set_member(entry: node_capnp::set_member::Reader<'_>) -> Result<SetMember> {
+    Ok(SetMember {
+        instance_id: read_name(
+            entry.get_instance_id()?.to_str()?,
+            "copies.set_members.instance_id",
+        )?,
+        link_id: required_text(entry.get_link_id()?.to_str()?, "copies.set_members.link_id")?,
+        target: required_text(entry.get_target()?.to_str()?, "copies.set_members.target")?,
+    })
 }
 
 /// Writes one launch identity, for either union that carries one.
