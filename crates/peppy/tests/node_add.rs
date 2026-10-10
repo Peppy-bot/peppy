@@ -263,13 +263,10 @@ fn node_add_after_failed_sync_succeeds() {
     peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     // 3. Run `node add .` on that node, it'll fail due to git hash mismatch
-    let add_result = node_add_command(&node_path).execute(&node_ctx);
-
-    assert!(
-        add_result.is_err(),
-        "node add should fail due to git hash mismatch"
-    );
-    let error_message = add_result.unwrap_err().to_string();
+    let error_message = node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect_err("node add should fail due to git hash mismatch")
+        .to_string();
     assert!(
         error_message.contains("git hash mismatch"),
         "error should mention git hash mismatch, got: {}",
@@ -701,16 +698,12 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     std::fs::write(&git_hash_path, "wrong-hash\n").expect("failed to write wrong git hash");
 
     // 3. `node add` without `--sync` should fail with a git hash mismatch
-    let add_result = node_add_command(&node_path).execute(&node_ctx);
+    let error_message = node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect_err("node add without --sync should fail on stale git.hash")
+        .to_string();
     assert!(
-        add_result.is_err(),
-        "node add without --sync should fail on stale git.hash"
-    );
-    assert!(
-        add_result
-            .unwrap_err()
-            .to_string()
-            .contains("git hash mismatch"),
+        error_message.contains("git hash mismatch"),
         "error should mention git hash mismatch"
     );
 
@@ -789,7 +782,7 @@ fn node_add_with_sync_flag_rejects_remote_source() {
     // validation before any async work. We still need a minimal AppContext.
     let (_rt, _serve, node_ctx, _node_dir) = setup();
 
-    let result = NodeCommand {
+    let err = NodeCommand {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
@@ -807,13 +800,9 @@ fn node_add_with_sync_flag_rejects_remote_source() {
             force: false,
         },
     }
-    .execute(&node_ctx);
-
-    assert!(
-        result.is_err(),
-        "node add --sync with remote source should fail"
-    );
-    let err = result.unwrap_err().to_string();
+    .execute(&node_ctx)
+    .expect_err("node add --sync with remote source should fail")
+    .to_string();
     assert!(
         err.contains("--sync is only valid for local node sources"),
         "error should mention local-source restriction, got: {}",
