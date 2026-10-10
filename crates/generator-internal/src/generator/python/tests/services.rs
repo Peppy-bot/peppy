@@ -62,11 +62,8 @@ pub(super) const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
 }
 "#;
 
-/// Only pointer-backed fields can be optional, so a `_has` presence probe is
-/// only ever emitted for these. `$optional` on a scalar is rejected when the
-/// config is parsed and never reaches code generation.
-// An optional struct carrying a fixed-length array: the shape a placement
-// takes, and the one that decoded a robot out of a scene.
+/// An optional struct carrying a fixed-length array, the shape a placement
+/// takes.
 const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_STRUCT: &str = r#"
 {
   placement: {
@@ -77,6 +74,9 @@ const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_STRUCT: &str = r#"
 }
 "#;
 
+/// Only pointer-backed fields can be optional, so a `_has` presence probe is
+/// only ever emitted for these. `$optional` on a scalar is rejected when the
+/// config is parsed and never reaches code generation.
 const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_POINTERS: &str = r#"
 {
   maybe_text: {

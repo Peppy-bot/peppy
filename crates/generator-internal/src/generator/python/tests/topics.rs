@@ -228,11 +228,11 @@ fn emit_topic() {
     );
     assert!(
         !rendered.contains("async def emit("),
-        "emit() should no longer be generated; declare_publisher is the only publish path; rendered:\n{rendered}"
+        "emit() is not generated; declare_publisher is the only publish path; rendered:\n{rendered}"
     );
     assert!(
         !rendered.contains("TopicMessenger.emit"),
-        "TopicMessenger.emit should no longer be generated; rendered:\n{rendered}"
+        "TopicMessenger.emit is not generated; rendered:\n{rendered}"
     );
 }
 
@@ -780,7 +780,7 @@ fn consumed_topic() {
     );
     assert!(
         !rendered.contains("on_next_message_received"),
-        "the per-call on_next_message_received API must be gone; rendered:\n{rendered}"
+        "a consumer reads through the held subscription, never a per-call on_next_message_received; rendered:\n{rendered}"
     );
     assert_no_producer_identity_params(&rendered);
 
@@ -828,11 +828,10 @@ fn consumed_topic() {
         ],
     );
 
-    // Regression guard for the dropped-message bug: the topic is subscribed
-    // exactly once (in `subscribe`), never per `next` call. The old
-    // `on_next_message_received` re-subscribed on every call, so anything
-    // published in the re-subscribe gap was silently lost; with a held
-    // subscription the buffer keeps every message between `next` calls.
+    // The topic is subscribed exactly once (in `subscribe`), never per
+    // `next` call: a subscription per call loses what is published between
+    // two calls, while a held subscription buffers every message between
+    // `next` calls.
     assert_eq!(
         rendered.matches("node_runner.subscribe_bound_set(").count(),
         1,
