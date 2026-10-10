@@ -43,6 +43,7 @@ from functions.parallel_release import (
     run_bindings,
     run_build,
     run_hub_check,
+    run_hub_launch,
     run_prepare,
     run_publish,
 )
@@ -1921,3 +1922,30 @@ def test_hub_check_refuses_a_hub_set_it_cannot_read(tmp_path: Path) -> None:
         run_hub_check(hub_set_path=hub_set_path, archive=tmp_path / "peppy.tgz")
 
     check_hub_set.assert_not_called()
+
+
+# --- hub-launch ---
+
+
+def test_hub_launch_dispatches_with_the_release_token_and_reads_with_the_job_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PEPPY_RELEASE_TOKEN", "release-token")
+    monkeypatch.setenv("PEPPY_JOB_TOKEN", "job-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", SLUG.full)
+    hub_set_path = tmp_path / "hub-set.json"
+    hub_set_path.write_text(_hub_set_text())
+
+    with patch("functions.parallel_release.check_launchers") as check_launchers:
+        run_hub_launch(hub_set_path=hub_set_path, peppy_run_id=18000000001)
+
+    dispatch_client, read_client, owner, hub_set, peppy_run_id = (
+        check_launchers.call_args.args
+    )
+    # The release token dispatches. The job token reads the run until it
+    # completes, which takes longer than the hour a release token lasts.
+    assert dispatch_client.headers["Authorization"] == "Bearer release-token"
+    assert read_client.headers["Authorization"] == "Bearer job-token"
+    assert owner == SLUG.owner
+    assert {r.hub.name: r.commit for r in hub_set.hubs} == HUB_COMMITS
+    assert peppy_run_id == 18000000001
