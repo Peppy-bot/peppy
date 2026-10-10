@@ -12,7 +12,7 @@
 //! (SIGKILL / OOM / crash) where the daemon runs no cleanup. A daemon that
 //! returns within the grace period resumes heart-beating on the same
 //! machine-deterministic core-node key, each beat resets the window, and the
-//! node survives the restart — which is what lets peer-mode nodes ride out a
+//! node survives the restart, which is what lets peer-mode nodes ride out a
 //! brief daemon outage.
 
 use std::future::Future;
@@ -58,7 +58,7 @@ pub async fn spawn_daemon_watchdog(
 /// the window; a `grace`-long silence cancels the token (triggering the node's
 /// clean shutdown) and exits. Also exits promptly if some other path cancels
 /// the token (e.g. an explicit `SHUTDOWN_SERVICE`) so the task does not linger.
-/// Returns `Ok(())` in every case — the loop ending is not itself an error.
+/// Returns `Ok(())` in every case: the loop ending is not itself an error.
 async fn run_watchdog<S: BeatSource>(
     mut source: S,
     grace: Duration,
@@ -116,7 +116,7 @@ mod tests {
         }
     }
 
-    /// With no beats, the watchdog cancels the token — but not before the grace
+    /// With no beats, the watchdog cancels the token, but not before the grace
     /// period elapses (a beat-less node must wait the full window).
     #[tokio::test(start_paused = true)]
     async fn fires_after_grace_with_no_beats() {

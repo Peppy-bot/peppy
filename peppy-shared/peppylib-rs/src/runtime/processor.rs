@@ -1888,7 +1888,7 @@ mod tests {
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
 
-        // No parameters provided — should fail immediately
+        // No parameters provided: construction fails at once.
         let config = StandaloneConfig::new();
         let result = Processor::new_standalone(&peppy_config_path, &config);
 
@@ -2043,7 +2043,7 @@ mod tests {
     #[test]
     fn validated_arguments_cannot_be_serialized_back_to_raw() {
         // NodeArguments derives Serialize but does not expose the inner
-        // data — the only way to consume it is through
+        // data. The only way to consume it is through
         // deserialize_parameters, which parses into a typed struct.
         let arguments = BTreeMap::from([("x".to_string(), AnyType::Int(1))]);
         let schema = ParameterSchema::from([(
@@ -2057,7 +2057,7 @@ mod tests {
             validate_node_arguments(arguments, &schema).expect("validation should pass");
 
         // We can serialize (for deserialize_parameters) but cannot access
-        // the inner map directly — this is a compile-time guarantee.
+        // the inner map directly: this is a compile-time guarantee.
         let json = serde_json::to_value(&validated).expect("should serialize");
         assert_eq!(json.get("x"), Some(&serde_json::json!(1)));
     }

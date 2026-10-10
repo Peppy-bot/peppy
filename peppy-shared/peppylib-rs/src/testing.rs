@@ -1,7 +1,7 @@
 //! Node-invariant test machinery behind the `testing` cargo feature.
 //!
 //! Everything here is untyped (`Payload` in, bytes out) on purpose: this module
-//! is the single implementation — per language — of the semantics that
+//! is the single implementation, per language, of the semantics that
 //! generated per-node test code (peppygen's `mock` / `fixtures` surfaces) and
 //! peppylib's own test binaries share. Generated code contributes only a typed
 //! veneer over these cores: message-type reuse, codecs, identity constants,
@@ -10,15 +10,15 @@
 //! generated crates re-export [`crate::PeppyError`] as their own error type.
 //!
 //! The module ships in the library (not `#[cfg(test)]`) so generated node test
-//! code can use it, but only compiles when the `testing` feature is enabled —
-//! node crates enable it via `[dev-dependencies]`, which `cargo build` never
+//! code can use it, but only compiles when the `testing` feature is enabled.
+//! Node crates enable it via `[dev-dependencies]`, which `cargo build` never
 //! resolves, so none of this can reach a production binary.
 //!
 //! The Python twin (`peppylib-py/peppylib/testing.py`) mirrors this module
 //! member for member, plus exactly two of its own: `resolve_node_dir` and
-//! `Mocks`. Both cover ground a Rust harness gets for free — the config path
+//! `Mocks`. Both cover ground a Rust harness gets for free (the config path
 //! is a compile-time `concat!(env!("CARGO_MANIFEST_DIR"), …)` const, and the
-//! generated `Mocks` struct tears down by `Drop` — so neither is a gap here.
+//! generated `Mocks` struct tears down by `Drop`), so neither is a gap here.
 //! Any *other* asymmetry between the two files is a bug.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -60,20 +60,20 @@ const CONNECT_RETRIES: u32 = 5;
 const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 /// Pre-main: gives zenoh's global Net runtime more worker threads for every
-/// test binary that links this module. Stock zenoh (1.9.0 through at least
-/// 1.10.1, the fix below has not shipped in a release) can deadlock its
-/// routing layer under peer-session churn: a thread holding the routing
-/// `ctrl_lock` parks in `block_in_place` waiting on the StartConditions
-/// mutex while the Net runtime's single default worker blocks on that same
-/// `ctrl_lock`, wedging the mutex queue (fix pending upstream in
-/// https://github.com/eclipse-zenoh/zenoh/pull/2637). With more Net workers
-/// a free worker can always drain the mutex queue, which un-parks the lock
-/// holder.
+/// test binary that links this module. Stock zenoh 1.9.0 through 1.10.1 can
+/// deadlock its routing layer under peer-session churn: a thread holding the
+/// routing `ctrl_lock` parks in `block_in_place` waiting on the
+/// StartConditions mutex while the Net runtime's single default worker
+/// blocks on that same `ctrl_lock`, wedging the mutex queue. The upstream
+/// fix is https://github.com/eclipse-zenoh/zenoh/pull/2637, which none of
+/// those releases contains, and this workaround is needed only while the
+/// zenoh in use lacks it. With more Net workers a free worker can always
+/// drain the mutex queue, which un-parks the lock holder.
 ///
 /// Runs before `main` so the variable is set before libtest spawns any
 /// thread and before zenoh's lazy global runtimes read it. Spawned zenohd
 /// child processes inherit it, which is harmless. An operator-provided
-/// `ZENOH_RUNTIME` wins. Remove once the upstream fix ships in a release.
+/// `ZENOH_RUNTIME` wins.
 ///
 /// One of the two scoped unsafe opt-outs in this module (see lib.rs): setting
 /// a process environment variable pre-main has no safe equivalent.
@@ -663,7 +663,7 @@ impl MockServiceCore {
     }
 
     /// The next unscripted request, with the responder the test must use to
-    /// answer it. Errors after `timeout` — a node that never called is a test
+    /// answer it. Errors after `timeout`: a node that never called is a test
     /// failure surfaced here, not a hang.
     pub async fn next_request(
         &self,
@@ -808,7 +808,7 @@ impl MockActionServerCore {
         }
         drop(live);
         // `self` drops here: the engine's routing loops stop and its
-        // liveliness token is released — the consumer-visible loss signal.
+        // liveliness token is released, the consumer-visible loss signal.
     }
 }
 
@@ -1141,7 +1141,7 @@ impl Drop for MockClock {
 }
 
 /// One entry of the harness's pre-setup readiness barrier: before the node's
-/// `setup` runs, the harness waits — on the node's own session — until a
+/// `setup` runs, the harness waits (on the node's own session) until a
 /// subscriber matching the exact keyexpr the node's `declare_publisher` will
 /// emit on is visible. The harness/mocks declare their observation
 /// subscriptions before the node exists, but in gossip mode the node's fresh
@@ -1171,7 +1171,7 @@ pub enum ServiceReadinessKind {
 /// services and actions: the node under test is a *fresh caller*, so its very
 /// first `poll`/`send_goal` inside `setup` can race gossip discovery of a mock
 /// queryable that was declared long before the node's session existed. The
-/// harness therefore waits — on the node's own session — until each mock's
+/// harness therefore waits (on the node's own session) until each mock's
 /// queryable answers reachability probes, before `setup` runs.
 pub struct ServiceReadiness {
     /// The identity the mock serves under (the dependency's node/contract
@@ -1195,7 +1195,7 @@ pub struct ServiceReadiness {
 /// returned one; a long-running `setup` that parks on the token's subscriptions
 /// is aborted like production drops it) → run the registered shutdown hooks →
 /// release the node session as the harness drops. Dropping without calling
-/// `shutdown` still cancels and aborts, but skips the hook run — prefer the
+/// `shutdown` still cancels and aborts, but skips the hook run: prefer the
 /// explicit call.
 pub struct HarnessCore {
     node_runner: Arc<NodeRunner>,
@@ -1209,8 +1209,8 @@ impl HarnessCore {
     /// call per mock; `publisher_readiness` lists every topic the harness (or
     /// a pairing mock) subscribed to that the node will publish on.
     ///
-    /// `setup` is the node's real entry point — the exact closure shape
-    /// `NodeBuilder::run` takes — spawned only after the readiness barrier
+    /// `setup` is the node's real entry point (the exact closure shape
+    /// `NodeBuilder::run` takes), spawned only after the readiness barrier
     /// passes, so its first publish routes.
     pub async fn start<Params, F, Fut>(
         peppy_config_path: impl Into<std::path::PathBuf>,
@@ -1332,7 +1332,7 @@ impl HarnessCore {
     }
 
     /// Converge the node: see the type-level teardown contract. Returns the
-    /// `setup` error if it failed — a test whose node errored during setup
+    /// `setup` error if it failed: a test whose node errored during setup
     /// should fail even when its assertions never noticed.
     pub async fn shutdown(mut self) -> Result<()> {
         self.cancellation_token.cancel();

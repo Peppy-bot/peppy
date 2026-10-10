@@ -64,7 +64,7 @@ pub(crate) trait SlotUpdate: Sized {
     fn admits(cardinality: Cardinality, members: usize) -> bool;
 
     /// Extra structured fields for the receipt debug log, beyond
-    /// link_id/sequence (e.g. `paired=true`).
+    /// link_id/sequence (e.g. `members=2 live=1`).
     fn log_detail(&self) -> String;
 }
 

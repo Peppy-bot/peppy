@@ -11,7 +11,7 @@
 //! same domain, so the timestamps the benchmark compares are already on one
 //! timeline; a wall-derived correction applied to them would move them off it.
 //!
-//! Like `node_health`, this is framework plumbing — it never invokes any user
+//! Like `node_health`, this is framework plumbing: it never invokes any user
 //! interface handler, so it does not violate the benchmark's no-trigger
 //! guarantee.
 

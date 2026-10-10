@@ -1,6 +1,6 @@
 //! Framework `observation_update` service: the daemon's live delivery channel
 //! for observer-slot state (source pin, source generation, source liveness).
-//! Registered pre-setup — user code may block in `setup_fn` forever, and
+//! Registered pre-setup: user code may block in `setup_fn` forever, and
 //! observation delivery must not depend on it. The sequenced, daemon-only,
 //! idempotent delivery protocol lives in [`crate::services::slot_update`]; this
 //! module only maps an `ObservationUpdateRequest` onto an observer slot's

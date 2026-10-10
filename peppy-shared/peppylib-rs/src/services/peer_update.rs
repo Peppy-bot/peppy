@@ -7,9 +7,10 @@
 //!
 //! Pairing state is daemon-authoritative: stacks are daemon-scoped, so the
 //! only legitimate caller is the node's own daemon, whose identity the node
-//! knows as its bound core_node. (Identity stamps are cooperative on the fabric
-//! — this guards against misdirected or misbehaving callers; transport-level
-//! access control remains the security boundary.)
+//! knows as its bound core_node. Identity stamps are cooperative on the
+//! fabric, so this core_node check guards only against misdirected or
+//! misbehaving callers; transport-level access control remains the security
+//! boundary.
 
 use crate::encoding::peer_update::PeerUpdateRequest;
 use crate::messaging::{PEER_UPDATE_SERVICE, PeerSetState, SenderTarget};
