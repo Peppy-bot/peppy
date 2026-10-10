@@ -77,8 +77,8 @@ def test_find_limactl_from_build_output(tmp_path: Path) -> None:
     limactl.parent.mkdir(parents=True)
     limactl.write_bytes(b"fake limactl")
 
-    # An empty home, so the cache pin (now checked first) cannot shadow the
-    # build-output case this test is about.
+    # An empty home, so the pinned cache entry, which find_limactl checks
+    # first, cannot shadow the build-output case this test is about.
     home = tmp_path / "home"
     home.mkdir()
 
@@ -89,11 +89,11 @@ def test_find_limactl_from_build_output(tmp_path: Path) -> None:
 
 
 def test_find_limactl_fallback_to_cache(tmp_path: Path) -> None:
-    """The exact pinned cache entry wins over a lexicographic sort.
+    """The exact pinned cache entry wins over every other limactl.
 
-    Two distractors are planted: a higher-sorting cache directory that the old
-    `sorted(...)[-1]` glob would have selected, and a stale build output that
-    the old build-output-first ordering would have selected.
+    Two distractors are planted: the cache entry of a later Lima version, which
+    sorts after the pinned one, and a stale build output that holds a limactl
+    too.
     """
     home = tmp_path / "home"
     cache_dir = home / ".peppy" / "tmp" / f"lima-{LIMA_VERSION}-Darwin-arm64" / "bin"
