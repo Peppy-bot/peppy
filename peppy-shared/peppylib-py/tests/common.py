@@ -5,6 +5,7 @@ Shared test helpers and constants for peppylib integration tests.
 import asyncio
 import hashlib
 import json
+import logging
 import queue
 import threading
 from collections.abc import Callable
@@ -14,6 +15,8 @@ import pytest
 
 import peppylib.testing as peppy_testing
 from peppylib import ProducerRef, SenderTarget
+
+logger = logging.getLogger(__name__)
 
 TEST_NODE_NAME = "test_node"
 TEST_NODE_TAG = "v1"
@@ -79,6 +82,11 @@ def start_runner_thread(
         try:
             run()
         except Exception as error:
+            # Whatever the runner raises is the test's to judge, so every
+            # exception goes to the queue. The log keeps its traceback, which
+            # pytest shows for a failing test where the assertion messages
+            # show only the exception's text.
+            logger.exception("the node runner thread raised")
             error_queue.put(error)
 
     runner_thread = threading.Thread(target=run_and_keep_error, daemon=True)
