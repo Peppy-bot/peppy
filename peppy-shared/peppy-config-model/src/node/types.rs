@@ -91,8 +91,6 @@ pub struct NodeConfig {
     pub execution: Execution,
 }
 
-// NodeInfo is not part of the new schema; manifest/config/instances carry this information.
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TypeToken {
@@ -1504,7 +1502,7 @@ pub struct EndpointDeclaration {
     pub kind: EndpointKind,
     /// Non-empty prose saying what the endpoint serves, for the reader of
     /// the manifest. It stays in the manifest: the daemon reports an
-    /// endpoint by label and kind, and no listing carries this text today.
+    /// endpoint by label and kind, and no listing carries this text.
     pub description: String,
 }
 
@@ -1625,8 +1623,8 @@ pub struct Manifest {
 
 // The blocked-mount-path list and predicate live in the sibling `mount_policy`
 // module so this crate (config-parse-time validation) and `containers` (Lima YAML
-// mutation) share one source of truth. Re-exported so
-// `config::node::is_blocked_mount_source` stays part of this crate's public API.
+// mutation) share one source of truth. Re-exported as
+// `config::node::is_blocked_mount_source`, part of this crate's public API.
 pub use super::mount_policy::is_blocked_mount_source;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

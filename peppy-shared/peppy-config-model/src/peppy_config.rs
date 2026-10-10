@@ -1,12 +1,12 @@
-//! Shared remnants of the daemon-global `peppy_config.json5` model.
+//! The part of the daemon-global `peppy_config.json5` model that crates
+//! beyond the daemon read.
 //!
 //! The document model itself (`PeppyConfig`, `load_or_create`, the bundled
 //! template and its comment-preserving completion) lives in the peppy
-//! `daemon-config` crate: only the daemon reads or writes that file. What
-//! stays here is the slice consumed beyond the daemon:
-//! [`SubscriberBufferConfig`] (pmi builds its subscriber buffer sizes from
-//! it), the buffer and grace defaults `runtime.rs` uses for runtime-config
-//! serde fallbacks, and the shutdown timing contract
+//! `daemon-config` crate, because only the daemon reads or writes that file.
+//! This module holds [`SubscriberBufferConfig`] (pmi builds its subscriber
+//! buffer sizes from it), the buffer and grace defaults of the runtime-config
+//! `Default` impls in `runtime.rs`, and the shutdown timing contract
 //! ([`EVENT_LOOP_JOIN_BUDGET_SECS`] read by `peppylib-py`, plus
 //! [`RUNTIME_FINALIZE_MARGIN_SECS`] which the daemon stacks on top of it when
 //! sizing force-kill deadlines).
@@ -14,10 +14,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Default subscriber channel buffer for the `Standard` QoS tier (number of
-/// in-flight messages). Mirrors the historical hardcoded value.
+/// in-flight messages).
 pub const DEFAULT_STANDARD_BUFFER_SIZE: usize = 128;
 /// Default subscriber channel buffer for the `HighThroughput` QoS tier (e.g.
-/// sensor-data streams). Mirrors the historical hardcoded value.
+/// sensor-data streams).
 pub const DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE: usize = 1024;
 
 /// Default daemon-liveness grace period, in seconds (180 = 3 minutes). A

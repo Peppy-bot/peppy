@@ -1,16 +1,15 @@
-//! Integration tests that parse the example configs shipped inside this crate
-//! (`config/examples/`) to ensure the schema types stay in sync with
-//! the ground-truth files.
+//! Integration tests that parse the example node configs shipped inside this
+//! crate (`examples/nodes_example_1/`), so the config types stay in sync with
+//! those files.
 //!
-//! If any test here fails, it means the config types in `config` have
-//! drifted from the example files — either the code or the examples need updating.
+//! A failure here means the config types of this crate and the example files
+//! disagree: fix the code or the examples.
 //!
-//! The docs-snippet equivalent — parsing the `peppy.json5` files under
-//! `peppy/docs/.../guides/snippets` — lives in the `peppy` repo's
-//! `docs-integration-tests` crate (`tests/snippet_configs.rs`), where both the
-//! docs and a dependency on this crate are available. It is intentionally not
-//! duplicated here so this workspace stays self-contained and never reaches back
-//! into `peppy/`.
+//! The docs snippets (the `peppy.json5` files under
+//! `docs/src/content/docs/guides/snippets`) are parsed by the
+//! `docs-integration-tests` crate (`docs/tests/integration/tests/snippet_configs.rs`),
+//! which can reach both the docs and this crate. This sealed workspace never
+//! reaches outside `peppy-shared/`, so those files are not parsed here.
 
 use peppy_config_model::consts::NODE_CONFIG_FILE;
 use peppy_config_model::node::NodeConfigParser;
