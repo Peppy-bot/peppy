@@ -237,18 +237,17 @@ pub fn plan_deployment(
         return Err(McpDeploymentError::NoExposures);
     }
     let mut ordered: Vec<&PinnedExposure> = exposures.iter().collect();
-    ordered.sort_by_key(|exposure| exposure.reference());
-    for (index, exposure) in ordered.iter().enumerate() {
-        if ordered[..index]
-            .iter()
-            .any(|other| other.reference() == exposure.reference())
-        {
-            return Err(McpDeploymentError::DuplicateExposure {
-                exposure: exposure.reference().to_string(),
-            });
-        }
+    ordered.sort_by_cached_key(|exposure| exposure.reference());
+    let references: Vec<ExposureRef> = ordered
+        .iter()
+        .map(|exposure| exposure.reference())
+        .collect();
+    // Sorted references put a repeated exposure beside its first listing.
+    if let Some(pair) = references.windows(2).find(|pair| pair[0] == pair[1]) {
+        return Err(McpDeploymentError::DuplicateExposure {
+            exposure: pair[1].to_string(),
+        });
     }
-    let references: Vec<ExposureRef> = ordered.iter().map(|e| e.reference()).collect();
     let name = built_in_identity(&references);
     let tag = BUILT_IN_TAG.to_owned();
 
