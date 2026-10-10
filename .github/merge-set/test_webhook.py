@@ -30,7 +30,7 @@ from merge_set import MergeSetError
 from test_merge_set import (
     BOT,
     RELAY_RUN_URL,
-    WORKFLOWS,
+    assert_ends_within_its_slim_runner,
     pull_request_event,
     workflow_lines,
 )
@@ -634,16 +634,7 @@ class RepositoryFacts(unittest.TestCase):
         self.assertIn(f"- .github/workflows/{DEPLOY_WORKFLOW}", lines)
 
     def test_the_deploy_starts_at_once_and_ends_within_the_limit_of_its_runner(self):
-        # An ubuntu-slim job stops after 15 minutes.
-        lines = workflow_lines(DEPLOY_WORKFLOW)
-        self.assertIn("runs-on: ubuntu-slim", lines)
-        (timeout,) = [line for line in lines if line.startswith("timeout-minutes:")]
-        self.assertLessEqual(int(timeout.split(":")[1]), 15)
-
-    def test_the_changes_job_runs_these_cases(self):
-        text = (WORKFLOWS / "tests.yml").read_text()
-        self.assertIn("--start-directory .github/merge-set", text)
-        self.assertIn("--pattern 'test_*.py'", text)
+        assert_ends_within_its_slim_runner(self, DEPLOY_WORKFLOW)
 
 
 if __name__ == "__main__":

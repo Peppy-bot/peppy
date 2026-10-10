@@ -2986,6 +2986,14 @@ def workflow_lines(name):
     return [line.strip() for line in (WORKFLOWS / name).read_text().splitlines()]
 
 
+def assert_ends_within_its_slim_runner(test, workflow):
+    """An ubuntu-slim job stops after 15 minutes."""
+    lines = workflow_lines(workflow)
+    test.assertIn("runs-on: ubuntu-slim", lines)
+    (timeout,) = [line for line in lines if line.startswith("timeout-minutes:")]
+    test.assertLessEqual(int(timeout.split(":")[1]), 15)
+
+
 class RepositoryFacts(unittest.TestCase):
     def test_the_sync_workflow_takes_the_inputs_the_relay_gives(self):
         text = (WORKFLOWS / merge_set.SYNC_WORKFLOW).read_text()
@@ -3021,11 +3029,7 @@ class RepositoryFacts(unittest.TestCase):
         self.assertIn("    environment:\n      name: merge-set\n", text)
 
     def test_the_sync_starts_at_once_and_ends_within_the_limit_of_its_runner(self):
-        # An ubuntu-slim job stops after 15 minutes.
-        lines = workflow_lines(merge_set.SYNC_WORKFLOW)
-        self.assertIn("runs-on: ubuntu-slim", lines)
-        (timeout,) = [line for line in lines if line.startswith("timeout-minutes:")]
-        self.assertLessEqual(int(timeout.split(":")[1]), 15)
+        assert_ends_within_its_slim_runner(self, merge_set.SYNC_WORKFLOW)
 
     def test_the_relay_hands_on_the_runs_of_the_ci_workflow(self):
         self.assertIn(
@@ -3035,6 +3039,7 @@ class RepositoryFacts(unittest.TestCase):
     def test_the_changes_job_runs_these_cases(self):
         text = (WORKFLOWS / "tests.yml").read_text()
         self.assertIn("--start-directory .github/merge-set", text)
+        self.assertIn("--pattern 'test_*.py'", text)
 
 
 if __name__ == "__main__":
