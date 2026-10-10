@@ -247,4 +247,104 @@ mod tests {
         assert_eq!(name, "some_node");
         assert_eq!(tag, "v123");
     }
+
+    #[test]
+    fn parses_git_repo_url_and_repo_path_from_https_url() {
+        let (repo_url, repo_path) =
+            parse_git_repo_url_and_path("https://github.com/Peppy-bot/nodes-hub.git/uvc_camera")
+                .expect("should parse git source");
+
+        assert_eq!(
+            repo_url.to_bstring().to_string(),
+            "https://github.com/Peppy-bot/nodes-hub.git"
+        );
+        assert_eq!(repo_path, "uvc_camera");
+    }
+
+    #[test]
+    fn parses_http_source_for_tar_zst_url() {
+        let source = parse_node_source("https://example.com/fake_uvc_camera.tar.zst", None)
+            .expect("should parse http source");
+
+        match &source {
+            NodeSource::Http { url, .. } => {
+                assert_eq!(url.as_str(), "https://example.com/fake_uvc_camera.tar.zst");
+            }
+            other => panic!("expected http source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_git_source_with_ref() {
+        let source = parse_node_source(
+            "https://github.com/Peppy-bot/nodes-hub.git/uvc_camera",
+            Some("v0.1.0".to_string()),
+        )
+        .expect("should parse git source");
+
+        match &source {
+            NodeSource::Git {
+                repo_url,
+                repo_path,
+                repo_ref,
+            } => {
+                assert_eq!(
+                    repo_url.to_bstring().to_string(),
+                    "https://github.com/Peppy-bot/nodes-hub.git"
+                );
+                assert_eq!(repo_path, "uvc_camera");
+                assert_eq!(repo_ref.as_deref(), Some("v0.1.0"));
+            }
+            other => panic!("expected git source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_git_source_without_ref() {
+        let source = parse_node_source(
+            "https://github.com/Peppy-bot/nodes-hub.git/uvc_camera",
+            None,
+        )
+        .expect("should parse git source");
+
+        match &source {
+            NodeSource::Git { repo_ref, .. } => {
+                assert!(repo_ref.is_none());
+            }
+            other => panic!("expected git source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_ref_for_http_archive() {
+        let err = parse_node_source(
+            "https://example.com/fake_uvc_camera.tar.zst",
+            Some("v0.1.0".to_string()),
+        )
+        .expect_err("should reject --ref for http archive");
+
+        assert!(err.to_string().contains("--ref"));
+    }
+
+    #[test]
+    fn rejects_ref_for_local_source() {
+        // Note: This test will fail to canonicalize the path since it doesn't exist,
+        // but it still validates that --ref is rejected for local sources
+        let err = parse_node_source("some/local/path", Some("v0.1.0".to_string()))
+            .expect_err("should reject --ref for local sources");
+
+        assert!(err.to_string().contains("--ref"));
+    }
+
+    #[test]
+    fn rejects_ref_for_repository_reference() {
+        let err = parse_node_source("some_node:v123", Some("v0.1.0".to_string()))
+            .expect_err("should reject --ref for a repository reference");
+
+        assert!(
+            err.to_string()
+                .contains("`--ref` is only supported for git sources"),
+            "unexpected error: {err}"
+        );
+    }
 }
