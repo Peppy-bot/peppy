@@ -428,13 +428,13 @@ fn login_persists_credentials_and_resolves_identity() {
         .expect("a login that signs in only needs no daemon");
 
     let creds = storage::load(&path).expect("load creds");
-    let pc = creds.session.as_ref().expect("session present");
-    assert_eq!(pc.access_token.expose_secret(), "access-token-1");
-    assert_eq!(pc.refresh_token.expose_secret(), "the-refresh-token");
-    assert_eq!(pc.subject, "user-123");
-    assert_eq!(pc.username, "alice");
-    assert_eq!(pc.issuer, server.base_url());
-    assert_eq!(pc.client_id, "cli-client-id");
+    let session = creds.session.as_ref().expect("session present");
+    assert_eq!(session.access_token.expose_secret(), "access-token-1");
+    assert_eq!(session.refresh_token.expose_secret(), "the-refresh-token");
+    assert_eq!(session.subject, "user-123");
+    assert_eq!(session.username, "alice");
+    assert_eq!(session.issuer, server.base_url());
+    assert_eq!(session.client_id, "cli-client-id");
     assert!(me.calls() >= 1, "GET /me should have been called");
     assert!(
         !dirs(&dir).runtime_config_dir().exists(),
@@ -1690,15 +1690,15 @@ fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
     let enrolled = enrollment::load(&dirs(&dir))
         .expect("the bundle parses")
         .expect("enrolled");
-    let d = &enrolled.document;
-    assert_eq!(d.workspace_id, WORKSPACE);
-    assert_eq!(d.project_id, PROJECT);
-    assert_eq!(d.peer_id, "peer-1");
-    assert_eq!(d.peer_name, "robot-7");
-    assert_eq!(d.zenoh_id.as_str(), ZID);
-    assert_eq!(d.namespace.as_str(), PROJECT);
-    assert_eq!(d.router.locator(), format!("tls/{ROUTER_HOST}:7447"));
-    assert_eq!(d.api_url, server.base_url());
+    let document = &enrolled.document;
+    assert_eq!(document.workspace_id, WORKSPACE);
+    assert_eq!(document.project_id, PROJECT);
+    assert_eq!(document.peer_id, "peer-1");
+    assert_eq!(document.peer_name, "robot-7");
+    assert_eq!(document.zenoh_id.as_str(), ZID);
+    assert_eq!(document.namespace.as_str(), PROJECT);
+    assert_eq!(document.router.locator(), format!("tls/{ROUTER_HOST}:7447"));
+    assert_eq!(document.api_url, server.base_url());
     assert_eq!(
         enrolled.certificate,
         test_support::certificate_validity(),

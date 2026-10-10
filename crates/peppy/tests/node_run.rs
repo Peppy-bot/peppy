@@ -611,12 +611,12 @@ fn write_consumer_with_slots(
     std::fs::create_dir_all(&consumer_dir).expect("create consumer dir");
     let entries = slots
         .iter()
-        .map(|(lid, cardinality)| {
+        .map(|(link_id, cardinality)| {
             let cardinality = cardinality
                 .map(|c| format!(r#", cardinality: "{c}""#))
                 .unwrap_or_default();
             format!(
-                r#"            {{ name: "{producer_name}", tag: "v1", link_id: "{lid}"{cardinality} }}"#
+                r#"            {{ name: "{producer_name}", tag: "v1", link_id: "{link_id}"{cardinality} }}"#
             )
         })
         .collect::<Vec<_>>()
@@ -691,7 +691,8 @@ fn add_built_consumer_with_pins(
     link_ids: &[&str],
     instances: &InstanceLifetime,
 ) {
-    let slots: Vec<(&str, Option<&str>)> = link_ids.iter().map(|lid| (*lid, None)).collect();
+    let slots: Vec<(&str, Option<&str>)> =
+        link_ids.iter().map(|link_id| (*link_id, None)).collect();
     add_built_consumer_with_slots(
         node_ctx,
         work_dir,
