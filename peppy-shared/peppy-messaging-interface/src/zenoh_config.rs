@@ -469,12 +469,8 @@ pub(crate) fn render_config(spec: &ZenohConfigSpec) -> zenoh::config::Config {
 }
 
 /// Rewrites the unroutable wildcard bind address to a connectable loopback host.
-pub(crate) fn connectable_host(host: &str) -> String {
-    if host == "0.0.0.0" {
-        "127.0.0.1".to_string()
-    } else {
-        host.to_string()
-    }
+pub(crate) fn connectable_host(host: &str) -> &str {
+    if host == "0.0.0.0" { "127.0.0.1" } else { host }
 }
 
 /// The liveness-probe config shared by the router watchdog and the

@@ -627,7 +627,7 @@ impl ZenohAdapter {
         tls: Option<TlsConfig>,
         namespace: Option<Namespace>,
     ) -> ZenohClientConfig {
-        let connect_host = connectable_host(host);
+        let connect_host = connectable_host(host).to_string();
         let seeds = if seed_peers.is_empty() {
             vec![format!("{protocol}/{connect_host}:{port}")]
         } else {

@@ -1,6 +1,7 @@
 use super::super::error::{Error, Result};
 use super::spawner::ZenohdSpawner;
 use super::{ZenohEndpoint, ZenohNetProtocol};
+use crate::zenoh_config::connectable_host;
 use std::env;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -266,12 +267,11 @@ impl ZenohdFacade {
     }
 
     fn connect_addr(&self) -> String {
-        let connect_host = if self.zenoh_endpoint.host() == "0.0.0.0" {
-            "127.0.0.1"
-        } else {
-            self.zenoh_endpoint.host()
-        };
-        format!("{connect_host}:{}", self.zenoh_endpoint.port())
+        format!(
+            "{}:{}",
+            connectable_host(self.zenoh_endpoint.host()),
+            self.zenoh_endpoint.port()
+        )
     }
 
     fn tcp_based(&self) -> bool {
@@ -1010,6 +1010,22 @@ mod tests {
         assert!(facade.managed_config_path().is_none());
         assert!(!facade.is_adopted());
         assert!(facade.router_process.is_none());
+    }
+
+    /// The TCP probes dial the address the session configs dial: the
+    /// unroutable wildcard bind address becomes loopback, any other host is
+    /// dialed as written.
+    #[test]
+    fn connect_addr_dials_loopback_for_the_ipv4_wildcard() {
+        let wildcard = ZenohdFacade::external("tcp/0.0.0.0:7447".parse().expect("parse endpoint"));
+        assert_eq!(wildcard.connect_addr(), "127.0.0.1:7447");
+
+        let named = ZenohdFacade::external(
+            "tcp/zenoh-router.internal:7447"
+                .parse()
+                .expect("parse endpoint"),
+        );
+        assert_eq!(named.connect_addr(), "zenoh-router.internal:7447");
     }
 
     #[test]
