@@ -96,8 +96,8 @@ impl PythonGenerator {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
+    #[cfg(test)]
+    fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         self.sections
     }
 
