@@ -14,7 +14,7 @@
 #![cfg(feature = "build_zenoh")]
 
 mod common;
-use common::{ZENOH_SERIAL, test_node_target};
+use common::{ZENOH_SERIAL, test_node_target, wait_for_subscriber_discovery};
 
 use bytes::Bytes;
 use pmi::{
@@ -117,8 +117,8 @@ async fn wildcard_service_call_emits_no_fifo_errors() {
         .unwrap();
 
     // Let the two queryables propagate through zenoh's discovery before the
-    // wildcard get goes out. Same delay the other integration tests use.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // wildcard get goes out.
+    wait_for_subscriber_discovery().await;
 
     // Server A: respond as soon as the query lands.
     let server_a = tokio::spawn(async move {
