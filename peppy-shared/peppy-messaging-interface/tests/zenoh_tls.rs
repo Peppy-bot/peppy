@@ -16,7 +16,8 @@ mod common;
 
 mod zenoh_tls_tests {
     use crate::common::{
-        ZENOH_SERIAL, next_message, receiver, sender, wait_for_subscriber_discovery,
+        ZENOH_SERIAL, next_message, receiver, sender, start_session_with_retry,
+        wait_for_subscriber_discovery,
     };
     use bytes::Bytes;
     use config::node::TopicRetention;
@@ -143,15 +144,11 @@ mod zenoh_tls_tests {
     /// Opens a `tls/` client session, retrying briefly while the router's TLS
     /// listener finishes settling after the TCP socket starts accepting.
     async fn open_tls_client(port: u16, tls: &TlsConfig) -> ZenohAdapter {
-        for _ in 0..40 {
-            if let Ok(mut adapter) = ZenohAdapter::connect_to_tls("127.0.0.1", port, tls.clone())
-                && adapter.start_session().await.is_ok()
-            {
-                return adapter;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("could not open a tls client session on 127.0.0.1:{port}");
+        start_session_with_retry(
+            || ZenohAdapter::connect_to_tls("127.0.0.1", port, tls.clone()).expect("adapter"),
+            &format!("a tls client session on 127.0.0.1:{port}"),
+        )
+        .await
     }
 
     /// Starts a `zenohd` router that serves local clients over plaintext `tcp/`
@@ -186,16 +183,11 @@ mod zenoh_tls_tests {
     /// Opens a plaintext `tcp/` client session to a local router, retrying while
     /// the listener settles.
     async fn open_plaintext_client(port: u16) -> ZenohAdapter {
-        for _ in 0..40 {
-            if let Ok(mut adapter) =
-                ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", port)
-                && adapter.start_session().await.is_ok()
-            {
-                return adapter;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("could not open a plaintext client session on 127.0.0.1:{port}");
+        start_session_with_retry(
+            || ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", port).expect("adapter"),
+            &format!("a plaintext client session on 127.0.0.1:{port}"),
+        )
+        .await
     }
 
     /// Positive path: a TLS router + two TLS clients complete the handshake and

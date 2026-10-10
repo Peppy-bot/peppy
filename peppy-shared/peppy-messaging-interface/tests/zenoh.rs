@@ -4,7 +4,8 @@ mod common;
 
 mod zenoh_tests {
     use crate::common::{
-        RECV_TIMEOUT, ZENOH_SERIAL, next_message, receiver, sender, wait_for_subscriber_discovery,
+        RECV_TIMEOUT, ZENOH_SERIAL, next_message, receiver, sender, start_session_with_retry,
+        wait_for_subscriber_discovery,
     };
     use bytes::Bytes;
     use config::node::TopicRetention;
@@ -18,15 +19,11 @@ mod zenoh_tests {
     /// `host:port`, retrying briefly in case the router is still settling after
     /// a respawn. Panics if it can't connect within the retry budget.
     async fn open_publisher(host: &str, port: u16) -> ZenohAdapter {
-        for _ in 0..40 {
-            if let Ok(mut adapter) = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)
-                && adapter.start_session().await.is_ok()
-            {
-                return adapter;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("could not open a publisher session against {host}:{port}");
+        start_session_with_retry(
+            || ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port).expect("adapter"),
+            &format!("a publisher session against {host}:{port}"),
+        )
+        .await
     }
 
     /// Repeatedly publishes to `topic` and waits briefly for the subscriber to
@@ -1057,16 +1054,15 @@ mod zenoh_tests {
     /// while the router settles.
     async fn open_namespaced(host: &str, port: u16, namespace: &str) -> ZenohAdapter {
         let ns = pmi::Namespace::parse(namespace).expect("valid namespace");
-        for _ in 0..40 {
-            let mut adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)
-                .expect("adapter")
-                .with_namespace(Some(ns.clone()));
-            if adapter.start_session().await.is_ok() {
-                return adapter;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("could not open a namespaced session against {host}:{port}");
+        start_session_with_retry(
+            || {
+                ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)
+                    .expect("adapter")
+                    .with_namespace(Some(ns.clone()))
+            },
+            &format!("a namespaced session against {host}:{port}"),
+        )
+        .await
     }
 
     /// Asserts the subscription receives nothing within a short window.

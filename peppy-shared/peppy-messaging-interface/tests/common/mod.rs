@@ -8,8 +8,8 @@
 #![allow(dead_code)]
 
 use pmi::{
-    IncomingRequest, SenderTarget, ServiceQueryable, Subscription, TopicMessage, TopicWireReceiver,
-    TopicWireSender,
+    IncomingRequest, MessengerBackend, SenderTarget, ServiceQueryable, Subscription, TopicMessage,
+    TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -80,6 +80,28 @@ pub fn receiver(to_topic: &str) -> TopicWireReceiver {
         to_topic,
     )
     .expect("valid wire fields")
+}
+
+/// How many times [`start_session_with_retry`] tries to start a session, and
+/// how long it waits between two tries: ten seconds in all.
+const SESSION_START_ATTEMPTS: usize = 40;
+const SESSION_START_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Starts the session of an adapter that `build` makes, retrying while a
+/// router that just started or restarted settles. Panics with
+/// "could not open {label}" when no attempt succeeds.
+pub async fn start_session_with_retry(
+    build: impl Fn() -> ZenohAdapter,
+    label: &str,
+) -> ZenohAdapter {
+    for _ in 0..SESSION_START_ATTEMPTS {
+        let mut adapter = build();
+        if adapter.start_session().await.is_ok() {
+            return adapter;
+        }
+        tokio::time::sleep(SESSION_START_RETRY_INTERVAL).await;
+    }
+    panic!("could not open {label}");
 }
 
 /// Sleeps long enough for zenoh's subscriber discovery to propagate before
