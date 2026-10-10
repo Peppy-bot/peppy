@@ -1403,6 +1403,8 @@ MERGE_STATE_BLOCKED = "blocked"
 MERGEABLE_STATES = frozenset({"clean", "unstable", "has_hooks"})
 WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
 ADMIN_PERMISSION = "admin"
+# The permission of a user who is no collaborator of the repository.
+NO_PERMISSION = "none"
 
 
 @dataclass(frozen=True)
@@ -1965,17 +1967,20 @@ class GitHubGateway:
     def permission(self, repository: Repository, login: str) -> str:
         key = (repository.name, login)
         if key not in self.permissions:
-            try:
-                response = self.api.request(
-                    "GET",
-                    f"/repos/{repository.full_name}/collaborators/{login}/permission",
-                )
-                self.permissions[key] = response["permission"]
-            except ApiError as error:
-                if error.status != 404:
-                    raise
-                self.permissions[key] = "none"
+            self.permissions[key] = self.read_permission(repository, login)
         return self.permissions[key]
+
+    def read_permission(self, repository: Repository, login: str) -> str:
+        try:
+            response = self.api.request(
+                "GET",
+                f"/repos/{repository.full_name}/collaborators/{login}/permission",
+            )
+        except ApiError as error:
+            if error.status != 404:
+                raise
+            return NO_PERMISSION
+        return response["permission"]
 
     def merge(self, pull_request: PullRequest, message: str) -> str:
         """Merge the pull request at its head commit, and return the merge

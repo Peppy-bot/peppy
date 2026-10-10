@@ -2570,6 +2570,20 @@ class Gateway(unittest.TestCase):
         self.assertEqual(gateway.permission(NODES_HUB, "mallory"), "none")
         self.assertEqual(len(api.calls), 1)
 
+    def test_the_permission_of_a_collaborator_is_read_once(self):
+        path = "/repos/Peppy-bot/nodes-hub/collaborators/alice/permission"
+        api = FakeApi({("GET", path): {"permission": "admin"}})
+        gateway = gateway_of(api)
+        self.assertEqual(gateway.permission(NODES_HUB, "alice"), "admin")
+        self.assertEqual(gateway.permission(NODES_HUB, "alice"), "admin")
+        self.assertEqual(len(api.calls), 1)
+
+    def test_another_failure_to_read_a_permission_stops_the_sync(self):
+        path = "/repos/Peppy-bot/nodes-hub/collaborators/alice/permission"
+        api = FakeApi({("GET", path): ApiError(f"GET {path}", 502, "Bad Gateway")})
+        with self.assertRaises(ApiError):
+            gateway_of(api).permission(NODES_HUB, "alice")
+
     def test_the_app_bypasses_a_ruleset_that_names_it_as_a_bypass_actor(self):
         path = f"/repos/Peppy-bot/nodes-hub/rulesets/{APPROVAL_RULESET}"
         for ruleset, bypassed in (
