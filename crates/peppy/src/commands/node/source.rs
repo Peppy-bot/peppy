@@ -98,7 +98,7 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
     {
         source_path
     } else {
-        source_path.join("peppy.json5")
+        source_path.join(NODE_CONFIG_FILE)
     };
 
     let peppy_json5 = peppy_json5.canonicalize().map_err(|e| {
