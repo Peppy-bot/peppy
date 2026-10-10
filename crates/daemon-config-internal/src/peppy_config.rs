@@ -1504,12 +1504,10 @@ mod tests {
             let content = format!(r#"{{ zenoh: {{ external: {{ endpoint: "{endpoint}" }} }} }}"#);
             let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
 
-            let err = load_or_create(&peppy_dirs).unwrap_err();
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
             assert!(
-                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                    if message.contains("zenoh.external.endpoint")
-                        && message.contains(expected_message)),
-                "expected an external endpoint error for {endpoint:?}, got: {err:?}"
+                message.contains("zenoh.external.endpoint") && message.contains(expected_message),
+                "expected an external endpoint error for {endpoint:?}, got: {message}"
             );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
         }
@@ -1564,11 +1562,10 @@ mod tests {
             ),
         ] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(content);
-            let err = load_or_create(&peppy_dirs).unwrap_err();
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
             assert!(
-                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                    if message.contains(expected)),
-                "expected {expected:?} for {content}, got: {err:?}"
+                message.contains(expected),
+                "expected {expected:?} for {content}, got: {message}"
             );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
         }
@@ -1588,11 +1585,10 @@ mod tests {
 }"#,
         ] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(content);
-            let err = load_or_create(&peppy_dirs).unwrap_err();
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
             assert!(
-                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                    if message.contains("unknown field `zenoh.external.future_router_option`")),
-                "expected an unknown external field error for {content}, got: {err:?}"
+                message.contains("unknown field `zenoh.external.future_router_option`"),
+                "expected an unknown external field error for {content}, got: {message}"
             );
             assert_eq!(std::fs::read_to_string(path).unwrap(), content);
         }
@@ -1616,11 +1612,10 @@ mod tests {
         ] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(content);
 
-            let err = load_or_create(&peppy_dirs).unwrap_err();
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
             assert!(
-                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                    if message.contains(expected_message)),
-                "expected an unknown-field error containing {expected_message:?}, got: {err:?}"
+                message.contains(expected_message),
+                "expected an unknown-field error containing {expected_message:?}, got: {message}"
             );
             assert_eq!(std::fs::read_to_string(path).unwrap(), content);
         }
@@ -1672,13 +1667,12 @@ mod tests {
             r#"{ core_node_name: "robot/7" }"#,
         ] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(bad);
-            let err = load_or_create(&peppy_dirs).unwrap_err();
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
             assert!(
-                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m))
-                    if m.contains("core_node_name")
-                        && m.contains(PEPPY_CONFIG_FILE)
-                        && m.contains(ALLOWED_CONFIG_CHARS)),
-                "expected a core-node-name validation error for {bad}, got: {err:?}"
+                message.contains("core_node_name")
+                    && message.contains(PEPPY_CONFIG_FILE)
+                    && message.contains(ALLOWED_CONFIG_CHARS),
+                "expected a core-node-name validation error for {bad}, got: {message}"
             );
             // Invalid names fail BEFORE completion: the file keeps omitting
             // knobs and is not rewritten, same as the malformed case.
@@ -1698,11 +1692,10 @@ mod tests {
         let over = "x".repeat(MAX_CORE_NODE_NAME_LEN + 1);
         let content = format!(r#"{{ core_node_name: "{over}" }}"#);
         let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
-        let err = load_or_create(&peppy_dirs).unwrap_err();
+        let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
         assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m))
-                if m.contains("core_node_name")),
-            "expected a core-node-name validation error, got: {err:?}"
+            message.contains("core_node_name"),
+            "expected a core-node-name validation error, got: {message}"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
     }
@@ -1969,31 +1962,35 @@ mod tests {
         );
     }
 
+    /// A value out of its range fails the load and names the field. It fails
+    /// BEFORE completion: the file keeps omitting knobs and is not rewritten,
+    /// same as the malformed case.
     #[test]
-    fn sub_minimum_shutdown_grace_fails_loud() {
-        let (_tmp, peppy_dirs, _) =
-            dirs_with_config(r#"{ lifecycle: { shutdown_grace_secs: 0 } }"#);
+    fn out_of_range_values_fail_loud_and_leave_the_file() {
+        for (content, field) in [
+            (
+                r#"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 0 } } } }"#,
+                "standard_buffer_size",
+            ),
+            (
+                r#"{ zenoh: { managed: { subscriber_buffers: { high_throughput_buffer_size: 0 } } } }"#,
+                "high_throughput_buffer_size",
+            ),
+            (
+                r#"{ lifecycle: { shutdown_grace_secs: 0 } }"#,
+                "shutdown_grace_secs",
+            ),
+            (
+                r#"{ lifecycle: { daemon_grace_secs: 5 } }"#,
+                "daemon_grace_secs",
+            ),
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(content);
 
-        let err = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("shutdown_grace_secs")),
-            "expected a shutdown-grace validation error, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn sub_minimum_grace_fails_loud_and_leaves_file_untouched() {
-        let invalid = r#"{ lifecycle: { daemon_grace_secs: 5 } }"#;
-        let (_tmp, peppy_dirs, path) = dirs_with_config(invalid);
-
-        let err = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("daemon_grace_secs")),
-            "expected a grace-period validation error, got: {err:?}"
-        );
-        // Out-of-range values fail BEFORE completion: the file keeps omitting
-        // knobs and is not rewritten, same as the malformed case.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
+            assert!(message.contains(field), "{content}: {message}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
     }
 
     #[test]
@@ -2190,32 +2187,6 @@ mod tests {
         );
         // A failed load never modifies the file, even though it omits knobs.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), malformed);
-    }
-
-    #[test]
-    fn zero_standard_buffer_size_fails_loud() {
-        let (_tmp, peppy_dirs, _) = dirs_with_config(
-            r#"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 0 } } } }"#,
-        );
-
-        let err = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("standard_buffer_size")),
-            "expected a buffer-size validation error, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn zero_high_throughput_buffer_size_fails_loud() {
-        let (_tmp, peppy_dirs, _) = dirs_with_config(
-            r#"{ zenoh: { managed: { subscriber_buffers: { high_throughput_buffer_size: 0 } } } }"#,
-        );
-
-        let err = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("high_throughput_buffer_size")),
-            "expected a buffer-size validation error, got: {err:?}"
-        );
     }
 
     #[test]
