@@ -705,7 +705,6 @@ impl RustGenerator {
         peer: &crate::generator::types::PeerContext,
         kind: PairTopicConsumerKind,
     ) -> Result<()> {
-        let topic_component = sanitize_component(topic.name.as_str());
         let schema_key =
             crate::generator::naming::peer_schema_key(&peer.link_id, topic.name.as_str());
         let struct_prefix = to_camel_case(&schema_key);
@@ -770,7 +769,20 @@ impl RustGenerator {
             #header_tokens
             #( #items )*
         });
+        self.push_pair_topic_section(topic, peer, artifact_kind, rendered)
+    }
 
+    /// Pushes the module of a pairing topic at `[link_id, leaf]`, where the leaf
+    /// is the topic name sanitized into a Rust module name, after checking that
+    /// no other pairing artifact of the node already sits there.
+    fn push_pair_topic_section(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &crate::generator::types::PeerContext,
+        kind: InterfaceKind,
+        code: String,
+    ) -> Result<()> {
+        let topic_component = sanitize_component(topic.name.as_str());
         let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
         crate::generator::types::ensure_no_peer_collision(
             &self.sections,
@@ -780,8 +792,8 @@ impl RustGenerator {
         )?;
         self.push_section(InterfaceArtifact {
             module_path,
-            kind: artifact_kind,
-            code_output: rendered,
+            kind,
+            code_output: code,
         });
         Ok(())
     }
@@ -1564,7 +1576,6 @@ impl LanguageGenerator for RustGenerator {
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
         self.testgen.record_peer_emitted_topic(topic, peer);
-        let topic_component = sanitize_component(topic.name.as_str());
         let schema_key =
             crate::generator::naming::peer_schema_key(&peer.link_id, topic.name.as_str());
         let schema_prefix = to_camel_case(&schema_key);
@@ -1601,20 +1612,7 @@ impl LanguageGenerator for RustGenerator {
             #method_tokens
         };
         let rendered = render_tokens(tokens);
-
-        let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
-        crate::generator::types::ensure_no_peer_collision(
-            &self.sections,
-            &module_path,
-            peer,
-            topic,
-        )?;
-        self.push_section(InterfaceArtifact {
-            module_path,
-            kind: InterfaceKind::PeerEmittedTopic,
-            code_output: rendered,
-        });
-        Ok(())
+        self.push_pair_topic_section(topic, peer, InterfaceKind::PeerEmittedTopic, rendered)
     }
 
     fn add_peer_consumed_topic(
