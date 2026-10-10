@@ -798,16 +798,7 @@ impl RawNodeArguments {
         // 1. Fill defaults for any keys missing from the supplied arguments,
         //    recursing into supplied groups to fill their missing children too.
         let mut missing: Vec<String> = Vec::new();
-        for (key, spec) in schema {
-            match self.0.get_mut(key) {
-                Some(value) => merge_defaults(value, spec, key, &mut missing),
-                None => {
-                    if let Some(default_value) = spec.synthesize_default(key, &mut missing) {
-                        self.0.insert(key.clone(), default_value);
-                    }
-                }
-            }
-        }
+        fill_group_defaults(&mut self.0, schema, "", &mut missing);
         if !missing.is_empty() {
             return Err(NodeArgumentsError::MissingParameters(missing));
         }
@@ -822,6 +813,33 @@ impl RawNodeArguments {
         }
 
         Ok(NodeArguments(self.0))
+    }
+}
+
+/// Fills the fields of one group from its schema (`path` is empty at the
+/// schema root): a supplied field gets its own missing children filled, and
+/// a missing field is synthesized from its `$default`s. Required leaves with
+/// no default are appended to `missing` as dot-paths.
+///
+/// The daemon ([`apply_parameter_defaults`]) and the node
+/// ([`validate_node_arguments`]) both fill defaults through this function, so
+/// both fill them the same way.
+fn fill_group_defaults(
+    values: &mut BTreeMap<String, AnyType>,
+    fields: &ParameterSchema,
+    path: &str,
+    missing: &mut Vec<String>,
+) {
+    for (key, spec) in fields {
+        let field_path = join_field_path(path, key);
+        match values.get_mut(key) {
+            Some(value) => merge_defaults(value, spec, &field_path, missing),
+            None => {
+                if let Some(synthesized) = spec.synthesize_default(&field_path, missing) {
+                    values.insert(key.clone(), synthesized);
+                }
+            }
+        }
     }
 }
 
@@ -844,17 +862,7 @@ fn merge_defaults(
 ) {
     match (spec, value) {
         (ParameterSpec::Group(fields), AnyType::Object(map)) => {
-            for (key, sub_spec) in fields {
-                let sub_path = join_field_path(path, key);
-                match map.get_mut(key) {
-                    Some(child) => merge_defaults(child, sub_spec, &sub_path, missing),
-                    None => {
-                        if let Some(synthesized) = sub_spec.synthesize_default(&sub_path, missing) {
-                            map.insert(key.clone(), synthesized);
-                        }
-                    }
-                }
-            }
+            fill_group_defaults(map, fields, path, missing);
         }
         (ParameterSpec::Array { items, .. }, AnyType::Array(arr)) => {
             for (i, elem) in arr.iter_mut().enumerate() {
@@ -1021,16 +1029,7 @@ pub fn apply_parameter_defaults(
     // visible to the caller when we end up returning a non-empty `missing`.
     let mut staged = arguments.clone();
     let mut missing = Vec::new();
-    for (key, spec) in schema {
-        match staged.get_mut(key) {
-            Some(value) => merge_defaults(value, spec, key, &mut missing),
-            None => {
-                if let Some(value) = spec.synthesize_default(key, &mut missing) {
-                    staged.insert(key.clone(), value);
-                }
-            }
-        }
-    }
+    fill_group_defaults(&mut staged, schema, "", &mut missing);
     if missing.is_empty() {
         *arguments = staged;
     }
