@@ -1,4 +1,4 @@
-use daemon_config::env::{is_forbidden_env_name, is_safe_env_value, is_valid_env_name};
+use daemon_config::env::check_env_var;
 
 /// Env vars that are meaningless or misleading when forwarded to a spawned node
 /// because the node runs somewhere the caller's paths do not describe: a
@@ -50,10 +50,7 @@ const CALLER_ONLY_ENV_KEYS: [&str; 7] = [
 /// rules but fails loudly, while the file is being parsed.
 fn should_forward_env(key: &str, value: &str) -> bool {
     let normalized = key.trim().to_ascii_uppercase();
-    is_valid_env_name(key)
-        && is_safe_env_value(value)
-        && !is_forbidden_env_name(key)
-        && !CALLER_ONLY_ENV_KEYS.contains(&normalized.as_str())
+    check_env_var(key, value).is_ok() && !CALLER_ONLY_ENV_KEYS.contains(&normalized.as_str())
 }
 
 /// Collects environment variables from the caller's environment to pass to the daemon.
