@@ -20,6 +20,7 @@ use crate::runtime::TaskHandle;
 use crate::types::Payload;
 use crate::{MessengerHandle, PeppyResult, ServiceMessenger};
 use config::node::Cardinality;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -218,39 +219,50 @@ where
             members_phrase(members)
         ));
     }
-    let mut stale = false;
-    let mut conflicting = false;
+    let mut gate = SequenceGate::Applied;
     slot.sender().send_if_modified(|state| {
         let held = U::state_sequence(state);
-        if request.sequence() < held {
-            stale = true;
-            return false;
-        }
-        if request.sequence() == held {
+        gate = match request.sequence().cmp(&held) {
+            Ordering::Less => SequenceGate::Stale,
             // One sequence, one state: a repeat of the sequence the slot
             // already holds is an idempotent retry and asserts the same
             // members. Two different states under one sequence are two answers
             // to one question, and applying either leaves the slot disagreeing
             // with whoever sent the other.
-            conflicting = *state != asserted;
-            return false;
-        }
-        *state = asserted.clone();
-        true
+            Ordering::Equal if *state == asserted => SequenceGate::Repeated,
+            Ordering::Equal => SequenceGate::Conflicting,
+            Ordering::Greater => {
+                *state = asserted;
+                SequenceGate::Applied
+            }
+        };
+        matches!(gate, SequenceGate::Applied)
     });
-    if stale {
-        return SlotUpdateResponse::stale();
-    }
-    if conflicting {
-        return SlotUpdateResponse::rejected(format!(
+    match gate {
+        SequenceGate::Stale => SlotUpdateResponse::stale(),
+        SequenceGate::Conflicting => SlotUpdateResponse::rejected(format!(
             "{} for {} `{}` repeats sequence {} asserting different state",
             U::SERVICE,
             U::SLOT_NOUN,
             request.link_id(),
             request.sequence()
-        ));
+        )),
+        SequenceGate::Applied | SequenceGate::Repeated => SlotUpdateResponse::accepted(),
     }
-    SlotUpdateResponse::accepted()
+}
+
+/// What the sequence gate made of one delivery, against the sequence the slot
+/// holds.
+enum SequenceGate {
+    /// A larger sequence: the delivery replaced the slot state.
+    Applied,
+    /// The held sequence asserting the held state: an idempotent retry, left
+    /// as it is.
+    Repeated,
+    /// A smaller sequence: a delayed delivery that must not roll the slot back.
+    Stale,
+    /// The held sequence asserting a different state, which is refused.
+    Conflicting,
 }
 
 /// One channel per link id, every slot seeded from `seed` and declared
