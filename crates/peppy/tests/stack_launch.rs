@@ -266,7 +266,6 @@ async fn node_launch_command_succeed() {
     });
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
-    let node_b_path = nodes_dir.path().join(node_b_name);
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
@@ -3258,8 +3257,9 @@ async fn stack_launch_flattens_a_composed_launcher() {
     );
     // Model a node that releases its keep-alive when asked to shut down, so
     // the teardown at the end of the test does not wait out a grace period.
-    let (_shutdown_handle, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
-        &MessengerHandle::from_shared(Arc::clone(&shared_messenger)),
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let (_shutdown_handle, shutdown_rx) = listen_for_shutdown(
+        &node_messenger,
         &core_node_name,
         instance_id,
         test_node_target(node_name),
@@ -3278,8 +3278,6 @@ async fn stack_launch_flattens_a_composed_launcher() {
 
     register_repo_caches(serve.temp_dir(), &[(node_name, node_tag, &node_path)]);
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let instance_id = "beta_inst";
     emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
 
     let launcher_path = nodes_dir.path().join("composed_launcher.json5");
