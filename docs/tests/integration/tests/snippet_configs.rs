@@ -12,6 +12,10 @@
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
 use daemon_config::contract::PeppyContractParser;
+use daemon_config::launcher::{LauncherFragmentParser, PeppyLauncherParser};
+use daemon_config::mcp_exposure::PeppyMcpExposureParser;
+use daemon_config::pairing::PeppyPairingParser;
+use daemon_config::repository::PeppyRepositoryIndexParser;
 use docs_integration_tests::workspace_root;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -59,71 +63,44 @@ fn assert_parses_with_matching_schema(path: &Path) {
 
     match peek.peppy_schema {
         PeppySchema::NodeV1 => {
-            let result = NodeConfigParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse node {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = NodeConfigParser::from_path(path);
+            assert_parsed("node", path, parsed);
         }
         PeppySchema::ContractV1 => {
-            let result = PeppyContractParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse contract {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = PeppyContractParser::from_path(path);
+            assert_parsed("contract", path, parsed);
         }
         PeppySchema::PairingV1 => {
-            let result = daemon_config::pairing::PeppyPairingParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse pairing {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = PeppyPairingParser::from_path(path);
+            assert_parsed("pairing", path, parsed);
         }
         PeppySchema::LauncherV1 => {
             // The federation guide's worked launcher is the headline example
             // of a whole feature. Before this arm parsed it, it was the one
             // piece of documented syntax nothing checked.
-            let result = daemon_config::launcher::PeppyLauncherParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse launcher {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = PeppyLauncherParser::from_path(path);
+            assert_parsed("launcher", path, parsed);
         }
         PeppySchema::LauncherFragmentV1 => {
-            let result = daemon_config::launcher::LauncherFragmentParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse launcher fragment {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = LauncherFragmentParser::from_path(path);
+            assert_parsed("launcher fragment", path, parsed);
         }
         PeppySchema::RepositoryV1 => {
-            let result = daemon_config::repository::PeppyRepositoryIndexParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse repository index {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = PeppyRepositoryIndexParser::from_path(path);
+            assert_parsed("repository index", path, parsed);
         }
         PeppySchema::McpExposureV1 => {
-            let result = daemon_config::mcp_exposure::PeppyMcpExposureParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse MCP exposure {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = PeppyMcpExposureParser::from_path(path);
+            assert_parsed("MCP exposure", path, parsed);
         }
+    }
+}
+
+/// Fail with the document kind, its path and the parser's error, so that a
+/// failure names the snippet that drifted from its schema.
+fn assert_parsed<T, E: std::fmt::Debug>(kind: &str, path: &Path, parsed: Result<T, E>) {
+    if let Err(error) = parsed {
+        panic!("failed to parse {kind} {}: {error:?}", path.display());
     }
 }
 
