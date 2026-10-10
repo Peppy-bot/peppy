@@ -78,14 +78,6 @@ pub fn validate_parameter_schema(parameters: &config::ParameterSchema) -> Result
         !name.is_empty() && name.chars().all(|c| allowed.contains(c))
     }
 
-    fn join_path(parent_path: &str, field_name: &str) -> String {
-        if parent_path.is_empty() {
-            field_name.to_string()
-        } else {
-            format!("{parent_path}.{field_name}")
-        }
-    }
-
     fn validate_fields(
         fields: &BTreeMap<String, ParameterSpec>,
         parent_path: &str,
@@ -99,11 +91,11 @@ pub fn validate_parameter_schema(parameters: &config::ParameterSchema) -> Result
                 });
             }
             if let ParameterSpec::Group(nested) = spec {
-                let field_path = join_path(parent_path, field_name);
+                let field_path = join_parameter_path(parent_path, field_name);
                 validate_fields(nested, &field_path, allowed)?;
             } else if let ParameterSpec::Array { .. } = spec {
                 return Err(Error::UnsupportedArrayParameter {
-                    path: join_path(parent_path, field_name),
+                    path: join_parameter_path(parent_path, field_name),
                 });
             }
         }
@@ -111,6 +103,17 @@ pub fn validate_parameter_schema(parameters: &config::ParameterSchema) -> Result
     }
 
     validate_fields(parameters, "", ALLOWED_CONFIG_CHARS)
+}
+
+/// The dotted path of `field_name` inside the group at `parent_path`, which
+/// is empty for the top level of the schema. Parameter errors name a field by
+/// this path.
+pub(crate) fn join_parameter_path(parent_path: &str, field_name: &str) -> String {
+    if parent_path.is_empty() {
+        field_name.to_string()
+    } else {
+        format!("{parent_path}.{field_name}")
+    }
 }
 
 fn generate_parameter_module_contents(
