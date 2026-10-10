@@ -903,11 +903,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
     let link_id = "cameras";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    let producer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        instances.keep_alive_script(),
-    ];
+    let producer_run_cmd = instances.keep_alive_argv();
     let producer_path = write_node_config_for_helper(
         nodes_dir.path(),
         producer_name,
@@ -1046,11 +1042,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
     let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    let run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        instances.keep_alive_script(),
-    ];
+    let run_cmd = instances.keep_alive_argv();
     let producer_path = write_node_config_for_helper(
         nodes_dir.path(),
         producer_name,
@@ -1317,11 +1309,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     super::common::publish_repo_index(contract_repo_dir.path());
     super::common::write_fs_repositories(&serve, &[contract_repo_dir.path()]);
 
-    let producer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        instances.keep_alive_script(),
-    ];
+    let producer_run_cmd = instances.keep_alive_argv();
     let producer_implements =
         format!(r#"[{{ name: "{contract_name}", tag: "{contract_tag}", link_id: "cam" }}]"#);
     let producer_interfaces = r#"{
@@ -1999,11 +1987,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     );
     super::common::seed_docs_repo(&serve, &ctx, contract_repo_dir.path());
 
-    let producer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        instances.keep_alive_script(),
-    ];
+    let producer_run_cmd = instances.keep_alive_argv();
     let producer_implements =
         format!(r#"[{{ name: "{contract_name}", tag: "{contract_tag}", link_id: "cam_out" }}]"#);
     let producer_interfaces = r#"{
@@ -3261,11 +3245,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     // The optional dependency exposes a service the consumer consumes, so the
     // consumer's codegen cannot skip resolving it: absence from the stack must
     // fall through to the repository cache.
-    let recorder_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        instances.keep_alive_script(),
-    ];
+    let recorder_run_cmd = instances.keep_alive_argv();
     let recorder_interfaces = r#"{
         services: {
             exposes: [{
