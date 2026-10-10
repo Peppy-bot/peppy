@@ -408,7 +408,7 @@ fn run_one_generation(options: &ServeOptions) -> Result<(ServeOutcome, bool)> {
         options.peppy_dirs.clone(),
     )
     .with_peppy_config(peppy_config)
-    .with_messaging_router(options.messaging_engine.clone())?
+    .with_messaging_router(&options.messaging_engine)?
     .with_core_node(options.core_node_name.clone())?;
 
     if let Some(token) = &options.shutdown_token {

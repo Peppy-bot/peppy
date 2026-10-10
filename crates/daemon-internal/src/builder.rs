@@ -127,56 +127,9 @@ impl ServeCommandBuilder {
     }
 
     /// The messaging router (Zenoh/MQTT etc...) is reponsible for message passing between the nodes and between the nodes and the peppy program
-    pub fn with_messaging_router(mut self, engine: String) -> Result<Self> {
-        let engine = engine.to_lowercase();
-        let listening_port = extract_messaging_port();
-        let adapter = match engine.as_str() {
-            "zenoh" => {
-                // Reconnecting session: if the router watchdog respawns zenohd,
-                // the daemon's own session re-establishes (and re-declares the
-                // core node's services) instead of going silent. The session's
-                // topology (peer vs router-relay) and subscriber buffer sizes come
-                // from the daemon-global config read at startup.
-                let subscriber_buffers =
-                    SubscriberBufferSizes::from(self.peppy_config.zenoh.subscriber_buffers());
-
-                // This generation's identity comes from the enrollment on disk:
-                // not enrolled means a standalone router under `local`; enrolled
-                // means the platform-minted router id, the project namespace,
-                // and a mutual-TLS link to the project's cloud router, all fixed
-                // for the life of the generation. A malformed enrollment fails
-                // startup loudly rather than silently booting standalone.
-                let enrollment = auth::enrollment::load(&self.peppy_dirs).map_err(|error| {
-                    Error::ExecutionFailed(format!(
-                        "could not read this machine's platform enrollment: {error}"
-                    ))
-                })?;
-                self.identity = FederationIdentity::of(enrollment.as_ref());
-
-                let gossip = self.peppy_config.zenoh.gossip();
-                let external_endpoint = self
-                    .peppy_config
-                    .zenoh
-                    .external_endpoint()
-                    .map(str::to_string);
-                let adapter = match external_endpoint {
-                    // An operator-run router keeps its own identity and its own
-                    // federation; only the session namespace follows the
-                    // enrollment here.
-                    Some(endpoint) => {
-                        ZenohAdapter::with_external_router(&endpoint, gossip, subscriber_buffers)?
-                    }
-                    None => self.managed_router_adapter(
-                        enrollment.as_ref(),
-                        listening_port,
-                        gossip,
-                        subscriber_buffers,
-                    )?,
-                }
-                .with_session_reconnect()
-                .with_namespace(Some(self.identity.namespace.clone()));
-                MessengerAdapter::Zenoh(adapter)
-            }
+    pub fn with_messaging_router(mut self, engine: &str) -> Result<Self> {
+        let adapter = match engine.to_lowercase().as_str() {
+            "zenoh" => MessengerAdapter::Zenoh(self.build_zenoh_adapter()?),
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),
             other => {
                 warn!(target: "daemon::serve", "Unsupported messaging engine '{}', using mock", other);
@@ -207,6 +160,50 @@ impl ServeCommandBuilder {
         Ok(self)
     }
 
+    /// Builds the zenoh adapter of this generation and records the identity
+    /// the enrollment on disk gives it.
+    fn build_zenoh_adapter(&mut self) -> Result<ZenohAdapter> {
+        // Reconnecting session: if the router watchdog respawns zenohd,
+        // the daemon's own session re-establishes (and re-declares the
+        // core node's services) instead of going silent. The session's
+        // topology (peer vs router-relay) and subscriber buffer sizes come
+        // from the daemon-global config read at startup.
+        let subscriber_buffers =
+            SubscriberBufferSizes::from(self.peppy_config.zenoh.subscriber_buffers());
+
+        // This generation's identity comes from the enrollment on disk:
+        // not enrolled means a standalone router under `local`; enrolled
+        // means the platform-minted router id, the project namespace,
+        // and a mutual-TLS link to the project's cloud router, all fixed
+        // for the life of the generation. A malformed enrollment fails
+        // startup loudly rather than silently booting standalone.
+        let enrollment = auth::enrollment::load(&self.peppy_dirs).map_err(|error| {
+            Error::ExecutionFailed(format!(
+                "could not read this machine's platform enrollment: {error}"
+            ))
+        })?;
+        self.identity = FederationIdentity::of(enrollment.as_ref());
+
+        let gossip = self.peppy_config.zenoh.gossip();
+        let external_endpoint = self
+            .peppy_config
+            .zenoh
+            .external_endpoint()
+            .map(str::to_string);
+        let adapter = match external_endpoint {
+            // An operator-run router keeps its own identity and its own
+            // federation; only the session namespace follows the
+            // enrollment here.
+            Some(endpoint) => {
+                ZenohAdapter::with_external_router(&endpoint, gossip, subscriber_buffers)?
+            }
+            None => self.managed_router_adapter(enrollment.as_ref(), gossip, subscriber_buffers)?,
+        };
+        Ok(adapter
+            .with_session_reconnect()
+            .with_namespace(Some(self.identity.namespace.clone())))
+    }
+
     /// Builds the managed zenoh router: standalone under a per-boot id when
     /// not enrolled; under the platform-minted id, dialing the project's cloud
     /// router over mutual TLS, when enrolled. Records the router for
@@ -214,7 +211,6 @@ impl ServeCommandBuilder {
     fn managed_router_adapter(
         &mut self,
         enrollment: Option<&Enrollment>,
-        listening_port: u16,
         gossip: bool,
         subscriber_buffers: SubscriberBufferSizes,
     ) -> Result<ZenohAdapter> {
@@ -240,7 +236,7 @@ impl ServeCommandBuilder {
         let adapter = ZenohAdapter::with_router(
             ZenohNetProtocol::Tcp,
             "0.0.0.0",
-            listening_port,
+            extract_messaging_port(),
             gossip,
             subscriber_buffers,
             connect_endpoints,
@@ -561,7 +557,7 @@ mod tests {
         let builder =
             ServeCommandBuilder::new("/unused", "regression-git-hash", PeppyDirs::new("/unused"))
                 .with_peppy_config(peppy_config)
-                .with_messaging_router("zenoh".to_string())
+                .with_messaging_router("zenoh")
                 .expect("build external messaging adapter without starting it");
         assert!(
             builder.managed_router.is_none(),
@@ -618,7 +614,7 @@ mod tests {
         };
         ServeCommandBuilder::new("/unused", "regression-git-hash", PeppyDirs::new(data_root))
             .with_peppy_config(peppy_config)
-            .with_messaging_router("zenoh".to_string())
+            .with_messaging_router("zenoh")
             .expect("build managed messaging adapter without starting it")
     }
 
@@ -705,7 +701,7 @@ mod tests {
             PeppyDirs::new(data_root.path()),
         )
         .with_peppy_config(peppy_config)
-        .with_messaging_router("zenoh".to_string())
+        .with_messaging_router("zenoh")
         .expect("build external messaging adapter without starting it");
 
         assert!(builder.managed_router.is_none());
@@ -736,7 +732,7 @@ mod tests {
 
         let Err(err) = ServeCommandBuilder::new("/unused", "hash", dirs)
             .with_peppy_config(peppy_config)
-            .with_messaging_router("zenoh".to_string())
+            .with_messaging_router("zenoh")
         else {
             panic!("a malformed enrollment must fail startup");
         };
