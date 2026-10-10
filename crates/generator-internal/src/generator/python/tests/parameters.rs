@@ -336,13 +336,13 @@ fn generate_empty_parameters_struct() {
 #[test]
 fn reject_parameters_with_invalid_field_names() {
     use crate::error::Error;
-    use crate::generator::rust::generate_parameters_struct;
+    use crate::generator::python::parameters::generate_python_parameters;
     use config::consts::ALLOWED_CONFIG_CHARS;
 
     let node_config: NodeConfig = serde_json5::from_str(INVALID_PARAMETERS_NODE_EXAMPLE)
         .expect("failed to parse INVALID_PARAMETERS_NODE_EXAMPLE into NodeConfig");
 
-    let result = generate_parameters_struct(&node_config.execution.parameters);
+    let result = generate_python_parameters(&node_config.execution.parameters);
 
     assert!(
         result.is_err(),
