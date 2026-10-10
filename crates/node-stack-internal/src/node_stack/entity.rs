@@ -323,6 +323,32 @@ pub struct OutputSinks {
     pub hooks: Arc<dyn OutputReaderHooks>,
 }
 
+impl OutputSinks {
+    /// Registers one output reader with the hooks, then spawns its task.
+    /// The reader is registered before its task launches so the daemon's
+    /// drain primitive counts it without racing the task's startup.
+    fn register_and_spawn_reader<R>(
+        &self,
+        reader: R,
+        stream: Iostream,
+        stderr_tail: Option<StderrTail>,
+    ) -> JoinHandle<std::io::Result<()>>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    {
+        self.hooks.on_reader_registered();
+        spawn_output_reader_async(
+            reader,
+            self.announcer.feedback_tx().clone(),
+            Arc::clone(&self.publish_enabled),
+            Arc::clone(&self.hooks),
+            stream,
+            stderr_tail,
+            self.announcer.log().clone(),
+        )
+    }
+}
+
 /// State handed back from [`NodeEntity::prepare_and_spawn`]. The caller owns
 /// it across `.await` boundaries (so it must be `Send`) and passes it to
 /// either [`NodeEntity::commit_started`] or [`NodeEntity::abort_started`].
@@ -1078,31 +1104,19 @@ impl NodeEntity {
         let mut output_reader_handles = Vec::new();
 
         let sinks = &ctx.output_sinks;
-        // Register each reader before launching its task so the daemon's drain
-        // primitive counts it without racing the task's startup.
         if let Some(stdout) = child.stdout.take() {
-            sinks.hooks.on_reader_registered();
-            output_reader_handles.push(spawn_output_reader_async(
+            output_reader_handles.push(sinks.register_and_spawn_reader(
                 stdout,
-                sinks.announcer.feedback_tx().clone(),
-                Arc::clone(&sinks.publish_enabled),
-                Arc::clone(&sinks.hooks),
                 Iostream::Stdout,
                 None,
-                sinks.announcer.log().clone(),
             ));
         }
 
         if let Some(stderr) = child.stderr.take() {
-            sinks.hooks.on_reader_registered();
-            output_reader_handles.push(spawn_output_reader_async(
+            output_reader_handles.push(sinks.register_and_spawn_reader(
                 stderr,
-                sinks.announcer.feedback_tx().clone(),
-                Arc::clone(&sinks.publish_enabled),
-                Arc::clone(&sinks.hooks),
                 Iostream::Stderr,
                 Some(stderr_buffer.clone()),
-                sinks.announcer.log().clone(),
             ));
         }
 
