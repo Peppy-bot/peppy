@@ -364,33 +364,20 @@ impl TestTopicPublisher {
     /// is visible, or `timeout` elapses; returns whether one matched. Marks
     /// the publisher matched on success so later publishes skip the wait.
     pub async fn wait_for_subscriber(&self, timeout: Duration) -> Result<bool> {
-        let matched = match (&self.peer, self.link_id.as_deref()) {
-            (Some(peer), Some(link_id)) => {
-                TopicMessenger::wait_for_pairing_subscriber(
-                    &self.messenger,
-                    &self.as_core_node,
-                    &self.as_instance_id,
-                    self.as_target.clone(),
-                    link_id,
-                    &self.topic,
-                    peer,
-                    timeout,
-                )
-                .await?
-            }
-            _ => {
-                TopicMessenger::wait_for_subscriber_with_link_id(
-                    &self.messenger,
-                    &self.as_core_node,
-                    &self.as_instance_id,
-                    self.as_target.clone(),
-                    self.link_id.as_deref(),
-                    &self.topic,
-                    timeout,
-                )
-                .await?
-            }
+        let published = PublishedTopic {
+            target: &self.as_target,
+            link_id: self.link_id.as_deref(),
+            peer: self.peer.as_ref(),
+            topic: &self.topic,
         };
+        let matched = wait_for_matching_subscriber(
+            &self.messenger,
+            &self.as_core_node,
+            &self.as_instance_id,
+            published,
+            timeout,
+        )
+        .await?;
         if matched {
             self.matched.store(true, Ordering::SeqCst);
         }
@@ -411,6 +398,57 @@ impl TestTopicPublisher {
             ))));
         }
         self.publisher.publish(payload).await
+    }
+}
+
+/// The wire identity a publisher declares under: a pairing publisher when
+/// both `peer` and `link_id` are set, a plain one (slot-scoped by `link_id`
+/// when it is set) otherwise.
+struct PublishedTopic<'a> {
+    target: &'a SenderTarget,
+    link_id: Option<&'a str>,
+    peer: Option<&'a crate::messaging::PeerInfo>,
+    topic: &'a str,
+}
+
+/// Waits until `messenger`'s session sees a subscriber matching the exact
+/// wire identity of `published`, declared as `as_core_node`/`as_instance_id`,
+/// or `timeout` elapses; returns whether one matched. The mock publisher's
+/// first publish and the harness's pre-setup barrier both gate on this, so
+/// they pick the same wait for the same publisher shape.
+async fn wait_for_matching_subscriber(
+    messenger: &MessengerHandle,
+    as_core_node: &str,
+    as_instance_id: &str,
+    published: PublishedTopic<'_>,
+    timeout: Duration,
+) -> Result<bool> {
+    match (published.peer, published.link_id) {
+        (Some(peer), Some(link_id)) => {
+            TopicMessenger::wait_for_pairing_subscriber(
+                messenger,
+                as_core_node,
+                as_instance_id,
+                published.target.clone(),
+                link_id,
+                published.topic,
+                peer,
+                timeout,
+            )
+            .await
+        }
+        _ => {
+            TopicMessenger::wait_for_subscriber_with_link_id(
+                messenger,
+                as_core_node,
+                as_instance_id,
+                published.target.clone(),
+                published.link_id,
+                published.topic,
+                timeout,
+            )
+            .await
+        }
     }
 }
 
@@ -1238,33 +1276,20 @@ impl HarnessCore {
         // the node's declare_publisher will use.
         let processor = node_runner.processor();
         for probe in publisher_readiness {
-            let matched = match (&probe.peer, probe.link_id.as_deref()) {
-                (Some(peer), Some(link_id)) => {
-                    TopicMessenger::wait_for_pairing_subscriber(
-                        node_runner.messenger(),
-                        processor.bound_core_node(),
-                        processor.bound_instance_id(),
-                        probe.target.clone(),
-                        link_id,
-                        &probe.topic,
-                        peer,
-                        READINESS_TIMEOUT,
-                    )
-                    .await?
-                }
-                _ => {
-                    TopicMessenger::wait_for_subscriber_with_link_id(
-                        node_runner.messenger(),
-                        processor.bound_core_node(),
-                        processor.bound_instance_id(),
-                        probe.target.clone(),
-                        probe.link_id.as_deref(),
-                        &probe.topic,
-                        READINESS_TIMEOUT,
-                    )
-                    .await?
-                }
+            let published = PublishedTopic {
+                target: &probe.target,
+                link_id: probe.link_id.as_deref(),
+                peer: probe.peer.as_ref(),
+                topic: &probe.topic,
             };
+            let matched = wait_for_matching_subscriber(
+                node_runner.messenger(),
+                processor.bound_core_node(),
+                processor.bound_instance_id(),
+                published,
+                READINESS_TIMEOUT,
+            )
+            .await?;
             if !matched {
                 return Err(Error::Io(std::io::Error::other(format!(
                     "readiness barrier: the harness subscription for topic `{}` (link_id {:?}) \
