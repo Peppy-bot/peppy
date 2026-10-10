@@ -80,16 +80,8 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
                 if n == 0 {
                     break;
                 }
-                // Trim a trailing newline (and CR) like BufRead::lines did; the
-                // captured copy keeps a normalized '\n' terminator.
-                let mut bytes = &buf[..];
-                if bytes.last() == Some(&b'\n') {
-                    bytes = &bytes[..bytes.len() - 1];
-                    if bytes.last() == Some(&b'\r') {
-                        bytes = &bytes[..bytes.len() - 1];
-                    }
-                }
-                let line = String::from_utf8_lossy(bytes);
+                // The captured copy keeps a normalized '\n' terminator.
+                let line = String::from_utf8_lossy(strip_line_ending(&buf));
                 crate::progress!("[{}] {}", label, line);
                 captured.push_str(&line);
                 captured.push('\n');
@@ -132,6 +124,15 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
         stdout: stdout_captured,
         stderr: stderr_captured,
     }
+}
+
+/// Returns `line` without its trailing `\n` or `\r\n`, as `BufRead::lines`
+/// yields it. A `\r` that no `\n` follows is part of the line.
+fn strip_line_ending(line: &[u8]) -> &[u8] {
+    let Some(line) = line.strip_suffix(b"\n") else {
+        return line;
+    };
+    line.strip_suffix(b"\r").unwrap_or(line)
 }
 
 /// Cargo warning lines reporting a failed command: the failure itself, then
@@ -319,6 +320,37 @@ mod tests {
         assert!(output.success);
         assert!(output.stdout.contains("out-line"));
         assert!(output.stderr.contains("err-line"));
+    }
+
+    #[test]
+    fn streaming_captures_lines_with_a_normalized_terminator() {
+        let cases = [
+            ("printf 'first\\r\\nsecond\\n'", "first\nsecond\n"),
+            ("printf 'unterminated'", "unterminated\n"),
+            ("printf 'lone-cr\\r'", "lone-cr\r\n"),
+            ("printf '\\r\\n'", "\n"),
+        ];
+        for (script, expected_stdout) in cases {
+            let output =
+                run_command_streaming(Command::new("bash").args(["-c", script]), "test-endings");
+            assert!(output.success, "{script}");
+            assert_eq!(output.stdout, expected_stdout, "{script}");
+        }
+    }
+
+    #[test]
+    fn strip_line_ending_removes_only_a_final_line_ending() {
+        let cases: [(&[u8], &[u8]); 6] = [
+            (b"line\r\n", b"line"),
+            (b"line\n", b"line"),
+            (b"line", b"line"),
+            (b"line\r", b"line\r"),
+            (b"\r\n", b""),
+            (b"line\r\r\n", b"line\r"),
+        ];
+        for (line, expected) in cases {
+            assert_eq!(strip_line_ending(line), expected, "{line:?}");
+        }
     }
 
     /// Output whose every line is identifiable by index, for tail assertions.
