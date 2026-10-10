@@ -861,6 +861,25 @@ pub fn seed_pairing_repo(
     seed_docs_repo(serve, ctx, repo_dir);
 }
 
+/// `repo add SOURCE [--ref REF]` at the default priority and id.
+pub fn add_repo(
+    ctx: &Arc<AppContext>,
+    source: &str,
+    git_ref: Option<&str>,
+) -> peppy::error::Result<()> {
+    use peppy::commands::Command;
+    peppy::commands::repo::RepoCommand {
+        command: peppy::commands::repo::RepoCommands::Add {
+            source: source.to_string(),
+            git_ref: git_ref
+                .map(|name| core_node_api::encoding::GitRepoRef::Named(name.to_string())),
+            top: false,
+            id: None,
+        },
+    }
+    .execute(ctx)
+}
+
 /// Points the emulated daemon at `repo_dirs` as its fs repositories, with ids
 /// from 1 in the given order: the `repositories.json5` that `repo refresh`
 /// reads.
