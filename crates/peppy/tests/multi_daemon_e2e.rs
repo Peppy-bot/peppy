@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use config::consts::{PEPPY_CONFIG_ENV, PEPPY_HOME_ENV};
-use core_node::{TEARDOWN_REAP_BUDGET, force_kill_deadline};
 use daemon_config::peppy_config::{
     ExternalZenohConfig, ManagedZenohConfig, OtlpEndpoint, PeppyConfig, ZenohConfig,
 };
@@ -22,8 +21,9 @@ use testcontainers::bollard::errors::Error as EngineError;
 use testcontainers::bollard::exec::{CreateExecOptions, StartExecResults};
 use testcontainers::bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType};
 use testcontainers::bollard::query_parameters::{
-    CreateContainerOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptions,
-    RemoveContainerOptionsBuilder, RemoveVolumeOptions, StopContainerOptionsBuilder,
+    CreateContainerOptionsBuilder, KillContainerOptionsBuilder, LogsOptionsBuilder,
+    RemoveContainerOptions, RemoveContainerOptionsBuilder, RemoveVolumeOptions,
+    StopContainerOptionsBuilder, WaitContainerOptionsBuilder,
 };
 use testcontainers::core::client::docker_client_instance;
 use testcontainers::runners::AsyncBuilder;
@@ -52,39 +52,9 @@ const CONTAINER_PEPPY_HOME: &str = "/data";
 /// needs no loop device.
 const CONTAINER_DAEMON_USER: &str = "peppy";
 
-/// How long the engine waits for a daemon to stop before it kills it.
-///
-/// A daemon catches the stop signal and tears its node stack down first:
-/// every node is asked to stop cooperatively, a straggler is force-killed at
-/// [`force_kill_deadline`], and the group is reaped inside
-/// [`TEARDOWN_REAP_BUDGET`]. A shorter window kills the daemon partway
-/// through, so what its container still has to unwind depends on where the
-/// teardown had reached. Derived from the daemon's own deadline the way the
-/// messaging router sizes its teardown budget, plus the same second of margin
-/// so the kill cannot land exactly as the teardown ends. A daemon that exports
-/// its log files then sends what is queued for up to
-/// [`log_export::SHUTDOWN_FLUSH`].
-fn stop_grace_secs() -> i32 {
-    let grace = Duration::from_secs(PeppyConfig::default().lifecycle.shutdown_grace_secs);
-    let budget = force_kill_deadline(grace)
-        + TEARDOWN_REAP_BUDGET
-        + log_export::SHUTDOWN_FLUSH
-        + Duration::from_secs(1);
-    i32::try_from(budget.as_secs()).expect("the daemon's teardown budget fits a stop timeout")
-}
-
-/// The grace the engine gives a daemon has to outlast the daemon's own
-/// teardown, or the kill lands on one that is still stopping its nodes.
-#[test]
-fn the_stop_grace_outlasts_the_daemons_own_teardown() {
-    let grace = Duration::from_secs(PeppyConfig::default().lifecycle.shutdown_grace_secs);
-    let teardown = force_kill_deadline(grace) + TEARDOWN_REAP_BUDGET + log_export::SHUTDOWN_FLUSH;
-    let engine = Duration::from_secs(stop_grace_secs().try_into().expect("a positive grace"));
-    assert!(
-        engine > teardown,
-        "the engine kills a daemon after {engine:?}, and the daemon's own teardown runs to {teardown:?}"
-    );
-}
+/// The stop timeout that has the engine wait for the exit of a container
+/// however long it takes, and never kill it.
+const WAIT_FOR_EXIT_WITHOUT_KILL: i32 = -1;
 
 /// Name of the image this test builds for its daemon containers.
 const E2E_IMAGE_NAME: &str = "peppy-multi-daemon-e2e";
@@ -926,17 +896,53 @@ impl Daemon {
         })
     }
 
-    /// Stops the daemon. The engine answers once the container has exited:
-    /// after the daemon's own teardown, or after the kill that ends a daemon
-    /// still running when [`stop_grace_secs`] is over.
+    /// Stops the daemon. The engine sends it the stop signal and answers once
+    /// it has handled the exit of the container.
+    ///
+    /// A daemon that serves catches the stop signal, tears its node stack
+    /// down within its own deadlines and exits. The engine waits for that exit
+    /// however long it takes, and does not kill. Under this suite's load, the
+    /// engine of a CI runner can see an exit tens of seconds after the
+    /// daemon's teardown has ended. A stop with a time limit then kills, gives
+    /// the kill a fixed time of its own to show the exit, and answers with an
+    /// error although the container goes on to stop.
     async fn stop(&self) {
         let options = StopContainerOptionsBuilder::new()
-            .t(stop_grace_secs())
+            .t(WAIT_FOR_EXIT_WITHOUT_KILL)
             .build();
         self.engine
             .stop_container(&self.name, Some(options))
             .await
             .unwrap_or_else(|error| panic!("stopping {}: {error}", self.name));
+    }
+
+    /// Kills the daemon, and returns once the engine has handled the exit of
+    /// its container, or at once if the container does not run.
+    ///
+    /// The engine answers a kill with an error when it has not seen the exit a
+    /// fixed time after the signal, which under this suite's load on a CI
+    /// runner is common. The signal has gone out all the same, so the answer
+    /// to the kill does not tell whether the container stops: the wait for its
+    /// exit does.
+    async fn kill(&self) -> Result<(), String> {
+        let kill = KillContainerOptionsBuilder::new().signal("SIGKILL").build();
+        // Not the outcome, see above.
+        let _ = self.engine.kill_container(&self.name, Some(kill)).await;
+        let exit = WaitContainerOptionsBuilder::new()
+            .condition("not-running")
+            .build();
+        match self
+            .engine
+            .wait_container(&self.name, Some(exit))
+            .next()
+            .await
+        {
+            // bollard reports the exit of a container with a nonzero exit
+            // code, which a kill gives, as an error.
+            Some(Ok(_) | Err(EngineError::DockerContainerWaitError { .. })) => Ok(()),
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err(String::from("the engine ended the wait without an answer")),
+        }
     }
 
     /// Populates this daemon's node cache from the fixture repository.
@@ -1002,8 +1008,7 @@ impl Daemon {
             .unwrap_or_else(|error| panic!("starting container {} failed: {error}", self.name));
     }
 
-    /// Removes this daemon's container, killed first if it still runs. Its
-    /// data root volume stays.
+    /// Removes this daemon's stopped container. Its data root volume stays.
     async fn remove_container(&self) {
         self.engine
             .remove_container(&self.name, Some(container_removal()))
@@ -1012,12 +1017,15 @@ impl Daemon {
     }
 }
 
-/// The removal of a daemon's container: killed first if it still runs, and
-/// with its anonymous volumes. The data root is a named volume, which the
-/// removal leaves in place.
+/// The removal of a daemon's container, with its anonymous volumes. The data
+/// root is a named volume, which the removal leaves in place.
+///
+/// The removal does not kill: a container is stopped before it is removed.
+/// The engine kills a running container it removes, and the removal then fails
+/// whenever the engine is slow to see the exit, as [`Daemon::kill`] tells.
 fn container_removal() -> RemoveContainerOptions {
     RemoveContainerOptionsBuilder::new()
-        .force(true)
+        .force(false)
         .v(true)
         .build()
 }
@@ -1029,13 +1037,16 @@ fn data_root_volume_name(container_name: &str) -> String {
 }
 
 impl Drop for Daemon {
-    /// Removes the container, then its data root volume, and blocks until the
-    /// engine answers each, so a test ends with both gone. Every test that
-    /// starts a daemon runs on a multi-thread runtime, which is what lets a
-    /// drop block on the removal.
+    /// Kills the daemon, then removes the container and its data root volume,
+    /// and blocks until the engine answers each, so a test ends with both
+    /// gone. Every test that starts a daemon runs on a multi-thread runtime,
+    /// which is what lets a drop block on the removal.
     fn drop(&mut self) {
         let volume = data_root_volume_name(&self.name);
         let removal = async {
+            if let Err(error) = self.kill().await {
+                eprintln!("killing container {}: {error}", self.name);
+            }
             if let Err(error) = self
                 .engine
                 .remove_container(&self.name, Some(container_removal()))
