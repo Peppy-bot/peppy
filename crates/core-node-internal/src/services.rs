@@ -273,7 +273,9 @@ fn format_core_node_name(generated: &str) -> Name {
         .expect("names_generator2 output always ends in a numeric segment");
     debug_assert_eq!(digits.len(), 3);
     debug_assert!(digits.chars().all(|c| c.is_ascii_digit()));
-    Name::new(format!("cn-{words}")).unwrap()
+    Name::new(format!("cn-{words}")).expect(
+        "names_generator2 words are lowercase ASCII letters joined by `-`, which a Name allows",
+    )
 }
 
 /// A pending listener registration, as collected by
@@ -355,7 +357,9 @@ impl CoreNode {
         };
 
         let messenger = MessengerHandle::from_shared(messenger);
-        let instance_id = Name::new(get_random(rng())).unwrap();
+        let instance_id = Name::new(get_random(rng())).expect(
+            "names_generator2 output is lowercase ASCII letters, `-` and digits, which a Name allows",
+        );
         // The core node is the root of the node stack. Resolve the cooperative
         // shutdown grace and the PyPI mirror from config once and pin them on
         // the stack, with the log exporter, so every stop path (teardown,
