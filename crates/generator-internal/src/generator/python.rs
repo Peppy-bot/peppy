@@ -155,8 +155,7 @@ impl PythonGenerator {
         schema_key: impl AsRef<str>,
         format: Option<&MessageFormat>,
     ) -> Result<Option<PythonSchemaInfo>> {
-        format
-            .filter(|format| !format.0.is_empty())
+        non_empty_message_format(format)
             .map(|format| self.register_schema(schema_key.as_ref(), format))
             .transpose()
     }
@@ -355,14 +354,14 @@ impl LanguageGenerator for PythonGenerator {
                 producer_name,
                 &service.name,
             ),
-            non_empty_message_format(Some(request_arguments)),
+            Some(request_arguments),
         )?;
         let response_schema_info = self.register_optional_schema(
             crate::generator::naming::consumed_service_response_schema_key(
                 producer_name,
                 &service.name,
             ),
-            non_empty_message_format(Some(response_arguments)),
+            Some(response_arguments),
         )?;
 
         let code = services::build_consumed_service(
