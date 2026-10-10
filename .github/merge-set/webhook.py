@@ -181,8 +181,10 @@ class WebhookSecret:
         self.read_at: float | None = None
 
     def load(self) -> bytes:
-        self.value = parse_webhook_secret(self.read())
+        # A read that fails, or that gives a secret that does not parse,
+        # counts against SECRET_REFRESH_SECONDS as well.
         self.read_at = self.clock()
+        self.value = parse_webhook_secret(self.read())
         return self.value
 
     def current(self) -> bytes:

@@ -466,6 +466,18 @@ class WebhookSecrets(unittest.TestCase):
         self.status(function, unsigned)
         self.assertEqual(reads.reads, 2)
 
+    def test_a_new_secret_that_does_not_parse_is_read_at_most_once_a_minute(self):
+        # The second document of Secrets Manager holds a number, not a string.
+        reads = FakeSecretReads("old", 1)
+        function = self.function(reads)
+        old = function_url_request("ping", {}, secret=b"old")
+        self.assertEqual(self.status(function, old), 200)
+        self.clock.now += webhook.SECRET_REFRESH_SECONDS
+        new = function_url_request("ping", {}, secret=b"new")
+        self.assertEqual(self.status(function, new), 500)
+        self.assertEqual(self.status(function, new), 401)
+        self.assertEqual(reads.reads, 2)
+
     def test_a_request_that_is_no_delivery_reads_the_secret_no_more(self):
         reads = FakeSecretReads(SECRET.decode())
         function = self.function(reads)
