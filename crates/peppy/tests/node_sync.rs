@@ -31,6 +31,35 @@ fn add_emitted_topic(peppy_json5: &Path) {
     std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
 }
 
+/// The codegen fingerprint recorded for the node whose manifest is
+/// `peppy_json5`.
+fn recorded_fingerprint(peppy_json5: &Path) -> String {
+    config::fingerprint::read_codegen_fingerprint(peppy_json5, config::consts::PEPPYGEN_OUTPUT_PATH)
+        .expect("fingerprint should be readable")
+}
+
+/// Changes the node's interfaces, as a developer does before a re-sync, and
+/// returns the fingerprint a sync must record for the changed manifest, which
+/// differs from the recorded one.
+fn change_interfaces(peppy_json5: &Path) -> String {
+    let old_fingerprint = recorded_fingerprint(peppy_json5);
+    assert!(
+        !old_fingerprint.is_empty(),
+        "fingerprint should not be empty"
+    );
+
+    add_emitted_topic(peppy_json5);
+
+    let expected_fingerprint =
+        config::runtime::RuntimeConfig::generate_peppy_config_fingerprint(peppy_json5)
+            .expect("peppy.json5 fingerprint should generate");
+    assert_ne!(
+        expected_fingerprint, old_fingerprint,
+        "fingerprint should change after modifying peppy.json5"
+    );
+    expected_fingerprint
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_sync_rust_command_succeeds() {
     let serve = ServeCommandEmulation::with_mock()
@@ -72,27 +101,7 @@ async fn node_sync_rust_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    let old_fingerprint = config::fingerprint::read_codegen_fingerprint(
-        &peppy_json5_path,
-        config::consts::PEPPYGEN_OUTPUT_PATH,
-    )
-    .expect("fingerprint should be readable");
-    assert!(
-        !old_fingerprint.is_empty(),
-        "fingerprint should not be empty"
-    );
-
-    // Change peppy.json5 to force a new fingerprint.
-    // This simulates a developer changing their node interface definitions and needing to re-sync.
-    add_emitted_topic(&peppy_json5_path);
-
-    let expected_fingerprint =
-        config::runtime::RuntimeConfig::generate_peppy_config_fingerprint(&peppy_json5_path)
-            .expect("peppy.json5 fingerprint should generate");
-    assert_ne!(
-        expected_fingerprint, old_fingerprint,
-        "fingerprint should change after modifying peppy.json5"
-    );
+    let expected_fingerprint = change_interfaces(&peppy_json5_path);
 
     // Run sync from inside the node directory (ctx.root_dir must contain peppy.json5)
     let sync_ctx = serve_app_context(&serve, &node_path);
@@ -105,13 +114,9 @@ async fn node_sync_rust_command_succeeds() {
     .execute(&sync_ctx)
     .expect("node sync command should succeed");
 
-    let new_fingerprint = config::fingerprint::read_codegen_fingerprint(
-        &peppy_json5_path,
-        config::consts::PEPPYGEN_OUTPUT_PATH,
-    )
-    .expect("updated fingerprint should be readable");
     assert_eq!(
-        new_fingerprint, expected_fingerprint,
+        recorded_fingerprint(&peppy_json5_path),
+        expected_fingerprint,
         "fingerprint file should be updated by sync"
     );
 
@@ -221,26 +226,7 @@ async fn node_sync_python_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    let old_fingerprint = config::fingerprint::read_codegen_fingerprint(
-        &peppy_json5_path,
-        config::consts::PEPPYGEN_OUTPUT_PATH,
-    )
-    .expect("fingerprint should be readable");
-    assert!(
-        !old_fingerprint.is_empty(),
-        "fingerprint should not be empty"
-    );
-
-    // Change peppy.json5 to force a new fingerprint.
-    add_emitted_topic(&peppy_json5_path);
-
-    let expected_fingerprint =
-        config::runtime::RuntimeConfig::generate_peppy_config_fingerprint(&peppy_json5_path)
-            .expect("peppy.json5 fingerprint should generate");
-    assert_ne!(
-        expected_fingerprint, old_fingerprint,
-        "fingerprint should change after modifying peppy.json5"
-    );
+    let expected_fingerprint = change_interfaces(&peppy_json5_path);
 
     // Run sync from inside the node directory
     let sync_ctx = serve_app_context(&serve, &node_path);
@@ -253,13 +239,9 @@ async fn node_sync_python_command_succeeds() {
     .execute(&sync_ctx)
     .expect("node sync command should succeed");
 
-    let new_fingerprint = config::fingerprint::read_codegen_fingerprint(
-        &peppy_json5_path,
-        config::consts::PEPPYGEN_OUTPUT_PATH,
-    )
-    .expect("updated fingerprint should be readable");
     assert_eq!(
-        new_fingerprint, expected_fingerprint,
+        recorded_fingerprint(&peppy_json5_path),
+        expected_fingerprint,
         "fingerprint file should be updated by sync"
     );
 
@@ -354,22 +336,7 @@ async fn node_sync_with_path_succeeds() {
         peppy_json5_path.display()
     );
 
-    let old_fingerprint = config::fingerprint::read_codegen_fingerprint(
-        &peppy_json5_path,
-        config::consts::PEPPYGEN_OUTPUT_PATH,
-    )
-    .expect("fingerprint should be readable");
-
-    // Change peppy.json5 to force a new fingerprint.
-    add_emitted_topic(&peppy_json5_path);
-
-    let expected_fingerprint =
-        config::runtime::RuntimeConfig::generate_peppy_config_fingerprint(&peppy_json5_path)
-            .expect("peppy.json5 fingerprint should generate");
-    assert_ne!(
-        expected_fingerprint, old_fingerprint,
-        "fingerprint should change after modifying peppy.json5"
-    );
+    let expected_fingerprint = change_interfaces(&peppy_json5_path);
 
     // Run sync from the PARENT directory, passing the node subdirectory as path argument.
     // This is the key difference: sync_ctx points to the parent, not the node directory.
@@ -383,13 +350,9 @@ async fn node_sync_with_path_succeeds() {
     .execute(&sync_ctx)
     .expect("node sync with path should succeed");
 
-    let new_fingerprint = config::fingerprint::read_codegen_fingerprint(
-        &peppy_json5_path,
-        config::consts::PEPPYGEN_OUTPUT_PATH,
-    )
-    .expect("updated fingerprint should be readable");
     assert_eq!(
-        new_fingerprint, expected_fingerprint,
+        recorded_fingerprint(&peppy_json5_path),
+        expected_fingerprint,
         "fingerprint file should be updated by sync with path"
     );
 
@@ -504,6 +467,28 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     );
 }
 
+/// The arm side of `arm_link/v1`: one pairing slot, link_id `controller`, with
+/// the topics the role emits and consumes.
+const ROBOT_ARM_ON_ARM_LINK: &str = r#"{
+    peppy_schema: "node/v1",
+    manifest: {
+        name: "robot_arm",
+        tag: "v1",
+        depends_on: {
+            pairings: [
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }
+            ]
+        }
+    },
+    interfaces: {
+        topics: {
+            emits: [{ link_id: "controller", name: "joint_states" }],
+            consumes: [{ link_id: "controller", name: "joint_commands" }]
+        }
+    },
+    execution: { language: "rust", run_cmd: ["sleep", "1"] }
+}"#;
+
 /// A node declaring `depends_on.pairings` syncs into `paired_topics/<link_id>/<topic>`
 /// modules once the pairing doc is in the daemon's pairing cache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -517,31 +502,9 @@ async fn node_sync_generates_peer_modules_for_pairing_slots() {
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
-    // The arm side of arm_link/v1: one slot, link_id `controller`.
     let node_dir = tempfile::tempdir().expect("node dir");
-    std::fs::write(
-        node_dir.path().join("peppy.json5"),
-        r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "robot_arm",
-                tag: "v1",
-                depends_on: {
-                    pairings: [
-                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }
-                    ]
-                }
-            },
-            interfaces: {
-                topics: {
-                    emits: [{ link_id: "controller", name: "joint_states" }],
-                    consumes: [{ link_id: "controller", name: "joint_commands" }]
-                }
-            },
-            execution: { language: "rust", run_cmd: ["sleep", "1"] }
-        }"#,
-    )
-    .expect("write node config");
+    std::fs::write(node_dir.path().join("peppy.json5"), ROBOT_ARM_ON_ARM_LINK)
+        .expect("write node config");
 
     let sync_ctx = serve_app_context(&serve, node_dir.path());
     NodeCommand {
@@ -577,29 +540,8 @@ async fn node_sync_pairing_cache_miss_suggests_repo_refresh() {
         .expect("failed to create serve emulation");
 
     let node_dir = tempfile::tempdir().expect("node dir");
-    std::fs::write(
-        node_dir.path().join("peppy.json5"),
-        r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "robot_arm",
-                tag: "v1",
-                depends_on: {
-                    pairings: [
-                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }
-                    ]
-                }
-            },
-            interfaces: {
-                topics: {
-                    emits: [{ link_id: "controller", name: "joint_states" }],
-                    consumes: [{ link_id: "controller", name: "joint_commands" }]
-                }
-            },
-            execution: { language: "rust", run_cmd: ["sleep", "1"] }
-        }"#,
-    )
-    .expect("write node config");
+    std::fs::write(node_dir.path().join("peppy.json5"), ROBOT_ARM_ON_ARM_LINK)
+        .expect("write node config");
 
     let sync_ctx = serve_app_context(&serve, node_dir.path());
     let err = NodeCommand {
