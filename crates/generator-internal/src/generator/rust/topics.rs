@@ -1,6 +1,6 @@
 use super::deserialization::build_deserialize_fn;
 use super::serialization::{MessageEncodingSpec, build_serialize_payload};
-use super::services::deserialize_fields_from_format;
+use super::services::{build_result_expr_from_values, deserialize_fields_from_format};
 use crate::error::Result;
 use crate::generator::types::{SubscriptionTag, retention_doc};
 use config::node::{Cardinality, ConsumedTopic, NativeEmittedTopic, QoSProfile, TopicRetention};
@@ -915,14 +915,8 @@ fn build_topic_deserialize_helper(
         struct_prefix,
         &context_expr,
     )?;
-    let field_inits: Vec<TokenStream> = params
-        .iter()
-        .zip(value_idents.iter())
-        .map(|(param, value_ident)| {
-            let field_ident = &param.ident;
-            quote!(#field_ident: #value_ident)
-        })
-        .collect();
+    let message_expr =
+        build_result_expr_from_values(params, &value_idents, Some(args_struct_ident));
 
     Ok(build_deserialize_fn(
         helper_fn_ident,
@@ -930,7 +924,7 @@ fn build_topic_deserialize_helper(
         &context_expr,
         &quote!(#args_struct_ident),
         &field_statements,
-        &quote!(#args_struct_ident { #( #field_inits ),* }),
+        &message_expr,
     ))
 }
 
