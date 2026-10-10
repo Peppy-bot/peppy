@@ -267,50 +267,14 @@ impl LaunchGoal {
 
         let placement = match goal.get_placement().which()? {
             PlacementWhich::Local(()) => PlacementSpec::Local,
-            PlacementWhich::Places(places) => {
-                let places_reader = places?;
-                let mut places = BTreeMap::new();
-                for idx in 0..places_reader.len() {
-                    let link = places_reader.get(idx);
-                    let link_id = link.get_link_id()?.to_str()?;
-                    let core_node = link.get_core_node()?.to_str()?;
-                    if link_id.is_empty() || core_node.is_empty() {
-                        return Err(crate::Error::Decoding(format!(
-                            "LaunchGoal.placement.places[{idx}] has an empty link_id or core_node"
-                        )));
-                    }
-                    if places
-                        .insert(link_id.to_owned(), core_node.to_owned())
-                        .is_some()
-                    {
-                        return Err(crate::Error::Decoding(format!(
-                            "LaunchGoal.placement.places wires `{link_id}` more than once"
-                        )));
-                    }
-                }
-                PlacementSpec::Places(places)
-            }
+            PlacementWhich::Places(places) => PlacementSpec::Places(read_places(places?)?),
         };
 
         let selections = read_selections(goal.get_selections()?, "LaunchGoal.selections")?;
         let joins = goal
             .get_joins()?
             .iter()
-            .map(|wire| {
-                let option = wire.get_option()?.to_str()?;
-                if option.is_empty() {
-                    return Err(crate::Error::Decoding(
-                        "LaunchGoal.joins names an empty option".to_owned(),
-                    ));
-                }
-                Ok(LaunchJoin {
-                    option: option.to_owned(),
-                    name: crate::encoding::read_name(
-                        wire.get_name()?.to_str()?,
-                        "LaunchGoal.joins.name",
-                    )?,
-                })
-            })
+            .map(read_launch_join)
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
@@ -323,6 +287,48 @@ impl LaunchGoal {
             joins,
         })
     }
+}
+
+/// Reads the `--place` wirings of a [`LaunchGoal`]. A link with a blank half
+/// is refused, and so is a link wired twice, which keeps "at most one target
+/// per placeholder" true of every decoded [`PlacementSpec::Places`].
+fn read_places(
+    places: capnp::struct_list::Reader<'_, launch_capnp::core_node_link::Owned>,
+) -> Result<BTreeMap<String, String>> {
+    let mut wirings = BTreeMap::new();
+    for (index, link) in places.iter().enumerate() {
+        let link_id = link.get_link_id()?.to_str()?;
+        let core_node = link.get_core_node()?.to_str()?;
+        if link_id.is_empty() || core_node.is_empty() {
+            return Err(crate::Error::Decoding(format!(
+                "LaunchGoal.placement.places[{index}] has an empty link_id or core_node"
+            )));
+        }
+        if wirings
+            .insert(link_id.to_owned(), core_node.to_owned())
+            .is_some()
+        {
+            return Err(crate::Error::Decoding(format!(
+                "LaunchGoal.placement.places wires `{link_id}` more than once"
+            )));
+        }
+    }
+    Ok(wirings)
+}
+
+/// Reads one `--join OPTION:NAME` reference of a [`LaunchGoal`]; a blank
+/// option is refused.
+fn read_launch_join(wire: launch_capnp::launch_join::Reader<'_>) -> Result<LaunchJoin> {
+    let option = wire.get_option()?.to_str()?;
+    if option.is_empty() {
+        return Err(crate::Error::Decoding(
+            "LaunchGoal.joins names an empty option".to_owned(),
+        ));
+    }
+    Ok(LaunchJoin {
+        option: option.to_owned(),
+        name: crate::encoding::read_name(wire.get_name()?.to_str()?, "LaunchGoal.joins.name")?,
+    })
 }
 
 /// Goal message for the Build action: the launch `peppy stack build` runs
