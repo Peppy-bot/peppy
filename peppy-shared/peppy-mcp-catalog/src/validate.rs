@@ -208,13 +208,14 @@ pub fn build_exposure_bundle(
                 ));
                 continue;
             };
-            if let Some(entry) = check_topic(target_name, topic, declared, &mut violations) {
-                if let Some(picture) = &topic.picture {
-                    pictures.push(picture_entry(picture, &entry, &routing));
-                }
-                resources.push(entry);
-                resource_members.push(BoundMember::new(&slot, declared));
+            let Some(entry) = check_topic(target_name, topic, declared, &mut violations) else {
+                continue;
+            };
+            if let Some(picture) = &topic.picture {
+                pictures.push(picture_entry(picture, &entry, &routing));
             }
+            resources.push(entry);
+            resource_members.push(BoundMember::new(&slot, declared));
         }
 
         for service in &target.services {
@@ -228,20 +229,22 @@ pub fn build_exposure_bundle(
                 ));
                 continue;
             };
-            if let Some(mut entry) = check_service(target_name, service, declared, &mut violations)
-            {
-                let context = format!("target `{target_name}` service `{}`", service.member);
-                if add_routing_arguments(
-                    &context,
-                    &routing,
-                    declared.request_message_format.as_ref(),
-                    &mut entry.input_schema,
-                    &mut violations,
-                ) {
-                    tools.push(entry);
-                    tool_members.push(BoundMember::new(&slot, declared));
-                }
+            let Some(mut entry) = check_service(target_name, service, declared, &mut violations)
+            else {
+                continue;
+            };
+            let context = format!("target `{target_name}` service `{}`", service.member);
+            if !add_routing_arguments(
+                &context,
+                &routing,
+                declared.request_message_format.as_ref(),
+                &mut entry.input_schema,
+                &mut violations,
+            ) {
+                continue;
             }
+            tools.push(entry);
+            tool_members.push(BoundMember::new(&slot, declared));
         }
 
         for action in &target.actions {
@@ -886,15 +889,15 @@ fn derive_schema(
     context: &str,
     violations: &mut Vec<String>,
 ) -> Option<Value> {
-    match format {
-        None => Some(empty_object_schema()),
-        Some(format) => match message_format_to_json_schema(format) {
-            Ok(schema) => Some(schema),
-            Err(error) => {
-                violations.push(format!("{context}: {error}"));
-                None
-            }
-        },
+    let Some(format) = format else {
+        return Some(empty_object_schema());
+    };
+    match message_format_to_json_schema(format) {
+        Ok(schema) => Some(schema),
+        Err(error) => {
+            violations.push(format!("{context}: {error}"));
+            None
+        }
     }
 }
 
