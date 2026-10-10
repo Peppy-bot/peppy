@@ -31,7 +31,6 @@ pub async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     Arc::new(Mutex::new(messenger))
 }
 
-#[allow(dead_code)]
 pub struct StartedCoreNode {
     pub shared_messenger: Arc<Mutex<Messenger>>,
     pub caller_handle: MessengerHandle,
@@ -137,47 +136,38 @@ pub async fn start_core_node_with_mock_messenger_outside_home() -> StartedCoreNo
 }
 
 pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
-    start_core_node_with_real_messenger_and_timeouts(
-        Duration::from_secs(10),
-        Duration::from_secs(30),
+    start_real_core_node(
+        default_node_arguments(),
+        daemon_config::peppy_config::LocalNodesTopology::Peer,
     )
     .await
 }
 
-/// Convenience wrapper over [`start_core_node_with_real_messenger_in_topology`]
-/// with the default timeouts, for the dual-topology e2e tests parameterized
-/// over the topology.
+/// Variant of [`start_core_node_with_real_messenger`] in an explicit messaging
+/// `topology`, for the dual-topology e2e tests parameterized over the
+/// topology.
 pub async fn start_core_node_with_real_messenger_topology(
     topology: daemon_config::peppy_config::LocalNodesTopology,
 ) -> StartedCoreNode {
-    start_core_node_with_real_messenger_in_topology(
-        Duration::from_secs(10),
-        Duration::from_secs(30),
-        topology,
-    )
-    .await
+    start_real_core_node(default_node_arguments(), topology).await
 }
 
 pub async fn start_core_node_with_real_messenger_and_timeouts(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> StartedCoreNode {
-    start_core_node_with_real_messenger_in_topology(
-        node_startup_timeout,
-        node_start_health_timeout,
-        daemon_config::peppy_config::LocalNodesTopology::Peer,
-    )
-    .await
+    let mut args = default_node_arguments();
+    args.node_startup_timeout = node_startup_timeout;
+    args.node_start_health_timeout = node_start_health_timeout;
+    start_real_core_node(args, daemon_config::peppy_config::LocalNodesTopology::Peer).await
 }
 
-/// Like [`start_core_node_with_real_messenger_and_timeouts`] but the messaging
-/// `topology` (peer vs router) is explicit. The core node's own session is
-/// built in that topology, and its `PeppyConfig` carries it so spawned nodes
-/// are injected with the same topology (faithful to production). Used by the
-/// dual-topology e2e tests.
-pub async fn start_core_node_with_real_messenger_in_topology(
-    node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
+/// Boots the core node on a real zenoh router in the messaging `topology`
+/// (peer vs router). The core node's own session is built in that topology,
+/// and its `PeppyConfig` carries it so spawned nodes are injected with the
+/// same topology (faithful to production).
+async fn start_real_core_node(
+    node_arguments: CoreNodeArguments,
     topology: daemon_config::peppy_config::LocalNodesTopology,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
@@ -201,9 +191,6 @@ pub async fn start_core_node_with_real_messenger_in_topology(
         .await
         .expect("failed to start zenoh session");
     let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-    let mut args = default_node_arguments();
-    args.node_startup_timeout = node_startup_timeout;
-    args.node_start_health_timeout = node_start_health_timeout;
     let peppy_config = daemon_config::peppy_config::PeppyConfig {
         zenoh: daemon_config::peppy_config::ZenohConfig::Managed(
             daemon_config::peppy_config::ManagedZenohConfig {
@@ -213,7 +200,14 @@ pub async fn start_core_node_with_real_messenger_in_topology(
         ),
         ..Default::default()
     };
-    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs, peppy_config).await
+    start_core_node_with_messenger(
+        shared_messenger,
+        node_arguments,
+        data_dir,
+        peppy_dirs,
+        peppy_config,
+    )
+    .await
 }
 
 /// Variant of [`start_core_node_with_mock_messenger`] with a custom
@@ -222,8 +216,6 @@ pub async fn start_core_node_with_real_messenger_in_topology(
 /// window and need wider margins than the 5s default gives under parallel
 /// test load.
 pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> StartedCoreNode {
-    let (data_dir, peppy_dirs) = init_test_data_dir();
-    let shared_messenger = create_mock_messenger().await;
     let peppy_config = daemon_config::peppy_config::PeppyConfig {
         lifecycle: daemon_config::peppy_config::LifecycleConfig {
             shutdown_grace_secs,
@@ -231,14 +223,7 @@ pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> St
         },
         ..Default::default()
     };
-    start_core_node_with_messenger(
-        shared_messenger,
-        default_node_arguments(),
-        data_dir,
-        peppy_dirs,
-        peppy_config,
-    )
-    .await
+    start_mock_core_node(default_node_arguments(), peppy_config).await
 }
 
 /// Variant of [`start_core_node_with_mock_messenger`] whose config names a
@@ -247,37 +232,19 @@ pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> St
 pub async fn start_core_node_with_pypi_mirror(
     mirror: daemon_config::peppy_config::PackagesBaseUrl,
 ) -> StartedCoreNode {
-    let (data_dir, peppy_dirs) = init_test_data_dir();
-    let shared_messenger = create_mock_messenger().await;
     let peppy_config = daemon_config::peppy_config::PeppyConfig {
         pypi_mirror: Some(mirror),
         ..Default::default()
     };
-    start_core_node_with_messenger(
-        shared_messenger,
-        default_node_arguments(),
-        data_dir,
-        peppy_dirs,
-        peppy_config,
-    )
-    .await
+    start_mock_core_node(default_node_arguments(), peppy_config).await
 }
 
 pub async fn start_core_node_with_health_timeout(
     node_start_health_timeout: Duration,
 ) -> StartedCoreNode {
-    let (data_dir, peppy_dirs) = init_test_data_dir();
-    let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
     args.node_start_health_timeout = node_start_health_timeout;
-    start_core_node_with_messenger(
-        shared_messenger,
-        args,
-        data_dir,
-        peppy_dirs,
-        daemon_config::peppy_config::PeppyConfig::default(),
-    )
-    .await
+    start_mock_core_node(args, daemon_config::peppy_config::PeppyConfig::default()).await
 }
 
 /// A health monitor policy that probes every 200ms with a 100ms budget, so
@@ -296,18 +263,9 @@ pub fn fast_health_monitor(failure_threshold: u32) -> HealthMonitorPolicy {
 pub async fn start_core_node_with_health_monitor(
     health_monitor: HealthMonitorPolicy,
 ) -> StartedCoreNode {
-    let (data_dir, peppy_dirs) = init_test_data_dir();
-    let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
     args.health_monitor = health_monitor;
-    start_core_node_with_messenger(
-        shared_messenger,
-        args,
-        data_dir,
-        peppy_dirs,
-        daemon_config::peppy_config::PeppyConfig::default(),
-    )
-    .await
+    start_mock_core_node(args, daemon_config::peppy_config::PeppyConfig::default()).await
 }
 
 /// Variant of [`start_core_node_with_mock_messenger`] whose log files export
@@ -329,6 +287,23 @@ pub async fn start_core_node_with_log_export(
     )
     .await;
     (started, records)
+}
+
+/// Boots the core node on a mock messenger and a fresh test data root.
+async fn start_mock_core_node(
+    node_arguments: CoreNodeArguments,
+    peppy_config: daemon_config::peppy_config::PeppyConfig,
+) -> StartedCoreNode {
+    let (data_dir, peppy_dirs) = init_test_data_dir();
+    let shared_messenger = create_mock_messenger().await;
+    start_core_node_with_messenger(
+        shared_messenger,
+        node_arguments,
+        data_dir,
+        peppy_dirs,
+        peppy_config,
+    )
+    .await
 }
 
 async fn start_core_node_with_messenger(
