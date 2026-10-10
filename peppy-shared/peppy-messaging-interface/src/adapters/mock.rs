@@ -22,7 +22,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-/// RAII wrapper for a MockAdapter-based Messenger with router started.
+/// A mock messenger with its router started, as [`MockAdapter::start_router`]
+/// returns it.
 pub struct MockInstance {
     messenger: Option<Messenger>,
     pub host: String,
@@ -37,23 +38,9 @@ impl MockInstance {
             .expect("messenger was already taken")
     }
 
-    /// Takes ownership of the messenger, preventing automatic cleanup on drop.
+    /// Takes ownership of the messenger.
     pub fn take_messenger(&mut self) -> Messenger {
         self.messenger.take().expect("messenger was already taken")
-    }
-}
-
-impl Drop for MockInstance {
-    fn drop(&mut self) {
-        let Some(mut messenger) = self.messenger.take() else {
-            return;
-        };
-        let _ = std::thread::spawn(move || {
-            if let Ok(rt) = tokio::runtime::Runtime::new() {
-                let _ = rt.block_on(async move { messenger.stop_router().await });
-            }
-        })
-        .join();
     }
 }
 
@@ -168,26 +155,13 @@ type MockLivelinessWatcher = Box<dyn Fn(&str, LivelinessEvent) + Send>;
 
 type LivelinessState = Arc<Mutex<MockLivelinessState>>;
 
+#[derive(Default)]
 pub struct MockAdapter {
-    pub(crate) is_session_connected: bool,
-    pub(crate) is_router_started: bool,
-    pub(crate) subscriptions: SubscriptionMap,
+    is_session_connected: bool,
+    subscriptions: SubscriptionMap,
     declared: MockDeclaredTopics,
-    pub(crate) queryables: QueryableMap,
+    queryables: QueryableMap,
     liveliness: LivelinessState,
-}
-
-impl Default for MockAdapter {
-    fn default() -> Self {
-        Self {
-            is_session_connected: false,
-            is_router_started: false,
-            subscriptions: Arc::new(Mutex::new(HashMap::new())),
-            declared: Arc::default(),
-            queryables: Arc::new(Mutex::new(HashMap::new())),
-            liveliness: Arc::new(Mutex::new(MockLivelinessState::default())),
-        }
-    }
 }
 
 impl MockAdapter {
@@ -228,7 +202,6 @@ impl MessengerBackend for MockAdapter {
         }
 
         self.is_session_connected = false;
-        self.is_router_started = false;
 
         self.subscriptions.lock().unwrap().clear();
         self.declared.lock().unwrap().clear();
@@ -556,12 +529,10 @@ impl MessengerBackend for MockAdapter {
     }
 
     async fn start_router(&mut self) -> Result<()> {
-        self.is_router_started = true;
         Ok(())
     }
 
     async fn stop_router(&mut self) -> Result<()> {
-        self.is_router_started = false;
         Ok(())
     }
 
@@ -657,8 +628,9 @@ impl MockAdapter {
             .map(|(keyexpr, _)| keyexpr.as_str())
     }
 
-    /// Creates a new MockAdapter, wraps it in a Messenger, starts the router,
-    /// and returns a `MockInstance` for managing the lifecycle.
+    /// Creates a new MockAdapter, wraps it in a Messenger, starts its router (the
+    /// mock has none, so this does nothing), and returns the messenger in a
+    /// [`MockInstance`].
     ///
     /// This mirrors the interface of `ZenohAdapter::start_router_ephemeral`.
     pub async fn start_router() -> Result<MockInstance> {
