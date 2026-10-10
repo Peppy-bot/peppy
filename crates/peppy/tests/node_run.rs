@@ -822,10 +822,7 @@ async fn node_run_bind_rejects_dead_key() {
         Vec::new(),
     )
     .execute(&node_ctx);
-    let err = match result {
-        Err(e) => e,
-        Ok(()) => panic!("--link ghost@<id> should have been rejected as a dead-key"),
-    };
+    let err = result.expect_err("--link ghost@<id> should have been rejected as a dead-key");
     let msg = err.to_string();
     assert!(
         msg.contains("ghost"),
@@ -972,10 +969,7 @@ async fn node_run_bind_rejects_target_mismatch() {
         Vec::new(),
     )
     .execute(&node_ctx);
-    let err = match result {
-        Err(e) => e,
-        Ok(()) => panic!("--link to wrong-node instance should have been rejected"),
-    };
+    let err = result.expect_err("--link to wrong-node instance should have been rejected");
     let msg = err.to_string();
     assert!(
         msg.contains(wrong_instance_id),
