@@ -986,7 +986,7 @@ impl TryFrom<String> for PublicName {
         if value.is_empty() {
             return Err("public name cannot be empty".to_string());
         }
-        if value.len() > 128 {
+        if value.chars().count() > 128 {
             return Err(format!(
                 "public name `{value}` is longer than 128 characters"
             ));
@@ -1679,6 +1679,18 @@ mod tests {
         let long = "x".repeat(129);
         let doc = minimal(&INFO_SERVICE.replace("cam.info", &long));
         assert!(parse_err(&doc).contains("longer than 128"));
+    }
+
+    /// 65 characters of two bytes each: within the character limit, past
+    /// 128 bytes, and refused for the characters alone.
+    #[test]
+    fn a_non_ascii_public_name_is_refused_for_its_characters_not_its_length() {
+        let doc = minimal(&INFO_SERVICE.replace("cam.info", &"é".repeat(65)));
+        let err = parse_err(&doc);
+        assert!(
+            err.contains("disallowed character") && !err.contains("longer than 128"),
+            "{err}"
+        );
     }
 
     #[test]
