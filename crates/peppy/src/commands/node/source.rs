@@ -23,7 +23,7 @@ pub fn is_probably_remote_source(source: &str) -> bool {
 /// - Must contain exactly one `:` separating a non-empty name from a
 ///   non-empty tag, neither of which may contain further `:` or `@`.
 /// - The arg must not exist on disk (a directory named `foo:bar` wins).
-pub fn looks_like_repo_node_ref(source: &str) -> bool {
+fn looks_like_repo_node_ref(source: &str) -> bool {
     if source.contains('/') || source.contains('\\') {
         return false;
     }
@@ -119,7 +119,7 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
     Ok(NodeSource::Fs(from_dir))
 }
 
-pub fn is_supported_http_archive(url: &url::Url) -> bool {
+fn is_supported_http_archive(url: &url::Url) -> bool {
     let path = url.path().to_ascii_lowercase();
     path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
 }

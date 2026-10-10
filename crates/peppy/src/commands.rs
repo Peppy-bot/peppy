@@ -43,7 +43,7 @@ pub(crate) const INCARNATION_LABEL_DIGITS: usize = 8;
 
 /// Single source of truth for the word `stack list` and `node info` print for
 /// an instance's health, so the two commands can never drift apart on it.
-pub(crate) fn health_label(healthy: bool) -> &'static str {
+fn health_label(healthy: bool) -> &'static str {
     if healthy { "healthy" } else { "unhealthy" }
 }
 
@@ -123,7 +123,7 @@ impl DomainLabels {
 /// they are what an operator reads off the block, so they keep the highest
 /// contrast. Coloring is purely additive, the padding is measured on the
 /// plain labels, so a colored block lines up exactly like its plain form.
-pub fn render_endpoints(entries: &[InstanceEndpoints], colorize: bool) -> String {
+fn render_endpoints(entries: &[InstanceEndpoints], colorize: bool) -> String {
     use std::fmt::Write as _;
 
     use colors::{
@@ -203,7 +203,7 @@ pub fn render_endpoints(entries: &[InstanceEndpoints], colorize: bool) -> String
 /// block. That one gate is also what tells the log formatter to write a
 /// message's control characters through rather than escape them, so the
 /// tints painted here are the tints an operator sees.
-pub fn log_endpoints(entries: &[InstanceEndpoints]) {
+pub(crate) fn log_endpoints(entries: &[InstanceEndpoints]) {
     for line in render_endpoints(entries, crate::terminal::colors_enabled()).lines() {
         tracing::info!("{line}");
     }
