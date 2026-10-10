@@ -2951,4 +2951,45 @@ mod tests {
             .expect("an undeclared observer seed should be ignored, not fatal");
         assert!(processor.observation_slot_watch("not_a_slot").is_none());
     }
+
+    /// A bound producer seeded on an undeclared link_id is dropped, on the same
+    /// terms, before any part of the seed is parsed: a copy that is not a name
+    /// does not fail startup there, and the declared slots boot from their own
+    /// seeds.
+    #[test]
+    fn standalone_bound_producer_on_an_undeclared_slot_is_ignored() {
+        let stray = StandaloneConfig::new()
+            .with_bound_producer("main", "core_x", "camera_1")
+            .with_vacant_producer_slot("wrist_camera")
+            .with_bound_producer("arms", "core_x", "right_arm")
+            .with_bound_producer_in_copy("not_a_slot", "core_x", "not a name", "arm");
+        let processor = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &stray)
+            .expect("an undeclared producer seed should be ignored, not fatal");
+        assert!(processor.bound_set_watch("not_a_slot").is_none());
+        assert_eq!(
+            instance_ids(&processor.bound_producers("arms")),
+            ["right_arm"]
+        );
+    }
+
+    /// A peer pin on an undeclared link_id is dropped on the same terms, where
+    /// the boot-config parse would refuse a pairing seed naming an undeclared
+    /// slot.
+    #[test]
+    fn standalone_peer_pin_on_an_undeclared_slot_is_ignored() {
+        let stray =
+            StandaloneConfig::new().with_peer_pin("not_a_slot", "core_a", "arm_1", "controller");
+        let processor = standalone_processor(PAIRING_SLOTS_CONFIG, &stray)
+            .expect("an undeclared peer pin should be ignored, not fatal");
+        assert!(processor.peer_set_watch("not_a_slot").is_none());
+        assert!(
+            processor
+                .peer_set_watch("arm")
+                .expect("declared slot should have a channel")
+                .borrow()
+                .members
+                .is_empty(),
+            "a declared slot boots unpaired"
+        );
+    }
 }
