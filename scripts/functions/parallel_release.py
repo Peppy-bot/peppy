@@ -690,7 +690,7 @@ def _upload_archives_and_publish(
                     f"left in place: https://github.com/{slug.full}/releases[/yellow]",
                     soft_wrap=True,
                 )
-        except Exception as cleanup_err:
+        except ReleaseError as cleanup_err:
             console.print(
                 f"[red]WARNING: Failed to delete draft release "
                 f"(id={draft.release_id}): {cleanup_err}[/red]\n"
