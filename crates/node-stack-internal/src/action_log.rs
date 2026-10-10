@@ -498,7 +498,7 @@ pub mod test_support {
         let prefix = line.get(..width)?;
         let shaped = prefix.starts_with('[')
             && prefix.ends_with("] ")
-            && prefix[1..5].bytes().all(|byte| byte.is_ascii_digit());
+            && prefix.as_bytes()[1..5].iter().all(u8::is_ascii_digit);
         shaped.then(|| &line[width..])
     }
 
@@ -944,6 +944,22 @@ mod tests {
                 "[node] ready",
                 "the node did not start\n\n--- stderr (last lines) ---\n[node] ready",
             ]
+        );
+    }
+
+    /// A continuation line quotes node output, which can hold any text: one
+    /// shaped like a time prefix with a multi-byte character inside it is
+    /// still a continuation.
+    #[test]
+    fn a_continuation_line_with_a_multibyte_char_joins_its_entry() {
+        let continuation = format!("[abcé{}] tail", "x".repeat(18));
+        let content = format!(
+            "{}\n{continuation}",
+            log_line(SystemTime::UNIX_EPOCH, Some(ERROR_MARKER), "boom")
+        );
+        assert_eq!(
+            test_support::log_entries(&content),
+            [format!("boom\n{continuation}")]
         );
     }
 
