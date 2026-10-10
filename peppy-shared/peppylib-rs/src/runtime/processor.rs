@@ -7,10 +7,7 @@ use crate::messaging::{
 use config::{
     AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
-    node::{
-        Cardinality, EndpointLabel, NodeConfig, PairingObserverDependency,
-        load_standalone_node_config,
-    },
+    node::{Cardinality, EndpointLabel, NodeConfig, load_standalone_node_config},
     runtime::{Name, NodeInstanceConfig, RuntimeConfig},
     validate_node_arguments,
 };
@@ -719,16 +716,6 @@ fn declared_endpoint_labels(node_config: &NodeConfig) -> BTreeSet<EndpointLabel>
     node_config.execution.endpoints.keys().cloned().collect()
 }
 
-/// Every observer slot declared in `depends_on.pairing_observers`, as an
-/// iterator over the manifest entries that both seeders below key on.
-fn observer_deps(node_config: &NodeConfig) -> impl Iterator<Item = &PairingObserverDependency> {
-    node_config
-        .manifest
-        .depends_on
-        .iter()
-        .flat_map(|deps| &deps.pairing_observers)
-}
-
 /// Seed one watch channel per **observer** pairing slot declared in
 /// `depends_on.pairing_observers`, keyed by slot link_id, each initialized
 /// from the boot config's `observation_seeds` entry for that slot: the
@@ -799,7 +786,11 @@ fn build_observation_slots(
 /// per processor and handed to [`build_observation_slots`], which seeds a
 /// channel for exactly these link_ids.
 fn build_observer_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Cardinality> {
-    observer_deps(node_config)
+    node_config
+        .manifest
+        .depends_on
+        .iter()
+        .flat_map(|deps| &deps.pairing_observers)
         .map(|dep| (dep.link_id.clone(), dep.cardinality))
         .collect()
 }
@@ -868,14 +859,10 @@ fn build_pairing_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Car
     node_config
         .manifest
         .depends_on
-        .as_ref()
-        .map(|deps| {
-            deps.pairings
-                .iter()
-                .map(|dep| (dep.link_id.clone(), dep.cardinality))
-                .collect()
-        })
-        .unwrap_or_default()
+        .iter()
+        .flat_map(|deps| &deps.pairings)
+        .map(|dep| (dep.link_id.clone(), dep.cardinality))
+        .collect()
 }
 
 /// Seed every `link_id` declared in the consumer manifest's `depends_on` from
