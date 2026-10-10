@@ -227,14 +227,15 @@ fn label_of(nodes: &[CycleCheckNode<'_>], idx: usize) -> String {
     format!("{}:{}", nodes[idx].name, nodes[idx].tag)
 }
 
+/// Node configs for the caller-driven cycle tests of this module and of
+/// [`crate::virtual_deptree`].
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use config::node::NodeConfigParser;
+pub(crate) mod test_support {
+    use config::node::{NodeConfig, NodeConfigParser};
 
     /// Readable builder for a node config. All tags default to `v1`; only the
     /// pieces relevant to a test are set, the rest stay empty.
-    struct NodeSpec {
+    pub(crate) struct NodeSpec {
         name: String,
         implements: Vec<(String, String)>,
         contract_deps: Vec<(String, String, String)>,
@@ -245,7 +246,7 @@ mod tests {
     }
 
     impl NodeSpec {
-        fn new(name: &str) -> Self {
+        pub(crate) fn new(name: &str) -> Self {
             Self {
                 name: name.to_owned(),
                 implements: Vec::new(),
@@ -257,40 +258,40 @@ mod tests {
             }
         }
 
-        fn implements(mut self, name: &str, tag: &str) -> Self {
+        pub(crate) fn implements(mut self, name: &str, tag: &str) -> Self {
             self.implements.push((name.to_owned(), tag.to_owned()));
             self
         }
 
-        fn contract_dep(mut self, name: &str, tag: &str, link_id: &str) -> Self {
+        pub(crate) fn contract_dep(mut self, name: &str, tag: &str, link_id: &str) -> Self {
             self.contract_deps
                 .push((name.to_owned(), tag.to_owned(), link_id.to_owned()));
             self
         }
 
-        fn node_dep(mut self, name: &str, tag: &str, link_id: &str) -> Self {
+        pub(crate) fn node_dep(mut self, name: &str, tag: &str, link_id: &str) -> Self {
             self.node_deps
                 .push((name.to_owned(), tag.to_owned(), link_id.to_owned()));
             self
         }
 
-        fn consumes_service(mut self, link_id: &str) -> Self {
+        pub(crate) fn consumes_service(mut self, link_id: &str) -> Self {
             self.service_consumes.push(link_id.to_owned());
             self
         }
 
-        fn consumes_action(mut self, link_id: &str) -> Self {
+        pub(crate) fn consumes_action(mut self, link_id: &str) -> Self {
             self.action_consumes.push(link_id.to_owned());
             self
         }
 
-        fn consumes_topic(mut self, link_id: &str, name: &str) -> Self {
+        pub(crate) fn consumes_topic(mut self, link_id: &str, name: &str) -> Self {
             self.topic_consumes
                 .push((link_id.to_owned(), name.to_owned()));
             self
         }
 
-        fn build(&self) -> NodeConfig {
+        pub(crate) fn build(&self) -> NodeConfig {
             let implements = join_indexed(&self.implements, |idx, (n, t)| {
                 format!(r#"{{ name: "{n}", tag: "{t}", link_id: "impl_{idx}" }}"#)
             });
@@ -345,6 +346,12 @@ mod tests {
             .collect::<Vec<_>>()
             .join(", ")
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::NodeSpec;
+    use super::*;
 
     fn view(configs: &[NodeConfig]) -> Vec<CycleCheckNode<'_>> {
         configs

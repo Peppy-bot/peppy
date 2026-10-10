@@ -151,6 +151,7 @@ impl VirtualDeptree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service_action_cycle::test_support::NodeSpec;
     use config::node::NodeConfigParser;
     use std::path::Path;
     use tempfile::TempDir;
@@ -318,101 +319,20 @@ mod tests {
         }
     }
 
-    /// Writes a node config that implements contracts and consumes
-    /// service/action/topic items through contract deps, for the
-    /// caller-driven cycle tests. `contract_deps` and the consume lists are
-    /// `(name, tag, link_id)` / `link_id` / `(link_id, topic_name)`.
-    fn write_node_full(
-        dir: &Path,
-        name: &str,
-        implements: &[(&str, &str)],
-        contract_deps: &[(&str, &str, &str)],
-        service_consumes: &[&str],
-        action_consumes: &[&str],
-        topic_consumes: &[(&str, &str)],
-    ) -> NodeConfig {
-        std::fs::create_dir_all(dir).unwrap();
-        let join = |items: Vec<String>| items.join(", ");
-        let implements = join(
-            implements
-                .iter()
-                .enumerate()
-                .map(|(idx, (n, t))| {
-                    format!(r#"{{ name: "{n}", tag: "{t}", link_id: "impl_{idx}" }}"#)
-                })
-                .collect(),
-        );
-        let contracts = join(
-            contract_deps
-                .iter()
-                .map(|(n, t, l)| format!(r#"{{ name: "{n}", tag: "{t}", link_id: "{l}" }}"#))
-                .collect(),
-        );
-        let services = join(
-            service_consumes
-                .iter()
-                .map(|l| format!(r#"{{ link_id: "{l}" }}"#))
-                .collect(),
-        );
-        let actions = join(
-            action_consumes
-                .iter()
-                .map(|l| format!(r#"{{ link_id: "{l}" }}"#))
-                .collect(),
-        );
-        let topics = join(
-            topic_consumes
-                .iter()
-                .map(|(l, n)| format!(r#"{{ link_id: "{l}", name: "{n}" }}"#))
-                .collect(),
-        );
-        let json5 = format!(
-            r#"{{
-                peppy_schema: "node/v1",
-                manifest: {{
-                    name: "{name}",
-                    tag: "v1",
-                    implements: [{implements}],
-                    depends_on: {{ nodes: [], contracts: [{contracts}] }},
-                }},
-                interfaces: {{
-                    services: {{ consumes: [{services}] }},
-                    actions: {{ consumes: [{actions}] }},
-                    topics: {{ consumes: [{topics}] }},
-                }},
-                execution: {{ language: "rust", run_cmd: ["./bin"] }},
-            }}"#
-        );
-        let path = dir.join(config::consts::NODE_CONFIG_FILE);
-        std::fs::write(&path, json5).unwrap();
-        NodeConfigParser::from_path(&path).unwrap()
-    }
-
     #[test]
     fn build_detects_mutual_service_contract_cycle() {
-        let tmp = TempDir::new().unwrap();
-        let a_dir = tmp.path().join("a");
-        let b_dir = tmp.path().join("b");
-        let a = write_node_full(
-            &a_dir,
-            "a",
-            &[("iface_a", "v1")],
-            &[("iface_b", "v1", "to_b")],
-            &["to_b"],
-            &[],
-            &[],
-        );
-        let b = write_node_full(
-            &b_dir,
-            "b",
-            &[("iface_b", "v1")],
-            &[("iface_a", "v1", "to_a")],
-            &["to_a"],
-            &[],
-            &[],
-        );
+        let a = NodeSpec::new("a")
+            .implements("iface_a", "v1")
+            .contract_dep("iface_b", "v1", "to_b")
+            .consumes_service("to_b")
+            .build();
+        let b = NodeSpec::new("b")
+            .implements("iface_b", "v1")
+            .contract_dep("iface_a", "v1", "to_a")
+            .consumes_service("to_a")
+            .build();
 
-        match VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)]) {
+        match VirtualDeptree::build(vec![(PathBuf::from("a"), a), (PathBuf::from("b"), b)]) {
             Err(Error::ServiceActionContractCycle { kind, .. }) => assert_eq!(kind, "service"),
             other => panic!("expected ServiceActionContractCycle, got {:?}", other),
         }
@@ -420,29 +340,18 @@ mod tests {
 
     #[test]
     fn build_detects_mutual_action_contract_cycle() {
-        let tmp = TempDir::new().unwrap();
-        let a_dir = tmp.path().join("a");
-        let b_dir = tmp.path().join("b");
-        let a = write_node_full(
-            &a_dir,
-            "a",
-            &[("iface_a", "v1")],
-            &[("iface_b", "v1", "to_b")],
-            &[],
-            &["to_b"],
-            &[],
-        );
-        let b = write_node_full(
-            &b_dir,
-            "b",
-            &[("iface_b", "v1")],
-            &[("iface_a", "v1", "to_a")],
-            &[],
-            &["to_a"],
-            &[],
-        );
+        let a = NodeSpec::new("a")
+            .implements("iface_a", "v1")
+            .contract_dep("iface_b", "v1", "to_b")
+            .consumes_action("to_b")
+            .build();
+        let b = NodeSpec::new("b")
+            .implements("iface_b", "v1")
+            .contract_dep("iface_a", "v1", "to_a")
+            .consumes_action("to_a")
+            .build();
 
-        match VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)]) {
+        match VirtualDeptree::build(vec![(PathBuf::from("a"), a), (PathBuf::from("b"), b)]) {
             Err(Error::ServiceActionContractCycle { kind, .. }) => assert_eq!(kind, "action"),
             other => panic!("expected ServiceActionContractCycle, got {:?}", other),
         }
@@ -450,89 +359,58 @@ mod tests {
 
     #[test]
     fn build_allows_bidirectional_topic_interfaces() {
-        let tmp = TempDir::new().unwrap();
-        let a_dir = tmp.path().join("a");
-        let b_dir = tmp.path().join("b");
-        let a = write_node_full(
-            &a_dir,
-            "a",
-            &[("iface_a", "v1")],
-            &[("iface_b", "v1", "to_b")],
-            &[],
-            &[],
-            &[("to_b", "telemetry")],
-        );
-        let b = write_node_full(
-            &b_dir,
-            "b",
-            &[("iface_b", "v1")],
-            &[("iface_a", "v1", "to_a")],
-            &[],
-            &[],
-            &[("to_a", "telemetry")],
-        );
+        let a = NodeSpec::new("a")
+            .implements("iface_a", "v1")
+            .contract_dep("iface_b", "v1", "to_b")
+            .consumes_topic("to_b", "telemetry")
+            .build();
+        let b = NodeSpec::new("b")
+            .implements("iface_b", "v1")
+            .contract_dep("iface_a", "v1", "to_a")
+            .consumes_topic("to_a", "telemetry")
+            .build();
 
-        let tree = VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)])
+        let tree = VirtualDeptree::build(vec![(PathBuf::from("a"), a), (PathBuf::from("b"), b)])
             .expect("mutual topics must stay allowed");
         assert_eq!(tree.topological_order().len(), 2);
     }
 
     #[test]
     fn build_allows_one_directional_service_interface() {
-        let tmp = TempDir::new().unwrap();
-        let a_dir = tmp.path().join("a");
-        let b_dir = tmp.path().join("b");
-        let a = write_node_full(
-            &a_dir,
-            "a",
-            &[],
-            &[("iface_b", "v1", "to_b")],
-            &["to_b"],
-            &[],
-            &[],
-        );
-        let b = write_node_full(&b_dir, "b", &[("iface_b", "v1")], &[], &[], &[], &[]);
+        let a = NodeSpec::new("a")
+            .contract_dep("iface_b", "v1", "to_b")
+            .consumes_service("to_b")
+            .build();
+        let b = NodeSpec::new("b").implements("iface_b", "v1").build();
 
-        let tree = VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)])
+        let tree = VirtualDeptree::build(vec![(PathBuf::from("a"), a), (PathBuf::from("b"), b)])
             .expect("one-directional service dep is fine");
         assert_eq!(tree.topological_order().len(), 2);
     }
 
     #[test]
     fn build_detects_three_node_service_cycle() {
-        let tmp = TempDir::new().unwrap();
-        let a_dir = tmp.path().join("a");
-        let b_dir = tmp.path().join("b");
-        let c_dir = tmp.path().join("c");
-        let a = write_node_full(
-            &a_dir,
-            "a",
-            &[("iface_a", "v1")],
-            &[("iface_b", "v1", "to_b")],
-            &["to_b"],
-            &[],
-            &[],
-        );
-        let b = write_node_full(
-            &b_dir,
-            "b",
-            &[("iface_b", "v1")],
-            &[("iface_c", "v1", "to_c")],
-            &["to_c"],
-            &[],
-            &[],
-        );
-        let c = write_node_full(
-            &c_dir,
-            "c",
-            &[("iface_c", "v1")],
-            &[("iface_a", "v1", "to_a")],
-            &["to_a"],
-            &[],
-            &[],
-        );
+        let a = NodeSpec::new("a")
+            .implements("iface_a", "v1")
+            .contract_dep("iface_b", "v1", "to_b")
+            .consumes_service("to_b")
+            .build();
+        let b = NodeSpec::new("b")
+            .implements("iface_b", "v1")
+            .contract_dep("iface_c", "v1", "to_c")
+            .consumes_service("to_c")
+            .build();
+        let c = NodeSpec::new("c")
+            .implements("iface_c", "v1")
+            .contract_dep("iface_a", "v1", "to_a")
+            .consumes_service("to_a")
+            .build();
 
-        match VirtualDeptree::build(vec![(a_dir, a), (b_dir, b), (c_dir, c)]) {
+        match VirtualDeptree::build(vec![
+            (PathBuf::from("a"), a),
+            (PathBuf::from("b"), b),
+            (PathBuf::from("c"), c),
+        ]) {
             Err(Error::ServiceActionContractCycle { nodes, .. }) => assert_eq!(nodes.len(), 3),
             other => panic!("expected ServiceActionContractCycle, got {:?}", other),
         }
