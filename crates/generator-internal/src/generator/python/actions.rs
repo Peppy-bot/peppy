@@ -4,7 +4,7 @@ use super::deserialization;
 use super::serialization;
 use super::services::sender_target_python_expr;
 use super::topics::emit_capnp_schema_loader;
-use super::type_mapping::{collect_fields_from_format, uses_optional};
+use super::type_mapping::{PythonField, collect_fields_from_format, uses_optional};
 use crate::error::Result;
 use crate::generator::types::{ConsumedActionMessage, ContractOrigin, non_empty_message_format};
 use config::node::{ConsumedAction, NativeExposedAction};
@@ -291,12 +291,11 @@ def is_cancelled(self) -> bool:
 
         // publish_feedback
         if let Some((fmt, info)) = feedback_format.zip(feedback_schema_info) {
-            let mut params = vec![String::from("self")];
-            for field in &feedback_fields {
-                params.push(format!("{}: {}", field.name, field.type_str));
-            }
             builder.block(
-                &format!("async def publish_feedback({}) -> None:", params.join(", ")),
+                &format!(
+                    "async def publish_feedback({}) -> None:",
+                    method_params(&feedback_fields)
+                ),
                 |builder| {
                     serialization::emit_new_capnp_message(builder, info, fmt, "");
                     builder.py(r#"
@@ -309,13 +308,10 @@ await self._inner.publish_feedback(payload)
 
         // complete / complete_cancelled
         if has_result {
+            let result_params = method_params(&result_fields);
             for method in ["complete", "complete_cancelled"] {
-                let mut params = vec![String::from("self")];
-                for field in &result_fields {
-                    params.push(format!("{}: {}", field.name, field.type_str));
-                }
                 builder.block(
-                    &format!("async def {method}({}) -> None:", params.join(", ")),
+                    &format!("async def {method}({result_params}) -> None:"),
                     |builder| {
                         if let Some((fmt, info)) =
                             result_response_format.zip(result_response_schema_info)
@@ -333,6 +329,18 @@ await self._inner.publish_feedback(payload)
     });
 
     Ok(builder.build())
+}
+
+/// The parameter list of a `GoalContext` method that sends `fields`: `self`,
+/// then one annotated parameter per field.
+fn method_params(fields: &[PythonField]) -> String {
+    let mut params = vec![String::from("self")];
+    params.extend(
+        fields
+            .iter()
+            .map(|field| format!("{}: {}", field.name, field.type_str)),
+    );
+    params.join(", ")
 }
 
 // ---------------------------------------------------------------------------
