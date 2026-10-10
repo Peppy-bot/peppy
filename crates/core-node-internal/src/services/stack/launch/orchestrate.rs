@@ -318,7 +318,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     // Validate all dependencies exist and expose the required interfaces.
     // An empty-admitting slot's dependency may be missing from the plan
     // entirely; the binding validation below still decides slot coverage.
-    let dependency_errors: Vec<String> = planned
+    let dependency_errors: Vec<config::ParsingError> = planned
         .iter()
         .flat_map(|item| {
             config::node::validate_dependency_specs(
@@ -330,7 +330,6 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
                 |name, tag| configs_by_key.get(&NodeKey::new(name, tag)).cloned(),
             )
         })
-        .map(|e| e.to_string())
         .collect();
 
     if !dependency_errors.is_empty() {
@@ -424,8 +423,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
         clocks,
     );
     if !validated.errors.is_empty() {
-        let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
-        let msg = daemon_config::format_bulleted(&errors);
+        let msg = daemon_config::format_bulleted(&validated.errors);
         publish_error(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(msg);
     }

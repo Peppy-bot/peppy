@@ -33,9 +33,8 @@ pub(in crate::services::stack) fn plan_clocks(
             incarnations.insert(domain.clone(), daemon_config::launcher::mint_incarnation());
         }
     }
-    let resolved = resolve_clocks(flat, placements, &incarnations).map_err(|errors| {
-        daemon_config::format_bulleted(errors.iter().map(ToString::to_string).collect::<Vec<_>>())
-    })?;
+    let resolved = resolve_clocks(flat, placements, &incarnations)
+        .map_err(|errors| daemon_config::format_bulleted(&errors))?;
     Ok((resolved, incarnations))
 }
 
