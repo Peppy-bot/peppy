@@ -465,37 +465,36 @@ async fn force_stop_instances(
     let mut snapshot = sysinfo::System::new();
     refresh_pids(&mut snapshot, &doomed_pids(doomed));
     let mut guest_kill_keys: Vec<String> = Vec::new();
-    let outcomes = doomed
-        .iter()
-        .map(|d| {
-            let Some(pid) = d.pid else {
-                return StopOutcome::NoProcess; // Nothing to force-kill or reap.
-            };
-            let outcome = if pid_running_in(&snapshot, pid) {
-                warn!(
-                    "Node instance '{}' did not exit within its {}s cooperative shutdown \
-                     window ({}s grace + runtime teardown); force-killing its process group \
-                     (pid {})",
-                    d.instance_id.as_str(),
-                    deadline.as_secs(),
-                    graceful_budget.as_secs(),
-                    pid
-                );
-                StopOutcome::ForceKilled
-            } else {
-                debug!(
-                    "Node instance '{}' exited gracefully within the grace period",
-                    d.instance_id.as_str()
-                );
-                StopOutcome::Graceful
-            };
-            kill_process_group(pid);
-            if d.is_container {
-                guest_kill_keys.push(d.instance_id.as_str().to_owned());
-            }
-            outcome
-        })
-        .collect();
+    let mut outcomes = Vec::with_capacity(doomed.len());
+    for d in doomed {
+        let Some(pid) = d.pid else {
+            outcomes.push(StopOutcome::NoProcess); // Nothing to force-kill or reap.
+            continue;
+        };
+        let outcome = if pid_running_in(&snapshot, pid) {
+            warn!(
+                "Node instance '{}' did not exit within its {}s cooperative shutdown \
+                 window ({}s grace + runtime teardown); force-killing its process group \
+                 (pid {})",
+                d.instance_id.as_str(),
+                deadline.as_secs(),
+                graceful_budget.as_secs(),
+                pid
+            );
+            StopOutcome::ForceKilled
+        } else {
+            debug!(
+                "Node instance '{}' exited gracefully within the grace period",
+                d.instance_id.as_str()
+            );
+            StopOutcome::Graceful
+        };
+        kill_process_group(pid);
+        if d.is_container {
+            guest_kill_keys.push(d.instance_id.as_str().to_owned());
+        }
+        outcomes.push(outcome);
+    }
 
     // Phase 2b (macOS): for container nodes the host group kill above only
     // reached the `limactl` client; the workload runs inside the Lima VM. Reach
