@@ -235,16 +235,13 @@ pub fn test_core_node_name(name: &str) -> config::runtime::CoreNodeName {
 }
 
 pub fn read_daemon_git_hash(daemon_state_path: &std::path::Path) -> String {
-    let contents =
-        std::fs::read_to_string(daemon_state_path).expect("daemon state file should be readable");
-    let value: serde_json::Value =
-        serde_json5::from_str(&contents).expect("daemon state should parse as JSON5");
-    value
-        .get("git_hash")
-        .and_then(|v| v.as_str())
-        .filter(|git_hash| !git_hash.is_empty())
-        .expect("daemon state should include a non-empty git_hash")
-        .to_string()
+    let state = daemon::state::DaemonState::read_from(daemon_state_path)
+        .expect("daemon state should read and parse");
+    assert!(
+        !state.git_hash.is_empty(),
+        "daemon state should include a non-empty git_hash"
+    );
+    state.git_hash
 }
 
 /// The on-disk layout the daemon expects of a staged node, written once: the
