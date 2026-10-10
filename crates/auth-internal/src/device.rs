@@ -341,9 +341,9 @@ mod tests {
         }
     }
 
-    /// T2: a device authorization whose code carries terminal control
-    /// sequences is refused before anything can print it, and the refusal
-    /// does not repeat the code.
+    /// A device authorization whose code carries terminal control sequences
+    /// is refused before anything can print it, and the refusal does not
+    /// repeat the code.
     #[test]
     fn device_start_refuses_a_user_code_with_control_characters() {
         let hostile = "\u{1b}[1A\u{1b}[2KAB\u{7}D-EFGH";

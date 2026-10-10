@@ -80,9 +80,9 @@ impl HttpClient {
             // Location header, and a bearer can never cross an origin. A caller
             // receives the 3xx and rejects it as an unexpected status.
             .max_redirects(0)
-            // Already ureq's default. Pinned so a future default change cannot
-            // quietly re-enable header forwarding across a redirect; this line
-            // changes no behaviour today.
+            // Already ureq's default. Set explicitly so that this client never
+            // forwards the Authorization header across a redirect, whatever the
+            // ureq default is.
             .redirect_auth_headers(RedirectAuthHeaders::Never)
             .timeout_global(Some(DEFAULT_HTTP_TIMEOUT))
             .build()
