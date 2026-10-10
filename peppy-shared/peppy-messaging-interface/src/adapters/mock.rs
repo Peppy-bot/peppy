@@ -5,7 +5,7 @@ use super::super::subscription_buffer::{
 };
 use super::super::types::{
     AbortOnDrop, ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer,
-    IncomingRequest, LivelinessEvent, LivelinessToken, LivelinessWatch, Message, Messenger,
+    IncomingRequest, LivelinessEvent, LivelinessToken, LivelinessWatch, Messenger,
     MessengerAdapter, MessengerBackend, MockResponseToken, Payload, PresenceScope, PublisherQoS,
     ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
     SubscriberQoS, Subscription, TopicMessage, service_query_lifetime,
@@ -56,10 +56,6 @@ impl Drop for MockInstance {
         .join();
     }
 }
-
-/// Shared map of published messages, keyed by topic. Used to record every
-/// publish for later assertions.
-type MessageLog = Arc<Mutex<HashMap<String, Vec<Message>>>>;
 
 /// One active subscription entry. `drop_secondary` is set when the
 /// subscriber wildcards the link_id slot at the keyexpr level (the topic
@@ -175,7 +171,6 @@ type LivelinessState = Arc<Mutex<MockLivelinessState>>;
 pub struct MockAdapter {
     pub(crate) is_session_connected: bool,
     pub(crate) is_router_started: bool,
-    pub(crate) messages: MessageLog,
     pub(crate) subscriptions: SubscriptionMap,
     declared: MockDeclaredTopics,
     pub(crate) queryables: QueryableMap,
@@ -187,7 +182,6 @@ impl Default for MockAdapter {
         Self {
             is_session_connected: false,
             is_router_started: false,
-            messages: Arc::new(Mutex::new(HashMap::new())),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
             declared: Arc::default(),
             queryables: Arc::new(Mutex::new(HashMap::new())),
@@ -236,7 +230,6 @@ impl MessengerBackend for MockAdapter {
         self.is_session_connected = false;
         self.is_router_started = false;
 
-        self.messages.lock().unwrap().clear();
         self.subscriptions.lock().unwrap().clear();
         self.declared.lock().unwrap().clear();
         self.queryables.lock().unwrap().clear();
@@ -722,11 +715,6 @@ impl MockAdapter {
         }
     }
 
-    fn to_response_message(message: &Message) -> Result<TopicMessage> {
-        let identifier = message.identifier();
-        TopicMessage::new(identifier, message.payload().clone())
-    }
-
     /// Pre-bind a per-topic publisher for `sender`. The returned publisher
     /// clones the adapter's `Arc`s, bypassing the central `Messenger` mutex.
     pub fn declare_topic_publisher(
@@ -773,7 +761,6 @@ impl MockAdapter {
         MockPublisher {
             topic,
             subscriptions: Arc::clone(&self.subscriptions),
-            messages: Arc::clone(&self.messages),
             retained,
         }
     }
@@ -803,43 +790,32 @@ impl MockAdapter {
             return Err(Error::PublishError { topic });
         }
 
-        let message = Message::new(&topic, payload.to_bytes());
         Self::route_publish(
             &topic,
-            &message,
+            payload.into_bytes(),
             is_primary,
-            &self.messages,
             &self.subscriptions,
             None,
         )
         .await
     }
 
-    /// Records `message` against `topic` in the mock's message log and fans
-    /// it out to every subscription whose pattern intersects `topic`. Shared
-    /// by [`MockAdapter::publish_keyexpr`] (which holds the adapter
-    /// directly) and [`MockPublisher::publish`] (which clones the same
-    /// `Arc`s for lock-free per-topic publishing). `is_primary` is the
-    /// wire-attachment dedup marker — subscribers that wildcarded the
-    /// link_id slot drop non-primary fan-out. A retaining topic keeps the
-    /// message in `retained`.
+    /// Fans the message published on `topic` out to every subscription
+    /// whose pattern intersects `topic`. Shared by
+    /// [`MockAdapter::publish_keyexpr`] (which holds the adapter directly)
+    /// and [`MockPublisher::publish`] (which clones the same `Arc`s for
+    /// lock-free per-topic publishing). `is_primary` is the wire-attachment
+    /// dedup marker: subscribers that wildcarded the link_id slot drop
+    /// non-primary fan-out. A retaining topic keeps the message in
+    /// `retained`.
     async fn route_publish(
         topic: &str,
-        message: &Message,
+        payload: bytes::Bytes,
         is_primary: bool,
-        messages: &MessageLog,
         subscriptions: &SubscriptionMap,
         retained: Option<&RetainedMessages>,
     ) -> Result<()> {
-        let response = Self::to_response_message(message)?;
-
-        {
-            let mut messages = messages.lock().unwrap();
-            messages
-                .entry(topic.to_string())
-                .or_default()
-                .push(message.clone());
-        }
+        let message = TopicMessage::new(topic, payload)?;
 
         let sinks: Vec<SubscriptionSink> = {
             let subscriptions = subscriptions.lock().unwrap();
@@ -847,7 +823,7 @@ impl MockAdapter {
             // holds while it replays: it replays this message or receives it
             // live, never both.
             if let Some(retained) = retained {
-                retained.keep(response.clone());
+                retained.keep(message.clone());
             }
             let mut matched = Vec::new();
             for (pattern, subs) in subscriptions.iter() {
@@ -865,7 +841,7 @@ impl MockAdapter {
         };
 
         for sink in sinks {
-            sink.deliver_async(response.clone()).await;
+            sink.deliver_async(message.clone()).await;
         }
         Ok(())
     }
@@ -1017,7 +993,6 @@ async fn handle_mock_queryable(
 pub struct MockPublisher {
     topic: String,
     subscriptions: SubscriptionMap,
-    messages: MessageLog,
     /// The topic's retained messages, when it retains.
     retained: Option<RetainedMessages>,
 }
@@ -1026,12 +1001,10 @@ impl MockPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
         // Pre-bound publishers are single-link, so each publish is its own
         // emit's only sample — always primary, mirroring the Zenoh side.
-        let message = Message::new(&self.topic, payload);
         MockAdapter::route_publish(
             &self.topic,
-            &message,
+            payload,
             true,
-            &self.messages,
             &self.subscriptions,
             self.retained.as_ref(),
         )

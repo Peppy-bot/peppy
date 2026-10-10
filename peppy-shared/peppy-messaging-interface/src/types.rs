@@ -793,32 +793,6 @@ impl MockResponseToken {
     }
 }
 
-/// Internal in-process message envelope used by the mock adapter's message log
-/// and routing. Not part of the public API: consumers use [`TopicMessage`] (the
-/// real transport envelope); only the mock backend records [`Message`]s.
-#[derive(Clone)]
-pub(crate) struct Message {
-    identifier: String,
-    payload: bytes::Bytes,
-}
-
-impl Message {
-    pub(crate) fn new(identifier: &str, payload: impl AsRef<[u8]>) -> Self {
-        Self {
-            identifier: identifier.to_string(),
-            payload: bytes::Bytes::copy_from_slice(payload.as_ref()),
-        }
-    }
-
-    pub(crate) fn identifier(&self) -> &str {
-        &self.identifier
-    }
-
-    pub(crate) fn payload(&self) -> &bytes::Bytes {
-        &self.payload
-    }
-}
-
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Payload {
     inner: PayloadInner,
