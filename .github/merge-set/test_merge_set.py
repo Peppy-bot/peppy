@@ -233,9 +233,8 @@ class Events(unittest.TestCase):
             ("nodes-hub", SET_NAME, "Peppy-bot/nodes-hub", "twelve"),
             ("landing-page", SET_NAME, "Peppy-bot/landing-page", ""),
         ):
-            with self.subTest(arguments=arguments):
-                with self.assertRaises(MergeSetError):
-                    merge_set.parse_event(*arguments)
+            with self.subTest(arguments=arguments), self.assertRaises(MergeSetError):
+                merge_set.parse_event(*arguments)
 
 
 class Relay(unittest.TestCase):
