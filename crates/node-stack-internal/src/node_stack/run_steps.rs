@@ -30,7 +30,7 @@ pub(super) static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Writes a runtime config to a unique temp file under
 /// `peppy_dirs.runtime_config_dir()` and returns the path.
 ///
-/// Used by both `spawn_process_node` and `spawn_container_node` to materialize
+/// Used by [`assemble_command`] and [`build_container_command`] to materialize
 /// the runtime config that the spawned child reads via the
 /// `PEPPY_RUNTIME_CONFIG` environment variable.
 pub(super) fn write_runtime_config_temp(
@@ -128,10 +128,11 @@ fn spawn_as_process_group_leader(_command: &mut Command) {}
 
 /// An unspawned start command plus the metadata its caller needs after the fork.
 ///
-/// `build_process_command` / `build_container_command` return this so the caller
-/// can fork the child under the entity write lock (recording the pid atomically
-/// with the spawn) while still owning the runtime config temp file's cleanup and
-/// having a human-readable command description for spawn-failure errors.
+/// `build_process_command`, `build_built_in_command` and
+/// `build_container_command` return this so the caller can fork the child
+/// under the entity write lock (recording the pid atomically with the spawn)
+/// while still owning the runtime config temp file's cleanup and having a
+/// human-readable command description for spawn-failure errors.
 pub(super) struct SpawnCommand {
     pub(super) command: Command,
     pub(super) runtime_config_path: PathBuf,
@@ -350,7 +351,7 @@ pub(super) fn collect_container_binds(
     binds
 }
 
-/// Inputs for [`spawn_container_node`].
+/// Inputs for [`build_container_command`].
 pub(super) struct SpawnContainerInputs<'a> {
     pub sif_path: &'a Path,
     pub working_dir: &'a Path,
