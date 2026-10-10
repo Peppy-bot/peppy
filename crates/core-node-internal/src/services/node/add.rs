@@ -12,7 +12,7 @@ use super::sync::{
     generate_peppygen_for_node, materialize_repo_deps, stack_resolver, stack_then_repo_resolver,
 };
 use super::{
-    clone_with_progress, extract_tar_zst, format_bytes, generate_random_id,
+    clone_with_progress, encode_hex, extract_tar_zst, format_bytes, generate_random_id,
     is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
     resolve_local_archive_source, sanitize_repo_path,
 };
@@ -655,10 +655,6 @@ fn decode_sha256_hex(input: &str) -> std::result::Result<Vec<u8>, String> {
 /// other byte.
 fn hex_digit_value(digit: u8) -> Option<u8> {
     (digit as char).to_digit(16).map(|value| value as u8)
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 fn extract_http_bundle(

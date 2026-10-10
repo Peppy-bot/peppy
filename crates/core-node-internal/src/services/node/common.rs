@@ -1,7 +1,7 @@
 //! Small glue helpers shared by the node command handlers that don't fit
 //! in one of the more specific submodules: panic payload decoding,
-//! random id generation, response encoding, and daemon-to-instance slot
-//! update delivery.
+//! random id generation, hex encoding, response encoding, and
+//! daemon-to-instance slot update delivery.
 
 use config::runtime::Name;
 use node_stack::NodeStack;
@@ -172,5 +172,10 @@ pub(crate) fn generate_random_id() -> String {
     use rand::RngExt;
     let mut rng = rand::rng();
     let bytes: [u8; 6] = rng.random();
+    encode_hex(&bytes)
+}
+
+/// Lowercase hexadecimal of `bytes`, two digits per byte.
+pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
