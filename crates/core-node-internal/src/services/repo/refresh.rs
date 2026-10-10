@@ -1036,6 +1036,9 @@ mod tests {
     use crate::services::repo::cache::{
         EntryOrigin, LauncherCacheEntry, NodeCacheEntry, repositories_list_path,
     };
+    use crate::services::repo::index::test_support::{
+        write_contract_json5, write_launcher_json5, write_node_json5,
+    };
     use config::consts::NODE_CONFIG_FILE;
 
     /// A fixed instant for every refresh under test, so nothing depends
@@ -1179,35 +1182,6 @@ mod tests {
         assert_eq!(ids[2], 7, "second missing id should be auto-assigned 7");
     }
 
-    fn write_launcher_json5(path: &Path) {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(
-            path,
-            r#"{
-  peppy_schema: "launcher/v1",
-  deployments: []
-}"#,
-        )
-        .unwrap();
-    }
-
-    fn write_contract_json5(path: &Path, name: &str, tag: &str) -> Vec<u8> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        let body = format!(
-            r#"{{
-  peppy_schema: "contract/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
-  interfaces: {{}}
-}}"#
-        );
-        std::fs::write(path, &body).unwrap();
-        body.into_bytes()
-    }
-
     /// Writes the index a repository publishes, the way `peppy repo index`
     /// does.
     ///
@@ -1324,23 +1298,6 @@ mod tests {
         refresh_every(peppy_dirs, now, on_feedback)
     }
 
-    /// Helper: write a minimal valid peppy.json5 into `dir`.
-    fn write_peppy_json5(dir: &Path, name: &str, tag: &str) {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(
-            dir.join(NODE_CONFIG_FILE),
-            format!(
-                r#"{{
-  peppy_schema: "node/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
-  interfaces: {{}},
-  execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
-}}"#
-            ),
-        )
-        .unwrap();
-    }
-
     /// The load-bearing case: a failure is scoped to the repository that
     /// caused it. The healthy repository picks up its change, the broken
     /// one keeps the entries it last published, and only the broken one
@@ -1352,8 +1309,8 @@ mod tests {
 
         let healthy = tmp.path().join("healthy");
         let broken = tmp.path().join("broken");
-        write_peppy_json5(&healthy.join("first"), "first", "v1");
-        write_peppy_json5(&broken.join("kept"), "kept", "v1");
+        write_node_json5(&healthy.join("first"), "first", "v1");
+        write_node_json5(&broken.join("kept"), "kept", "v1");
         write_repos(
             &peppy_dirs,
             &format!(
@@ -1370,8 +1327,8 @@ mod tests {
         write_all_caches(&peppy_dirs, &clean).unwrap();
 
         // Now break the second repository and add a node to the first.
-        write_peppy_json5(&healthy.join("second"), "second", "v1");
-        write_peppy_json5(&broken.join("gone"), "gone", "v1");
+        write_node_json5(&healthy.join("second"), "second", "v1");
+        write_node_json5(&broken.join("gone"), "gone", "v1");
         stale_index(&broken, "gone/peppy.json5");
 
         let refreshed =
@@ -1418,7 +1375,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("first"), "first", "v1");
+        write_node_json5(&repo.join("first"), "first", "v1");
         write_repos(
             &peppy_dirs,
             &format!(
@@ -1510,7 +1467,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
+        write_node_json5(&repo.join("node_a"), "node_a", "v1");
         write_repos(
             &peppy_dirs,
             &format!(
@@ -1527,7 +1484,7 @@ mod tests {
         assert!(!clean.statuses[0].is_retained());
 
         // Break it, and refresh much later.
-        write_peppy_json5(&repo.join("vanished"), "vanished", "v1");
+        write_node_json5(&repo.join("vanished"), "vanished", "v1");
         stale_index(&repo, "vanished/peppy.json5");
         let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(99_000);
         let failed = refresh_publishing(&peppy_dirs, &[], later, &mut |_| {}).unwrap();
@@ -1551,7 +1508,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("vanished"), "vanished", "v1");
+        write_node_json5(&repo.join("vanished"), "vanished", "v1");
         write_repos(
             &peppy_dirs,
             &format!(
@@ -1582,7 +1539,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let healthy = tmp.path().join("healthy");
-        write_peppy_json5(&healthy.join("node_a"), "node_a", "v1");
+        write_node_json5(&healthy.join("node_a"), "node_a", "v1");
         let gone = tmp.path().join("not-mounted");
         write_repos(
             &peppy_dirs,
@@ -1633,7 +1590,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let conflicted = tmp.path().join("conflicted");
-        write_peppy_json5(&conflicted.join("a"), "vanished", "v1");
+        write_node_json5(&conflicted.join("a"), "vanished", "v1");
         stale_index(&conflicted, "a/peppy.json5");
         let gone = tmp.path().join("not-mounted");
         write_repos(
@@ -1672,8 +1629,8 @@ mod tests {
 
         let one = tmp.path().join("one");
         let two = tmp.path().join("two");
-        write_peppy_json5(&one.join("from_one"), "from_one", "v1");
-        write_peppy_json5(&two.join("from_two"), "from_two", "v1");
+        write_node_json5(&one.join("from_one"), "from_one", "v1");
+        write_node_json5(&two.join("from_two"), "from_two", "v1");
         write_repos(
             &peppy_dirs,
             &format!(
@@ -1686,7 +1643,7 @@ mod tests {
         write_all_caches(&peppy_dirs, &clean).unwrap();
 
         // Break repository 2 only.
-        write_peppy_json5(&two.join("vanished"), "vanished", "v1");
+        write_node_json5(&two.join("vanished"), "vanished", "v1");
         stale_index(&two, "vanished/peppy.json5");
         let refreshed = refresh_publishing(&peppy_dirs, &[&one], TEST_NOW, &mut |_| {}).unwrap();
 
@@ -1720,8 +1677,8 @@ mod tests {
 
         let repo_a = tmp.path().join("repo_a");
         let repo_b = tmp.path().join("repo_b");
-        write_peppy_json5(&repo_a.join("node_a"), "node_a", "v1");
-        write_peppy_json5(&repo_b.join("node_b"), "node_b", "v1");
+        write_node_json5(&repo_a.join("node_a"), "node_a", "v1");
+        write_node_json5(&repo_b.join("node_b"), "node_b", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1766,8 +1723,8 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("keep_node"), "keep_node", "v1");
-        write_peppy_json5(&repo.join("secret_node"), "secret_node", "v1");
+        write_node_json5(&repo.join("keep_node"), "keep_node", "v1");
+        write_node_json5(&repo.join("secret_node"), "secret_node", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1819,8 +1776,8 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("keep_node"), "keep_node", "v1");
-        write_peppy_json5(&repo.join("secret_node"), "secret_node", "v1");
+        write_node_json5(&repo.join("keep_node"), "keep_node", "v1");
+        write_node_json5(&repo.join("secret_node"), "secret_node", "v1");
         // Published first, so the index declares both, then the excluded
         // one is made unreadable behind peppy's back.
         publish_repo(&repo);
@@ -1862,7 +1819,7 @@ mod tests {
         let src_tmp = tempfile::tempdir().unwrap();
         let src = src_tmp.path();
         let repo = git2::Repository::init(src).expect("init repo");
-        write_peppy_json5(&src.join("arm"), "arm", "v1");
+        write_node_json5(&src.join("arm"), "arm", "v1");
         let branch = publish_and_commit(&repo, src, &["arm/peppy.json5"]);
 
         let peppy_tmp = tempfile::tempdir().unwrap();
@@ -1894,7 +1851,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
+        write_node_json5(&repo.join("node_a"), "node_a", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1928,7 +1885,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
+        write_node_json5(&repo.join("node_a"), "node_a", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -2126,7 +2083,7 @@ mod tests {
         write_launcher_json5(&repo_a.join("nested").join("demo.json5"));
         write_launcher_json5(&repo_b.join("openarm01_sim_teleop.json5"));
         // Throw a node into repo_a too so we exercise the mixed walk.
-        write_peppy_json5(&repo_a.join("node_a"), "node_a", "v1");
+        write_node_json5(&repo_a.join("node_a"), "node_a", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -2374,7 +2331,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
+        write_node_json5(&repo.join("node_a"), "node_a", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -2558,7 +2515,7 @@ mod tests {
             .set_bool("uploadpack.allowReachableSHA1InWant", true)
             .expect("allow fetches by hash");
 
-        write_peppy_json5(&src.join("arm"), "arm", "v1");
+        write_node_json5(&src.join("arm"), "arm", "v1");
         publish_and_commit(&repo, &src, &["arm/peppy.json5"]);
         let tagged = repo.head().expect("head").peel_to_commit().expect("commit");
         let signature =
@@ -2752,7 +2709,7 @@ mod tests {
         let served = tempfile::tempdir().unwrap();
         let src = served.path().join("hub");
         let repo = git2::Repository::init(&src).expect("init repo");
-        write_peppy_json5(&src.join("arm"), "arm", "v1");
+        write_node_json5(&src.join("arm"), "arm", "v1");
         publish_and_commit(&repo, &src, &["arm/peppy.json5"]);
         let branched = repo.head().unwrap().peel_to_commit().unwrap();
         repo.branch("peppy-release/v0.31.2", &branched, false)
@@ -2818,7 +2775,7 @@ mod tests {
         let signature = git2::Signature::now("Peppy", "peppy@example.com").unwrap();
         let mut commits = Vec::new();
         for (version, note) in [("v0.31.1", "first"), ("v0.31.2", "second")] {
-            write_peppy_json5(&src.join("arm"), "arm", "v1");
+            write_node_json5(&src.join("arm"), "arm", "v1");
             std::fs::write(src.join("notes.txt"), note).unwrap();
             publish_and_commit(&repo, &src, &["arm/peppy.json5", "notes.txt"]);
             let commit = repo.head().unwrap().peel_to_commit().unwrap();

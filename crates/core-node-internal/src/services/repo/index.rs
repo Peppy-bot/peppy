@@ -987,14 +987,15 @@ fn collect_item(
     });
 }
 
+/// Writers of the minimal valid manifest of each kind, for tests that build
+/// a repository on disk.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
     use config::consts::NODE_CONFIG_FILE;
-    use config::fingerprint::fingerprint_for_bytes;
+    use std::path::Path;
 
     /// Helper: write a minimal valid node manifest under `dir`.
-    fn write_node_json5(dir: &Path, name: &str, tag: &str) {
+    pub(crate) fn write_node_json5(dir: &Path, name: &str, tag: &str) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(
             dir.join(NODE_CONFIG_FILE),
@@ -1011,7 +1012,7 @@ mod tests {
     }
 
     /// Helper: write a `.json5` launcher file at `path` (any name accepted).
-    fn write_launcher_json5(path: &Path) {
+    pub(crate) fn write_launcher_json5(path: &Path) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -1025,26 +1026,25 @@ mod tests {
         .unwrap();
     }
 
-    /// Helper: write a minimal valid contract manifest at `path`.
-    fn write_contract_json5(path: &Path, name: &str, tag: &str) {
+    /// Helper: write a minimal valid contract manifest at `path`, returning
+    /// the bytes written.
+    pub(crate) fn write_contract_json5(path: &Path, name: &str, tag: &str) -> Vec<u8> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
-        std::fs::write(
-            path,
-            format!(
-                r#"{{
+        let body = format!(
+            r#"{{
   peppy_schema: "contract/v1",
   manifest: {{ name: "{name}", tag: "{tag}" }},
   interfaces: {{}}
 }}"#
-            ),
-        )
-        .unwrap();
+        );
+        std::fs::write(path, &body).unwrap();
+        body.into_bytes()
     }
 
     /// Helper: write a minimal valid pairing manifest at `path`.
-    fn write_pairing_json5(path: &Path, name: &str, tag: &str) {
+    pub(crate) fn write_pairing_json5(path: &Path, name: &str, tag: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -1068,7 +1068,7 @@ mod tests {
     /// Helper: write a minimal valid MCP exposure manifest at `path`. The
     /// sha256 pin only has to be well-formed here: the walk extracts the
     /// identity and never resolves the pinned contract.
-    fn write_mcp_exposure_json5(path: &Path, name: &str, tag: &str) {
+    pub(crate) fn write_mcp_exposure_json5(path: &Path, name: &str, tag: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -1102,6 +1102,14 @@ mod tests {
         )
         .unwrap();
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::*;
+    use super::*;
+    use config::consts::NODE_CONFIG_FILE;
+    use config::fingerprint::fingerprint_for_bytes;
 
     /// The identities the walk found, of one kind, as `name:tag` labels.
     fn found(walked: &WalkResult, kind: RepoItemKind) -> Vec<String> {
