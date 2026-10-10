@@ -347,8 +347,8 @@ fn read_certificate_validity(path: &Path) -> Result<CertificateValidity> {
     CertificateValidity::parse_pem(&std::fs::read_to_string(path)?)
 }
 
-/// Writes the bundle under `<root>/conf/peer/` (`0700`), the key and the
-/// document owner-only. Each file is published atomically, and the document
+/// Writes the bundle under `<root>/conf/peer/` (`0700`), every file
+/// owner-only. Each file is published atomically, and the document
 /// last: a crash before it lands leaves no record, so the machine reads as
 /// not enrolled and the next `enroll` overwrites the partial material.
 pub fn save(dirs: &PeppyDirs, bundle: &EnrollmentBundle) -> Result<()> {
@@ -363,7 +363,6 @@ pub fn save(dirs: &PeppyDirs, bundle: &EnrollmentBundle) -> Result<()> {
     document::publish(
         &peer_dir.join(PEER_KEY_FILE),
         bundle.peer_key_pem.expose_secret(),
-        true,
     )?;
     publish_issued(&peer_dir, &bundle.issued)
 }
@@ -393,9 +392,9 @@ fn publish_issued(peer_dir: &Path, issued: &IssuedMaterial) -> Result<()> {
         (CHAIN_FILE, &issued.chain_pem),
         (PLATFORM_ZENOH_CONFIG_FILE, &issued.platform_zenoh_config),
     ] {
-        document::publish(&peer_dir.join(file), content, false)?;
+        document::publish(&peer_dir.join(file), content)?;
     }
-    document::save(&peer_dir.join(ENROLLMENT_FILE), &issued.document, true)
+    document::save(&peer_dir.join(ENROLLMENT_FILE), &issued.document)
 }
 
 /// Removes the whole peer directory. Absent is not an error: the machine is
@@ -731,6 +730,33 @@ mod tests {
             let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode(&loaded.peer_key), 0o600);
             assert_eq!(mode(&dirs.peer_dir().join(ENROLLMENT_FILE)), 0o600);
+        }
+    }
+
+    /// The certificates and the platform's config sit next to the key, and
+    /// they are owner-only like it.
+    #[cfg(unix)]
+    #[test]
+    fn every_saved_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(dir.path());
+
+        save(&dirs, &bundle()).expect("save");
+
+        for name in [
+            ENROLLMENT_FILE,
+            PEER_KEY_FILE,
+            PEER_CERTIFICATE_FILE,
+            TRUST_ANCHOR_FILE,
+            CHAIN_FILE,
+            PLATFORM_ZENOH_CONFIG_FILE,
+        ] {
+            let mode = std::fs::metadata(dirs.peer_dir().join(name))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{name}");
         }
     }
 

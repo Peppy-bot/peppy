@@ -136,7 +136,7 @@ pub fn save(dirs: &PeppyDirs, selection: &PlatformSelection) -> Result<()> {
     std::fs::create_dir_all(&conf)?;
     // `conf/` holds the credentials too; keep it owner-only as `storage` does.
     restrict_dir(&conf)?;
-    document::save(&selection_path(dirs), selection, false)
+    document::save(&selection_path(dirs), selection)
 }
 
 /// Removes the selection. Absent is not an error: nothing is then selected.
@@ -161,6 +161,22 @@ mod tests {
         remove(&dirs).expect("remove");
         assert_eq!(load(&dirs).unwrap(), None);
         remove(&dirs).expect("removing two times is fine");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_saved_selection_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(dir.path());
+
+        save(&dirs, &selection()).expect("save");
+
+        let mode = std::fs::metadata(selection_path(&dirs))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     /// A workspace with no project is a selection too, and the file of one
