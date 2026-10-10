@@ -107,6 +107,27 @@ fn parse_message_format(example: &str) -> MessageFormat {
     serde_json5::from_str(example).unwrap()
 }
 
+/// Asserts that a rendered consumer module (topic subscriber, service poller
+/// or action caller) takes no core_node or instance_id string parameter. The
+/// producer travels only as the `peppylib.ProducerRef` resolved from the
+/// slot's bound set, so no `from_*` or `target_*` core_node or instance_id
+/// parameter appears, and no `pinned_target_for` accessor is emitted (the
+/// runtime helpers are the bound-producer accessors).
+pub(super) fn assert_no_producer_identity_params(rendered: &str) {
+    for needle in [
+        "from_core_node",
+        "from_instance_id: Optional[str] = None",
+        "target_core_node",
+        "target_instance_id: Optional[str] = None",
+        "pinned_target_for",
+    ] {
+        assert!(
+            !rendered.contains(needle),
+            "`{needle}` is not part of the generated API; rendered:\n{rendered}"
+        );
+    }
+}
+
 /// In the case of a topic, an "exposed" topic is an entity that emits messages.
 #[test]
 fn emit_topic() {
@@ -761,14 +782,7 @@ fn consumed_topic() {
         !rendered.contains("on_next_message_received"),
         "the per-call on_next_message_received API must be gone; rendered:\n{rendered}"
     );
-    assert!(
-        !rendered.contains("from_core_node"),
-        "from_core_node should no longer appear in the generated API; rendered:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("from_instance_id: Optional[str] = None"),
-        "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
-    );
+    assert_no_producer_identity_params(&rendered);
 
     // Topic metadata and subscribe call: the merged subscription follows the
     // slot's complete bound set by its link_id through the node runner, which
@@ -948,8 +962,8 @@ fn consumed_two_topics_same_node() {
 /// service pollers, action callers) expose no user-facing producer-identity
 /// parameters. Producer identity travels only as the full
 /// `(core_node, instance_id)` resolved at runtime from the bindings map.
-/// This test fails loudly if any generator drifts back to exposing a
-/// `from_*` / `target_*` core_node or instance_id parameter.
+/// This test fails loudly if any generator exposes a `from_*` / `target_*`
+/// core_node or instance_id parameter.
 #[test]
 fn no_user_facing_producer_identity_params() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
@@ -1003,35 +1017,5 @@ fn no_user_facing_producer_identity_params() {
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
 
-    // Topic subscriber: producer identity travels only as the full
-    // `(core_node, instance_id)` resolved at runtime from the bindings map;
-    // there is no user-facing core_node parameter, and `from_instance_id`
-    // is no longer a parameter either.
-    assert!(
-        !rendered.contains("from_core_node"),
-        "from_core_node should no longer appear in the generated API; rendered:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("from_instance_id: Optional[str] = None"),
-        "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
-    );
-
-    // The fixtures supply real manifest link_ids, and every consumed call
-    // site resolves its bound set through the slot's cardinality-typed
-    // accessor. The generated API exposes no targeting parameters:
-    // `target_core_node` and `target_instance_id` must not appear, and a
-    // `pinned_target_for` accessor must never be emitted (the runtime
-    // helpers are the bound-producer accessors).
-    assert!(
-        !rendered.contains("target_core_node"),
-        "target_core_node should not appear in the generated API; rendered:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("target_instance_id: Optional[str] = None"),
-        "target_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helpers are the bound-producer accessors; rendered:\n{rendered}"
-    );
+    assert_no_producer_identity_params(&rendered);
 }
