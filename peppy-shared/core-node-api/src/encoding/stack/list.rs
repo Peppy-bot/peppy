@@ -327,6 +327,7 @@ impl crate::encoding::Wire for StackListResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::decoding_error;
 
     /// Interleaved members group under their slot, slots in the order each was
     /// first added to and targets in the order they were added.
@@ -456,6 +457,54 @@ mod tests {
                 StackListResponse::decode(&payload).is_err(),
                 "{name} {option} {core_node} {instance_id}"
             );
+        }
+    }
+
+    /// A set member with a blank or invalid field, or a blank selection word,
+    /// is refused at the wire boundary with the field that carried it.
+    #[test]
+    fn response_decode_refuses_a_blank_set_member_field_or_selection() {
+        for (selection, (instance_id, link_id, target), expected) in [
+            (
+                "commander=xr_commander",
+                ("bad/id", "robots", "alpha_arm_inst"),
+                "copies.set_members.instance_id",
+            ),
+            (
+                "commander=xr_commander",
+                ("monitor_inst", "", "alpha_arm_inst"),
+                "copies.set_members.link_id",
+            ),
+            (
+                "commander=xr_commander",
+                ("monitor_inst", "robots", ""),
+                "copies.set_members.target",
+            ),
+            (
+                "",
+                ("monitor_inst", "robots", "alpha_arm_inst"),
+                "copies.selections[0]",
+            ),
+        ] {
+            let mut builder = Builder::new_default();
+            let wire = builder.init_root::<node_capnp::stack_list_response::Builder>();
+            let mut copy = wire.init_copies(1).get(0);
+            copy.set_name("alpha");
+            copy.set_option("openarm_v2");
+            copy.set_core_node("jetson-1");
+            copy.reborrow()
+                .init_instance_ids(1)
+                .set(0, "alpha_arm_inst");
+            copy.reborrow().init_selections(1).set(0, selection);
+            let mut member = copy.init_set_members(1).get(0);
+            member.set_instance_id(instance_id);
+            member.set_link_id(link_id);
+            member.set_target(target);
+
+            let refusal = decoding_error(StackListResponse::decode(
+                &encode_message(&builder).unwrap(),
+            ));
+            assert!(refusal.contains(expected), "{refusal}");
         }
     }
 
