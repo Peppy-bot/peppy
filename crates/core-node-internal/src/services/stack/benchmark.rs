@@ -319,6 +319,15 @@ fn producer_topic_qos(producer: Option<&NodeConfig>, topic_name: &str) -> QoSPro
         .unwrap_or_default()
 }
 
+/// Each config keyed by its `(name, tag)`, so the QoS and probe-size passes
+/// look a producer up the same way.
+fn configs_by_identity(configs: &[NodeConfig]) -> HashMap<(&str, &str), &NodeConfig> {
+    configs
+        .iter()
+        .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
+        .collect()
+}
+
 /// Walk every node's consumed interfaces and resolve each to one edge per
 /// producer. A direct node dep yields one edge; a contract dep yields one per
 /// implementing producer. Topic QoS for contract-implementation edges is left
@@ -326,10 +335,7 @@ fn producer_topic_qos(producer: Option<&NodeConfig>, topic_name: &str) -> QoSPro
 /// [`resolve_contract_topic_qos`] (the shape and qos of a contract-backed
 /// entry live in the contract document, not the producer's manifest).
 fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
-    let by_key: HashMap<(&str, &str), &NodeConfig> = configs
-        .iter()
-        .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
-        .collect();
+    let by_key = configs_by_identity(configs);
 
     let mut edges = Vec::new();
     for config in configs {
@@ -459,10 +465,7 @@ fn resolve_probe_sizes(
     contract_cache: &mut ContractDocCache,
     peppy_dirs: &PeppyDirs,
 ) {
-    let by_key: HashMap<(&str, &str), &NodeConfig> = configs
-        .iter()
-        .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
-        .collect();
+    let by_key = configs_by_identity(configs);
 
     for edge in edges.iter_mut() {
         let (req, resp) = match &edge.origin {
