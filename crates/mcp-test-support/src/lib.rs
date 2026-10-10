@@ -86,7 +86,7 @@ pub fn compile_node(node_dir: &Path, built_binary: &str, installed_binary: &str)
 }
 
 /// The platform filename of a built executable.
-pub fn executable_filename(name: &str) -> String {
+fn executable_filename(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
