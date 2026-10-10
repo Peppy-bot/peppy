@@ -1023,16 +1023,30 @@ class PullRequestReport:
     unbypassed_approval_rulesets: tuple[str, ...]
 
 
+class BlockerKind(Enum):
+    # Blocks every user.
+    BLOCKING = "blocking"
+    # A missing approval that only rulesets the App bypasses require, so an
+    # admin of every repository of the set merges without it.
+    MISSING_APPROVAL = "missing approval"
+    # A hub job that ran with another commit of a branch of the set, or whose
+    # set record expired: a re-run of its run clears it.
+    OUT_OF_DATE_CI = "out-of-date CI"
+
+
 @dataclass(frozen=True)
 class Blocker:
     repository: Repository
     text: str
-    # A missing approval, which an admin of every repository of the set
-    # merges without.
-    waived_for_admins: bool = False
-    # A hub job that ran with another commit of a branch of the set, or whose
-    # set record expired: a re-run of its run clears it.
-    out_of_date_ci: bool = False
+    kind: BlockerKind = BlockerKind.BLOCKING
+
+    @property
+    def waived_for_admins(self) -> bool:
+        return self.kind is BlockerKind.MISSING_APPROVAL
+
+    @property
+    def out_of_date_ci(self) -> bool:
+        return self.kind is BlockerKind.OUT_OF_DATE_CI
 
 
 def short(commit: str) -> str:
@@ -1077,16 +1091,22 @@ def missing_approval_text(label: str, unbypassed_rulesets: Sequence[str]) -> str
     )
 
 
+def missing_approval_kind(unbypassed_rulesets: Sequence[str]) -> BlockerKind:
+    """GitHub refuses the merge of the App while a ruleset that it does not
+    bypass requires the approval, so no admin merges without it."""
+    if unbypassed_rulesets:
+        return BlockerKind.BLOCKING
+    return BlockerKind.MISSING_APPROVAL
+
+
 def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     pull_request = report.pull_request
     repository = pull_request.repository
     label = pull_request.label
     blockers = []
 
-    def block(
-        text: str, waived_for_admins: bool = False, out_of_date_ci: bool = False
-    ) -> None:
-        blockers.append(Blocker(repository, text, waived_for_admins, out_of_date_ci))
+    def block(text: str, kind: BlockerKind = BlockerKind.BLOCKING) -> None:
+        blockers.append(Blocker(repository, text, kind))
 
     if pull_request.base_branch != repository.integration_branch:
         block(
@@ -1112,7 +1132,7 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     if report.review is ReviewDecision.REVIEW_REQUIRED:
         block(
             missing_approval_text(label, report.unbypassed_approval_rulesets),
-            waived_for_admins=not report.unbypassed_approval_rulesets,
+            missing_approval_kind(report.unbypassed_approval_rulesets),
         )
     for check, state in report.checks:
         if state is not CheckState.PASSED:
@@ -1120,7 +1140,7 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
                 f"The required check `{check.context}` of {label} {CHECK_STATE_TEXTS[state]}."
             )
     for stale in report.stale:
-        block(stale_job_text(label, stale), out_of_date_ci=True)
+        block(stale_job_text(label, stale), BlockerKind.OUT_OF_DATE_CI)
     return blockers
 
 
