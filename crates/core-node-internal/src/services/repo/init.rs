@@ -313,7 +313,7 @@ mod tests {
         ));
 
         // Simulate `repo remove` deleting the launchers-hub entry.
-        let mut without_launchers: Vec<Value> = initial
+        let without_launchers: Vec<Value> = initial
             .into_iter()
             .filter(|e| {
                 e.get("url").and_then(|v| v.as_str())
@@ -322,7 +322,6 @@ mod tests {
             .collect();
         let serialized = json5_pretty::to_string_pretty(&without_launchers).unwrap();
         std::fs::write(repositories_list_path(&peppy_dirs), &serialized).unwrap();
-        without_launchers.clear(); // dropped, only used to write
 
         ensure_default_repos(&peppy_dirs).unwrap();
 
