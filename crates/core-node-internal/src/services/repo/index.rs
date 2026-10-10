@@ -464,7 +464,7 @@ impl std::fmt::Display for IndexDrift {
 
 /// Walks `root` and produces the index it should contain.
 pub fn generate_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
-    let walked = walk_directory(root, &[]);
+    let walked = walk_directory(root);
     if !walked.conflicts.is_empty() {
         return Err(IndexError::ContestedIdentity(walked.conflicts));
     }
@@ -786,21 +786,15 @@ fn identity_label(item: &DeclaredItem<'_>) -> String {
 
 /// Walk a repository's working tree for the files that declare items.
 ///
-/// Any directory whose path matches one of the `excluded_paths` entries is
-/// pruned from the walk (neither descended into nor scanned).
-///
 /// Each `.json5` file is read once and dispatched by the `peppy_schema` value
 /// its body declares. A node manifest is required to declare `node/v1`, so the
 /// filename carries no special meaning here: a node in `peppy.json5` and a node
 /// in any other `.json5` are both found by the same schema dispatch.
-pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkResult {
-    // Canonicalize the root so that paths emitted by the walker share a
-    // common prefix representation with the excluded paths (which come from
-    // `ExclusionSet::load` already canonicalized). Without this, macOS
-    // `/var/...` symlinks break subdirectory exclusion: the walker emits
-    // `/var/...` while excluded paths resolve to `/private/var/...`.
+pub(crate) fn walk_directory(root: &Path) -> WalkResult {
+    // Walked from its canonical form, the same root that
+    // `read_published_items` and `check_repository_index` resolve the
+    // index's entries against.
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let excluded = excluded_paths.to_vec();
     let walker = ignore::WalkBuilder::new(&root)
         .hidden(true)
         // What a repository publishes must not depend on the machine doing
@@ -819,11 +813,7 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
                 return true;
             }
             let name = entry.file_name().to_string_lossy();
-            if PRUNED_DIR_NAMES.iter().any(|pruned| name == *pruned) {
-                return false;
-            }
-            let entry_path = entry.path();
-            !excluded.iter().any(|exc| entry_path.starts_with(exc))
+            !PRUNED_DIR_NAMES.iter().any(|pruned| name == *pruned)
         })
         .build();
 
@@ -1174,7 +1164,7 @@ mod tests {
             "v1",
         );
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(found(&walked, RepoItemKind::Node), vec!["my_sensor:v1"]);
         assert_eq!(found(&walked, RepoItemKind::Launcher), vec!["teleop"]);
@@ -1199,7 +1189,7 @@ mod tests {
         write_mcp_exposure_json5(&repo.join("a/surface.json5"), "camera_surface", "v1");
         write_mcp_exposure_json5(&repo.join("b/surface.json5"), "camera_surface", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(walked.conflicts.len(), 1);
         let conflict = walked.conflicts[0].to_string();
@@ -1215,7 +1205,7 @@ mod tests {
         let repo = tmp.path().join("repo");
         write_node_json5(&repo.join("nodes/my_sensor"), "my_sensor", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         let item = &walked.items[0];
         assert_eq!(item.relative_path, "nodes/my_sensor/peppy.json5");
@@ -1234,7 +1224,7 @@ mod tests {
         )
         .unwrap();
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(found(&walked, RepoItemKind::Node), vec!["a:v1"]);
         assert_eq!(walked.items.len(), 1, "the index is not an item");
@@ -1251,7 +1241,7 @@ mod tests {
             write_node_json5(&repo.join(pruned).join("buried"), "buried", "v1");
         }
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(found(&walked, RepoItemKind::Node), vec!["real:v1"]);
     }
@@ -1267,7 +1257,7 @@ mod tests {
         write_node_json5(&repo.join("uvc_recon/rust"), "uvc_recon", "v1");
         write_node_json5(&repo.join("uvc_recon/python"), "uvc_recon", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(walked.conflicts.len(), 1, "one contested identity");
         let conflict = &walked.conflicts[0];
@@ -1297,7 +1287,7 @@ mod tests {
         write_launcher_json5(&repo.join("sim/bringup.json5"));
         write_launcher_json5(&repo.join("real/bringup.json5"));
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(walked.conflicts.len(), 1);
         assert_eq!(walked.conflicts[0].kind, RepoItemKind::Launcher);
@@ -1317,7 +1307,7 @@ mod tests {
         write_pairing_json5(&repo.join("a/joint.json5"), "joint_link", "v1");
         write_pairing_json5(&repo.join("b/joint.json5"), "joint_link", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         let kinds: Vec<RepoItemKind> = walked.conflicts.iter().map(|c| c.kind).collect();
         assert_eq!(
@@ -1342,7 +1332,7 @@ mod tests {
         write_node_json5(&repo.join("one"), "alpha", "v1");
         write_node_json5(&repo.join("two"), "alpha", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         let names: Vec<&str> = walked.conflicts.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "beta"], "sorted by identity");
@@ -1363,7 +1353,7 @@ mod tests {
         write_node_json5(&repo.join("v1"), "my_sensor", "v1");
         write_node_json5(&repo.join("v2"), "my_sensor", "v2");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert!(walked.conflicts.is_empty(), "{:?}", walked.conflicts);
         let mut identities = found(&walked, RepoItemKind::Node);
@@ -1707,7 +1697,7 @@ mod tests {
         write_contract_json5(&repo.join("interfaces/rgb.json5"), "rgb_camera", "v1");
         write_pairing_json5(&repo.join("robot/joint.json5"), "joint_link", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
         let index = generate_repository_index(&repo).expect("generates");
         write_repository_index(&repo, &index).expect("writes");
 
@@ -1954,7 +1944,7 @@ mod tests {
         )
         .unwrap();
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(walked.conflicts, Vec::new());
         assert_eq!(
