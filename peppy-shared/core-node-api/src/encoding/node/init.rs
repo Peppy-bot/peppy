@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::node_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_fs_path, encode_message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInitRequest {
@@ -37,13 +37,7 @@ impl NodeInitRequest {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_init_request::Builder>();
-            let node_root_dir = self.node_root_dir.to_str().ok_or_else(|| {
-                crate::Error::Encoding(format!(
-                    "node_root_dir is not valid UTF-8: {}",
-                    self.node_root_dir.display()
-                ))
-            })?;
-            request.set_node_root_dir(node_root_dir);
+            request.set_node_root_dir(encode_fs_path(&self.node_root_dir, "node_root_dir")?);
             request.set_node_name(&self.node_name);
             request.set_git_hash(&self.git_hash);
             request.set_with_container(self.with_container);
@@ -120,6 +114,26 @@ impl crate::encoding::Wire for NodeInitResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The daemon creates the node under `node_root_dir` as sent, so a path
+    /// that is not UTF-8 is refused instead of reaching it with its invalid
+    /// bytes replaced.
+    #[cfg(unix)]
+    #[test]
+    fn init_request_encode_refuses_a_node_root_dir_that_is_not_utf8() {
+        let request = NodeInitRequest::new(
+            crate::encoding::non_utf8_path(),
+            "my_node",
+            "deadbeef",
+            false,
+            Toolchain::Cargo,
+        );
+        let refusal = crate::encoding::encoding_error(request.encode());
+        assert!(
+            refusal.contains("node_root_dir is not valid UTF-8"),
+            "{refusal}"
+        );
+    }
 
     #[test]
     fn init_request_round_trips_with_container() {

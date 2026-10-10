@@ -72,7 +72,7 @@ pub use stack::reset::{StackResetRequest, StackResetResponse};
 use capnp::introspect::Introspect;
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{Payload, Result};
 
@@ -221,6 +221,32 @@ pub(crate) fn decoding_error<T: std::fmt::Debug>(result: Result<T>) -> String {
         crate::Error::Decoding(message) => message,
         other => panic!("expected a decoding error, got {other:?}"),
     }
+}
+
+/// A path that is not UTF-8, for tests of the encoders that refuse one.
+#[cfg(all(test, unix))]
+pub(crate) fn non_utf8_path() -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+
+    PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9"))
+}
+
+/// The message of an encode refusal, for tests that assert on it.
+#[cfg(all(test, unix))]
+pub(crate) fn encoding_error<T: std::fmt::Debug>(result: Result<T>) -> String {
+    match result.expect_err("encode should fail") {
+        crate::Error::Encoding(message) => message,
+        other => panic!("expected an encoding error, got {other:?}"),
+    }
+}
+
+/// The text of a filesystem-path field, for a path the daemon opens as sent.
+/// The wire carries paths as text, so a path that is not UTF-8 is refused: a
+/// lossy conversion would replace its invalid bytes and name another file.
+pub(crate) fn encode_fs_path<'a>(path: &'a Path, field: &str) -> Result<&'a str> {
+    path.to_str().ok_or_else(|| {
+        crate::Error::Encoding(format!("{field} is not valid UTF-8: {}", path.display()))
+    })
 }
 
 /// Decode a non-empty filesystem-path text field into a `PathBuf`.

@@ -10,8 +10,8 @@ use crate::{NonEmptyPayload, Payload, Result};
 
 use crate::encoding::endpoints::{read_launch_endpoints, write_launch_endpoints};
 use crate::encoding::{
-    capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
-    required_text, write_text_list,
+    capnp_list_len, decode_message, encode_fs_path, encode_message, encode_message_non_empty,
+    optional_text, required_text, write_text_list,
 };
 use crate::graph::InstanceEndpoint;
 use config::runtime::Name;
@@ -185,13 +185,7 @@ impl LaunchGoal {
             let mut origin = goal.reborrow().init_launcher_origin();
             match &self.launcher_origin {
                 LauncherOrigin::Fs(path) => {
-                    let path = path.to_str().ok_or_else(|| {
-                        crate::Error::Encoding(format!(
-                            "LaunchGoal.launcher_origin.fs is not valid UTF-8: {}",
-                            path.display()
-                        ))
-                    })?;
-                    origin.set_fs(path);
+                    origin.set_fs(encode_fs_path(path, "LaunchGoal.launcher_origin.fs")?);
                 }
                 LauncherOrigin::Repository { name } => {
                     origin.set_repository(name.as_str());
@@ -1088,21 +1082,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn launch_goal_encode_refuses_a_launcher_path_that_is_not_utf8() {
-        use std::os::unix::ffi::OsStrExt;
-
-        let path = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9/launcher.json5"));
         let goal = LaunchGoal::new(
-            LauncherOrigin::Fs(path),
+            LauncherOrigin::Fs(crate::encoding::non_utf8_path()),
             "launch-abc123",
             StackBudgets::new(1, 1, 1, None),
         );
-        let error = goal
-            .encode()
-            .expect_err("a non-UTF-8 path cannot travel as text");
-        assert!(matches!(error, crate::Error::Encoding(_)), "{error}");
+        let refusal = crate::encoding::encoding_error(goal.encode());
         assert!(
-            error.to_string().contains("LaunchGoal.launcher_origin.fs"),
-            "{error}"
+            refusal.contains("LaunchGoal.launcher_origin.fs is not valid UTF-8"),
+            "{refusal}"
         );
     }
 
