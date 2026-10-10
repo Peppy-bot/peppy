@@ -1,5 +1,15 @@
 //! Router liveness probe for the daemon's router watchdog.
 
+/// How long a probe waits for its throwaway session to close. The probe has
+/// its answer by then, so a slow close must not stall the caller.
+const PROBE_SESSION_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Closes the throwaway session of a router probe, bounded by
+/// [`PROBE_SESSION_CLOSE_TIMEOUT`].
+pub(super) async fn close_probe_session(session: zenoh::Session) {
+    let _ = tokio::time::timeout(PROBE_SESSION_CLOSE_TIMEOUT, session.close()).await;
+}
+
 /// Lock-free handle for probing whether the Zenoh router is responsive.
 ///
 /// Holds a fail-fast probe config (scouting disabled, single connect attempt to
@@ -26,10 +36,8 @@ impl RouterHealthChecker {
     pub async fn is_router_responsive(&self, timeout: std::time::Duration) -> bool {
         match tokio::time::timeout(timeout, zenoh::open(self.probe_config.clone())).await {
             Ok(Ok(session)) => {
-                // We only needed the handshake. Close the probe session, but
-                // don't let a slow close stall the watchdog.
-                let _ =
-                    tokio::time::timeout(std::time::Duration::from_secs(1), session.close()).await;
+                // We only needed the handshake.
+                close_probe_session(session).await;
                 true
             }
             // Open errored, or our timeout elapsed before the handshake settled.

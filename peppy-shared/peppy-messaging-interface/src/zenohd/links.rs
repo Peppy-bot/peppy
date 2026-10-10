@@ -199,9 +199,8 @@ impl RouterLinksProbe {
             tokio::time::sleep(LINKS_POLL_INTERVAL).await;
         };
 
-        // The probe served its purpose either way; don't let a slow close
-        // stall the caller (same policy as the router health checker).
-        let _ = tokio::time::timeout(Duration::from_secs(1), session.close()).await;
+        // The probe served its purpose either way.
+        super::health::close_probe_session(session).await;
         established
     }
 }
