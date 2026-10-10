@@ -1344,6 +1344,35 @@ mod tests {
         assert_eq!(payload.to_bytes().as_ref(), payload.as_bytes().as_ref());
     }
 
+    /// `into_bytes` cannot take over the buffer zenoh holds either, so owning
+    /// a zenoh payload copies it, like `to_bytes`.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn owning_a_zenoh_payload_copies_the_wire_buffer() {
+        let payload = Payload::from_zbytes(ZBytes::from(vec![9u8; WIRE_BUFFER_LEN]));
+        let wire_address = buffer_address(&payload);
+
+        let owned = payload.clone().into_bytes();
+        assert_ne!(owned.as_ptr(), wire_address);
+        assert_eq!(owned.as_ref(), payload.as_bytes().as_ref());
+    }
+
+    /// A payload that arrives in several zenoh slices has no contiguous buffer
+    /// to borrow: reading it gathers the slices in order, and both owned
+    /// accessors return the gathered bytes.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn a_multi_slice_zenoh_payload_reads_and_owns_its_slices_in_order() {
+        let mut writer = ZBytes::writer();
+        writer.append(ZBytes::from(vec![1u8, 2]));
+        writer.append(ZBytes::from(vec![3u8]));
+        let payload = Payload::from_zbytes(writer.finish());
+
+        assert!(matches!(payload.as_bytes(), Cow::Owned(_)));
+        assert_eq!(payload.to_bytes().as_ref(), [1u8, 2, 3]);
+        assert_eq!(payload.into_bytes().as_ref(), [1u8, 2, 3]);
+    }
+
     /// Envelope clones ride the payload's refcount. Bindings that outlive the
     /// receive call clone the whole message rather than copy the body out.
     #[test]
