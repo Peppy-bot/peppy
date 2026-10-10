@@ -1,10 +1,26 @@
 use super::common::setup;
+use peppy::context::AppContext;
 use peppy::test_support::LogCapture;
+use std::sync::Arc;
 use std::time::Duration;
 
 use config::node::Toolchain;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName};
+
+/// Runs the Cargo `node init` of `node_name` into the root directory of `ctx`.
+fn init_cargo_node(ctx: &Arc<AppContext>, node_name: &str, with_container: bool) {
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            toolchain: Toolchain::Cargo,
+            to_dir: None,
+            with_container,
+        },
+    }
+    .execute(ctx)
+    .expect("node create command should succeed");
+}
 
 #[test]
 fn node_cargo_init_command_success() {
@@ -21,16 +37,7 @@ fn node_cargo_init_command_success() {
     let _guard = log_capture.install();
 
     // Execute the node create command
-    NodeCommand {
-        command: NodeCommands::Init {
-            node_name: NodeName::new(node_name).expect("valid node name"),
-            toolchain: Toolchain::Cargo,
-            to_dir: None,
-            with_container: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node create command should succeed");
+    init_cargo_node(&node_ctx, node_name, false);
 
     // Verify the node directory was created
     let created_node_dir = node_dir.path().join(node_name);
@@ -111,16 +118,7 @@ fn node_cargo_init_with_container_generates_apptainer_def() {
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    NodeCommand {
-        command: NodeCommands::Init {
-            node_name: NodeName::new(node_name).expect("valid node name"),
-            toolchain: Toolchain::Cargo,
-            to_dir: None,
-            with_container: true,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node create command should succeed");
+    init_cargo_node(&node_ctx, node_name, true);
 
     let created_node_dir = node_dir.path().join(node_name);
     assert!(
@@ -137,16 +135,7 @@ fn node_cargo_init_without_container_omits_apptainer_def() {
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    NodeCommand {
-        command: NodeCommands::Init {
-            node_name: NodeName::new(node_name).expect("valid node name"),
-            toolchain: Toolchain::Cargo,
-            to_dir: None,
-            with_container: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node create command should succeed");
+    init_cargo_node(&node_ctx, node_name, false);
 
     let created_node_dir = node_dir.path().join(node_name);
     assert!(
