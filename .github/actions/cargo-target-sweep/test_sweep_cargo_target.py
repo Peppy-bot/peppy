@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """What `sweep-cargo-target.py` keeps in a target dir or a target root, and what
 it removes.
 

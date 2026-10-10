@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for the resolution of the peppy build and the hubs of a hub's CI job,
 and of the hub set of a peppy release.
 

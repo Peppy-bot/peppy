@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """What `report.py` reads from a sticky disk, and the report it writes.
 
 The cases give the script the mount table, the du output and the record the

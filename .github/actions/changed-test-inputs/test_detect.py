@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for the test-input detection.
 
 The detection decides which suites a pull request runs, so a defect here is
