@@ -177,7 +177,7 @@ fn stage_hub_docs(repo_dir: &Path, pairings: &[&str], contracts: &[&str]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_launch_command_succeed() {
+async fn stack_launch_command_succeeds() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -356,7 +356,7 @@ async fn node_launch_command_succeed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_stack() {
+async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_stack() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -548,7 +548,7 @@ impl TimeoutTestHarness {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
+async fn stack_launch_fails_when_the_build_idle_timeout_is_hit() {
     let harness = setup_timeout_test("build_idle_node_b").await;
 
     override_build_cmd(
@@ -588,7 +588,7 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
+async fn stack_launch_fails_when_the_run_idle_timeout_is_hit() {
     let harness = setup_timeout_test("run_idle_node_b").await;
 
     // Silent run command that never produces output and never becomes ready.
@@ -626,7 +626,7 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_launch_fails_when_max_timeout_is_hit() {
+async fn stack_launch_fails_when_the_max_timeout_is_hit() {
     let harness = setup_timeout_test("max_timeout_node_b").await;
 
     // Continuous output for ~10s so idle never fires, but `max_timeout_secs=2` does.
@@ -674,7 +674,7 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
 /// Without the fix the vec stays empty (defaulted to `_` later by the
 /// runtime), so this is the boundary that surfaces the silent-loss bug.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stack_launch_populates_link_ids_from_launcher_bindings() {
+async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
     let instances = peppy::test_support::InstanceLifetime::new();

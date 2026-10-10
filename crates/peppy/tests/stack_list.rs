@@ -142,7 +142,7 @@ fn node_inventory_row(output: &str, label: &str) -> InventoryRow {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_list_command_succeeds() {
+async fn stack_list_command_succeeds() {
     // Mock messaging is sufficient for listing and dependency graph tests (no spawned node process).
     let serve = ServeCommandEmulation::with_mock()
         .await

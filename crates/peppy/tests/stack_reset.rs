@@ -8,7 +8,7 @@ use peppy::commands::Command;
 use peppy::commands::stack::{StackCommand, StackCommands};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_reset_command_resets_node_stack() {
+async fn stack_reset_command_resets_node_stack() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -55,7 +55,7 @@ async fn service_reset_command_resets_node_stack() {
         command: StackCommands::Reset { federated: false },
     }
     .execute(&ctx)
-    .expect("service reset command should succeed");
+    .expect("stack reset command should succeed");
 
     let graph = stack_graph(messenger_handle, &core_node_name).await;
 
