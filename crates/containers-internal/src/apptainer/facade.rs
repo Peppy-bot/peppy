@@ -929,9 +929,7 @@ impl Apptainer {
         match &self.backend {
             Backend::Native { .. } => Ok(absolute_path),
             Backend::Lima { .. } => {
-                let home = std::env::var("HOME").map_err(|_| {
-                    Error::ConfigurationError("HOME environment variable not set".into())
-                })?;
+                let home = lima::home_dir_from_env()?;
 
                 // Ahead of both acceptance checks on purpose. `ensure_host_mounts`
                 // already refuses to register these, but a `$HOME`-relative or
@@ -1222,8 +1220,7 @@ fn to_absolute(path: &Path) -> std::io::Result<PathBuf> {
 /// run, node build) funnel through the two methods that use it, which must
 /// agree on what counts.
 fn paths_lima_must_mount<'a>(mount_src_paths: &[&'a str]) -> Result<Vec<&'a str>> {
-    let home = std::env::var("HOME")
-        .map_err(|_| Error::ConfigurationError("HOME environment variable not set".into()))?;
+    let home = lima::home_dir_from_env()?;
     Ok(mount_src_paths
         .iter()
         .filter(|p| {

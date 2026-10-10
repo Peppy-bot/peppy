@@ -729,6 +729,14 @@ pub(crate) fn peppy_home_dir(rel: &str) -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| Path::new(&home).join(".peppy").join(rel))
 }
 
+/// The user's home directory from `$HOME`, which Lima auto-mounts into the
+/// guest at the same path. The Lima path rules read it through here, so they
+/// agree on what the home directory is and on the error when it is unset.
+pub(crate) fn home_dir_from_env() -> Result<String> {
+    std::env::var("HOME")
+        .map_err(|_| Error::ConfigurationError("HOME environment variable not set".into()))
+}
+
 /// Resolve an installation directory using a standard three-step fallback:
 ///
 /// 1. Runtime override via `env_var` environment variable.
@@ -827,8 +835,7 @@ pub(crate) fn resolve_lima_home() -> Result<PathBuf> {
     }
 
     // 3) Fallback: well-known location in the user's home
-    let home = std::env::var("HOME")
-        .map_err(|_| Error::ConfigurationError("HOME environment variable not set".into()))?;
+    let home = home_dir_from_env()?;
     Ok(PathBuf::from(home).join(".peppy/lima-data"))
 }
 
