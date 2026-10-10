@@ -377,11 +377,9 @@ fn decode_frame(
     match encoding {
         "rgb8" => pixels_as_rgb8(bytes, width, height, encoding).map(DynamicImage::ImageRgb8),
         "bgr8" => {
-            bytes
-                .as_chunks_mut::<3>()
-                .0
-                .iter_mut()
-                .for_each(|pixel| pixel.swap(0, 2));
+            for pixel in bytes.as_chunks_mut::<3>().0 {
+                pixel.swap(0, 2);
+            }
             pixels_as_rgb8(bytes, width, height, encoding).map(DynamicImage::ImageRgb8)
         }
         depth if U16_ENCODINGS.contains(&depth) => {
