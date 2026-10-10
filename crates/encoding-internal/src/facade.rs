@@ -39,18 +39,7 @@ impl CapnpFacade {
         P: AsRef<Path>,
         O: AsRef<Path>,
     {
-        Self::compile_with_executable(capnp_files, output_dir.as_ref(), self.binary_path())
-    }
-
-    fn compile_with_executable<P>(
-        capnp_files: &[P],
-        output_dir: &Path,
-        capnp_executable: &Path,
-    ) -> Result<()>
-    where
-        P: AsRef<Path>,
-    {
-        let output_dir = output_dir.to_path_buf();
+        let output_dir = output_dir.as_ref();
         let capnp_output_dir = output_dir.join("capnp");
         std::fs::create_dir_all(&capnp_output_dir)?;
 
@@ -59,7 +48,7 @@ impl CapnpFacade {
             let capnp_path = capnp_file.as_ref();
 
             let mut command = CompilerCommand::new();
-            command.capnp_executable(capnp_executable);
+            command.capnp_executable(self.binary_path());
             command.output_path(&capnp_output_dir);
             command.default_parent_module(vec!["capnp".to_string()]);
 
