@@ -8,6 +8,9 @@ use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
+/// Generates the statements that read one field into a local and returns
+/// them with the local's name. An optional field reads into an `Option`,
+/// guarded by the field's presence check when its wire type has one.
 pub fn generate_field_reader_statements(
     reader_expr: &TokenStream,
     field_name: &str,
@@ -16,15 +19,45 @@ pub fn generate_field_reader_statements(
     context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> Result<(Vec<TokenStream>, Ident)> {
-    generate_field_reader_statements_inner(
+    if !schema.is_optional() {
+        return generate_required_field_reader_statements(
+            reader_expr,
+            field_name,
+            schema,
+            struct_prefix,
+            context_expr,
+            names,
+        );
+    }
+
+    let option_ident = names.next(&format!("{field_name}_opt"));
+    let (inner_statements, value_ident) = generate_required_field_reader_statements(
         reader_expr,
         field_name,
         schema,
         struct_prefix,
         context_expr,
         names,
-        true,
-    )
+    )?;
+    if !schema_supports_presence_check(schema) {
+        let mut statements = inner_statements;
+        statements.push(quote!(let #option_ident = Some(#value_ident);));
+        return Ok((statements, option_ident));
+    }
+
+    let has_method = Ident::new(
+        &format!("has_{}", sanitize_component(field_name)),
+        Span::call_site(),
+    );
+    let statements = vec![quote! {
+        let #option_ident = if #reader_expr.reborrow().#has_method() {
+            #( #inner_statements )*
+            Some(#value_ident)
+        } else {
+            None
+        };
+    }];
+    Ok((statements, option_ident))
 }
 
 /// Generates a complete deserialization function:
@@ -116,55 +149,16 @@ pub fn deserialize_format_fields(
     Ok((field_statements, field_inits, value_idents))
 }
 
-fn generate_field_reader_statements_inner(
+/// Generates the statements that read one field as if it were required:
+/// the wire value itself, without a presence check.
+fn generate_required_field_reader_statements(
     reader_expr: &TokenStream,
     field_name: &str,
     schema: &SchemaType,
     struct_prefix: &str,
     context_expr: &TokenStream,
     names: &mut NameGenerator,
-    handle_optional: bool,
 ) -> Result<(Vec<TokenStream>, Ident)> {
-    if handle_optional && schema.is_optional() {
-        let option_ident = names.next(&format!("{field_name}_opt"));
-        if schema_supports_presence_check(schema) {
-            let has_method = Ident::new(
-                &format!("has_{}", sanitize_component(field_name)),
-                Span::call_site(),
-            );
-            let (inner_statements, value_ident) = generate_field_reader_statements_inner(
-                reader_expr,
-                field_name,
-                schema,
-                struct_prefix,
-                context_expr,
-                names,
-                false,
-            )?;
-            let statements = vec![quote! {
-                let #option_ident = if #reader_expr.reborrow().#has_method() {
-                    #( #inner_statements )*
-                    Some(#value_ident)
-                } else {
-                    None
-                };
-            }];
-            return Ok((statements, option_ident));
-        } else {
-            let (mut statements, value_ident) = generate_field_reader_statements_inner(
-                reader_expr,
-                field_name,
-                schema,
-                struct_prefix,
-                context_expr,
-                names,
-                false,
-            )?;
-            statements.push(quote!(let #option_ident = Some(#value_ident);));
-            return Ok((statements, option_ident));
-        }
-    }
-
     match schema {
         SchemaType::Type(token) => Ok(generate_primitive_reader(
             reader_expr,
