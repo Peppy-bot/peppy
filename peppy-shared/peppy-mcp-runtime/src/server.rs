@@ -3076,6 +3076,49 @@ mod tests {
             assert!(error.message.contains("`robot.list` takes no arguments"));
         }
 
+        /// A describe value whose tool fails or overruns its deadline is
+        /// null, the note giving the reason in the words of a call of that
+        /// tool.
+        #[tokio::test(start_paused = true)]
+        async fn the_listing_notes_a_describe_tool_that_fails_or_overruns_its_deadline() {
+            let fleet = vec![
+                member("status", "alpha", "backbone_inst"),
+                member("status", "bravo", "backbone_inst"),
+            ];
+            let server = ExposureServer::builder(bundle())
+                .with_fleet(move || fleet.clone())
+                .with_tool("robot.get_identity", |call: ToolCall| async move {
+                    let Recipient::Member(member) = call.recipient else {
+                        panic!("a per-robot call names its member");
+                    };
+                    if member.instance_id == "alpha_backbone_inst" {
+                        return Err(ToolCallError::Failed("the identity is unset".to_string()));
+                    }
+                    std::future::pending::<Result<Value, ToolCallError>>().await
+                })
+                .with_tool("camera.set_brightness", brightness_handler)
+                .build()
+                .expect("bundle and handlers agree");
+            // Paused time auto-advances past bravo's 2000 ms deadline once
+            // its describe call is the only thing pending.
+            let listed = structured(
+                server
+                    .list_robots(runtime(&server), JsonObject::new())
+                    .await
+                    .expect("lists"),
+            );
+            assert_eq!(listed["robots"][0]["identity"], Value::Null);
+            assert_eq!(
+                listed["robots"][0]["notes"],
+                json!(["identity: call failed: the identity is unset"])
+            );
+            assert_eq!(listed["robots"][1]["identity"], Value::Null);
+            assert_eq!(
+                listed["robots"][1]["notes"],
+                json!(["identity: deadline exceeded: the provider did not answer within 2000 ms"])
+            );
+        }
+
         #[tokio::test(start_paused = true)]
         async fn resources_follow_the_fleet_and_a_change_is_announced() {
             let (server, members) = served();
@@ -4507,6 +4550,33 @@ mod tests {
             calls[0]["message"],
             "provider unavailable: no producer bound"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_service_that_overruns_its_deadline_is_recorded_as_failed_in_the_words_of_its_tool_error()
+     {
+        let (builder, _) = record_builder();
+        let server = builder
+            .with_tool("front_camera.set_brightness", |_call: ToolCall| {
+                std::future::pending::<Result<Value, ToolCallError>>()
+            })
+            .build()
+            .expect("builds");
+        // Paused time auto-advances past the 2000 ms deadline once the
+        // provider is the only thing pending.
+        let result = server
+            .execute_tool(
+                "front_camera.set_brightness",
+                arguments(json!({ "value": 1 })),
+                None,
+            )
+            .await
+            .expect("an overrun is a tool error");
+        let overrun = "deadline exceeded: the provider did not answer within 2000 ms";
+        assert_eq!(tool_error_text(&result), overrun);
+        let calls = recorded_calls(&server);
+        assert_eq!(calls[0]["outcome"], "failed");
+        assert_eq!(calls[0]["message"], overrun);
     }
 
     #[tokio::test]
