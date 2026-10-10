@@ -38,12 +38,13 @@ _MIB = 1024 * 1024
 # it as the client's fault costs a release its archives.
 _RETRYABLE_STATUS_CODES = frozenset({500, 502, 503, 504})
 
-_GIT_REMOTE_PATTERNS: list[tuple[str, str]] = [
-    ("git@github.com:", "git@github.com:"),
-    ("https://github.com/", "https://github.com/"),
-    ("http://github.com/", "http://github.com/"),
-    ("ssh://git@github.com/", "ssh://git@github.com/"),
-]
+# The URL forms of a GitHub remote, each followed by "owner/repo".
+_GITHUB_REMOTE_PREFIXES = (
+    "git@github.com:",
+    "https://github.com/",
+    "http://github.com/",
+    "ssh://git@github.com/",
+)
 
 
 @dataclass(frozen=True)
@@ -343,10 +344,9 @@ def github_repo_slug() -> RepoSlug:
             "(set GITHUB_REPOSITORY=owner/repo or configure git remote 'origin')"
         )
 
-    for prefix, match_prefix in _GIT_REMOTE_PATTERNS:
-        if remote_url.startswith(match_prefix):
-            slug_str = remote_url[len(prefix) :]
-            slug_str = slug_str.removesuffix(".git")
+    for prefix in _GITHUB_REMOTE_PREFIXES:
+        if remote_url.startswith(prefix):
+            slug_str = remote_url.removeprefix(prefix).removesuffix(".git")
             return _parse_slug(slug_str)
 
     raise ReleaseError(f"unsupported remote url (expected github.com): {remote_url}")

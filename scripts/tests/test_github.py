@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -19,6 +19,7 @@ from functions.github import (
     find_published_release,
     get_latest_release,
     github_api,
+    github_repo_slug,
     github_upload_asset,
     publish_release,
 )
@@ -32,6 +33,54 @@ API_BASE = "https://api.github.com/repos/test-owner/test-repo"
 
 def test_the_api_url_of_a_repository_is_its_rest_api_root() -> None:
     assert SLUG.api_url == API_BASE
+
+
+# --- Repository slug ---
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "git@github.com:",
+        "https://github.com/",
+        "http://github.com/",
+        "ssh://git@github.com/",
+    ],
+)
+@pytest.mark.parametrize("suffix", ["", ".git"])
+def test_github_repo_slug_reads_the_origin_remote(
+    monkeypatch: pytest.MonkeyPatch, prefix: str, suffix: str
+) -> None:
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    with patch("functions.github.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(stdout=f"{prefix}Peppy-bot/peppy{suffix}\n")
+        assert github_repo_slug() == RepoSlug(owner="Peppy-bot", repo="peppy")
+
+    mock_run.assert_called_once_with(
+        ["git", "config", "--get", "remote.origin.url"],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_github_repo_slug_prefers_github_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_REPOSITORY", "Peppy-bot/peppy")
+    with patch("functions.github.subprocess.run") as mock_run:
+        assert github_repo_slug() == RepoSlug(owner="Peppy-bot", repo="peppy")
+
+    mock_run.assert_not_called()
+
+
+def test_github_repo_slug_refuses_a_remote_off_github(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    with patch("functions.github.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(stdout="https://gitlab.com/a/b.git\n")
+        with pytest.raises(ReleaseError, match="unsupported remote url"):
+            github_repo_slug()
 
 
 @pytest.fixture()
