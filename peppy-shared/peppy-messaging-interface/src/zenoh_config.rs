@@ -303,6 +303,20 @@ pub(crate) enum SessionMode {
     Router,
 }
 
+impl SessionMode {
+    /// The name zenoh gives this mode. Zenoh reads every per-mode map
+    /// (`listen.endpoints`, `timestamping.enabled`) against the session's own
+    /// mode, so this name is also the key of the session's entry in each map:
+    /// an entry under another key is silently ignored.
+    fn zenoh_name(self) -> &'static str {
+        match self {
+            SessionMode::Peer => "peer",
+            SessionMode::Client => "client",
+            SessionMode::Router => "router",
+        }
+    }
+}
+
 /// Inputs for [`build_zenoh_config`].
 pub(crate) struct ZenohConfigSpec {
     pub mode: SessionMode,
@@ -337,11 +351,7 @@ pub(crate) struct ZenohConfigSpec {
 
 /// Builds the JSON5-equivalent config value for a session or the router.
 pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
-    let mode = match spec.mode {
-        SessionMode::Peer => "peer",
-        SessionMode::Client => "client",
-        SessionMode::Router => "router",
-    };
+    let mode = spec.mode.zenoh_name();
 
     let mut config = json!({
         "mode": mode,
@@ -374,33 +384,13 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
     }
 
     if !spec.listen_endpoints.is_empty() {
-        // Zenoh reads `listen.endpoints` against the session's OWN mode, so the
-        // key must match `mode` above — the same per-role-map rule as
-        // `timestamping` below. Deriving it exhaustively (rather than
-        // `else => "peer"`) keeps a client's endpoints from being silently
-        // misfiled under `peer` if one ever listens.
-        let role = match spec.mode {
-            SessionMode::Router => "router",
-            SessionMode::Peer => "peer",
-            SessionMode::Client => "client",
-        };
-        config["listen"] = json!({ "endpoints": { role: spec.listen_endpoints } });
+        config["listen"] = json!({ "endpoints": { mode: spec.listen_endpoints } });
     }
 
     // Stamp data at the producer so consumers can measure real delivery latency.
-    // Zenoh matches `enabled` against the session's OWN mode, so the key must
-    // match `mode` above — a `peer` session ignores an `enabled.client` entry.
     // Stamping at the source keeps peer mode (no router in the direct path) on
     // par with router mode, where the client/router already stamps.
-    config["timestamping"] = match spec.mode {
-        SessionMode::Router => {
-            json!({ "enabled": { "router": true }, "drop_future_timestamp": false })
-        }
-        SessionMode::Peer => json!({ "enabled": { "peer": true }, "drop_future_timestamp": false }),
-        SessionMode::Client => {
-            json!({ "enabled": { "client": true }, "drop_future_timestamp": false })
-        }
-    };
+    config["timestamping"] = json!({ "enabled": { mode: true }, "drop_future_timestamp": false });
 
     // Workspace routing namespace. zenoh's `namespace` is a
     // session-level field: it is applied to the application session opened
