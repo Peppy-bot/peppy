@@ -718,6 +718,19 @@ impl TopicWireReceiver {
 
 // ─── Services ────────────────────────────────────────────────────────────────
 
+/// The producer's `(core_node, instance_id)` wire slots of a caller-side
+/// sender: both pinned for a `Some` target, both open for `None`.
+fn producer_slots(
+    target: Option<&ProducerRef>,
+) -> Result<(Option<Segment>, Option<Segment>), SegmentError> {
+    let Some(target) = target else {
+        return Ok((None, None));
+    };
+    let core_node = Segment::try_from(target.core_node.as_str())?;
+    let instance_id = Segment::try_from(target.instance_id.as_str())?;
+    Ok((Some(core_node), Some(instance_id)))
+}
+
 /// Caller-side addressing for a service. `target` is the producer's full
 /// `(core_node, instance_id)` wire address; `None` is a genuine wildcard
 /// on both slots (the discovery probe shape). The one representable
@@ -747,15 +760,14 @@ impl ServiceWireSender {
         to_service_name: &str,
         kind: ServiceKind,
     ) -> crate::error::Result<Self> {
+        let bound_core_node = Segment::try_from(bound_core_node)?;
+        let as_instance_id = Segment::try_from(as_instance_id)?;
+        let (target_core_node, target_instance_id) = producer_slots(target)?;
         Ok(Self {
-            bound_core_node: Segment::try_from(bound_core_node)?,
-            as_instance_id: Segment::try_from(as_instance_id)?,
-            target_core_node: target
-                .map(|t| Segment::try_from(t.core_node.as_str()))
-                .transpose()?,
-            target_instance_id: target
-                .map(|t| Segment::try_from(t.instance_id.as_str()))
-                .transpose()?,
+            bound_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
             to_target,
             to_service_name: Segment::try_from(to_service_name)?,
             kind,
@@ -850,15 +862,14 @@ impl ActionWireSender {
         to_target: SenderTarget,
         to_action_name: &str,
     ) -> crate::error::Result<Self> {
+        let as_core_node = Segment::try_from(as_core_node)?;
+        let as_instance_id = Segment::try_from(as_instance_id)?;
+        let (target_core_node, target_instance_id) = producer_slots(target)?;
         Ok(Self {
-            as_core_node: Segment::try_from(as_core_node)?,
-            as_instance_id: Segment::try_from(as_instance_id)?,
-            target_core_node: target
-                .map(|t| Segment::try_from(t.core_node.as_str()))
-                .transpose()?,
-            target_instance_id: target
-                .map(|t| Segment::try_from(t.instance_id.as_str()))
-                .transpose()?,
+            as_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
             to_target,
             to_action_name: Segment::try_from(to_action_name)?,
         })
