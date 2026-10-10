@@ -845,15 +845,8 @@ async fn process_node_run(
         }
     };
 
+    let instance_id = runtime_config.node_instance.instance_id.clone();
     let instance_id_str = runtime_config.node_instance.instance_id.as_str();
-    let instance_id = match Name::new(instance_id_str) {
-        Ok(name) => name,
-        Err(e) => {
-            let msg = format!("Invalid instance_id: {}", e);
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
-        }
-    };
 
     debug!(
         "Processing `node_run` from {sender_instance_id}, node={}:{}, instance_id={}",
