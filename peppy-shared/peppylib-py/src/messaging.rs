@@ -17,7 +17,7 @@ pub(crate) use target::{PyProducerRef, PySenderTarget};
 
 use config::namespace::Namespace;
 use peppylib::PeppyError;
-use peppylib::messaging::{MessengerHandle, SessionScope};
+use peppylib::messaging::{MessengerHandle, PeerInfo, ProducerRef, SessionScope};
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -34,6 +34,23 @@ pub(crate) use topics::{
 pub(crate) fn repr_copy(copy: Option<&str>) -> String {
     copy.map(|copy| format!("{copy:?}"))
         .unwrap_or_else(|| "None".to_string())
+}
+
+/// A producer as every repr spells it, the `ProducerRef` constructor call.
+pub(crate) fn repr_producer(producer: &ProducerRef) -> String {
+    format!(
+        "ProducerRef({:?}, {:?})",
+        producer.core_node, producer.instance_id
+    )
+}
+
+/// A peer as every repr spells it, the `PeerInfo` constructor call.
+pub(crate) fn repr_peer_info(peer: &PeerInfo) -> String {
+    format!(
+        "PeerInfo(producer={}, peer_link_id={:?})",
+        repr_producer(&peer.producer),
+        peer.peer_link_id
+    )
 }
 
 /// Convert a `peppylib::error::Error` into an appropriate Python exception.

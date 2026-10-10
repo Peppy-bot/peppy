@@ -91,7 +91,7 @@ impl PyBoundMember {
     fn __repr__(&self) -> String {
         format!(
             "BoundMember(producer={}, copy={})",
-            PyProducerRef::from(self.inner.producer.clone()).__repr__(),
+            super::repr_producer(&self.inner.producer),
             self.copy()
                 .map(|copy| copy.__repr__())
                 .unwrap_or_else(|| "None".to_string())

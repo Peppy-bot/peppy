@@ -50,10 +50,7 @@ impl PyPeerInfo {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "PeerInfo(producer=ProducerRef({:?}, {:?}), peer_link_id={:?})",
-            self.inner.producer.core_node, self.inner.producer.instance_id, self.inner.peer_link_id
-        )
+        super::repr_peer_info(&self.inner)
     }
 }
 
@@ -100,7 +97,7 @@ impl PyPeerMember {
     fn __repr__(&self) -> String {
         format!(
             "PeerMember(info={}, copy={})",
-            PyPeerInfo::from(self.inner.info.clone()).__repr__(),
+            super::repr_peer_info(&self.inner.info),
             super::repr_copy(self.inner.copy.as_deref())
         )
     }
