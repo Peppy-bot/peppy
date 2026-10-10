@@ -23,6 +23,12 @@ pull request at a time, so a merge that fails part way leaves the set partly
 merged: the bot then blocks the pull requests that did not merge and reports
 what merged on every pull request of the set.
 
+The bot acts on a ticked box only for the user who opened every pull request
+of the set and has write access to every repository of it, or for a user with
+the admin role on every repository of the set. The user who ticked a box is
+the one who last edited the dashboard. To any other user who ticks a box, the
+bot answers why it does nothing.
+
 A user with the admin role on every repository of the set merges it without
 the approvals it lacks, as the rulesets let an admin merge a pull request of
 their own. The App is a bypass actor, for pull requests, of the rulesets that
@@ -409,6 +415,9 @@ class PullRequest:
     number: int
     url: str
     title: str
+    # The login of the user who opened the pull request; None when GitHub
+    # names no user.
+    author: str | None
     is_open: bool
     merged: bool
     draft: bool
@@ -435,6 +444,7 @@ def parse_pull_request(repository: Repository, item: Mapping) -> PullRequest:
         number=item["number"],
         url=item["html_url"],
         title=item["title"],
+        author=(item.get("user") or {}).get("login"),
         is_open=item["state"] == "open",
         merged=item.get("merged_at") is not None,
         draft=bool(item.get("draft")),
@@ -1247,7 +1257,8 @@ def render_set_dashboard(
         f"These pull requests share the branch name `{state.name}`. The CI of "
         "each hub pull request tests it with the others, so they merge "
         "together: the `merge-set` check keeps the merge button of each one "
-        "blocked. Tick the first box below to merge all of them.",
+        "blocked. Tick the first box below to merge all of them. The bot acts "
+        f"on a ticked box only for {WHO_MAY_ASK}.",
         "",
         "| Repository | Pull request | Head | CI | State |",
         "| --- | --- | --- | --- | --- |",
@@ -1385,6 +1396,61 @@ def requesters_of(requests: Sequence[Request]) -> list[str]:
     return logins
 
 
+WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
+ADMIN_PERMISSION = "admin"
+# The users the bot acts for when they tick a box, as the dashboard and the
+# refusals word it.
+WHO_MAY_ASK = (
+    "the user who opened every pull request of the set and has write access "
+    "to every repository of it, or an admin of every repository of the set"
+)
+
+
+def is_admin_of_the_set(state: SetState, permissions: Mapping[Repository, str]) -> bool:
+    """Whether a user, whose permission on each repository of the set is in
+    `permissions`, has the admin role on every repository of the set."""
+    return all(
+        permissions[member.repository] == ADMIN_PERMISSION for member in state.members
+    )
+
+
+@dataclass(frozen=True)
+class AccessRefusal:
+    """Why the bot does not act for a user who ticked a box: the pull requests
+    of the set the user did not open, and the repositories of the set the user
+    has no write access to."""
+
+    not_opened: tuple[PullRequest, ...]
+    no_write_access: tuple[Repository, ...]
+
+
+def access_refusal(
+    state: SetState, login: str, permissions: Mapping[Repository, str]
+) -> AccessRefusal | None:
+    """Why the bot does not act for the user `login`, whose permission on each
+    repository of the set is in `permissions`; None when it acts. It acts for
+    an admin of every repository of the set, and for the user who opened
+    every pull request of the set and has write access to every repository
+    of it."""
+    if is_admin_of_the_set(state, permissions):
+        return None
+    refusal = AccessRefusal(
+        not_opened=tuple(
+            pull_request
+            for pull_request in state.open_pull_requests()
+            if pull_request.author != login
+        ),
+        no_write_access=tuple(
+            member.repository
+            for member in state.members
+            if permissions[member.repository] not in WRITE_PERMISSIONS
+        ),
+    )
+    if not refusal.not_opened and not refusal.no_write_access:
+        return None
+    return refusal
+
+
 # The merge -------------------------------------------------------------------
 
 MERGE_METHOD = "merge"
@@ -1401,8 +1467,6 @@ MERGE_STATE_BLOCKED = "blocked"
 # The `mergeable_state` values of a pull request GitHub merges: `unstable`
 # has a failed check that no rule requires, `has_hooks` a pre-receive hook.
 MERGEABLE_STATES = frozenset({"clean", "unstable", "has_hooks"})
-WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
-ADMIN_PERMISSION = "admin"
 
 
 @dataclass(frozen=True)
@@ -1511,14 +1575,27 @@ def unmergeable_reasons(states: Sequence[tuple[PullRequest, str]]) -> list[str]:
     ]
 
 
-def render_access_refusal(
-    action: Action, missing: Mapping[str, Sequence[Repository]]
-) -> str:
+def access_refusal_reasons(refusal: AccessRefusal) -> str:
+    reasons = []
+    if refusal.not_opened:
+        reasons.append(
+            "you did not open "
+            + ", ".join(pull_request.label for pull_request in refusal.not_opened)
+        )
+    if refusal.no_write_access:
+        reasons.append(
+            "you have no write access to "
+            + ", ".join(repository.name for repository in refusal.no_write_access)
+        )
+    return ", and ".join(reasons)
+
+
+def render_access_refusal(action: Action, refusals: Mapping[str, AccessRefusal]) -> str:
     what = "merge the set" if action is Action.MERGE else "re-run the CI of the set"
     lines = [
-        f"@{login}, the bot did not {what} for you: you have no write access to "
-        f"{', '.join(repository.name for repository in repositories)}."
-        for login, repositories in missing.items()
+        f"@{login}, the bot did not {what} for you: "
+        f"{access_refusal_reasons(refusal)}. It does that only for {WHO_MAY_ASK}."
+        for login, refusal in refusals.items()
     ]
     return "\n\n".join(lines) + "\n"
 
@@ -2217,21 +2294,29 @@ def read_requests(
     return requests
 
 
-def missing_write_access(
+def permissions_in_the_set(
     gateway: GitHubGateway, state: SetState, login: str
-) -> list[Repository]:
-    return [
-        member.repository
+) -> dict[Repository, str]:
+    """The permission of the user on each repository of the set."""
+    return {
+        member.repository: gateway.permission(member.repository, login)
         for member in state.members
-        if gateway.permission(member.repository, login) not in WRITE_PERMISSIONS
-    ]
+    }
 
 
-def is_admin_of_the_set(gateway: GitHubGateway, state: SetState, login: str) -> bool:
-    return all(
-        gateway.permission(member.repository, login) == ADMIN_PERMISSION
-        for member in state.members
-    )
+def access_refusals(
+    gateway: GitHubGateway, state: SetState, logins: Sequence[str]
+) -> dict[str, AccessRefusal]:
+    """Why the bot does not act for each of the users it refuses. A user it
+    acts for has no entry."""
+    refusals = {}
+    for login in logins:
+        refusal = access_refusal(
+            state, login, permissions_in_the_set(gateway, state, login)
+        )
+        if refusal is not None:
+            refusals[login] = refusal
+    return refusals
 
 
 def set_gate(gateway: GitHubGateway, pull_request: PullRequest, gate: Gate) -> None:
@@ -2354,7 +2439,9 @@ def merge_the_set(
     context: RunContext,
 ) -> None:
     asked_on = request.dashboard.pull_request
-    admin = is_admin_of_the_set(gateway, state, request.requester)
+    admin = is_admin_of_the_set(
+        state, permissions_in_the_set(gateway, state, request.requester)
+    )
     blockers = blockers_for(set_blockers(state, reports), admin)
     if blockers:
         gateway.create_comment(
@@ -2439,32 +2526,35 @@ def handle_requests(
     requests: Sequence[Request],
     context: RunContext,
 ) -> None:
-    """Act on each action once, for the first user who asked for it with
-    write access to every repository of the set. The re-run goes first: a
-    merge asked for at the same time then finds the re-run CI running and
-    stops."""
+    """Act on each action once, for the first user who asked for it and whom
+    the bot acts for: an admin of every repository of the set, or the user
+    who opened every pull request of the set and has write access to every
+    repository of it. Every other user who asked for it gets the reason the
+    bot does not act for them, and the reports name the users it acts for
+    alone. The re-run goes first: a merge asked for at the same time then
+    finds the re-run CI running and stops."""
     reports = read_reports(gateway, state)
     for action in (Action.RERUN, Action.MERGE):
         asked = [request for request in requests if request.action is action]
         if not asked:
             continue
-        requesters = requesters_of(asked)
-        missing = {
-            login: missing_write_access(gateway, state, login) for login in requesters
-        }
-        allowed = next(
-            (request for request in asked if not missing[request.requester]), None
-        )
-        if allowed is None:
-            gateway.create_comment(
-                asked[0].dashboard.pull_request, render_access_refusal(action, missing)
+        refusals = access_refusals(gateway, state, requesters_of(asked))
+        if refusals:
+            refused = next(
+                request for request in asked if request.requester in refusals
             )
+            gateway.create_comment(
+                refused.dashboard.pull_request, render_access_refusal(action, refusals)
+            )
+        allowed = [request for request in asked if request.requester not in refusals]
+        if not allowed:
             continue
+        requesters = requesters_of(allowed)
         if action is Action.RERUN:
-            rerun_out_of_date(gateway, state, reports, allowed, requesters)
+            rerun_out_of_date(gateway, state, reports, allowed[0], requesters)
         else:
             merge_the_set(
-                gateway, state, reports, dashboards, allowed, requesters, context
+                gateway, state, reports, dashboards, allowed[0], requesters, context
             )
 
 

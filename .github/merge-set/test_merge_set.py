@@ -27,6 +27,7 @@ import merge_set
 import resolve
 from merge_set import (
     PEPPY,
+    AccessRefusal,
     Action,
     ApiError,
     BranchRules,
@@ -74,6 +75,8 @@ def pull_request(repository, number=1, **changes):
         number=number,
         url=f"https://github.com/Peppy-bot/{repository.name}/pull/{number}",
         title=f"Change {repository.name}",
+        # The user who ticks the boxes unless a test names another one.
+        author="alice",
         is_open=True,
         merged=False,
         draft=False,
@@ -633,6 +636,7 @@ class PullRequests(unittest.TestCase):
             "number": 12,
             "html_url": "https://github.com/Peppy-bot/nodes-hub/pull/12",
             "title": "Add the gripper force",
+            "user": {"login": "alice"},
             "state": "open",
             "merged_at": None,
             "draft": False,
@@ -660,6 +664,18 @@ class PullRequests(unittest.TestCase):
         )
         self.assertFalse(parsed.is_open)
         self.assertTrue(parsed.merged)
+
+    def test_the_author_is_the_user_who_opened_it(self):
+        self.assertEqual(
+            merge_set.parse_pull_request(NODES_HUB, self.item()).author, "alice"
+        )
+
+    def test_a_pull_request_whose_author_github_does_not_name(self):
+        unnamed = self.item()
+        del unnamed["user"]
+        for item in (self.item(user=None), unnamed):
+            with self.subTest(item=item):
+                self.assertIsNone(merge_set.parse_pull_request(NODES_HUB, item).author)
 
     def test_a_pull_request_from_a_fork_or_a_deleted_fork(self):
         for repo in ({"full_name": "someone/nodes-hub"}, None):
@@ -1345,6 +1361,113 @@ class Blockers(unittest.TestCase):
         self.assertIn("nodes-hub#1, nodes-hub#2", texts[0])
 
 
+class Access(unittest.TestCase):
+    def setUp(self):
+        self.peppy = pull_request(PEPPY, 512)
+        self.nodes = pull_request(NODES_HUB, 88)
+        self.state = set_state(member(PEPPY, self.peppy), member(NODES_HUB, self.nodes))
+
+    @staticmethod
+    def permissions(peppy="write", nodes="write"):
+        return {PEPPY: peppy, NODES_HUB: nodes}
+
+    def test_the_author_of_every_pull_request_with_write_access_is_not_refused(self):
+        for permission in sorted(merge_set.WRITE_PERMISSIONS):
+            with self.subTest(permission=permission):
+                self.assertIsNone(
+                    merge_set.access_refusal(
+                        self.state, "alice", self.permissions(permission, permission)
+                    )
+                )
+
+    def test_an_admin_of_every_repository_who_opened_no_pull_request_is_not_refused(
+        self,
+    ):
+        self.assertIsNone(
+            merge_set.access_refusal(
+                self.state, "bob", self.permissions("admin", "admin")
+            )
+        )
+
+    def test_a_user_with_write_access_who_opened_no_pull_request_is_refused(self):
+        self.assertEqual(
+            merge_set.access_refusal(self.state, "bob", self.permissions()),
+            AccessRefusal(not_opened=(self.peppy, self.nodes), no_write_access=()),
+        )
+
+    def test_the_author_of_some_pull_requests_of_the_set_alone_is_refused(self):
+        nodes = replace(self.nodes, author="bob")
+        state = set_state(member(PEPPY, self.peppy), member(NODES_HUB, nodes))
+        self.assertEqual(
+            merge_set.access_refusal(state, "alice", self.permissions()),
+            AccessRefusal(not_opened=(nodes,), no_write_access=()),
+        )
+        self.assertEqual(
+            merge_set.access_refusal(state, "bob", self.permissions()),
+            AccessRefusal(not_opened=(self.peppy,), no_write_access=()),
+        )
+
+    def test_an_admin_of_some_repositories_alone_is_refused_what_they_did_not_open(
+        self,
+    ):
+        self.assertEqual(
+            merge_set.access_refusal(
+                self.state, "bob", self.permissions("admin", "write")
+            ),
+            AccessRefusal(not_opened=(self.peppy, self.nodes), no_write_access=()),
+        )
+        self.assertIsNone(
+            merge_set.access_refusal(
+                self.state, "alice", self.permissions("admin", "write")
+            )
+        )
+
+    def test_the_author_without_write_access_to_a_repository_is_refused(self):
+        for permission in ("triage", "read", "none"):
+            with self.subTest(permission=permission):
+                self.assertEqual(
+                    merge_set.access_refusal(
+                        self.state, "alice", self.permissions(nodes=permission)
+                    ),
+                    AccessRefusal(not_opened=(), no_write_access=(NODES_HUB,)),
+                )
+
+    def test_a_pull_request_without_a_named_author_leaves_the_set_to_an_admin(self):
+        nodes = replace(self.nodes, author=None)
+        state = set_state(member(PEPPY, self.peppy), member(NODES_HUB, nodes))
+        self.assertEqual(
+            merge_set.access_refusal(state, "alice", self.permissions()),
+            AccessRefusal(not_opened=(nodes,), no_write_access=()),
+        )
+        self.assertIsNone(
+            merge_set.access_refusal(state, "bob", self.permissions("admin", "admin"))
+        )
+
+    def test_every_open_pull_request_of_a_member_has_to_be_the_users(self):
+        other = pull_request(NODES_HUB, 89, author="bob")
+        state = set_state(
+            member(PEPPY, self.peppy), member(NODES_HUB, self.nodes, other)
+        )
+        self.assertEqual(
+            merge_set.access_refusal(state, "alice", self.permissions()),
+            AccessRefusal(not_opened=(other,), no_write_access=()),
+        )
+
+    def test_a_refusal_names_each_reason_and_who_the_bot_acts_for(self):
+        refusals = {
+            "bob": AccessRefusal((self.peppy, self.nodes), (NODES_HUB,)),
+            "carol": AccessRefusal((), (PEPPY,)),
+        }
+        self.assertEqual(
+            merge_set.render_access_refusal(Action.RERUN, refusals),
+            "@bob, the bot did not re-run the CI of the set for you: you did not "
+            "open peppy#512, nodes-hub#88, and you have no write access to "
+            f"nodes-hub. It does that only for {merge_set.WHO_MAY_ASK}.\n\n"
+            "@carol, the bot did not re-run the CI of the set for you: you have "
+            f"no write access to peppy. It does that only for {merge_set.WHO_MAY_ASK}.\n",
+        )
+
+
 class Dashboards(unittest.TestCase):
     def test_a_ready_set_lists_every_member_and_offers_the_merge(self):
         peppy, nodes = pull_request(PEPPY, 512), pull_request(NODES_HUB, 88)
@@ -1363,6 +1486,9 @@ class Dashboards(unittest.TestCase):
         self.assertIn(
             "- [ ] <!-- merge-set:merge --> Merge the 2 pull requests of this set together",
             body,
+        )
+        self.assertIn(
+            f"The bot acts on a ticked box only for {merge_set.WHO_MAY_ASK}.", body
         )
         self.assertNotIn("merge-set:rerun", body)
         self.assertEqual(merge_set.ticked_actions(body), [])
@@ -1631,6 +1757,17 @@ class FakeGitHub:
         ]
         self.ci_runs[pr.label] = ci_run_of(repository)
         return pr
+
+    def make_admin(self, login, repositories=merge_set.REPOSITORIES):
+        for repository in repositories:
+            self.permissions[(repository.name, login)] = "admin"
+
+    def set_author(self, pr, login):
+        """The pull request as `login` opened it."""
+        pulls = self.pulls[pr.repository.name]
+        opened = replace(pr, author=login)
+        pulls[pulls.index(pr)] = opened
+        return opened
 
     def dashboard_comment(self, pr, body):
         comment = FakeComment(len(self.comments) + 1, pr, BOT, body)
@@ -2034,15 +2171,135 @@ class SyncMerge(unittest.TestCase):
         for pr in (self.peppy, self.nodes, self.contracts):
             self.assertEqual(self.github.gates(pr)[-1].state, "pending")
 
-    def test_a_user_without_write_access_to_a_repository_of_the_set_is_refused(self):
-        self.github.permissions[("contracts-hub", "mallory")] = "read"
-        self.tick_merge(login="mallory")
+    def assert_refused(self, refusal_text):
+        """The bot merged nothing, answered `refusal_text` on the pull request
+        whose box was ticked, cleared the box and kept every gate blocked."""
         self.assertEqual(self.github.merged, [])
         (refusal,) = self.github.reports_on(self.nodes)
+        self.assertEqual(refusal, refusal_text)
+        self.assertEqual(
+            merge_set.ticked_actions(self.github.dashboard_body(self.nodes)), []
+        )
+        for pr in (self.peppy, self.nodes, self.contracts):
+            self.assertEqual(self.github.gates(pr)[-1].state, "pending")
+
+    def test_an_author_without_write_access_to_a_repository_of_the_set_is_refused(
+        self,
+    ):
+        self.github.permissions[("contracts-hub", "alice")] = "read"
+        self.tick_merge(login="alice")
+        self.assert_refused(
+            "@alice, the bot did not merge the set for you: you have no write "
+            f"access to contracts-hub. It does that only for {merge_set.WHO_MAY_ASK}.\n"
+        )
+
+    def test_a_user_with_write_access_who_opened_no_pull_request_is_refused(self):
+        self.tick_merge(login="mallory")
+        self.assert_refused(
+            "@mallory, the bot did not merge the set for you: you did not open "
+            "peppy#512, nodes-hub#88, contracts-hub#9. It does that only for "
+            f"{merge_set.WHO_MAY_ASK}.\n"
+        )
+
+    def test_a_user_who_opened_no_pull_request_and_lacks_write_access_is_refused(
+        self,
+    ):
+        self.github.permissions[("contracts-hub", "mallory")] = "read"
+        self.tick_merge(login="mallory")
+        self.assert_refused(
+            "@mallory, the bot did not merge the set for you: you did not open "
+            "peppy#512, nodes-hub#88, contracts-hub#9, and you have no write "
+            f"access to contracts-hub. It does that only for {merge_set.WHO_MAY_ASK}.\n"
+        )
+
+    def test_the_author_of_some_pull_requests_of_the_set_alone_is_refused(self):
+        self.contracts = self.github.set_author(self.contracts, "bob")
+        self.tick_merge(login="alice")
+        self.assert_refused(
+            "@alice, the bot did not merge the set for you: you did not open "
+            f"contracts-hub#9. It does that only for {merge_set.WHO_MAY_ASK}.\n"
+        )
+
+    def test_a_set_opened_by_two_users_merges_for_an_admin_alone(self):
+        self.contracts = self.github.set_author(self.contracts, "bob")
+        (on_peppy,) = self.github.comments_on(self.peppy)
+        self.github.tick(on_peppy, Action.MERGE, "bob")
+        self.tick_merge(login="alice")
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.peppy)
+        self.assertIn("@bob, the bot did not merge the set for you", refusal)
+        self.assertIn("@alice, the bot did not merge the set for you", refusal)
+        self.github.make_admin("carol")
+        self.tick_merge(login="carol")
+        self.assertEqual(
+            [label for label, _ in self.github.merged],
+            ["peppy#512", "nodes-hub#88", "contracts-hub#9"],
+        )
+
+    def test_an_admin_merges_a_set_another_user_opened(self):
+        self.github.make_admin("bob")
+        self.tick_merge(login="bob")
+        self.assertEqual(len(self.github.merged), 3)
+        (report_text,) = self.github.reports_on(self.contracts)
+        self.assertIn("merged, as @bob asked", report_text)
+
+    def test_an_admin_of_some_repositories_who_opened_no_pull_request_is_refused(
+        self,
+    ):
+        self.github.make_admin("bob", (PEPPY, NODES_HUB))
+        self.tick_merge(login="bob")
+        self.assert_refused(
+            "@bob, the bot did not merge the set for you: you did not open "
+            "peppy#512, nodes-hub#88, contracts-hub#9. It does that only for "
+            f"{merge_set.WHO_MAY_ASK}.\n"
+        )
+
+    def test_a_refused_user_who_ticks_with_the_author_is_refused_and_not_named(
+        self,
+    ):
+        (on_peppy,) = self.github.comments_on(self.peppy)
+        self.github.tick(on_peppy, Action.MERGE, "mallory")
+        self.tick_merge(login="alice")
+        self.assertEqual(
+            [label for label, _ in self.github.merged],
+            ["peppy#512", "nodes-hub#88", "contracts-hub#9"],
+        )
+        refusal, report_text = self.github.reports_on(self.peppy)
         self.assertEqual(
             refusal,
-            "@mallory, the bot did not merge the set for you: you have no write "
-            "access to contracts-hub.\n",
+            "@mallory, the bot did not merge the set for you: you did not open "
+            "peppy#512, nodes-hub#88, contracts-hub#9. It does that only for "
+            f"{merge_set.WHO_MAY_ASK}.\n",
+        )
+        self.assertTrue(
+            report_text.startswith(
+                "The set `feat/gripper-force` merged, as @alice asked:\n"
+            )
+        )
+        for pr in (self.peppy, self.nodes, self.contracts):
+            with self.subTest(pr=pr.label):
+                self.assertEqual(
+                    self.github.gates(pr)[-1],
+                    merge_set.merging_gate(SET_NAME, "alice", RUN_URL),
+                )
+
+    def test_a_refused_user_who_ticks_with_the_author_is_not_named_in_a_refusal(
+        self,
+    ):
+        self.github.check_runs_of[("contracts-hub", self.contracts.head_commit)] = [
+            CheckRun(2, "test", 15368, False, None)
+        ]
+        (on_peppy,) = self.github.comments_on(self.peppy)
+        self.github.tick(on_peppy, Action.MERGE, "mallory")
+        self.tick_merge(login="alice")
+        self.assertEqual(self.github.merged, [])
+        (access_refusal,) = self.github.reports_on(self.peppy)
+        self.assertTrue(access_refusal.startswith("@mallory, the bot did not merge"))
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertTrue(
+            refusal.startswith(
+                "@alice, the set `feat/gripper-force` did not merge, because:"
+            )
         )
 
     def test_a_box_no_user_ticked_is_cleared_without_a_merge(self):
@@ -2118,19 +2375,29 @@ class SyncMerge(unittest.TestCase):
         self.tick_merge()
         self.assertEqual(len(self.github.merged), 3)
 
-    def make_admin(self, login="alice", repositories=merge_set.REPOSITORIES):
-        for repository in repositories:
-            self.github.permissions[(repository.name, login)] = "admin"
-
     def leave_unapproved(self, *pull_requests):
         # GitHub reports a pull request that lacks an approval as blocked.
         for pr in pull_requests:
             self.github.reviews[pr.label] = ReviewDecision.REVIEW_REQUIRED
             self.github.merge_states[pr.label] = [(True, "blocked")]
 
+    def test_an_admin_merges_a_set_another_user_opened_that_lacks_approvals(self):
+        self.leave_unapproved(self.nodes, self.contracts)
+        self.github.make_admin("bob")
+        self.tick_merge(login="bob")
+        self.assertEqual(
+            [label for label, _ in self.github.merged],
+            ["peppy#512", "nodes-hub#88", "contracts-hub#9"],
+        )
+        (report_text,) = self.github.reports_on(self.peppy)
+        self.assertIn("merged, as @bob asked", report_text)
+        self.assertRegex(
+            report_text, r"- nodes-hub#88 merged as `[0-9a-f]{7}` without an approval\."
+        )
+
     def test_an_admin_merges_a_set_that_lacks_approvals(self):
         self.leave_unapproved(self.nodes, self.contracts)
-        self.make_admin()
+        self.github.make_admin("alice")
         self.tick_merge()
         self.assertEqual(
             [label for label, _ in self.github.merged],
@@ -2157,7 +2424,7 @@ class SyncMerge(unittest.TestCase):
 
     def test_an_admin_of_some_repositories_of_the_set_alone_is_no_admin_of_it(self):
         self.leave_unapproved(self.nodes)
-        self.make_admin(repositories=(PEPPY, NODES_HUB))
+        self.github.make_admin("alice", (PEPPY, NODES_HUB))
         self.tick_merge()
         self.assertEqual(self.github.merged, [])
 
@@ -2167,7 +2434,7 @@ class SyncMerge(unittest.TestCase):
         # GitHub would merge peppy and refuse contracts-hub: the bot merges none.
         self.leave_unapproved(self.nodes, self.contracts)
         self.github.unbypassed.add(("contracts-hub", APPROVAL_RULESET))
-        self.make_admin()
+        self.github.make_admin("alice")
         self.tick_merge()
         self.assertEqual(self.github.merged, [])
         (refusal,) = self.github.reports_on(self.nodes)
@@ -2186,7 +2453,7 @@ class SyncMerge(unittest.TestCase):
 
     def test_a_review_that_requests_changes_blocks_an_admin(self):
         self.github.reviews[self.nodes.label] = ReviewDecision.CHANGES_REQUESTED
-        self.make_admin()
+        self.github.make_admin("alice")
         self.tick_merge()
         self.assertEqual(self.github.merged, [])
         (refusal,) = self.github.reports_on(self.nodes)
@@ -2196,7 +2463,7 @@ class SyncMerge(unittest.TestCase):
         # Another rule than the approval blocks it, which the admin does not waive.
         self.leave_unapproved(self.nodes)
         self.github.merge_states[self.contracts.label] = [(True, "blocked")]
-        self.make_admin()
+        self.github.make_admin("alice")
         self.tick_merge()
         self.assertEqual(self.github.merged, [])
         (refusal,) = self.github.reports_on(self.nodes)
@@ -2204,6 +2471,7 @@ class SyncMerge(unittest.TestCase):
         self.assertNotIn("nodes-hub#88", refusal)
 
     def test_two_users_who_tick_at_once_get_one_merge(self):
+        self.github.make_admin("bob")
         (on_peppy,) = self.github.comments_on(self.peppy)
         self.github.tick(on_peppy, Action.MERGE, "bob")
         self.tick_merge(login="alice")
@@ -2230,10 +2498,49 @@ class SyncRerun(unittest.TestCase):
         self.github.runs[self.nodes.label] = [self.stale_run, self.running_run]
         sync(self.github)
 
-    def tick_rerun(self):
+    def tick_rerun(self, login="alice"):
         (comment,) = self.github.comments_on(self.peppy)
-        self.github.tick(comment, Action.RERUN)
+        self.github.tick(comment, Action.RERUN, login)
         sync(self.github)
+
+    def test_a_user_who_opened_no_pull_request_of_the_set_gets_no_re_run(self):
+        self.tick_rerun(login="mallory")
+        self.assertEqual(self.github.reruns, [])
+        (refusal,) = self.github.reports_on(self.peppy)
+        self.assertEqual(
+            refusal,
+            "@mallory, the bot did not re-run the CI of the set for you: you did "
+            "not open peppy#512, nodes-hub#88. It does that only for "
+            f"{merge_set.WHO_MAY_ASK}.\n",
+        )
+        self.assertIn(
+            "- [ ] <!-- merge-set:rerun -->", self.github.dashboard_body(self.peppy)
+        )
+
+    def test_an_admin_re_runs_the_ci_of_a_set_another_user_opened(self):
+        self.github.make_admin("bob", (PEPPY, NODES_HUB))
+        self.tick_rerun(login="bob")
+        self.assertEqual(self.github.reruns, [("nodes-hub", 10)])
+
+    def test_a_refused_user_who_ticks_with_the_author_is_refused_and_not_named(
+        self,
+    ):
+        (on_nodes,) = self.github.comments_on(self.nodes)
+        self.github.tick(on_nodes, Action.RERUN, "mallory")
+        self.tick_rerun(login="alice")
+        self.assertEqual(self.github.reruns, [("nodes-hub", 10)])
+        (report_text,) = self.github.reports_on(self.peppy)
+        self.assertTrue(
+            report_text.startswith(
+                "@alice, the out-of-date CI of the set `feat/gripper-force`:"
+            )
+        )
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertTrue(
+            refusal.startswith(
+                "@mallory, the bot did not re-run the CI of the set for you"
+            )
+        )
 
     def test_the_dashboard_names_the_stale_runs_and_offers_the_re_run(self):
         body = self.github.dashboard_body(self.peppy)
