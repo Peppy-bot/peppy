@@ -1221,6 +1221,41 @@ raise
     Ok(format!("\"\"\"{doc}\"\"\"\n\n{}", builder.build()))
 }
 
+/// The default of a set slot's instance-count kwarg: the fewest instances
+/// its cardinality admits.
+fn default_instance_count(cardinality: Cardinality) -> usize {
+    match cardinality {
+        Cardinality::One | Cardinality::OneOrMore => 1,
+        Cardinality::ZeroOrOne | Cardinality::ZeroOrMore => 0,
+    }
+}
+
+/// Starts one mock per instance id of a dependency or observer set slot:
+/// the ids come from the `ids_kwarg` override when given, else `count_kwarg`
+/// of them are generated. Returns the local holding the ids, which the
+/// slot's seeding iterates.
+fn push_instance_set_mock_starts(
+    parts: &mut HarnessParts,
+    alias: &str,
+    local: &str,
+    count_kwarg: &str,
+    ids_kwarg: &str,
+) -> String {
+    let ids_local = format!("{local}_member_ids");
+    parts.mock_starts.push(format!(
+        "{ids_local} = list({ids_kwarg}) if {ids_kwarg} is not None else \
+         [f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\" for index in range({count_kwarg})]"
+    ));
+    parts.mock_starts.push(format!("{local} = []"));
+    parts
+        .mock_starts
+        .push(format!("for member_instance_id in {ids_local}:"));
+    parts.mock_starts.push(format!(
+        "    {local}.append(await {alias}.Mock.start(router, member_instance_id))"
+    ));
+    ids_local
+}
+
 /// The harness statements of one pairing slot: its mock start, its peer
 /// pin seeding and the readiness barriers on the topics the node emits to
 /// the mock peer.
@@ -1284,13 +1319,9 @@ fn render_pairing_harness_parts(
         }
         Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
             let kwarg = format!("{attr}_instances");
-            let default_count: usize = match spec.cardinality {
-                Cardinality::OneOrMore => 1,
-                _ => 0,
-            };
             parts.slot_kwargs.push(SlotKwarg {
                 name: kwarg.clone(),
-                default: default_count.to_string(),
+                default: default_instance_count(spec.cardinality).to_string(),
                 doc: format!(
                     "{kwarg}: how many mock peers to pair into the `{link_id}` \
                      pairing slot, each under its own instance id and outside any \
@@ -1398,13 +1429,9 @@ fn render_observed_harness_parts(
         }
         Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
             let kwarg = format!("{attr}_instances");
-            let default_count: usize = match spec.cardinality {
-                Cardinality::OneOrMore => 1,
-                _ => 0,
-            };
             parts.slot_kwargs.push(SlotKwarg {
                 name: kwarg.clone(),
-                default: default_count.to_string(),
+                default: default_instance_count(spec.cardinality).to_string(),
                 doc: format!(
                     "{kwarg}: how many mock sources to start for the `{link_id}` \
                      observer slot."
@@ -1420,19 +1447,7 @@ fn render_observed_harness_parts(
                      classify sources by instance name."
                 ),
             });
-            let ids_local = format!("{local}_member_ids");
-            parts.mock_starts.push(format!(
-                "{ids_local} = list({ids_kwarg}) if {ids_kwarg} is not None else \
-                 [f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\" for index in \
-                 range({kwarg})]"
-            ));
-            parts.mock_starts.push(format!("{local} = []"));
-            parts
-                .mock_starts
-                .push(format!("for member_instance_id in {ids_local}:"));
-            parts.mock_starts.push(format!(
-                "    {local}.append(await {alias}.Mock.start(router, member_instance_id))"
-            ));
+            let ids_local = push_instance_set_mock_starts(parts, alias, local, &kwarg, &ids_kwarg);
             parts
                 .seeding
                 .push(format!("for member_instance_id in {ids_local}:"));
@@ -1526,13 +1541,9 @@ fn render_dep_harness_parts(
         }
         Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
             let kwarg = format!("{attr}_instances");
-            let default_count: usize = match spec.cardinality {
-                Cardinality::OneOrMore => 1,
-                _ => 0,
-            };
             parts.slot_kwargs.push(SlotKwarg {
                 name: kwarg.clone(),
-                default: default_count.to_string(),
+                default: default_instance_count(spec.cardinality).to_string(),
                 doc: format!(
                     "{kwarg}: how many mock producer instances to start and bind for \
                      the `{link_id}` dependency slot."
@@ -1548,18 +1559,7 @@ fn render_dep_harness_parts(
                      classify producers by instance name."
                 ),
             });
-            let ids_local = format!("{local}_member_ids");
-            parts.mock_starts.push(format!(
-                "{ids_local} = list({ids_kwarg}) if {ids_kwarg} is not None else \
-                 [f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\" for index in range({kwarg})]"
-            ));
-            parts.mock_starts.push(format!("{local} = []"));
-            parts
-                .mock_starts
-                .push(format!("for member_instance_id in {ids_local}:"));
-            parts.mock_starts.push(format!(
-                "    {local}.append(await {alias}.Mock.start(router, member_instance_id))"
-            ));
+            let ids_local = push_instance_set_mock_starts(parts, alias, local, &kwarg, &ids_kwarg);
             parts
                 .seeding
                 .push(format!("for member_instance_id in {ids_local}:"));
