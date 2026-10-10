@@ -2,6 +2,7 @@ use super::identifiers::sanitize_python_identifier;
 use crate::error::{Error, Result};
 use crate::generator::naming::{array_item_type_name, nested_type_name};
 use config::node::{PeppygenLanguage, QoSProfile, SchemaType, TopicRetention, TypeToken};
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 /// A field in a Python dataclass.
@@ -50,21 +51,7 @@ pub fn schema_type_to_python(
         SchemaType::Array(array) => match array.items.as_ref() {
             SchemaType::Object(object) => {
                 let class_name = array_item_type_name(struct_prefix, field_name);
-                validate_python_identifier_collisions(object.fields.keys(), &class_name)?;
-                let mut fields = Vec::new();
-                for (nested_name, nested_schema) in &object.fields {
-                    let field_type = schema_type_to_python(
-                        nested_schema,
-                        &class_name,
-                        nested_name,
-                        nested_classes,
-                    )?;
-                    fields.push(PythonField {
-                        name: sanitize_python_identifier(nested_name),
-                        type_str: field_type,
-                        is_optional: nested_schema.is_optional(),
-                    });
-                }
+                let fields = collect_python_fields(&object.fields, &class_name, nested_classes)?;
                 nested_classes.push(NestedDataclass {
                     name: class_name.clone(),
                     fields,
@@ -86,17 +73,7 @@ pub fn schema_type_to_python(
         },
         SchemaType::Object(object) => {
             let class_name = nested_type_name(struct_prefix, field_name);
-            validate_python_identifier_collisions(object.fields.keys(), &class_name)?;
-            let mut fields = Vec::new();
-            for (nested_name, nested_schema) in &object.fields {
-                let field_type =
-                    schema_type_to_python(nested_schema, &class_name, nested_name, nested_classes)?;
-                fields.push(PythonField {
-                    name: sanitize_python_identifier(nested_name),
-                    type_str: field_type,
-                    is_optional: nested_schema.is_optional(),
-                });
-            }
+            let fields = collect_python_fields(&object.fields, &class_name, nested_classes)?;
             nested_classes.push(NestedDataclass {
                 name: class_name.clone(),
                 fields,
@@ -122,17 +99,29 @@ pub fn collect_fields_from_format(
     struct_prefix: &str,
     nested_classes: &mut Vec<NestedDataclass>,
 ) -> Result<Vec<PythonField>> {
-    validate_python_identifier_collisions(format.0.keys(), struct_prefix)?;
-    let mut fields = Vec::new();
-    for (field_name, schema) in &format.0 {
-        let type_str = schema_type_to_python(schema, struct_prefix, field_name, nested_classes)?;
-        fields.push(PythonField {
+    collect_python_fields(&format.0, struct_prefix, nested_classes)
+}
+
+/// Maps the fields of the dataclass `class_name`, after checking that no two
+/// of them sanitize to the same Python identifier. The dataclasses of nested
+/// objects are pushed onto `nested_classes` as their fields are mapped, so
+/// each one comes before the class that references it.
+fn collect_python_fields(
+    fields: &IndexMap<String, SchemaType>,
+    class_name: &str,
+    nested_classes: &mut Vec<NestedDataclass>,
+) -> Result<Vec<PythonField>> {
+    validate_python_identifier_collisions(fields.keys(), class_name)?;
+    let mut python_fields = Vec::with_capacity(fields.len());
+    for (field_name, schema) in fields {
+        let type_str = schema_type_to_python(schema, class_name, field_name, nested_classes)?;
+        python_fields.push(PythonField {
             name: sanitize_python_identifier(field_name),
             type_str,
             is_optional: schema.is_optional(),
         });
     }
-    Ok(fields)
+    Ok(python_fields)
 }
 
 fn validate_python_identifier_collisions<'a, I>(field_names: I, context: &str) -> Result<()>
@@ -192,7 +181,6 @@ pub fn qos_profile_python(profile: &QoSProfile) -> &'static str {
 mod tests {
     use super::*;
     use config::node::{ArrayKind, ArraySchema, MessageFormat, PeppygenLanguage};
-    use indexmap::IndexMap;
 
     #[test]
     fn collect_fields_rejects_nested_array_item_shapes() {
