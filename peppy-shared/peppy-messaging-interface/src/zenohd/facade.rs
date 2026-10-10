@@ -74,6 +74,21 @@ fn zenohd_log_excerpt(log_path: &Path) -> String {
     }
 }
 
+/// The endpoints a router reads from the `listen` or `connect` section of a
+/// zenoh config. Zenoh accepts `endpoints` as a plain array, which applies to
+/// every mode, or as a per-mode map, of which a router reads the `router`
+/// entry.
+fn router_endpoints(section: &serde_json::Value) -> Vec<&str> {
+    let endpoints = &section["endpoints"];
+    endpoints
+        .as_array()
+        .or_else(|| endpoints["router"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect()
+}
+
 /// Environment variable naming an explicit `zenohd` binary to run, taking
 /// precedence over every packaged/built candidate. The escape hatch for
 /// installed-wheel and installed-crate consumers whose build baked a
@@ -341,8 +356,9 @@ impl ZenohdFacade {
     /// wait for" rather than an error on the startup path (zenohd itself already
     /// parsed the same file to boot).
     ///
-    /// Endpoints are accepted in both config shapes: a plain array (what peppy
-    /// renders) and the per-mode `{ router: [...] }` map an operator may pin.
+    /// Endpoints are read in both config shapes (see [`router_endpoints`]): a
+    /// plain array (what peppy renders) and the per-mode `{ router: [...] }` map
+    /// an operator may pin.
     pub(crate) fn configured_connect_endpoints(&self) -> Vec<String> {
         let Some(config_path) = self.managed_config_path() else {
             return Vec::new();
@@ -364,13 +380,8 @@ impl ZenohdFacade {
                 return Vec::new();
             }
         };
-        let endpoints = &connect["endpoints"];
-        let list = endpoints
-            .as_array()
-            .or_else(|| endpoints["router"].as_array());
-        list.into_iter()
-            .flatten()
-            .filter_map(|endpoint| endpoint.as_str())
+        router_endpoints(&connect)
+            .into_iter()
             .map(str::to_string)
             .collect()
     }
@@ -396,7 +407,7 @@ impl ZenohdFacade {
             Error::ConfigurationError(format!("Failed to parse listen config: {}", e))
         })?;
 
-        let endpoint_str = listen["endpoints"]["router"][0].as_str().ok_or_else(|| {
+        let endpoint_str = router_endpoints(&listen).first().copied().ok_or_else(|| {
             Error::ConfigurationError("No router endpoint found in config".to_string())
         })?;
 
@@ -855,6 +866,73 @@ mod tests {
             .unwrap()
             .join(format!("zenohd_{expected_port}.log"));
         assert_eq!(zenohd_log_path, &expected_log_path);
+    }
+
+    /// Zenoh also accepts `listen.endpoints` as a plain array, which applies
+    /// to every mode, so an operator-pinned config in that shape names the
+    /// router endpoint as well as the per-mode map does.
+    #[test]
+    fn managed_reads_a_plain_array_listen_endpoint() {
+        let config_file =
+            json5_config_file(r#"{ "listen": { "endpoints": ["tcp/127.0.0.1:7448"] } }"#);
+
+        let facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
+
+        assert_eq!(facade.zenoh_endpoint.host(), "127.0.0.1");
+        assert_eq!(facade.zenoh_endpoint.port(), 7448);
+        assert_eq!(facade.zenoh_endpoint.protocol(), ZenohNetProtocol::Tcp);
+    }
+
+    /// A per-mode listen map without a `router` entry names no endpoint this
+    /// router listens on.
+    #[test]
+    fn managed_rejects_a_listen_map_without_a_router_entry() {
+        let config_file = json5_config_file(
+            r#"{ "listen": { "endpoints": { "peer": ["tcp/127.0.0.1:7448"] } } }"#,
+        );
+
+        let Err(error) = ZenohdFacade::managed(config_file.path()) else {
+            panic!("a config with no router listen endpoint must be rejected");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("No router endpoint found in config"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn configured_connect_endpoints_reads_both_config_shapes() {
+        let expected = vec![
+            "tcp/10.0.0.7:7447".to_string(),
+            "tls/router.example:7443".to_string(),
+        ];
+        for (shape, connect_endpoints) in [
+            (
+                "plain array",
+                r#"["tcp/10.0.0.7:7447", "tls/router.example:7443"]"#,
+            ),
+            (
+                "per-mode map",
+                r#"{ "router": ["tcp/10.0.0.7:7447", "tls/router.example:7443"] }"#,
+            ),
+        ] {
+            let config_file = json5_config_file(&format!(
+                r#"{{
+                    "listen": {{ "endpoints": {{ "router": ["tcp/127.0.0.1:7447"] }} }},
+                    "connect": {{ "endpoints": {connect_endpoints} }}
+                }}"#
+            ));
+            let facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
+
+            assert_eq!(facade.configured_connect_endpoints(), expected, "{shape}");
+        }
+
+        let standalone = router_config_file(7447);
+        let facade = ZenohdFacade::managed(standalone.path()).expect("create facade");
+        assert!(facade.configured_connect_endpoints().is_empty());
     }
 
     #[test]
