@@ -101,7 +101,7 @@ pub fn generate_peppygen_lib(
 
     let execution = node_config.execution;
 
-    let result = match language {
+    match language {
         PeppygenLanguage::Rust => {
             let mut rust_generator = RustGenerator::new();
             rust_generator.set_parameters(execution.parameters);
@@ -118,7 +118,6 @@ pub fn generate_peppygen_lib(
             )?;
             // Create or update the node's Cargo.toml with peppygen dependency
             ensure_node_cargo_toml(node_dir, node_config.manifest.name.as_str())?;
-            Ok(())
         }
         PeppygenLanguage::Python => {
             let mut python_generator = PythonGenerator::new();
@@ -135,12 +134,11 @@ pub fn generate_peppygen_lib(
                 &output_dir,
                 peppy_dirs,
                 deploy_mode,
-            )
+            )?;
         }
-    };
+    }
 
     // Only write git.hash and the fingerprint after successful generation.
-    result?;
     if node_tree == common::NodeTree::Source {
         write_if_changed(&peppy_dir.join("git.hash"), git_hash.as_bytes())?;
     }
@@ -300,17 +298,13 @@ fn set_path_dependency_with_features(
 
 fn write_if_changed(path: &Path, contents: &[u8]) -> Result<()> {
     match fs::read(path) {
-        Ok(existing) if existing == contents => Ok(()),
-        Ok(_) => {
-            fs::write(path, contents)?;
-            Ok(())
-        }
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            fs::write(path, contents)?;
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
+        Ok(existing) if existing == contents => return Ok(()),
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
+    fs::write(path, contents)?;
+    Ok(())
 }
 
 #[cfg(test)]
