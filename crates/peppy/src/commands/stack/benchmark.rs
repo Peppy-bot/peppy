@@ -270,37 +270,15 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
         .iter()
         .partition(|r| r.measurement.is_synthetic_probe());
 
-    if !synthetic.is_empty() {
-        println!(
-            "\nSynthetic probes: handler-free round-trips, schema-sized payloads \
-             ({samples} samples/interface)"
-        );
-        let rows = display_rows(&synthetic, &previous, colorize, ReportTable::Synthetic);
-        let mut table = String::new();
-        render_table(
-            &mut table,
-            &SYNTHETIC_HEADERS,
-            &[rows],
-            crate::terminal::stdout_width(),
-        );
-        print!("{table}");
-    }
-
-    if !real.is_empty() {
-        println!(
-            "\nReal traffic: observe-only one-way delivery of live topic messages \
-             ({samples} samples/interface)"
-        );
-        let rows = display_rows(&real, &previous, colorize, ReportTable::Real);
-        let mut table = String::new();
-        render_table(
-            &mut table,
-            &REAL_HEADERS,
-            &[rows],
-            crate::terminal::stdout_width(),
-        );
-        print!("{table}");
-    }
+    let tables = render_report_tables(
+        &synthetic,
+        &real,
+        &previous,
+        colorize,
+        samples,
+        crate::terminal::stdout_width(),
+    );
+    print!("{tables}");
 
     println!("{}", benchmark_legend(colorize));
 
@@ -327,6 +305,33 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
     }
 }
 
+/// The synthetic-probe table, then the real-traffic table, each under its
+/// title. A table with no rows is left out, title included.
+fn render_report_tables(
+    synthetic: &[&InterfaceLatency],
+    real: &[&InterfaceLatency],
+    previous: &BTreeMap<String, StoredStats>,
+    colorize: bool,
+    samples: u32,
+    max_width: Option<usize>,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    for (rows, table) in [
+        (synthetic, ReportTable::Synthetic),
+        (real, ReportTable::Real),
+    ] {
+        if rows.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "\n{}", table.title(samples));
+        let rows = display_rows(rows, previous, colorize, table);
+        render_table(&mut out, table.headers(), &[rows], max_width);
+    }
+    out
+}
+
 /// Which report table rows are being rendered for. The synthetic table shows
 /// the `measure` column (its rows are all clock-independent round-trips, so a
 /// `clock` column would be pure noise); the real-traffic table shows the
@@ -335,6 +340,32 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
 enum ReportTable {
     Synthetic,
     Real,
+}
+
+impl ReportTable {
+    /// The line above the table: what its rows measure, and over how many
+    /// samples per interface.
+    fn title(self, samples: u32) -> String {
+        match self {
+            Self::Synthetic => format!(
+                "Synthetic probes: handler-free round-trips, schema-sized payloads \
+                 ({samples} samples/interface)"
+            ),
+            Self::Real => format!(
+                "Real traffic: observe-only one-way delivery of live topic messages \
+                 ({samples} samples/interface)"
+            ),
+        }
+    }
+
+    /// The column headers, whose third column names the cell
+    /// [`display_rows`] puts there for this table.
+    fn headers(self) -> &'static [&'static str] {
+        match self {
+            Self::Synthetic => &SYNTHETIC_HEADERS,
+            Self::Real => &REAL_HEADERS,
+        }
+    }
 }
 
 /// Column headers for the synthetic-probe table.
@@ -653,6 +684,51 @@ mod tests {
             assert!(plain.contains(label), "legend missing {label}");
         }
         assert!(plain.contains("never publishes onto a real topic"));
+    }
+
+    /// The synthetic table comes first, then the real one, each under its
+    /// own title and headers; a kind with no rows has neither.
+    #[test]
+    fn report_tables_render_synthetic_then_real_under_their_titles() {
+        let rows = sample_rows();
+        let (synthetic, real) = split_rows(&rows);
+        let previous = BTreeMap::new();
+        let mut synthetic_part = String::from(
+            "\nSynthetic probes: handler-free round-trips, schema-sized payloads \
+             (200 samples/interface)\n",
+        );
+        render_table(
+            &mut synthetic_part,
+            &SYNTHETIC_HEADERS,
+            &[display_rows(
+                &synthetic,
+                &previous,
+                false,
+                ReportTable::Synthetic,
+            )],
+            None,
+        );
+        let mut real_part = String::from(
+            "\nReal traffic: observe-only one-way delivery of live topic messages \
+             (200 samples/interface)\n",
+        );
+        render_table(
+            &mut real_part,
+            &REAL_HEADERS,
+            &[display_rows(&real, &previous, false, ReportTable::Real)],
+            None,
+        );
+
+        let tables = |synthetic: &[&InterfaceLatency], real: &[&InterfaceLatency]| {
+            render_report_tables(synthetic, real, &previous, false, 200, None)
+        };
+        assert_eq!(
+            tables(&synthetic, &real),
+            format!("{synthetic_part}{real_part}")
+        );
+        assert_eq!(tables(&synthetic, &[]), synthetic_part);
+        assert_eq!(tables(&[], &real), real_part);
+        assert_eq!(tables(&[], &[]), "");
     }
 
     #[test]
