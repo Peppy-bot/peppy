@@ -867,21 +867,26 @@ async fn topic_publish_reliable_5000hz_messages() {
     // publisher once the subscriber's bounded channel fills. A real stream is
     // drained continuously, so emit in a background task while the main task
     // receives.
+    let publisher = TopicMessenger::declare_publisher(
+        &sender_handle,
+        emitter_core_node,
+        emitter_instance_id,
+        test_node_target(node_name),
+        None,
+        topic,
+        qos,
+        TopicRetention::LiveOnly,
+    )
+    .await
+    .expect("Should declare the publisher");
     let emit_ids = message_ids.clone();
     let emitter = tokio::spawn(async move {
         for &message_id in &emit_ids {
             let payload = Payload::from(message_id.to_le_bytes().to_vec());
-            publish_once(
-                &sender_handle,
-                emitter_core_node,
-                emitter_instance_id,
-                test_node_target(node_name),
-                topic,
-                qos.clone(),
-                payload,
-            )
-            .await
-            .expect("Should send the payload");
+            publisher
+                .publish(payload)
+                .await
+                .expect("Should send the payload");
         }
     });
 
@@ -4522,6 +4527,18 @@ async fn topic_pinned_subscription_compares_full_pairs() {
         let stop = stop_emitters.clone();
         let qos = qos.clone();
         tokio::spawn(async move {
+            let publisher = TopicMessenger::declare_publisher(
+                &handle,
+                core,
+                shared_inst,
+                test_node_target(node_name),
+                None,
+                topic,
+                qos,
+                TopicRetention::LiveOnly,
+            )
+            .await
+            .expect("declare should succeed");
             let mut ticker = tokio::time::interval(Duration::from_millis(50));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
@@ -4529,17 +4546,10 @@ async fn topic_pinned_subscription_compares_full_pairs() {
                     biased;
                     _ = stop.cancelled() => break,
                     _ = ticker.tick() => {
-                        publish_once(
-                            &handle,
-                            core,
-                            shared_inst,
-                            test_node_target(node_name),
-                            topic,
-                            qos.clone(),
-                            payload.clone(),
-                        )
-                        .await
-                        .expect("emit should succeed");
+                        publisher
+                            .publish(payload.clone())
+                            .await
+                            .expect("emit should succeed");
                     }
                 }
             }
