@@ -32,7 +32,7 @@ use tempfile::tempdir;
 use config::node::{ArraySchema, MessageFormat, PrimitiveSchema, SchemaType, TypeToken};
 use facade::CapnpFacade;
 use indexmap::IndexMap;
-use wire_layout::{SchemaNodes, StructLayout};
+use wire_layout::{SchemaNodes, StructLayout, join_path};
 
 /// The output_dir should point to the `src` of a Rust crate. A new `capnp` module will be
 /// created at the root of this directory with all the `capnp` files.
@@ -144,13 +144,10 @@ impl MessageFormatMapper {
                         *entry = rendered;
                     }
                     if let SchemaType::Object(object) = array.items.as_ref() {
+                        let element_key = format!("{current_key}[]");
                         for (field_name, field_schema) in &object.fields {
                             let sanitized = sanitize_field_name(field_name);
-                            let next_key = if current_key.is_empty() {
-                                format!("[].{sanitized}")
-                            } else {
-                                format!("{current_key}[].{sanitized}")
-                            };
+                            let next_key = join_path(&element_key, &sanitized);
                             override_array_types(&next_key, field_schema, mapping);
                         }
                     }
@@ -158,11 +155,7 @@ impl MessageFormatMapper {
                 SchemaType::Object(object) => {
                     for (field_name, field_schema) in &object.fields {
                         let sanitized = sanitize_field_name(field_name);
-                        let next_key = if current_key.is_empty() {
-                            sanitized
-                        } else {
-                            format!("{current_key}.{sanitized}")
-                        };
+                        let next_key = join_path(current_key, &sanitized);
                         override_array_types(&next_key, field_schema, mapping);
                     }
                 }
@@ -557,11 +550,7 @@ fn collect_struct_fields(
             .get_name()?
             .to_string()
             .map_err(|err| Error::Encoding(format!("invalid field name encoding: {err}")))?;
-        let key = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}.{name}")
-        };
+        let key = join_path(prefix, &name);
 
         let field_type = match field
             .which()

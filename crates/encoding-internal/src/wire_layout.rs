@@ -490,7 +490,7 @@ fn not_in_schema(err: capnp::NotInSchema) -> Error {
     ))
 }
 
-fn join_path(path: &str, name: &str) -> String {
+pub(crate) fn join_path(path: &str, name: &str) -> String {
     if path.is_empty() {
         name.to_string()
     } else {
