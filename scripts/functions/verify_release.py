@@ -16,9 +16,9 @@ REQUIRED_ALL = [
 
 # ELF e_machine values for the architectures peppy releases for. Linux
 # binaries are verified against these; a binary whose header names another
-# machine fails the release. The v0.25.3 x86_64 archive shipped an aarch64
-# apptainer through the presence-only check, and every consumer of the
-# tarball (installs, CI runners) broke at exec with no build-time signal.
+# machine fails the release. Presence alone does not catch such a binary: it
+# sits at the right path and breaks every consumer of the tarball (installs,
+# CI runners) at exec, with no build-time signal.
 ELF_MACHINE_BY_ARCH = {
     "x86_64": 62,
     "aarch64": 183,

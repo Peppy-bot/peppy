@@ -77,7 +77,7 @@ def find_limactl(repo_root: Path) -> Path:
 
     Checks the exact SHA-verified cache entry for LIMA_VERSION first, then falls
     back to the cargo build output created by the containers crate build.rs.
-    There is deliberately no `lima-*` glob: sorting one picked the
+    There is deliberately no `lima-*` glob: a sorted glob picks the
     lexicographically last directory, so an unrelated cache entry such as
     `lima-99.0.0-Darwin-arm64` would win over the verified download.
     """
@@ -156,10 +156,10 @@ def _vm_resources() -> tuple[int, int]:
 
     CPUs: host cores minus two, so macOS and Lima's host-side daemons (ssh,
     virtiofs, port forwarding) keep dedicated cores while the build runs at
-    full parallelism. Memory: 1.5 GiB per vCPU, the ratio the earlier fixed
-    8-job/12 GiB tuning established for release builds with LTO, floored at
-    8 GiB so the serial LTO link step is never starved, and capped at half
-    the host's RAM so starting the VM cannot push the host into swap.
+    full parallelism. Memory: 1.5 GiB per vCPU, the ratio release builds with
+    LTO need (8 jobs in 12 GiB), floored at 8 GiB so the serial LTO link step
+    is never starved, and capped at half the host's RAM so starting the VM
+    cannot push the host into swap.
 
     Only applied at VM creation: an existing instance keeps the resources it
     was created with, so the in-VM build derives its parallelism from the
@@ -247,8 +247,8 @@ def _ensure_pinned_go_in_vm(limactl: Path) -> None:
     """Install the pinned Go toolchain in the Lima VM if missing or wrong version.
 
     Idempotent: skips the download when the correct version is already present.
-    Kept separate from the Rust setup so it also runs on VMs that already have
-    Rust but predate Go pinning.
+    Kept separate from the Rust setup, which skips a VM that already has Rust,
+    so it runs on every VM, one with Rust and no pinned Go included.
     """
     install_script = f"""\
 set -eu

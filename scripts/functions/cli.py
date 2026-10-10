@@ -261,7 +261,7 @@ def get_native_triple() -> str:
 def get_targets_for_platform() -> list[str]:
     """Return the list of target triples to build for the current platform.
 
-    On macOS ARM64: all 4 release triples.
+    On macOS ARM64: every release triple (RELEASE_TRIPLES).
     On Linux: only the native triple.
     """
     if is_macos_arm64():

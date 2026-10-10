@@ -1110,8 +1110,7 @@ def test_check_docs_raises_on_claude_nonzero(tmp_path: Path) -> None:
 
 
 def test_check_docs_raises_on_missing_structured_output(tmp_path: Path) -> None:
-    # The regression that motivated --json-schema: a prose answer must fail
-    # with a diagnosable error, never a JSON traceback.
+    # A prose answer fails with a diagnosable error, never a JSON traceback.
     mock = MagicMock()
     mock.returncode = 0
     mock.stdout = json.dumps({"type": "result", "result": "The docs are fine."})

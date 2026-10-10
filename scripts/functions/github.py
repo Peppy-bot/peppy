@@ -261,7 +261,8 @@ def github_upload_asset(
     Uses the uploads.github.com endpoint with application/octet-stream.
     The file is streamed from disk, with a progress line every
     _UPLOAD_PROGRESS_INTERVAL seconds and a summary once GitHub accepted it.
-    Retries on timeouts, connection errors, and HTTP 502/503/504.
+    Retries on the transient failures of _is_retryable: timeouts, refused or
+    dropped connections, and HTTP 500/502/503/504.
     Cleans up partial uploads before each retry to avoid 422 conflicts.
     Returns the parsed JSON response from the upload.
     """
@@ -313,7 +314,7 @@ def github_upload_asset(
                 ) from e
             last_exc = e
 
-    # Unreachable, but satisfies type checker
+    # Reached only when max_attempts is below 1, which runs no attempt.
     raise ReleaseError(f"failed to upload asset '{asset_name}': max retries exceeded")
 
 
