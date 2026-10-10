@@ -18,8 +18,6 @@ pub(crate) fn sanitize_component(raw: &str) -> String {
         } else if !out.is_empty() && !last_was_underscore {
             out.push('_');
             last_was_underscore = true;
-        } else if out.is_empty() {
-            last_was_underscore = true;
         }
     }
 
@@ -27,11 +25,7 @@ pub(crate) fn sanitize_component(raw: &str) -> String {
         out.pop();
     }
 
-    if out.is_empty() {
-        return String::new();
-    }
-
-    if matches!(out.chars().next(), Some(c) if c.is_ascii_digit()) {
+    if out.starts_with(|ch: char| ch.is_ascii_digit()) {
         out.insert(0, '_');
     }
 
@@ -64,11 +58,7 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
 
     while let Some(ch) = chars.next() {
         if ch.is_ascii_uppercase() {
-            let next_is_lower = chars
-                .peek()
-                .copied()
-                .map(|next| next.is_ascii_lowercase())
-                .unwrap_or(false);
+            let next_is_lower = chars.peek().is_some_and(char::is_ascii_lowercase);
             if !result.is_empty()
                 && (prev_was_lower_or_digit || next_is_lower)
                 && !result.ends_with('_')
@@ -79,7 +69,7 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
             prev_was_lower_or_digit = false;
         } else if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
             result.push(ch);
-            prev_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+            prev_was_lower_or_digit = true;
         } else {
             if !result.ends_with('_') && !result.is_empty() {
                 result.push('_');
@@ -96,12 +86,7 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
         return String::from("message");
     }
 
-    if result
-        .chars()
-        .next()
-        .map(|ch| ch.is_ascii_digit())
-        .unwrap_or(false)
-    {
+    if result.starts_with(|ch: char| ch.is_ascii_digit()) {
         result.insert(0, '_');
     }
 
@@ -166,12 +151,7 @@ pub(crate) fn to_camel_case(raw: &str) -> String {
         out.push_str("Item");
     }
 
-    if !out
-        .chars()
-        .next()
-        .map(|ch| ch.is_ascii_alphabetic())
-        .unwrap_or(true)
-    {
+    if out.starts_with(|ch: char| !ch.is_ascii_alphabetic()) {
         out.insert(0, 'T');
     }
 
@@ -208,15 +188,11 @@ pub(crate) fn sanitize_capnp_field_name(input: &str) -> String {
         camel.extend(chars);
     }
 
-    if camel.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+    if camel.starts_with(|ch: char| ch.is_ascii_digit()) {
         camel.insert(0, '_');
     }
 
-    if camel.is_empty() {
-        "_field".to_string()
-    } else {
-        camel
-    }
+    camel
 }
 
 /// Resolved schema file stem with both the base name and the full file stem.
