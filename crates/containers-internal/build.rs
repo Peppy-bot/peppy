@@ -2369,16 +2369,16 @@ echo "=== Apptainer build complete ==="
 
         // On macOS, apptainer is Linux-only and runs inside a Lima VM.
         // We download and bundle Lima ourselves; no `brew install lima` required.
-        let use_lima = if target_os == "macos" {
-            true
-        } else if target_os != "linux" {
-            println!(
-                "cargo:warning=Skipping apptainer build: apptainer is Linux-only (target_os={})",
-                target_os
-            );
-            return;
-        } else {
-            false
+        let use_lima = match target_os.as_str() {
+            "macos" => true,
+            "linux" => false,
+            other => {
+                println!(
+                    "cargo:warning=Skipping apptainer build: apptainer is Linux-only (target_os={})",
+                    other
+                );
+                return;
+            }
         };
 
         // fuse2fs is the one userspace mount helper the bundled apptainer tree
