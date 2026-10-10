@@ -117,11 +117,10 @@ impl Artifact {
 ///   stage and is rejected immediately with no queueing.
 /// - `Ready`: the [`Artifact`] is on disk, built from sources or the
 ///   daemon's own executable for a built-in node. The instances list may be
-///   empty (no instances spawned yet, equivalent to the old `Built` stage)
-///   or hold any mix of `Starting` (in-flight `prepare_and_spawn`),
-///   `Running`, and terminal `Finished`/`Failed` instances. A self-exited
-///   instance stays listed as `Finished` or `Failed` until the stack is
-///   cleared or it is stopped.
+///   empty (no instances spawned yet) or hold any mix of `Starting`
+///   (in-flight `prepare_and_spawn`), `Running`, and terminal
+///   `Finished`/`Failed` instances. A self-exited instance stays listed as
+///   `Finished` or `Failed` until the stack is cleared or it is stopped.
 /// - `Root`: the synthetic daemon entity. Has no buildable artifact and
 ///   exactly one `Running` instance (the daemon process itself). The
 ///   lifecycle methods (`build`, `prepare_and_spawn`, `commit_started`,
@@ -141,7 +140,6 @@ pub enum NodeStage {
         artifact: Artifact,
         instances: Vec<TrackedNodeInstance>,
     },
-    // Special kind
     Root {
         config_path: PathBuf,
         /// Boxed so the one root entity does not make every stage as large
@@ -354,9 +352,10 @@ fn next_entity_generation() -> u64 {
 }
 
 /// RAII guard for a temporary working directory staged by `node add` and
-/// consumed by `node build`. Removes the directory when the last clone is
-/// dropped, so removing an `Added` entity from the stack also cleans up
-/// its pending working dir on disk.
+/// consumed by `node build`. Removes the directory on drop, which for the
+/// shared `Arc<WorkingDirGuard>` is when its last clone drops, so removing
+/// an `Added` entity from the stack also cleans up its pending working dir
+/// on disk.
 #[derive(Debug)]
 pub struct WorkingDirGuard {
     path: PathBuf,
@@ -384,9 +383,9 @@ pub struct NodeEntity {
     stage: NodeStage,
     /// Unique-per-construction token used to detect when an in-flight `build`
     /// is racing against a wholesale entity replacement (`push_config_impl`'s
-    /// in-place overwrite). Bumped on every `new`, `from_snapshot`, and
-    /// `root` construction. The build path captures this value at Phase 1 and
-    /// re-checks it at Phase 3 before publishing artifacts.
+    /// in-place overwrite). Bumped by every constructor (`new`, `built_in`,
+    /// `root`, `from_snapshot`). The build path captures this value at Phase 1
+    /// and re-checks it at Phase 3 before publishing artifacts.
     generation: u64,
     /// In-memory only: the temporary working directory staged by `node add`
     /// and consumed by `node build`. Set to `Some` while the entity is
@@ -509,10 +508,10 @@ impl NodeEntity {
         }
     }
 
-    /// Returns the entity's monotonic generation token. Bumped on every
-    /// `new`/`from_snapshot`/`root` construction so the build path can
-    /// distinguish "still the entity I started building" from "wholesale
-    /// replaced by a concurrent push_config".
+    /// Returns the entity's monotonic generation token. Bumped by every
+    /// constructor (`new`, `built_in`, `root`, `from_snapshot`) so the build
+    /// path can distinguish "still the entity I started building" from
+    /// "wholesale replaced by a concurrent push_config".
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -573,11 +572,12 @@ impl NodeEntity {
         }
     }
 
-    /// Returns the tracked instances of this entity, including both
-    /// `Starting` (in-flight) and `Running` (committed) instances. Observers
-    /// that only care about fully-started instances should filter by
-    /// [`TrackedNodeInstance::state`]. Returns an empty slice for `Added`
-    /// and `Building`.
+    /// Returns the tracked instances of this entity: the `Starting`
+    /// (in-flight), `Running` (committed), and terminal `Finished`/`Failed`
+    /// instances of a `Ready` entity, or the one daemon instance of the root
+    /// entity. Observers that only care about fully-started instances should
+    /// filter by [`TrackedNodeInstance::state`]. Returns an empty slice for
+    /// `Added` and `Building`.
     pub fn instances(&self) -> &[TrackedNodeInstance] {
         match &self.stage {
             NodeStage::Ready { instances, .. } => instances,
@@ -833,8 +833,9 @@ impl NodeEntity {
     }
 
     /// Best-effort removal of an in-flight `Starting` instance. Used by
-    /// [`prepare_and_spawn`] (on I/O failure during the spawn/wire phases)
-    /// and [`abort_started`] (on caller-side ready/health failure).
+    /// [`Self::prepare_and_spawn`] (on I/O failure during the spawn/wire
+    /// phases) and [`Self::abort_started`] (on caller-side ready/health
+    /// failure).
     ///
     /// Looks up the instance by id and removes it from the `Ready.instances`
     /// list. Silent no-op if the entity is no longer in `Ready` (concurrent
@@ -856,14 +857,14 @@ impl NodeEntity {
     }
 
     /// Records the spawned child's `pid` on the still-`Starting` instance
-    /// `instance_id`. Called by [`prepare_and_spawn`] while the entity write lock
-    /// is already held, in the SAME critical section as the fork, so a daemon
-    /// teardown snapshot can never observe a live child whose pid is not yet
-    /// force-killable. A no-op if the entity is no longer `Ready` or the instance
-    /// is gone, which cannot happen while the `Starting` instance is registered:
-    /// `push_config`/`remove_config` both refuse a non-empty instances list under
-    /// this same entity write lock, so the entity is neither replaced nor
-    /// detached for the lifetime of the start.
+    /// `instance_id`. Called by [`Self::prepare_and_spawn`] while the entity
+    /// write lock is already held, in the SAME critical section as the fork,
+    /// so a daemon teardown snapshot can never observe a live child whose pid
+    /// is not yet force-killable. A no-op if the entity is no longer `Ready`
+    /// or the instance is gone, which cannot happen while the `Starting`
+    /// instance is registered: `push_config`/`remove_config` both refuse a
+    /// non-empty instances list under this same entity write lock, so the
+    /// entity is neither replaced nor detached for the lifetime of the start.
     fn record_starting_pid(&mut self, instance_id: &Name, pid: u32) {
         let NodeStage::Ready { instances, .. } = &mut self.stage else {
             return;
@@ -1933,8 +1934,8 @@ mod tests {
     }
 
     /// Guards the one line that places resolved bindings onto the `graph_json`
-    /// wire: `From<&NodeEntity>` must copy each instance's `slot_bindings`
-    /// through to its `SerializedInstance`. Reverting that line to an empty map
+    /// wire: `serialize_node_entity` must copy each instance's `slot_bindings`
+    /// through to its `SerializedInstance`. Setting that field to an empty map
     /// makes this fail.
     #[test]
     fn serialized_node_carries_per_instance_slot_bindings() {
