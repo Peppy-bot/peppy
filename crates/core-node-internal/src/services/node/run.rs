@@ -1220,13 +1220,16 @@ async fn process_node_run(
     // feeds the entity's output readers; the forwarder copies lines onto the
     // daemon's external feedback topic and increments published_count so
     // FeedbackSync can detect quiescence.
-    let publish_enabled = Arc::new(AtomicBool::new(true));
-    let feedback_sync = FeedbackSync::new();
+    let feedback = RunFeedback {
+        sync: FeedbackSync::new(),
+        publish_enabled: Arc::new(AtomicBool::new(true)),
+        quiet_window: drain_quiet_window(is_container),
+    };
 
     let (internal_feedback_tx, mut internal_feedback_rx) =
         mpsc::unbounded_channel::<FeedbackLine>();
     let external_feedback_tx = ctx.announcer.feedback_tx().clone();
-    let feedback_sync_publisher = feedback_sync.clone();
+    let feedback_sync_publisher = feedback.sync.clone();
     tokio::spawn(async move {
         while let Some(line) = internal_feedback_rx.recv().await {
             let _ = external_feedback_tx.send(line);
@@ -1253,33 +1256,26 @@ async fn process_node_run(
         peppy_dirs: &ctx.action.peppy_dirs,
         output_sinks: node_stack::OutputSinks {
             announcer: Announcer::new(ctx.announcer.log().clone(), internal_feedback_tx.clone()),
-            publish_enabled: Arc::clone(&publish_enabled),
-            hooks: Arc::new(feedback_sync.clone()),
+            publish_enabled: Arc::clone(&feedback.publish_enabled),
+            hooks: Arc::new(feedback.sync.clone()),
         },
     };
     // Reject early if an outer orchestrator already cancelled us; avoids
     // spawning a child process we're only going to tear down on the next line.
     if cancel_token.is_cancelled() {
         let msg = "cancelled before node process spawn".to_string();
-        ctx.announcer.log().error(&msg);
-        feedback_sync
-            .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+        return feedback
+            .close_on_failure(&ctx.announcer, instance_id_str, msg)
             .await;
-        publish_enabled.store(false, Ordering::Release);
-        return NodeRunResult::failure(msg);
     }
 
     let (mut child, started_ctx) =
         match node_stack::NodeEntity::prepare_and_spawn(&entity_handle, start_ctx).await {
             Ok(t) => t,
             Err(e) => {
-                let msg = e.to_string();
-                ctx.announcer.log().error(&msg);
-                feedback_sync
-                    .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+                return feedback
+                    .close_on_failure(&ctx.announcer, instance_id_str, e.to_string())
                     .await;
-                publish_enabled.store(false, Ordering::Release);
-                return NodeRunResult::failure(msg);
             }
         };
 
@@ -1296,25 +1292,16 @@ async fn process_node_run(
             "failed to reserve pair for slot `{}`: {reserve_msg}",
             pair.own.link_id
         );
-        ctx.action
-            .relationships
-            .pairing()
-            .dissolve_for_instance(instance_id_str)
-            .await;
-        let msg = node_stack::NodeEntity::abort_started(
+        return abort_uncommitted_instance(
+            &ctx,
+            &feedback,
             &entity_handle,
             child,
             started_ctx,
-            reason,
             &instance_id,
+            reason,
         )
         .await;
-        ctx.announcer.log().error(&msg);
-        feedback_sync
-            .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
-            .await;
-        publish_enabled.store(false, Ordering::Release);
-        return NodeRunResult::failure(msg);
     }
 
     let signal_target = NodeSignalTarget {
@@ -1353,25 +1340,16 @@ async fn process_node_run(
             "Aborting node instance '{}' during ready wait: {}",
             instance_id_str, reason
         );
-        ctx.action
-            .relationships
-            .pairing()
-            .dissolve_for_instance(instance_id_str)
-            .await;
-        let msg = node_stack::NodeEntity::abort_started(
+        return abort_uncommitted_instance(
+            &ctx,
+            &feedback,
             &entity_handle,
             child,
             started_ctx,
-            reason.to_string(),
             &instance_id,
+            reason.to_string(),
         )
         .await;
-        ctx.announcer.log().error(&msg);
-        feedback_sync
-            .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
-            .await;
-        publish_enabled.store(false, Ordering::Release);
-        return NodeRunResult::failure(msg);
     }
 
     debug!(
@@ -1439,25 +1417,16 @@ async fn process_node_run(
                     "Aborting node instance '{}' after health check: {}",
                     instance_id_str, reason
                 );
-                ctx.action
-                    .relationships
-                    .pairing()
-                    .dissolve_for_instance(instance_id_str)
-                    .await;
-                let msg = node_stack::NodeEntity::abort_started(
+                return abort_uncommitted_instance(
+                    &ctx,
+                    &feedback,
                     &entity_handle,
                     child,
                     started_ctx,
-                    reason,
                     &instance_id,
+                    reason,
                 )
                 .await;
-                ctx.announcer.log().error(&msg);
-                feedback_sync
-                    .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
-                    .await;
-                publish_enabled.store(false, Ordering::Release);
-                return NodeRunResult::failure(msg);
             }
             let pid = child.id().unwrap_or(0);
             let commit_result = node_stack::NodeEntity::commit_started(
@@ -1577,16 +1546,9 @@ async fn process_node_run(
                                  with its pairing slots unpaired; stop it with \
                                  `peppy node stop {instance_id_str}`"
                             );
-                            ctx.announcer.log().error(&msg);
-                            feedback_sync
-                                .drain_or_warn(
-                                    instance_id_str,
-                                    drain_quiet_window(is_container),
-                                    false,
-                                )
+                            return feedback
+                                .close_on_failure(&ctx.announcer, instance_id_str, msg)
                                 .await;
-                            publish_enabled.store(false, Ordering::Release);
-                            return NodeRunResult::failure(msg);
                         }
                         for pair in &planned_pairs {
                             ctx.announcer
@@ -1600,16 +1562,8 @@ async fn process_node_run(
                     // delays the close instead of dropping output. Containers
                     // wait for their first stdout line; processes do not, so a
                     // silent process is not penalized.
-                    feedback_sync
-                        .drain_or_warn(
-                            instance_id_str,
-                            drain_quiet_window(is_container),
-                            is_container,
-                        )
-                        .await;
-                    let result = NodeRunResult::success(pid).with_endpoints(endpoints);
-                    publish_enabled.store(false, Ordering::Release);
-                    result
+                    feedback.close(instance_id_str, is_container).await;
+                    NodeRunResult::success(pid).with_endpoints(endpoints)
                 }
                 Err(e) => {
                     let msg = format!("Failed to register instance: {}", e);
@@ -1618,12 +1572,9 @@ async fn process_node_run(
                         .pairing()
                         .dissolve_for_instance(instance_id_str)
                         .await;
-                    ctx.announcer.log().error(&msg);
-                    feedback_sync
-                        .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
-                        .await;
-                    publish_enabled.store(false, Ordering::Release);
-                    NodeRunResult::failure(msg)
+                    feedback
+                        .close_on_failure(&ctx.announcer, instance_id_str, msg)
+                        .await
                 }
             }
         }
@@ -1637,29 +1588,79 @@ async fn process_node_run(
                 "Aborting node instance '{}' during health check: {}",
                 instance_id_str, reason
             );
-            ctx.action
-                .relationships
-                .pairing()
-                .dissolve_for_instance(instance_id_str)
-                .await;
-            let msg = node_stack::NodeEntity::abort_started(
+            abort_uncommitted_instance(
+                &ctx,
+                &feedback,
                 &entity_handle,
                 child,
                 started_ctx,
-                reason,
                 &instance_id,
+                reason,
             )
-            .await;
-            // The run log is where an operator reads why an instance never
-            // started; the reason travels on the result too.
-            ctx.announcer.log().error(&msg);
-            feedback_sync
-                .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
-                .await;
-            publish_enabled.store(false, Ordering::Release);
-            NodeRunResult::failure(msg)
+            .await
         }
     }
+}
+
+/// The feedback stream of one `node_run` as the node's output readers see
+/// it: the drain state they report to, and the gate that lets them publish.
+struct RunFeedback {
+    sync: FeedbackSync,
+    publish_enabled: Arc<AtomicBool>,
+    /// See [`drain_quiet_window`].
+    quiet_window: Duration,
+}
+
+impl RunFeedback {
+    /// Ends the run's feedback stream: waits until the readers have drained
+    /// the child's output onto it, then stops them publishing. The readers
+    /// outlive the run, and the lines they read after this go to the log only.
+    async fn close(&self, instance_id: &str, require_stdout: bool) {
+        self.sync
+            .drain_or_warn(instance_id, self.quiet_window, require_stdout)
+            .await;
+        self.publish_enabled.store(false, Ordering::Release);
+    }
+
+    /// Ends a run that fails once its feedback stream is open: records
+    /// `message` in the run log, closes the stream without waiting for
+    /// stdout, and returns `message` as the run's failure.
+    async fn close_on_failure(
+        &self,
+        announcer: &Announcer,
+        instance_id: &str,
+        message: String,
+    ) -> NodeRunResult {
+        let failure = record_run_failure(announcer, message);
+        self.close(instance_id, false).await;
+        failure
+    }
+}
+
+/// Tears down an instance that was spawned but never committed to Running:
+/// releases the pairs reserved for it, kills the child and removes its
+/// `Starting` entry, then fails the run with `reason` and the child's stderr
+/// tail. The run log is where an operator reads why an instance never
+/// started, so the failure is written there as well as on the result.
+async fn abort_uncommitted_instance(
+    ctx: &ProcessNodeRunContext,
+    feedback: &RunFeedback,
+    entity_handle: &EntityHandle,
+    child: Child,
+    started_ctx: node_stack::StartedInstanceCtx,
+    instance_id: &Name,
+    reason: String,
+) -> NodeRunResult {
+    ctx.action
+        .relationships
+        .pairing()
+        .dissolve_for_instance(instance_id.as_str())
+        .await;
+    let msg =
+        NodeEntity::abort_started(entity_handle, child, started_ctx, reason, instance_id).await;
+    feedback
+        .close_on_failure(&ctx.announcer, instance_id.as_str(), msg)
+        .await
 }
 
 /// Outcome of a startup step (ready-signal wait, health check, endpoint
