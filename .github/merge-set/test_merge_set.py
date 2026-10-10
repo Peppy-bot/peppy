@@ -24,7 +24,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import merge_set
-import resolve
 from merge_set import (
     PEPPY,
     Action,
@@ -43,6 +42,7 @@ from merge_set import (
     ReviewDecision,
     TestedRef,
     TestedSet,
+    resolve,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]

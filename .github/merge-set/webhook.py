@@ -48,7 +48,7 @@ from datetime import datetime
 from pathlib import Path
 
 import merge_set
-import resolve
+from merge_set import resolve
 
 # The contract with aws/peppy-ci-pipelines of Peppy-bot/infraops, which sets
 # the function up: the entry point of its runtime, the variables it sets on
