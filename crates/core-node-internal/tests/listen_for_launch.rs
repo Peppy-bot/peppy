@@ -160,6 +160,8 @@ const LAUNCHER_EXAMPLE1: &str = r#"
 
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+/// The launch id `send_node_launch_and_wait` launches under.
+const TEST_LAUNCH_ID: &str = "launch-test-fixture";
 
 /// The `depends_on` of a node that consumes the `camera_stream` of a
 /// `uvc_camera:v1` through its `front_camera` link.
@@ -387,7 +389,7 @@ async fn send_launch_origin_and_wait_observing(
 ) -> Result<(LaunchGoalResponse, LaunchResult), String> {
     let goal = LaunchGoal::new(
         launcher_origin,
-        "launch-test-fixture",
+        TEST_LAUNCH_ID,
         StackBudgets::new(300, 300, 300, Some(3600)).with_env_vars(env_vars),
     );
     let goal_payload = goal
@@ -2417,8 +2419,6 @@ async fn launch_scripted_node_above(
     (result, records, started_core_node)
 }
 
-/// The launch id `send_node_launch_and_wait` launches under.
-const TEST_LAUNCH_ID: &str = "launch-test-fixture";
 /// A line a scripted node prints. The script that prints it does not hold it,
 /// so an error that quotes the script does not hold it either.
 const SCRIPT_OUTPUT: &str = "the-node-printed-this-line";
