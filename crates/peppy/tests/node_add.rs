@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::common::{
-    emulate_startup_services, node_add_command, node_run_command, serve_app_context, setup,
-    stack_graph, test_node_target,
+    assert_instance_count, emulate_startup_services, node_add_command, node_run_command,
+    serve_app_context, setup, stack_graph, test_node_target,
 };
 
 #[test]
@@ -76,25 +76,14 @@ fn node_add_command_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
-
     // Verify the node is in the graph with 0 instances (since run=false)
-    let added_node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        added_node.instance_count(),
+    rt.block_on(assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         0,
-        "graph should show 0 instances for the added node. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+        "for the added node",
+    ));
 }
 
 #[test]
@@ -184,25 +173,14 @@ fn node_add_command_with_run_arg_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
-
     // Verify the node is in the graph with 1 instance (since run=true)
-    let added_node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        added_node.instance_count(),
+    rt.block_on(assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         1,
-        "graph should show 1 instance for the added node. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+        "for the added node",
+    ));
 }
 
 #[test]
@@ -286,19 +264,13 @@ fn node_add_after_failed_sync_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
-
-    let added_node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        added_node.instance_count(),
+    rt.block_on(assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         0,
-        "graph should show 0 instances for the added node"
-    );
+        "for the added node",
+    ));
 }
 
 /// When adding a node that already exists with running instances:

@@ -13,8 +13,8 @@ use peppylib::MessengerHandle;
 use peppylib::core_node::transport::poll;
 
 use super::common::{
-    CALLER_INSTANCE_ID, emulate_startup_services, node_add_command, node_run_command,
-    serve_app_context, stack_graph, test_node_target,
+    CALLER_INSTANCE_ID, assert_instance_count, emulate_startup_services, node_add_command,
+    node_run_command, serve_app_context, test_node_target,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -53,23 +53,14 @@ async fn node_run_command_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
+    assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         0,
-        "graph should show 0 instances before run. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+        "before run",
+    )
+    .await;
 
     // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
@@ -89,23 +80,7 @@ async fn node_run_command_succeeds() {
     );
 
     // Verify the node has 1 instance now
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
-        1,
-        "graph should show 1 instance after run. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+    assert_instance_count(messenger_handle, &core_node_name, node_name, 1, "after run").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -205,23 +180,14 @@ async fn node_run_command_with_args_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
+    assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         0,
-        "graph should show 0 instances before run. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+        "before run",
+    )
+    .await;
 
     // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
@@ -268,23 +234,7 @@ async fn node_run_command_with_args_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
-        1,
-        "graph should show 1 instance after run. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+    assert_instance_count(messenger_handle, &core_node_name, node_name, 1, "after run").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -323,23 +273,14 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
+    assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         0,
-        "graph should show 0 instances before run. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+        "before run",
+    )
+    .await;
 
     // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
@@ -371,23 +312,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
-        1,
-        "graph should show 1 instance after run. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+    assert_instance_count(messenger_handle, &core_node_name, node_name, 1, "after run").await;
 }
 
 /// An `--instance-id` that is not a valid name is refused with the config
@@ -564,15 +489,14 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         logs
     );
 
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph
-        .find_node(node_name, "v1")
-        .expect("graph should contain the added node");
-    assert_eq!(
-        node.instance_count(),
+    assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         1,
-        "graph should show 1 instance after `run -b`"
-    );
+        "after `run -b`",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -670,15 +594,14 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         logs
     );
 
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph
-        .find_node(node_name, "v1")
-        .expect("graph should contain the added node");
-    assert_eq!(
-        node.instance_count(),
+    assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         1,
-        "graph should show 1 instance after `run -b`"
-    );
+        "after `run -b`",
+    )
+    .await;
 }
 
 /// Hand-crafts a peppy.json5 declaring `depends_on.nodes` against

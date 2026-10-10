@@ -222,6 +222,37 @@ pub async fn stack_graph(
     serde_json::from_str(&response.graph_json).expect("graph_json should parse")
 }
 
+/// Asserts that `stack list` shows `expected` instances of `node_name` at the
+/// standard test tag. `moment` names the point of the test ("before run",
+/// "after stop") in the failure.
+pub async fn assert_instance_count(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    expected: usize,
+    moment: &str,
+) {
+    let graph = stack_graph(messenger, core_node_name).await;
+    let node = graph
+        .find_node(node_name, TEST_NODE_TAG)
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the added node. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node.instance_count(),
+        expected,
+        "graph should show {expected} instance(s) {moment}. Got: {:?}",
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// One `stack list` answer from `core_node_name`.
 async fn stack_list(
     messenger: &MessengerHandle,

@@ -9,8 +9,8 @@ use peppylib::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 use super::common::{
-    emulate_startup_services, node_add_command, node_run_command, serve_app_context, stack_graph,
-    test_node_target,
+    assert_instance_count, emulate_startup_services, node_add_command, node_run_command,
+    serve_app_context, test_node_target,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -91,23 +91,14 @@ async fn node_stop_command_succeeds() {
     .expect("node shutdown service should start");
 
     // Verify the node was added with 0 instances
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
+    assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         0,
-        "graph should show 0 instances before run. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+        "before run",
+    )
+    .await;
 
     // Now run the node using the run command with a deterministic instance id
     node_run_command(instance_id, node_name, Vec::new(), Vec::new())
@@ -115,23 +106,7 @@ async fn node_stop_command_succeeds() {
         .expect("node run command should succeed");
 
     // Verify the node now has 1 instance
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
-        1,
-        "graph should show 1 instance after run. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+    assert_instance_count(messenger_handle, &core_node_name, node_name, 1, "after run").await;
 
     // Model a node that actually stops when asked: capture the run pid (logged
     // by the run command) and SIGKILL the process when the cooperative shutdown
@@ -181,23 +156,14 @@ async fn node_stop_command_succeeds() {
         .expect("kill task should not panic");
 
     // Verify the node now has 0 instances again
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
+    assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         0,
-        "graph should show 0 instances after stop. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+        "after stop",
+    )
+    .await;
 
     // Verify the logs contain success message
     let logs = log_capture.logs();
