@@ -1,8 +1,12 @@
 #![allow(dead_code)]
 
 use config::node::{QoSProfile, TopicRetention};
-use peppylib::messaging::{MessengerHandle, PeerInfo, SenderTarget, TopicMessenger};
+use peppylib::messaging::{
+    MessengerHandle, PeerInfo, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget,
+    TopicMessenger,
+};
 use peppylib::types::Payload;
+use peppylib::{Message, PeppyResult};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
 use std::time::Duration;
@@ -206,6 +210,34 @@ pub struct CoreNodeClient {
     pub caller_handle: MessengerHandle,
     pub core_node_name: String,
     pub instance_id: String,
+}
+
+impl CoreNodeClient {
+    /// The test node's instance, as the producer a pinned call addresses.
+    pub fn producer(&self) -> ProducerRef {
+        ProducerRef::new(self.core_node_name.as_str(), self.instance_id.as_str())
+    }
+
+    /// Calls `service` of the test node as `CALLER_INSTANCE_ID`, addressed
+    /// through `target`, with a 2 s budget.
+    pub async fn poll_test_node(
+        &self,
+        service: &str,
+        target: ServiceTarget<'_>,
+        request: Payload,
+    ) -> PeppyResult<Message> {
+        ServiceMessenger::poll(
+            &self.caller_handle,
+            &self.core_node_name,
+            CALLER_INSTANCE_ID,
+            test_node_target(TEST_NODE_NAME),
+            service,
+            target,
+            request,
+            Duration::from_secs(2),
+        )
+        .await
+    }
 }
 
 /// Creates a shared mock messenger and returns a client with a MessengerHandle.
