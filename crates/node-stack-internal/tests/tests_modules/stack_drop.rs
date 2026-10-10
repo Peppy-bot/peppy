@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use config::runtime::Name;
 use nix::sys::signal::Signal;
-use node_stack::{EntityHandle, NodeEntity, NodeStack, StartContext, StartedInstanceCtx};
+use node_stack::{EntityHandle, NodeEntity, NodeStack, StartedInstanceCtx};
 use tokio::process::Child;
 
 use crate::helpers::config_common::core_node_config;
@@ -45,23 +45,10 @@ async fn spawn_starting(
 ) -> (EntityHandle, Child, StartedInstanceCtx) {
     let config_path = harness.peppy_root.path().join("sensor.json5");
     let handle = real_lifecycle::build_ready(stack, harness, sensor_config(), config_path).await;
-    let (child, started_ctx) = NodeEntity::prepare_and_spawn(
-        &handle,
-        StartContext {
-            instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &harness.peppy_dirs,
-            output_sinks: harness.output_sinks(),
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed on a Ready entity");
+    let (child, started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, harness.start_context(instance_id))
+            .await
+            .expect("prepare_and_spawn should succeed on a Ready entity");
     (handle, child, started_ctx)
 }
 

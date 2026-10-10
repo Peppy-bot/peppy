@@ -194,23 +194,10 @@ async fn stop_instance_skips_starting_instances() {
     // Drive prepare_and_spawn to produce a Starting instance, but do NOT
     // commit_started; the instance stays in Starting.
     let id = Name::new("starting-inst").unwrap();
-    let (mut child, _started_ctx) = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &harness.peppy_dirs,
-            output_sinks: harness.output_sinks(),
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed");
+    let (mut child, _started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, harness.start_context(&id))
+            .await
+            .expect("prepare_and_spawn should succeed");
 
     let removed = handle.write().stop_instance(&id);
     assert!(
@@ -1276,23 +1263,9 @@ async fn prepare_and_spawn_rejects_when_not_built() {
     let handle = stack.find("sensor", "v1").expect("entity should exist");
     let (instance_id, h) = start_harness("test-inst-1");
 
-    let err = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-        },
-    )
-    .await
-    .expect_err("prepare_and_spawn should fail on Added entity");
+    let err = NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+        .await
+        .expect_err("prepare_and_spawn should fail on Added entity");
 
     match err {
         NodeStackError::InvalidStageTransition { from, to, .. } => {
@@ -1313,23 +1286,10 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     let (instance_id, h) = start_harness("test-inst-2");
     let handle = push_built_long_running_sensor(&stack, &h).await;
 
-    let (child, started_ctx) = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed on Ready entity");
+    let (child, started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+            .await
+            .expect("prepare_and_spawn should succeed on Ready entity");
 
     // Entity is in Ready with the new instance in Starting state.
     {
@@ -1397,23 +1357,10 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
     let (instance_id, h) = start_harness("test-inst-3");
     let handle = push_built_long_running_sensor(&stack, &h).await;
 
-    let (child, started_ctx) = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed");
+    let (child, started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+            .await
+            .expect("prepare_and_spawn should succeed");
 
     let pid = child.id().expect("child has pid");
 
@@ -1477,23 +1424,10 @@ async fn abort_started_quotes_the_stderr_of_the_child_and_not_its_stdout() {
     let config_path = h.peppy_root.path().join("printing_sensor.json5");
     let handle = real_lifecycle::build_ready_as_is(&stack, &h, config, config_path).await;
 
-    let (mut child, started_ctx) = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed");
+    let (mut child, started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+            .await
+            .expect("prepare_and_spawn should succeed");
     // Waiting for the child to exit puts both lines in the pipes before
     // abort_started kills it, so the readers it drains have seen them.
     child
@@ -1532,23 +1466,10 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
         real_lifecycle::spawn_running_instance(Arc::clone(&handle), &h, existing_id.clone()).await;
 
     // Now spawn a second instance via the regular start API.
-    let (child, started_ctx) = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed on Ready entity with existing instances");
+    let (child, started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+            .await
+            .expect("prepare_and_spawn should succeed on Ready entity with existing instances");
 
     // Entity is still in Ready. Both instances visible: existing Running
     // and new Starting.
@@ -1623,23 +1544,9 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
     let _existing =
         real_lifecycle::spawn_running_instance(Arc::clone(&handle), &h, instance_id.clone()).await;
 
-    let err = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-        },
-    )
-    .await
-    .expect_err("prepare_and_spawn should reject duplicate instance id");
+    let err = NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+        .await
+        .expect_err("prepare_and_spawn should reject duplicate instance id");
 
     match err {
         NodeStackError::DuplicateInstanceId {
