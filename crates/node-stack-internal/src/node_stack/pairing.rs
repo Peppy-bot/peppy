@@ -107,6 +107,12 @@ impl Pairing {
         }
     }
 
+    /// Whether this pair is the one between `a` and `b`, whichever way round
+    /// it was recorded.
+    fn is_between(&self, a: &SlotAddr, b: &SlotAddr) -> bool {
+        self.endpoint(a).is_some() && self.endpoint(b).is_some()
+    }
+
     /// The OTHER endpoint relative to `slot`, if this pair contains `slot`.
     pub fn peer_of(&self, slot: &SlotAddr) -> Option<&PairEndpoint> {
         if &self.a.slot == slot {
@@ -163,9 +169,7 @@ impl PairingRegistry {
 
     /// The pair between `a` and `b`, whichever way round it was recorded.
     pub(crate) fn find_pair(&self, a: &SlotAddr, b: &SlotAddr) -> Option<&Pairing> {
-        self.pairs
-            .iter()
-            .find(|p| p.endpoint(a).is_some() && p.endpoint(b).is_some())
+        self.pairs.iter().find(|pair| pair.is_between(a, b))
     }
 
     pub(crate) fn insert(&mut self, pairing: Pairing) {
@@ -173,10 +177,7 @@ impl PairingRegistry {
     }
 
     pub(crate) fn remove_pair(&mut self, a: &SlotAddr, b: &SlotAddr) -> Option<Pairing> {
-        let idx = self
-            .pairs
-            .iter()
-            .position(|p| p.endpoint(a).is_some() && p.endpoint(b).is_some())?;
+        let idx = self.pairs.iter().position(|pair| pair.is_between(a, b))?;
         Some(self.pairs.remove(idx))
     }
 
