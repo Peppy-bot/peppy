@@ -3866,10 +3866,7 @@ fn stack_resolve_accepts_a_vacant_pairing_slot_and_says_it_checked() {
 
     let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
         .expect("a vacant slot is covered");
-    let report_text = report.join(
-        "
-",
-    );
+    let report_text = report.join("\n");
     assert!(
         report_text.contains("link rules hold"),
         "the report confirms the rules ran: {report_text}"
@@ -3900,10 +3897,7 @@ fn stack_resolve_reports_the_check_skipped_when_a_manifest_is_missing() {
 
     let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
         .expect("a cache miss skips the link check");
-    let report_text = report.join(
-        "
-",
-    );
+    let report_text = report.join("\n");
     assert!(
         report_text.contains("link rules not checked")
             && report_text.contains("stranger:v1")
@@ -3939,10 +3933,7 @@ fn stack_resolve_reports_the_check_skipped_on_a_mislabeled_manifest() {
 
     let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
         .expect("a mislabeled manifest skips the link check");
-    let report_text = report.join(
-        "
-",
-    );
+    let report_text = report.join("\n");
     assert!(
         report_text.contains("link rules not checked")
             && report_text.contains("declares `renamed_viewer:v1`"),
@@ -3965,10 +3956,7 @@ fn stack_resolve_reports_the_check_skipped_on_an_empty_cache() {
     let (_document, report) =
         peppy::commands::stack::resolve_rendered(&empty_peppy_dirs(), launcher, &[], &[])
             .expect("an empty cache skips the link check");
-    let report_text = report.join(
-        "
-",
-    );
+    let report_text = report.join("\n");
     assert!(
         report_text.contains("link rules not checked") && report_text.contains("repo refresh"),
         "the skip tells the user how to enable the check: {report_text}"
