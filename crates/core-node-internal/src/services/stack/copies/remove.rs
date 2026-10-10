@@ -98,11 +98,9 @@ async fn remove_inner(
             return Err(consumers.refusal(name, &removed_domains));
         }
     }
-    let root = ctx.node_stack.root().read().config().clone();
     let (_, bindings, _, observations) = validate_and_order_dependencies(
         ctx,
         &remaining_planned,
-        &root,
         &active.placements,
         &copies,
         &active.resolved_clocks,

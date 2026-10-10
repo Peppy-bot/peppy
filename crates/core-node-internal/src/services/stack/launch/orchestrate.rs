@@ -279,7 +279,6 @@ type ResolvedSlotBindings = std::collections::BTreeMap<String, config::runtime::
 pub(in crate::services::stack) async fn validate_and_order_dependencies(
     ctx: &StackChangeContext,
     planned: &[PlannedDeployment],
-    root_config: &config::node::NodeConfig,
     placements: &daemon_config::launcher::Placements,
     copies: &daemon_config::launcher::CopyMembership,
     clocks: &daemon_config::launcher::ResolvedClocks,
@@ -292,6 +291,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     ),
     String,
 > {
+    let root_config = ctx.node_stack.root().read().config().clone();
     publish_stdout(
         ctx,
         "Validating dependencies",

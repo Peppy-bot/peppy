@@ -275,12 +275,10 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // doc pins are minted so a graph refusal, which points at the launcher
     // and the manifests, has first say over a document missing from this
     // machine's caches.
-    let root_config = ctx.node_stack.root().read().config().clone();
     let (ordered, resolved_slot_bindings, planned_pairings, planned_observations) =
         match validate_and_order_dependencies(
             &ctx,
             &planned,
-            &root_config,
             &placements,
             &copy_membership,
             &clocks,

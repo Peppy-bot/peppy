@@ -118,15 +118,13 @@ async fn join_inner(
     let grown_slots = changed_slots(&copy, &planned, Change::Join)?;
     let live = live_machines(ctx, &placements).await?;
     check_hosts_live(&copy.name, &grown_slots, &placements, &live)?;
-    let root = ctx.node_stack.root().read().config().clone();
     // A join follows the domains the stack already publishes: its known
     // lifetimes go in, so a copy binding to a running simulation reads the
     // clock that simulation is already supplying.
     let (clocks, incarnations) = plan_clocks(&combined, &placements, &active.clocks)?;
     let copies = CopyMembership::of(active.copy_records().chain([&copy]));
     let (ordered, bindings, pairings, observations) =
-        validate_and_order_dependencies(ctx, &planned, &root, &placements, &copies, &clocks)
-            .await?;
+        validate_and_order_dependencies(ctx, &planned, &placements, &copies, &clocks).await?;
     let grown_sets = whole_sets(&grown_slots, &bindings, &observations);
     let watchers = lifecycle_watchers(&observations, &placements)?;
     // The instances supplying the clocks this join reads take part in it: a
