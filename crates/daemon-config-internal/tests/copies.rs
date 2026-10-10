@@ -2466,6 +2466,44 @@ fn a_copy_cannot_reuse_an_id_the_stack_defines() {
     );
 }
 
+/// A copy that reuses several stack ids is refused under the same id on
+/// every run: the first of them by name.
+#[test]
+fn a_copy_reusing_several_stack_ids_names_the_first() {
+    let instances = r#"[
+        { instance_id: "a_inst" }, { instance_id: "b_inst" }, { instance_id: "c_inst" },
+        { instance_id: "d_inst" }, { instance_id: "e_inst" }, { instance_id: "f_inst" },
+        { instance_id: "g_inst" }, { instance_id: "h_inst" }
+    ]"#;
+    let prepared = load(&format!(
+        r#"{{
+        peppy_schema: "launcher/v1",
+        components: [
+            {{ name: "robot", cardinality: "zero_or_more", options: {{
+                sim: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }}, instances: {instances} }}] }}
+            }} }}
+        ],
+        deployments: [
+            {{ source: {{ name: "engine", tag: "v1" }}, instances: {instances} }}
+        ]
+    }}"#
+    ));
+    let launch = prepared.launch(&[], &[]).unwrap();
+    let error = join(
+        &prepared,
+        "sim",
+        "alpha",
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::CopyReusesStackId { option, id }
+            if option == "sim" && id == "a_inst"),
+        "{error}"
+    );
+}
+
 /// A stack fragment file's own adjustment guarded on a copy axis can never
 /// run.
 #[test]

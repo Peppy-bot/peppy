@@ -299,7 +299,7 @@ pub(super) fn compose_copy(
             domain: domain.to_string(),
         });
     }
-    let owned: HashSet<&str> = node_ids(fragments.iter().copied()).collect();
+    let owned: BTreeSet<&str> = node_ids(fragments.iter().copied()).collect();
     if owned.is_empty() {
         return Err(CompositionError::CopyStartsNothing {
             copy: name.to_string(),
@@ -472,7 +472,7 @@ pub(super) fn argument_overrides(
 fn apply_overrides(
     name: &Name,
     expanded: &mut Expanded,
-    owned: &HashSet<&str>,
+    owned: &BTreeSet<&str>,
     arguments: &ArgumentOverrides,
 ) -> Result<(), CompositionError> {
     let origin = format!("arguments of copy `{name}`");
@@ -481,7 +481,7 @@ fn apply_overrides(
             return Err(CompositionError::ArgumentTargetAbsent {
                 copy: name.to_string(),
                 target: target.clone(),
-                available: crate::error::format_quoted_list(owned.iter().collect::<BTreeSet<_>>()),
+                available: crate::error::format_quoted_list(owned.iter()),
             });
         }
         let instance = instance_named_mut(&mut expanded.deployments, target)
