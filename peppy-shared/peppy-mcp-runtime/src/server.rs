@@ -34,6 +34,7 @@ use rmcp::task_manager::{TaskContext, TaskExit, TaskManager, TaskOptions};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData as McpError, Peer, RoleServer, ServerHandler};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -448,9 +449,9 @@ fn claim_name(names: &mut HashSet<String>, name: &str) -> Result<(), BuildError>
     })
 }
 
-/// Measures the compact serialized size of a value without materializing
-/// the string.
-fn serialized_len(value: &Value) -> u64 {
+/// Measures the compact serialized size of a JSON value or object without
+/// materializing the string.
+pub(crate) fn serialized_len(value: &impl Serialize) -> u64 {
     struct ByteCount(u64);
     impl std::io::Write for ByteCount {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {

@@ -11,7 +11,7 @@
 
 use crate::bridge::time_to_rfc3339;
 use crate::clock::Clock;
-use crate::server::read_only_annotations;
+use crate::server::{read_only_annotations, serialized_len};
 use crate::tasks::ActionExit;
 use rmcp::model::{Implementation, JsonObject, Tool};
 use serde::Serialize;
@@ -22,7 +22,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 /// The most bytes of a call's arguments an entry keeps as sent; larger
 /// arguments are kept as their size alone.
-const ARGUMENTS_KEPT_BYTES: usize = 1024;
+const ARGUMENTS_KEPT_BYTES: u64 = 1024;
 
 /// What a recording that is dropped while its call runs says: the task
 /// was cancelled or aborted, or the call's connection closed, before the
@@ -189,10 +189,9 @@ impl CallRecord {
         arguments: &JsonObject,
     ) -> Recording {
         let now = self.clock.now_nanos();
-        let arguments_json = serde_json::to_string(arguments).expect("JSON object serializes");
-        let arguments_bytes = arguments_json.len() as u64;
-        let arguments = (arguments_json.len() <= ARGUMENTS_KEPT_BYTES)
-            .then(|| Value::Object(arguments.clone()));
+        let arguments_bytes = serialized_len(arguments);
+        let arguments =
+            (arguments_bytes <= ARGUMENTS_KEPT_BYTES).then(|| Value::Object(arguments.clone()));
         let call = Arc::new(Mutex::new(RecordedCall {
             started_at: time_to_rfc3339(UNIX_EPOCH + Duration::from_nanos(now)),
             client,
