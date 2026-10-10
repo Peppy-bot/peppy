@@ -26,7 +26,6 @@ fn create_node_config_dir(peppy_json5: &str) -> TempDir {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_success() {
-    // These must match the values used in create_test_node()
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";

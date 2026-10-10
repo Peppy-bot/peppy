@@ -490,23 +490,12 @@ pub fn write_packages_cache(started: &StartedCoreNode, content: &str) {
 /// Creates a fresh test node in a new temp directory.
 /// Each call creates a completely new node with its own peppygen generation
 /// and cargo build, ensuring isolation between tests.
-pub fn create_test_node() -> TempDir {
-    init_test_node_project("example_node", "v1", true)
-}
-
-/// Creates a fresh test node in a new temp directory.
-/// Each call creates a completely new node with its own peppygen generation
-/// and cargo build, ensuring isolation between tests.
 ///
 /// The returned [`TempDir`] owns the directory and deletes it, including the
 /// multi-GB cargo `target/`, when it drops, so test runs never accumulate
 /// build artifacts. Bind it for as long as the node is needed (e.g. for the
 /// whole test body) and let it drop at scope end.
 pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> TempDir {
-    init_test_node_project(node_name, node_tag, true)
-}
-
-pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bool) -> TempDir {
     // Build under the shared test-tmp root (see `config_test_support::test_tmp_root`) and keep the
     // `TempDir` guard rather than `.keep()`-ing it, so the directory and its
     // ~2 GB cargo build are reclaimed when the returned guard drops.
@@ -523,7 +512,7 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
         PeppygenLanguage::Rust,
         node_dir.path(),
         Vec::new(),
-        "test-hash",
+        super::TEST_GIT_HASH,
         &peppy_dirs,
         Default::default(),
         None,
@@ -531,9 +520,7 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
     )
     .expect("failed to generate peppygen for test node");
 
-    if build_project {
-        build_cargo_project(node_dir.path());
-    }
+    build_cargo_project(node_dir.path());
 
     node_dir
 }
