@@ -19,10 +19,10 @@ use peppylib::services::shutdown::listen_for_shutdown;
 
 use super::common::{
     build_count, build_logs_for, built_artifacts_for, counting_build_cmd,
-    emulate_cooperative_shutdown, emulate_pairing_node_services, emulate_startup_services,
-    install_node_manifest, node_add_command, read_daemon_git_hash, register_repo_caches,
-    serve_app_context, stack_graph, test_node_target, write_minimal_node_config,
-    write_node_config_for_helper,
+    emulate_cooperative_shutdown, emulate_node_services, emulate_pairing_node_services,
+    emulate_startup_services, install_node_manifest, node_add_command, read_daemon_git_hash,
+    register_repo_caches, serve_app_context, stack_graph, test_node_target,
+    write_minimal_node_config, write_node_config_for_helper,
 };
 
 /// The budgets these tests launch and build under: idle windows generous
@@ -718,40 +718,14 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
 
     // The dummy `sh` subprocess does not expose `node_ready`/`node_health`/
     // `shutdown`, so impersonate them from the test process for each
-    // instance the launcher will spawn. The daemon's `wait_for_ready_signal`
-    // queries via Zenoh with a wildcard `link_id`, so the queryables
-    // declared here (with default link_ids) still match.
+    // instance the launcher will spawn.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    emulate_startup_services(
-        &node_messenger,
-        &core_node_name,
-        producer_name,
-        producer_instance_id,
-    )
-    .await;
-    let (_shutdown_producer, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        producer_instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("producer shutdown service should start");
-    emulate_startup_services(
-        &node_messenger,
-        &core_node_name,
-        consumer_name,
-        consumer_instance_id,
-    )
-    .await;
-    let (_shutdown_consumer, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer shutdown service should start");
+    for (node_name, instance_id) in [
+        (producer_name, producer_instance_id),
+        (consumer_name, consumer_instance_id),
+    ] {
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
+    }
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -889,22 +863,12 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
     // Impersonate the framework services the dummy `sh` subprocesses do
     // not expose, for all three spawned instances.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let mut service_guards = Vec::new();
     for (node_name, instance_id) in [
         (producer_name, front_instance_id),
         (producer_name, rear_instance_id),
         (consumer_name, consumer_instance_id),
     ] {
-        emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
-        let (shutdown, _) = listen_for_shutdown(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("shutdown service should start");
-        service_guards.push(shutdown);
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
     }
 
     // The binding array deliberately lists `rear` before `front` so the
@@ -1305,36 +1269,12 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     super::common::seed_docs_repo(&serve, &ctx, contract_repo_dir.path());
 
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    emulate_startup_services(
-        &node_messenger,
-        &core_node_name,
-        producer_name,
-        producer_instance_id,
-    )
-    .await;
-    let (_shutdown_producer, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        producer_instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("producer shutdown service should start");
-    emulate_startup_services(
-        &node_messenger,
-        &core_node_name,
-        consumer_name,
-        consumer_instance_id,
-    )
-    .await;
-    let (_shutdown_consumer, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer shutdown service should start");
+    for (node_name, instance_id) in [
+        (producer_name, producer_instance_id),
+        (consumer_name, consumer_instance_id),
+    ] {
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
+    }
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -1777,30 +1717,12 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     // impersonate them from the test process for both instances (the
     // daemon's launch waits for each instance to report ready).
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    emulate_startup_services(
-        &node_messenger,
-        &core_node_name,
-        controller_name,
-        controller_instance_id,
-    )
-    .await;
-    let (_shutdown_controller, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        controller_instance_id,
-        test_node_target(controller_name),
-    )
-    .await
-    .expect("controller shutdown service should start");
-    emulate_startup_services(&node_messenger, &core_node_name, arm_name, arm_instance_id).await;
-    let (_shutdown_arm, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        arm_instance_id,
-        test_node_target(arm_name),
-    )
-    .await
-    .expect("arm shutdown service should start");
+    for (node_name, instance_id) in [
+        (controller_name, controller_instance_id),
+        (arm_name, arm_instance_id),
+    ] {
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
+    }
 
     // Bind both directions: the controller's slot to the arm and the
     // arm's slot to the controller — an unbound slot would be rejected
@@ -1981,22 +1903,12 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     // The dummy `sh` subprocesses expose none of the framework services, so
     // impersonate them for all three instances.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let mut service_guards = Vec::new();
     for (node_name, instance_id) in [
         (producer_name, producer_instance_id),
         (consumer_name, bound_instance_id),
         (consumer_name, vacant_instance_id),
     ] {
-        emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
-        let (shutdown, _) = listen_for_shutdown(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("shutdown service should start");
-        service_guards.push(shutdown);
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
     }
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
@@ -2570,32 +2482,18 @@ async fn stack_launch_delivers_observer_member_sets() {
     );
 
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    // Source instance services: ready/health/shutdown, no peer_update (its slot
-    // is vacant, so it is never paired).
-    for (node_name, instance_id) in [("robot_arm", "arm_1"), ("robot_arm", "arm_2")] {
-        emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
-        let (_shutdown, _) = listen_for_shutdown(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("shutdown service should start");
+    // Every instance answers ready/health/shutdown. The sources serve no
+    // peer_update: their slot is vacant, so they are never paired.
+    for (node_name, instance_id) in [
+        ("robot_arm", "arm_1"),
+        ("robot_arm", "arm_2"),
+        ("recorder", "rec_1"),
+    ] {
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
     }
-    // Recorder services, including the `observation_update` endpoint whose watch
-    // observes the delivered source pin.
-    emulate_startup_services(&node_messenger, &core_node_name, "recorder", "rec_1").await;
-    let (_rec_shutdown, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        "rec_1",
-        test_node_target("recorder"),
-    )
-    .await
-    .expect("shutdown service should start");
-    // One watch channel per declared observer slot, exactly as a real node's
-    // processor seeds them.
+    // The recorder's `observation_update` endpoint, whose watches observe the
+    // delivered source pins: one watch channel per declared observer slot,
+    // exactly as a real node's processor seeds them.
     let (obs_slots, obs_receivers) =
         super::common::observer_slot_channels(&["watch", "watched", "spare"]);
     peppylib::services::observation_update::listen_for_observation_update(
@@ -2926,31 +2824,15 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     // Every instance's framework services, impersonated from the test process:
     // the fixtures' run_cmd is a keep-alive shell, not a peppylib node.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let mut service_handles = Vec::new();
     for (node_name, instance_id) in [
         ("openarm_backbone", "backbone_inst"),
         ("lerobot_recorder", "recorder_inst"),
-        ("openarm_joint_leader", "leader_1"),
-        ("openarm_joint_leader", "leader_2"),
-        ("openarm_joint_follower", "follower_1"),
-        ("openarm_joint_follower", "follower_2"),
-        ("openarm_gripper_leader", "grip_leader_1"),
-        ("openarm_gripper_follower", "grip_follower_1"),
         ("openarm_web_commander", "commander_inst"),
     ] {
-        emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
-        let (shutdown, _) = listen_for_shutdown(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("shutdown service should start");
-        service_handles.push(shutdown);
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
     }
-    // The limbs pair with each other, so each carries a `peer_update` endpoint.
-    let mut peer_handles = Vec::new();
+    // The limbs pair with each other, so each also carries a `peer_update`
+    // endpoint.
     for (node_name, instance_id) in [
         ("openarm_joint_leader", "leader_1"),
         ("openarm_joint_leader", "leader_2"),
@@ -2959,19 +2841,15 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         ("openarm_gripper_leader", "grip_leader_1"),
         ("openarm_gripper_follower", "grip_follower_1"),
     ] {
-        let (slots, _rx) =
-            super::common::pairing_slot_channel("limb", config::node::Cardinality::ZeroOrOne);
-        peer_handles.push(
-            peppylib::services::peer_update::listen_for_peer_update(
-                &node_messenger,
-                &core_node_name,
-                instance_id,
-                test_node_target(node_name),
-                slots,
-            )
-            .await
-            .expect("peer_update service should start"),
-        );
+        emulate_pairing_node_services(
+            &node_messenger,
+            &core_node_name,
+            node_name,
+            instance_id,
+            "limb",
+            config::node::Cardinality::ZeroOrOne,
+        )
+        .await;
     }
     // One observation watch per declared observer slot, as a real node's
     // processor seeds them.
@@ -3230,21 +3108,13 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     // The dummy `sh` consumer does not expose the framework services, so
     // impersonate them from the test process.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    emulate_startup_services(
+    emulate_node_services(
         &node_messenger,
         &core_node_name,
         consumer_name,
         consumer_instance_id,
     )
     .await;
-    let (_shutdown_consumer, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer shutdown service should start");
 
     // The launcher deploys only the consumer. The recorder is registered in
     // the repository cache but appears in no deployment and no binding.

@@ -595,6 +595,29 @@ pub async fn emulate_startup_services(
     .expect("health service should start");
 }
 
+/// Starts the services an emulated test instance exposes when the test ends
+/// the instance's process itself: the [`emulate_startup_services`] pair, which
+/// a launch polls before it counts the instance started, and a shutdown
+/// service that answers the daemon's cooperative stop request without ending
+/// the process. The services run until the test ends: their task handles
+/// detach on drop.
+pub async fn emulate_node_services(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+) {
+    emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
+    let (_shutdown, _) = peppylib::services::shutdown::listen_for_shutdown(
+        messenger,
+        core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("shutdown service should start");
+}
+
 /// Installs the shutdown service an emulated instance owes, wired to actually
 /// end the process: the daemon's cooperative request is answered *and* the
 /// `run_cmd` is killed, so the stop completes at once.
@@ -709,15 +732,7 @@ pub async fn emulate_pairing_node_services(
     link_id: &str,
     cardinality: config::node::Cardinality,
 ) -> tokio::sync::watch::Receiver<peppylib::messaging::PeerSetState> {
-    emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
-    let (_shutdown, _) = peppylib::services::shutdown::listen_for_shutdown(
-        messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("shutdown service should start");
+    emulate_node_services(messenger, core_node_name, node_name, instance_id).await;
 
     serve_peer_update(
         messenger,
