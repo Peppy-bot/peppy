@@ -273,7 +273,7 @@ fn consumed_service() {
     );
     assert!(
         !rendered.contains("target_instance_id: Option<&str>"),
-        "target_instance_id should no longer appear as a generated parameter; got: {rendered}"
+        "target_instance_id must not appear as a generated parameter; got: {rendered}"
     );
     assert!(
         !rendered.contains("target_core_node"),

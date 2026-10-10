@@ -155,8 +155,8 @@ fn emit_topic() {
         ],
     );
 
-    // Topic metadata. declare_publisher is the only publish path; build_message
-    // serializes off the messenger lock, and emit() is no longer generated.
+    // Topic metadata. declare_publisher is the only publish path, and
+    // build_message serializes off the messenger lock.
     assert_contains_all(
         &rendered,
         &[
@@ -167,11 +167,11 @@ fn emit_topic() {
     );
     assert!(
         !rendered.contains("pub async fn emit("),
-        "emit() should no longer be generated; declare_publisher is the only publish path; got: {rendered}"
+        "emit() is not generated; declare_publisher is the only publish path; got: {rendered}"
     );
     assert!(
         !rendered.contains("TopicMessenger::emit"),
-        "TopicMessenger::emit should no longer be generated; got: {rendered}"
+        "TopicMessenger::emit is not generated; got: {rendered}"
     );
 }
 
@@ -705,11 +705,11 @@ fn consumed_topic() {
     );
     assert!(
         !rendered.contains("on_next_message_received"),
-        "the per-call on_next_message_received API must be gone; got: {rendered}"
+        "the per-call on_next_message_received API must not appear; got: {rendered}"
     );
     assert!(
         !rendered.contains("from_core_node"),
-        "from_core_node should no longer appear in the generated API; got: {rendered}"
+        "from_core_node must not appear in the generated API; got: {rendered}"
     );
 
     // Deserialization
@@ -734,18 +734,17 @@ fn consumed_topic() {
     );
 
     // Error variant: subscribing maps the failure to `TopicSubscribe`; a
-    // closed subscription is no longer an error (it surfaces as `Ok(None)`).
+    // closed subscription is not an error (it surfaces as `Ok(None)`).
     assert_contains_all(&rendered, &["crate::Error::TopicSubscribe"]);
     assert!(
         !rendered.contains("crate::Error::SubscriptionClosed"),
-        "closed subscriptions now return Ok(None), not SubscriptionClosed; got: {rendered}"
+        "closed subscriptions return Ok(None), not SubscriptionClosed; got: {rendered}"
     );
 
-    // Regression guard for the dropped-message bug: the topic is subscribed
-    // exactly once (in `subscribe`), never per `next` call. The old
-    // `on_next_message_received` re-subscribed on every call, so anything
-    // published in the re-subscribe gap was silently lost; with a held
-    // subscription the buffer keeps every message between `next` calls.
+    // The topic is subscribed exactly once (in `subscribe`), never per `next`
+    // call: a per-call subscription loses what is published between calls,
+    // while the held subscription's buffer keeps every message between `next`
+    // calls.
     assert_eq!(
         rendered
             .matches("peppylib::runtime::subscribe_bound_set(")
@@ -1011,8 +1010,8 @@ fn compile_lib_with_emitted_and_consumed_topics() {
 /// service pollers, action callers) expose no user-facing producer-identity
 /// parameters. Producer identity travels only as the full
 /// `(core_node, instance_id)` resolved at runtime from the bindings map.
-/// This test fails loudly if any generator drifts back to exposing a
-/// `from_*` / `target_*` core_node or instance_id parameter.
+/// This test fails loudly if any generator exposes a `from_*` / `target_*`
+/// core_node or instance_id parameter.
 #[test]
 fn no_user_facing_producer_identity_params() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
@@ -1068,26 +1067,25 @@ fn no_user_facing_producer_identity_params() {
 
     // Topic subscriber: producer identity travels only as the full
     // `(core_node, instance_id)` resolved at runtime from the bindings map;
-    // there is no user-facing core_node parameter, and `from_instance_id`
-    // is no longer a parameter either.
+    // there is no user-facing core_node or `from_instance_id` parameter.
     assert!(
         !rendered.contains("from_core_node"),
-        "from_core_node should no longer appear in the generated API; rendered:\n{rendered}"
+        "from_core_node must not appear in the generated API; rendered:\n{rendered}"
     );
     assert!(
         !rendered.contains("from_instance_id: Option<&str>"),
-        "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
+        "from_instance_id must not appear as a generated parameter; rendered:\n{rendered}"
     );
 
     // Consumed service/action call sites resolve the slot's single bound
-    // producer at runtime; the user-facing `target_instance_id` parameter
-    // is gone. `target_core_node` is never exposed in the generated API.
+    // producer at runtime; neither `target_instance_id` nor
+    // `target_core_node` is a parameter of the generated API.
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; rendered:\n{rendered}"
     );
     assert!(
         !rendered.contains("target_instance_id: Option<&str>"),
-        "target_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
+        "target_instance_id must not appear as a generated parameter; rendered:\n{rendered}"
     );
 }
