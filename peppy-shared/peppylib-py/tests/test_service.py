@@ -193,6 +193,58 @@ async def test_service_handler_exception_returns_service_error():
         assert handled is True
 
 
+async def _raise_in_async_handler(_request):
+    raise RuntimeError("async handler boom")
+
+
+async def _return_text_from_async_handler(_request):
+    return "not bytes"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("async_handler", "reason"),
+    [
+        (_raise_in_async_handler, "returned error: RuntimeError: async handler boom$"),
+        (
+            _return_text_from_async_handler,
+            "returned error: TypeError: Can't extract `str` to `Vec`$",
+        ),
+    ],
+    ids=["raises", "returns_text"],
+)
+async def test_async_service_handler_failure_returns_service_error(async_handler, reason):
+    """An async handler that raises, or resolves to something other than
+    bytes, answers the caller with a service error carrying the reason, as a
+    synchronous handler does."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        service = await ServiceMessenger.listen(
+            server_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            SenderTarget.node(NODE_NAME, NODE_TAG),
+            SERVICE_NAME,
+        )
+        handler = asyncio.ensure_future(service.handle_next_request(async_handler))
+
+        with pytest.raises(RuntimeError, match=reason):
+            await ServiceMessenger.poll(
+                client_handle,
+                CORE_NODE,
+                INSTANCE_ID,
+                SenderTarget.node(NODE_NAME, NODE_TAG),
+                SERVICE_NAME,
+                ProducerRef(CORE_NODE, INSTANCE_ID),
+                REQUEST_PAYLOAD,
+                5.0,
+            )
+
+        assert await handler is True
+
+
 @pytest.mark.asyncio
 async def test_service_iface_scoped_native_and_conformed_do_not_collide():
     """Same service name exposed natively AND under an implemented contract must wire to distinct paths."""

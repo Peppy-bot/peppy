@@ -174,13 +174,11 @@ impl PyServiceEndpoint {
             let py_context = PyServiceRequestContext::from(context);
             let Some(handler_call) = crate::py_future::try_attach_gated(|py| -> PyResult<_> {
                 let result = handler.call1(py, (py_context,))?;
-                let is_awaitable = result.bind(py).hasattr("__await__")?;
-                if is_awaitable {
-                    let future = pyo3_async_runtimes::tokio::into_future(result.into_bound(py))?;
-                    Ok((Some(future), None))
-                } else {
-                    Ok((None, Some(result.extract::<Vec<u8>>(py)?)))
+                if !result.bind(py).hasattr("__await__")? {
+                    return Ok(HandlerReply::Ready(result.extract::<Vec<u8>>(py)?));
                 }
+                let future = pyo3_async_runtimes::tokio::into_future(result.into_bound(py))?;
+                Ok(HandlerReply::Pending(future))
             }) else {
                 return Ok(false);
             };
@@ -188,38 +186,38 @@ impl PyServiceEndpoint {
             // structured `respond_error` path so the caller sees
             // `ServiceError { reason }` without the framework smuggling a
             // sentinel through the response payload.
-            let send_result = match handler_call {
-                Ok((maybe_future, sync_bytes)) => {
-                    let response_bytes = if let Some(future) = maybe_future {
-                        match future.await {
-                            Ok(py_result) => match crate::py_future::try_attach_gated(|py| {
-                                py_result.extract::<Vec<u8>>(py)
-                            }) {
-                                Some(extracted) => extracted.map_err(|err| err.to_string()),
-                                None => Err("node is shutting down".to_string()),
-                            },
-                            Err(err) => Err(err.to_string()),
-                        }
-                    } else if let Some(sync_bytes) = sync_bytes {
-                        Ok(sync_bytes)
-                    } else {
-                        Err("internal error: missing synchronous handler response bytes"
-                            .to_string())
-                    };
-
-                    match response_bytes {
-                        Ok(response_bytes) => {
-                            responder.respond(Payload::from(response_bytes)).await
-                        }
-                        Err(reason) => responder.respond_error(reason).await,
-                    }
-                }
-                Err(err) => responder.respond_error(err.to_string()).await,
+            let response = match handler_call {
+                Ok(HandlerReply::Ready(bytes)) => Ok(bytes),
+                Ok(HandlerReply::Pending(future)) => awaited_response_bytes(future.await),
+                Err(err) => Err(err.to_string()),
+            };
+            let send_result = match response {
+                Ok(bytes) => responder.respond(Payload::from(bytes)).await,
+                Err(reason) => responder.respond_error(reason).await,
             };
             send_result.map_err(to_py_err)?;
 
             Ok(true)
         })
+    }
+}
+
+/// What a Python service handler returned: the response bytes of a
+/// synchronous handler, or the future of an async one.
+enum HandlerReply<F> {
+    Ready(Vec<u8>),
+    Pending(F),
+}
+
+/// The response bytes an async handler resolved to, or the reason the caller
+/// receives as a service error. Extracting the bytes attaches to the
+/// interpreter through the shutdown gate, so a node that is shutting down
+/// answers with that reason instead.
+fn awaited_response_bytes(awaited: PyResult<Py<PyAny>>) -> Result<Vec<u8>, String> {
+    let value = awaited.map_err(|err| err.to_string())?;
+    match crate::py_future::try_attach_gated(|py| value.extract::<Vec<u8>>(py)) {
+        Some(extracted) => extracted.map_err(|err| err.to_string()),
+        None => Err("node is shutting down".to_string()),
     }
 }
 
