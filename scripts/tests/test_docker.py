@@ -293,18 +293,8 @@ def test_inspect_builder_platforms_parses_both() -> None:
         )
         platforms = _inspect_builder_platforms(BUILDX_BUILDER_NAME)
 
+    # linux/arm64/v8 is normalised to linux/arm64.
     assert platforms == {"linux/amd64", "linux/arm64"}
-
-
-def test_inspect_builder_platforms_strips_qualifiers() -> None:
-    """linux/arm64/v8 should be normalised to linux/arm64."""
-    with patch("functions.docker.subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout=INSPECT_OUTPUT_BOTH_PLATFORMS
-        )
-        platforms = _inspect_builder_platforms(BUILDX_BUILDER_NAME)
-
-    assert "linux/arm64" in platforms
 
 
 def test_inspect_builder_platforms_skips_an_entry_without_an_architecture() -> None:
