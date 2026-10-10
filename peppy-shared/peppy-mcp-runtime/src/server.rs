@@ -829,17 +829,9 @@ impl ExposureServer {
             &mut recording,
         )?;
 
-        let deadline = Duration::from_millis(tool.entry.deadline_ms.get());
-        let value = match tokio::time::timeout(deadline, tool.handler.call(call)).await {
-            Err(_elapsed) => {
-                let overrun = format!(
-                    "deadline exceeded: the provider did not answer within {} ms",
-                    tool.entry.deadline_ms
-                );
-                recording.failed(overrun.clone());
-                return Ok(tool_error(overrun));
-            }
-            Ok(Err(error)) => {
+        let value = match call_bridge(tool, call).await {
+            Ok(value) => value,
+            Err(error) => {
                 let message = error.to_string();
                 match error {
                     ToolCallError::Unavailable(_) => recording.refused(message.clone()),
@@ -849,7 +841,6 @@ impl ExposureServer {
                 }
                 return Ok(tool_error(message));
             }
-            Ok(Ok(value)) => value,
         };
 
         let completion = Completion::of(&value);
@@ -1473,15 +1464,10 @@ impl ExposureServer {
             input: json!({}),
             recipient: Recipient::Member(member),
         };
-        let deadline = Duration::from_millis(tool.entry.deadline_ms.get());
-        match tokio::time::timeout(deadline, tool.handler.call(call)).await {
-            Ok(Ok(value)) => within_result_limit(&tool.entry, value),
-            Ok(Err(error)) => Err(error.to_string()),
-            Err(_elapsed) => Err(format!(
-                "deadline exceeded: the provider did not answer within {} ms",
-                tool.entry.deadline_ms
-            )),
-        }
+        let value = call_bridge(tool, call)
+            .await
+            .map_err(|error| error.to_string())?;
+        within_result_limit(&tool.entry, value)
     }
 }
 
@@ -1517,6 +1503,20 @@ fn refuse_arguments(tool: &str, purpose: &str, arguments: &JsonObject) -> Result
         format!("`{tool}` takes no arguments; it {purpose}"),
         None,
     ))
+}
+
+/// Calls the bridge of `tool` under the entry's `deadline_ms`: a provider
+/// that does not answer in time is a [`ToolCallError::Deadline`].
+async fn call_bridge(tool: &ToolState, call: ToolCall) -> Result<Value, ToolCallError> {
+    let deadline = Duration::from_millis(tool.entry.deadline_ms.get());
+    tokio::time::timeout(deadline, tool.handler.call(call))
+        .await
+        .unwrap_or_else(|_elapsed| {
+            Err(ToolCallError::Deadline(format!(
+                "the provider did not answer within {} ms",
+                tool.entry.deadline_ms
+            )))
+        })
 }
 
 /// A tool result held to the entry's `max_result_bytes`.
