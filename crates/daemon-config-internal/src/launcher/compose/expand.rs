@@ -378,17 +378,9 @@ pub(super) fn append_links(
         }
         Some(LinkValue::Vacant(_)) => return Err(refuse("a vacancy")),
     };
-    for addition in additions {
-        if targets.contains(addition) {
-            return Err(CompositionError::AddLinksDuplicateTarget {
-                origin: origin.to_owned(),
-                target: target.to_owned(),
-                slot: slot.to_owned(),
-                added: addition.clone(),
-            });
-        }
-        targets.push(addition.clone());
-    }
+    // The existing targets come from a `LinkTargets` and hold no repeat, so
+    // the repeat `LinkTargets::new` reports is always one of the additions.
+    targets.extend(additions.iter().cloned());
     LinkTargets::new(targets).map_err(|err| CompositionError::AddLinksDuplicateTarget {
         origin: origin.to_owned(),
         target: target.to_owned(),

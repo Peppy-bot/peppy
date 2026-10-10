@@ -456,6 +456,63 @@ fn add_links_refuses_a_target_already_bound() {
     assert!(err.to_string().contains("seed_inst"), "got: {err}");
 }
 
+/// The refusal names the addition that repeats a target: one the slot
+/// lists in the file, or one an earlier option already added.
+#[test]
+fn add_links_names_the_addition_the_slot_already_lists() {
+    for (a_adds, b_adds, repeated, adding_origin) in [
+        (
+            r#"["a_inst", "seed_inst"]"#,
+            r#"["b_inst"]"#,
+            "seed_inst",
+            "l.json5, option `a.on`",
+        ),
+        (
+            r#"["a_inst"]"#,
+            r#"["b_inst", "a_inst"]"#,
+            "a_inst",
+            "l.json5, option `b.on`",
+        ),
+    ] {
+        let dir = tempdir().unwrap();
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            &format!(
+                r#"{{
+                    peppy_schema: "launcher/v1",
+                    components: [
+                        {{ name: "a", cardinality: "zero_or_one", options: {{ on: {{
+                            adjustments: [ {{ target: "panel", add_links: {{ observers: {a_adds} }} }} ] }} }} }},
+                        {{ name: "b", cardinality: "zero_or_one", options: {{ on: {{
+                            adjustments: [ {{ target: "panel", add_links: {{ observers: {b_adds} }} }} ] }} }} }},
+                    ],
+                    deployments: [
+                        {{ source: {{ name: "panel", tag: "v1" }},
+                          instances: [{{ instance_id: "panel",
+                                        links: {{ observers: ["seed_inst"] }} }}] }},
+                    ],
+                }}"#
+            ),
+        );
+        let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+        let err = compose(&parsed, &launcher, &words(&["a=on", "b=on"]))
+            .expect_err("a repeated target must be refused");
+        let CompositionError::AddLinksDuplicateTarget {
+            origin,
+            target,
+            slot,
+            added,
+        } = &err
+        else {
+            panic!("expected AddLinksDuplicateTarget, got: {err}");
+        };
+        assert_eq!(added, repeated);
+        assert_eq!(slot, "observers");
+        assert_eq!(target, "panel");
+        assert_eq!(origin, adding_origin);
+    }
+}
+
 /// Two entries of one option write one slot in order: the second appends
 /// to what the first set.
 #[test]
