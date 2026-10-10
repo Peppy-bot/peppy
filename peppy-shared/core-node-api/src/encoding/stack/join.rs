@@ -197,33 +197,23 @@ impl StackJoinGoal {
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
+        use launch_capnp::stack_join_goal::placement::Which;
+
         let message = decode_message(data)?;
         let goal = message.get_root::<launch_capnp::stack_join_goal::Reader>()?;
         let name = read_name(goal.get_name()?.to_str()?, "StackJoinGoal.name")?;
         let option = required_text(goal.get_option()?.to_str()?, "StackJoinGoal.option")?;
         let selections = read_selections(goal.get_selections()?, "StackJoinGoal.selections")?;
-        let arguments =
-            goal.get_arguments()?
-                .iter()
-                .map(|argument| {
-                    let instance_id = read_name(
-                        argument.get_instance_id()?.to_str()?,
-                        "arguments.instance_id",
-                    )?;
-                    let key = read_name(argument.get_argument()?.to_str()?, "arguments.argument")?;
-                    let value = serde_json5::from_str(argument.get_value()?.to_str()?).map_err(
-                        |error| crate::Error::Decoding(format!("`arguments.value`: {error}")),
-                    )?;
-                    ArgumentOverride::new(instance_id, key, value)
-                        .map_err(|error| crate::Error::Decoding(error.to_string()))
-                })
-                .collect::<Result<Vec<_>>>()?;
+        let arguments = goal
+            .get_arguments()?
+            .iter()
+            .map(read_argument_override)
+            .collect::<Result<Vec<_>>>()?;
         if let Some((instance_id, argument)) = repeated_target(&arguments) {
             return Err(crate::Error::Decoding(format!(
                 "`arguments` overrides `{instance_id}.{argument}` twice"
             )));
         }
-        use launch_capnp::stack_join_goal::placement::Which;
         let placement = match goal.get_placement().which()? {
             Which::Coordinator(()) => JoinPlacement::Local,
             Which::CoreNode(host) => {
@@ -246,6 +236,22 @@ impl StackJoinGoal {
             budgets,
         })
     }
+}
+
+/// Reads one override of a [`StackJoinGoal`]: both names must be names and
+/// the value must be JSON5 holding only finite numbers.
+fn read_argument_override(
+    argument: launch_capnp::argument_override::Reader<'_>,
+) -> Result<ArgumentOverride> {
+    let instance_id = read_name(
+        argument.get_instance_id()?.to_str()?,
+        "arguments.instance_id",
+    )?;
+    let key = read_name(argument.get_argument()?.to_str()?, "arguments.argument")?;
+    let value = serde_json5::from_str(argument.get_value()?.to_str()?)
+        .map_err(|error| crate::Error::Decoding(format!("`arguments.value`: {error}")))?;
+    ArgumentOverride::new(instance_id, key, value)
+        .map_err(|error| crate::Error::Decoding(error.to_string()))
 }
 
 impl crate::encoding::Wire for StackJoinGoal {
