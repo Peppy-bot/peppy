@@ -216,7 +216,7 @@ async fn receive(
     StatusCode::from_u16(answered).expect("an answer is a status code")
 }
 
-fn records(request: ExportLogsServiceRequest) -> Vec<ReceivedRecord> {
+pub(crate) fn records(request: ExportLogsServiceRequest) -> Vec<ReceivedRecord> {
     request
         .resource_logs
         .into_iter()

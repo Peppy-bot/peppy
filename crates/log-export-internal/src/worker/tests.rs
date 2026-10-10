@@ -66,16 +66,9 @@ impl Transport for ScriptedTransport {
         headers: &OtlpHeaders,
     ) -> Result<TransportResponse, TransportError> {
         let request = ExportLogsServiceRequest::decode(body.clone()).expect("an OTLP request");
-        let bodies = request
-            .resource_logs
+        let bodies = crate::test_support::records(request)
             .into_iter()
-            .flat_map(|resource| resource.scope_logs)
-            .flat_map(|scope| scope.log_records)
-            .filter_map(|record| record.body?.value)
-            .map(|value| match value {
-                crate::otlp::messages::any_value::Value::StringValue(text) => text,
-                crate::otlp::messages::any_value::Value::BoolValue(flag) => flag.to_string(),
-            })
+            .map(|record| record.body)
             .collect();
         self.posts().push(Post {
             at: Instant::now(),
