@@ -1622,46 +1622,29 @@ mod backwards_transitions_are_rejected {
     }
 
     #[test]
-    fn build_rejected_from_building() {
-        assert_eq!(building().ensure_buildable(), Err("Building"));
+    fn build_is_accepted_from_added_only() {
+        let cases = [
+            (added(), Ok(())),
+            (building(), Err("Building")),
+            (ready_empty(), Err("Ready")),
+            (ready_with_running_instance(), Err("Ready")),
+        ];
+        for (stage, expected) in cases {
+            assert_eq!(stage.ensure_buildable(), expected, "{stage:?}");
+        }
     }
 
     #[test]
-    fn build_rejected_from_ready_empty() {
-        assert_eq!(ready_empty().ensure_buildable(), Err("Ready"));
-    }
-
-    #[test]
-    fn build_rejected_from_ready_with_instances() {
-        assert_eq!(
-            ready_with_running_instance().ensure_buildable(),
-            Err("Ready")
-        );
-    }
-
-    #[test]
-    fn build_accepted_from_added() {
-        assert_eq!(added().ensure_buildable(), Ok(()));
-    }
-
-    #[test]
-    fn prepare_and_spawn_rejected_from_added() {
-        assert_eq!(added().ensure_spawnable(), Err("Added"));
-    }
-
-    #[test]
-    fn prepare_and_spawn_rejected_from_building() {
-        assert_eq!(building().ensure_spawnable(), Err("Building"));
-    }
-
-    #[test]
-    fn prepare_and_spawn_accepted_from_ready_empty() {
-        assert_eq!(ready_empty().ensure_spawnable(), Ok(()));
-    }
-
-    #[test]
-    fn prepare_and_spawn_accepted_from_ready_with_running_instance() {
-        assert_eq!(ready_with_running_instance().ensure_spawnable(), Ok(()));
+    fn prepare_and_spawn_is_accepted_from_ready_only() {
+        let cases = [
+            (added(), Err("Added")),
+            (building(), Err("Building")),
+            (ready_empty(), Ok(())),
+            (ready_with_running_instance(), Ok(())),
+        ];
+        for (stage, expected) in cases {
+            assert_eq!(stage.ensure_spawnable(), expected, "{stage:?}");
+        }
     }
 }
 
