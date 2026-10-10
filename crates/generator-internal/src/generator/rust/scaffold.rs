@@ -234,12 +234,14 @@ fn flatten_vendored_path(current: &str) -> Option<String> {
         .then(|| format!("../{final_component}"))
 }
 
-/// Rewrites every intra-vendor `path` dependency in `doc` to a flat sibling so the
-/// deployed flat-cache layout resolves. Registry deps and non-vendored path deps
-/// are left alone; `features` and other keys on the dependency are preserved.
-/// Idempotent on manifests whose paths are already flat.
+/// Rewrites every intra-vendor `path` dependency of the `[dependencies]` and
+/// `[build-dependencies]` tables in `doc` to a flat sibling so the deployed
+/// flat-cache layout resolves. Registry deps and non-vendored path deps are left
+/// alone; `features` and other keys on the dependency are preserved. Idempotent
+/// on manifests whose paths are already flat. The dev-dependencies are not
+/// rewritten: [`localize_cargo_toml`] strips them first.
 fn normalize_vendored_path_deps(doc: &mut DocumentMut) {
-    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+    for table_name in ["dependencies", "build-dependencies"] {
         let Some(deps) = doc.get_mut(table_name).and_then(|t| t.as_table_mut()) else {
             continue;
         };
