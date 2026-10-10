@@ -145,23 +145,7 @@ impl Processor {
             runtime_config.node_instance.arguments.clone(),
             &node_config.execution.parameters,
         )?;
-
-        let pairing_cardinalities = build_pairing_cardinalities(&node_config);
-        let pairing_slots = build_pairing_slots(&runtime_config, &pairing_cardinalities)?;
-        let bound_slots = build_bound_slots(&runtime_config, &node_config)?;
-        let observation_cardinalities = build_observer_cardinalities(&node_config);
-        let observation_slots =
-            build_observation_slots(&runtime_config, &observation_cardinalities)?;
-
-        Ok(Self {
-            runtime_config,
-            validated_arguments,
-            bound_slots,
-            pairing_slots,
-            observation_slots,
-            clock_cache: Arc::new(AtomicU64::new(0)),
-            endpoint_labels: declared_endpoint_labels(&node_config),
-        })
+        Self::from_runtime_config(runtime_config, validated_arguments, &node_config)
     }
 
     /// Create processor for standalone mode.
@@ -240,11 +224,22 @@ impl Processor {
             node_config.manifest.tag.as_str(),
             STANDALONE_CORE_NODE,
         )?;
+        Self::from_runtime_config(runtime_config, validated_arguments, &node_config)
+    }
 
-        let pairing_cardinalities = build_pairing_cardinalities(&node_config);
+    /// The step every constructor ends in: builds the slot caches from the
+    /// runtime config's seeds and the manifest's `depends_on`, pairing slots
+    /// first, then consumer slots, then observer slots, so a bad config
+    /// reports the same first error whichever mode built it.
+    fn from_runtime_config(
+        runtime_config: RuntimeConfig,
+        validated_arguments: NodeArguments,
+        node_config: &NodeConfig,
+    ) -> Result<Self> {
+        let pairing_cardinalities = build_pairing_cardinalities(node_config);
         let pairing_slots = build_pairing_slots(&runtime_config, &pairing_cardinalities)?;
-        let bound_slots = build_bound_slots(&runtime_config, &node_config)?;
-        let observation_cardinalities = build_observer_cardinalities(&node_config);
+        let bound_slots = build_bound_slots(&runtime_config, node_config)?;
+        let observation_cardinalities = build_observer_cardinalities(node_config);
         let observation_slots =
             build_observation_slots(&runtime_config, &observation_cardinalities)?;
 
@@ -255,7 +250,7 @@ impl Processor {
             pairing_slots,
             observation_slots,
             clock_cache: Arc::new(AtomicU64::new(0)),
-            endpoint_labels: declared_endpoint_labels(&node_config),
+            endpoint_labels: declared_endpoint_labels(node_config),
         })
     }
 
