@@ -333,7 +333,11 @@ impl ActionLog {
         let mut state = self.inner.state.lock();
         let time = time_after(state.last_time, SystemTime::now());
         state.last_time = time;
-        let _ = writeln!(state.file, "{}", log_line(time, marker, text));
+        // One write per line: `writeln!` writes the line and its end in two,
+        // and a reader of the file could see the line without its end.
+        let mut line = log_line(time, marker, text);
+        line.push('\n');
+        let _ = state.file.write_all(line.as_bytes());
         match exported {
             Exported::No => {}
             Exported::Daemon(severity) => {
