@@ -1606,9 +1606,8 @@ fn claim_rejects_other_literals_defensively() {
 #[test]
 fn parse_topic_keyexpr_surfaces_concrete_link_id_at_segment_eight() {
     // Publish format: `*/{as_core}/*/{as_inst}/topic/{disc}/{name}/{tag}/{link_id}/{topic}`.
-    // Index 8 is the link_id slot. The peppylib Subscription wrapper drops
-    // messages whose link_id is in the sibling-pinned excluded set;
-    // surfacing the literal is the load-bearing change.
+    // Index 8 is the link_id slot, which a consumer reads to tell a
+    // producer's slots apart.
     let key = "*/publisher_core/*/publisher_inst/topic/node/sensor_node/v1/wrist_left/temperature";
     let parsed = ZenohWireFormat::parse_topic_keyexpr(key).expect("should parse");
     assert_eq!(parsed.link_id, "wrist_left");
@@ -1616,10 +1615,8 @@ fn parse_topic_keyexpr_surfaces_concrete_link_id_at_segment_eight() {
 
 #[test]
 fn parse_topic_keyexpr_surfaces_default_link_id_literal() {
-    // A producer without `--link-id` publishes under the reserved `_` slot.
-    // It still surfaces; the filter compares against the consumer's
-    // excluded set, and `_` is a valid literal that just doesn't appear
-    // there in practice.
+    // An emission that names no link_id publishes under the reserved `_`
+    // slot. It surfaces as `_`, like any other literal.
     let key = "*/publisher_core/*/publisher_inst/topic/node/sensor_node/v1/_/temperature";
     let parsed = ZenohWireFormat::parse_topic_keyexpr(key).expect("should parse");
     assert_eq!(parsed.link_id, "_");

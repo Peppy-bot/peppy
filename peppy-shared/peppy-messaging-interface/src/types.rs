@@ -955,11 +955,11 @@ impl TopicMessage {
     }
 
     /// Producer's bound link_id, parsed out of the inbound keyexpr at
-    /// segment 8 of the topic publish format. Used by the consumer-side
-    /// filter that drops messages whose producer link_id is already claimed
-    /// by a sibling pinned subscription on the same `(name, tag)`. Empty
-    /// when the message arrived via a non-topic path (e.g. service replies
-    /// constructed via [`Self::from_parts`]).
+    /// segment 8 of the topic publish format (a service reply carries the
+    /// responder's claimed link_id at the same segment). peppylib's pairing
+    /// slot streams compare it with the slot a producer publishes on. Empty
+    /// for a message built with [`Self::from_parts`], such as a service
+    /// request.
     pub fn link_id(&self) -> &str {
         &self.link_id
     }
