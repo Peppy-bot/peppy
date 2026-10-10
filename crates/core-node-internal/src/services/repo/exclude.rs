@@ -1,8 +1,8 @@
 use crate::Result;
 use crate::services::repo::refresh::reindex_after_change;
 use crate::services::repo::{
-    EXCLUDED_REPOS_FILE, entry_identity, normalize_repo_entries, parse_repo_entry, repo_entry_id,
-    repo_source_to_json, source_identity, write_repo_entries,
+    EXCLUDED_REPOS_FILE, has_entry_with_identity, normalize_repo_entries, parse_repo_entry,
+    repo_entry_id, repo_source_to_json, source_identity, write_repo_entries,
 };
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
@@ -184,11 +184,7 @@ fn handle_repo_exclude_request_inner(
     };
 
     let new_identity = identity.trim();
-    let is_duplicate = repos
-        .iter()
-        .any(|entry| entry_identity(entry).is_some_and(|existing| existing == new_identity));
-
-    if is_duplicate {
+    if has_entry_with_identity(&repos, new_identity) {
         return Ok((
             RepoExcludeResponse::failure(format!("repository '{}' already exists", new_identity)),
             false,

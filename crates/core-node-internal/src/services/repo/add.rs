@@ -2,7 +2,8 @@ use crate::Result;
 use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::read_or_create_repos;
 use crate::services::repo::{
-    entry_identity, repo_entry_id, repo_source_to_json, source_identity, write_repo_entries,
+    has_entry_with_identity, repo_entry_id, repo_source_to_json, source_identity,
+    write_repo_entries,
 };
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
@@ -98,11 +99,7 @@ fn handle_repo_add_request_inner(
     };
 
     let new_identity = identity.trim();
-    let is_duplicate = repos
-        .iter()
-        .any(|entry| entry_identity(entry).is_some_and(|existing| existing == new_identity));
-
-    if is_duplicate {
+    if has_entry_with_identity(&repos, new_identity) {
         return RepoAddResponse::failure(format!("repository '{}' already exists", new_identity))
             .encode()
             .map_err(Into::into);

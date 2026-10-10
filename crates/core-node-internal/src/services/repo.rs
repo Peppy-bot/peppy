@@ -166,6 +166,15 @@ pub(crate) fn entry_identity(entry: &Value) -> Option<String> {
         .map(|source| source_identity(&source))
 }
 
+/// Whether an entry of `entries` already describes the repository with
+/// this `identity`: the duplicate rule of `repositories.json5` and
+/// `excluded_repositories.json5`.
+pub(crate) fn has_entry_with_identity(entries: &[Value], identity: &str) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry_identity(entry).is_some_and(|existing| existing == identity))
+}
+
 /// The configured repositories, resolved once so that attributing a whole
 /// cache to them costs one pass over the list per entry rather than one
 /// `canonicalize` per (entry, repository) pair.
