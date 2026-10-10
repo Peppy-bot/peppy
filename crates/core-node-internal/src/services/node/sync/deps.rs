@@ -18,13 +18,23 @@ pub(crate) enum DepClosure {
     Transitive,
 }
 
+/// What [`materialize_repo_deps`] found for the dependencies of a manifest.
+pub(crate) struct MaterializedDeps {
+    /// The config of every dependency materialized from the repository
+    /// cache, keyed by `(name, tag)`.
+    pub(crate) configs: HashMap<(String, String), config::node::NodeConfig>,
+    /// One entry per dependency materialized from the repository cache.
+    pub(crate) provenance: Vec<RepoResolvedEntry>,
+    /// The `name:tag` of every dependency the walk found in the node stack
+    /// (direct or, under [`DepClosure::Transitive`], via a
+    /// repo-cache-materialized parent) so the response can surface them
+    /// under "Synchronized from node stack:".
+    pub(crate) stack_hits: Vec<String>,
+}
+
 /// Walks `manifest.depends_on.nodes` and fetches every dependency
 /// missing from `node_stack` through the repository cache, to `closure`
-/// depth. Returns `(name, tag) -> NodeConfig` for every materialized dep,
-/// a provenance vec for repo-resolved entries, and a `name:tag` list of
-/// every dep the walk found in the node stack (direct or, under
-/// [`DepClosure::Transitive`], via a repo-cache-materialized parent) so
-/// the response can surface them under "Synchronized from node stack:".
+/// depth.
 ///
 /// A dep that resolves through `node_stack` is recorded as a stack hit
 /// and expansion stops there (the existing resolver tier handles
@@ -36,23 +46,18 @@ pub(crate) async fn materialize_repo_deps(
     node_stack: &NodeStack,
     peppy_dirs: &PeppyDirs,
     closure: DepClosure,
-) -> std::result::Result<
-    (
-        HashMap<(String, String), config::node::NodeConfig>,
-        Vec<RepoResolvedEntry>,
-        Vec<String>,
-    ),
-    String,
-> {
-    let mut resolved: HashMap<(String, String), config::node::NodeConfig> = HashMap::new();
-    let mut provenance: Vec<RepoResolvedEntry> = Vec::new();
-    let mut stack_hits: Vec<String> = Vec::new();
+) -> std::result::Result<MaterializedDeps, String> {
+    let mut found = MaterializedDeps {
+        configs: HashMap::new(),
+        provenance: Vec::new(),
+        stack_hits: Vec::new(),
+    };
 
     let Some(deps) = manifest.depends_on.as_ref() else {
-        return Ok((resolved, provenance, stack_hits));
+        return Ok(found);
     };
     if deps.nodes.is_empty() {
-        return Ok((resolved, provenance, stack_hits));
+        return Ok(found);
     }
 
     // Lazy-load the nodes cache: defer the read until the first stack
@@ -77,7 +82,7 @@ pub(crate) async fn materialize_repo_deps(
         // and skip materialization for anything already pushed onto the
         // persistent NodeStack.
         if node_stack.find(&name, &tag).is_some() {
-            stack_hits.push(format!("{}:{}", name, tag));
+            found.stack_hits.push(format!("{}:{}", name, tag));
             continue;
         }
         if cache.is_none() {
@@ -118,15 +123,15 @@ pub(crate) async fn materialize_repo_deps(
             }
         }
 
-        resolved.insert((name.clone(), tag.clone()), parsed);
-        provenance.push(RepoResolvedEntry {
+        found.configs.insert((name.clone(), tag.clone()), parsed);
+        found.provenance.push(RepoResolvedEntry {
             name,
             tag,
             source_kind,
         });
     }
 
-    Ok((resolved, provenance, stack_hits))
+    Ok(found)
 }
 
 /// Discriminator carried by [`DependencyLookupEntry`] so the resolver knows

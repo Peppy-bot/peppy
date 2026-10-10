@@ -8,7 +8,7 @@ pub use self::interfaces::{collect_all_deployment_interfaces, stack_resolver};
 pub(crate) use self::interfaces::{resolve_contract_doc, stack_then_repo_resolver};
 
 use self::codegen::remove_previous_peppy_dir;
-pub(crate) use self::deps::{DepClosure, materialize_repo_deps};
+pub(crate) use self::deps::{DepClosure, MaterializedDeps, materialize_repo_deps};
 use super::trace_interface_step;
 use crate::Result;
 use crate::services::response::into_service_response;
@@ -136,7 +136,7 @@ async fn handle_node_sync_request_inner(
         )
         .await
         {
-            Ok((resolved, provenance, stack_hits)) => (resolved, provenance, Some(stack_hits)),
+            Ok(deps) => (deps.configs, deps.provenance, Some(deps.stack_hits)),
             Err(reason) => {
                 return NodeSyncResponse::failure(reason)
                     .encode()

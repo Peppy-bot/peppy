@@ -8,8 +8,8 @@ use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::git_utils::install_credentials;
 use super::sync::{
-    self, AutoSyncParams, DepClosure, collect_all_deployment_interfaces, materialize_repo_deps,
-    stack_resolver, stack_then_repo_resolver,
+    self, AutoSyncParams, DepClosure, MaterializedDeps, collect_all_deployment_interfaces,
+    materialize_repo_deps, stack_resolver, stack_then_repo_resolver,
 };
 use super::{
     clone_with_progress, encode_hex, extract_tar_zst, generate_random_id, is_supported_fs_archive,
@@ -1415,7 +1415,11 @@ async fn process_node_add_inner(
     // consumed modules peppygen generates, so it must resolve through the
     // repository cache instead, and exposure is re-checked against the exact
     // configs the generator consumes.
-    let (repo_resolved, repo_provenance, _) = materialize_repo_deps(
+    let MaterializedDeps {
+        configs: repo_resolved,
+        provenance: repo_provenance,
+        ..
+    } = materialize_repo_deps(
         &node_config.manifest,
         &ctx.action.node_stack,
         &ctx.action.peppy_dirs,
