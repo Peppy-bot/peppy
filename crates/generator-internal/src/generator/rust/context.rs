@@ -44,10 +44,6 @@ impl GenerationContext {
         self.add_struct(struct_ident, fields);
     }
 
-    pub fn wrap_optional_type(&mut self, ty: TokenStream) -> TokenStream {
-        quote!(Option<#ty>)
-    }
-
     pub fn into_tokens(self) -> Vec<TokenStream> {
         let mut items: Vec<TokenStream> = Vec::new();
         items.extend(self.structs.into_iter().map(StructDefinition::into_tokens));

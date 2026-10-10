@@ -66,11 +66,9 @@ pub fn schema_type_to_tokens(
         }
     };
 
-    let ty = if schema.is_optional() {
-        context.wrap_optional_type(ty)
-    } else {
-        ty
-    };
+    if schema.is_optional() {
+        return Ok(quote!(Option<#ty>));
+    }
     Ok(ty)
 }
 
