@@ -497,15 +497,14 @@ mod container_e2e_tests {
 
     /// `node build --force` superseding an in-flight container build must SIGKILL
     /// the displaced build's process group (apptainer + its `%post` children),
-    /// not just the host `limactl`. Regression test for the guest zombie left
-    /// behind when the PGID file write lost a guest-filesystem race and the kill
-    /// became a no-op.
+    /// not just the host `limactl`, also when the build's PGID file write loses
+    /// a guest-filesystem race: a kill that skips the group leaves a zombie
+    /// behind in the guest.
     ///
     /// Runs on both backends: `guest_command` queries the kernel the build runs
     /// in (the Lima guest on macOS, the host on Linux), and the assertion is the
-    /// same. The bug is macOS-only, so this is red on the pre-fix Lima path and a
-    /// green regression guard on Linux (where cancellation already uses the host
-    /// process group).
+    /// same. The race exists only on the Lima path; on Linux cancellation uses
+    /// the host process group.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn container_force_build_kills_displaced_guest_build() {
         const NODE_NAME: &str = "zombie_e2e_node";
@@ -667,9 +666,8 @@ mod container_e2e_tests {
         }
 
         // After the supersede chain, at most the final still-active build may have
-        // a live marker. On the pre-fix code, displaced reuse-builds whose PGID
-        // write lost the race were never killed and leak orphaned `%post`
-        // processes.
+        // a live marker. A displaced build whose process group is not killed
+        // leaks its `%post` processes as orphans.
         //
         // The displaced build is SIGKILL'd and reaped before its successor is
         // admitted, so a healthy chain is already down to one marker by the time
