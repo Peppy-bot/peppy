@@ -1551,8 +1551,7 @@ class MergeMessages(unittest.TestCase):
         )
         outcome = merge_set.MergeOutcome(
             merged=(merge_set.MergedPullRequest(peppy, "a" * 40),),
-            failed=nodes,
-            failure="Base branch was modified.",
+            failure=merge_set.MergeFailure(nodes, "Base branch was modified."),
             not_tried=(contracts,),
         )
         text = merge_set.render_merge_report(SET_NAME, ["alice"], outcome, [])

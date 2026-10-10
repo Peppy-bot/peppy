@@ -1434,18 +1434,25 @@ class MergedPullRequest:
 
 
 @dataclass(frozen=True)
+class MergeFailure:
+    """The pull request GitHub did not merge, and GitHub's reason."""
+
+    pull_request: PullRequest
+    reason: str
+
+
+@dataclass(frozen=True)
 class MergeOutcome:
     merged: tuple[MergedPullRequest, ...]
-    # The pull request whose merge failed, and GitHub's reason; None when
-    # every pull request merged.
-    failed: PullRequest | None
-    failure: str | None
+    # None when every pull request merged.
+    failure: MergeFailure | None
     not_tried: tuple[PullRequest, ...]
 
     @property
     def unmerged(self) -> tuple[PullRequest, ...]:
-        failed = (self.failed,) if self.failed is not None else ()
-        return failed + self.not_tried
+        if self.failure is None:
+            return self.not_tried
+        return (self.failure.pull_request, *self.not_tried)
 
 
 def merge_commit_message(
@@ -1473,7 +1480,7 @@ def render_merge_report(
         + "."
         for merged in outcome.merged
     ]
-    if outcome.failed is None:
+    if outcome.failure is None:
         return (
             "\n".join(
                 [
@@ -1484,12 +1491,13 @@ def render_merge_report(
             )
             + "\n"
         )
+    failure = outcome.failure
     lines = [
         f"The merge of the set `{set_name}`, which {mention(requesters)} asked "
         "for, stopped:",
         "",
         *merged,
-        f"- {outcome.failed.label} did not merge: {outcome.failure}",
+        f"- {failure.pull_request.label} did not merge: {failure.reason}",
         *(
             f"- {pull_request.label} was not tried."
             for pull_request in outcome.not_tried
@@ -2363,12 +2371,11 @@ def merge_in_order(
         except MergeRefused as refusal:
             return MergeOutcome(
                 merged=tuple(merged),
-                failed=pull_request,
-                failure=str(refusal),
+                failure=MergeFailure(pull_request, str(refusal)),
                 not_tried=tuple(pull_requests[index + 1 :]),
             )
         merged.append(MergedPullRequest(pull_request, commit))
-    return MergeOutcome(tuple(merged), None, None, ())
+    return MergeOutcome(tuple(merged), None, ())
 
 
 def block_again(
