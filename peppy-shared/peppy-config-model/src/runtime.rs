@@ -723,18 +723,12 @@ impl RuntimeConfig {
         Ok(path.to_path_buf())
     }
 
+    /// Fingerprints the config file at `peppy_config` the way the codegen
+    /// writer does, so a node can compare the result with the fingerprint
+    /// stored next to its generated code.
     pub fn generate_peppy_config_fingerprint(peppy_config: impl AsRef<Path>) -> Result<String> {
-        use sha2::{Digest, Sha256};
-        let config_path = peppy_config.as_ref();
-        let content = std::fs::read(config_path)?;
-        let hash = Sha256::digest(&content);
-        Ok(hash
-            .iter()
-            .fold(String::with_capacity(hash.len() * 2), |mut acc, b| {
-                use std::fmt::Write;
-                let _ = write!(acc, "{:02x}", b);
-                acc
-            }))
+        let content = fs::read(peppy_config.as_ref())?;
+        Ok(crate::fingerprint::fingerprint_for_bytes(&content))
     }
 }
 
@@ -1434,6 +1428,26 @@ mod tests {
             matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref msg)) if msg.contains("Invalid name"))
                 || matches!(err, Error::Parsing(ParsingError::InvalidName(_, _))),
             "expected parsing error about invalid name, got: {err}"
+        );
+    }
+
+    /// A node compares this fingerprint with the one the codegen writer
+    /// stored, so both must be the lowercase SHA-256 hex of the file bytes.
+    #[test]
+    fn the_peppy_config_fingerprint_is_the_one_the_codegen_writer_stores() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("peppy.json5");
+        fs::write(&path, b"abc").unwrap();
+
+        let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(&path).unwrap();
+        assert_eq!(
+            fingerprint,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        crate::fingerprint::generate_node_config_fingerprint(&path, "peppygen").unwrap();
+        assert_eq!(
+            fingerprint,
+            crate::fingerprint::read_codegen_fingerprint(&path, "peppygen").unwrap()
         );
     }
 
