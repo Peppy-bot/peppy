@@ -398,15 +398,9 @@ mod tests {
     async fn cancel_on_timeout_returns_value_when_phase_completes_first() {
         let notify = Arc::new(Notify::new());
         let token = CancellationToken::new();
-        let cleanup_ran = Arc::new(AtomicBool::new(false));
-        let cleanup_ran_for_phase = Arc::clone(&cleanup_ran);
 
         // Phase completes immediately with a value; no timeout should fire.
-        let phase = async move {
-            // Reset-like ping proves we keep the happy-path contract (no cancel signal).
-            let _ = cleanup_ran_for_phase;
-            "ok"
-        };
+        let phase = async { "ok" };
 
         let outcome = run_phase_cancel_on_timeout(
             Box::pin(phase),
