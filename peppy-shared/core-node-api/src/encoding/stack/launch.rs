@@ -761,6 +761,15 @@ mod tests {
     use super::*;
     use crate::encoding::decoding_error;
 
+    /// A launch of the repository launcher `name` with the smallest budgets.
+    fn repository_goal(name: &str) -> LaunchGoal {
+        LaunchGoal::new(
+            LauncherOrigin::repository(name),
+            "launch-abc123",
+            StackBudgets::new(1, 1, 1, None),
+        )
+    }
+
     #[test]
     fn launch_goal_roundtrips_fs_origin() {
         let goal = LaunchGoal::new(
@@ -797,14 +806,8 @@ mod tests {
     /// launch.
     #[test]
     fn a_build_goal_carries_the_launch_it_would_run() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "openarm_simulation".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_selections(vec!["mujoco".to_string()]);
+        let goal =
+            repository_goal("openarm_simulation").with_selections(vec!["mujoco".to_string()]);
         let build = StackBuildGoal::from(goal.clone());
 
         let bytes = build.encode().expect("encode");
@@ -871,14 +874,7 @@ mod tests {
     /// local or on a peer, ignores a cached artifact.
     #[test]
     fn launch_goal_roundtrips_rebuild() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "openarm_v2".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_rebuild(true);
+        let goal = repository_goal("openarm_v2").with_rebuild(true);
 
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
@@ -917,14 +913,8 @@ mod tests {
     /// had read a document only the coordinator holds.
     #[test]
     fn launch_goal_roundtrips_local_placement() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "split_compute_manipulation".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_placement(PlacementSpec::Local);
+        let goal =
+            repository_goal("split_compute_manipulation").with_placement(PlacementSpec::Local);
 
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
@@ -936,13 +926,7 @@ mod tests {
     /// neither `--place` nor `--local` was given.
     #[test]
     fn launch_goal_without_placement_decodes_as_no_places() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "teleop".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        );
+        let goal = repository_goal("teleop");
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert_eq!(decoded.placement, PlacementSpec::Places(BTreeMap::new()));
@@ -954,14 +938,7 @@ mod tests {
     /// meaning.
     #[test]
     fn launch_goal_roundtrips_selections_verbatim() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "openarm_v2".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_selections(vec![
+        let goal = repository_goal("openarm_v2").with_selections(vec![
             "mujoco".to_string(),
             "robot=mujoco".to_string(),
             "xr_commander".to_string(),
@@ -1019,17 +996,12 @@ mod tests {
     /// that describes a two-machine topology must still run on one box.
     #[test]
     fn launch_goal_roundtrips_two_links_wired_to_one_core_node() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "split_compute_manipulation".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_placement(PlacementSpec::Places(BTreeMap::from([
-            ("robot_onboard".to_string(), "cn-solo".to_string()),
-            ("cloud_inference".to_string(), "cn-solo".to_string()),
-        ])));
+        let goal = repository_goal("split_compute_manipulation").with_placement(
+            PlacementSpec::Places(BTreeMap::from([
+                ("robot_onboard".to_string(), "cn-solo".to_string()),
+                ("cloud_inference".to_string(), "cn-solo".to_string()),
+            ])),
+        );
 
         let bytes = goal.encode().expect("encode");
         assert_eq!(LaunchGoal::decode(&bytes).expect("decode"), goal);
@@ -1057,17 +1029,10 @@ mod tests {
     #[test]
     fn launch_goal_decode_rejects_empty_core_node_link_fields() {
         for (link_id, core_node) in [("", "cn-atlas"), ("cloud_inference", "")] {
-            let goal = LaunchGoal::new(
-                LauncherOrigin::Repository {
-                    name: "teleop".to_string(),
-                },
-                "launch-abc123",
-                StackBudgets::new(1, 1, 1, None),
-            )
-            .with_placement(PlacementSpec::Places(BTreeMap::from([(
-                link_id.to_string(),
-                core_node.to_string(),
-            )])));
+            let goal =
+                repository_goal("teleop").with_placement(PlacementSpec::Places(BTreeMap::from([
+                    (link_id.to_string(), core_node.to_string()),
+                ])));
             let msg = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
             assert!(msg.contains("empty link_id or core_node"), "got: {msg}");
         }
@@ -1143,13 +1108,7 @@ mod tests {
 
     #[test]
     fn launch_goal_decode_rejects_empty_repository_name() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        );
+        let goal = repository_goal("");
         let msg = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
         assert!(msg.contains("repository name is empty"), "got: {msg}");
     }
@@ -1198,51 +1157,34 @@ mod tests {
         assert!(LaunchFeedback::decode(b"not capnp").is_err());
     }
 
+    /// Every constructor sets the outcome it names, starts with no node log,
+    /// and round-trips.
     #[test]
-    fn launch_result_new_roundtrips() {
-        let result = LaunchResult::new(true, "/var/log/launch.log", None);
-        assert!(result.success);
-        assert!(result.node_add_logs.is_empty());
-        assert!(result.node_build_logs.is_empty());
-        assert!(result.node_run_logs.is_empty());
-        let bytes = result.encode().expect("encode");
-        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
-        assert_eq!(decoded, result);
-    }
-
-    #[test]
-    fn launch_result_success_constructor_roundtrips() {
-        let result = LaunchResult::success("/var/log/launch.log");
-        assert!(result.success);
-        assert_eq!(result.error_message, None);
-        let bytes = result.encode().expect("encode");
-        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
-        assert_eq!(decoded, result);
-    }
-
-    #[test]
-    fn launch_result_failure_constructor_roundtrips() {
-        let result = LaunchResult::failure("/var/log/launch.log", "node build failed");
-        assert!(!result.success);
-        assert_eq!(result.error_message.as_deref(), Some("node build failed"));
-        let bytes = result.encode().expect("encode");
-        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
-        assert_eq!(decoded, result);
-    }
-
-    #[test]
-    fn launch_result_with_empty_node_logs_roundtrips() {
-        let result = LaunchResult::success("/var/log/launch.log").with_node_logs(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
-        let bytes = result.encode().expect("encode");
-        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
-        assert_eq!(decoded, result);
-        assert!(decoded.node_add_logs.is_empty());
-        assert!(decoded.node_build_logs.is_empty());
-        assert!(decoded.node_run_logs.is_empty());
+    fn launch_result_constructors_roundtrip() {
+        let log_path = "/var/log/launch.log";
+        for (result, success, error_message) in [
+            (LaunchResult::new(true, log_path, None), true, None),
+            (LaunchResult::success(log_path), true, None),
+            (
+                LaunchResult::failure(log_path, "node build failed"),
+                false,
+                Some("node build failed"),
+            ),
+            (
+                LaunchResult::success(log_path).with_node_logs(Vec::new(), Vec::new(), Vec::new()),
+                true,
+                None,
+            ),
+        ] {
+            assert_eq!(result.success, success, "{result:?}");
+            assert_eq!(result.error_message.as_deref(), error_message, "{result:?}");
+            let bytes = result.encode().expect("encode");
+            let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
+            assert_eq!(decoded, result);
+            assert!(decoded.node_add_logs.is_empty());
+            assert!(decoded.node_build_logs.is_empty());
+            assert!(decoded.node_run_logs.is_empty());
+        }
     }
 
     #[test]
