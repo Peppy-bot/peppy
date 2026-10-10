@@ -33,6 +33,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 RECORD_NAME = "sticky-disk-report.json"
@@ -231,29 +232,34 @@ def label_directory(key: str, mount_points: dict[str, str], places: list[tuple[s
     return f"{point}/{rest}" if rest else point
 
 
-def cache_rows(measurement: Measurement, record: Record | None, mount_points: dict[str, str], places: list[tuple[str, str]]) -> list[Row]:
-    caches = sorted(k for k in measurement.directories if "/" not in k)
+def directory_rows(
+    keys: Iterable[str],
+    measurement: Measurement,
+    record: Record | None,
+    mount_points: dict[str, str],
+    places: list[tuple[str, str]],
+) -> list[Row]:
+    """A row for each directory under `mounts/` that `keys` names: its label,
+    its size at the restore and its size now."""
     return [
         Row(
             label=label_directory(key, mount_points, places),
             at_restore=record.directories.get(key) if record else None,
             now=measurement.directories[key],
         )
-        for key in caches
+        for key in keys
     ]
+
+
+def cache_rows(measurement: Measurement, record: Record | None, mount_points: dict[str, str], places: list[tuple[str, str]]) -> list[Row]:
+    caches = sorted(k for k in measurement.directories if "/" not in k)
+    return directory_rows(caches, measurement, record, mount_points, places)
 
 
 def largest_rows(measurement: Measurement, record: Record | None, mount_points: dict[str, str], places: list[tuple[str, str]]) -> list[Row]:
     inner = [k for k in measurement.directories if "/" in k]
     inner.sort(key=lambda k: (-measurement.directories[k], k))
-    return [
-        Row(
-            label=label_directory(key, mount_points, places),
-            at_restore=record.directories.get(key) if record else None,
-            now=measurement.directories[key],
-        )
-        for key in inner[:LARGEST_DIRECTORIES]
-    ]
+    return directory_rows(inner[:LARGEST_DIRECTORIES], measurement, record, mount_points, places)
 
 
 def render_table(rows: list[Row], has_record: bool) -> list[str]:
