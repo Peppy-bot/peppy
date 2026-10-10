@@ -146,8 +146,8 @@ pub fn validate_dependency_specs(
 ) -> Vec<ParsingError> {
     let mut errors = Vec::new();
 
-    // Build link_id → (name, tag, resolved_config) lookup from depends_on.nodes
-    let mut resolved_deps: HashMap<String, (String, String, NodeConfig)> = HashMap::new();
+    // Build the link_id lookup of the depends_on.nodes entries that resolve.
+    let mut resolved_deps: HashMap<&str, ResolvedDependency<'_>> = HashMap::new();
 
     // Phase 1: Validate all declared dependency nodes exist
     if let Some(depends_on) = &manifest.depends_on {
@@ -168,12 +168,12 @@ pub fn validate_dependency_specs(
                 continue;
             };
             resolved_deps.insert(
-                dep.link_id.clone(),
-                (
-                    dep.name.as_str().to_owned(),
-                    dep.tag.clone(),
-                    dependency_config,
-                ),
+                dep.link_id.as_str(),
+                ResolvedDependency {
+                    name: dep.name.as_str(),
+                    tag: &dep.tag,
+                    config: dependency_config,
+                },
             );
         }
     }
@@ -244,13 +244,21 @@ pub fn validate_dependency_specs(
     errors
 }
 
+/// A `depends_on.nodes` entry whose config resolved, read by the exposure
+/// check of the interfaces consumed through its link_id.
+struct ResolvedDependency<'a> {
+    name: &'a str,
+    tag: &'a str,
+    config: NodeConfig,
+}
+
 /// Validates a set of consumed interfaces, checking that each `link_id` is declared
 /// and that the referenced dependency exposes the required interface.
 #[allow(clippy::too_many_arguments)]
 fn validate_consumed_items<'a>(
     items: impl Iterator<Item = (&'a str, &'a str)>,
     kind: InterfaceKind,
-    resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
+    resolved_deps: &HashMap<&str, ResolvedDependency<'_>>,
     declared_link_ids: &HashSet<&str>,
     pairing_link_ids: &HashSet<&str>,
     implements_link_ids: &HashSet<&str>,
@@ -278,7 +286,7 @@ fn validate_consumed_items<'a>(
             });
             continue;
         }
-        if !resolved_deps.contains_key(link_id) {
+        let Some(dependency) = resolved_deps.get(link_id) else {
             if !declared_link_ids.contains(link_id) {
                 errors.push(ParsingError::UndeclaredLinkId {
                     dependant: dependant_name.to_owned(),
@@ -287,12 +295,12 @@ fn validate_consumed_items<'a>(
                 });
             }
             continue;
-        }
+        };
         validate_consumed_interface(
             link_id,
             name,
             kind,
-            resolved_deps,
+            dependency,
             dependant_name,
             dependant_tag,
             errors,
@@ -300,8 +308,8 @@ fn validate_consumed_items<'a>(
     }
 }
 
-/// Validates that a consumed interface's `link_id` resolves to a dependency
-/// that natively exposes the required interface. Node dependencies expose
+/// Validates that the dependency a consumed interface's `link_id` resolves to
+/// natively exposes the required interface. Node dependencies expose
 /// native interfaces only: a name the producer provides solely as part of an
 /// implemented contract gets a dedicated error pointing at
 /// `depends_on.contracts` instead of a generic "not exposed".
@@ -309,29 +317,20 @@ fn validate_consumed_interface(
     link_id: &str,
     interface_name: &str,
     kind: InterfaceKind,
-    resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
+    dependency: &ResolvedDependency<'_>,
     dependant_name: &str,
     dependant_tag: &str,
     errors: &mut Vec<ParsingError>,
 ) {
-    let Some((dep_name, dep_tag, dep_config)) = resolved_deps.get(link_id) else {
-        // The link_id doesn't map to any resolved dependency.
-        // This path is only reached when the dependency was declared but did
-        // not resolve (reported as MissingDependency in Phase 1, or admitted
-        // absent by the policy).
-        // Undeclared link_ids are caught before this function is called.
-        return;
-    };
-
-    match find_exposure(dep_config, kind, interface_name.trim()) {
+    match find_exposure(&dependency.config, kind, interface_name.trim()) {
         Exposure::Native => {}
         Exposure::ContractBackedOnly(entry) => {
             errors.push(ParsingError::ConsumedInterfaceOnlyContractBacked(Box::new(
                 ConsumedInterfaceOnlyContractBacked {
                     dependant: dependant_name.to_owned(),
                     dependant_tag: dependant_tag.to_owned(),
-                    dependency: dep_name.clone(),
-                    dependency_tag: dep_tag.clone(),
+                    dependency: dependency.name.to_owned(),
+                    dependency_tag: dependency.tag.to_owned(),
                     interface_kind: kind.label().to_owned(),
                     interface_name: interface_name.to_owned(),
                     link_id: link_id.to_owned(),
@@ -344,8 +343,8 @@ fn validate_consumed_interface(
             errors.push(ParsingError::MissingInterface(Box::new(MissingInterface {
                 dependant: dependant_name.to_owned(),
                 dependant_tag: dependant_tag.to_owned(),
-                dependency: dep_name.clone(),
-                dependency_tag: dep_tag.clone(),
+                dependency: dependency.name.to_owned(),
+                dependency_tag: dependency.tag.to_owned(),
                 interface_kind: kind.label().to_owned(),
                 interface_name: interface_name.to_owned(),
             })));
