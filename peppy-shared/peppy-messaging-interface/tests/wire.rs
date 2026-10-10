@@ -36,14 +36,43 @@ async fn recv_reply(stream: &mut ReplyStream, label: &str) -> TopicMessage {
 
 // ─── Topics ───────────────────────────────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn topic_native_roundtrip() {
-    let _lock = ZENOH_SERIAL.lock().await;
+/// Publishes `body` from `sender` through a fresh ephemeral router and returns
+/// the message that a live subscription of `receiver` reads.
+async fn run_topic_roundtrip(
+    sender: &TopicWireSender,
+    receiver: &TopicWireReceiver,
+    body: Bytes,
+    label: &str,
+) -> TopicMessage {
     let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("Failed to start zenohd process");
     instance.messenger().start_session().await.unwrap();
 
+    let sub = instance
+        .messenger()
+        .subscribe_topic(receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
+        .await
+        .unwrap();
+    wait_for_subscriber_discovery().await;
+
+    instance
+        .messenger()
+        .publish_topic(
+            sender,
+            Payload::from_bytes(body),
+            PublisherQoS::Standard,
+            true,
+        )
+        .await
+        .unwrap();
+
+    next_message(&sub, label).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn topic_native_roundtrip() {
+    let _lock = ZENOH_SERIAL.lock().await;
     let sender = TopicWireSender::new(
         "core_pub",
         "publisher_inst",
@@ -63,26 +92,14 @@ async fn topic_native_roundtrip() {
     )
     .expect("valid wire fields");
 
-    let sub = instance
-        .messenger()
-        .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
-        .await
-        .unwrap();
-    wait_for_subscriber_discovery().await;
-
     let body = Bytes::from_static(b"native_frame");
-    instance
-        .messenger()
-        .publish_topic(
-            &sender,
-            Payload::from_bytes(body.clone()),
-            PublisherQoS::Standard,
-            true,
-        )
-        .await
-        .unwrap();
-
-    let received = next_message(&sub, "topic_native_roundtrip sub").await;
+    let received = run_topic_roundtrip(
+        &sender,
+        &receiver,
+        body.clone(),
+        "topic_native_roundtrip sub",
+    )
+    .await;
     assert_eq!(received.payload(), &body);
     assert_eq!(received.core_node(), "core_pub");
     assert_eq!(received.instance_id(), "publisher_inst");
@@ -91,11 +108,6 @@ async fn topic_native_roundtrip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn topic_contract_roundtrip() {
     let _lock = ZENOH_SERIAL.lock().await;
-    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .unwrap();
-    instance.messenger().start_session().await.unwrap();
-
     let target = SenderTarget::contract("manipulator", "v1-rc2").expect("valid target");
     let sender = TopicWireSender::new("core_pub", "pub_inst", target.clone(), None, "joint_states")
         .expect("valid wire fields");
@@ -110,37 +122,20 @@ async fn topic_contract_roundtrip() {
     )
     .expect("valid wire fields");
 
-    let sub = instance
-        .messenger()
-        .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
-        .await
-        .unwrap();
-    wait_for_subscriber_discovery().await;
-
     let body = Bytes::from_static(b"q=[0.1,0.2,0.3]");
-    instance
-        .messenger()
-        .publish_topic(
-            &sender,
-            Payload::from_bytes(body.clone()),
-            PublisherQoS::Standard,
-            true,
-        )
-        .await
-        .unwrap();
-
-    let received = next_message(&sub, "topic_contract_roundtrip sub").await;
+    let received = run_topic_roundtrip(
+        &sender,
+        &receiver,
+        body.clone(),
+        "topic_contract_roundtrip sub",
+    )
+    .await;
     assert_eq!(received.payload(), &body);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn topic_wildcard_subscriber() {
     let _lock = ZENOH_SERIAL.lock().await;
-    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .unwrap();
-    instance.messenger().start_session().await.unwrap();
-
     let sender = TopicWireSender::new(
         "any_publisher_core",
         "any_publisher_inst",
@@ -161,26 +156,14 @@ async fn topic_wildcard_subscriber() {
     )
     .expect("valid wire fields");
 
-    let sub = instance
-        .messenger()
-        .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
-        .await
-        .unwrap();
-    wait_for_subscriber_discovery().await;
-
     let body = Bytes::from_static(b"frame_42");
-    instance
-        .messenger()
-        .publish_topic(
-            &sender,
-            Payload::from_bytes(body.clone()),
-            PublisherQoS::Standard,
-            true,
-        )
-        .await
-        .unwrap();
-
-    let received = next_message(&sub, "topic_wildcard_subscriber sub").await;
+    let received = run_topic_roundtrip(
+        &sender,
+        &receiver,
+        body.clone(),
+        "topic_wildcard_subscriber sub",
+    )
+    .await;
     assert_eq!(received.payload(), &body);
 }
 
