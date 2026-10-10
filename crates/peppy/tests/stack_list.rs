@@ -97,6 +97,20 @@ fn add_ready_node(ctx: &Arc<AppContext>, source: &Path) {
         .expect("node add should succeed");
 }
 
+/// The entry of the daemon named `core_node_name` in a `stack list --json`
+/// document.
+fn core_node_entry(json_output: &str, core_node_name: &str) -> serde_json::Value {
+    let doc: serde_json::Value =
+        serde_json::from_str(json_output).expect("the output is one JSON document");
+    doc["core_nodes"]
+        .as_array()
+        .expect("core_nodes is a list")
+        .iter()
+        .find(|entry| entry["core_node"] == core_node_name)
+        .expect("this daemon's entry is present")
+        .clone()
+}
+
 /// A node's row parsed from the rendered stack inventory table.
 struct InventoryRow {
     stage: String,
@@ -261,15 +275,7 @@ async fn node_list_command_succeeds() {
         "{:?}",
         json_report.failed_names
     );
-    let doc: serde_json::Value =
-        serde_json::from_str(&json_report.output).expect("the output is one JSON document");
-    let entry = doc["core_nodes"]
-        .as_array()
-        .expect("core_nodes is a list")
-        .iter()
-        .find(|entry| entry["core_node"] == core_node_name.as_str())
-        .expect("this daemon's entry is present")
-        .clone();
+    let entry = core_node_entry(&json_report.output, &core_node_name);
     assert!(entry["error"].is_null(), "{entry}");
     let nodes = entry["stack"]["nodes"]
         .as_array()
@@ -700,15 +706,7 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
     let json_report = peppy::commands::stack::list_nodes_json_collecting(&node_ctx)
         .await
         .expect("stack list --json should succeed");
-    let doc: serde_json::Value =
-        serde_json::from_str(&json_report.output).expect("the output is one JSON document");
-    let entry = doc["core_nodes"]
-        .as_array()
-        .expect("core_nodes is a list")
-        .iter()
-        .find(|entry| entry["core_node"] == core_node_name.as_str())
-        .expect("this daemon's entry is present")
-        .clone();
+    let entry = core_node_entry(&json_report.output, &core_node_name);
     let node = entry["stack"]["nodes"]
         .as_array()
         .expect("the stack carries its nodes")
