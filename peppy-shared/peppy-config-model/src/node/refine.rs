@@ -586,8 +586,8 @@ pub fn refined<M, R: Refines<M>>(
 
 /// [`refined`] for a member the caller only borrows out of a resolved
 /// document. The clone happens in the refining arm alone, so an entry
-/// without a `refine` block — nearly every entry — pays nothing to leave
-/// the document's member as it found it.
+/// without a `refine` block (nearly every entry) pays nothing to leave the
+/// document's member as it found it.
 pub fn refined_ref<'a, M, R>(
     refinement: Option<&R>,
     member: &'a M,

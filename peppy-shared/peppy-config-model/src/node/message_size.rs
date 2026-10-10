@@ -3,13 +3,13 @@
 //! `stack benchmark` uses this to send service/action probes carrying a payload
 //! of the message's real size, so the round-trip reflects real serialization +
 //! transport instead of an empty sentinel. Fixed-shape messages size (closely)
-//! exactly; variable-length fields — `string`, `bytes`, and unbounded arrays
-//! (no `$length`) — cannot be known from the schema, so they contribute only
+//! exactly. Variable-length fields (`string`, `bytes`, and unbounded arrays
+//! with no `$length`) cannot be known from the schema, so they contribute only
 //! their fixed pointer overhead and flag the estimate as a lower bound.
 //!
 //! The numbers approximate Cap'n Proto's framed layout (the wire codec): a
 //! word-aligned data section, an 8-byte pointer per variable/composite field,
-//! and a small framing constant. Exactness is not important — the benchmark
+//! and a small framing constant. Exactness is not important: the benchmark
 //! sends that many opaque bytes, so only the order of magnitude (a few bytes vs
 //! a few MB) matters.
 

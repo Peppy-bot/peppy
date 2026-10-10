@@ -20,9 +20,9 @@ mod error;
 mod macros;
 mod parsing;
 
-/// Private module that contains all implementation modules.
-/// The `#[path = "."]` attribute tells Rust to resolve child modules from `src/`,
-/// the same directory as this file, so existing file paths are preserved.
+/// Private module that holds every implementation module. `#[path = "."]`
+/// resolves its child modules from `src/`, the directory of this file, so
+/// each module keeps its file directly under `src/`.
 #[path = "."]
 mod internal {
     pub mod consts;
