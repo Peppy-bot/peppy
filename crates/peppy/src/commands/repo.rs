@@ -208,7 +208,7 @@ pub struct RepoCommand {
 impl Command for RepoCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         match self.command {
-            RepoCommands::Init => init::repo_init(ctx),
+            RepoCommands::Init => init::repo_init(),
             RepoCommands::Index {
                 path,
                 check,
