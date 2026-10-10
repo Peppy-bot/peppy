@@ -2,10 +2,10 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node,
-    build_staged_node, children_of, create_test_node_with_name, install_kill_on_shutdown_listener,
-    instance_state_in_any_state, is_process_running, poll_until, send_node_add_and_wait,
-    send_node_add_then_build, send_node_run_and_wait, spawn_real_running_instance,
-    spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    answer_readiness, build_staged_node, children_of, create_test_node_with_name,
+    install_kill_on_shutdown_listener, instance_state_in_any_state, is_process_running, poll_until,
+    send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
+    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
@@ -14,8 +14,6 @@ use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use peppylib::core_node::transport::poll_node_stop;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -725,27 +723,7 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
     // Mocks satisfy the readiness gate so the real node_run path commits the
     // instance and spawns its exit watcher (the bare `sleep` cannot speak the
     // protocol itself).
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);

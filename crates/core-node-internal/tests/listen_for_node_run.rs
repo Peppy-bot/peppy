@@ -1,11 +1,12 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, create_test_node_with_name,
-    fast_health_monitor, instance_state_in_any_state, poll_until, send_node_add_then_build,
-    send_node_run_and_wait, send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
-    start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger, wait_until_action_completes, write_peppy_json5,
+    AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, answer_readiness,
+    create_test_node_with_name, fast_health_monitor, instance_state_in_any_state, poll_until,
+    send_node_add_then_build, send_node_run_and_wait, send_node_run_and_wait_with_env,
+    start_core_node_with_health_monitor, start_core_node_with_health_timeout,
+    start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
+    wait_until_action_completes, write_peppy_json5,
 };
 use config::runtime::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
@@ -435,27 +436,7 @@ async fn listen_for_node_run_writes_log_file() {
         add_response.error_message
     );
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     // Allow ready/health services to establish listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -863,49 +844,8 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     );
 
     // Set up ready/health services for both nodes
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-
-    let _first_ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            FIRST_INSTANCE_ID,
-            common::test_node_target(FIRST_NODE_NAME),
-        )
-        .await
-        .expect("first ready service should start"),
-    );
-    let _first_health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            FIRST_INSTANCE_ID,
-            common::test_node_target(FIRST_NODE_NAME),
-        )
-        .await
-        .expect("first health service should start"),
-    );
-
-    let _second_ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            SECOND_INSTANCE_ID,
-            common::test_node_target(SECOND_NODE_NAME),
-        )
-        .await
-        .expect("second ready service should start"),
-    );
-    let _second_health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            SECOND_INSTANCE_ID,
-            common::test_node_target(SECOND_NODE_NAME),
-        )
-        .await
-        .expect("second health service should start"),
-    );
+    let mut responders = answer_readiness(&started, FIRST_NODE_NAME, FIRST_INSTANCE_ID).await;
+    responders.extend(answer_readiness(&started, SECOND_NODE_NAME, SECOND_INSTANCE_ID).await);
 
     // Allow ready/health services to establish listeners
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1032,27 +972,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
         add_response.error_message
     );
 
-    let instance_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &instance_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start ready service"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &instance_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start health service"),
-    );
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -1180,27 +1100,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
         add_response.error_message
     );
 
-    let instance_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &instance_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start ready service"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &instance_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start health service"),
-    );
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -1305,27 +1205,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
 
     // Set up ready/health services for the container instance
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     // Allow ready/health services to establish listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1513,27 +1393,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
     // Set up ready/health services for the container instance. The container
     // will actually launch (auto-create succeeds), so these need to be live.
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -2649,29 +2509,8 @@ async fn add_panel_node_with_services(
         add_response.error_message
     );
 
+    let mut services = answer_readiness(started, node_name, instance_id).await;
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let mut services = vec![
-        AbortOnDrop(
-            listen_for_node_ready(
-                &node_messenger,
-                &started.core_node_name,
-                instance_id,
-                common::test_node_target(node_name),
-            )
-            .await
-            .expect("node ready service should start"),
-        ),
-        AbortOnDrop(
-            listen_for_node_health(
-                &node_messenger,
-                &started.core_node_name,
-                instance_id,
-                common::test_node_target(node_name),
-            )
-            .await
-            .expect("node health service should start"),
-        ),
-    ];
     services.push(AbortOnDrop(
         peppylib::services::endpoints::listen_for_node_endpoints(
             &node_messenger,
@@ -2876,27 +2715,7 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
         add_response.error_message
     );
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,

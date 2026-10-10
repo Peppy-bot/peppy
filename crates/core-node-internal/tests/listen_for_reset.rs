@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node,
+    CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node, answer_readiness,
     build_staged_node, children_of, install_kill_on_shutdown_listener, instance_state_in_any_state,
     is_process_running, poll_until, send_node_add_and_wait, send_node_add_then_build,
     send_node_run_and_wait, spawn_real_running_instance, spawn_real_stuck_instance,
@@ -10,10 +10,6 @@ use common::{
 use config::runtime::Name;
 use core_node_api::encoding::StackResetRequest;
 use peppylib::core_node::transport::poll;
-use peppylib::messaging::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
-use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -388,27 +384,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
 
     // Mocks satisfy the readiness gate so the real node_run path commits the
     // instance and spawns its exit watcher.
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);

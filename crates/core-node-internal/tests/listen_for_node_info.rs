@@ -1,17 +1,15 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, real_build_and_spawn_instance,
-    send_node_add_then_build, send_node_run_and_wait, start_core_node_with_mock_messenger,
-    write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, answer_readiness,
+    real_build_and_spawn_instance, send_node_add_then_build, send_node_run_and_wait,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
 use peppylib::core_node::transport::poll as transport_poll;
 use peppylib::messaging::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -222,47 +220,10 @@ async fn node_info_has_instance_ids() {
     // Simulate each instance exposing ready/health services so the node_run
     // action can proceed against the mock messenger (we start `sleep` rather
     // than a real node).
-    let node_handle = MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready_task_1 = AbortOnDrop(
-        listen_for_node_ready(
-            &node_handle,
-            &started_core_node.core_node_name,
-            TARGET_INSTANCE_ID_1,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start node_ready service (instance 1)"),
-    );
-    let _health_task_1 = AbortOnDrop(
-        listen_for_node_health(
-            &node_handle,
-            &started_core_node.core_node_name,
-            TARGET_INSTANCE_ID_1,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start node_health service (instance 1)"),
-    );
-    let _ready_task_2 = AbortOnDrop(
-        listen_for_node_ready(
-            &node_handle,
-            &started_core_node.core_node_name,
-            TARGET_INSTANCE_ID_2,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start node_ready service (instance 2)"),
-    );
-    let _health_task_2 = AbortOnDrop(
-        listen_for_node_health(
-            &node_handle,
-            &started_core_node.core_node_name,
-            TARGET_INSTANCE_ID_2,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start node_health service (instance 2)"),
-    );
+    let mut responders =
+        answer_readiness(&started_core_node, TARGET_NODE_NAME, TARGET_INSTANCE_ID_1).await;
+    responders
+        .extend(answer_readiness(&started_core_node, TARGET_NODE_NAME, TARGET_INSTANCE_ID_2).await);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -439,26 +400,7 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
 
     let node_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _responders = answer_readiness(&started_core_node, NODE_NAME, INSTANCE_ID).await;
     let _endpoints = AbortOnDrop(
         peppylib::services::endpoints::listen_for_node_endpoints(
             &node_messenger,
