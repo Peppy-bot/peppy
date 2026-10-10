@@ -1946,9 +1946,8 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
 /// by the exit watcher (`Failed` for an unclean (signal / non-zero) exit)
 /// instead of being left `Running` and merely flagged unhealthy. The instance
 /// stays tracked so it remains visible in `stack list`, but as a terminal state,
-/// and the `Running`-only lookup no longer returns it. Regression guard for the
-/// one-shot/crashed-node fix: a dead process must never read as
-/// "running / unhealthy".
+/// and the `Running`-only lookup does not return it: a dead process must never
+/// read as "running / unhealthy".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     const TARGET_NODE_NAME: &str = "exit_watcher_node";
@@ -2296,8 +2295,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
 /// unhealthy" warning for a node being torn down on purpose. Both behaviors
 /// hang off the daemon `shutdown_token`; this drives the real token (the same
 /// one the core node threads into every node's watcher and monitor) and asserts
-/// the suppression end to end. Regression guard for the "suppress shutdown-time
-/// health warnings" / "never relabel an intentional kill as a crash" fix.
+/// the suppression end to end.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     const TARGET_NODE_NAME: &str = "shutdown_suppressed_node";

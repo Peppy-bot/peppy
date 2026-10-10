@@ -1,19 +1,20 @@
-//! Regression tests for `node_add` with `manifest.implements`.
+//! Tests for `node_add` with `manifest.implements`.
 //!
 //! `node_add` copies the source to a temp working dir and *regenerates*
 //! peppygen there before handing off to `node_build`. That regeneration
-//! must resolve the produced-side contract entries of `manifest.implements`
-//! as well as `depends_on`. Without them the generator never sees the
-//! contract-backed topics/services, the resulting peppygen has a flat
-//! layout (`emitted_topics.rs` is empty), and node code importing nested
-//! paths like `peppygen::emitted_topics::<link_id>::<topic>` fails to
-//! compile inside the container. A sync followed by a build on a
-//! developer's workstation does not go through this path, so it cannot
-//! catch such a gap.
+//! resolves the produced-side contract entries of `manifest.implements` as
+//! well as `depends_on`, so the staged peppygen nests each contract-backed
+//! topic and service under its link
+//! (`peppygen::emitted_topics::<link_id>::<topic>`), the layout node code
+//! compiles against inside the container. Without those entries the
+//! generator never sees the contract-backed topics/services and the peppygen
+//! has a flat layout (`emitted_topics.rs` is empty). A sync followed by a
+//! build on a developer's workstation does not go through this path, so it
+//! cannot show such a gap.
 //!
 //! These tests assert against the daemon-staged working dir directly
-//! (via `pending_working_dir`) so they catch a regression in the add
-//! path even when `sync` would still pass.
+//! (via `pending_working_dir`), so they check the add path on its own,
+//! whatever `sync` does.
 use super::*;
 use common::TestPackagesCache;
 

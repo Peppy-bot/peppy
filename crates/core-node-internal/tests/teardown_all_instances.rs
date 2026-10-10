@@ -88,8 +88,8 @@ async fn teardown_force_kills_whole_process_group() {
 
 /// Teardown must also force-kill a node caught mid-launch (`Starting`): the
 /// child is spawned and its pid recorded inside `prepare_and_spawn`, before
-/// `commit_started` runs. Regression guard for the `Starting`-window orphan and
-/// for keeping `Starting` instances in `collect_doomed_instances`.
+/// `commit_started` runs. A `Starting` instance left out of
+/// `collect_doomed_instances` would outlive the teardown as an orphan.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn teardown_force_kills_instance_still_in_starting() {
     const NODE_NAME: &str = "starting_node";
@@ -103,8 +103,8 @@ async fn teardown_force_kills_instance_still_in_starting() {
 
     let instance_id = Name::new(INSTANCE_ID).expect("valid instance id");
     // Drive prepare_and_spawn WITHOUT commit_started: the instance stays in
-    // `Starting` with a live child: the mid-launch state that, before the fix,
-    // carried no pid in the registry and so was skipped by the force phase.
+    // `Starting` with a live child: the mid-launch state, which the force phase
+    // can kill only because the registry already carries its pid.
     let starting = spawn_real_starting_instance(&started, NODE_NAME, NODE_TAG, &instance_id).await;
     let node_pid = starting.pid;
 

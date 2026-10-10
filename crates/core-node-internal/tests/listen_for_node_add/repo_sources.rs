@@ -210,7 +210,7 @@ async fn repo_node_add_partial_stack_coverage() {
 
 /// The launch-shaped sequence: a dependency is added and BUILT on its own,
 /// then a dependent's batch resolves the same identity from the cache with
-/// an unchanged manifest. The batch must leave the built entity alone —
+/// an unchanged manifest. The batch must leave the built entity alone:
 /// re-pushing it would reset it to `Added` and silently discard the
 /// artifact, so a stack launch whose later deployment depends on an
 /// earlier, already-built one would fail its run phase with "added but

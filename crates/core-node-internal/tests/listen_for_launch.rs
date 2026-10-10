@@ -1204,9 +1204,9 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
         "second request should replace existing stack (add node_b)"
     );
 
-    // Core regression: the relaunch must terminate the previous stack's process,
-    // not orphan it. Before the fix, node_a's OS process survived the relaunch,
-    // detached from the daemon and invisible to `stack list`.
+    // The relaunch must terminate the previous stack's process: an orphan
+    // would outlive the relaunch, detached from the daemon and invisible to
+    // `stack list`.
     poll_until(
         Duration::from_secs(10),
         &format!("node_a process {pid_a} should be terminated by the relaunch, not orphaned"),
@@ -1263,8 +1263,8 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         .write(&started_core_node.peppy_dirs);
 
     // Drive the launch concurrently so we can capture node_b's started pid
-    // before the health-timeout failure tears the stack down. Without the fix,
-    // that partially-started instance would be orphaned by the failure path.
+    // before the health-timeout failure tears the stack down, and check that
+    // the failure path terminates that partially-started instance.
     let caller = started_core_node.caller_handle.clone();
     let core_name = started_core_node.core_node_name.clone();
     let launch_task = tokio::spawn(async move {
@@ -1303,7 +1303,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         "launch should fail because the node never becomes healthy"
     );
 
-    // New contract: a failed launch leaves a clean empty stack.
+    // A failed launch leaves a clean empty stack.
     assert_eq!(
         node_stack.len(),
         1,
@@ -1397,7 +1397,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
         "error message should contain the node name:tag, got: {error_message}"
     );
 
-    // New contract: a failed launch leaves a clean empty stack. The previous
+    // A failed launch leaves a clean empty stack. The previous
     // stack is torn down at the clear step, not rolled back.
     assert_eq!(
         node_stack.len(),
@@ -1491,7 +1491,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
         "error message should contain the instance ID, got: {error_message}"
     );
 
-    // New contract: a failed launch leaves a clean empty stack. The previous
+    // A failed launch leaves a clean empty stack. The previous
     // stack is torn down at the clear step, not rolled back.
     assert_eq!(
         node_stack.len(),

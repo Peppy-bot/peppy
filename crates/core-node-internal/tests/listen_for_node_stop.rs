@@ -158,12 +158,12 @@ async fn listen_for_node_stop_success() {
 /// A cooperative node that legitimately takes longer than the bare grace window
 /// to disappear (a real one runs its hooks within `grace`, then a Python node
 /// joins its asyncio loop and the interpreter finalizes) must still be reported
-/// graceful, not force-killed. This pins the Issue 2 fix: the daemon's
-/// force-kill deadline is `force_kill_deadline(grace)` (grace + loop-join +
-/// finalize), not the bare `grace`. We make the node exit at `grace + 2s` (past
-/// the old `grace` deadline, comfortably inside the new one) and assert it is
-/// classified graceful. Under the old behavior the process is still alive at the
-/// `grace` deadline and would be SIGKILLed and reported force-killed.
+/// graceful, not force-killed: the daemon's force-kill deadline is
+/// `force_kill_deadline(grace)` (grace + loop-join + finalize), not the bare
+/// `grace`. We make the node exit at `grace + 2s` (past a bare `grace` deadline,
+/// comfortably inside `force_kill_deadline(grace)`) and assert it is classified
+/// graceful. With a bare `grace` deadline the process would still be alive when
+/// the deadline passed, and would be SIGKILLed and reported force-killed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_deadline() {
     const TARGET_NODE_NAME: &str = "slow_cooperative_node";
@@ -394,8 +394,7 @@ async fn node_stop_force_kills_whole_process_group() {
     .await
     .expect("node_stop request should complete");
 
-    // New behavior: a stuck node is force-killed and reported as success
-    // (it used to fail with "did not terminate within timeout").
+    // A stuck node is force-killed and its stop is reported as a success.
     assert!(
         response.success,
         "node_stop must force-kill a stuck node and succeed, got error: {:?}",

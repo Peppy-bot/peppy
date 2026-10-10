@@ -1194,29 +1194,30 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
 }
 
-/// Regression test: container builds must succeed when the daemon's peppy
-/// data root sits OUTSIDE `$HOME`, as a `PEPPY_HOME` outside `$HOME` puts it
-/// (on macOS, for example, under `/var/folders/…`).
+/// Container builds must succeed when the daemon's peppy data root sits
+/// OUTSIDE `$HOME`, as a `PEPPY_HOME` outside `$HOME` puts it (on macOS, for
+/// example, under `/var/folders/…`).
 ///
 /// On macOS the Lima guest VM only auto-mounts `$HOME`, so the build's
 /// working dir (under `<root>/tmp`) is invisible to the guest unless the
-/// build flow registers the root via `Apptainer::ensure_host_mounts`. Before
-/// that registration existed, this scenario failed command construction with
-/// "Path … is not accessible inside the Lima VM" — but no test caught it,
-/// because every other starter roots the daemon under `test_tmp_root()`
-/// (inside the repo, under `$HOME`). On Linux the native backend imposes no
-/// mount restriction, so there this test only exercises the plain build flow.
+/// build flow registers the root via `Apptainer::ensure_host_mounts`; without
+/// it, command construction fails with "Path … is not accessible inside the
+/// Lima VM". Every other starter roots the daemon under `test_tmp_root()`
+/// (inside the repo, under `$HOME`), so only this test covers that
+/// registration. On Linux the native backend imposes no mount restriction, so
+/// there this test only exercises the plain build flow.
 ///
 /// The def file deliberately copies a relative `%files` source (like the
 /// generated `%files . /opt/{name}` defs): the build must run with the guest
 /// cwd set to the working dir. Relying on `limactl shell`'s host-cwd
-/// propagation breaks here — the kernel canonicalizes the cwd to
+/// propagation breaks here: the kernel canonicalizes the cwd to
 /// `/private/var/…` while the Lima mount only exists in the guest at the
 /// `/var/folders/…` form, and Lima's failed `cd` is NON-fatal, so the build
-/// silently ran from the home mount and `%files .` copied the user's entire
-/// `$HOME` into the image until the guest tmpfs filled up. The facade now
-/// `cd`s explicitly inside the guest wrapper and aborts if that fails; this
-/// test fails without that fix ("cp: cannot stat './marker.txt'").
+/// would silently run from the home mount and `%files .` would copy the
+/// user's entire `$HOME` into the image until the guest tmpfs filled up. The
+/// facade `cd`s explicitly inside the guest wrapper and aborts if that fails;
+/// a build from any other cwd fails this test with "cp: cannot stat
+/// './marker.txt'".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_with_container_from_outside_home_root() {
     let _container_test_guard = acquire_container_test_guard().await;

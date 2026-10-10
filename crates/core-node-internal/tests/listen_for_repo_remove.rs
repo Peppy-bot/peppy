@@ -50,7 +50,7 @@ async fn remove_fs_repo_succeeds() {
     assert!(repos.is_empty(), "repos should be empty after removal");
 
     // Cache refresh is triggered for all repo types (including fs) and
-    // rewrites all four cache files together — a partial rewrite would
+    // rewrites all four cache files together: a partial rewrite would
     // leave the untouched files still listing the removed repo's items.
     for cache_path in [
         nodes_repo_cache_path(&started.peppy_dirs),

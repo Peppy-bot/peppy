@@ -187,8 +187,8 @@ async fn stack_benchmark_enumerates_wired_service_edge() {
 
 /// A consumer that wires the *same* interface from the *same* producer via two
 /// distinct `depends_on` links produces two separate rows, identical in
-/// producer/interface but differing only by `link_id`. Regression guard for the
-/// duplicate, indistinguishable rows that prompted carrying `link_id` end-to-end.
+/// producer/interface but differing only by `link_id`, which the benchmark
+/// carries end to end so the two rows can be told apart.
 fn two_link_consumer_config() -> &'static str {
     r#"{
         peppy_schema: "node/v1",
