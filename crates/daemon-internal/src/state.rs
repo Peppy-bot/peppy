@@ -86,7 +86,7 @@ impl DaemonState {
 
     /// Returns the path where the daemon state file is stored: the data
     /// root's `daemon_state.json5`.
-    pub(crate) fn state_file_path() -> PathBuf {
+    fn state_file_path() -> PathBuf {
         Self::state_file_in(PeppyDirs::default().root())
     }
 

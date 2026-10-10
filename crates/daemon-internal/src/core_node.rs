@@ -23,7 +23,7 @@ use tracing::{info, warn};
 /// full run of misses, about twenty seconds, is what turns `unhealthy`. The
 /// monitor never removes an instance, so a router outage shows up as an
 /// unhealthy window rather than tearing the stack down.
-pub(crate) const HEALTH_MONITOR: HealthMonitorPolicy = HealthMonitorPolicy {
+const HEALTH_MONITOR: HealthMonitorPolicy = HealthMonitorPolicy {
     interval: Duration::from_secs(5),
     timeout: Duration::from_secs(3),
     failure_threshold: NonZeroU32::new(3).unwrap(),
@@ -35,7 +35,7 @@ pub(crate) const HEALTH_MONITOR: HealthMonitorPolicy = HealthMonitorPolicy {
 /// couple of dropped beats never trip a node's watchdog. The seconds value is
 /// defined next to the grace-period floor in `config::peppy_config`, where a
 /// compile-time assert enforces that margin.
-pub(crate) const DAEMON_HEARTBEAT_INTERVAL: Duration =
+const DAEMON_HEARTBEAT_INTERVAL: Duration =
     Duration::from_secs(daemon_config::peppy_config::DAEMON_HEARTBEAT_INTERVAL_SECS);
 
 /// Bound on the wait for the managed router's configured `connect` links

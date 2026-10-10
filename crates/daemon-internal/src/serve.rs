@@ -40,7 +40,7 @@ enum Startup {
 /// crash-only supervisor (systemd `Restart=on-failure`, launchd `KeepAlive`
 /// scoped to `SuccessfulExit=false`) recovers a daemon the in-process loop could
 /// not. Distinct from a clean stop's `0` and the generic `exit(1)`.
-pub(crate) const RESTART_EXIT_CODE: i32 = 75;
+const RESTART_EXIT_CODE: i32 = 75;
 
 /// Wall-clock window and cap for the in-process flap backstop: more than
 /// [`FLAP_CAP`] restarts within [`FLAP_WINDOW`] converts a same-PID busy loop

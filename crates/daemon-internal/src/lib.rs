@@ -33,5 +33,5 @@ mod router_federation;
 mod serve;
 mod shutdown_signal;
 
-pub use error::{Error as DaemonError, Result};
+pub use error::Error as DaemonError;
 pub use serve::{ServeOptions, serve};

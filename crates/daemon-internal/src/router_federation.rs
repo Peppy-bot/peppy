@@ -122,10 +122,10 @@ pub(crate) enum FederationOutcome {
 
 /// The injectable collaborators one poke needs: the enrollment on disk, the
 /// link probe, and the clock the expiry check reads.
-pub(crate) struct FederationDeps {
-    pub(crate) enrollment: EnrollmentReader,
-    pub(crate) prober: Prober,
-    pub(crate) clock: Clock,
+struct FederationDeps {
+    enrollment: EnrollmentReader,
+    prober: Prober,
+    clock: Clock,
 }
 
 /// A "reconcile now" request from the control socket: compare the enrollment
