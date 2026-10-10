@@ -1629,16 +1629,32 @@ def read_response(
         raise ApiError(action, error.code, error_message(error)) from error
     except urllib.error.URLError as error:
         raise ApiError(action, None, str(error.reason)) from error
+    except resolve.REQUEST_ERRORS as error:
+        # urlopen wraps only the failures of sending the request in a
+        # URLError: a timeout or a reset connection while it waits for the
+        # response, or a response that breaks off, comes as itself.
+        raise ApiError(action, None, str(error)) from error
 
 
 def error_message(error: urllib.error.HTTPError) -> str:
     """The message GitHub puts in the body of a refused call, else the HTTP
-    reason."""
+    reason: for a body that breaks off, that is no JSON object, or that has
+    no message."""
+    reason = str(error.reason)
     try:
-        document = json.loads(error.read() or b"{}")
-    except (json.JSONDecodeError, OSError):
-        return str(error.reason)
-    return document.get("message") or str(error.reason)
+        body = error.read()
+    except resolve.REQUEST_ERRORS:
+        return reason
+    try:
+        document = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return reason
+    if not isinstance(document, Mapping):
+        return reason
+    message = document.get("message")
+    if not isinstance(message, str) or not message:
+        return reason
+    return message
 
 
 REVIEW_DECISION_QUERY = """

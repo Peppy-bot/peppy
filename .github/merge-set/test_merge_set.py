@@ -12,6 +12,7 @@ uses, so the changes job of tests.yml runs these cases on every change.
 """
 
 import base64
+import http.client
 import io
 import json
 import os
@@ -2655,6 +2656,55 @@ class Gateway(unittest.TestCase):
             merge_set.GitHubApi("token").request("PUT", "/x")
         self.assertEqual(refused.exception.status, 405)
         self.assertEqual(refused.exception.message, "Pull Request is not mergeable")
+
+    def test_a_refused_call_without_a_message_names_the_http_reason(self):
+        class BrokenBody(io.BytesIO):
+            def read(self, *arguments):
+                raise http.client.IncompleteRead(b"{")
+
+        for case, body in (
+            ("no body", io.BytesIO(b"")),
+            ("a list", io.BytesIO(b'["x"]')),
+            ("a string", io.BytesIO(b'"x"')),
+            ("not UTF-8", io.BytesIO(b"\xff")),
+            ("a message that is no string", io.BytesIO(b'{"message": 3}')),
+            ("a body that breaks off", BrokenBody()),
+        ):
+            error = merge_set.urllib.error.HTTPError(
+                "https://api.github.com/x", 405, "Method Not Allowed", {}, body
+            )
+            with self.subTest(case=case):
+                with (
+                    patch.object(
+                        merge_set.urllib.request, "urlopen", side_effect=error
+                    ),
+                    self.assertRaises(ApiError) as refused,
+                ):
+                    merge_set.GitHubApi("token").request("PUT", "/x")
+                self.assertEqual(refused.exception.status, 405)
+                self.assertEqual(refused.exception.message, "Method Not Allowed")
+
+    def test_a_call_that_the_network_breaks_is_an_api_error(self):
+        # urlopen wraps only the failures of sending the request in a
+        # URLError: these come while it waits for the response or reads it.
+        for failure in (
+            TimeoutError("timed out"),
+            ConnectionResetError(104, "Connection reset by peer"),
+            http.client.RemoteDisconnected(
+                "Remote end closed connection without response"
+            ),
+            http.client.IncompleteRead(b"{"),
+        ):
+            with self.subTest(failure=failure):
+                with (
+                    patch.object(
+                        merge_set.urllib.request, "urlopen", side_effect=failure
+                    ),
+                    self.assertRaises(ApiError) as failed,
+                ):
+                    merge_set.GitHubApi("token").request("PUT", "/x")
+                self.assertIsNone(failed.exception.status)
+                self.assertEqual(failed.exception.message, str(failure))
 
 
 class GitFixture:
