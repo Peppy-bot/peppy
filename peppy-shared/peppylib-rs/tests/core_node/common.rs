@@ -45,9 +45,8 @@ pub(crate) fn write_standalone_peppy_config(dir: &TempDir) -> PathBuf {
 }
 
 /// Polls `is_reachable` for `service_name` until it responds, bounded by a
-/// 5s deadline, via the shared `peppylib::testing` wait. Replaces a fixed
-/// sleep: fast when zenoh discovery completes quickly, and fails loudly if it
-/// never does.
+/// 5s deadline, via the shared `peppylib::testing` wait: fast when zenoh
+/// discovery completes quickly, and fails loudly if it never does.
 pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name: &str) {
     peppylib::testing::wait_service_reachable(
         client,

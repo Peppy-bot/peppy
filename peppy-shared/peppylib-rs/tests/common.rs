@@ -9,9 +9,9 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 /// Deterministically wait until `publisher`'s session sees a subscriber for the
-/// topic it is about to publish on, replacing a fixed "settle for zenoh
-/// discovery" sleep. The arguments mirror the subsequent publish.
-/// Panics if no subscriber routes within 2s.
+/// topic it is about to publish on. Peer-mode discovery is not instantaneous,
+/// so a publish sent before routing completes can be dropped. The arguments
+/// mirror the subsequent publish. Panics if no subscriber routes within 2s.
 pub async fn wait_for_topic_subscriber(
     publisher: &MessengerHandle,
     core_node: &str,
@@ -177,7 +177,7 @@ pub fn test_node_target(name: &str) -> SenderTarget {
 
 /// Declares a publisher and publishes a single payload. The publisher is the
 /// only topic-publish path, so a test that publishes once just declares then
-/// publishes; the arguments mirror the old one-shot emit.
+/// publishes; the arguments mirror the publisher declaration, then the payload.
 #[allow(clippy::too_many_arguments)]
 pub async fn publish_once(
     messenger: &MessengerHandle,
