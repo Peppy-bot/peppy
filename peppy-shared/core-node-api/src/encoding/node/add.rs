@@ -862,40 +862,22 @@ mod tests {
         assert_eq!(decoded, feedback);
     }
 
+    /// Each constructor sets exactly the predicate of its stream, before and
+    /// after the trip.
     #[test]
-    fn node_add_feedback_stdout_predicates() {
-        let feedback = NodeAddFeedback::stdout("out");
-        assert!(feedback.is_stdout());
-        assert!(!feedback.is_stderr());
-        assert!(!feedback.is_warning());
-        let encoded = feedback.encode().expect("encode");
-        let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
-        assert_eq!(decoded, feedback);
-        assert!(decoded.is_stdout());
-    }
-
-    #[test]
-    fn node_add_feedback_stderr_predicates() {
-        let feedback = NodeAddFeedback::stderr("err");
-        assert!(!feedback.is_stdout());
-        assert!(feedback.is_stderr());
-        assert!(!feedback.is_warning());
-        let encoded = feedback.encode().expect("encode");
-        let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
-        assert_eq!(decoded, feedback);
-        assert!(decoded.is_stderr());
-    }
-
-    #[test]
-    fn node_add_feedback_warning_predicates() {
-        let feedback = NodeAddFeedback::warning("warn");
-        assert!(!feedback.is_stdout());
-        assert!(!feedback.is_stderr());
-        assert!(feedback.is_warning());
-        let encoded = feedback.encode().expect("encode");
-        let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
-        assert_eq!(decoded, feedback);
-        assert!(decoded.is_warning());
+    fn node_add_feedback_predicates_name_its_stream() {
+        let predicates = |f: &NodeAddFeedback| [f.is_stdout(), f.is_stderr(), f.is_warning()];
+        for (feedback, expected) in [
+            (NodeAddFeedback::stdout("out"), [true, false, false]),
+            (NodeAddFeedback::stderr("err"), [false, true, false]),
+            (NodeAddFeedback::warning("warn"), [false, false, true]),
+        ] {
+            assert_eq!(predicates(&feedback), expected, "{feedback:?}");
+            let encoded = feedback.encode().expect("encode");
+            let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
+            assert_eq!(decoded, feedback);
+            assert_eq!(predicates(&decoded), expected, "{decoded:?}");
+        }
     }
 
     #[test]
