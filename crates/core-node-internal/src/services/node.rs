@@ -73,7 +73,9 @@ use archive::{
     extract_tar_zst, is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
     resolve_local_archive_source,
 };
-use common::{encode_hex, encode_response_or_err, generate_random_id, panic_message};
+use common::{
+    encode_hex, encode_response_or_err, generate_random_id, panic_message, parse_node_config_file,
+};
 use env::{inject_node_runtime_env, inject_rust_build_env, validate_goal_env_vars};
 use feedback::spawn_feedback_forwarder;
 use git_utils::sanitize_repo_path;

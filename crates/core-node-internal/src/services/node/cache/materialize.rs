@@ -11,8 +11,9 @@
 //! caller can fan it into its own channel / log sink.
 
 use crate::services::node::Report;
+use crate::services::node::common::parse_node_config_file;
 use crate::services::repo::cache::{NodeCacheEntry, resolve_cached_artifact_path};
-use config::node::{NodeConfig, NodeConfigParser};
+use config::node::NodeConfig;
 use daemon_config::consts::PeppyDirs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -69,12 +70,6 @@ pub(crate) async fn materialize_entry(
         })?
         .to_path_buf();
 
-    let parsed = NodeConfigParser::from_path(&manifest_path).map_err(|e| {
-        format!(
-            "Failed to parse node config at {}: {}",
-            manifest_path.display(),
-            e
-        )
-    })?;
+    let parsed = parse_node_config_file(&manifest_path)?;
     Ok((root_dir, parsed))
 }

@@ -1,13 +1,15 @@
 //! Small glue helpers shared by the node command handlers that don't fit
 //! in one of the more specific submodules: panic payload decoding,
-//! random id generation, hex encoding, response encoding, and
-//! daemon-to-instance slot update delivery.
+//! random id generation, hex encoding, node config file parsing,
+//! response encoding, and daemon-to-instance slot update delivery.
 
+use config::node::{NodeConfig, NodeConfigParser};
 use config::runtime::Name;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use peppylib::encoding::slot_update::SlotUpdateResponse;
 use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -152,6 +154,17 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     } else {
         "unknown panic payload".to_string()
     }
+}
+
+/// Parses the node config at `config_path`, naming the file in the error.
+pub(crate) fn parse_node_config_file(config_path: &Path) -> Result<NodeConfig, String> {
+    NodeConfigParser::from_path(config_path).map_err(|e| {
+        format!(
+            "Failed to parse node config at {}: {}",
+            config_path.display(),
+            e
+        )
+    })
 }
 
 /// Maps an encoding `Result` to a `PeppyResult`, wrapping the error as an

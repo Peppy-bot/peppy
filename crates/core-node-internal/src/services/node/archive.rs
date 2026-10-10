@@ -3,8 +3,9 @@
 //! a tempdir, and locating the node root inside an already-extracted
 //! bundle. `extract_tar_zst` itself is re-exported from `node_stack`.
 
+use super::parse_node_config_file;
 use config::consts::NODE_CONFIG_FILE;
-use config::node::{NodeConfig, NodeConfigParser};
+use config::node::NodeConfig;
 use std::path::{Path, PathBuf};
 
 pub(crate) use node_stack::extract_tar_zst;
@@ -83,14 +84,7 @@ pub(crate) fn resolve_local_archive_source(
 
     extract_tar_zst(archive_path, temp_dir.path())?;
     let source_path = locate_node_root_dir(temp_dir.path())?;
-    let config_path = source_path.join(NODE_CONFIG_FILE);
-    let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
-        format!(
-            "Failed to parse node config at {}: {}",
-            config_path.display(),
-            e
-        )
-    })?;
+    let node_config = parse_node_config_file(&source_path.join(NODE_CONFIG_FILE))?;
 
     Ok(ResolvedLocalArchiveSource {
         node_config,

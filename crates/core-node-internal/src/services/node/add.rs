@@ -14,7 +14,7 @@ use super::sync::{
 use super::{
     clone_with_progress, encode_hex, extract_tar_zst, format_bytes, generate_random_id,
     is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
-    resolve_local_archive_source, sanitize_repo_path,
+    parse_node_config_file, resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
 use crate::source_url::SourceUrl;
@@ -402,14 +402,9 @@ fn parse_config_from_checkout(
     // in phase 1 is only a preflight hint; its result is not trusted as
     // the final config, since the probe and the clone could in principle
     // disagree (e.g. a force-push between the two fetches).
-    let node_config = match NodeConfigParser::from_path(&config_path) {
+    let node_config = match parse_node_config_file(&config_path) {
         Ok(cfg) => cfg,
-        Err(e) => {
-            let msg = format!(
-                "Failed to parse node config at {}: {}",
-                config_path.display(),
-                e
-            );
+        Err(msg) => {
             std::fs::remove_dir_all(&checkout_dir).ok();
             return Err(msg);
         }
@@ -742,14 +737,7 @@ fn resolve_http_source_blocking(
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let extracted =
         resolve_http_source_download_and_extract(url, peppy_dirs, expected_sha256, announcer)?;
-    let config_path = extracted.source_path.join(NODE_CONFIG_FILE);
-    let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
-        format!(
-            "Failed to parse node config at {}: {}",
-            config_path.display(),
-            e
-        )
-    })?;
+    let node_config = parse_node_config_file(&extracted.source_path.join(NODE_CONFIG_FILE))?;
 
     Ok(ResolvedNodeAddSource {
         source_path: extracted.source_path,
@@ -850,14 +838,7 @@ async fn resolve_node_add_source(
                 });
             }
 
-            let config_path = path.join(NODE_CONFIG_FILE);
-            let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
-                format!(
-                    "Failed to parse node config at {}: {}",
-                    config_path.display(),
-                    e
-                )
-            })?;
+            let node_config = parse_node_config_file(&path.join(NODE_CONFIG_FILE))?;
             Ok(ResolvedNodeAddSource {
                 source_path: path.clone(),
                 node_config,
