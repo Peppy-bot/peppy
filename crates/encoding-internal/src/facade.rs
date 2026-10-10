@@ -10,17 +10,17 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-/// Facade around the Cap'n Proto CLI binary.
-/// Provides helpers to locate the binary bundled with the crate or built at compile time
-/// and exposes higher-level operations such as compiling schemas.
+/// Facade around the Cap'n Proto CLI binary: resolves the binary (see [`CapnpFacade::new`]) and
+/// compiles schemas with it.
 #[derive(Debug, Clone)]
 pub struct CapnpFacade {
     capnp_path: PathBuf,
 }
 
 impl CapnpFacade {
-    /// Locate the Cap'n Proto binary either via runtime environment, compile-time build script,
-    /// or the pre-bundled tools shipped with the crate.
+    /// Resolves the Cap'n Proto binary: the `CAPNP_BINARY_PATH` override when it is set, else the
+    /// binary embedded at build time, extracted to `$PEPPY_HOME/bin/peppy_capnp_binary` on first
+    /// use.
     pub fn new() -> Result<Self> {
         let capnp_path = Self::resolve_capnp_binary()?;
         Ok(Self { capnp_path })
@@ -233,7 +233,7 @@ impl CapnpFacade {
         // build embeds and still runs. A stale file left by an earlier install
         // (different capnp version, or a broken/wrong-arch binary) fails the
         // content comparison or the run probe and is re-extracted rather than
-        // trusted, which replaces the old "never overwrite" guard.
+        // trusted.
         if Self::matches_embedded(binary_path, binary_bytes)
             && Self::verify_runs(binary_path).is_ok()
         {

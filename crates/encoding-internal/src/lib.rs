@@ -2,8 +2,10 @@
 //!
 //! This crate compiles a [`config::node::MessageFormat`] into Cap'n Proto
 //! schema artifacts and Rust type mappings, and bundles the `capnp` compiler
-//! binary needed to do so (see `build.rs` and `tools/`). It lives outside
-//! `peppy-shared` because only `peppy`'s code generator depends on it.
+//! binary needed to do so (see `build.rs`; the binaries live in
+//! `peppy-shared/peppy-config-model/tools`). It lives outside `peppy-shared`
+//! because only crates of the `peppy` workspace (the code generator and
+//! `message-codec`) depend on it.
 
 mod facade;
 mod types;
@@ -32,8 +34,8 @@ use facade::CapnpFacade;
 use indexmap::IndexMap;
 use wire_layout::{SchemaNodes, StructLayout, join_path};
 
-/// The output_dir should point to the `src` of a Rust crate. A new `capnp` module will be
-/// created at the root of this directory with all the `capnp` files.
+/// `output_dir` is the `src` directory of a Rust crate: the call writes a `capnp.rs` module and
+/// a `capnp/` directory with the generated files at its root.
 pub fn compile_capnp<P, O>(capnp_files: &[P], output_dir: O) -> Result<()>
 where
     P: AsRef<Path>,
@@ -42,7 +44,7 @@ where
     CapnpFacade::new()?.compile_files(capnp_files, output_dir)
 }
 
-/// This struct helps tuning a MessageFormat into a capnp proto and its associated Rust types
+/// This struct turns a MessageFormat into a capnp proto and its associated Rust types
 pub struct MessageFormatMapper {
     schema_name: String,
     message_format: MessageFormat,
