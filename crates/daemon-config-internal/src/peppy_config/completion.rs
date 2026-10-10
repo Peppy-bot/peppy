@@ -176,6 +176,17 @@ struct MissingEntry {
     path: String,
 }
 
+/// The dot-separated path of the setting `key` inside the block at `parent`,
+/// where an empty `parent` is the document root. The added-settings log, the
+/// override refusal and the coverage tests compare these paths, so every path
+/// is spelled here.
+fn dotted_path(parent: &str, key: &str) -> String {
+    if parent.is_empty() {
+        return key.to_string();
+    }
+    format!("{parent}.{key}")
+}
+
 /// Walks `specs` against `block`, recording every absent entry and descending
 /// into present entries that have children. Per level, the absent entries come
 /// first and the descents after, so the added-settings log lists each block's
@@ -193,11 +204,7 @@ fn collect_missing(
                 .iter()
                 .any(|alternative| block.contains_key(*alternative))
         {
-            let path = if parent_path.is_empty() {
-                spec.key.to_string()
-            } else {
-                format!("{}.{}", parent_path.join("."), spec.key)
-            };
+            let path = dotted_path(&parent_path.join("."), spec.key);
             missing.push(MissingEntry {
                 parent_path: parent_path.to_vec(),
                 snippet: spec.snippet,
@@ -229,11 +236,7 @@ fn collect_missing(
 pub(super) fn missing_paths_in_template_order(completion: &Completion) -> Vec<String> {
     fn collect_known_paths(specs: &[EntrySpec], parent: &str, paths: &mut Vec<String>) {
         for spec in specs {
-            let path = if parent.is_empty() {
-                spec.key.to_string()
-            } else {
-                format!("{parent}.{}", spec.key)
-            };
+            let path = dotted_path(parent, spec.key);
             paths.push(path.clone());
             collect_known_paths(spec.children, &path, paths);
         }
@@ -659,11 +662,7 @@ pub(super) fn leaf_paths(value: &Value) -> Vec<String> {
         match value.as_object() {
             Some(entries) => {
                 for (key, nested) in entries {
-                    let path = if prefix.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{prefix}.{key}")
-                    };
+                    let path = dotted_path(prefix, key);
                     walk(nested, &path, paths);
                 }
             }
@@ -741,11 +740,7 @@ mod tests {
 
         fn table_leaf_paths(specs: &[EntrySpec], prefix: &str, out: &mut Vec<String>) {
             for spec in specs {
-                let path = if prefix.is_empty() {
-                    spec.key.to_string()
-                } else {
-                    format!("{prefix}.{}", spec.key)
-                };
+                let path = dotted_path(prefix, spec.key);
                 if spec.children.is_empty() {
                     out.push(path);
                 } else {
