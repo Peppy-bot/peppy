@@ -910,15 +910,16 @@ pub(crate) async fn dispatch_node_add(
     action_context: NodeAddActionContext,
     announcer: Announcer,
 ) -> NodeAddResult {
-    if matches!(goal.source, NodeSource::Exposures { .. }) {
-        crate::services::mcp::built_in::run_built_in_add(goal, action_context, announcer).await
-    } else if matches!(
-        goal.source,
-        NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. }
-    ) {
-        super::add_batch::run_pinned_add(goal, action_context, announcer).await
-    } else {
-        run_node_add(goal, action_context, announcer).await
+    match goal.source {
+        NodeSource::Exposures { .. } => {
+            crate::services::mcp::built_in::run_built_in_add(goal, action_context, announcer).await
+        }
+        NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. } => {
+            super::add_batch::run_pinned_add(goal, action_context, announcer).await
+        }
+        NodeSource::Fs(_) | NodeSource::Git { .. } | NodeSource::Http { .. } => {
+            run_node_add(goal, action_context, announcer).await
+        }
     }
 }
 

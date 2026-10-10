@@ -156,7 +156,10 @@ pub(crate) async fn run_pinned_add(
             };
             (closure.nodes, doc_pins_json5)
         }
-        _ => {
+        NodeSource::Fs(_)
+        | NodeSource::Git { .. }
+        | NodeSource::Http { .. }
+        | NodeSource::Exposures { .. } => {
             return record_add_failure(
                 &announcer,
                 "internal error: run_pinned_add called with a non-pinned source".to_owned(),
