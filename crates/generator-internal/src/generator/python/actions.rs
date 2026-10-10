@@ -387,7 +387,6 @@ await self._inner.publish_feedback(payload)
 pub struct ConsumedActionSchemaInfo<'a> {
     pub goal_request: Option<&'a PythonSchemaInfo>,
     pub goal_response: Option<&'a PythonSchemaInfo>,
-    pub cancel_response: Option<&'a PythonSchemaInfo>,
     pub feedback: Option<&'a PythonSchemaInfo>,
     pub result_response: Option<&'a PythonSchemaInfo>,
 }
@@ -410,7 +409,6 @@ pub fn build_consumed_action(
     // Capnp preamble and loader functions
     let any_schema = schema_info.goal_request.is_some()
         || schema_info.goal_response.is_some()
-        || schema_info.cancel_response.is_some()
         || schema_info.feedback.is_some()
         || schema_info.result_response.is_some();
 
@@ -420,7 +418,6 @@ pub fn build_consumed_action(
     for info in [
         schema_info.goal_request,
         schema_info.goal_response,
-        schema_info.cancel_response,
         schema_info.feedback,
         schema_info.result_response,
     ]

@@ -470,7 +470,6 @@ impl LanguageGenerator for PythonGenerator {
             actions::ConsumedActionSchemaInfo {
                 goal_request: goal_request_schema_info.as_ref(),
                 goal_response: goal_response_schema_info.as_ref(),
-                cancel_response: None,
                 feedback: feedback_schema_info.as_ref(),
                 result_response: result_response_schema_info.as_ref(),
             },
