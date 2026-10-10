@@ -45,7 +45,9 @@ impl TryFrom<String> for DatastoreKey {
     type Error = DatastoreKeyError;
 
     fn try_from(key: String) -> core::result::Result<Self, Self::Error> {
-        validate_datastore_key(&key)?;
+        if key.is_empty() {
+            return Err(DatastoreKeyError::Empty);
+        }
         Ok(Self(key))
     }
 }
@@ -82,18 +84,6 @@ pub enum DatastoreKeyError {
     /// The key was the empty string.
     #[error("datastore key must not be empty")]
     Empty,
-}
-
-/// Checks that `key` is a valid datastore key.
-///
-/// Datastore keys are arbitrary non-empty strings carried in the payload:
-/// slashes, dots, spaces and Unicode all round-trip.
-fn validate_datastore_key(key: &str) -> core::result::Result<(), DatastoreKeyError> {
-    if key.is_empty() {
-        return Err(DatastoreKeyError::Empty);
-    }
-
-    Ok(())
 }
 
 /// Store a `value` (arbitrary bytes) under `key`, tagged with `encoding`.
