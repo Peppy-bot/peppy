@@ -658,10 +658,8 @@ impl NodeStackInner {
     }
 
     /// Live pairs, liveness-filtered without mutating the registry (for
-    /// read-lock paths; write paths use [`Self::prune_dead_pairs`]). Same
-    /// rule as [`PairingRegistry::prune_dead`]: only LOCAL endpoints are
-    /// judged, because this daemon cannot see whether an instance on
-    /// another machine is alive, and "cannot see" must not read as "dead".
+    /// read-lock paths; write paths use [`Self::prune_dead_pairs`]), by the
+    /// rule of [`Pairing::has_live_local_endpoints`].
     fn live_pairs_filtered(&self) -> Vec<Pairing> {
         if self.pairing_registry.pairs().is_empty() {
             return Vec::new();
@@ -671,12 +669,7 @@ impl NodeStackInner {
         self.pairing_registry
             .pairs()
             .iter()
-            .filter(|p| {
-                [&p.a, &p.b].into_iter().all(|endpoint| {
-                    !endpoint.slot.is_on(&local_core_node)
-                        || live.contains(&endpoint.slot.instance_id)
-                })
-            })
+            .filter(|pair| pair.has_live_local_endpoints(&local_core_node, |id| live.contains(id)))
             .cloned()
             .collect()
     }

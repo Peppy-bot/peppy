@@ -127,6 +127,24 @@ impl Pairing {
             endpoint.slot.core_node == core_node && endpoint.slot.instance_id == instance_id
         })
     }
+
+    /// Whether `is_live` accepts the instance of every endpoint on
+    /// `local_core_node`, the rule by which a pair is still live.
+    ///
+    /// A remote endpoint is deliberately never judged. This daemon cannot see
+    /// whether an instance on another machine is alive, and treating "cannot
+    /// see" as "dead" would silently dissolve every cross-daemon pair on the
+    /// next registry read. Remote death arrives as an explicit notification
+    /// from the daemon that owns it, which stays authoritative.
+    pub(crate) fn has_live_local_endpoints(
+        &self,
+        local_core_node: &str,
+        is_live: impl Fn(&str) -> bool,
+    ) -> bool {
+        [&self.a, &self.b].into_iter().all(|endpoint| {
+            !endpoint.slot.is_on(local_core_node) || is_live(&endpoint.slot.instance_id)
+        })
+    }
 }
 
 /// The pair store. Plain `Vec`: stacks hold at most a handful of pairs, and
@@ -183,21 +201,13 @@ impl PairingRegistry {
     }
 
     /// Drops every pair for which `is_live` rejects a LOCAL endpoint's
-    /// instance. The lazy half of cleanup: the process-exit watcher has no
-    /// stack back-reference, so registry reads prune dead pairs on the fly
-    /// instead of trusting eager dissolution alone.
-    ///
-    /// A remote endpoint is deliberately never pruned here. This daemon cannot
-    /// see whether an instance on another machine is alive, and treating
-    /// "cannot see" as "dead" would silently dissolve every cross-daemon pair
-    /// on the next registry read. Remote death arrives as an explicit
-    /// notification from the daemon that owns it, which stays authoritative.
+    /// instance (see [`Pairing::has_live_local_endpoints`]). The lazy half of
+    /// cleanup: the process-exit watcher has no stack back-reference, so
+    /// registry reads prune dead pairs on the fly instead of trusting eager
+    /// dissolution alone.
     pub(crate) fn prune_dead(&mut self, local_core_node: &str, is_live: impl Fn(&str) -> bool) {
-        self.pairs.retain(|p| {
-            [&p.a, &p.b].into_iter().all(|endpoint| {
-                !endpoint.slot.is_on(local_core_node) || is_live(&endpoint.slot.instance_id)
-            })
-        });
+        self.pairs
+            .retain(|pair| pair.has_live_local_endpoints(local_core_node, &is_live));
     }
 
     pub(crate) fn pairs(&self) -> &[Pairing] {
