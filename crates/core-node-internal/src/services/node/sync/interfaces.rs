@@ -93,7 +93,7 @@ struct ResolvedDependencies {
     contract_docs: HashMap<String, daemon_config::contract::PeppyContract>,
 }
 
-pub fn collect_consumed_interfaces(
+fn collect_consumed_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
@@ -441,7 +441,7 @@ pub(crate) fn resolve_contract_doc(
 /// match each diff individually; every other failure is a plain message,
 /// matching the sync module's string error contract.
 #[derive(Debug)]
-pub enum ImplementsError {
+enum ImplementsError {
     /// One aggregated set-diff per broken slot.
     Coverage(Vec<ContractCoverageMismatch>),
     /// One aggregated problem list per entry whose `refine` block the
@@ -499,7 +499,7 @@ struct SlotCoverage {
 /// Contract documents resolve through the local cache with sha256 pinning
 /// and on-disk drift detection (see [`resolve_contract_doc`]); a cache miss
 /// surfaces "run `peppy repo refresh`".
-pub fn resolve_implements(
+fn resolve_implements(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,

@@ -72,7 +72,7 @@ fn resolve_pairing_doc_cached(
 /// pairing artifact instead: with the name and sha256 pin it forms the
 /// `(name, tag, sha256)` key each slot's document is looked up and cached
 /// under.
-pub(crate) fn validate_pairing_specs(
+fn validate_pairing_specs(
     manifest: &config::node::Manifest,
     peppy_dirs: &PeppyDirs,
     doc_pins: Option<&crate::services::node::pins::DocPins>,
@@ -157,7 +157,7 @@ fn pairing_slots(manifest: &config::node::Manifest) -> Vec<PairingSlotRef<'_>> {
 /// entries. Mirrors `ImplementsError`: coverage problems are aggregated per
 /// slot so a node with several wrong entries produces one readable report.
 #[derive(Debug)]
-pub enum PairingError {
+pub(super) enum PairingError {
     /// One aggregated set-diff per broken slot.
     Coverage(Vec<PairingCoverageMismatch>),
     /// One aggregated problem list per entry whose `refine` block the
@@ -213,7 +213,7 @@ struct SlotCoverage {
 ///
 /// Runs [`validate_pairing_specs`] first, so role errors and cache misses
 /// surface before any of this.
-pub fn collect_pairing_interfaces(
+pub(super) fn collect_pairing_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
