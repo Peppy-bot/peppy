@@ -244,76 +244,73 @@ impl RustGenerator {
         let goal_response_data_ident = Ident::new("GoalResponseData", Span::call_site());
         let has_goal_response_data = response_artifacts.is_some();
 
-        // Build response-specific parts (struct definition, deserializer, result expression)
+        // The response-specific parts: the GoalResponseData struct, its
+        // deserializer, and the `data` binding and field of the returned
+        // handle.
         let mut helper_items = Vec::new();
-        let response_handling = if let Some(ref response_artifacts) = response_artifacts {
-            let _response_params = collect_function_params(
-                None,
-                Some(response_artifacts),
-                &format!("{action_struct_name}GoalResponse"),
-                context,
-                Some(&goal_response_data_ident),
-            )?;
+        let (data_binding, data_field) = match &response_artifacts {
+            Some(response_artifacts) => {
+                let _response_params = collect_function_params(
+                    None,
+                    Some(response_artifacts),
+                    &format!("{action_struct_name}GoalResponse"),
+                    context,
+                    Some(&goal_response_data_ident),
+                )?;
 
-            // Build deserializer helper
-            let response_schema_key = format!("{schema_key}_response");
-            let response_schema = self.register_schema(
-                &response_schema_key,
-                "GoalResponseMessage",
-                response_artifacts,
-            )?;
-            let reader_type = response_schema.reader_type_tokens();
+                // Build deserializer helper
+                let response_schema_key = format!("{schema_key}_response");
+                let response_schema = self.register_schema(
+                    &response_schema_key,
+                    "GoalResponseMessage",
+                    response_artifacts,
+                )?;
+                let reader_type = response_schema.reader_type_tokens();
 
-            let response_format = response_artifacts.message_format();
-            let context_expr = quote!(format!(
-                "{} {} GoalResponse",
-                TARGET_NODE_NAME, TARGET_ACTION_NAME
-            ));
-            let (response_statements, response_inits, _) =
-                deserialize_format_fields(response_format, "GoalResponseData", &context_expr)?;
+                let response_format = response_artifacts.message_format();
+                let context_expr = quote!(format!(
+                    "{} {} GoalResponse",
+                    TARGET_NODE_NAME, TARGET_ACTION_NAME
+                ));
+                let (response_statements, response_inits, _) =
+                    deserialize_format_fields(response_format, "GoalResponseData", &context_expr)?;
 
-            let deserialize_helper = build_deserialize_fn(
-                &Ident::new("deserialize_goal_response", Span::call_site()),
-                &reader_type,
-                &context_expr,
-                &quote!(#goal_response_data_ident),
-                &response_statements,
-                &quote!(#goal_response_data_ident { #( #response_inits ),* }),
-            );
-            helper_items.push(deserialize_helper);
+                let deserialize_helper = build_deserialize_fn(
+                    &Ident::new("deserialize_goal_response", Span::call_site()),
+                    &reader_type,
+                    &context_expr,
+                    &quote!(#goal_response_data_ident),
+                    &response_statements,
+                    &quote!(#goal_response_data_ident { #( #response_inits ),* }),
+                );
+                helper_items.push(deserialize_helper);
 
-            quote! {
-                let reply = action_handle.goal_reply();
-                let accepted = reply.accepted;
-                let reason = reply.reason.clone();
                 // An empty body means no response was supplied (a declared
                 // response serializes to a non-empty capnp message), which
                 // only a reject can produce.
-                let data = if reply.body.is_empty() {
-                    None
-                } else {
-                    Some(deserialize_goal_response(reply.body.as_ref())?)
+                let data_binding = quote! {
+                    let data = if reply.body.is_empty() {
+                        None
+                    } else {
+                        Some(deserialize_goal_response(reply.body.as_ref())?)
+                    };
                 };
-                Ok(Self {
-                    messenger: node_runner.messenger().clone(),
-                    inner: action_handle,
-                    accepted,
-                    reason,
-                    data,
-                })
+                (data_binding, quote!(data,))
             }
-        } else {
-            quote! {
-                let reply = action_handle.goal_reply();
-                let accepted = reply.accepted;
-                let reason = reply.reason.clone();
-                Ok(Self {
-                    messenger: node_runner.messenger().clone(),
-                    inner: action_handle,
-                    accepted,
-                    reason,
-                })
-            }
+            None => (TokenStream::new(), TokenStream::new()),
+        };
+        let response_handling = quote! {
+            let reply = action_handle.goal_reply();
+            let accepted = reply.accepted;
+            let reason = reply.reason.clone();
+            #data_binding
+            Ok(Self {
+                messenger: node_runner.messenger().clone(),
+                inner: action_handle,
+                accepted,
+                reason,
+                #data_field
+            })
         };
 
         // The `to_target` matches the producer's emission shape: a dependency
@@ -1711,37 +1708,26 @@ impl LanguageGenerator for RustGenerator {
         helper_items.append(&mut result_helpers);
 
         let goal_response_data_ident = Ident::new("GoalResponseData", Span::call_site());
-        let action_handle_struct = if has_goal_response_data {
+        let data_field = has_goal_response_data.then(|| {
             quote! {
-                pub struct ActionHandle {
-                    messenger: peppylib::MessengerHandle,
-                    inner: peppylib::messaging::ActionGoalHandle,
-                    /// Whether the producer admitted the goal, decoded from
-                    /// the framework goal-ack envelope.
-                    pub accepted: bool,
-                    /// Optional human-readable rejection reason from the
-                    /// goal-ack envelope. `None` for accepted goals and for
-                    /// rejections sent without a reason.
-                    pub reason: Option<String>,
-                    /// The declared goal response. Always present for
-                    /// accepted goals; `None` when a rejection carried no
-                    /// response payload.
-                    pub data: Option<#goal_response_data_ident>,
-                }
+                /// The declared goal response. Always present for
+                /// accepted goals; `None` when a rejection carried no
+                /// response payload.
+                pub data: Option<#goal_response_data_ident>,
             }
-        } else {
-            quote! {
-                pub struct ActionHandle {
-                    messenger: peppylib::MessengerHandle,
-                    inner: peppylib::messaging::ActionGoalHandle,
-                    /// Whether the producer admitted the goal, decoded from
-                    /// the framework goal-ack envelope.
-                    pub accepted: bool,
-                    /// Optional human-readable rejection reason from the
-                    /// goal-ack envelope. `None` for accepted goals and for
-                    /// rejections sent without a reason.
-                    pub reason: Option<String>,
-                }
+        });
+        let action_handle_struct = quote! {
+            pub struct ActionHandle {
+                messenger: peppylib::MessengerHandle,
+                inner: peppylib::messaging::ActionGoalHandle,
+                /// Whether the producer admitted the goal, decoded from
+                /// the framework goal-ack envelope.
+                pub accepted: bool,
+                /// Optional human-readable rejection reason from the
+                /// goal-ack envelope. `None` for accepted goals and for
+                /// rejections sent without a reason.
+                pub reason: Option<String>,
+                #data_field
             }
         };
 
