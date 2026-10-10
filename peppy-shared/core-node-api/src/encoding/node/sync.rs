@@ -7,7 +7,7 @@ use crate::{Payload, Result};
 
 use crate::encoding::RepoSourceKind;
 use crate::encoding::{
-    capnp_list_len, decode_message, encode_message, read_text_list, write_text_list,
+    capnp_list_len, decode_message, encode_fs_path, encode_message, read_text_list, write_text_list,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +38,7 @@ impl NodeSyncRequest {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_sync_request::Builder>();
-            request.set_node_root_dir(self.node_root_dir.to_string_lossy());
+            request.set_node_root_dir(encode_fs_path(&self.node_root_dir, "node_root_dir")?);
             request.set_git_hash(&self.git_hash);
             request.set_include_repositories(self.include_repositories);
         }
@@ -179,6 +179,20 @@ impl crate::encoding::Wire for NodeSyncResponse {
 mod tests {
     use super::*;
     use crate::encoding::decoding_error;
+
+    /// The daemon syncs the node under `node_root_dir` as sent, so a path
+    /// that is not UTF-8 is refused instead of reaching it with its invalid
+    /// bytes replaced.
+    #[cfg(unix)]
+    #[test]
+    fn sync_request_encode_refuses_a_node_root_dir_that_is_not_utf8() {
+        let request = NodeSyncRequest::new(crate::encoding::non_utf8_path(), "deadbeef", false);
+        let refusal = crate::encoding::encoding_error(request.encode());
+        assert!(
+            refusal.contains("node_root_dir is not valid UTF-8"),
+            "{refusal}"
+        );
+    }
 
     #[test]
     fn node_sync_request_roundtrip_with_flag_off() {

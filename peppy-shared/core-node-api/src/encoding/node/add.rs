@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use super::builder::FeedbackStream;
 use crate::encoding::{
-    capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
+    capnp_list_len, decode_message, encode_fs_path, encode_message, encode_message_non_empty,
+    optional_text,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,7 +289,7 @@ impl NodeAddGoal {
             let mut source = goal.reborrow().init_source();
             match &self.source {
                 NodeSource::Fs(path) => {
-                    source.set_fs(path.to_string_lossy().as_ref());
+                    source.set_fs(encode_fs_path(path, "NodeSource.fs")?);
                 }
                 NodeSource::Git {
                     repo_url,
@@ -588,6 +589,20 @@ impl crate::encoding::Wire for NodeAddResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The daemon reads the node from `NodeSource::Fs` as sent, so a path
+    /// that is not UTF-8 is refused instead of reaching it with its invalid
+    /// bytes replaced.
+    #[cfg(unix)]
+    #[test]
+    fn goal_encode_refuses_an_fs_source_that_is_not_utf8() {
+        let goal = NodeAddGoal::new(crate::encoding::non_utf8_path(), "deadbeef", 60);
+        let refusal = crate::encoding::encoding_error(goal.encode());
+        assert!(
+            refusal.contains("NodeSource.fs is not valid UTF-8"),
+            "{refusal}"
+        );
+    }
 
     #[test]
     fn decode_fs_rejects_empty_path() {

@@ -6,7 +6,7 @@ use crate::repo_capnp;
 use crate::{Payload, Result};
 
 use crate::encoding::RepoSource;
-use crate::encoding::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_fs_path, encode_message};
 
 use super::add::{read_git_source, write_git_source};
 use super::git_ref::GitRepoRef;
@@ -39,7 +39,7 @@ impl RepoExcludeRequest {
             let mut source = request.reborrow().init_source();
             match &self.source {
                 RepoSource::Fs(path) => {
-                    source.set_fs(path.to_string_lossy().as_ref());
+                    source.set_fs(encode_fs_path(path, "RepoExcludeRequest.source.fs")?);
                 }
                 RepoSource::Git { repo_url, repo_ref } => {
                     write_git_source(source.init_git(), repo_url, repo_ref);
@@ -137,6 +137,20 @@ impl crate::encoding::Wire for RepoExcludeResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The daemon matches `RepoSource::Fs` against its repositories as sent,
+    /// so a path that is not UTF-8 is refused instead of reaching it with its
+    /// invalid bytes replaced.
+    #[cfg(unix)]
+    #[test]
+    fn exclude_request_encode_refuses_an_fs_source_that_is_not_utf8() {
+        let request = RepoExcludeRequest::new_fs(crate::encoding::non_utf8_path());
+        let refusal = crate::encoding::encoding_error(request.encode());
+        assert!(
+            refusal.contains("RepoExcludeRequest.source.fs is not valid UTF-8"),
+            "{refusal}"
+        );
+    }
 
     #[test]
     fn exclude_request_new_fs_round_trips() {

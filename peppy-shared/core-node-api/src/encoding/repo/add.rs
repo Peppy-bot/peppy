@@ -6,7 +6,7 @@ use capnp::message::Builder;
 use crate::repo_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_fs_path, encode_message};
 
 use super::git_ref::{GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, decode_git_repo_ref};
 
@@ -144,7 +144,7 @@ impl RepoAddRequest {
             let mut source = request.reborrow().init_source();
             match &self.source {
                 RepoSource::Fs(path) => {
-                    source.set_fs(path.to_string_lossy().as_ref());
+                    source.set_fs(encode_fs_path(path, "RepoAddRequest.source.fs")?);
                 }
                 RepoSource::Git { repo_url, repo_ref } => {
                     write_git_source(source.init_git(), repo_url, repo_ref);
@@ -251,6 +251,20 @@ impl crate::encoding::Wire for RepoAddResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The daemon registers the repository at `RepoSource::Fs` as sent, so a
+    /// path that is not UTF-8 is refused instead of reaching it with its
+    /// invalid bytes replaced.
+    #[cfg(unix)]
+    #[test]
+    fn add_request_encode_refuses_an_fs_source_that_is_not_utf8() {
+        let request = RepoAddRequest::new_fs(crate::encoding::non_utf8_path());
+        let refusal = crate::encoding::encoding_error(request.encode());
+        assert!(
+            refusal.contains("RepoAddRequest.source.fs is not valid UTF-8"),
+            "{refusal}"
+        );
+    }
 
     #[test]
     fn source_kind_as_str_parse_roundtrips() {
