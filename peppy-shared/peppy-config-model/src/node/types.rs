@@ -1647,7 +1647,7 @@ pub struct ContainerConfig {
 ///
 /// Returns the dot-path portion of each reference (e.g., `"device_path"` or
 /// `"video.device_path"`).
-pub fn extract_parameter_refs(mount_path: &str) -> Vec<&str> {
+fn extract_parameter_refs(mount_path: &str) -> Vec<&str> {
     let mut refs = Vec::new();
     let mut remaining = mount_path;
     while let Some(start) = remaining.find("${parameters:") {
