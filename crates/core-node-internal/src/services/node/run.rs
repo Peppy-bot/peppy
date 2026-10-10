@@ -709,6 +709,13 @@ fn encode_rejected_start_goal(reason: impl Into<String>) -> PeppyResult<Payload>
     )
 }
 
+/// Writes `message` to the run log as an error and returns it as the run's
+/// failure, so the reason is in the file the client is pointed at.
+fn record_run_failure(announcer: &Announcer, message: String) -> NodeRunResult {
+    announcer.log().error(&message);
+    NodeRunResult::failure(message)
+}
+
 /// Closes the add-to-start window.
 ///
 /// A federated coordinator validated this instance's whole plan (slots,
@@ -838,11 +845,7 @@ async fn process_node_run(
     } = goal;
     let mut env_vars = match super::validate_goal_env_vars(&env_vars) {
         Ok(vars) => vars,
-        Err(e) => {
-            let msg = e.to_string();
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
-        }
+        Err(e) => return record_run_failure(&ctx.announcer, e.to_string()),
     };
 
     let instance_id = runtime_config.node_instance.instance_id.clone();
@@ -853,17 +856,13 @@ async fn process_node_run(
         node_name, tag, instance_id_str
     );
 
-    let entity_handle = match ctx.action.node_stack.find(&node_name, &tag) {
-        Some(entity) => entity,
-        None => {
-            let msg = format!(
-                "Node '{node_name}:{tag}' not found in node stack. \
-                 Run `peppy stack list` to see the nodes in the stack, or `peppy node add <dir>` \
-                 to add it from its directory."
-            );
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
-        }
+    let Some(entity_handle) = ctx.action.node_stack.find(&node_name, &tag) else {
+        let msg = format!(
+            "Node '{node_name}:{tag}' not found in node stack. \
+             Run `peppy stack list` to see the nodes in the stack, or `peppy node add <dir>` \
+             to add it from its directory."
+        );
+        return record_run_failure(&ctx.announcer, msg);
     };
 
     // Stack-wide `instance_id` uniqueness (spec rule 7): reject if the
@@ -884,8 +883,7 @@ async fn process_node_run(
             existing_name,
             existing_tag,
         );
-        ctx.announcer.log().error(&msg);
-        return NodeRunResult::failure(msg);
+        return record_run_failure(&ctx.announcer, msg);
     }
 
     // A simulated domain is identified by its name and the machine hosting its
@@ -901,8 +899,7 @@ async fn process_node_run(
                  start its publisher on `{}`",
                 domain.name, domain.core_node, ctx.action.core_node_name, domain.core_node,
             );
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
+            return record_run_failure(&ctx.announcer, msg);
         }
         if let Some(owner) = ctx.action.node_stack.clock_domain_publisher(&domain.name)
             && owner != instance_id
@@ -915,8 +912,7 @@ async fn process_node_run(
                 ctx.action.core_node_name,
                 owner.as_str(),
             );
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
+            return record_run_failure(&ctx.announcer, msg);
         }
     }
 
@@ -933,8 +929,7 @@ async fn process_node_run(
                  on `{}`; `peppy clock list` shows each domain and the machine hosting it",
                 domain.core_node, publisher.core_node,
             );
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
+            return record_run_failure(&ctx.announcer, msg);
         }
         if domain.core_node.as_str() == ctx.action.core_node_name {
             match local_publisher_of(&ctx.action.node_stack, domain) {
@@ -945,8 +940,7 @@ async fn process_node_run(
                          `peppy node run --publish-clock {}`",
                         ctx.action.core_node_name, domain.name,
                     );
-                    ctx.announcer.log().error(&msg);
-                    return NodeRunResult::failure(msg);
+                    return record_run_failure(&ctx.announcer, msg);
                 }
                 Some(owner) if owner.as_str() != publisher.instance_id => {
                     let msg = format!(
@@ -956,8 +950,7 @@ async fn process_node_run(
                         owner.as_str(),
                         publisher.instance_id,
                     );
-                    ctx.announcer.log().error(&msg);
-                    return NodeRunResult::failure(msg);
+                    return record_run_failure(&ctx.announcer, msg);
                 }
                 Some(_) => {}
             }
@@ -972,8 +965,7 @@ async fn process_node_run(
                 node_name, tag, node_name, tag
             );
             drop(guard);
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
+            return record_run_failure(&ctx.announcer, msg);
         }
         guard.config().clone()
     };
@@ -981,8 +973,7 @@ async fn process_node_run(
     if let Err(msg) =
         refuse_stale_manifest(&node_name, &tag, manifest_sha256.as_deref(), &node_config)
     {
-        ctx.announcer.log().error(&msg);
-        return NodeRunResult::failure(msg);
+        return record_run_failure(&ctx.announcer, msg);
     }
 
     // Pairing pre-spawn check (the trust-boundary twin of the CLI preflight
@@ -1009,10 +1000,7 @@ async fn process_node_run(
         .collect::<std::result::Result<std::collections::BTreeMap<_, _>, String>>()
     {
         Ok(reasons) => reasons,
-        Err(msg) => {
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
-        }
+        Err(msg) => return record_run_failure(&ctx.announcer, msg),
     };
 
     // Snapshot + claims are read under two short read locks, and only when
@@ -1058,10 +1046,7 @@ async fn process_node_run(
             &clocks,
         ) {
             Ok(p) => p,
-            Err(msg) => {
-                ctx.announcer.log().error(&msg);
-                return NodeRunResult::failure(msg);
-            }
+            Err(msg) => return record_run_failure(&ctx.announcer, msg),
         }
     };
     for (link_id, reason) in &vacant_reasons {
@@ -1099,9 +1084,10 @@ async fn process_node_run(
         &node_config.execution.parameters,
     );
     if !missing.is_empty() {
-        let msg = format!("Missing required parameters: {}", missing.join(", "));
-        ctx.announcer.log().error(&msg);
-        return NodeRunResult::failure(msg);
+        return record_run_failure(
+            &ctx.announcer,
+            format!("Missing required parameters: {}", missing.join(", ")),
+        );
     }
 
     let is_container = node_config.execution.container.is_some();
@@ -1122,10 +1108,7 @@ async fn process_node_run(
     .and_then(expand_home_in_mount_specs)
     {
         Ok(paths) => paths,
-        Err(msg) => {
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
-        }
+        Err(msg) => return record_run_failure(&ctx.announcer, msg),
     };
 
     // A container's transport depends on whether it shares the host network
@@ -1173,14 +1156,12 @@ async fn process_node_run(
         .await
         {
             Ok(Ok(apptainer)) => apptainer,
-            Ok(Err(msg)) => {
-                ctx.announcer.log().error(&msg);
-                return NodeRunResult::failure(msg);
-            }
+            Ok(Err(msg)) => return record_run_failure(&ctx.announcer, msg),
             Err(e) => {
-                let msg = format!("Apptainer initialization task failed: {}", e);
-                ctx.announcer.log().error(&msg);
-                return NodeRunResult::failure(msg);
+                return record_run_failure(
+                    &ctx.announcer,
+                    format!("Apptainer initialization task failed: {}", e),
+                );
             }
         };
 
@@ -1231,9 +1212,10 @@ async fn process_node_run(
     let runtime_config_json5 = match serde_json5::to_string(&launch_config) {
         Ok(json) => json,
         Err(e) => {
-            let msg = format!("Failed to serialize runtime config: {}", e);
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
+            return record_run_failure(
+                &ctx.announcer,
+                format!("Failed to serialize runtime config: {}", e),
+            );
         }
     };
 
