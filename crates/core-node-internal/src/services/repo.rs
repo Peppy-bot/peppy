@@ -453,7 +453,7 @@ pub(crate) fn write_repo_entries(
 mod tests {
     use super::{
         ListedRepo, RepoEntryError, RepoOwners, listed_repositories, nodes_by_repository,
-        parse_repo_entry, source_identity,
+        normalize_repo_entries, parse_repo_entry, repo_entry_id, source_identity,
     };
     use crate::services::repo::cache::test_support::{node_entry, owned_by};
     use crate::services::repo::cache::{EntryOrigin, UNOWNED_REPO_ID, repositories_list_path};
@@ -894,5 +894,47 @@ mod tests {
 
         let fs = serde_json::json!({ "type": "fs", "path": "/home/user/workspace" });
         assert!(!owns(&fs, &git_origin("main")));
+    }
+
+    /// The ids of `repos`, in order.
+    fn ids_of(repos: &[Value]) -> Vec<Option<u64>> {
+        repos.iter().map(repo_entry_id).collect()
+    }
+
+    /// A list whose entries all carry distinct ids but sit out of id order
+    /// is sorted, and the sorted list is written back.
+    #[test]
+    fn normalize_sorts_and_rewrites_a_list_out_of_id_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("repositories.json5");
+        let mut repos = vec![
+            serde_json::json!({ "id": 2, "type": "fs", "path": "/b" }),
+            serde_json::json!({ "id": 1, "type": "fs", "path": "/a" }),
+        ];
+
+        normalize_repo_entries(&mut repos, &path, "repositories").unwrap();
+
+        assert_eq!(ids_of(&repos), vec![Some(1), Some(2)]);
+        let written: Vec<Value> =
+            serde_json5::from_str(&std::fs::read_to_string(&path).expect("list is written"))
+                .unwrap();
+        assert_eq!(ids_of(&written), vec![Some(1), Some(2)]);
+    }
+
+    /// A list already in id order with every id present needs no change,
+    /// so nothing is written.
+    #[test]
+    fn normalize_leaves_a_sorted_list_unwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("repositories.json5");
+        let mut repos = vec![
+            serde_json::json!({ "id": 1, "type": "fs", "path": "/a" }),
+            serde_json::json!({ "id": 2, "type": "fs", "path": "/b" }),
+        ];
+
+        normalize_repo_entries(&mut repos, &path, "repositories").unwrap();
+
+        assert_eq!(ids_of(&repos), vec![Some(1), Some(2)]);
+        assert!(!path.exists(), "a list that needs no change is not written");
     }
 }
