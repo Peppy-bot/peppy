@@ -1,5 +1,7 @@
 use super::PythonSchemaInfo;
-use super::code_builder::{PythonCodeBuilder, container_name, emit_fixed_length_check};
+use super::code_builder::{
+    PythonCodeBuilder, container_name, emit_fixed_length_check, next_temp_index,
+};
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
 use super::topics::capnp_loader_fn_name;
 use crate::generator::naming::sanitize_capnp_field_name;
@@ -134,8 +136,7 @@ fn emit_field_value_assignment(
             }
         }
         SchemaType::Object(object) => {
-            let idx = *counter;
-            *counter += 1;
+            let idx = next_temp_index(counter);
             let sub_builder = format!("builder_{idx}");
             builder.line(&format!(
                 "{sub_builder} = {builder_var}.init(\"{capnp_name}\")"
@@ -165,11 +166,9 @@ fn emit_time_assignment(
     value_expr: &str,
     counter: &mut u32,
 ) {
-    let idx = *counter;
-    *counter += 1;
+    let idx = next_temp_index(counter);
     let ts_var = format!("timestamp_{idx}");
-    let idx2 = *counter;
-    *counter += 1;
+    let idx2 = next_temp_index(counter);
     let ts_builder = format!("builder_{idx2}");
     builder.line(&format!(
         "{ts_var} = peppylib.encoding.convert_time({value_expr})"
@@ -193,8 +192,7 @@ fn emit_object_array_assignment(
     length: Option<usize>,
     counter: &mut u32,
 ) {
-    let idx = *counter;
-    *counter += 1;
+    let idx = next_temp_index(counter);
     let list_builder = format!("list_{idx}");
     let length_expr = match length {
         Some(len) => format!("{len}"),

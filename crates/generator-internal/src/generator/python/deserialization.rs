@@ -1,5 +1,7 @@
 use super::PythonSchemaInfo;
-use super::code_builder::{PythonCodeBuilder, container_name, emit_fixed_length_check};
+use super::code_builder::{
+    PythonCodeBuilder, container_name, emit_fixed_length_check, next_temp_index,
+};
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
 use super::topics::capnp_loader_fn_name;
 use crate::generator::naming::{array_item_type_name, sanitize_capnp_field_name, to_camel_case};
@@ -149,15 +151,21 @@ pub fn build_deserialize_fn(
                 let field_bindings =
                     deserialize_format_fields(builder, "capnp_msg", format, struct_prefix);
 
-                let kwargs: Vec<String> = field_bindings
-                    .iter()
-                    .map(|(name, var)| format!("{name}={var}"))
-                    .collect();
-                let kwargs_str = kwargs.join(", ");
+                let kwargs_str = keyword_arguments(&field_bindings);
                 builder.line(&format!("return {struct_prefix}({kwargs_str})"));
             });
         },
     );
+}
+
+/// The `name=var` keyword arguments of a dataclass constructor call, one per
+/// `(python_field_name, variable_name)` binding.
+fn keyword_arguments(bindings: &[(String, String)]) -> String {
+    bindings
+        .iter()
+        .map(|(name, var)| format!("{name}={var}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Deserializes all fields from a `MessageFormat`, iterating directly over format fields.
@@ -196,8 +204,7 @@ fn generate_primitive_reader(
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
-    let idx = *counter;
-    *counter += 1;
+    let idx = next_temp_index(counter);
     let var = format!("{python_name}_{idx}");
     builder.line(&format!(
         "{var} = {}",
@@ -214,11 +221,9 @@ fn generate_time_reader(
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
-    let ts_idx = *counter;
-    *counter += 1;
+    let ts_idx = next_temp_index(counter);
     let ts_var = format!("timestamp_{ts_idx}");
-    let result_idx = *counter;
-    *counter += 1;
+    let result_idx = next_temp_index(counter);
     let result_var = format!("{python_name}_{result_idx}");
     builder.line(&format!(
         "{ts_var} = {}",
@@ -241,8 +246,7 @@ fn generate_array_reader(
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
-    let idx = *counter;
-    *counter += 1;
+    let idx = next_temp_index(counter);
     let var = format!("{python_name}_{idx}");
     builder.line(&format!(
         "{var} = {container}({})",
@@ -263,8 +267,7 @@ fn generate_object_reader(
     let python_name = sanitize_python_identifier(field_name);
     let nested_prefix = format!("{struct_prefix}{}", to_camel_case(field_name));
 
-    let reader_idx = *counter;
-    *counter += 1;
+    let reader_idx = next_temp_index(counter);
     let sub_reader = format!("reader_{reader_idx}");
     builder.line(&format!(
         "{sub_reader} = {}",
@@ -284,14 +287,9 @@ fn generate_object_reader(
         nested_bindings.push((sanitize_python_identifier(nested_name), nested_var));
     }
 
-    let result_idx = *counter;
-    *counter += 1;
+    let result_idx = next_temp_index(counter);
     let result_var = format!("{python_name}_{result_idx}");
-    let kwargs: Vec<String> = nested_bindings
-        .iter()
-        .map(|(name, var)| format!("{name}={var}"))
-        .collect();
-    let kwargs_str = kwargs.join(", ");
+    let kwargs_str = keyword_arguments(&nested_bindings);
     builder.line(&format!("{result_var} = {nested_prefix}({kwargs_str})"));
     result_var
 }
@@ -309,21 +307,18 @@ fn generate_object_array_reader(
 
     let nested_prefix = array_item_type_name(struct_prefix, field_name);
 
-    let list_idx = *counter;
-    *counter += 1;
+    let list_idx = next_temp_index(counter);
     let list_var = format!("list_{list_idx}");
     builder.line(&format!(
         "{list_var} = {}",
         capnp_read_expr(reader_var, &capnp_name)
     ));
 
-    let result_idx = *counter;
-    *counter += 1;
+    let result_idx = next_temp_index(counter);
     let result_var = format!("{python_name}_{result_idx}");
     builder.line(&format!("{result_var} = []"));
 
-    let elem_idx = *counter;
-    *counter += 1;
+    let elem_idx = next_temp_index(counter);
     let elem_var = format!("elem_{elem_idx}");
     builder.block(&format!("for {elem_var} in {list_var}:"), |builder| {
         let mut nested_bindings = Vec::new();
@@ -339,11 +334,7 @@ fn generate_object_array_reader(
             nested_bindings.push((sanitize_python_identifier(nested_name), nested_var));
         }
 
-        let kwargs: Vec<String> = nested_bindings
-            .iter()
-            .map(|(name, var)| format!("{name}={var}"))
-            .collect();
-        let kwargs_str = kwargs.join(", ");
+        let kwargs_str = keyword_arguments(&nested_bindings);
         builder.line(&format!(
             "{result_var}.append({nested_prefix}({kwargs_str}))"
         ));

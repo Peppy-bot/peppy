@@ -249,6 +249,15 @@ pub fn container_name(items: &SchemaType) -> &'static str {
     }
 }
 
+/// Takes the next temporary-variable index from `counter`. The readers or
+/// writers of one message share a counter, so every temporary they name is
+/// unique within the generated function.
+pub fn next_temp_index(counter: &mut u32) -> u32 {
+    let index = *counter;
+    *counter += 1;
+    index
+}
+
 /// Emits the `ValueError` raised when `var` does not hold exactly `len`
 /// items; `container` names it in the message (`list` or `bytes`).
 pub fn emit_fixed_length_check(
