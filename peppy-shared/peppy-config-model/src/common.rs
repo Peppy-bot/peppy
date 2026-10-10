@@ -457,28 +457,7 @@ fn parse_array_spec(map: BTreeMap<String, AnyType>, path: &str) -> Result<Parame
                 items = Some(value);
             }
             "$length" => {
-                let len = match value {
-                    AnyType::UInt(u) => usize::try_from(u).map_err(|_| {
-                        format!(
-                            "at `{}`: `$length` value {u} does not fit in usize on this target",
-                            display_path(path)
-                        )
-                    })?,
-                    AnyType::Int(i) if i >= 0 => usize::try_from(i).map_err(|_| {
-                        format!(
-                            "at `{}`: `$length` value {i} does not fit in usize on this target",
-                            display_path(path)
-                        )
-                    })?,
-                    other => {
-                        return Err(format!(
-                            "at `{}`: `$length` must be a non-negative integer, got {}",
-                            display_path(path),
-                            other.type_name()
-                        ));
-                    }
-                };
-                length = Some(len);
+                length = Some(parse_array_length(value, path)?);
             }
             "$default" => {
                 return Err(format!(
@@ -518,6 +497,28 @@ fn parse_array_spec(map: BTreeMap<String, AnyType>, path: &str) -> Result<Parame
     Ok(ParameterSpec::Array {
         items: Box::new(item_spec),
         length,
+    })
+}
+
+/// Parses the `$length` of an array spec: a non-negative integer that fits
+/// in `usize` on this target.
+fn parse_array_length(value: AnyType, path: &str) -> Result<usize, String> {
+    let length: u64 = match value {
+        AnyType::UInt(u) => u,
+        AnyType::Int(i) if i >= 0 => i as u64,
+        other => {
+            return Err(format!(
+                "at `{}`: `$length` must be a non-negative integer, got {}",
+                display_path(path),
+                other.type_name()
+            ));
+        }
+    };
+    usize::try_from(length).map_err(|_| {
+        format!(
+            "at `{}`: `$length` value {length} does not fit in usize on this target",
+            display_path(path)
+        )
     })
 }
 
@@ -1476,6 +1477,22 @@ mod tests {
         match parsed {
             ParameterSpec::Array { length, .. } => assert_eq!(length, Some(3)),
             other => panic!("expected array, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn array_length_must_be_a_non_negative_integer() {
+        for source in [
+            r#"{ $type: "array", $items: "u8", $length: -1 }"#,
+            r#"{ $type: "array", $items: "u8", $length: "3" }"#,
+        ] {
+            let err = serde_json5::from_str::<ParameterSpec>(source)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("at `<root>`: `$length` must be a non-negative integer"),
+                "{source} got: {err}"
+            );
         }
     }
 
