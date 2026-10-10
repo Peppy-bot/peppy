@@ -635,16 +635,15 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
             if copy == "alpha" && option == "empty"),
         "{error}"
     );
-    let error = PeppyLauncherParser::from_content(
+    let error = load_error(
         r#"{ peppy_schema: "launcher/v1", components: [
             { name: "robot", cardinality: "zero_or_more", options: { real: {} } }
         ], deployments: [{ robot: "real", instances: [{ instance_id: "alpha", with: { commander: "web" } }] }] }"#,
     );
-    let prepared = PreparedLauncher::load(&error.unwrap(), Path::new("fleet.json5"));
     assert!(
-        matches!(prepared, Err(CompositionError::CopySelectsUnknownAxis { ref copy, ref axis, .. })
+        matches!(&error, CompositionError::CopySelectsUnknownAxis { copy, axis, .. }
             if copy == "alpha" && axis == "commander"),
-        "{prepared:?}"
+        "{error}"
     );
     let stack_only = load(
         r#"{ peppy_schema: "launcher/v1", components: [
@@ -664,10 +663,9 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
         ),
         Err(CompositionError::NoRepeatableAxis)
     ));
-    let fleet = fleet("");
-    let launch = fleet.launch(&[], &[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let error = join(
-        &fleet,
+        &prepared,
         "engine",
         "alpha",
         &launch.selection,
@@ -1482,12 +1480,10 @@ fn a_target_a_stack_option_and_a_copy_option_both_define_is_refused() {
     }}"#
         )
     };
-    let parsed = PeppyLauncherParser::from_content(&document(
+    let error = load_error(&document(
         r#"adjustments: [{ target: "cam_inst", set_arguments: { rendered: true } }],"#,
         "",
-    ))
-    .unwrap();
-    let error = PreparedLauncher::load(&parsed, Path::new("fleet.json5")).unwrap_err();
+    ));
     assert!(
         matches!(&error, CompositionError::AdjustmentTargetAmbiguous(ambiguous)
             if ambiguous.target == "cam_inst" && ambiguous.stack == "simulation.isaac"
@@ -2354,7 +2350,7 @@ fn a_launcher_constraint_naming_a_copy_axis_speaks_for_its_copies() {
 /// would read the launcher's selection for their own.
 #[test]
 fn an_option_axis_cannot_shadow_a_launcher_axis() {
-    let parsed = PeppyLauncherParser::from_content(
+    let error = load_error(
         r#"{
         peppy_schema: "launcher/v1",
         components: [
@@ -2369,9 +2365,7 @@ fn an_option_axis_cannot_shadow_a_launcher_axis() {
         ],
         deployments: [{ simulation: "engine" }]
     }"#,
-    )
-    .unwrap();
-    let error = PreparedLauncher::load(&parsed, Path::new("fleet.json5")).unwrap_err();
+    );
     assert!(
         matches!(&error, CompositionError::AxisInReachTwice { axis, first, .. }
             if axis == "simulation" && first == "the launcher"),
