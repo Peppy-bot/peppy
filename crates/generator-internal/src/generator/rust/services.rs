@@ -20,8 +20,9 @@ pub struct ServiceResponseSpec<'a> {
 
 #[derive(Clone, Copy)]
 pub struct ExposedServiceMethodSpec<'a> {
-    pub wire_params: &'a [FunctionParam],
-    pub handler_params: &'a [FunctionParam],
+    /// The request's fields in wire order, which are also the fields of the
+    /// request data struct.
+    pub params: &'a [FunctionParam],
     pub encoding: Option<&'a MessageEncodingSpec>,
     pub request_format: Option<&'a MessageFormat>,
     /// The prefix the request's nested message structs are defined with, so
@@ -40,8 +41,7 @@ pub fn build_exposed_service_method(
     spec: &ExposedServiceMethodSpec,
 ) -> Result<(TokenStream, Vec<TokenStream>)> {
     let ExposedServiceMethodSpec {
-        wire_params,
-        handler_params,
+        params,
         encoding,
         request_format,
         struct_prefix,
@@ -99,8 +99,7 @@ pub fn build_exposed_service_method(
             deserializer_fn_name: &request_deserializer_name,
             request_spec,
             request_format,
-            wire_params,
-            handler_params,
+            params,
             struct_prefix,
             request_struct: request_data_struct,
         })?;
@@ -222,8 +221,9 @@ pub struct RequestDeserializerSpec<'a> {
     pub deserializer_fn_name: &'a Ident,
     pub request_spec: &'a MessageEncodingSpec,
     pub request_format: &'a MessageFormat,
-    pub wire_params: &'a [FunctionParam],
-    pub handler_params: &'a [FunctionParam],
+    /// The request's fields in wire order, which are also the fields of the
+    /// request data struct.
+    pub params: &'a [FunctionParam],
     pub struct_prefix: &'a str,
     pub request_struct: Option<&'a Ident>,
 }
@@ -233,8 +233,7 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
         deserializer_fn_name,
         request_spec,
         request_format,
-        wire_params,
-        handler_params,
+        params,
         struct_prefix,
         request_struct,
     } = *spec;
@@ -242,14 +241,10 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
     let field_context_expr = quote!(String::from(SERVICE_NAME));
     let reader_type = &request_spec.reader_type;
 
-    let return_ty = build_return_type_from_params(handler_params, request_struct);
-    let (field_statements, value_idents) = deserialize_fields_from_format(
-        request_format,
-        wire_params,
-        struct_prefix,
-        &field_context_expr,
-    )?;
-    let request_expr = build_result_expr_from_values(handler_params, &value_idents, request_struct);
+    let return_ty = build_return_type_from_params(params, request_struct);
+    let (field_statements, value_idents) =
+        deserialize_fields_from_format(request_format, params, struct_prefix, &field_context_expr)?;
+    let request_expr = build_result_expr_from_values(params, &value_idents, request_struct);
 
     Ok(build_deserialize_fn(
         deserializer_fn_name,

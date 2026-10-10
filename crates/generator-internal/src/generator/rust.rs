@@ -935,8 +935,7 @@ impl LanguageGenerator for RustGenerator {
 
         let (method_token, helper_tokens) =
             build_exposed_service_method(&ExposedServiceMethodSpec {
-                wire_params: &wire_params,
-                handler_params: &wire_params,
+                params: &wire_params,
                 encoding: encoding.as_ref(),
                 request_format,
                 struct_prefix: &struct_prefix,
