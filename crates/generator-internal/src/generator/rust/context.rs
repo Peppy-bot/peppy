@@ -73,6 +73,15 @@ impl GenerationContext {
     }
 }
 
+/// The fields of a struct that holds one field per function param, in the
+/// order of the params.
+pub fn build_fields_from_params(params: &[FunctionParam]) -> Vec<(Ident, TokenStream)> {
+    params
+        .iter()
+        .map(|param| (param.ident.clone(), param.ty.clone()))
+        .collect()
+}
+
 struct StructDefinition {
     ident: Ident,
     fields: Vec<(Ident, TokenStream)>,

@@ -44,7 +44,8 @@ use actions::{
     build_handle_goal_next_request,
 };
 use context::{
-    GenerationContext, add_response_struct, collect_function_params, map_message_format,
+    GenerationContext, add_response_struct, build_fields_from_params, collect_function_params,
+    map_message_format,
 };
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
 use serialization::{
@@ -201,11 +202,10 @@ impl RustGenerator {
                     &format!("{action_struct_name}Goal"),
                     context,
                 )?;
-                let fields: Vec<(Ident, TokenStream)> = params
-                    .iter()
-                    .map(|p| (p.ident.clone(), p.ty.clone()))
-                    .collect();
-                context.add_struct(goal_request_ident.clone(), fields);
+                context.add_struct(
+                    goal_request_ident.clone(),
+                    build_fields_from_params(&params),
+                );
 
                 let schema_info = self.register_schema(
                     schema_key,
@@ -540,11 +540,7 @@ impl RustGenerator {
         let params =
             collect_function_params(Some(&format_artifacts), &schema_struct_name, context)?;
 
-        let fields: Vec<(Ident, TokenStream)> = params
-            .iter()
-            .map(|param| (param.ident.clone(), param.ty.clone()))
-            .collect();
-        context.add_struct(struct_ident.clone(), fields);
+        context.add_struct(struct_ident.clone(), build_fields_from_params(&params));
 
         let encoding = self
             .prepare_message_encoding(schema_key, &struct_prefix, Some(&format_artifacts), &params)?
@@ -725,11 +721,7 @@ impl RustGenerator {
         )?;
 
         let struct_ident = Ident::new(SUBSCRIBED_MESSAGE_STRUCT_NAME, Span::call_site());
-        let fields = params
-            .iter()
-            .map(|param| (param.ident.clone(), param.ty.clone()))
-            .collect();
-        context.add_struct(struct_ident.clone(), fields);
+        context.add_struct(struct_ident.clone(), build_fields_from_params(&params));
 
         let encoding = self
             .prepare_message_encoding(schema_key, struct_prefix, Some(format_artifacts), &params)?
@@ -1341,11 +1333,10 @@ impl LanguageGenerator for RustGenerator {
 
         let request_struct_ident = Ident::new("Request", Span::call_site());
         if !request_struct_params.is_empty() {
-            let fields = request_struct_params
-                .iter()
-                .map(|param| (param.ident.clone(), param.ty.clone()))
-                .collect();
-            context.add_struct_with_constructor(request_struct_ident.clone(), fields);
+            context.add_struct_with_constructor(
+                request_struct_ident.clone(),
+                build_fields_from_params(&request_struct_params),
+            );
         }
 
         let request_encoding = self.prepare_message_encoding(

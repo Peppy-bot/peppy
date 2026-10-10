@@ -17,9 +17,9 @@ use super::super::testgen::{
 use super::scaffold::sanitize_rust_module_name;
 use super::topics::{qos_profile_tokens, retention_tokens};
 use super::{
-    GenerationContext, RustGenerator, build_deserialize_fn, build_serialize_payload,
-    collect_function_params, deserialize_format_fields, generate_assignments_from_struct,
-    identifiers, map_message_format, render_tokens,
+    GenerationContext, RustGenerator, build_deserialize_fn, build_fields_from_params,
+    build_serialize_payload, collect_function_params, deserialize_format_fields,
+    generate_assignments_from_struct, identifiers, map_message_format, render_tokens,
 };
 use crate::error::Result;
 use crate::generator::naming::to_camel_case;
@@ -201,11 +201,7 @@ pub(super) fn build_local_struct_with_deserializer(
     let mut context = GenerationContext::default();
     let struct_ident = Ident::new(struct_name, Span::call_site());
     let params = collect_function_params(Some(&artifacts), struct_name, &mut context)?;
-    let fields: Vec<(Ident, TokenStream)> = params
-        .iter()
-        .map(|param| (param.ident.clone(), param.ty.clone()))
-        .collect();
-    context.add_struct(struct_ident.clone(), fields);
+    context.add_struct(struct_ident.clone(), build_fields_from_params(&params));
     let struct_items = context.into_tokens();
 
     let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
