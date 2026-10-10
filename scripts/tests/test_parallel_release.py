@@ -522,8 +522,9 @@ def test_apptainer_packs_the_cache_the_build_left(
     env = mock_run.call_args.kwargs["env"]
     assert env["PATH"].startswith(f"/pinned/go/bin{os.pathsep}")
     assert env["GOTOOLCHAIN"] == "local"
+    cache = APPTAINER_CACHE.format(arch="x86_64")
     with tarfile.open(tmp_path / "out" / "apptainer-x86_64.tgz") as tar:
-        binary = tar.getmember("apptainer-1.5.2-x86_64-nosuid/bin/apptainer")
+        binary = tar.getmember(f"{cache}/bin/apptainer")
     # The executable bit is why the cache travels as a tarball.
     assert binary.mode & 0o111
 
@@ -616,7 +617,9 @@ def test_build_embeds_the_provisioned_bindings_and_apptainer(
         "v0.3.0", "aarch64-unknown-linux-gnu", tmp_path
     )
     assert embedded["so"] == sorted((*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER))
-    seeded = _cache_root(tmp_path) / "apptainer-1.5.2-aarch64-nosuid" / "bin" / "apptainer"
+    seeded = (
+        _cache_root(tmp_path) / APPTAINER_CACHE.format(arch="aarch64") / "bin" / "apptainer"
+    )
     assert seeded.is_file()
     assert seeded.stat().st_mode & 0o111
     build_mocks.verify.assert_called_once_with(
