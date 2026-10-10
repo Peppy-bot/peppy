@@ -850,7 +850,7 @@ impl MessengerBackend for ZenohAdapter {
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
 
-        Ok(ServiceQueryable::new(rx, vec![Box::new(queryable)]))
+        Ok(ServiceQueryable::new(rx, Box::new(queryable)))
     }
 
     async fn call_service(

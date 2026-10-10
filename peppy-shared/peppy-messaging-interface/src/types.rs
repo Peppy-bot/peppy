@@ -234,10 +234,10 @@ pub trait MessengerBackend {
 
     // ─── Services ─────────────────────────────────────────────────────────
 
-    /// Declare a service queryable (one per producer-bound link_id) and return
-    /// a fan-in handle for received [`IncomingRequest`]s. Producers with
-    /// multiple bound link_ids get one queryable each so Zenoh keyexpr
-    /// matching can replace the previous dispatch-time filter.
+    /// Declare the producer's service queryable and return the handle that
+    /// receives its [`IncomingRequest`]s. One queryable serves every bound
+    /// link_id: its keyexpr has `*` at the link_id slot, and the adapter
+    /// claims the default `_` segment for each query.
     fn listen_service(
         &self,
         recv: &ServiceWireReceiver,
@@ -570,26 +570,23 @@ impl CoreNodePresenceList {
 }
 
 /// Server-side handle yielded by [`MessengerBackend::listen_service`] for a
-/// service or action sub-service. The adapter-owned `_guards` keep one
-/// queryable (Zenoh `Queryable<()>` or mock equivalent) per producer-bound
-/// link_id alive, fanned into a single [`IncomingRequest`] channel.
-/// Dropping the handle drops every guard, which undeclares the underlying
-/// queryables.
+/// service or action sub-service. The adapter-owned `_guard` keeps the
+/// producer's one queryable (a Zenoh `Queryable<()>`, or the mock's
+/// forwarder task) alive. Its keyexpr has `*` at the link_id slot, so it
+/// receives the queries for every bound link_id. Dropping the handle
+/// undeclares it.
 ///
 /// Like [`Subscription`], the channel uses `flume` so the zenoh reception
 /// callback can `send` synchronously with backpressure rather than dropping
 /// inbound requests when the consumer falls behind.
 pub struct ServiceQueryable {
     pub rx: flume::Receiver<IncomingRequest>,
-    _guards: Vec<Guard>,
+    _guard: Guard,
 }
 
 impl ServiceQueryable {
-    pub(crate) fn new(rx: flume::Receiver<IncomingRequest>, guards: Vec<Guard>) -> Self {
-        Self {
-            rx,
-            _guards: guards,
-        }
+    pub(crate) fn new(rx: flume::Receiver<IncomingRequest>, guard: Guard) -> Self {
+        Self { rx, _guard: guard }
     }
 }
 

@@ -283,7 +283,7 @@ impl MessengerBackend for MockAdapter {
 
         Ok(ServiceQueryable::new(
             rx,
-            vec![Box::new(AbortOnDrop::new(join_handle.abort_handle()))],
+            Box::new(AbortOnDrop::new(join_handle.abort_handle())),
         ))
     }
 
