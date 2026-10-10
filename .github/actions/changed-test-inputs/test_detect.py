@@ -112,7 +112,7 @@ class Detection(unittest.TestCase):
         # peppylib-rs takes peppy-messaging-interface by path, so a change to
         # the latter has to run the former's suite too.
         selection = select(
-            "%s/peppy-messaging-interface/src/lib.rs" % detect.PEPPY_SHARED
+            f"{detect.PEPPY_SHARED}/peppy-messaging-interface/src/lib.rs"
         )
         self.assertIn("peppylib-rs", cargo_packages(selection))
 
@@ -130,7 +130,7 @@ class Detection(unittest.TestCase):
         # The peppy crates take the tree by path, so a change to one of its
         # packages has to run the suites of crates/ that compile it.
         selection = select(
-            "%s/peppy-messaging-interface/src/lib.rs" % detect.PEPPY_SHARED
+            f"{detect.PEPPY_SHARED}/peppy-messaging-interface/src/lib.rs"
         )
         self.assertEqual(selection["container_e2e"], "true")
 
@@ -237,7 +237,7 @@ class Detection(unittest.TestCase):
         # Both build the `peppy` package, which reaches the sealed tree.
         for path in (
             "crates/daemon-internal/src/lib.rs",
-            "%s/peppy-messaging-interface/src/lib.rs" % detect.PEPPY_SHARED,
+            f"{detect.PEPPY_SHARED}/peppy-messaging-interface/src/lib.rs",
         ):
             with self.subTest(path=path):
                 selection = select(path)

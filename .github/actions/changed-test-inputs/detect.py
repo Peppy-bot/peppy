@@ -383,26 +383,26 @@ def report(selection: Mapping[str, str], base: str) -> None:
         ]
         if not selected:
             print(
-                '::notice::Skipped "%s": none of the files it builds from or '
-                "reads changed vs %s" % (job, versus)
+                f'::notice::Skipped "{job}": none of the files it builds from or '
+                f"reads changed vs {versus}"
             )
             lines.append(
-                "- **%s** is skipped: nothing it builds from or reads changed" % job
+                f"- **{job}** is skipped: nothing it builds from or reads changed"
             )
             continue
         # A boolean output says only that the job runs; a selection says which
         # packages or libraries of it do.
         detail = ", ".join(value for value in selected if value != "true")
         if detail:
-            lines.append("- **%s** runs: `%s`" % (job, detail))
+            lines.append(f"- **{job}** runs: `{detail}`")
         else:
-            lines.append("- **%s** runs" % job)
+            lines.append(f"- **{job}** runs")
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_file:
         return
     with open(summary_file, "a") as handle:
         handle.write("### Gated test suites\n")
-        handle.write("Measured against the diff vs `%s`.\n\n" % versus)
+        handle.write(f"Measured against the diff vs `{versus}`.\n\n")
         handle.write("\n".join(lines) + "\n")
 
 
@@ -414,19 +414,19 @@ def main() -> None:
             print("changed file set unknowable; running every suite")
             selection = select_everything()
         else:
-            print("changed files (%d):" % len(files))
+            print(f"changed files ({len(files)}):")
             for path in files:
                 print("  " + path)
             selection = select(files)
     except Exception as exc:  # noqa: BLE001 - fail open by design
-        print("::warning::change detection failed (%s); running every suite" % exc)
+        print(f"::warning::change detection failed ({exc}); running every suite")
         selection = select_everything()
     print("suite selection: " + json.dumps(selection, sort_keys=True))
     output_file = os.environ.get("GITHUB_OUTPUT")
     if output_file:
         with open(output_file, "a") as handle:
             handle.writelines(
-                "%s=%s\n" % (output, value) for output, value in selection.items()
+                f"{output}={value}\n" for output, value in selection.items()
             )
     report(selection, base)
 
