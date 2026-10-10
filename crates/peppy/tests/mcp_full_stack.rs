@@ -995,10 +995,7 @@ impl Stack {
 
     /// The refusal a join of `option` named `name` gives.
     fn join_error(&self, option: &str, name: &str) -> String {
-        match self.try_join(option, name) {
-            Ok(()) => panic!("the join must be refused\n{}", self.run_logs()),
-            Err(error) => error.to_string(),
-        }
+        self.refusal("join", self.try_join(option, name))
     }
 
     fn try_join(&self, option: &str, name: &str) -> Result<(), peppy::error::Error> {
@@ -1032,17 +1029,26 @@ impl Stack {
             .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", self.run_logs()));
     }
 
+    /// Launches a whole launcher document, which succeeds.
+    fn launch_launcher_or_panic(&self, launcher: &str) {
+        self.launch_launcher(launcher, Vec::new())
+            .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", self.run_logs()));
+    }
+
     fn launch_error(&self, deployments: &str) -> String {
-        match self.launch(deployments) {
-            Ok(()) => panic!("the launch must be refused\n{}", self.run_logs()),
-            Err(error) => error.to_string(),
-        }
+        self.refusal("launch", self.launch(deployments))
     }
 
     /// The refusal a whole launcher document gives.
     fn launch_launcher_error(&self, launcher: &str) -> String {
-        match self.launch_launcher(launcher, Vec::new()) {
-            Ok(()) => panic!("the launch must be refused\n{}", self.run_logs()),
+        self.refusal("launch", self.launch_launcher(launcher, Vec::new()))
+    }
+
+    /// The text of the error a refused `what` ended with. A `what` that
+    /// succeeds fails the test with the run logs.
+    fn refusal(&self, what: &str, outcome: Result<(), peppy::error::Error>) -> String {
+        match outcome {
+            Ok(()) => panic!("the {what} must be refused\n{}", self.run_logs()),
             Err(error) => error.to_string(),
         }
     }
@@ -2509,12 +2515,7 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
 
     // --- No robot yet: the endpoint is up with an empty fleet, and a call
     // naming a robot says how one is added.
-    stack
-        .launch_launcher(
-            &fleet_launcher(port, "camera_robot", &["cam"], ""),
-            Vec::new(),
-        )
-        .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", stack.run_logs()));
+    stack.launch_launcher_or_panic(&fleet_launcher(port, "camera_robot", &["cam"], ""));
     wait_for_port(port, || stack.run_logs()).await;
     let listing = stack.stack_list().await;
     assert!(
@@ -2838,12 +2839,12 @@ async fn a_join_filling_a_once_per_robot_target_twice_is_refused() {
     let stack = Stack::boot(true).await;
     let port = ephemeral_port();
     write_robot_fragment(&stack, "two_camera_robot", TWO_CAMERA_ROBOT_FRAGMENT);
-    stack
-        .launch_launcher(
-            &fleet_launcher(port, "two_camera_robot", &["left_cam", "right_cam"], ""),
-            Vec::new(),
-        )
-        .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", stack.run_logs()));
+    stack.launch_launcher_or_panic(&fleet_launcher(
+        port,
+        "two_camera_robot",
+        &["left_cam", "right_cam"],
+        "",
+    ));
     wait_for_port(port, || stack.run_logs()).await;
     let client = connect(&endpoint(port, "/fleet_cameras/v1/mcp")).await;
     let (robots, _) = listed_robots(&client, "alpha").await;
