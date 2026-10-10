@@ -15,6 +15,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+/// Adds one node on this machine, in process, answering with the add's
+/// outcome and its log path. `Ok` carries a successful result only; a
+/// failed add arrives as `Err` with its error message.
 pub(in crate::services::stack) async fn add_node_directly(
     ctx: &StackChangeContext,
     node_add_goal: NodeAddGoal,
@@ -153,6 +156,9 @@ pub(in crate::services::stack) async fn build_node_directly(
     }
 }
 
+/// Starts one instance on this machine, in process, answering with the
+/// start's outcome and its log path. `Ok` carries a successful result only;
+/// a failed start arrives as `Err` with its error message.
 pub(in crate::services::stack) async fn start_node_directly(
     ctx: &StackChangeContext,
     node_run_goal: NodeRunGoal,

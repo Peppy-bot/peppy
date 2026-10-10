@@ -257,29 +257,16 @@ async fn add_locally(
 
     let (result, log_path) = add_node_directly(ctx, node_add_goal).await;
 
-    let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
     if let Some(path) = log_path {
         outcome.add_logs.push(NodeAddLogEntry {
             node_label: key.label(),
             log_path: path,
-            failed,
+            failed: result.is_err(),
             core_node: ctx.bound_core_node.as_str().to_owned(),
         });
     }
 
-    let added = match result {
-        Ok(result) if result.success => result,
-        Ok(result) => {
-            return Err(format!(
-                "failed to add node {}: {}",
-                key.label(),
-                result
-                    .error_message
-                    .unwrap_or_else(|| "node_add failed".to_string())
-            ));
-        }
-        Err(err) => return Err(format!("failed to add node {}: {err}", key.label())),
-    };
+    let added = result.map_err(|reason| format!("failed to add node {}: {reason}", key.label()))?;
 
     if is_built_in(item) {
         return Ok(None);

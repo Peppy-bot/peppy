@@ -356,24 +356,17 @@ async fn start_locally(
     )?;
     let (result, log_path) = start_node_directly(ctx, node_run_goal, log).await;
 
-    let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
     if let Some(path) = log_path {
         run_log_paths.push(NodeRunLogEntry {
             instance_id: instance_id.to_string(),
             node_label: key.label(),
             log_path: path,
-            failed,
+            failed: result.is_err(),
             core_node: ctx.bound_core_node.clone(),
         });
     }
 
-    match result {
-        Ok(result) if result.success => Ok(result),
-        Ok(result) => Err(result
-            .error_message
-            .unwrap_or_else(|| "node_run failed".to_string())),
-        Err(err) => Err(err),
-    }
+    result
 }
 
 /// Starts one instance on a peer, pinning the manifest this coordinator
