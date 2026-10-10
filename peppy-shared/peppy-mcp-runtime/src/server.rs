@@ -57,10 +57,10 @@ const UNAVAILABLE_SINCE_START: &str =
 const UNAVAILABLE_SINCE_JOIN: &str =
     "unavailable: nothing has been published since the robot joined";
 
-/// `ttlMs` for the catalog-shaped results: discovery, `tools/list`, and
-/// `resources/list`. The catalog is fixed for the life of the server (a
-/// changed exposure restarts the process serving it), so clients may cache
-/// it for as long as they keep the connection.
+/// `ttlMs` for the catalog-shaped results: discovery, `tools/list`, and the
+/// `resources/list` of a fixed surface. The catalog is fixed for the life of
+/// the server (a changed exposure restarts the process serving it), so
+/// clients may cache it for as long as they keep the connection.
 const CATALOG_TTL_MS: u64 = 3_600_000;
 
 /// Grace period the advertised TTL of a task under a whole-goal deadline
@@ -4357,9 +4357,6 @@ mod tests {
         bundle
     }
 
-    /// The builder of a record server, on a wall clock the test drives,
-    /// with every handler registered; a test registers its own handler of
-    /// a name over the one here.
     /// The builder of `bundle` with the handlers of every member of
     /// `record_bundle`.
     fn record_builder_of(bundle: ExposureBundle) -> ExposureServerBuilder {
@@ -4372,6 +4369,9 @@ mod tests {
             .with_task("recorder.resume_session", resume_handler)
     }
 
+    /// The builder of a record server, on a wall clock the test drives,
+    /// with every handler registered; a test registers its own handler of
+    /// a name over the one here.
     fn record_builder() -> (ExposureServerBuilder, Arc<std::sync::atomic::AtomicU64>) {
         let (clock, nanos) = manual_clock();
         let builder = record_builder_of(record_bundle()).with_wall_clock(clock);
