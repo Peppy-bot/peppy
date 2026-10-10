@@ -700,14 +700,21 @@ mod tests {
     };
 
     /// Writes `manifest` to a temporary `Cargo.toml`, localizes it with
-    /// [`TEST_METADATA`] and returns the resulting `[package]` table.
-    fn localized_package(manifest: &str) -> toml_edit::Table {
+    /// [`TEST_METADATA`] and returns the resulting document.
+    fn localized_manifest(manifest: &str) -> DocumentMut {
         let dir = tempfile::TempDir::new().unwrap();
         let cargo_toml = dir.path().join("Cargo.toml");
         fs::write(&cargo_toml, manifest).unwrap();
         localize_cargo_toml(&cargo_toml, &TEST_METADATA).unwrap();
-        let doc: DocumentMut = fs::read_to_string(&cargo_toml).unwrap().parse().unwrap();
-        doc["package"].as_table().unwrap().clone()
+        fs::read_to_string(&cargo_toml).unwrap().parse().unwrap()
+    }
+
+    /// The `[package]` table of [`localized_manifest`].
+    fn localized_package(manifest: &str) -> toml_edit::Table {
+        localized_manifest(manifest)["package"]
+            .as_table()
+            .unwrap()
+            .clone()
     }
 
     #[test]
@@ -758,5 +765,60 @@ mod tests {
                 .and_then(|authors| authors.get(0)?.as_str()),
             Some("Peppy")
         );
+    }
+
+    #[test]
+    fn localize_cargo_toml_flattens_vendored_paths_and_strips_dev_dependencies() {
+        let doc = localized_manifest(
+            r#"
+            [package]
+            name = "core-node-api"
+            version = "0.1.0"
+
+            [dependencies]
+            peppy-config-model = { path = "../../peppy-shared/peppy-config-model", features = ["schema"] }
+            serde = "1"
+
+            [dependencies.peppy-messaging-interface]
+            path = "../../peppy-shared/peppy-messaging-interface"
+
+            [build-dependencies]
+            build-helpers = { path = "build-helpers" }
+
+            [dev-dependencies]
+            peppylib = { path = "../../peppy-shared/peppylib" }
+
+            [target.'cfg(unix)'.dependencies]
+            libc = "0.2"
+
+            [target.'cfg(unix)'.dev-dependencies]
+            tempfile = "3"
+            "#,
+        );
+
+        let dependencies = &doc["dependencies"];
+        assert_eq!(
+            dependencies["peppy-config-model"]["path"].as_str(),
+            Some("../peppy-config-model")
+        );
+        assert_eq!(
+            dependencies["peppy-config-model"]["features"]
+                .as_array()
+                .map(|features| features.len()),
+            Some(1)
+        );
+        assert_eq!(dependencies["serde"].as_str(), Some("1"));
+        assert_eq!(
+            dependencies["peppy-messaging-interface"]["path"].as_str(),
+            Some("../peppy-messaging-interface")
+        );
+        assert_eq!(
+            doc["build-dependencies"]["build-helpers"]["path"].as_str(),
+            Some("../build-helpers")
+        );
+        assert!(doc.get("dev-dependencies").is_none());
+        let unix_target = &doc["target"]["cfg(unix)"];
+        assert_eq!(unix_target["dependencies"]["libc"].as_str(), Some("0.2"));
+        assert!(unix_target.get("dev-dependencies").is_none());
     }
 }
