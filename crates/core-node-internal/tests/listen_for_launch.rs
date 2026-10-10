@@ -420,7 +420,6 @@ async fn send_launch_origin_and_wait_observing(
     }
 
     let absolute_deadline = tokio::time::Instant::now() + result_timeout;
-    let mut last_activity = tokio::time::Instant::now();
 
     // Drain feedback until the server closes the stream on completion, then
     // fetch the buffered result once.
@@ -429,13 +428,9 @@ async fn send_launch_origin_and_wait_observing(
         if now >= absolute_deadline {
             return Err("Timeout waiting for launch result".to_string());
         }
-        if now.duration_since(last_activity) >= result_timeout {
-            return Err("Timeout waiting for launch result (idle)".to_string());
-        }
         let drain_timeout = Duration::from_millis(50);
         match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
             Ok(Ok(msg)) => {
-                last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
                 if let Ok(feedback) = LaunchFeedback::decode(&payload) {
                     on_feedback(feedback);
