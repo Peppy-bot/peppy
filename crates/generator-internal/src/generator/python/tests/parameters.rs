@@ -186,13 +186,7 @@ fn build_parameters_py(generator: PythonGenerator) -> String {
     let output_dir = temp_dir.path().join("output");
     fs::create_dir_all(&output_dir).unwrap();
 
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
+    build_package(generator, &output_dir);
 
     let parameters_file = output_dir.join("peppygen").join("parameters.py");
     assert!(

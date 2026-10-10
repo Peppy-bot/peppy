@@ -290,6 +290,43 @@ fn emit_two_topics() {
     );
 }
 
+/// A node that drops message-format interfaces generates again over its
+/// earlier tree: `peppygen/capnp` keeps only the schemas of the interfaces
+/// the node still has, and goes away with the last one.
+#[test]
+fn regeneration_drops_the_capnp_schemas_of_removed_topics() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let output_dir = temp_dir.path().join("output");
+    let capnp_dir = output_dir.join("peppygen").join("capnp");
+    let video_stream_schema = capnp_dir.join("video_stream_message.capnp");
+    let lidar_schema = capnp_dir.join("push_lidar_object_message.capnp");
+    let video_stream = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
+
+    let mut generator = PythonGenerator::new();
+    generator.add_emitted_topic(&video_stream, None).unwrap();
+    generator
+        .add_emitted_topic(&parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2), None)
+        .unwrap();
+    build_package(generator, &output_dir);
+    assert!(video_stream_schema.exists());
+    assert!(lidar_schema.exists());
+
+    let mut generator = PythonGenerator::new();
+    generator.add_emitted_topic(&video_stream, None).unwrap();
+    build_package(generator, &output_dir);
+    assert!(video_stream_schema.exists());
+    assert!(
+        !lidar_schema.exists(),
+        "the schema of the removed topic must leave peppygen/capnp"
+    );
+
+    build_package(PythonGenerator::new(), &output_dir);
+    assert!(
+        !capnp_dir.exists(),
+        "peppygen/capnp must go away with the last schema"
+    );
+}
+
 #[test]
 fn emit_topic_escapes_python_keyword_fields() {
     let emitted_topic_with_python_keyword_fields: &str = r#"

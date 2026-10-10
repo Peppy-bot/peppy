@@ -196,12 +196,19 @@ fn write_peppylib_package(
     Ok(())
 }
 
+/// Writes the node's Cap'n Proto schemas under `peppygen/capnp`. A generation
+/// can run over the tree of an earlier one, so the earlier directory is
+/// removed first: the package keeps no schema of an interface the node no
+/// longer has.
 pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path) -> Result<()> {
+    let capnp_dir = to_path.join("peppygen").join("capnp");
+    if capnp_dir.exists() {
+        fs::remove_dir_all(&capnp_dir)?;
+    }
     if schemas.is_empty() {
         return Ok(());
     }
 
-    let capnp_dir = to_path.join("peppygen").join("capnp");
     fs::create_dir_all(&capnp_dir)?;
     for schema in schemas.values() {
         let file_path = capnp_dir.join(format!("{}.capnp", schema.file_stem()));
