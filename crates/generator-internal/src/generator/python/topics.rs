@@ -486,13 +486,11 @@ pub fn build_pair_topic_consumer(
         .collect();
     builder.dataclass("Message", &field_refs);
 
-    let loader_fn_name = capnp_loader_fn_name(schema_info);
     deserialization::build_deserialize_fn(
         &mut builder,
         schema_info,
         arguments,
         "Message",
-        &format!("{loader_fn_name}()"),
         "_deserialize_payload",
     );
 
@@ -581,13 +579,11 @@ pub fn build_consumed_topic(
     builder.dataclass("Message", &field_refs);
 
     // Generate deserialize_payload helper function
-    let loader_fn_name = capnp_loader_fn_name(schema_info);
     deserialization::build_deserialize_fn(
         &mut builder,
         schema_info,
         arguments,
         "Message",
-        &format!("{loader_fn_name}()"),
         "_deserialize_payload",
     );
 

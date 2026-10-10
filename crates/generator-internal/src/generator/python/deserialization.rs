@@ -1,6 +1,7 @@
 use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, container_name, emit_fixed_length_check};
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
+use super::topics::capnp_loader_fn_name;
 use crate::generator::naming::{array_item_type_name, sanitize_capnp_field_name, to_camel_case};
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
@@ -100,7 +101,7 @@ pub fn generate_field_reader_statements(
 /// Emits:
 /// ```python
 /// def deserialize_payload(payload):
-///     with capnp_module_expr.StructName.from_bytes(payload) as capnp_msg:
+///     with _<file_stem>_capnp().StructName.from_bytes(payload) as capnp_msg:
 ///         ...field reads...
 ///         return Message(field1=var1, ...)
 /// ```
@@ -109,16 +110,16 @@ pub fn build_deserialize_fn(
     schema_info: &PythonSchemaInfo,
     format: &MessageFormat,
     struct_prefix: &str,
-    capnp_module_expr: &str,
     fn_name: &str,
 ) {
+    let loader_fn_name = capnp_loader_fn_name(schema_info);
     builder.blank_line();
     builder.line(&format!(
         "def {fn_name}(payload: bytes) -> {struct_prefix}:"
     ));
     builder.indent();
     builder.line(&format!(
-        "with {capnp_module_expr}.{}.from_bytes(payload) as capnp_msg:",
+        "with {loader_fn_name}().{}.from_bytes(payload) as capnp_msg:",
         schema_info.struct_name
     ));
     builder.indent();

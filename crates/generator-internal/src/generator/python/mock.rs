@@ -177,14 +177,7 @@ pub(super) fn emit_value_deserializer(
     struct_prefix: &str,
 ) -> Result<()> {
     let info = register_with_loader(generator, builder, emitted_loaders, schema_key, format)?;
-    deserialization::build_deserialize_fn(
-        builder,
-        &info,
-        format,
-        struct_prefix,
-        &format!("{}()", capnp_loader_fn_name(&info)),
-        fn_name,
-    );
+    deserialization::build_deserialize_fn(builder, &info, format, struct_prefix, fn_name);
     builder.blank_line();
     Ok(())
 }
@@ -203,14 +196,7 @@ pub(super) fn emit_local_message_with_deserializer(
 ) -> Result<()> {
     let info = register_with_loader(generator, builder, emitted_loaders, schema_key, format)?;
     emit_format_as_dataclass(builder, class_name, format)?;
-    deserialization::build_deserialize_fn(
-        builder,
-        &info,
-        format,
-        class_name,
-        &format!("{}()", capnp_loader_fn_name(&info)),
-        fn_name,
-    );
+    deserialization::build_deserialize_fn(builder, &info, format, class_name, fn_name);
     builder.blank_line();
     Ok(())
 }

@@ -201,13 +201,11 @@ pub fn build_exposed_service(
         .filter(|f| !f.0.is_empty())
         .zip(request_schema_info)
     {
-        let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "RequestData",
-            &format!("{loader_fn_name}()"),
             "_deserialize_request",
         );
     }
@@ -368,13 +366,11 @@ pub fn build_consumed_service(
 
     // _deserialize_response helper (when response schema exists)
     if let Some((fmt, info)) = response_format.zip(response_schema_info) {
-        let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "ResponseData",
-            &format!("{loader_fn_name}()"),
             "_deserialize_response",
         );
     }

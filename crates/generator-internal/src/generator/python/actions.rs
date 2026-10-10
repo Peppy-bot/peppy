@@ -137,13 +137,11 @@ def reject(reason=None):
     // ---------------------------------------------------------------
 
     if let Some((fmt, info)) = goal_request_format.zip(goal_request_schema_info) {
-        let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "GoalRequestData",
-            &format!("{loader_fn_name}()"),
             "_deserialize_goal_request",
         );
         builder.blank_line();
@@ -494,39 +492,33 @@ class ResultStatus(IntEnum):
 
     // _deserialize_goal_response
     if let Some((fmt, info)) = goal_response_format.zip(schema_info.goal_response) {
-        let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "GoalResponseData",
-            &format!("{loader_fn_name}()"),
             "_deserialize_goal_response",
         );
     }
 
     // _deserialize_feedback_payload
     if let Some((fmt, info)) = feedback_format.zip(schema_info.feedback) {
-        let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "FeedbackMessage",
-            &format!("{loader_fn_name}()"),
             "_deserialize_feedback_payload",
         );
     }
 
     // _deserialize_result_response
     if let Some((fmt, info)) = result_response_format.zip(schema_info.result_response) {
-        let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "ResultResponseData",
-            &format!("{loader_fn_name}()"),
             "_deserialize_result_response",
         );
     }
