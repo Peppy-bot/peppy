@@ -2,6 +2,7 @@ use core_node::{MatchedItem, PublishedDoc, SearchOutcome, SearchQuery};
 use core_node_api::encoding::RepoItemKind;
 use daemon_config::consts::PeppyDirs;
 
+use super::identity_label;
 use crate::commands::colors::{COUNT_COLOR, NODE_COLOR, paint};
 use crate::commands::table::render_table;
 use crate::error::{Error, Result};
@@ -125,11 +126,7 @@ fn match_table(
 
 /// `name:tag`, or the bare name for untagged kinds (launchers).
 pub(super) fn display_id(item: &MatchedItem) -> String {
-    if item.tag.is_empty() {
-        item.name.clone()
-    } else {
-        format!("{}:{}", item.name, item.tag)
-    }
+    identity_label(&item.name, &item.tag)
 }
 
 /// The kind as prose. The JSON output uses [`RepoItemKind::as_str`]

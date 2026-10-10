@@ -36,6 +36,15 @@ fn parse_git_ref(raw: &str) -> std::result::Result<GitRepoRef, String> {
     GitRepoRef::parse(raw).map_err(|e| e.to_string())
 }
 
+/// An item identity as the repo commands print it: `name:tag`, or the bare
+/// name for untagged kinds (launchers).
+fn identity_label(name: &str, tag: &str) -> String {
+    if tag.is_empty() {
+        return name.to_owned();
+    }
+    format!("{name}:{tag}")
+}
+
 #[derive(Subcommand)]
 pub enum RepoCommands {
     /// Sync the local `repositories.json5` with the bundled defaults.
