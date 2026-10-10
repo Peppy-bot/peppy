@@ -306,9 +306,15 @@ impl PeerPublisher {
     /// peer new to the set gets one.
     async fn publisher_for(&self, peer: &PeerInfo) -> Result<TopicPublisher> {
         let mut declared = self.declared.lock().await;
-        let peers: Vec<PeerInfo> = self.watch_rx.borrow().peers().cloned().collect();
-        declared.retain(|(known, _)| peers.contains(known));
-        if !peers.contains(peer) {
+        // Both checks read one snapshot of the slot through the watch guard,
+        // which ends with this block: it must not live across the declare
+        // below, because the guard is not Send and holds the watch read lock.
+        let is_paired = {
+            let state = self.watch_rx.borrow();
+            declared.retain(|(known, _)| state.peers().any(|held| held == known));
+            state.peers().any(|held| held == peer)
+        };
+        if !is_paired {
             return Err(Error::PeerNotPaired {
                 link_id: self.link_id.clone(),
                 peer: format!(
