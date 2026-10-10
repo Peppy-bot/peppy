@@ -752,8 +752,8 @@ impl Command for PlatformCommand {
 #[cfg(test)]
 mod tests {
     use super::{
-        federation_is_managed, read_daemon_state, report_enroll, report_unenroll,
-        stack_has_user_nodes,
+        FederationPokeAction, await_restart, federation_is_managed, read_daemon_state,
+        report_enroll, report_unenroll, stack_has_user_nodes,
     };
     use core_node_api::{
         InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
@@ -765,6 +765,9 @@ mod tests {
         ExternalZenohConfig, ManagedZenohConfig, PeppyConfig, ZenohConfig,
     };
     use std::collections::BTreeMap;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::time::Duration;
 
     fn managed_config() -> PeppyConfig {
         PeppyConfig {
@@ -850,6 +853,48 @@ mod tests {
         assert!(
             federation_is_managed(read_daemon_state(&dirs).as_ref(), &managed_config()),
             "a dead daemon's state must not override the disk config"
+        );
+    }
+
+    /// Once the daemon state shows the daemon back under the identity the
+    /// enrollment prescribes, the restart wait pokes the control socket again
+    /// and reports what that poke settles on.
+    #[test]
+    fn a_restart_wait_reports_the_poke_of_the_daemon_that_came_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dirs = PeppyDirs::new(dir.path());
+        write_running_state(&dirs, None);
+        let socket = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket).expect("bind stub control socket");
+        let stub_daemon = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept the poke");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().expect("clone the stream"))
+                .read_line(&mut request)
+                .expect("read the poke");
+            stream
+                .write_all(b"{\"status\":\"error\",\"message\":\"boom\"}\n")
+                .expect("write the reply");
+            request
+        });
+
+        let error = await_restart(
+            &dirs,
+            &socket,
+            Duration::from_secs(30),
+            &FederationPokeAction::Enroll,
+        )
+        .expect_err("the settled poke is a daemon error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("the daemon could not apply the enrollment: boom"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            stub_daemon.join().expect("stub daemon").trim(),
+            "refederate"
         );
     }
 
