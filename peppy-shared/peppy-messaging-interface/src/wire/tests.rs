@@ -179,6 +179,112 @@ fn service_kind_action_variants_share_root_with_distinct_suffixes() {
     assert_eq!(ServiceKind::ActionResult.suffix(), Some("result"));
 }
 
+// ─── Caller-side sender constructors ──────────────────────────────────────
+
+/// The outcome of building a service sender and an action sender from the
+/// same arguments, so that one case checks both constructors.
+fn build_caller_senders(
+    own_core_node: &str,
+    target: Option<&ProducerRef>,
+    name: &str,
+) -> [(&'static str, crate::error::Result<()>); 2] {
+    [
+        (
+            "ServiceWireSender",
+            ServiceWireSender::new(
+                own_core_node,
+                "caller_inst",
+                target,
+                test_node_target("robot_arm"),
+                name,
+                ServiceKind::Service,
+            )
+            .map(drop),
+        ),
+        (
+            "ActionWireSender",
+            ActionWireSender::new(
+                own_core_node,
+                "caller_inst",
+                target,
+                test_node_target("robot_arm"),
+                name,
+            )
+            .map(drop),
+        ),
+    ]
+}
+
+#[test]
+fn caller_senders_check_their_own_core_node_then_the_target_then_the_name() {
+    let invalid_core_node = ProducerRef::new("bad/core", "target_inst");
+    let invalid_instance_id = ProducerRef::new("target_core", "bad@inst");
+    let cases = [
+        (
+            "caller@core",
+            Some(&invalid_core_node),
+            "ping",
+            SegmentError::ContainsAt("caller@core".to_string()),
+        ),
+        (
+            "caller_core",
+            Some(&invalid_core_node),
+            "bad/name",
+            SegmentError::ContainsSlash("bad/core".to_string()),
+        ),
+        (
+            "caller_core",
+            Some(&invalid_instance_id),
+            "bad/name",
+            SegmentError::ContainsAt("bad@inst".to_string()),
+        ),
+        (
+            "caller_core",
+            None,
+            "bad/name",
+            SegmentError::ContainsSlash("bad/name".to_string()),
+        ),
+    ];
+
+    for (own_core_node, target, name, expected) in cases {
+        for (constructor, result) in build_caller_senders(own_core_node, target, name) {
+            match result {
+                Err(crate::error::Error::InvalidSegment(error)) => {
+                    assert_eq!(error, expected, "{constructor}");
+                }
+                other => panic!("{constructor}: expected {expected:?}, got {other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn caller_senders_pin_both_producer_slots_or_leave_both_open() {
+    let target = ProducerRef::new("target_core", "target_inst");
+    let pinned = ServiceWireSender::new(
+        "caller_core",
+        "caller_inst",
+        Some(&target),
+        test_node_target("robot_arm"),
+        "ping",
+        ServiceKind::Service,
+    )
+    .expect("valid service sender");
+    assert_eq!(pinned.target_core_node, Some(seg("target_core")));
+    assert_eq!(pinned.target_instance_id, Some(seg("target_inst")));
+
+    let open = ActionWireSender::new(
+        "caller_core",
+        "caller_inst",
+        None,
+        test_node_target("robot_arm"),
+        "pick_place",
+    )
+    .expect("valid action sender");
+    assert_eq!(open.target_core_node, None);
+    assert_eq!(open.target_instance_id, None);
+}
+
 // ─── ActionWireSender derived services ────────────────────────────────────
 
 fn sample_action_sender() -> ActionWireSender {
