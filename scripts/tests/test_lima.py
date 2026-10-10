@@ -187,21 +187,21 @@ def test_ensure_lima_vm_creates_when_not_found(tmp_path: Path) -> None:
     assert create_call[1] == {"capture": False}
 
 
-def test_vm_resources_leaves_host_headroom(tmp_path: Path) -> None:
+def test_vm_resources_leaves_host_headroom() -> None:
     """A 10-core, 32 GiB host gets 8 vCPUs and 12 GiB (1.5 GiB per vCPU)."""
     with patch("functions.lima.os.cpu_count", return_value=10), \
          patch("functions.lima._host_memory_gib", return_value=32):
         assert lima._vm_resources() == (8, 12)
 
 
-def test_vm_resources_floors_memory_for_lto_link(tmp_path: Path) -> None:
+def test_vm_resources_floors_memory_for_lto_link() -> None:
     """A small host still gets 8 GiB so the serial LTO link is not starved."""
     with patch("functions.lima.os.cpu_count", return_value=4), \
          patch("functions.lima._host_memory_gib", return_value=32):
         assert lima._vm_resources() == (2, 8)
 
 
-def test_vm_resources_caps_memory_at_half_host_ram(tmp_path: Path) -> None:
+def test_vm_resources_caps_memory_at_half_host_ram() -> None:
     """The guest never claims more than half the host's RAM, even below the floor."""
     with patch("functions.lima.os.cpu_count", return_value=10), \
          patch("functions.lima._host_memory_gib", return_value=8):
