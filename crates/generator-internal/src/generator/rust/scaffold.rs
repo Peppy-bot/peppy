@@ -191,25 +191,46 @@ fn inherits_from_workspace(package: &toml_edit::Table, key: &str) -> bool {
         == Some(true)
 }
 
-/// Crate directories the vendored `.peppy/libs` cache lays out as flat siblings.
+/// One crate of the vendored `.peppy/libs` cache: its directory there, and
+/// the hash and copy steps of its embedded files.
+struct VendoredCrate {
+    dir_name: &'static str,
+    hash_into: fn(&mut Sha256, &str),
+    copy_into: fn(&str, &Path, &WorkspacePackageMetadata) -> Result<()>,
+}
+
+impl VendoredCrate {
+    /// The vendored crate whose files `E` embeds, laid out under `dir_name`.
+    const fn embedded<E: Embed>(dir_name: &'static str) -> Self {
+        Self {
+            dir_name,
+            hash_into: hash_embedded_crate::<E>,
+            copy_into: copy_embedded_crate::<E>,
+        }
+    }
+}
+
+/// Crates the vendored `.peppy/libs` cache lays out as flat siblings, in the
+/// order they are hashed into the cache key, staged and deployed.
 /// A `path` dependency whose final component is one of these is rewritten to
 /// `../<crate>` so it resolves in the flat cache however the source manifest
 /// spells the way to its sibling. The source crates live in the sealed
 /// `peppy-shared` tree, so a sibling is all such a path can name.
-const VENDORED_SIBLING_CRATES: &[&str] = &[
-    "peppylib",
-    "peppy-messaging-interface",
-    "peppy-config-model",
-    "core-node-api",
-    "build-helpers",
+const VENDORED_CRATES: [VendoredCrate; 5] = [
+    VendoredCrate::embedded::<EmbeddedPeppylib>("peppylib"),
+    VendoredCrate::embedded::<EmbeddedPeppyMessagingInterface>("peppy-messaging-interface"),
+    VendoredCrate::embedded::<EmbeddedConfig>("peppy-config-model"),
+    VendoredCrate::embedded::<EmbeddedCoreNodeApi>("core-node-api"),
+    VendoredCrate::embedded::<EmbeddedBuildHelpers>("build-helpers"),
 ];
 
 /// Returns the flattened `../<crate>` path for `current` if its final component
 /// names a vendored sibling crate, otherwise `None` (leave it untouched).
 fn flatten_vendored_path(current: &str) -> Option<String> {
     let final_component = current.rsplit('/').next().unwrap_or(current);
-    VENDORED_SIBLING_CRATES
-        .contains(&final_component)
+    VENDORED_CRATES
+        .iter()
+        .any(|vendored| vendored.dir_name == final_component)
         .then(|| format!("../{final_component}"))
 }
 
@@ -322,21 +343,16 @@ fn hash_embedded_crate<E: Embed>(hasher: &mut Sha256, label: &str) {
 /// `rerun-if-changed` registration keeps those embedded bytes fresh).
 fn vendored_crates_cache_key() -> String {
     let mut hasher = Sha256::new();
-    hash_embedded_crate::<EmbeddedPeppylib>(&mut hasher, "peppylib");
-    hash_embedded_crate::<EmbeddedPeppyMessagingInterface>(
-        &mut hasher,
-        "peppy-messaging-interface",
-    );
-    hash_embedded_crate::<EmbeddedConfig>(&mut hasher, "peppy-config-model");
-    hash_embedded_crate::<EmbeddedCoreNodeApi>(&mut hasher, "core-node-api");
-    hash_embedded_crate::<EmbeddedBuildHelpers>(&mut hasher, "build-helpers");
+    for vendored in &VENDORED_CRATES {
+        (vendored.hash_into)(&mut hasher, vendored.dir_name);
+    }
     let hash = hasher.finalize();
     let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
     format!("{}-{}", &hex[..16], env!("CARGO_PKG_VERSION"))
 }
 
-/// Deploys the vendored Rust crates (peppylib, peppy-messaging-interface, config, core-node-api,
-/// build-helpers) to a shared cache directory, then links or copies them into `node_libs_dir`.
+/// Deploys the [`VENDORED_CRATES`] to a shared cache directory, then links or
+/// copies them into `node_libs_dir`.
 ///
 /// In `Symlink` mode (the default), creates symlinks from `node_libs_dir/{crate}`
 /// to the shared cache. This avoids duplicating source files across nodes.
@@ -357,33 +373,20 @@ fn deploy_rust_crates_to_shared_cache(
 
     populate_cache_dir_once(&cache_dir, |staging_dir| {
         let metadata = WorkspacePackageMetadata::embedded();
-        copy_embedded_crate::<EmbeddedPeppylib>("peppylib", staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedPeppyMessagingInterface>(
-            "peppy-messaging-interface",
-            staging_dir,
-            &metadata,
-        )?;
-        copy_embedded_crate::<EmbeddedConfig>("peppy-config-model", staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedCoreNodeApi>("core-node-api", staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedBuildHelpers>("build-helpers", staging_dir, &metadata)?;
+        for vendored in &VENDORED_CRATES {
+            (vendored.copy_into)(vendored.dir_name, staging_dir, &metadata)?;
+        }
         Ok(())
     })?;
 
-    // Link or copy all vendored crates (peppylib, peppy-messaging-interface, config,
-    // core-node-api, build-helpers) into node_libs_dir.
+    // Link or copy every vendored crate into node_libs_dir.
     // All are needed because the crates reference each other via relative sibling
     // paths (e.g., peppylib has `config = { package = "peppy-config-model", path = "../peppy-config-model" }` and
     // build-dependencies), and Cargo resolves these paths relative to the symlink
     // location, not the target.
-    for crate_name in &[
-        "peppylib",
-        "peppy-messaging-interface",
-        "peppy-config-model",
-        "core-node-api",
-        "build-helpers",
-    ] {
-        let dest = node_libs_dir.join(crate_name);
-        let source = cache_dir.join(crate_name);
+    for vendored in &VENDORED_CRATES {
+        let dest = node_libs_dir.join(vendored.dir_name);
+        let source = cache_dir.join(vendored.dir_name);
 
         match deploy_mode {
             CrateDeployMode::Symlink => {
@@ -610,6 +613,32 @@ mod tests {
     fn sanitize_module_name_snake_cases_and_guards_a_leading_digit() {
         assert_eq!(sanitize_rust_module_name("Video-Stream"), "video_stream");
         assert_eq!(sanitize_rust_module_name("9lives"), "_9lives");
+    }
+
+    #[test]
+    fn flatten_vendored_path_points_each_vendored_crate_at_its_flat_sibling() {
+        let cases = [
+            ("../peppylib", Some("../peppylib")),
+            (
+                "../peppy-messaging-interface",
+                Some("../peppy-messaging-interface"),
+            ),
+            (
+                "../../peppy-shared/peppy-config-model",
+                Some("../peppy-config-model"),
+            ),
+            ("../core-node-api", Some("../core-node-api")),
+            ("build-helpers", Some("../build-helpers")),
+            ("../peppylib-rs", None),
+            ("../some-other-crate", None),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(
+                flatten_vendored_path(path).as_deref(),
+                expected,
+                "path {path}"
+            );
+        }
     }
 
     const TEST_METADATA: WorkspacePackageMetadata = WorkspacePackageMetadata {
