@@ -78,8 +78,8 @@ const NODE_CONFIG: &str = r#"{
 /// One native `move_arm` action plus two contract-backed `arm:v1`/`arm:v2`
 /// slots each exposing an action named `move_arm`. Verifies:
 ///   1. Contract-backed artifacts nest under
-///      `exposed_actions/{contract_name}/{contract_tag}/move_arm.rs` while the
-///      native artifact stays flat at `exposed_actions/move_arm.rs`.
+///      `exposed_actions/{link_id}/move_arm.rs` while the native artifact
+///      stays flat at `exposed_actions/move_arm.rs`.
 ///   2. The category `exposed_actions.rs` lists the native leaf and one
 ///      module entry per implemented contract.
 ///   3. Each leaf calls `peppylib::ActionMessenger::expose` with the matching

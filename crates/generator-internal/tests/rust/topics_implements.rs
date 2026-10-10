@@ -7,8 +7,8 @@
 //! `generate_peppygen_lib` (the cache-loading side is exercised by the sync
 //! unit tests in `core-node-internal`), and verify:
 //!   1. The generated file layout nests contract-backed artifacts under
-//!      `emitted_topics/{iface_name}/{iface_tag}/{topic}.rs` while keeping the
-//!      native artifact at `emitted_topics/{topic}.rs`.
+//!      `emitted_topics/{link_id}/{topic}.rs` while keeping the native
+//!      artifact at `emitted_topics/{topic}.rs`.
 //!   2. Each `mod.rs` declares the right children.
 //!   3. The rendered declare_publisher inside each leaf passes the matching
 //!      sender target (`SenderTarget::contract("name", "tag")?` for contract-backed,
@@ -88,9 +88,8 @@ const NODE_CONFIG: &str = r#"{
 /// publisher plus three resolved contract-backed interfaces (`depth_camera:v1`,
 /// `depth_camera:v2`, `uvc_camera:v1`) each shaped as `video_stream` with a
 /// distinguishing marker field. Verifies that:
-///   1. Conformed artifacts nest under
-///      `emitted_topics/{iface_name}/{iface_tag}/{topic}.rs` while the native
-///      artifact stays flat at `emitted_topics/{topic}.rs`.
+///   1. Conformed artifacts nest under `emitted_topics/{link_id}/{topic}.rs`
+///      while the native artifact stays flat at `emitted_topics/{topic}.rs`.
 ///   2. Each container `mod.rs` declares its direct child modules, and the
 ///      top-level `emitted_topics.rs` lists the native leaf plus one entry per
 ///      implemented contract directory.

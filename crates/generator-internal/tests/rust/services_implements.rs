@@ -68,9 +68,8 @@ const NODE_CONFIG: &str = r#"{
 
 /// One native `control` service plus two contract-backed interfaces
 /// (`camera:v1`, `arm:v2`) each exposing a service named `control`. Verifies:
-///   1. Conformed artifacts nest under
-///      `exposed_services/{iface_name}/{iface_tag}/control.rs` while the
-///      native artifact stays flat at `exposed_services/control.rs`.
+///   1. Conformed artifacts nest under `exposed_services/{link_id}/control.rs`
+///      while the native artifact stays flat at `exposed_services/control.rs`.
 ///   2. The category `exposed_services.rs` declares the native leaf and one
 ///      module entry per implemented contract.
 ///   3. Each leaf calls `peppylib::ServiceMessenger::listen` with the matching
