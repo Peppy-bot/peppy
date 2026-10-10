@@ -185,7 +185,13 @@ impl LaunchGoal {
             let mut origin = goal.reborrow().init_launcher_origin();
             match &self.launcher_origin {
                 LauncherOrigin::Fs(path) => {
-                    origin.set_fs(path.to_string_lossy().as_ref());
+                    let path = path.to_str().ok_or_else(|| {
+                        crate::Error::Encoding(format!(
+                            "LaunchGoal.launcher_origin.fs is not valid UTF-8: {}",
+                            path.display()
+                        ))
+                    })?;
+                    origin.set_fs(path);
                 }
                 LauncherOrigin::Repository { name } => {
                     origin.set_repository(name.as_str());
@@ -1073,6 +1079,31 @@ mod tests {
         );
         let msg = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
         assert!(msg.contains("absolute"), "got: {msg}");
+    }
+
+    /// The daemon opens `LauncherOrigin::Fs` as sent, and the wire carries it
+    /// as text. A path that is not UTF-8 would reach the daemon with its
+    /// invalid bytes replaced, naming a file the caller never pointed at, so
+    /// the encoder refuses it.
+    #[cfg(unix)]
+    #[test]
+    fn launch_goal_encode_refuses_a_launcher_path_that_is_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9/launcher.json5"));
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Fs(path),
+            "launch-abc123",
+            StackBudgets::new(1, 1, 1, None),
+        );
+        let error = goal
+            .encode()
+            .expect_err("a non-UTF-8 path cannot travel as text");
+        assert!(matches!(error, crate::Error::Encoding(_)), "{error}");
+        assert!(
+            error.to_string().contains("LaunchGoal.launcher_origin.fs"),
+            "{error}"
+        );
     }
 
     #[test]
