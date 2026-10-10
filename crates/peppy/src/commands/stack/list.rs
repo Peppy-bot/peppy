@@ -455,8 +455,8 @@ fn format_stack_body(
     }
 
     // Per-instance bindings. A distinct view from the node table above, but it
-    // rides the same `graph_json` payload (each instance now carries its
-    // resolved slot bindings) so there is no extra wire round-trip.
+    // rides the same `graph_json` payload (each instance carries its resolved
+    // slot bindings) so there is no extra wire round-trip.
     let _ = writeln!(out, "Instance bindings");
     let _ = writeln!(out);
     let binding_nodes: Vec<&SerializedNode> =
@@ -535,8 +535,7 @@ use crate::commands::colors::{
 };
 use crate::commands::table::{col_width, render_table, wrap};
 
-/// Column headers kept in one place so widths stay consistent between the
-/// separator and data rows.
+/// Headers for the nodes table, one row per node.
 const HEADERS: [&str; 4] = ["NODE", "STAGE", "INSTANCES", "PATH"];
 
 fn render_nodes_table(
@@ -876,9 +875,9 @@ fn format_instances_compact(node: &SerializedNode) -> String {
     let finished = count(InstanceState::Finished);
     let failed = count(InstanceState::Failed);
 
-    // The common, unambiguous cases keep their original compact phrasing; any
-    // mix (including terminal instances) falls through to an explicit
-    // per-state breakdown so no instance is silently dropped from the count.
+    // The common, unambiguous cases use a compact phrasing; any mix
+    // (including terminal instances) falls through to an explicit per-state
+    // breakdown so no instance is silently dropped from the count.
     match (running, starting, finished, failed) {
         (r, 0, 0, 0) => format!("{r} running"),
         (0, s, 0, 0) => format!("{s} starting"),

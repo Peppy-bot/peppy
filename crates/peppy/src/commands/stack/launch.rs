@@ -118,7 +118,7 @@ impl PlacementArgs {
     /// federation are all the coordinator's: it has the resolved document,
     /// which for a `Repository` launcher the CLI may never have seen. That is
     /// why `--local` travels as [`PlacementSpec::Local`] rather than as the
-    /// map it expands to — the CLI cannot expand what it cannot read.
+    /// map it expands to: the CLI cannot expand what it cannot read.
     fn resolve(&self, coordinator: &str) -> Result<PlacementSpec> {
         if self.local && !self.places.is_empty() {
             return Err(Error::ExecutionFailed(

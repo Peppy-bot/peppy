@@ -174,6 +174,8 @@ fn report_block(
         colorize,
         max_width,
     ));
+    // Judged on the usage sections alone: an identity published as both a
+    // node and a contract still says the contract half is unused.
     let usable_by_nodes = items
         .iter()
         .any(|item| matches!(item.kind, RepoItemKind::Contract | RepoItemKind::Pairing));
@@ -184,8 +186,6 @@ fn report_block(
         ));
     }
     out.push_str(&sections);
-    // Judged on the usage sections alone: an identity published as both a
-    // node and a contract still says the contract half is unused.
     for slot in &report.pairing_slots {
         out.push_str(&peer_section(slot, colorize, max_width));
     }
@@ -199,9 +199,10 @@ fn report_block(
 ///
 /// A slot no indexed node can pair with says so on one line, because that
 /// is the answer, and on a slot whose cardinality has a floor of one it is
-/// the answer that no indexed node completes a launch of this one. Being listed here is a match of pairing and role, which is
-/// what pairing requires and all the caches record; whether a stack of the
-/// two is one worth running is a launcher's business.
+/// the answer that no indexed node completes a launch of this one. Being
+/// listed here is a match of pairing and role, which is what pairing
+/// requires and all the caches record; whether a stack of the two is one
+/// worth running is a launcher's business.
 fn peer_section(slot: &SlotPeers, colorize: bool, max_width: Option<usize>) -> String {
     let label = format!(
         "Slot {} ({} as {}, {})",

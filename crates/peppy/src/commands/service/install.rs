@@ -124,13 +124,12 @@ fn make_install_context(
         // 0.11): systemd `Restart=on-failure`, launchd `KeepAlive { SuccessfulExit
         // = false }`. A clean stop therefore stays stopped.
         //
-        // FOLLOW-UP: systemd's default `StartLimitBurst` could give up after a few
-        // rapid `exit(RESTART_EXIT_CODE)` fallbacks; the in-process flap backstop
-        // already caps that, but `StartLimitIntervalSec=0` would also disable the
-        // unit-side limit. The `service_manager` 0.11 generic API does not expose
-        // it (its own TODO maps `reset_after_secs` -> `StartLimitIntervalSec`), so
-        // it would require overriding `ServiceInstallCtx.contents` with a fully
-        // rendered unit; deferred until flapping is actually observed.
+        // The unit keeps systemd's default start rate limit (`StartLimitBurst`),
+        // so a burst of rapid `exit(RESTART_EXIT_CODE)` fallbacks can make
+        // systemd stop restarting it. The in-process flap backstop caps those
+        // fallbacks. The `service_manager` 0.11 generic API does not expose
+        // `StartLimitIntervalSec`; setting it needs a fully rendered unit in
+        // `ServiceInstallCtx.contents`.
         restart_policy: RestartPolicy::OnFailure {
             delay_secs: Some(5),
             max_retries: None,

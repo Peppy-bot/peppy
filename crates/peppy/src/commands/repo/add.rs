@@ -77,9 +77,13 @@ async fn add_repo_async(
 /// Parse a user-supplied source string into a [`RepoSource`].
 ///
 /// Accepts:
-/// - Local filesystem paths (absolute or relative)
-/// - Git URLs (contains `.git` or starts with `git@`/`ssh://`)
-/// - Plain HTTP/HTTPS URLs
+/// - Local filesystem paths (absolute or relative), canonicalized when they
+///   exist
+/// - Git URLs (ends in `.git`, contains `.git/`, or starts with `git@`,
+///   `ssh://` or `git://`)
+/// - Any other URL that parses as a git clone URL, when `--ref` is given
+///
+/// Refuses every other URL.
 pub(crate) fn parse_repo_source(
     source_str: &str,
     git_ref: Option<GitRepoRef>,

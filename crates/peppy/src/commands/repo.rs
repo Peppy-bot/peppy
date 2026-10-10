@@ -143,7 +143,7 @@ pub enum RepoCommands {
         /// - Local path: `/path/to/directory`
         /// - Git URL: `https://github.com/org/repo.git`
         /// - Git URL with ref: `https://github.com/org/repo.git --ref <branch, tag, commit, or @{peppy-release}>`
-        /// - Plain URL: `https://example.com/packages`
+        /// - Git URL without `.git`, with ref: `https://github.com/org/repo --ref main`
         source: String,
         /// Git ref to track (git sources only): a branch, a tag, a commit,
         /// or `@{peppy-release}`, which reads the tag
@@ -159,8 +159,8 @@ pub enum RepoCommands {
         /// free one. Take ids from the reserved band >= 2000: peppy's
         /// bundled defaults (see its `assets/default_repositories.json5`)
         /// stay below 2000, so a pinned id can never collide with a default
-        /// a future peppy release ships — which would silently skip that
-        /// default, since defaults are only appended for ids not taken.
+        /// a future peppy release ships. Such a collision would silently skip
+        /// that default, since defaults are only appended for ids not taken.
         #[arg(long, conflicts_with = "top")]
         id: Option<u64>,
     },
@@ -177,7 +177,7 @@ pub enum RepoCommands {
         /// - Local path: `/path/to/directory`
         /// - Git URL: `https://github.com/org/repo.git`
         /// - Git URL with ref: `https://github.com/org/repo.git --ref <branch, tag, commit, or @{peppy-release}>`
-        /// - Plain URL: `https://example.com/packages`
+        /// - Git URL without `.git`, with ref: `https://github.com/org/repo --ref main`
         source: String,
         /// Git ref of the repository to exclude (git sources only), as it is
         /// written in `repositories.json5`: a branch, a tag, a commit, or

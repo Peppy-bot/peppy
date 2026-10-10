@@ -142,8 +142,8 @@ fn handle_feedback(
 }
 
 /// A goal [`drive_stack_goal`] drives, and the word every line it writes
-/// calls that goal by. Visible only inside `commands::stack`, so the three
-/// stack goals are the whole set.
+/// calls that goal by. Visible only inside `commands::stack`, so the
+/// implementations below are the whole set.
 pub(super) trait StackGoal: core_node_api::ActionGoal {
     const OPERATION: &'static str;
 }

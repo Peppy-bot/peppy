@@ -1,9 +1,5 @@
 //! `peppy stack reset`: tear the node stack down to an empty state.
 //!
-//! Replaces `peppy service reset`. The daemon service was already called
-//! `stack_reset`; only the CLI verb was misfiled under `service`, where it read
-//! as something that restarts the daemon.
-//!
 //! The federated mode is where "participants are discovered, not remembered"
 //! pays off. Nothing here reads a coordinator's memory of who took part: it
 //! asks the federation which daemons hold a slice of the launch, using the same
@@ -321,8 +317,8 @@ mod tests {
 
     /// A restarted or already-reset coordinator has no slice left to name a
     /// launch, so rediscovery keys on its NAME: every machine whose slice or
-    /// reservation names it as coordinator is swept. This is the state the
-    /// old slice-keyed discovery could not recover from.
+    /// reservation names it as coordinator is swept. A discovery keyed on the
+    /// slice alone cannot recover from this state.
     #[test]
     fn a_coordinator_with_no_slice_still_finds_every_machine_its_launches_hold() {
         let holdings = [
