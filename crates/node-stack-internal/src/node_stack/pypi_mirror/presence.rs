@@ -66,7 +66,7 @@ enum Answer {
     /// Any other answer.
     Absent,
     /// No answer at all.
-    None(reqwest::Error),
+    Unanswered(reqwest::Error),
 }
 
 /// The files of `files` that `mirror` has: the ones it answers `200` for,
@@ -98,7 +98,7 @@ pub(super) async fn files_on_mirror(
                 unanswered_in_a_row = 0;
             }
             Answer::Absent => unanswered_in_a_row = 0,
-            Answer::None(last_error) => {
+            Answer::Unanswered(last_error) => {
                 unanswered_in_a_row += 1;
                 if unanswered_in_a_row >= UNANSWERED_REQUESTS_TO_STOP {
                     return Err(MirrorUnreachable {
@@ -123,7 +123,7 @@ async fn ask(client: reqwest::Client, url: String, file: PypiFile) -> (PypiFile,
 async fn answer_for(client: &reqwest::Client, url: String, size: Option<u64>) -> Answer {
     let response = match client.head(url).send().await {
         Ok(response) => response,
-        Err(error) => return Answer::None(error),
+        Err(error) => return Answer::Unanswered(error),
     };
     if response.status() != StatusCode::OK || served_by_pypi(response.url()) {
         return Answer::Absent;
