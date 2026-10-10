@@ -63,10 +63,10 @@ impl AnyType {
                 AnyType::Int(_) | AnyType::UInt(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
-            TypeToken::U8 => check_unsigned_range(self, 0, u8::MAX as u64, path, token),
-            TypeToken::U16 => check_unsigned_range(self, 0, u16::MAX as u64, path, token),
-            TypeToken::U32 => check_unsigned_range(self, 0, u32::MAX as u64, path, token),
-            TypeToken::U64 => check_unsigned_range(self, 0, u64::MAX, path, token),
+            TypeToken::U8 => check_unsigned_range(self, u8::MAX as u64, path, token),
+            TypeToken::U16 => check_unsigned_range(self, u16::MAX as u64, path, token),
+            TypeToken::U32 => check_unsigned_range(self, u32::MAX as u64, path, token),
+            TypeToken::U64 => check_unsigned_range(self, u64::MAX, path, token),
             TypeToken::I8 => check_signed_range(self, i8::MIN as i64, i8::MAX as i64, path, token),
             TypeToken::I16 => {
                 check_signed_range(self, i16::MIN as i64, i16::MAX as i64, path, token)
@@ -94,7 +94,6 @@ impl AnyType {
 
 fn check_unsigned_range(
     value: &AnyType,
-    min: u64,
     max: u64,
     path: &str,
     token: &TypeToken,
@@ -110,10 +109,10 @@ fn check_unsigned_range(
             });
         }
     };
-    if v < min || v > max {
+    if v > max {
         return Err(TypeMismatch {
             path: path.to_string(),
-            expected: format!("{} in [{}, {}]", type_token_name(token), min, max),
+            expected: format!("{} in [0, {}]", type_token_name(token), max),
             actual: format!("{}", v),
         });
     }
@@ -602,10 +601,10 @@ fn parse_default_value(kind: &TypeToken, raw: AnyType, path: &str) -> Result<Def
         TypeToken::Time => Err(format!(
             "at `{display}`: `$default` is not supported for type `time`"
         )),
-        TypeToken::U8 => bounded_uint_default(raw, 0, u8::MAX as u64, "u8", display),
-        TypeToken::U16 => bounded_uint_default(raw, 0, u16::MAX as u64, "u16", display),
-        TypeToken::U32 => bounded_uint_default(raw, 0, u32::MAX as u64, "u32", display),
-        TypeToken::U64 => bounded_uint_default(raw, 0, u64::MAX, "u64", display),
+        TypeToken::U8 => bounded_uint_default(raw, u8::MAX as u64, "u8", display),
+        TypeToken::U16 => bounded_uint_default(raw, u16::MAX as u64, "u16", display),
+        TypeToken::U32 => bounded_uint_default(raw, u32::MAX as u64, "u32", display),
+        TypeToken::U64 => bounded_uint_default(raw, u64::MAX, "u64", display),
         TypeToken::I8 => bounded_int_default(raw, i8::MIN as i64, i8::MAX as i64, "i8", display),
         TypeToken::I16 => {
             bounded_int_default(raw, i16::MIN as i64, i16::MAX as i64, "i16", display)
@@ -644,7 +643,6 @@ fn parse_default_value(kind: &TypeToken, raw: AnyType, path: &str) -> Result<Def
 
 fn bounded_uint_default(
     raw: AnyType,
-    min: u64,
     max: u64,
     name: &str,
     display: &str,
@@ -664,9 +662,9 @@ fn bounded_uint_default(
             ));
         }
     };
-    if v < min || v > max {
+    if v > max {
         return Err(format!(
-            "at `{display}`: `$default` value {v} is outside the range of `{name}` [{min}, {max}]"
+            "at `{display}`: `$default` value {v} is outside the range of `{name}` [0, {max}]"
         ));
     }
     Ok(DefaultValue::UInt(v))
@@ -1825,6 +1823,29 @@ mod tests {
         let raw = RawNodeArguments::from([("count".to_string(), AnyType::Int(-1))]);
         let err = raw.into_resolved(&s).unwrap_err();
         assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+    }
+
+    #[test]
+    fn unsigned_range_errors_name_the_range() {
+        let default_err =
+            serde_json5::from_str::<ParameterSpec>(r#"{ $type: "u8", $default: 300 }"#)
+                .unwrap_err()
+                .to_string();
+        assert!(
+            default_err.contains("`$default` value 300 is outside the range of `u8` [0, 255]"),
+            "got: {default_err}"
+        );
+
+        let s = schema(r#"{ count: "u8" }"#);
+        let err = validate_node_arguments(
+            BTreeMap::from([("count".to_string(), AnyType::UInt(300))]),
+            &s,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "type mismatch at `count`: expected `u8 in [0, 255]`, got `300`"
+        );
     }
 
     #[test]
