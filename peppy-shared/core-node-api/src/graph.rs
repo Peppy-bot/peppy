@@ -160,25 +160,24 @@ pub struct SerializedInstance {
     pub healthy: bool,
     /// The one clock this instance reads, mirroring
     /// [`config::runtime::NodeInstanceConfig`]'s resolved framework. Wall time
-    /// is the default and is omitted, so a payload from a producer that
-    /// predates clock domains reads as the wall-time instance it was.
+    /// is the default and is omitted from the wire, so an absent field decodes
+    /// as wall time.
     #[serde(default, skip_serializing_if = "ClockBinding::is_wall")]
     pub clock: ClockBinding,
     /// Validator-resolved producers bound to each of this instance's
     /// `depends_on` slots, keyed by the consumer manifest's link id.
     /// Mirrors [`config::runtime::NodeInstanceConfig::slot_bindings`] and
     /// the `TrackedNodeInstance` this is produced from. Empty for
-    /// instances whose manifest declares no `depends_on` slots. Defaulted
-    /// on decode so `graph_json` payloads from producers that predate this
-    /// field still parse.
+    /// instances whose manifest declares no `depends_on` slots, and then
+    /// omitted from the wire, so an absent field decodes as empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: SlotBindings,
     /// Live pairing-slot state for every `depends_on.pairings` entry, keyed
     /// by the slot's link_id. Overlaid by the daemon from the manifest plus
-    /// its pairing registry when serializing the graph — this is the
+    /// its pairing registry when serializing the graph: this is the
     /// observability surface behind `peppy stack list`'s pairing rows.
-    /// Empty for instances whose manifest declares no pairings; defaulted on
-    /// decode for payloads that predate the field.
+    /// Empty for instances whose manifest declares no pairings, and then
+    /// omitted from the wire, so an absent field decodes as empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pairing_slots: BTreeMap<String, SerializedPairingSlot>,
     /// The endpoints this instance serves, in label order: what `peppy stack
@@ -202,9 +201,8 @@ pub struct SerializedPairingSlot {
     /// while unpaired.
     pub peers: Vec<PairedPeer>,
     /// The slot's declared cardinality, so a reader can tell a slot holding
-    /// no pair by design from one whose peer is missing. Defaulted on decode
-    /// for payloads from a producer that predates the field, which reads them
-    /// as `one` and so as missing a peer.
+    /// no pair by design from one whose peer is missing. Omitted from the wire
+    /// when `one`, which is also what an absent field decodes to.
     #[serde(default, skip_serializing_if = "Cardinality::is_one")]
     pub cardinality: Cardinality,
 }
@@ -236,7 +234,7 @@ impl SerializedNode {
         format!("{}:{}", self.name, self.tag)
     }
 
-    /// Externally visible instance ids — the subset of `instances` that have
+    /// Externally visible instance ids: the subset of `instances` that have
     /// reached `Running`. In-flight `Starting` instances are intentionally
     /// hidden: the externally-visible meaning is "currently running and
     /// reachable via messenger services".
@@ -265,8 +263,8 @@ pub struct SerializedEdge {
     /// `Some("name:tag")` when this edge is a dependency resolved through
     /// contract implementation (the consumer declares `depends_on.contracts` and
     /// `to` is a node whose `manifest.implements` names that contract); `None` for a direct
-    /// `depends_on.nodes` edge. Defaulted on decode so payloads from producers
-    /// that predate this field still parse.
+    /// `depends_on.nodes` edge. Omitted from the wire when `None`, which is
+    /// also what an absent field decodes to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via_contract: Option<String>,
 }
@@ -769,8 +767,8 @@ mod tests {
 
     #[test]
     fn node_rejects_payload_without_required_core_node() {
-        let pre_change = r#"{"name":"n","tag":"v1","config_path":"","artifact_path":null}"#;
-        let error = serde_json::from_str::<SerializedNode>(pre_change)
+        let without_core_node = r#"{"name":"n","tag":"v1","config_path":"","artifact_path":null}"#;
+        let error = serde_json::from_str::<SerializedNode>(without_core_node)
             .expect_err("core_node is a required wire field");
         assert!(error.to_string().contains("core_node"), "got: {error}");
     }
