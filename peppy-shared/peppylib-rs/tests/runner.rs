@@ -27,6 +27,23 @@ struct Parameters {
     frequency_hz: f64,
 }
 
+/// The test node's manifest: the one parameter the test `Parameters` type
+/// reads, and no endpoints.
+const TEST_NODE_PEPPY_CONFIG: &str = r#"{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "test_node",
+    tag: "v1",
+  },
+  execution: {
+    language: "rust",
+    parameters: {
+      frequency_hz: "f64"
+    },
+    run_cmd: ["./target/debug/test_node"]
+  },
+}"#;
+
 struct EnvAndDirGuard {
     previous_runtime_config: Option<String>,
     previous_dir: PathBuf,
@@ -154,38 +171,47 @@ async fn wait_until_reachable<T: std::fmt::Debug>(
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn daemon_runner_succeed() {
-    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+/// Daemon-mode scaffolding: an ephemeral router, a node `peppy.json5` +
+/// launch config in a temp dir, and the env guard that points `NodeBuilder`
+/// at them. Declaration order matters for drop: the env guard restores cwd
+/// before the temp dir it points into is removed.
+struct DaemonStack {
+    _env_guard: EnvAndDirGuard,
+    _temp_dir: tempfile::TempDir,
+    router: pmi::ZenohdInstance,
+}
+
+impl DaemonStack {
+    /// Connects a control messenger to the stack's router. The daemon runner
+    /// opens its session under the `local` workspace namespace (no workspace
+    /// id in the runtime config); this messenger must too, or its
+    /// reachability probe never routes to the node's services.
+    async fn connect_control_messenger(&self) -> peppylib::MessengerHandle {
+        peppylib::MessengerHandle::connect(&self.router.host, self.router.port)
+            .await
+            .expect("failed to create messenger")
+    }
+}
+
+/// Stands up the daemon-mode scaffolding for the manifest `peppy_config`,
+/// with an optional `lifecycle.shutdown_grace_secs` override in the launch
+/// config (mirroring what the daemon ships to spawned nodes).
+async fn start_daemon_stack(peppy_config: &str, shutdown_grace_secs: Option<u64>) -> DaemonStack {
+    let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
-    let peppy_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "test_node",
-        tag: "v1",
-      },
-      execution: {
-        language: "rust",
-        parameters: {
-          frequency_hz: "f64"
-        },
-        run_cmd: ["./target/debug/test_node"]
-      },
-    }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
     config::fingerprint::create_codegen_fingerprint(
         &peppy_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    let runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
+    let mut runtime_config = RuntimeConfig::new(
+        &router.host,
+        router.port,
         NodeInstanceConfig {
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
@@ -198,12 +224,26 @@ async fn daemon_runner_succeed() {
         TEST_CORE_NODE,
     )
     .expect("runtime config should build");
+    if let Some(grace) = shutdown_grace_secs {
+        runtime_config.lifecycle.shutdown_grace_secs = grace;
+    }
     let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
     runtime_config
         .save_json5_launch_config(&runtime_config_path)
         .expect("failed to write runtime config");
 
-    let _env_guard = EnvAndDirGuard::new(temp_dir.path(), &runtime_config_path);
+    let env_guard = EnvAndDirGuard::new(temp_dir.path(), &runtime_config_path);
+
+    DaemonStack {
+        _env_guard: env_guard,
+        _temp_dir: temp_dir,
+        router,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_runner_succeed() {
+    let stack = start_daemon_stack(TEST_NODE_PEPPY_CONFIG, None).await;
 
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<f64>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
@@ -219,12 +259,7 @@ async fn daemon_runner_succeed() {
         .expect("runner setup signal should be sent");
     assert_eq!(frequency_hz, TEST_FREQUENCY_HZ);
 
-    // The daemon runner opens its session under the `local` workspace namespace (no
-    // workspace id in the runtime config); this control messenger must too,
-    // or its reachability probe never routes to the node's services.
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger");
+    let messenger = stack.connect_control_messenger().await;
 
     wait_until_reachable(
         &messenger,
@@ -436,43 +471,6 @@ async fn standalone_runner_fails_when_a_declared_endpoint_is_not_announced() {
     assert!(error.to_string().contains("`viewer`"), "{error}");
 }
 
-/// Writes the daemon-mode runtime config for `peppy_config` and points the
-/// environment at it, returning the guard that holds both. Shared by the
-/// daemon-mode endpoint tests below.
-fn write_daemon_runtime_config(
-    temp_dir: &Path,
-    peppy_config: &str,
-    router_host: &str,
-    router_port: u16,
-) -> EnvAndDirGuard {
-    let peppy_config_path = temp_dir.join(NODE_CONFIG_FILE);
-    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-    let runtime_config = RuntimeConfig::new(
-        router_host,
-        router_port,
-        NodeInstanceConfig {
-            arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
-                .expect("runtime args should parse"),
-            ..NodeInstanceConfig::new(
-                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
-            )
-        },
-        TEST_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .expect("runtime config should build");
-    let runtime_config_path = temp_dir.join("peppy_runtime.json5");
-    runtime_config
-        .save_json5_launch_config(&runtime_config_path)
-        .expect("failed to write runtime config");
-    EnvAndDirGuard::new(temp_dir, &runtime_config_path)
-}
-
 /// Polls `service` on the daemon-mode test node until it answers or the
 /// runner exits, returning the reply payload.
 async fn poll_test_node_until_answered(
@@ -511,17 +509,7 @@ async fn daemon_runner_offers_node_endpoints_for_a_manifest_that_declares_them()
     use peppylib::encoding::endpoints::{NodeEndpointsRequest, NodeEndpointsResponse};
     use peppylib::messaging::NODE_ENDPOINTS_SERVICE;
 
-    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let _env_guard = write_daemon_runtime_config(
-        temp_dir.path(),
-        ENDPOINTS_PEPPY_CONFIG,
-        &router_host,
-        router_port,
-    );
+    let stack = start_daemon_stack(ENDPOINTS_PEPPY_CONFIG, None).await;
 
     let mut runner_task = tokio::task::spawn_blocking(move || {
         NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
@@ -535,9 +523,7 @@ async fn daemon_runner_offers_node_endpoints_for_a_manifest_that_declares_them()
         })
     });
 
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger");
+    let messenger = stack.connect_control_messenger().await;
     let request = NodeEndpointsRequest::new()
         .encode()
         .expect("failed to encode endpoints request");
@@ -602,30 +588,13 @@ async fn daemon_runner_offers_node_endpoints_for_a_manifest_that_declares_them()
 async fn daemon_runner_offers_no_node_endpoints_for_a_manifest_without_them() {
     use peppylib::messaging::NODE_ENDPOINTS_SERVICE;
 
-    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: { name: "test_node", tag: "v1" },
-      execution: {
-        language: "rust",
-        parameters: { frequency_hz: "f64" },
-        run_cmd: ["./target/debug/test_node"]
-      },
-    }"#;
-    let _env_guard =
-        write_daemon_runtime_config(temp_dir.path(), peppy_config, &router_host, router_port);
+    let stack = start_daemon_stack(TEST_NODE_PEPPY_CONFIG, None).await;
 
     let mut runner_task = tokio::task::spawn_blocking(move || {
         NodeBuilder::new().run(|_parameters: Parameters, _node_runner| async move { Ok(()) })
     });
 
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger");
+    let messenger = stack.connect_control_messenger().await;
     let health_request = NodeHealthRequest::new()
         .encode()
         .expect("failed to encode health request");
@@ -674,21 +643,8 @@ async fn standalone_runner_succeed() {
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
-    let peppy_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "test_node",
-        tag: "v1",
-      },
-      execution: {
-        language: "rust",
-        parameters: {
-          frequency_hz: "f64"
-        },
-        run_cmd: ["./target/debug/test_node"]
-      },
-    }"#;
-    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+    std::fs::write(&peppy_config_path, TEST_NODE_PEPPY_CONFIG)
+        .expect("failed to write peppy config");
 
     let standalone_config = StandaloneConfig::new()
         .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
@@ -729,21 +685,8 @@ async fn standalone_runner_succeed() {
 async fn init_standalone_ignores_inherited_runtime_config_env() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
-    let peppy_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "test_node",
-        tag: "v1",
-      },
-      execution: {
-        language: "rust",
-        parameters: {
-          frequency_hz: "f64"
-        },
-        run_cmd: ["./target/debug/test_node"]
-      },
-    }"#;
-    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+    std::fs::write(&peppy_config_path, TEST_NODE_PEPPY_CONFIG)
+        .expect("failed to write peppy config");
 
     // Point the daemon-mode variable at a config that does not exist; the
     // guard holds the env lock so parallel tests cannot race the variable.
@@ -778,54 +721,7 @@ async fn init_standalone_ignores_inherited_runtime_config_env() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_ready_but_not_healthy() {
-    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-
-    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
-    let peppy_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "test_node",
-        tag: "v1",
-      },
-      execution: {
-        language: "rust",
-        parameters: {
-          frequency_hz: "f64"
-        },
-        run_cmd: ["./target/debug/test_node"]
-      },
-    }"#;
-    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig {
-            arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
-                .expect("runtime args should parse"),
-            ..NodeInstanceConfig::new(
-                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
-            )
-        },
-        TEST_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .expect("runtime config should build");
-    let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
-    runtime_config
-        .save_json5_launch_config(&runtime_config_path)
-        .expect("failed to write runtime config");
-
-    let _env_guard = EnvAndDirGuard::new(temp_dir.path(), &runtime_config_path);
+    let stack = start_daemon_stack(TEST_NODE_PEPPY_CONFIG, None).await;
 
     let (setup_started_tx, setup_started_rx) = tokio::sync::oneshot::channel::<()>();
     let (setup_continue_tx, setup_continue_rx) = tokio::sync::oneshot::channel::<()>();
@@ -842,12 +738,7 @@ async fn node_ready_but_not_healthy() {
         .expect("runner setup should start")
         .expect("setup start signal should be sent");
 
-    // The daemon runner opens its session under the `local` workspace namespace (no
-    // workspace id in the runtime config); this control messenger must too,
-    // or its reachability probe never routes to the node's services.
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger");
+    let messenger = stack.connect_control_messenger().await;
 
     wait_until_reachable(
         &messenger,
@@ -943,54 +834,7 @@ async fn node_ready_but_not_healthy() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_cancellation_token_cancelled_on_shutdown() {
-    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-
-    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
-    let peppy_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "test_node",
-        tag: "v1",
-      },
-      execution: {
-        language: "rust",
-        parameters: {
-          frequency_hz: "f64"
-        },
-        run_cmd: ["./target/debug/test_node"]
-      },
-    }"#;
-    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig {
-            arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
-                .expect("runtime args should parse"),
-            ..NodeInstanceConfig::new(
-                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
-            )
-        },
-        TEST_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .expect("runtime config should build");
-    let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
-    runtime_config
-        .save_json5_launch_config(&runtime_config_path)
-        .expect("failed to write runtime config");
-
-    let _env_guard = EnvAndDirGuard::new(temp_dir.path(), &runtime_config_path);
+    let stack = start_daemon_stack(TEST_NODE_PEPPY_CONFIG, None).await;
 
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<CancellationToken>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
@@ -1010,12 +854,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         "cancellation token should not be cancelled before shutdown request"
     );
 
-    // The daemon runner opens its session under the `local` workspace namespace (no
-    // workspace id in the runtime config); this control messenger must too,
-    // or its reachability probe never routes to the node's services.
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger");
+    let messenger = stack.connect_control_messenger().await;
 
     wait_until_reachable(
         &messenger,
@@ -1053,54 +892,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
 /// arm is covered by `daemon_cancellation_token_cancelled_on_shutdown`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
-    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-
-    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
-    let peppy_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "test_node",
-        tag: "v1",
-      },
-      execution: {
-        language: "rust",
-        parameters: {
-          frequency_hz: "f64"
-        },
-        run_cmd: ["./target/debug/test_node"]
-      },
-    }"#;
-    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig {
-            arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
-                .expect("runtime args should parse"),
-            ..NodeInstanceConfig::new(
-                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
-            )
-        },
-        TEST_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .expect("runtime config should build");
-    let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
-    runtime_config
-        .save_json5_launch_config(&runtime_config_path)
-        .expect("failed to write runtime config");
-
-    let _env_guard = EnvAndDirGuard::new(temp_dir.path(), &runtime_config_path);
+    let stack = start_daemon_stack(TEST_NODE_PEPPY_CONFIG, None).await;
 
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<CancellationToken>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
@@ -1124,12 +916,7 @@ async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
         "cancellation token should not be cancelled before shutdown request"
     );
 
-    // The daemon runner opens its session under the `local` workspace namespace (no
-    // workspace id in the runtime config); this control messenger must too,
-    // or its reachability probe never routes to the node's services.
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger");
+    let messenger = stack.connect_control_messenger().await;
 
     // The shutdown service is a pre-setup service, so it must be reachable
     // while setup_fn is still blocked
@@ -1176,21 +963,8 @@ async fn node_runner_exposes_messenger_and_metadata() {
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
-    let peppy_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "test_node",
-        tag: "v1",
-      },
-      execution: {
-        language: "rust",
-        parameters: {
-          frequency_hz: "f64"
-        },
-        run_cmd: ["./target/debug/test_node"]
-      },
-    }"#;
-    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+    std::fs::write(&peppy_config_path, TEST_NODE_PEPPY_CONFIG)
+        .expect("failed to write peppy config");
 
     let standalone_config = StandaloneConfig::new()
         .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
@@ -1242,97 +1016,14 @@ async fn node_runner_exposes_messenger_and_metadata() {
         .expect("runner should return Ok");
 }
 
-/// Scaffolding for the shutdown-hook tests below: an ephemeral router, a node
-/// `peppy.json5` + launch config in a temp dir, and the env guard that points
-/// `NodeBuilder` at them in daemon mode. Declaration order matters for drop:
-/// the env guard restores cwd before the temp dir it points into is removed.
-struct DaemonStack {
-    _env_guard: EnvAndDirGuard,
-    _temp_dir: tempfile::TempDir,
-    _router: pmi::ZenohdInstance,
-    router_host: String,
-    router_port: u16,
-}
-
-/// Stands up the daemon-mode scaffolding with an optional
-/// `lifecycle.shutdown_grace_secs` override in the launch config (mirroring
-/// what the daemon ships to spawned nodes).
-async fn start_daemon_stack(shutdown_grace_secs: Option<u64>) -> DaemonStack {
-    let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (router.host.clone(), router.port);
-
-    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
-    let peppy_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "test_node",
-        tag: "v1",
-      },
-      execution: {
-        language: "rust",
-        parameters: {
-          frequency_hz: "f64"
-        },
-        run_cmd: ["./target/debug/test_node"]
-      },
-    }"#;
-    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let mut runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig {
-            arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
-                .expect("runtime args should parse"),
-            ..NodeInstanceConfig::new(
-                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
-            )
-        },
-        TEST_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .expect("runtime config should build");
-    if let Some(grace) = shutdown_grace_secs {
-        runtime_config.lifecycle.shutdown_grace_secs = grace;
-    }
-    let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
-    runtime_config
-        .save_json5_launch_config(&runtime_config_path)
-        .expect("failed to write runtime config");
-
-    let env_guard = EnvAndDirGuard::new(temp_dir.path(), &runtime_config_path);
-
-    DaemonStack {
-        _env_guard: env_guard,
-        _temp_dir: temp_dir,
-        _router: router,
-        router_host,
-        router_port,
-    }
-}
-
 /// Polls until the node's `SHUTDOWN_SERVICE` is reachable (panicking if the
 /// runner exits first), then sends the shutdown request: the same in-band ask
 /// `peppy node stop` delivers.
 async fn send_shutdown_when_reachable<T: std::fmt::Debug>(
-    router_host: &str,
-    router_port: u16,
+    stack: &DaemonStack,
     runner_task: &mut tokio::task::JoinHandle<T>,
 ) {
-    // The daemon runner opens its session under the `local` workspace namespace (no
-    // workspace id in the runtime config); this control messenger must too,
-    // or its reachability probe never routes to the node's services.
-    let messenger = peppylib::MessengerHandle::connect(router_host, router_port)
-        .await
-        .expect("failed to create messenger");
+    let messenger = stack.connect_control_messenger().await;
 
     wait_until_reachable(
         &messenger,
@@ -1359,7 +1050,7 @@ async fn send_shutdown_when_reachable<T: std::fmt::Debug>(
 /// (the `ds_lock_probe` leak).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_shutdown_awaits_hooks_lifo_before_exit() {
-    let stack = start_daemon_stack(None).await;
+    let stack = start_daemon_stack(TEST_NODE_PEPPY_CONFIG, None).await;
 
     let order: std::sync::Arc<Mutex<Vec<String>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
     let order_first = std::sync::Arc::clone(&order);
@@ -1391,7 +1082,7 @@ async fn daemon_shutdown_awaits_hooks_lifo_before_exit() {
         .expect("runner setup should complete")
         .expect("runner setup signal should be sent");
 
-    send_shutdown_when_reachable(&stack.router_host, stack.router_port, &mut runner_task).await;
+    send_shutdown_when_reachable(&stack, &mut runner_task).await;
 
     tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
         .await
@@ -1410,7 +1101,7 @@ async fn daemon_shutdown_awaits_hooks_lifo_before_exit() {
 /// up to that point (e.g. an instance lock stored early in setup).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_shutdown_during_setup_runs_registered_hooks() {
-    let stack = start_daemon_stack(None).await;
+    let stack = start_daemon_stack(TEST_NODE_PEPPY_CONFIG, None).await;
 
     let (hook_tx, hook_rx) = tokio::sync::oneshot::channel::<()>();
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
@@ -1432,7 +1123,7 @@ async fn daemon_shutdown_during_setup_runs_registered_hooks() {
         .expect("runner setup should start")
         .expect("setup start signal should be sent");
 
-    send_shutdown_when_reachable(&stack.router_host, stack.router_port, &mut runner_task).await;
+    send_shutdown_when_reachable(&stack, &mut runner_task).await;
 
     tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
         .await
@@ -1450,7 +1141,7 @@ async fn daemon_shutdown_during_setup_runs_registered_hooks() {
 /// still returns, so stuck cleanup can never wedge a stop.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_shutdown_hooks_are_bounded_by_grace_window() {
-    let stack = start_daemon_stack(Some(1)).await;
+    let stack = start_daemon_stack(TEST_NODE_PEPPY_CONFIG, Some(1)).await;
 
     let order: std::sync::Arc<Mutex<Vec<&'static str>>> =
         std::sync::Arc::new(Mutex::new(Vec::new()));
@@ -1479,7 +1170,7 @@ async fn daemon_shutdown_hooks_are_bounded_by_grace_window() {
         .expect("runner setup should complete")
         .expect("runner setup signal should be sent");
 
-    send_shutdown_when_reachable(&stack.router_host, stack.router_port, &mut runner_task).await;
+    send_shutdown_when_reachable(&stack, &mut runner_task).await;
 
     // Must exit shortly after the 1s grace window, not after the 600s sleep.
     tokio::time::timeout(Duration::from_secs(15), &mut runner_task)
@@ -1500,7 +1191,7 @@ async fn daemon_shutdown_hooks_are_bounded_by_grace_window() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_sigint_runs_hooks_and_exits() {
     // Held for scope: the env guard and router must outlive the runner.
-    let _stack = start_daemon_stack(None).await;
+    let _stack = start_daemon_stack(TEST_NODE_PEPPY_CONFIG, None).await;
 
     // Safety net: install a process-wide SIGINT handler in the test runtime
     // before raising, so the raise below can never kill the test process even
@@ -1557,21 +1248,8 @@ async fn standalone_cancel_awaits_hooks_before_exit() {
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
-    let peppy_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "test_node",
-        tag: "v1",
-      },
-      execution: {
-        language: "rust",
-        parameters: {
-          frequency_hz: "f64"
-        },
-        run_cmd: ["./target/debug/test_node"]
-      },
-    }"#;
-    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+    std::fs::write(&peppy_config_path, TEST_NODE_PEPPY_CONFIG)
+        .expect("failed to write peppy config");
 
     let standalone_config = StandaloneConfig::new()
         .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
