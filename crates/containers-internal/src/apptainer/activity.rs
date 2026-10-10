@@ -497,9 +497,8 @@ fn clock_ticks_to_duration(ticks: u64, ticks_per_second: NonZeroU64) -> Duration
 /// own metadata is counted, not its target's). Missing paths and unreadable
 /// entries contribute 0 so one bad subtree cannot zero out the whole sample.
 fn dir_size_bytes(root: &Path) -> u64 {
-    let meta = match std::fs::symlink_metadata(root) {
-        Ok(meta) => meta,
-        Err(_) => return 0,
+    let Ok(meta) = std::fs::symlink_metadata(root) else {
+        return 0;
     };
     if meta.is_dir() {
         dir_tree_size(root)
@@ -513,9 +512,8 @@ fn dir_size_bytes(root: &Path) -> u64 {
 /// recursion; `metadata`, an lstat with no path building, for sizes) because
 /// this runs over the whole apptainer cache every sample tick.
 fn dir_tree_size(dir: &Path) -> u64 {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return 0,
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
     };
     entries
         .filter_map(|entry| entry.ok())
