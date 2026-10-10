@@ -111,19 +111,17 @@ def test_upload_asset_success(
 # --- Upload: streamed with progress ---
 
 
-class _TicksThenStops:
-    """Stands in for the reporter's Event: *ticks* intervals elapse,
-    then the upload is over, whatever the host's speed."""
-
-    ticks = 0
+class _TwoIntervalsThenStops:
+    """Stands in for the reporter's Event: two intervals elapse, then the
+    upload is over, whatever the host's speed."""
 
     def __init__(self) -> None:
-        self._remaining = self.ticks
+        self._intervals_left = 2
 
     def wait(self, timeout: float) -> bool:
-        if self._remaining == 0:
+        if self._intervals_left == 0:
             return True
-        self._remaining -= 1
+        self._intervals_left -= 1
         return False
 
     def set(self) -> None:
@@ -156,7 +154,7 @@ def test_upload_asset_streams_the_whole_file_with_its_length(
     assert "Transfer-Encoding" not in request.headers
 
 
-@patch("functions.github.Event", type("Ticks", (_TicksThenStops,), {"ticks": 2}))
+@patch("functions.github.Event", _TwoIntervalsThenStops)
 @patch("functions.github.time.monotonic", side_effect=[100.0, 105.0, 110.0, 125.0])
 def test_upload_asset_prints_progress_lines_then_a_summary(
     mock_monotonic: object,
