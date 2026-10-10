@@ -1,17 +1,19 @@
 import asyncio
-import sys
+import logging
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.emitted_topics import message_stream
 from peppygen.parameters import Parameters
+
+logger = logging.getLogger(__name__)
 
 
 async def emit_hello_world_loop(node_runner: NodeRunner):
     # Declare the publisher once, then publish each message on it.
     try:
         publisher = await message_stream.declare_publisher(node_runner)
-    except Exception as e:
-        print(f"Failed to declare message_stream publisher: {e}", file=sys.stderr)
+    except Exception:
+        logger.exception("Failed to declare message_stream publisher")
         return
 
     counter = 0
@@ -21,8 +23,8 @@ async def emit_hello_world_loop(node_runner: NodeRunner):
         print(message, flush=True)
         try:
             await publisher.publish(message_stream.build_message(message))
-        except Exception as e:
-            print(f"Failed to publish hello world: {e}", file=sys.stderr)
+        except Exception:
+            logger.exception("Failed to publish hello world")
         await asyncio.sleep(3)
 
 

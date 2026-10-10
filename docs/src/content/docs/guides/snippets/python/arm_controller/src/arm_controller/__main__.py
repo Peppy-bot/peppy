@@ -1,9 +1,11 @@
 import asyncio
-import sys
+import logging
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.paired_topics.arm import joint_commands, joint_states
 from peppygen.parameters import Parameters
+
+logger = logging.getLogger(__name__)
 
 # `arm_controller` plays the `controller` role of the `arm_link` pairing.
 # Both directions of its `arm` slot live under `peppygen.paired_topics.arm`: it
@@ -21,33 +23,33 @@ async def control_loop(node_runner: NodeRunner):
     # Declare the publisher once, then publish each command on it.
     try:
         publisher = await joint_commands.declare_publisher(node_runner)
-    except Exception as e:
-        print(f"Failed to declare joint_commands publisher: {e}", file=sys.stderr)
+    except Exception:
+        logger.exception("Failed to declare joint_commands publisher")
         return
 
     # Subscribing while unpaired is legal: the subscription follows the
     # slot's live pin, silent until an arm is paired.
     try:
         subscription = await joint_states.subscribe(node_runner)
-    except Exception as e:
-        print(f"Failed to subscribe to joint_states: {e}", file=sys.stderr)
+    except Exception:
+        logger.exception("Failed to subscribe to joint_states")
         return
 
     # Optional: block until an arm is paired and log who it is.
     try:
         peer = await joint_states.wait_paired(node_runner)
         print(f"paired with arm {peer.producer.core_node}/{peer.producer.instance_id}")
-    except Exception as e:
-        print(f"Failed to wait for a paired arm: {e}", file=sys.stderr)
+    except Exception:
+        logger.exception("Failed to wait for a paired arm")
         return
 
     while True:
         try:
             received = await subscription.next()
-        except Exception as e:
+        except Exception:
             # Log the failure, then pause before retrying so a persistent
             # receive error does not spin the loop at full speed.
-            print(f"Error receiving joint state: {e}", file=sys.stderr)
+            logger.exception("Error receiving joint state")
             await asyncio.sleep(1.0)
             continue
 
@@ -70,8 +72,8 @@ async def control_loop(node_runner: NodeRunner):
                     1.0,  # max_velocity
                 )
             )
-        except Exception as e:
-            print(f"Failed to publish joint command: {e}", file=sys.stderr)
+        except Exception:
+            logger.exception("Failed to publish joint command")
 
 
 async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
