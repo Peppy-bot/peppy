@@ -108,17 +108,9 @@ fn handle_feedback(
     scrolling_output: &mut Option<ScrollingOutput>,
     current_scrolling_step: &mut Option<LaunchFeedbackStep>,
 ) {
-    // Check if we're switching between steps
-    let step_changed = current_scrolling_step
-        .as_ref()
-        .map(|s| std::mem::discriminant(s) != std::mem::discriminant(&feedback.step))
-        .unwrap_or(true);
-
-    if step_changed {
-        // Clear existing scrolling output if we were in a scrolling step
-        if let Some(output) = scrolling_output.as_mut() {
+    if *current_scrolling_step != Some(feedback.step) {
+        if let Some(mut output) = scrolling_output.take() {
             output.clear();
-            *scrolling_output = None;
         }
         *current_scrolling_step = Some(feedback.step);
     }
@@ -400,5 +392,29 @@ mod tests {
             line,
             "reactive_policy:v1@cn-robot-7 [FAILED]: /tmp/.peppy/logs/build/reactive_policy_v1.log"
         );
+    }
+
+    /// A change of step ends the scrolling output of the step before it; the
+    /// add, build and run steps write into one, the launcher step does not.
+    #[test]
+    fn handle_feedback_resets_the_scrolling_output_on_a_step_change() {
+        let mut scrolling_output = None;
+        let mut current_scrolling_step = None;
+        let steps = [
+            (LaunchFeedbackStep::LauncherStep, false),
+            (LaunchFeedbackStep::AddingNode, true),
+            (LaunchFeedbackStep::AddingNode, true),
+            (LaunchFeedbackStep::BuildingNode, true),
+            (LaunchFeedbackStep::LauncherStep, false),
+        ];
+        for (step, has_scrolling_output) in steps {
+            handle_feedback(
+                &LaunchFeedback::stdout("line", step),
+                &mut scrolling_output,
+                &mut current_scrolling_step,
+            );
+            assert_eq!(scrolling_output.is_some(), has_scrolling_output, "{step:?}");
+            assert_eq!(current_scrolling_step, Some(step));
+        }
     }
 }
