@@ -14,7 +14,7 @@
 //! UPDATE_PYTHON_GOLDEN=1 cargo test -p generator --lib python::tests::golden
 //! ```
 //!
-//! and read the resulting diff — that diff is the change.
+//! and read the resulting diff: that diff is the change.
 
 use super::*;
 use crate::generator::types::{ConsumedActionMessage, ContractOrigin, PeerContext};
