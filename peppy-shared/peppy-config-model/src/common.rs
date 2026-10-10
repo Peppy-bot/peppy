@@ -358,8 +358,12 @@ impl<'de> Deserialize<'de> for ParameterSpec {
 fn parameter_spec_from_any(value: AnyType, path: &str) -> Result<ParameterSpec, String> {
     match value {
         AnyType::String(name) => {
-            let kind = parse_type_token(&name)
-                .ok_or_else(|| format!("at `{path}`: unknown primitive type `{name}`"))?;
+            let kind = parse_type_token(&name).ok_or_else(|| {
+                format!(
+                    "at `{}`: unknown primitive type `{name}`",
+                    display_path(path)
+                )
+            })?;
             Ok(ParameterSpec::Primitive {
                 kind,
                 default: None,
@@ -1285,6 +1289,17 @@ mod tests {
     fn unknown_type_rejected() {
         let result: Result<ParameterSpec, _> = serde_json5::from_str(r#""qubit""#);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn unknown_shorthand_type_names_the_root_path() {
+        let err = serde_json5::from_str::<ParameterSpec>(r#""qubit""#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("at `<root>`: unknown primitive type `qubit`"),
+            "got: {err}"
+        );
     }
 
     #[test]
