@@ -19,6 +19,7 @@ use common::{
     Boot, DaemonGuard, MessagingEngine, PORT_ATTEMPTS, SERVE_INITIALIZED, free_port,
     spawn_daemon_with_env, wait_for_boot,
 };
+use daemon::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
 use log_export::test_support::{OtlpReceiver, ReceivedRecord};
 use std::collections::BTreeMap;
@@ -133,12 +134,20 @@ impl Daemon {
         printed
     }
 
+    /// Stages `manifest` as the node `name` in a new nodes directory. Returns
+    /// the nodes directory, which the caller holds for as long as the daemon
+    /// may read the node, and the node directory.
+    fn install_node(&self, name: &str, manifest: &str) -> (tempfile::TempDir, PathBuf) {
+        let nodes = tempfile::tempdir().expect("temp nodes dir");
+        // A node directory is added by the binary that generated its code.
+        let git_hash = common::read_daemon_git_hash(&DaemonState::state_file_in(self.home.path()));
+        let node_dir = common::install_node_manifest(nodes.path(), name, &git_hash, manifest);
+        (nodes, node_dir)
+    }
+
     /// Writes the node whose build prints [`BUILD_NOTE`], [`BUILD_WARNING`]
     /// and [`BUILD_STEP`], and whose instances print [`RUN_LINE`] and exit.
     fn write_the_node(&self) -> (tempfile::TempDir, PathBuf) {
-        let nodes = tempfile::tempdir().expect("temp nodes dir");
-        // A node directory is added by the binary that generated its code.
-        let git_hash = common::read_daemon_git_hash(&self.home.path().join("daemon_state.json5"));
         let build = format!("echo '{BUILD_NOTE}'; echo '{BUILD_WARNING}'; echo '{BUILD_STEP}'");
         let run = format!("echo '{RUN_LINE}'");
         let manifest = format!(
@@ -152,8 +161,7 @@ impl Daemon {
             }}
         }}"#
         );
-        let node_dir = common::install_node_manifest(nodes.path(), NODE_NAME, &git_hash, &manifest);
-        (nodes, node_dir)
+        self.install_node(NODE_NAME, &manifest)
     }
 
     /// Adds and builds the node of [`Self::write_the_node`].
@@ -195,8 +203,6 @@ impl Daemon {
     /// Adds a node whose build prints the error line of a `cargo build` that
     /// fails on a type error, and fails. The add fails.
     fn add_the_broken_node(&self) {
-        let nodes = tempfile::tempdir().expect("temp nodes dir");
-        let git_hash = common::read_daemon_git_hash(&self.home.path().join("daemon_state.json5"));
         let build = format!("echo '{CARGO_ERROR_LINE}' >&2; exit 101");
         let manifest = format!(
             r#"{{
@@ -209,8 +215,7 @@ impl Daemon {
             }}
         }}"#
         );
-        let node_dir =
-            common::install_node_manifest(nodes.path(), BROKEN_NODE_NAME, &git_hash, &manifest);
+        let (_nodes, node_dir) = self.install_node(BROKEN_NODE_NAME, &manifest);
         let (success, _) =
             self.peppy_outcome(&["node", "add", &node_dir.display().to_string(), "--build"]);
         assert!(!success, "a failed build fails the add");
@@ -261,6 +266,19 @@ fn bodies_from<'a>(records: &'a [ReceivedRecord], path: &Path) -> Vec<&'a str> {
         .iter()
         .filter(|record| record.attributes.get("log.file.path") == Some(&path))
         .map(|record| record.body.as_str())
+        .collect()
+}
+
+/// The records exported from run logs that name the stream their line was
+/// printed on: what the instances of a node printed.
+fn run_output_records(receiver: &mut OtlpReceiver) -> Vec<ReceivedRecord> {
+    receiver
+        .take_records()
+        .into_iter()
+        .filter(|record| {
+            record.attributes["peppy.log"] == "run"
+                && record.attributes.contains_key("log.iostream")
+        })
         .collect()
 }
 
@@ -498,8 +516,6 @@ fn a_rust_node_that_logs_through_tracing_exports_the_levels_it_prints() {
     let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
     let mut receiver = receiver(&runtime);
     let daemon = Daemon::boot(&format!("otlp_endpoint: \"{}\"", receiver.endpoint()), &[]);
-    let nodes = tempfile::tempdir().expect("temp nodes dir");
-    let git_hash = common::read_daemon_git_hash(&daemon.home.path().join("daemon_state.json5"));
     // `peppy node info` of a node the daemon does not hold logs an info line
     // on its way and an error line for the answer.
     let manifest = format!(
@@ -514,8 +530,7 @@ fn a_rust_node_that_logs_through_tracing_exports_the_levels_it_prints() {
         }}"#,
         peppy = env!("CARGO_BIN_EXE_peppy"),
     );
-    let node_dir =
-        common::install_node_manifest(nodes.path(), TRACING_NODE_NAME, &git_hash, &manifest);
+    let (_nodes, node_dir) = daemon.install_node(TRACING_NODE_NAME, &manifest);
     daemon.peppy(&["node", "add", &node_dir.display().to_string(), "--build"]);
     let (_, _) = daemon.peppy_outcome(&[
         "node",
@@ -526,14 +541,7 @@ fn a_rust_node_that_logs_through_tracing_exports_the_levels_it_prints() {
     ]);
     let (_home, _printed) = daemon.stop();
 
-    let records: Vec<ReceivedRecord> = receiver
-        .take_records()
-        .into_iter()
-        .filter(|record| {
-            record.attributes["peppy.log"] == "run"
-                && record.attributes.contains_key("log.iostream")
-        })
-        .collect();
+    let records = run_output_records(&mut receiver);
     assert!(!records.is_empty(), "the node's output is exported");
     for level in ["INFO", "ERROR"] {
         let record = records
@@ -556,8 +564,6 @@ fn a_python_node_that_logs_through_logging_exports_the_levels_it_prints() {
     let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
     let mut receiver = receiver(&runtime);
     let daemon = Daemon::boot(&format!("otlp_endpoint: \"{}\"", receiver.endpoint()), &[]);
-    let nodes = tempfile::tempdir().expect("temp nodes dir");
-    let git_hash = common::read_daemon_git_hash(&daemon.home.path().join("daemon_state.json5"));
     let program = format!(
         "import logging; logging.warning('disk is nearly full'); \
          logging.error('motor fault'); print('{PRINTED_LINE}', flush=True)"
@@ -573,8 +579,7 @@ fn a_python_node_that_logs_through_logging_exports_the_levels_it_prints() {
             }}
         }}"#,
     );
-    let node_dir =
-        common::install_node_manifest(nodes.path(), LOGGING_NODE_NAME, &git_hash, &manifest);
+    let (_nodes, node_dir) = daemon.install_node(LOGGING_NODE_NAME, &manifest);
     daemon.peppy(&["node", "add", &node_dir.display().to_string(), "--build"]);
     let (_, _) = daemon.peppy_outcome(&[
         "node",
@@ -585,14 +590,7 @@ fn a_python_node_that_logs_through_logging_exports_the_levels_it_prints() {
     ]);
     let (_home, _printed) = daemon.stop();
 
-    let records: Vec<ReceivedRecord> = receiver
-        .take_records()
-        .into_iter()
-        .filter(|record| {
-            record.attributes["peppy.log"] == "run"
-                && record.attributes.contains_key("log.iostream")
-        })
-        .collect();
+    let records = run_output_records(&mut receiver);
     for (level, number, message) in [
         ("WARNING", 13, "disk is nearly full"),
         ("ERROR", 17, "motor fault"),
