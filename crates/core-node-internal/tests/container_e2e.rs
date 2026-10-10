@@ -399,15 +399,27 @@ mod container_e2e_tests {
         );
     }
 
-    /// PIDs of the live `%post` marker processes in the build kernel. The
-    /// `[P]...` class keeps the grep from matching its own argv.
+    /// The script that the `%post` of a blocked zombie test build writes and
+    /// runs with `sh`, so the shell that runs it carries this name in its
+    /// `ps args` (one shell per in-flight build; its `sleep` child does not).
+    const MARKER: &str = "PEPPY_ZOMBIE_E2E_MARKER";
+
+    /// [`MARKER`] as a pattern whose first character sits in a bracket class,
+    /// so a `grep` or `pgrep -f` for it does not match its own argv.
+    fn self_excluding_marker_pattern() -> String {
+        let mut rest = MARKER.chars();
+        let first = rest.next().expect("the marker is not empty");
+        format!("[{first}]{}", rest.as_str())
+    }
+
+    /// PIDs of the live `%post` marker processes in the build kernel.
     fn marker_pids(facade: &containers::Apptainer) -> HashSet<u32> {
+        let list_markers = format!(
+            "ps -eo pid=,args= | grep '{}'",
+            self_excluding_marker_pattern()
+        );
         let out = facade
-            .guest_command(&[
-                "sh",
-                "-c",
-                "ps -eo pid=,args= | grep '[P]EPPY_ZOMBIE_E2E_MARKER'",
-            ])
+            .guest_command(&["sh", "-c", &list_markers])
             .expect("guest_command should run");
         String::from_utf8_lossy(&out.stdout)
             .lines()
@@ -417,13 +429,13 @@ mod container_e2e_tests {
 
     /// SIGKILLs each marker's whole (setsid-detached) process group, so the
     /// `%post` loop and its `sleep` child go together.
-    fn kill_marker_groups(facade: &containers::Apptainer, marker: &str) {
+    fn kill_marker_groups(facade: &containers::Apptainer) {
         let kill_groups = format!(
-            "for p in $(pgrep -f '[P]{m}'); do \
+            "for p in $(pgrep -f '{pattern}'); do \
                  g=$(ps -o pgid= -p \"$p\" 2>/dev/null | tr -d ' '); \
                  [ -n \"$g\" ] && kill -KILL -\"$g\" 2>/dev/null; \
              done; true",
-            m = &marker[1..]
+            pattern = self_excluding_marker_pattern()
         );
         let _ = facade.guest_command(&["sh", "-c", &kill_groups]);
     }
@@ -499,7 +511,6 @@ mod container_e2e_tests {
         const NODE_NAME: &str = "zombie_e2e_node";
         const BASE_NODE_NAME: &str = "zombie_e2e_base";
         const NODE_TAG: &str = "v1";
-        const MARKER: &str = "PEPPY_ZOMBIE_E2E_MARKER";
         // Each `--force` supersedes the prior in-flight build. The first build is
         // cold (its PGID write always succeeds), so we need several reuse builds
         // for the guest-FS race to bite at least once.
@@ -518,7 +529,7 @@ mod container_e2e_tests {
         // its blocked `%post` processes behind. Reclaim any such leftovers up
         // front so this run counts only markers it created, instead of failing
         // on a predecessor's.
-        kill_marker_groups(&facade, MARKER);
+        kill_marker_groups(&facade);
 
         // Pull the base image once, here, into a local `.sif` the supersede
         // chain then bootstraps from. The chain cares only that each build
@@ -673,7 +684,7 @@ mod container_e2e_tests {
         }
 
         // Clean up before asserting so a failure never leaks build processes.
-        kill_marker_groups(&facade, MARKER);
+        kill_marker_groups(&facade);
         for t in tasks {
             t.abort();
         }
