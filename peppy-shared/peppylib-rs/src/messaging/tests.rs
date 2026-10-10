@@ -1290,13 +1290,49 @@ async fn service_communication_poll_specific_instance_id() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_poll_wrong_node() {
+    let listener = ProducerRef::new("listener_core_node", "listener_instance");
+    // A wrong instance_id on the listener's real core_node.
+    let pinned = ProducerRef::new(&listener.core_node, "wrong_node");
+    assert_poll_to_absent_producer_is_unreachable(
+        &listener,
+        pinned,
+        Duration::from_millis(1500),
+        Duration::from_secs(1),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_communication_poll_wrong_core_node() {
+    let listener = ProducerRef::new("listener_core_node", "listener_instance");
+    // The listener's real instance_id on a wrong core_node.
+    let pinned = ProducerRef::new("wrong_core_node", &listener.instance_id);
+    assert_poll_to_absent_producer_is_unreachable(
+        &listener,
+        pinned,
+        Duration::from_millis(500),
+        Duration::from_millis(200),
+    )
+    .await;
+}
+
+/// Starts a `camera` listener at `listener` exposing `enable_camera`, then
+/// polls the service pinned to `pinned`, a pair that matches the listener in
+/// one half only. The poll must fail as unreachable, naming the pinned
+/// instance_id, and the listener's handler must never run. `listener_wait`
+/// bounds how long the listener waits for a request, and `poll_timeout` is
+/// the poll's budget.
+async fn assert_poll_to_absent_producer_is_unreachable(
+    listener: &ProducerRef,
+    pinned: ProducerRef,
+    listener_wait: Duration,
+    poll_timeout: Duration,
+) {
     let router = TestRouterContext::start().await;
 
     // Listener instance
     let listener_node_name = "camera";
     let listener_service_name = "enable_camera";
-    let listener_instance_id = "listener_instance";
-    let listener_core_node = "listener_core_node";
 
     // Caller instance
     const CALLER_INSTANCE_ID: &str = "caller_instance";
@@ -1306,8 +1342,7 @@ async fn service_communication_poll_wrong_node() {
     let call_count = Arc::new(AtomicUsize::new(0));
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
-    let service_wait_timeout = Duration::from_millis(1500);
-    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
+    let service_task_timeout = listener_wait + Duration::from_millis(500);
     let service_ready_timeout = Duration::from_secs(1);
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
@@ -1315,8 +1350,8 @@ async fn service_communication_poll_wrong_node() {
         let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            listener_core_node,
-            listener_instance_id,
+            &listener.core_node,
+            &listener.instance_id,
             test_node_target(listener_node_name),
             listener_service_name,
         )
@@ -1330,21 +1365,21 @@ async fn service_communication_poll_wrong_node() {
                 let response_payload = Payload::from_static(b"ack");
                 async move {
                     // This closure should never be called in this test since
-                    // we're targeting the wrong node
+                    // we're targeting a producer that does not exist
                     call_count.fetch_add(1, Ordering::SeqCst);
                     Ok(response_payload)
                 }
             });
 
             service_ready_tx.send(()).unwrap();
-            let handled = tokio::time::timeout(service_wait_timeout, handler).await;
+            let handled = tokio::time::timeout(listener_wait, handler).await;
 
-            // The service is targeted at the wrong node, so the user handler
-            // must never run. A correct run either leaves the handler parked
-            // until `service_wait_timeout` fires (`Err(Elapsed)`) or finds the
+            // The poll targets a producer that does not exist, so the user
+            // handler must never run. A correct run either leaves the handler
+            // parked until `listener_wait` fires (`Err(Elapsed)`) or finds the
             // request stream already closed (`Ok(false)`); both mean no request
-            // was delivered. Only `Ok(true)` — a request actually reaching the
-            // handler — is a failure. `call_count == 0` below is the
+            // was delivered. Only `Ok(true)` (a request actually reaching the
+            // handler) is a failure. `call_count == 0` below is the
             // authoritative guarantee that nothing was processed.
             match handled {
                 Err(_) | Ok(Ok(false)) | Ok(Err(_)) => {}
@@ -1362,149 +1397,10 @@ async fn service_communication_poll_wrong_node() {
         .expect("service should signal readiness before timeout")
         .expect("service should signal readiness");
 
-    // The caller node has its own scope (emulates a separate node running on a different instance)
-    {
-        let caller_handle = router.messenger().await;
-        let err = {
-            let result = ServiceMessenger::poll(
-                &caller_handle,
-                CALLER_CORE_NODE,
-                CALLER_INSTANCE_ID,
-                test_node_target(listener_node_name),
-                listener_service_name,
-                // Use a wrong instance_id here (the core_node is the real one)
-                ServiceTarget::Producer(&ProducerRef::new(listener_core_node, "wrong_node")),
-                request_payload.clone(),
-                Duration::from_secs(1),
-            )
-            .await;
-
-            let Err(err) = result else {
-                panic!("service call should fail when targeting the wrong node");
-            };
-
-            err
-        };
-
-        let Error::ServiceUnreachable {
-            instance_id: err_instance_id,
-            service_name: err_service_name,
-        } = &err
-        else {
-            panic!(
-                "expected ServiceUnreachable error, received unexpected error: {:?}",
-                err
-            );
-        };
-
-        assert_eq!(err_instance_id.as_deref(), Some("wrong_node"));
-        assert_eq!(err_service_name.as_str(), listener_service_name);
-        assert_eq!(
-            call_count.load(Ordering::SeqCst),
-            0,
-            "service should not be called when targeting the wrong instance"
-        );
-    }
-
-    tokio::time::timeout(service_task_timeout, service_task)
-        .await
-        .expect("service task should finish within timeout")
-        .expect("service task panicked")
-        .expect("service task returned error");
-
-    // Authoritative check that the user handler never ran — independent of
-    // whether the listener timed out or its stream closed first. Asserting only
-    // after the service task has joined guarantees the handler future is fully
-    // resolved, so a late increment cannot slip past this check.
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
-        0,
-        "service callback should not have been called"
-    );
-
-    tokio::time::timeout(service_task_timeout, router.shutdown())
-        .await
-        .expect("router shutdown timed out");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn service_communication_poll_wrong_core_node() {
-    let router = TestRouterContext::start().await;
-
-    // Listener instance
-    let listener_node_name = "camera";
-    let listener_service_name = "enable_camera";
-    let listener_instance_id = "listener_instance";
-    let listener_core_node = "listener_core_node";
-
-    // Caller instance
-    const CALLER_INSTANCE_ID: &str = "caller_instance";
-    const CALLER_CORE_NODE: &str = "caller_core_node";
-
-    let request_payload = Payload::from_static(b"enable=true");
-
-    let call_count = Arc::new(AtomicUsize::new(0));
-
-    let (service_ready_tx, service_ready_rx) = oneshot::channel();
-    let service_wait_timeout = Duration::from_millis(500);
-    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
-    let service_ready_timeout = Duration::from_secs(1);
-
-    // The exposed service has its own dedicated scope (emulates running on its own instance)
-    let service_task = {
-        let service_expose_handle = router.messenger().await;
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node,
-            listener_instance_id,
-            test_node_target(listener_node_name),
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
-
-        let call_count = Arc::clone(&call_count);
-
-        tokio::spawn(async move {
-            let handler = service.handle_next_request(|_request| {
-                let response_payload = Payload::from_static(b"ack");
-                async move {
-                    // This closure should never be called in this test since
-                    // we're targeting the wrong node
-                    call_count.fetch_add(1, Ordering::SeqCst);
-                    Ok(response_payload)
-                }
-            });
-
-            service_ready_tx.send(()).unwrap();
-            let handled = tokio::time::timeout(service_wait_timeout, handler).await;
-
-            // The service is targeted at the wrong node, so the user handler
-            // must never run. A correct run either leaves the handler parked
-            // until `service_wait_timeout` fires (`Err(Elapsed)`) or finds the
-            // request stream already closed (`Ok(false)`); both mean no request
-            // was delivered. Only `Ok(true)` — a request actually reaching the
-            // handler — is a failure. `call_count == 0` below is the
-            // authoritative guarantee that nothing was processed.
-            match handled {
-                Err(_) | Ok(Ok(false)) | Ok(Err(_)) => {}
-                Ok(Ok(true)) => {
-                    panic!("service handler processed a request despite the wrong target")
-                }
-            }
-
-            Ok::<(), Error>(())
-        })
-    };
-
-    // The caller node has its own scope (emulates a separate node running on a different instance)
+    // The caller node has its own scope (emulates a separate node running on a
+    // different instance). The poll retries a cold-start miss itself, so it
+    // follows the readiness signal at once.
     let err = {
-        tokio::time::timeout(service_ready_timeout, service_ready_rx)
-            .await
-            .expect("service should signal readiness before timeout")
-            .expect("service should signal readiness");
-
-        // No settle sleep: the poll below self-retries on a cold-start miss.
         let caller_handle = router.messenger().await;
         let result = ServiceMessenger::poll(
             &caller_handle,
@@ -1512,15 +1408,17 @@ async fn service_communication_poll_wrong_core_node() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            // Pin a producer on the wrong core_node (the instance_id is the real one)
-            ServiceTarget::Producer(&ProducerRef::new("wrong_core_node", listener_instance_id)),
+            ServiceTarget::Producer(&pinned),
             request_payload.clone(),
-            Duration::from_millis(200),
+            poll_timeout,
         )
         .await;
 
         let Err(err) = result else {
-            panic!("service call should fail when targeting the wrong core node");
+            panic!(
+                "service call should fail when targeting the absent producer `{}/{}`",
+                pinned.core_node, pinned.instance_id
+            );
         };
 
         err
@@ -1538,8 +1436,16 @@ async fn service_communication_poll_wrong_core_node() {
     };
 
     // The pinned target's instance_id travels in the error
-    assert_eq!(err_instance_id.as_deref(), Some(listener_instance_id));
+    assert_eq!(
+        err_instance_id.as_deref(),
+        Some(pinned.instance_id.as_str())
+    );
     assert_eq!(err_service_name.as_str(), listener_service_name);
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        0,
+        "service should not be called when targeting the wrong instance"
+    );
 
     tokio::time::timeout(service_task_timeout, service_task)
         .await
@@ -1547,9 +1453,10 @@ async fn service_communication_poll_wrong_core_node() {
         .expect("service task panicked")
         .expect("service task returned error");
 
-    // Authoritative check that the user handler never ran for the wrong core
-    // node — independent of whether the listener timed out or its stream
-    // closed first.
+    // Authoritative check that the user handler never ran, independent of
+    // whether the listener timed out or its stream closed first. Asserting only
+    // after the service task has joined guarantees the handler future is fully
+    // resolved, so a late increment cannot slip past this check.
     assert_eq!(
         call_count.load(Ordering::SeqCst),
         0,
