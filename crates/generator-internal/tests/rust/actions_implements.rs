@@ -5,49 +5,11 @@
 //! `contract_name`/`contract_tag` literals.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
-use config::node::{
-    GoalServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, SchemaType,
-    TypeToken,
-};
-use generator::{
-    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, NodeTree,
-    generate_peppygen_lib,
-};
-use indexmap::IndexMap;
+use crate::implements_fixtures::{contract_backed_action, make_move_arm_action};
+use config::node::PeppygenLanguage;
+use generator::{CrateDeployMode, NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
-
-fn make_action(marker: &str) -> NativeExposedAction {
-    let mut req: IndexMap<String, SchemaType> = IndexMap::new();
-    req.insert(marker.to_string(), SchemaType::Type(TypeToken::I32));
-    let mut resp: IndexMap<String, SchemaType> = IndexMap::new();
-    resp.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
-    NativeExposedAction {
-        name: "move_arm".to_string(),
-        goal_service: Some(GoalServiceEndpoint {
-            request_message_format: Some(MessageFormat(req)),
-            response_message_format: Some(MessageFormat(resp)),
-        }),
-        feedback_topic: None,
-        result_service: None,
-    }
-}
-
-fn contract_backed(
-    link_id: &str,
-    name: &str,
-    tag: &str,
-    action: NativeExposedAction,
-) -> DeploymentInterface {
-    DeploymentInterface::new(InterfaceVariant::ExposedAction {
-        action,
-        origin: Some(ContractOrigin {
-            link_id: link_id.to_string(),
-            contract_name: name.to_string(),
-            contract_tag: tag.to_string(),
-        }),
-    })
-}
 
 const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
@@ -93,8 +55,8 @@ fn nests_contract_backed_actions_under_link_id() {
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("arm_v1", "arm", "v1", make_action("arm_v1_marker")),
-        contract_backed("arm_v2", "arm", "v2", make_action("arm_v2_marker")),
+        contract_backed_action("arm_v1", "arm", "v1", make_move_arm_action("arm_v1_marker")),
+        contract_backed_action("arm_v2", "arm", "v2", make_move_arm_action("arm_v2_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();

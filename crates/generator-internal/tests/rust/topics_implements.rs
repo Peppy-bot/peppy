@@ -16,49 +16,11 @@
 //!      `peppylib::TopicMessenger::declare_publisher`.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
-use config::node::{
-    MessageFormat, NativeEmittedTopic, PeppygenLanguage, QoSProfile, SchemaType, TopicRetention,
-    TypeToken,
-};
-use generator::{
-    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, NodeTree,
-    generate_peppygen_lib,
-};
-use indexmap::IndexMap;
+use crate::implements_fixtures::{contract_backed_topic, make_video_stream_topic};
+use config::node::PeppygenLanguage;
+use generator::{CrateDeployMode, NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
-
-/// Minimal `video_stream`-shaped topic with one distinguishing field per
-/// interface tag so we can tell the generated files apart at a glance.
-fn make_topic(distinguishing_field: &str) -> NativeEmittedTopic {
-    let mut fields: IndexMap<String, SchemaType> = IndexMap::new();
-    fields.insert(
-        distinguishing_field.to_string(),
-        SchemaType::Type(TypeToken::U32),
-    );
-    NativeEmittedTopic {
-        name: "video_stream".to_string(),
-        qos_profile: QoSProfile::SensorData,
-        retention: TopicRetention::LiveOnly,
-        message_format: Some(MessageFormat(fields)),
-    }
-}
-
-fn contract_backed(
-    link_id: &str,
-    name: &str,
-    tag: &str,
-    topic: NativeEmittedTopic,
-) -> DeploymentInterface {
-    DeploymentInterface::new(InterfaceVariant::EmittedTopic {
-        topic,
-        origin: Some(ContractOrigin {
-            link_id: link_id.to_string(),
-            contract_name: name.to_string(),
-            contract_tag: tag.to_string(),
-        }),
-    })
-}
 
 const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
@@ -105,19 +67,24 @@ fn nests_contract_backed_topics_under_link_id() {
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed(
+        contract_backed_topic(
             "depth_v1",
             "depth_camera",
             "v1",
-            make_topic("depth_v1_marker"),
+            make_video_stream_topic("depth_v1_marker"),
         ),
-        contract_backed(
+        contract_backed_topic(
             "depth_v2",
             "depth_camera",
             "v2",
-            make_topic("depth_v2_marker"),
+            make_video_stream_topic("depth_v2_marker"),
         ),
-        contract_backed("uvc_v1", "uvc_camera", "v1", make_topic("uvc_v1_marker")),
+        contract_backed_topic(
+            "uvc_v1",
+            "uvc_camera",
+            "v1",
+            make_video_stream_topic("uvc_v1_marker"),
+        ),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -263,11 +230,11 @@ fn hyphenated_link_id_lands_in_underscore_directory() {
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
-    let extras = vec![contract_backed(
+    let extras = vec![contract_backed_topic(
         "depth-beta",
         "depth_camera",
         "v1-beta",
-        make_topic("hyphen_marker"),
+        make_video_stream_topic("hyphen_marker"),
     )];
 
     let peppy_dirs = test_peppy_dirs();

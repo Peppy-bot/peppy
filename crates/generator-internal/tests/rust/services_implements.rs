@@ -5,42 +5,11 @@
 //! for contract-backed leaves and `SenderTarget::node(...)` for the native one.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
-use config::node::{MessageFormat, NativeExposedService, PeppygenLanguage, SchemaType, TypeToken};
-use generator::{
-    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, NodeTree,
-    generate_peppygen_lib,
-};
-use indexmap::IndexMap;
+use crate::implements_fixtures::{contract_backed_service, make_control_service};
+use config::node::PeppygenLanguage;
+use generator::{CrateDeployMode, NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
-
-fn make_service(marker: &str) -> NativeExposedService {
-    let mut request_fields: IndexMap<String, SchemaType> = IndexMap::new();
-    request_fields.insert(marker.to_string(), SchemaType::Type(TypeToken::Bool));
-    let mut response_fields: IndexMap<String, SchemaType> = IndexMap::new();
-    response_fields.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
-    NativeExposedService {
-        name: "control".to_string(),
-        request_message_format: Some(MessageFormat(request_fields)),
-        response_message_format: Some(MessageFormat(response_fields)),
-    }
-}
-
-fn contract_backed(
-    link_id: &str,
-    name: &str,
-    tag: &str,
-    service: NativeExposedService,
-) -> DeploymentInterface {
-    DeploymentInterface::new(InterfaceVariant::ExposedService {
-        service,
-        origin: Some(ContractOrigin {
-            link_id: link_id.to_string(),
-            contract_name: name.to_string(),
-            contract_tag: tag.to_string(),
-        }),
-    })
-}
 
 const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
@@ -83,8 +52,13 @@ fn nests_contract_backed_services_under_link_id() {
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("cam", "camera", "v1", make_service("camera_v1_marker")),
-        contract_backed("arm", "arm", "v2", make_service("arm_v2_marker")),
+        contract_backed_service(
+            "cam",
+            "camera",
+            "v1",
+            make_control_service("camera_v1_marker"),
+        ),
+        contract_backed_service("arm", "arm", "v2", make_control_service("arm_v2_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
