@@ -1197,47 +1197,20 @@ mod tests {
 
     #[test]
     fn fails_when_runtime_parameter_missing_in_compiled_config() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
         // Compiled config only has 'value' parameter
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
-        config::fingerprint::create_codegen_fingerprint(
-            &peppy_config_path,
-            Path::new(PEPPYGEN_OUTPUT_PATH),
-        );
 
         // Runtime config has 'value' AND 'extra_param' - but 'extra_param' is not in compiled
-        let json5_config = r#"{
-            messaging_host: "127.0.0.1",
-            messaging_port: 7448,
-            node_instance: {
+        let Err(err) = daemon_processor_with_instance_block(
+            peppy_config,
+            r#"{
                 instance_id: "test_instance",
                 arguments: { value: 42, extra_param: "unexpected" }
-            },
-            node_name: "test_node",
-            node_tag: "v1",
-            bound_core_node: "core-1234"
-        }"#
-        .to_string();
-
-        let runtime_config: RuntimeConfig =
-            serde_json5::from_str(&json5_config).expect("runtime config should parse");
-
-        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
-        runtime_config
-            .save_json5_launch_config(&runtime_config_path)
-            .expect("runtime config should be saved");
-
-        let Err(err) = Processor::new_daemon_from_path(
-            &peppy_config_path,
-            runtime_config_path.to_str().unwrap(),
+            }"#,
         ) else {
             panic!("expected missing parameter error");
         };
@@ -1250,47 +1223,20 @@ mod tests {
 
     #[test]
     fn fails_when_parameter_type_mismatch() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
         // Compiled config expects 'value' to be i64
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
-        config::fingerprint::create_codegen_fingerprint(
-            &peppy_config_path,
-            Path::new(PEPPYGEN_OUTPUT_PATH),
-        );
 
         // Runtime config provides 'value' as a string instead of i64
-        let json5_config = r#"{
-            messaging_host: "127.0.0.1",
-            messaging_port: 7448,
-            node_instance: {
+        let Err(err) = daemon_processor_with_instance_block(
+            peppy_config,
+            r#"{
                 instance_id: "test_instance",
                 arguments: { value: "not_an_integer" }
-            },
-            node_name: "test_node",
-            node_tag: "v1",
-            bound_core_node: "core-1234"
-        }"#
-        .to_string();
-
-        let runtime_config: RuntimeConfig =
-            serde_json5::from_str(&json5_config).expect("runtime config should parse");
-
-        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
-        runtime_config
-            .save_json5_launch_config(&runtime_config_path)
-            .expect("runtime config should be saved");
-
-        let Err(err) = Processor::new_daemon_from_path(
-            &peppy_config_path,
-            runtime_config_path.to_str().unwrap(),
+            }"#,
         ) else {
             panic!("expected type mismatch error");
         };
@@ -1303,11 +1249,8 @@ mod tests {
 
     #[test]
     fn fails_when_nested_parameter_type_mismatch() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
         // Compiled config expects nested object with specific types
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "test_node", tag: "v1" },
             execution: {
@@ -1322,38 +1265,14 @@ mod tests {
                 run_cmd: ["./target/debug/test_node"]
             },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
-        config::fingerprint::create_codegen_fingerprint(
-            &peppy_config_path,
-            Path::new(PEPPYGEN_OUTPUT_PATH),
-        );
 
         // Runtime config provides 'enabled' as string instead of bool
-        let json5_config = r#"{
-            messaging_host: "127.0.0.1",
-            messaging_port: 7448,
-            node_instance: {
+        let Err(err) = daemon_processor_with_instance_block(
+            peppy_config,
+            r#"{
                 instance_id: "test_instance",
                 arguments: { config: { enabled: "yes", threshold: 0.5 } }
-            },
-            node_name: "test_node",
-            node_tag: "v1",
-            bound_core_node: "core-1234"
-        }"#
-        .to_string();
-
-        let runtime_config: RuntimeConfig =
-            serde_json5::from_str(&json5_config).expect("runtime config should parse");
-
-        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
-        runtime_config
-            .save_json5_launch_config(&runtime_config_path)
-            .expect("runtime config should be saved");
-
-        let Err(err) = Processor::new_daemon_from_path(
-            &peppy_config_path,
-            runtime_config_path.to_str().unwrap(),
+            }"#,
         ) else {
             panic!("expected type mismatch error");
         };
@@ -1366,11 +1285,8 @@ mod tests {
 
     #[test]
     fn fails_when_array_item_type_mismatch() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
         // Compiled config expects array of strings
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "test_node", tag: "v1" },
             execution: {
@@ -1384,38 +1300,14 @@ mod tests {
                 run_cmd: ["./target/debug/test_node"]
             },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
-        config::fingerprint::create_codegen_fingerprint(
-            &peppy_config_path,
-            Path::new(PEPPYGEN_OUTPUT_PATH),
-        );
 
         // Runtime config provides array with mixed types (string and int)
-        let json5_config = r#"{
-            messaging_host: "127.0.0.1",
-            messaging_port: 7448,
-            node_instance: {
+        let Err(err) = daemon_processor_with_instance_block(
+            peppy_config,
+            r#"{
                 instance_id: "test_instance",
                 arguments: { tags: ["valid", 123, "also_valid"] }
-            },
-            node_name: "test_node",
-            node_tag: "v1",
-            bound_core_node: "core-1234"
-        }"#
-        .to_string();
-
-        let runtime_config: RuntimeConfig =
-            serde_json5::from_str(&json5_config).expect("runtime config should parse");
-
-        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
-        runtime_config
-            .save_json5_launch_config(&runtime_config_path)
-            .expect("runtime config should be saved");
-
-        let Err(err) = Processor::new_daemon_from_path(
-            &peppy_config_path,
-            runtime_config_path.to_str().unwrap(),
+            }"#,
         ) else {
             panic!("expected type mismatch error");
         };
@@ -1590,20 +1482,15 @@ mod tests {
 
     #[test]
     fn standalone_mode_uses_manifest_node_name() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
 
         let config = StandaloneConfig::new();
-        let processor = Processor::new_standalone(&peppy_config_path, &config)
-            .expect("should create processor");
+        let processor =
+            standalone_processor(peppy_config, &config).expect("should create processor");
 
         assert_eq!(processor.node_name(), "my_node");
         assert_eq!(processor.bound_instance_id(), "standalone");
@@ -1614,18 +1501,13 @@ mod tests {
 
     #[test]
     fn standalone_mode_resolves_the_clock_like_a_launch_would() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
 
-        let wall = Processor::new_standalone(&peppy_config_path, &StandaloneConfig::new())
+        let wall = standalone_processor(peppy_config, &StandaloneConfig::new())
             .expect("should create processor");
         assert!(wall.clock().is_wall(), "wall time is the default");
 
@@ -1634,8 +1516,8 @@ mod tests {
             config::runtime::CoreNodeName::new("cn-sim").expect("valid core node name"),
             config::runtime::ClockIncarnation::try_from(3).expect("non-zero"),
         );
-        let sim = Processor::new_standalone(
-            &peppy_config_path,
+        let sim = standalone_processor(
+            peppy_config,
             &StandaloneConfig::new()
                 .with_clock(config::runtime::ClockBinding::publisher(domain.clone())),
         )
@@ -1649,24 +1531,19 @@ mod tests {
 
     #[test]
     fn standalone_mode_with_custom_config() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
 
         let config = StandaloneConfig::new()
             .with_node_name("custom_name")
             .with_instance_id("custom_instance")
             .with_messaging("192.168.1.100", 9999);
 
-        let processor = Processor::new_standalone(&peppy_config_path, &config)
-            .expect("should create processor");
+        let processor =
+            standalone_processor(peppy_config, &config).expect("should create processor");
 
         assert_eq!(processor.node_name(), "custom_name");
         assert_eq!(processor.bound_instance_id(), "custom_instance");
@@ -1676,22 +1553,17 @@ mod tests {
 
     #[test]
     fn standalone_mode_with_json5_parameters() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
 
         let config =
             StandaloneConfig::new().with_parameters_json(serde_json::json!({ "value": 42 }));
 
-        let processor = Processor::new_standalone(&peppy_config_path, &config)
-            .expect("should create processor");
+        let processor =
+            standalone_processor(peppy_config, &config).expect("should create processor");
 
         let args_json = serde_json::to_value(processor.input_arguments()).unwrap();
         assert_eq!(args_json.get("value"), Some(&serde_json::json!(42)));
@@ -1707,16 +1579,11 @@ mod tests {
             enabled: bool,
         }
 
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
 
         let params = TestParams {
             threshold: 0.75,
@@ -1724,8 +1591,8 @@ mod tests {
         };
         let config = StandaloneConfig::new().with_parameters(&params);
 
-        let processor = Processor::new_standalone(&peppy_config_path, &config)
-            .expect("should create processor");
+        let processor =
+            standalone_processor(peppy_config, &config).expect("should create processor");
 
         let args_json = serde_json::to_value(processor.input_arguments()).unwrap();
         assert_eq!(args_json.get("threshold"), Some(&serde_json::json!(0.75)));
@@ -1737,10 +1604,7 @@ mod tests {
         // `with_peer_pin` seeds the slot before any watch receiver exists
         // (the first `peer(...)` subscribes later); the seed must land in the
         // receiver-less channel rather than being discarded.
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: {
                 name: "my_node",
@@ -1753,12 +1617,10 @@ mod tests {
             },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
 
         let config = StandaloneConfig::new().with_peer_pin("arm", "core_a", "arm_1", "controller");
-        let processor = Processor::new_standalone(&peppy_config_path, &config)
-            .expect("should create processor");
+        let processor =
+            standalone_processor(peppy_config, &config).expect("should create processor");
 
         let watch_rx = processor
             .peer_set_watch("arm")
@@ -1791,16 +1653,11 @@ mod tests {
 
     #[test]
     fn standalone_mode_seeds_a_multi_slot_with_every_pin_and_its_copy() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        std::fs::write(&peppy_config_path, PAIRING_SLOTS_CONFIG)
-            .expect("peppy config should be written");
-
         let config = StandaloneConfig::new()
             .with_peer_pin_in_copy("limbs", "core_a", "left_1", "engine", "robot_a")
             .with_peer_pin("limbs", "core_a", "left_2", "engine");
-        let processor = Processor::new_standalone(&peppy_config_path, &config)
-            .expect("should create processor");
+        let processor =
+            standalone_processor(PAIRING_SLOTS_CONFIG, &config).expect("should create processor");
 
         let watch_rx = processor
             .peer_set_watch("limbs")
@@ -1836,15 +1693,10 @@ mod tests {
 
     #[test]
     fn standalone_mode_refuses_two_pins_on_a_scalar_slot() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        std::fs::write(&peppy_config_path, PAIRING_SLOTS_CONFIG)
-            .expect("peppy config should be written");
-
         let config = StandaloneConfig::new()
             .with_peer_pin("arm", "core_a", "arm_1", "controller")
             .with_peer_pin("arm", "core_a", "arm_2", "controller");
-        let Err(err) = Processor::new_standalone(&peppy_config_path, &config) else {
+        let Err(err) = standalone_processor(PAIRING_SLOTS_CONFIG, &config) else {
             panic!("a scalar slot holds one pair");
         };
         assert!(
@@ -1859,14 +1711,9 @@ mod tests {
 
     #[test]
     fn standalone_mode_refuses_a_copy_that_is_not_a_name() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        std::fs::write(&peppy_config_path, PAIRING_SLOTS_CONFIG)
-            .expect("peppy config should be written");
-
         let config = StandaloneConfig::new()
             .with_peer_pin_in_copy("limbs", "core_a", "left_1", "engine", "robot a");
-        let Err(err) = Processor::new_standalone(&peppy_config_path, &config) else {
+        let Err(err) = standalone_processor(PAIRING_SLOTS_CONFIG, &config) else {
             panic!("a copy is a name");
         };
         assert!(
@@ -1877,20 +1724,15 @@ mod tests {
 
     #[test]
     fn standalone_mode_fails_when_required_parameters_missing() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
 
         // No parameters provided: construction fails at once.
         let config = StandaloneConfig::new();
-        let result = Processor::new_standalone(&peppy_config_path, &config);
+        let result = standalone_processor(peppy_config, &config);
 
         let Err(err) = result else {
             panic!("expected error when required parameters are missing");
@@ -1908,21 +1750,16 @@ mod tests {
 
     #[test]
     fn standalone_mode_fails_when_some_parameters_missing() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool", name: "string" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
 
         // Only provide one of three required parameters
         let config =
             StandaloneConfig::new().with_parameters_json(serde_json::json!({ "threshold": 0.5 }));
-        let result = Processor::new_standalone(&peppy_config_path, &config);
+        let result = standalone_processor(peppy_config, &config);
 
         let Err(err) = result else {
             panic!("expected error when some required parameters are missing");
@@ -1942,10 +1779,7 @@ mod tests {
     #[test]
     fn standalone_mode_fills_defaults_for_omitted_parameters() {
         // Partial config: user omits `frame_rate`, runtime fills it from $default.
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: {
@@ -1957,12 +1791,10 @@ mod tests {
                 run_cmd: ["./target/debug/my_node"]
             },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
 
         let config =
             StandaloneConfig::new().with_parameters_json(serde_json::json!({ "name": "front" }));
-        let processor = Processor::new_standalone(&peppy_config_path, &config)
+        let processor = standalone_processor(peppy_config, &config)
             .expect("standalone with partial parameters should succeed");
 
         let args_json = serde_json::to_value(processor.input_arguments()).unwrap();
@@ -1974,10 +1806,7 @@ mod tests {
     fn standalone_mode_synthesizes_fully_defaulted_group() {
         // The whole `device` group is omitted; every leaf has a default,
         // so the runtime synthesizes the group from defaults.
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: {
@@ -1991,11 +1820,9 @@ mod tests {
                 run_cmd: ["./target/debug/my_node"]
             },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
 
         let config = StandaloneConfig::new();
-        let processor = Processor::new_standalone(&peppy_config_path, &config)
+        let processor = standalone_processor(peppy_config, &config)
             .expect("fully-defaulted group should be synthesized");
 
         let args_json = serde_json::to_value(processor.input_arguments()).unwrap();
@@ -2010,10 +1837,7 @@ mod tests {
         // `device.serial` has no default (USB serials vary per unit); the
         // error must name that leaf by full dot-path so users know what to
         // supply.
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        let peppy_config_content = r#"{
+        let peppy_config = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: {
@@ -2027,11 +1851,9 @@ mod tests {
                 run_cmd: ["./target/debug/my_node"]
             },
         }"#;
-        std::fs::write(&peppy_config_path, peppy_config_content)
-            .expect("peppy config should be written");
 
         let config = StandaloneConfig::new();
-        let result = Processor::new_standalone(&peppy_config_path, &config);
+        let result = standalone_processor(peppy_config, &config);
         let err = result.err().expect("missing required leaf should error");
         let msg = err.to_string();
         assert!(
@@ -2143,6 +1965,18 @@ mod tests {
             .expect("runtime config should be saved");
 
         Processor::new_daemon_from_path(&peppy_config_path, runtime_config_path.to_str().unwrap())
+    }
+
+    /// Builds a standalone processor from a manifest string, written to
+    /// `peppy.json5` in a fresh temp dir the way a node's own file is read.
+    fn standalone_processor(
+        peppy_config: &str,
+        config: &StandaloneConfig,
+    ) -> Result<Processor, crate::error::Error> {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, peppy_config).expect("peppy config should be written");
+        Processor::new_standalone(&peppy_config_path, config)
     }
 
     fn instance_ids(producers: &[config::runtime::ProducerRef]) -> Vec<&str> {
@@ -2833,10 +2667,6 @@ mod tests {
     /// fails startup naming the slot.
     #[test]
     fn standalone_bound_members_carry_the_copy_they_were_seeded_in() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        std::fs::write(&peppy_config_path, MULTI_SLOT_PEPPY_CONFIG)
-            .expect("peppy config should be written");
         let seeded = |arms: StandaloneConfig| {
             arms.with_bound_producer("main", "core_x", "camera_1")
                 .with_vacant_producer_slot("wrist_camera")
@@ -2847,7 +2677,7 @@ mod tests {
                 .with_bound_producer("arms", "core_x", "right_arm")
                 .with_bound_producer_in_copy("arms", "core_y", "bravo", "arm"),
         );
-        let processor = Processor::new_standalone(&peppy_config_path, &config)
+        let processor = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &config)
             .expect("seeded slots should construct");
         let copies = |members: &[crate::messaging::BoundMember]| -> Vec<(String, Option<String>)> {
             members
@@ -2882,7 +2712,7 @@ mod tests {
             "not a name",
             "arm",
         ));
-        let Err(err) = Processor::new_standalone(&peppy_config_path, &unnamed) else {
+        let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &unnamed) else {
             panic!("a copy is a name");
         };
         assert!(
@@ -2900,7 +2730,7 @@ mod tests {
             "bravo",
             "not a name",
         ));
-        let Err(err) = Processor::new_standalone(&peppy_config_path, &unnamed_id) else {
+        let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &unnamed_id) else {
             panic!("an id inside a copy is a name");
         };
         assert!(
@@ -2954,13 +2784,8 @@ mod tests {
     /// in call order; duplicate seeds are rejected.
     #[test]
     fn standalone_bound_producers_accumulate_and_enforce_cardinality() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        std::fs::write(&peppy_config_path, MULTI_SLOT_PEPPY_CONFIG)
-            .expect("peppy config should be written");
-
         let unseeded = StandaloneConfig::new();
-        let Err(err) = Processor::new_standalone(&peppy_config_path, &unseeded) else {
+        let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &unseeded) else {
             panic!("expected unbound-slot startup error");
         };
         assert!(
@@ -2977,7 +2802,7 @@ mod tests {
             .with_bound_producer("wrist_camera", "core_x", "camera_2")
             .with_bound_producer("arms", "core_x", "right_arm")
             .with_bound_producer("arms", "core_x", "left_arm");
-        let processor = Processor::new_standalone(&peppy_config_path, &seeded)
+        let processor = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &seeded)
             .expect("seeded slots should construct");
         assert_eq!(
             instance_ids(&processor.bound_producers("main")),
@@ -3000,7 +2825,7 @@ mod tests {
             .with_bound_producer("main", "core_x", "camera_1")
             .with_bound_producer("arms", "core_x", "right_arm")
             .with_bound_producer("arms", "core_x", "right_arm");
-        let Err(err) = Processor::new_standalone(&peppy_config_path, &duplicated) else {
+        let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &duplicated) else {
             panic!("duplicate seeded producer must be rejected");
         };
         assert!(
@@ -3015,16 +2840,11 @@ mod tests {
     /// call on a slot whose cardinality has a floor of one fails startup.
     #[test]
     fn standalone_vacant_producer_slot_seeds_an_explicit_empty_set() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        std::fs::write(&peppy_config_path, MULTI_SLOT_PEPPY_CONFIG)
-            .expect("peppy config should be written");
-
         let vacant = StandaloneConfig::new()
             .with_bound_producer("main", "core_x", "camera_1")
             .with_vacant_producer_slot("wrist_camera")
             .with_bound_producer("arms", "core_x", "right_arm");
-        let processor = Processor::new_standalone(&peppy_config_path, &vacant)
+        let processor = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &vacant)
             .expect("a vacant zero_or_one slot should construct");
         assert_eq!(processor.optional_bound_producer("wrist_camera"), None);
 
@@ -3032,7 +2852,7 @@ mod tests {
             .with_vacant_producer_slot("main")
             .with_vacant_producer_slot("wrist_camera")
             .with_bound_producer("arms", "core_x", "right_arm");
-        let Err(err) = Processor::new_standalone(&peppy_config_path, &vacant_one_slot) else {
+        let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &vacant_one_slot) else {
             panic!("a vacant `one` slot must fail startup");
         };
         assert!(
@@ -3051,13 +2871,8 @@ mod tests {
     /// members answer the slot's accessors from construction.
     #[test]
     fn standalone_observed_sources_accumulate_and_enforce_cardinality() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        std::fs::write(&peppy_config_path, OBSERVER_PEPPY_CONFIG)
-            .expect("peppy config should be written");
-
         let unseeded = StandaloneConfig::new();
-        let Err(err) = Processor::new_standalone(&peppy_config_path, &unseeded) else {
+        let Err(err) = standalone_processor(OBSERVER_PEPPY_CONFIG, &unseeded) else {
             panic!("expected an unseeded floored observer slot to fail startup");
         };
         assert!(
@@ -3074,7 +2889,7 @@ mod tests {
             .with_observed_source("sole_arm", "core_x", "left_arm", "commander")
             .with_observed_source("watched_arms", "core_x", "right_arm", "commander")
             .with_observed_source("watched_arms", "core_x", "left_arm", "commander");
-        let processor = Processor::new_standalone(&peppy_config_path, &seeded)
+        let processor = standalone_processor(OBSERVER_PEPPY_CONFIG, &seeded)
             .expect("seeded observer slots should construct");
 
         let sole = processor
@@ -3112,7 +2927,7 @@ mod tests {
             .with_observed_source("sole_arm", "core_x", "left_arm", "commander")
             .with_observed_source("watched_arms", "core_x", "right_arm", "commander")
             .with_observed_source("watched_arms", "core_x", "right_arm", "commander");
-        let Err(err) = Processor::new_standalone(&peppy_config_path, &duplicated) else {
+        let Err(err) = standalone_processor(OBSERVER_PEPPY_CONFIG, &duplicated) else {
             panic!("duplicate seeded pairing must be rejected");
         };
         assert!(
@@ -3126,18 +2941,13 @@ mod tests {
     /// `with_bound_producer`.
     #[test]
     fn standalone_observed_source_on_an_undeclared_slot_is_ignored() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config_path = temp_dir.path().join("peppy.json5");
-        std::fs::write(&peppy_config_path, ZERO_FLOOR_OBSERVER_PEPPY_CONFIG)
-            .expect("peppy config should be written");
-
         let stray = StandaloneConfig::new().with_observed_source(
             "not_a_slot",
             "core_x",
             "left_arm",
             "commander",
         );
-        let processor = Processor::new_standalone(&peppy_config_path, &stray)
+        let processor = standalone_processor(ZERO_FLOOR_OBSERVER_PEPPY_CONFIG, &stray)
             .expect("an undeclared observer seed should be ignored, not fatal");
         assert!(processor.observation_slot_watch("not_a_slot").is_none());
     }
