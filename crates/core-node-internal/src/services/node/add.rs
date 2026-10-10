@@ -8,8 +8,8 @@ use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::git_utils::install_credentials;
 use super::sync::{
-    self, AutoSyncParams, DepClosure, collect_all_deployment_interfaces,
-    generate_peppygen_for_node, materialize_repo_deps, stack_resolver, stack_then_repo_resolver,
+    self, AutoSyncParams, DepClosure, collect_all_deployment_interfaces, materialize_repo_deps,
+    stack_resolver, stack_then_repo_resolver,
 };
 use super::{
     clone_with_progress, encode_hex, extract_tar_zst, generate_random_id, is_supported_fs_archive,
@@ -1485,7 +1485,7 @@ async fn process_node_add_inner(
     let git_hash = goal.git_hash.clone();
     let peppy_dirs = ctx.action.peppy_dirs.clone();
     run_staged_job(generation, move |staging_dir| {
-        generate_peppygen_for_node(
+        generator::generate_peppygen_lib(
             language,
             staging_dir,
             consumed_interfaces,

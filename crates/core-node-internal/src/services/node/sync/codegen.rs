@@ -1,7 +1,6 @@
 use super::interfaces::{collect_all_deployment_interfaces, stack_resolver};
 use crate::services::node::Report;
 use daemon_config::consts::PeppyDirs;
-use generator::DeploymentInterface;
 use node_stack::NodeStack;
 use tracing::debug;
 
@@ -164,7 +163,7 @@ pub fn auto_sync_if_missing(
                 params.on_feedback,
             )
             .map_err(|reason| crate::Error::Io(std::io::Error::other(reason)))?;
-            generate_peppygen_for_node(
+            generator::generate_peppygen_lib(
                 params.execution_language,
                 params.node_dir,
                 consumed,
@@ -213,39 +212,6 @@ pub fn auto_sync_if_missing(
             }
         }
     }
-
-    Ok(())
-}
-
-/// Generates the peppygen library for a node.
-///
-/// This function takes the pre-collected data and generates the peppygen
-/// library in the node directory. Use `collect_consumed_interfaces` to
-/// gather the consumed interfaces before calling this function.
-///
-/// This function is designed to be called from within `spawn_blocking` contexts
-/// where the data has already been extracted and can be moved into the closure.
-#[allow(clippy::too_many_arguments)]
-pub fn generate_peppygen_for_node(
-    language: config::node::PeppygenLanguage,
-    node_dir: impl AsRef<std::path::Path>,
-    consumed_interfaces: Vec<DeploymentInterface>,
-    git_hash: &str,
-    peppy_dirs: &PeppyDirs,
-    deploy_mode: generator::CrateDeployMode,
-    config_path: Option<&std::path::Path>,
-    node_tree: generator::NodeTree,
-) -> crate::Result<()> {
-    generator::generate_peppygen_lib(
-        language,
-        node_dir,
-        consumed_interfaces,
-        git_hash,
-        peppy_dirs,
-        deploy_mode,
-        config_path,
-        node_tree,
-    )?;
 
     Ok(())
 }

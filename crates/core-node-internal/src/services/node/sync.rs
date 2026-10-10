@@ -3,7 +3,7 @@ mod deps;
 mod interfaces;
 mod pairings;
 
-pub use self::codegen::{AutoSyncParams, auto_sync_if_missing, generate_peppygen_for_node};
+pub use self::codegen::{AutoSyncParams, auto_sync_if_missing};
 pub use self::interfaces::{collect_all_deployment_interfaces, stack_resolver};
 pub(crate) use self::interfaces::{resolve_contract_doc, stack_then_repo_resolver};
 
@@ -298,9 +298,9 @@ async fn handle_node_sync_request_inner(
     });
 
     // Generate peppygen for the root node.
-    match tokio::task::spawn_blocking(move || -> Result<()> {
+    match tokio::task::spawn_blocking(move || {
         remove_previous_peppy_dir(&node_root_dir);
-        generate_peppygen_for_node(
+        generator::generate_peppygen_lib(
             language,
             &node_root_dir,
             consumed_interfaces,
@@ -314,18 +314,8 @@ async fn handle_node_sync_request_inner(
     .await
     {
         Ok(Ok(())) => {}
-        Ok(Err(crate::Error::GeneratorError(e))) => {
-            return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
-                .encode()
-                .map_err(Into::into);
-        }
-        Ok(Err(crate::Error::Io(e))) => {
-            return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
-                .encode()
-                .map_err(Into::into);
-        }
         Ok(Err(e)) => {
-            return NodeSyncResponse::failure(format!("Failed to sync node: {}", e))
+            return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
                 .encode()
                 .map_err(Into::into);
         }
