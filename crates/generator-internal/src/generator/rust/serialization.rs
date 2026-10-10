@@ -304,7 +304,9 @@ fn make_length_expr(
     }
 }
 
-/// Pre-computed length tokens for object list serialization.
+/// Serializes a list of scalars, strings or byte strings into the list that
+/// `init_method` creates, one element at a time. Refuses a list of `time`
+/// values.
 fn generate_list_assignment(
     builder_expr: &TokenStream,
     init_method: &Ident,

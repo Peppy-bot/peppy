@@ -3,11 +3,12 @@
 //! seeding-call planning live here ONCE; the Rust and Python backends only
 //! render these specs (one derivation, two renderers).
 //!
-//! Population is a one-line `record_*` call at the end of each backend's
-//! existing `add_*` method, cloning the already-validated inputs. Renderers
-//! re-derive schema keys with the same `naming` functions production used,
-//! so codecs land on the identical capnp files (schema registries dedupe by
-//! file stem, zero duplicated schemas).
+//! Population is one `record_*` call at the start of each backend's `add_*`
+//! method, cloning the parsed inputs. An `add_*` that then fails aborts the
+//! whole generation, so nothing renders from an input production refused.
+//! Renderers re-derive schema keys with the same `naming` functions
+//! production used, so codecs land on the identical capnp files (schema
+//! registries dedupe by file stem, zero duplicated schemas).
 
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,

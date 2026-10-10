@@ -408,10 +408,8 @@ pub fn build_peer_topic_publisher(
     }
 }
 
-/// Consume side of a peer topic: a subscription backed by
-/// `peppylib::runtime::subscribe_peer`, which follows the slot's live pin
-/// (silent while unpaired, triple wire pin while paired, drop-before-redeclare
-/// on re-pin). The binding-slot consumer filters are never involved.
+/// Inputs of a pairing-topic subscription module, shared by the peer and
+/// observer consume sides.
 pub struct PeerTopicSubscriptionSpec<'a> {
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
@@ -422,6 +420,10 @@ pub struct PeerTopicSubscriptionSpec<'a> {
     pub struct_prefix: &'a str,
 }
 
+/// Consume side of a peer topic: a subscription backed by
+/// `peppylib::runtime::subscribe_peer`, which follows the slot's live pin
+/// (silent while unpaired, triple wire pin while paired, drop-before-redeclare
+/// on re-pin). The binding-slot consumer filters are never involved.
 pub fn build_peer_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Result<TokenStream> {
     build_pair_topic_subscription(spec, PairTopicSubscriptionKind::Peer)
 }

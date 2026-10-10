@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 /// Always generates a `Parameters` struct, even if empty.
 ///
 /// Returns an error if any field name contains characters outside
-/// [`config::consts::ALLOWED_CONFIG_CHARS`].
+/// [`config::consts::ALLOWED_CONFIG_CHARS`], or if a parameter is an array.
 pub fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Result<String> {
     validate_parameter_schema(parameters)?;
 
@@ -64,10 +64,10 @@ pub fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Resul
     }))
 }
 
-/// Validates that parameter field names contain only allowed characters.
-///
-/// Type validity is already enforced at parse time by [`config::ParameterSpec`],
-/// so this only checks identifier-name rules. Shared with the Python generator.
+/// Checks the rules the generators add on top of parsing: every field name,
+/// at any depth, uses only [`config::consts::ALLOWED_CONFIG_CHARS`], and no
+/// parameter is an array ([`Error::UnsupportedArrayParameter`], with its
+/// dotted path). Shared with the Python generator.
 pub fn validate_parameter_schema(parameters: &config::ParameterSchema) -> Result<()> {
     use config::consts::ALLOWED_CONFIG_CHARS;
 
