@@ -813,8 +813,7 @@ pub fn plan_requested_pairs(
 
     let validated = validate_pairings(&items, &already_paired, &externally_covered);
     if !validated.errors.is_empty() {
-        let errors: Vec<String> = validated.errors.iter().map(|e| e.to_string()).collect();
-        return Err(daemon_config::format_bulleted(&errors));
+        return Err(daemon_config::format_bulleted(&validated.errors));
     }
 
     // A pair joins two instances reading one timeline, each interpreting
@@ -827,8 +826,7 @@ pub fn plan_requested_pairs(
         &[],
     );
     if !clock_errors.is_empty() {
-        let errors: Vec<String> = clock_errors.iter().map(|e| e.to_string()).collect();
-        return Err(daemon_config::format_bulleted(&errors));
+        return Err(daemon_config::format_bulleted(&clock_errors));
     }
 
     let mut planned: Vec<PlannedPair> = validated
