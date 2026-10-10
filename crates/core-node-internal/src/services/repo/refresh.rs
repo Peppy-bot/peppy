@@ -2310,42 +2310,29 @@ mod tests {
     /// libgit2's local transport (used for both raw paths and `file://`
     /// URLs) rejects `depth(1)` with "shallow fetch is not supported by the
     /// local transport". The clone helper has to detect those URLs and skip
-    /// the shallow option, otherwise the clone fails outright. These two
-    /// tests lock in that fallback behavior so a regression that re-enables
+    /// the shallow option, otherwise the clone fails outright. These cases
+    /// lock in that fallback behavior so a regression that re-enables
     /// `depth(1)` for local URLs would fail fast.
-    #[test]
-    fn clone_shallow_falls_back_to_full_clone_for_file_url() {
+    #[rstest::rstest]
+    #[case::file_url("file://")]
+    #[case::raw_path("")]
+    fn clone_shallow_falls_back_to_full_clone_for_local_url(#[case] url_prefix: &str) {
         let src_tmp = tempfile::tempdir().unwrap();
         init_repo_with_commits(src_tmp.path(), 3);
 
         let dst_tmp = tempfile::tempdir().unwrap();
         let dst = dst_tmp.path().join("clone");
-        let repo_url = format!("file://{}", src_tmp.path().display());
+        let repo_url = format!("{url_prefix}{}", src_tmp.path().display());
 
-        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {})
-            .expect("file:// clone should succeed (depth must be skipped)");
+        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {}).unwrap_or_else(|e| {
+            panic!("cloning {repo_url} should succeed (depth must be skipped): {e}")
+        });
 
         assert!(
             !dst.join(".git/shallow").exists(),
-            "file:// goes through libgit2's local transport which rejects \
+            "{repo_url} goes through libgit2's local transport which rejects \
              depth(1); .git/shallow should not exist"
         );
-        assert_eq!(count_commits(&repo), 3);
-    }
-
-    #[test]
-    fn clone_shallow_falls_back_to_full_clone_for_raw_path() {
-        let src_tmp = tempfile::tempdir().unwrap();
-        init_repo_with_commits(src_tmp.path(), 3);
-
-        let dst_tmp = tempfile::tempdir().unwrap();
-        let dst = dst_tmp.path().join("clone");
-        let repo_url = src_tmp.path().display().to_string();
-
-        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {})
-            .expect("raw-path clone should succeed (depth must be skipped)");
-
-        assert!(!dst.join(".git/shallow").exists());
         assert_eq!(count_commits(&repo), 3);
     }
 
