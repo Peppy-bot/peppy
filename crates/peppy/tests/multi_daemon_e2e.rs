@@ -2213,29 +2213,20 @@ async fn a_relaunch_reuses_the_cached_container_build() {
         .wait_for_node_log("probe_cam_inst", "[uvc_camera] Emitted frame")
         .await;
 
-    let build_logs = format!("{CONTAINER_PEPPY_HOME}/logs/build/uvc_camera_python_mock_v1_*.log");
-    let oldest = require_success(
-        federation
-            .robot
-            .exec(vec![
-                "/bin/sh",
-                "-c",
-                &format!("ls {build_logs} | sort | head -n 1 | xargs cat"),
-            ])
-            .await,
-        "reading the first build log",
-    );
-    let newest = require_success(
-        federation
-            .robot
-            .exec(vec![
-                "/bin/sh",
-                "-c",
-                &format!("ls {build_logs} | sort | tail -n 1 | xargs cat"),
-            ])
-            .await,
-        "reading the second build log",
-    );
+    let oldest = build_log(
+        &federation.robot,
+        "uvc_camera_python_mock",
+        "v1",
+        BuildLogEnd::Oldest,
+    )
+    .await;
+    let newest = build_log(
+        &federation.robot,
+        "uvc_camera_python_mock",
+        "v1",
+        BuildLogEnd::Newest,
+    )
+    .await;
     assert!(
         oldest.contains("Starting build..."),
         "the first launch ran apptainer build:\n{oldest}"
@@ -3374,9 +3365,21 @@ fn instance_dir(instance: &str) -> String {
     format!("{CONTAINER_PEPPY_HOME}/instances/{instance}")
 }
 
-/// The newest build log `node:tag` left on `daemon`, which is where a reuse
-/// is recorded whatever the CLI showed.
-async fn newest_build_log(daemon: &Daemon, node: &str, tag: &str) -> String {
+/// Which of the build logs a node left on a daemon to read, in the sort
+/// order of their names.
+#[derive(Clone, Copy)]
+enum BuildLogEnd {
+    Oldest,
+    Newest,
+}
+
+/// The oldest or newest build log `node:tag` left on `daemon`. The build log
+/// records whether a build ran or reused an image, whatever the CLI showed.
+async fn build_log(daemon: &Daemon, node: &str, tag: &str, end: BuildLogEnd) -> String {
+    let (select_end, end_name) = match end {
+        BuildLogEnd::Oldest => ("head -n 1", "oldest"),
+        BuildLogEnd::Newest => ("tail -n 1", "newest"),
+    };
     require_success(
         daemon
             .exec(vec![
@@ -3384,11 +3387,11 @@ async fn newest_build_log(daemon: &Daemon, node: &str, tag: &str) -> String {
                 "-c",
                 &format!(
                     "ls {CONTAINER_PEPPY_HOME}/logs/build/{node}_{tag}_*.log \
-                     | sort | tail -n 1 | xargs cat"
+                     | sort | {select_end} | xargs cat"
                 ),
             ])
             .await,
-        &format!("reading the newest {node}:{tag} build log"),
+        &format!("reading the {end_name} {node}:{tag} build log"),
     )
 }
 
@@ -3477,10 +3480,11 @@ async fn a_federated_build_builds_each_node_where_the_launch_places_it() {
         "the launch must start the built stack:\n{}",
         launch.text
     );
-    let newest_peer_build_log = newest_build_log(
+    let newest_peer_build_log = build_log(
         &federation.cloud,
         "uvc_camera_video_reconstruction_python",
         "v1",
+        BuildLogEnd::Newest,
     )
     .await;
     assert!(
