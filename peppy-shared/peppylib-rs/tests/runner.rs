@@ -669,8 +669,6 @@ async fn daemon_runner_offers_no_node_endpoints_for_a_manifest_without_them() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn standalone_runner_succeed() {
-    use peppylib::runtime::CancellationToken;
-
     // Acquire the env guard to prevent races with daemon tests that set PEPPY_RUNTIME_CONFIG.
     // This ensures we run in standalone mode.
     let _env_guard = EnvAndDirGuard::new_standalone();
@@ -698,7 +696,7 @@ async fn standalone_runner_succeed() {
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
 
-    let standalone_config = peppylib::runtime::StandaloneConfig::new()
+    let standalone_config = StandaloneConfig::new()
         .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
         .with_messaging(&router_host, router_port)
         .with_instance_id(TEST_INSTANCE_ID);
@@ -761,7 +759,7 @@ async fn init_standalone_ignores_inherited_runtime_config_env() {
     let bogus_runtime_config = temp_dir.path().join("does_not_exist.json5");
     let _env_guard = EnvAndDirGuard::new(temp_dir.path(), &bogus_runtime_config);
 
-    let standalone_config = peppylib::runtime::StandaloneConfig::new()
+    let standalone_config = StandaloneConfig::new()
         .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
         .with_instance_id(TEST_INSTANCE_ID);
 
@@ -1241,7 +1239,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
 
-    let standalone_config = peppylib::runtime::StandaloneConfig::new()
+    let standalone_config = StandaloneConfig::new()
         .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
         .with_messaging(&router_host, router_port)
         .with_instance_id(TEST_INSTANCE_ID)
@@ -1626,7 +1624,7 @@ async fn standalone_cancel_awaits_hooks_before_exit() {
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
 
-    let standalone_config = peppylib::runtime::StandaloneConfig::new()
+    let standalone_config = StandaloneConfig::new()
         .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
         .with_messaging(&router_host, router_port)
         .with_instance_id(TEST_INSTANCE_ID);
