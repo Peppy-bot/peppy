@@ -307,7 +307,7 @@ fn disallowed_produced_link_id(
 
 /// A pairing slot link_id travels the wire as a keyexpr segment, so it must
 /// obey the segment rules from `pmi::wire::Segment` (which this crate cannot
-/// name — pmi depends on us): no `/`, no `@`, and not one of the reserved
+/// name, because pmi depends on this crate): no `/`, no `@`, and not one of the reserved
 /// sentinels (`*`, `**`, and the default-link_id sentinel `_`). Emptiness and
 /// all-punctuation values are already rejected by the field deserializer.
 fn is_wire_safe_link_id(link_id: &str) -> bool {
@@ -655,9 +655,9 @@ mod tests {
 
     #[test]
     fn test_dependency_entry_with_from_any_rejected() {
-        // `from_any` was removed from the schema: a dependency slot only ever
-        // receives from producers the launcher binds to it. A manifest still
-        // carrying the flag must fail loudly instead of silently parsing.
+        // A dependency slot receives only from the producers the launcher
+        // binds to it, so the schema has no `from_any` flag, and a manifest
+        // that carries one fails as an unknown field instead of parsing.
         for deps_block in [
             r#"nodes: [{ name: "alpha", tag: "v1", link_id: "a", from_any: true }]"#,
             r#"contracts: [{ name: "beta", tag: "v1", link_id: "b", from_any: true }]"#,
@@ -1615,9 +1615,8 @@ mod tests {
         );
     }
 
-    /// Future-proofing test: when a new field is added to [`NodeConfig`], this
-    /// exhaustive destructuring will fail to compile, forcing the author to
-    /// think about how it should be handled.
+    /// Exhaustive destructuring of [`NodeConfig`]: a new field fails to
+    /// compile here, so its author decides how the field is handled.
     #[test]
     fn node_config_field_set_is_complete() {
         let tmp = NamedTempFile::new().unwrap();
@@ -1630,7 +1629,7 @@ mod tests {
 
         let merged = load_standalone_node_config(tmp.path()).unwrap();
 
-        // Exhaustive destructuring — add-a-field will fail compilation here.
+        // Exhaustive destructuring: a new field fails compilation here.
         let NodeConfig {
             peppy_schema,
             manifest,
@@ -1684,7 +1683,7 @@ mod tests {
     }
 
     #[test]
-    fn test_old_conforms_to_manifest_rejected_as_unknown_field() {
+    fn test_conforms_to_in_interfaces_rejected_as_unknown_field() {
         let json5 = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "old_node", tag: "v1" },
