@@ -638,7 +638,7 @@ pub async fn emulate_cooperative_shutdown(
     instance_id: &str,
     pidfile: std::path::PathBuf,
 ) {
-    let (handle, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
+    let (_shutdown, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
         messenger,
         core_node_name,
         instance_id,
@@ -647,8 +647,6 @@ pub async fn emulate_cooperative_shutdown(
     .await
     .expect("shutdown service should start");
     tokio::spawn(async move {
-        // Held for the task's life so the service outlives the run it guards.
-        let _handle = handle;
         if shutdown_rx.await.is_err() {
             return;
         }
