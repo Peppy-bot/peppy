@@ -897,19 +897,14 @@ impl Apptainer {
     /// # Ok::<(), containers::Error>(())
     /// ```
     pub fn run(&self, image: &str) -> ApptainerCommand<'_> {
-        ApptainerCommand {
-            facade: self,
-            kind: CommandKind::Run {
+        ApptainerCommand::new(
+            self,
+            CommandKind::Run {
                 image: image.to_string(),
                 args: Vec::new(),
             },
-            flags: Vec::new(),
-            bind_mounts: Vec::new(),
-            apptainer_env: Vec::new(),
-            lima_shell_extra_args: Vec::new(),
-            cancel_pgid_path: None,
-            working_dir: None,
-        }
+            Vec::new(),
+        )
     }
 
     /// Start building an `apptainer exec` command.
@@ -917,19 +912,14 @@ impl Apptainer {
     /// If `container` is a filesystem path (not a URI) it is translated to a
     /// guest-visible path when running under Lima.
     pub fn exec(&self, container: &str, cmd: &[&str]) -> ApptainerCommand<'_> {
-        ApptainerCommand {
-            facade: self,
-            kind: CommandKind::Exec {
+        ApptainerCommand::new(
+            self,
+            CommandKind::Exec {
                 container: container.to_string(),
                 cmd: cmd.iter().map(|s| s.to_string()).collect(),
             },
-            flags: Vec::new(),
-            bind_mounts: Vec::new(),
-            apptainer_env: Vec::new(),
-            lima_shell_extra_args: Vec::new(),
-            cancel_pgid_path: None,
-            working_dir: None,
-        }
+            Vec::new(),
+        )
     }
 
     /// Start building an `apptainer build` command.
@@ -939,22 +929,17 @@ impl Apptainer {
     /// `--mksquashfs-args` flag added later with [`ApptainerCommand::raw_flag`]
     /// replaces it, as apptainer reads the last one.
     pub fn build(&self, output: &Path, def_file: &Path) -> ApptainerCommand<'_> {
-        ApptainerCommand {
-            facade: self,
-            kind: CommandKind::Build {
+        ApptainerCommand::new(
+            self,
+            CommandKind::Build {
                 output: output.to_string_lossy().into_owned(),
                 def_file: def_file.to_string_lossy().into_owned(),
             },
-            flags: vec![
+            vec![
                 MKSQUASHFS_ARGS_FLAG.to_string(),
                 SQUASHFS_COMPRESSION.to_string(),
             ],
-            bind_mounts: Vec::new(),
-            apptainer_env: Vec::new(),
-            lima_shell_extra_args: Vec::new(),
-            cancel_pgid_path: None,
-            working_dir: None,
-        }
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -1413,6 +1398,21 @@ pub struct ApptainerCommand<'a> {
 }
 
 impl<'a> ApptainerCommand<'a> {
+    /// A command of `kind` that starts with `flags` and none of the optional
+    /// settings the builder methods add.
+    fn new(facade: &'a Apptainer, kind: CommandKind, flags: Vec<String>) -> Self {
+        Self {
+            facade,
+            kind,
+            flags,
+            bind_mounts: Vec::new(),
+            apptainer_env: Vec::new(),
+            lima_shell_extra_args: Vec::new(),
+            cancel_pgid_path: None,
+            working_dir: None,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Named flag methods
     // -----------------------------------------------------------------------
