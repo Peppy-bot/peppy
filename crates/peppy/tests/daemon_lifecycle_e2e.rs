@@ -13,8 +13,9 @@
 //! binary by `core-node`'s `teardown_all_instances` test, and the watchdog
 //! timing by `peppylib`'s `daemon_watchdog` tests.
 
-use crate::common::{MessagingEngine, SERVE_INITIALIZED, spawn_daemon, wait_for_exit};
-use peppy::test_support::wait_for_log;
+use crate::common::{
+    DAEMON_BOOT, MessagingEngine, SERVE_INITIALIZED, spawn_daemon, wait_for_daemon, wait_for_exit,
+};
 use std::time::Duration;
 
 fn run_shutdown_signal_case(signal: rustix::process::Signal) {
@@ -22,10 +23,12 @@ fn run_shutdown_signal_case(signal: rustix::process::Signal) {
     let (mut guard, logs) = spawn_daemon(home.path(), MessagingEngine::Mock);
 
     // Wait until the serve loop is fully up before signaling.
-    wait_for_log(
-        || logs.lock().unwrap().clone(),
+    wait_for_daemon(
+        &mut guard,
+        &logs,
+        DAEMON_BOOT,
         SERVE_INITIALIZED,
-        Duration::from_secs(60),
+        |snapshot| snapshot.contains(SERVE_INITIALIZED).then_some(()),
     );
 
     let pid = rustix::process::Pid::from_child(&guard.0);
