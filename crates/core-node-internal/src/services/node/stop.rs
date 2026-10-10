@@ -679,21 +679,17 @@ pub(crate) async fn stop_named_instances(
     relationships: &RelationshipCoordinators,
     ids: &[Name],
 ) {
-    let graph = node_stack.to_serialized_graph();
     for id in ids.iter().rev() {
-        let running = graph.nodes.iter().find(|node| {
-            node.instances
-                .iter()
-                .any(|instance| instance.instance_id == id.as_str())
-        });
-        if let Some(node) = running {
+        if let Some((node_name, node_tag)) =
+            node_stack.find_entity_label_for_instance_id_any_state(id)
+        {
             stop_instances(
                 messenger,
                 core_node,
                 root_id,
                 node_stack,
-                &node.name,
-                &node.tag,
+                &node_name,
+                &node_tag,
                 std::slice::from_ref(id),
             )
             .await;
