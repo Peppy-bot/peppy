@@ -191,6 +191,59 @@ fn node_cargo_init_without_container_omits_apptainer_def() {
 }
 
 #[test]
+fn node_init_with_to_dir_creates_the_node_in_that_directory() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to start mock serve emulation");
+
+    let working_dir = tempfile::tempdir().expect("failed to create temp working dir");
+    let target_dir = tempfile::tempdir().expect("failed to create temp target dir");
+    let node_name = "test_node";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(working_dir.path(), serve.messenger())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let _guard = log_capture.install();
+
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            toolchain: Toolchain::Cargo,
+            to_dir: Some(target_dir.path().to_path_buf()),
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node create command should succeed");
+
+    assert!(
+        target_dir
+            .path()
+            .join(node_name)
+            .join("peppy.json5")
+            .exists(),
+        "the node should be created under --to-dir"
+    );
+    assert!(
+        !working_dir.path().join(node_name).exists(),
+        "--to-dir should replace the working directory as the parent of the node"
+    );
+    let logs = log_capture.logs();
+    let expected = format!(
+        "Successfully created node '{node_name}' at {}/{node_name}",
+        target_dir.path().display()
+    );
+    assert!(
+        logs.contains(&expected),
+        "logs should name the --to-dir location. Logs:\n{logs}"
+    );
+}
+
+#[test]
 fn node_uv_init_command_success() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let serve = rt
