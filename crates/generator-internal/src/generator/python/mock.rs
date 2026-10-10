@@ -23,7 +23,7 @@ use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass};
 use super::deserialization;
 use super::scaffold::sanitize_python_module_name;
 use super::serialization;
-use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
+use super::topics::{emit_capnp_loader_fn, emit_capnp_preamble};
 use super::type_mapping::{qos_profile_python, retention_python};
 use super::{PythonGenerator, PythonSchemaInfo};
 use crate::error::Result;
@@ -142,19 +142,7 @@ pub(super) fn emit_value_serializer(
     builder.block(
         &format!("def {fn_name}(value: {value_type}) -> bytes:"),
         |builder| {
-            builder.line(&format!(
-                "capnp_msg = {}().{}.new_message()",
-                capnp_loader_fn_name(&info),
-                info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(
-                builder,
-                "capnp_msg",
-                format,
-                "value",
-                &mut counter,
-            );
+            serialization::emit_new_capnp_message(builder, &info, format, "value");
             builder.line("return capnp_msg.to_bytes()");
         },
     );

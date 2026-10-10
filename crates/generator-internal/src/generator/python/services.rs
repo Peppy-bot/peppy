@@ -2,7 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass};
 use super::deserialization;
 use super::serialization;
-use super::topics::{capnp_loader_fn_name, emit_capnp_schema_loader};
+use super::topics::emit_capnp_schema_loader;
 use crate::error::Result;
 use crate::generator::types::{ContractOrigin, non_empty_message_format};
 use config::node::{Cardinality, ConsumedService, MessageFormat, NativeExposedService};
@@ -255,19 +255,7 @@ response = handler(request)
 if hasattr(response, "__await__"):
     response = await response
 "#);
-            let loader_fn_name = capnp_loader_fn_name(resp_info);
-            builder.line(&format!(
-                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                resp_info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(
-                builder,
-                "capnp_msg",
-                resp_fmt,
-                "response",
-                &mut counter,
-            );
+            serialization::emit_new_capnp_message(builder, resp_info, resp_fmt, "response");
             builder.line("return capnp_msg.to_bytes()");
         },
     );
@@ -415,13 +403,7 @@ pub fn build_consumed_service(
 
         // Serialize the request payload
         if let Some((fmt, info)) = request_format.zip(request_schema_info) {
-            let loader_fn_name = capnp_loader_fn_name(info);
-            builder.line(&format!(
-                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(builder, "capnp_msg", fmt, "request", &mut counter);
+            serialization::emit_new_capnp_message(builder, info, fmt, "request");
             builder.line("request_payload = capnp_msg.to_bytes()");
         } else {
             builder.line("request_payload = b\"\"");

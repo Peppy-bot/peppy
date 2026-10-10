@@ -82,13 +82,7 @@ fn emit_build_message_fn(
                 builder.line("return b\"\"");
                 return;
             };
-            let loader_fn_name = capnp_loader_fn_name(info);
-            builder.line(&format!(
-                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(builder, "capnp_msg", fmt, "", &mut counter);
+            serialization::emit_new_capnp_message(builder, info, fmt, "");
             builder.line("return capnp_msg.to_bytes()");
         },
     );

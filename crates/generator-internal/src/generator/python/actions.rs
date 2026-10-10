@@ -3,7 +3,7 @@ use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass, emit_nest
 use super::deserialization;
 use super::serialization;
 use super::services::sender_target_python_expr;
-use super::topics::{capnp_loader_fn_name, emit_capnp_schema_loader};
+use super::topics::emit_capnp_schema_loader;
 use super::type_mapping::{collect_fields_from_format, uses_optional};
 use crate::error::Result;
 use crate::generator::types::{ConsumedActionMessage, ContractOrigin, non_empty_message_format};
@@ -243,19 +243,7 @@ if hasattr(decision, "__await__"):
                     if let Some((fmt, info)) = goal_response_format.zip(goal_response_schema_info) {
                         builder.line("response = decision.response");
                         builder.block("if response is not None:", |builder| {
-                            let loader_fn_name = capnp_loader_fn_name(info);
-                            builder.line(&format!(
-                                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                                info.struct_name
-                            ));
-                            let mut counter = 0u32;
-                            serialization::emit_capnp_assignments(
-                                builder,
-                                "capnp_msg",
-                                fmt,
-                                "response",
-                                &mut counter,
-                            );
+                            serialization::emit_new_capnp_message(builder, info, fmt, "response");
                             builder.line("response_bytes = capnp_msg.to_bytes()");
                         });
                         builder.block("else:", |builder| {
@@ -310,19 +298,7 @@ def is_cancelled(self) -> bool:
             builder.block(
                 &format!("async def publish_feedback({}) -> None:", params.join(", ")),
                 |builder| {
-                    let loader_fn_name = capnp_loader_fn_name(info);
-                    builder.line(&format!(
-                        "capnp_msg = {loader_fn_name}().{}.new_message()",
-                        info.struct_name
-                    ));
-                    let mut counter = 0u32;
-                    serialization::emit_capnp_assignments(
-                        builder,
-                        "capnp_msg",
-                        fmt,
-                        "",
-                        &mut counter,
-                    );
+                    serialization::emit_new_capnp_message(builder, info, fmt, "");
                     builder.py(r#"
 payload = capnp_msg.to_bytes()
 await self._inner.publish_feedback(payload)
@@ -344,19 +320,7 @@ await self._inner.publish_feedback(payload)
                         if let Some((fmt, info)) =
                             result_response_format.zip(result_response_schema_info)
                         {
-                            let loader_fn_name = capnp_loader_fn_name(info);
-                            builder.line(&format!(
-                                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                                info.struct_name
-                            ));
-                            let mut counter = 0u32;
-                            serialization::emit_capnp_assignments(
-                                builder,
-                                "capnp_msg",
-                                fmt,
-                                "",
-                                &mut counter,
-                            );
+                            serialization::emit_new_capnp_message(builder, info, fmt, "");
                             builder.line("payload = capnp_msg.to_bytes()");
                         } else {
                             builder.line("payload = b\"\"");
@@ -571,19 +535,7 @@ to it.
 
                 // Serialize request payload
                 if let Some((fmt, info)) = goal_request_format.zip(schema_info.goal_request) {
-                    let loader_fn_name = capnp_loader_fn_name(info);
-                    builder.line(&format!(
-                        "capnp_msg = {loader_fn_name}().{}.new_message()",
-                        info.struct_name
-                    ));
-                    let mut counter = 0u32;
-                    serialization::emit_capnp_assignments(
-                        builder,
-                        "capnp_msg",
-                        fmt,
-                        "request",
-                        &mut counter,
-                    );
+                    serialization::emit_new_capnp_message(builder, info, fmt, "request");
                     builder.line("user_goal_payload = capnp_msg.to_bytes()");
                 } else {
                     builder.line("user_goal_payload = b\"\"");

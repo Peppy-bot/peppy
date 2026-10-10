@@ -1,22 +1,30 @@
+use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, container_name, emit_fixed_length_check};
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
+use super::topics::capnp_loader_fn_name;
 use crate::generator::naming::sanitize_capnp_field_name;
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 
-/// Emits pycapnp field assignment statements for all fields in a `MessageFormat`.
+/// Emits a new pycapnp message of `schema_info` bound to `capnp_msg`, then
+/// one assignment statement per field of `format`. The caller emits what is
+/// done with the message (`capnp_msg.to_bytes()`).
 ///
-/// `builder_var` is the pycapnp message variable (e.g., `"capnp_msg"` or `"header_builder"`).
-/// `param_prefix` is the Python expression prefix for accessing parameter values
-/// (empty string for top-level fields, e.g., `"header"` for nested fields under `header`).
-/// `counter` provides unique suffixes for temporary variable names.
-pub fn emit_capnp_assignments(
+/// `param_prefix` is the Python expression the field values are read from:
+/// `"request"` reads `request.<field>`, an empty prefix reads each field from
+/// a parameter of the same name.
+pub fn emit_new_capnp_message(
     builder: &mut PythonCodeBuilder,
-    builder_var: &str,
+    schema_info: &PythonSchemaInfo,
     format: &MessageFormat,
     param_prefix: &str,
-    counter: &mut u32,
 ) {
+    builder.line(&format!(
+        "capnp_msg = {}().{}.new_message()",
+        capnp_loader_fn_name(schema_info),
+        schema_info.struct_name
+    ));
+    let mut counter = 0u32;
     for (field_name, schema) in &format.0 {
         let python_name = sanitize_python_identifier(field_name);
         let value_expr = if param_prefix.is_empty() {
@@ -27,11 +35,11 @@ pub fn emit_capnp_assignments(
 
         emit_field_assignment(
             builder,
-            builder_var,
+            "capnp_msg",
             field_name,
             schema,
             &value_expr,
-            counter,
+            &mut counter,
         );
     }
 }
