@@ -87,8 +87,8 @@ impl ServeCommandBuilder {
         root_dir: impl Into<PathBuf>,
         git_hash: impl Into<String>,
         peppy_dirs: PeppyDirs,
-    ) -> Result<Self> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             composite_command: CompositeCommand::default(),
             messenger: None,
             messaging_ready: None,
@@ -105,7 +105,7 @@ impl ServeCommandBuilder {
             identity: FederationIdentity::of(None),
             managed_router: None,
             teardown_token: CancellationToken::new(),
-        })
+        }
     }
 
     /// Supplies the daemon-global config (messaging mode + subscriber buffer sizes)
@@ -560,7 +560,6 @@ mod tests {
 
         let builder =
             ServeCommandBuilder::new("/unused", "regression-git-hash", PeppyDirs::new("/unused"))
-                .expect("create builder")
                 .with_peppy_config(peppy_config)
                 .with_messaging_router("zenoh".to_string())
                 .expect("build external messaging adapter without starting it");
@@ -618,7 +617,6 @@ mod tests {
             ..PeppyConfig::default()
         };
         ServeCommandBuilder::new("/unused", "regression-git-hash", PeppyDirs::new(data_root))
-            .expect("create builder")
             .with_peppy_config(peppy_config)
             .with_messaging_router("zenoh".to_string())
             .expect("build managed messaging adapter without starting it")
@@ -706,7 +704,6 @@ mod tests {
             "regression-git-hash",
             PeppyDirs::new(data_root.path()),
         )
-        .expect("create builder")
         .with_peppy_config(peppy_config)
         .with_messaging_router("zenoh".to_string())
         .expect("build external messaging adapter without starting it");
@@ -738,7 +735,6 @@ mod tests {
         };
 
         let Err(err) = ServeCommandBuilder::new("/unused", "hash", dirs)
-            .expect("create builder")
             .with_peppy_config(peppy_config)
             .with_messaging_router("zenoh".to_string())
         else {

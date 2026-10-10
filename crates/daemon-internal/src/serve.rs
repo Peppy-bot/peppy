@@ -82,13 +82,11 @@ impl CompositeCommand {
         self
     }
 
-    pub(crate) fn execute(self) -> Result<Vec<ServeAsyncHandle>> {
-        let mut futures: Vec<ServeAsyncHandle> = Vec::new();
-        for async_command in self.async_commands {
-            futures.push(async_command.run());
-        }
-
-        Ok(futures)
+    pub(crate) fn execute(self) -> Vec<ServeAsyncHandle> {
+        self.async_commands
+            .into_iter()
+            .map(|command| command.run())
+            .collect()
     }
 }
 
@@ -160,13 +158,13 @@ impl Serve {
             .enable_all()
             .build()?;
 
-        let handles = self.composite_command.execute()?;
+        let handles = self.composite_command.execute();
         let external_shutdown = self.shutdown_token;
         let teardown_token = self.teardown_token;
         let restart_rx = self.restart_rx;
 
         info!("Running serve command...");
-        let outcome = runtime.block_on(async move {
+        runtime.block_on(async move {
             // The coordinator is the one observer of the OS shutdown signals,
             // and a signal reaches only the listeners that exist when it
             // arrives. So the coordinator listens before any handler runs, and
@@ -219,8 +217,7 @@ impl Serve {
             }
 
             reason
-        })?;
-        Ok(outcome)
+        })
     }
 
     /// Waits until every readiness gate fires, a gate drops without firing,
@@ -409,7 +406,7 @@ fn run_one_generation(options: &ServeOptions) -> Result<(ServeOutcome, bool)> {
         &options.root_dir,
         options.git_hash.clone(),
         options.peppy_dirs.clone(),
-    )?
+    )
     .with_peppy_config(peppy_config)
     .with_messaging_router(options.messaging_engine.clone())?
     .with_core_node(options.core_node_name.clone())?;
