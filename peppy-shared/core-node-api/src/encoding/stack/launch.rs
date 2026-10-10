@@ -1067,6 +1067,35 @@ mod tests {
         }
     }
 
+    /// A [`PlacementSpec::Places`] map cannot hold one link twice, so only a
+    /// hand-built message reaches this refusal. It is what keeps "at most one
+    /// target per placeholder" a property of the decoded type.
+    #[test]
+    fn launch_goal_decode_refuses_a_link_wired_twice() {
+        let mut builder = Builder::new_default();
+        {
+            let mut wire = builder.init_root::<launch_capnp::launch_goal::Builder>();
+            wire.set_launch_id("launch-1");
+            wire.set_node_add_idle_timeout_secs(1);
+            wire.set_node_build_idle_timeout_secs(1);
+            wire.set_node_run_idle_timeout_secs(1);
+            wire.reborrow()
+                .init_launcher_origin()
+                .set_repository("fleet");
+            let mut places = wire.init_placement().init_places(2);
+            for (index, core_node) in ["cn-a", "cn-b"].into_iter().enumerate() {
+                let mut link = places.reborrow().get(index as u32);
+                link.set_link_id("robot_onboard");
+                link.set_core_node(core_node);
+            }
+        }
+        let refusal = decoding_error(LaunchGoal::decode(&encode_message(&builder).unwrap()));
+        assert!(
+            refusal.contains("wires `robot_onboard` more than once"),
+            "{refusal}"
+        );
+    }
+
     /// `LauncherOrigin::Fs` is documented to carry an absolute path; the
     /// daemon opens it directly without resolving. A relative path here
     /// would silently anchor at the daemon's CWD, which is a footgun.
