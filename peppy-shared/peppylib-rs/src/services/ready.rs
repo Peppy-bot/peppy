@@ -14,7 +14,6 @@ pub async fn listen_for_node_ready(
         instance_id,
         as_identity,
         NODE_READY_SERVICE,
-        NODE_READY_SERVICE,
     )
     .await
 }
