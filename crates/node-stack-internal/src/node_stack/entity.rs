@@ -798,7 +798,7 @@ impl NodeEntity {
             None => {
                 // Process node: run build_cmd inside the working dir.
                 run_build_cmd(
-                    snapshot.build_cmd.as_ref(),
+                    snapshot.build_cmd.as_deref(),
                     ctx.working_dir,
                     ctx.env_vars,
                     &ctx.announcer,

@@ -610,7 +610,7 @@ pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String 
 /// successfully. Used by [`super::entity::NodeEntity::build`] for process
 /// nodes after the entity has transitioned to `Building`.
 pub(super) async fn run_build_cmd(
-    build_cmd: Option<&Vec<String>>,
+    build_cmd: Option<&[String]>,
     working_dir: &Path,
     env_vars: &[(String, String)],
     announcer: &Announcer,
@@ -968,7 +968,7 @@ mod tests {
         let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
         let cmd = vec!["peppy-test-no-such-tool".to_string(), "sync".to_string()];
         let err = run_build_cmd(
-            Some(&cmd),
+            Some(cmd.as_slice()),
             working_dir.path(),
             &[],
             &Announcer::new(scratch_log(), feedback_tx),
@@ -988,7 +988,7 @@ mod tests {
         let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
         let cmd = vec!["true".to_string()];
         let err = run_build_cmd(
-            Some(&cmd),
+            Some(cmd.as_slice()),
             working_dir,
             &[],
             &Announcer::new(scratch_log(), feedback_tx),
@@ -1057,7 +1057,7 @@ mod tests {
         let cmd = vec!["peppy-test-stub-tool".to_string(), "sync".to_string()];
         let env_vars = vec![("PATH".to_string(), tool_dir.path().display().to_string())];
         run_build_cmd(
-            Some(&cmd),
+            Some(cmd.as_slice()),
             working_dir.path(),
             &env_vars,
             &Announcer::new(scratch_log(), feedback_tx),
@@ -1079,8 +1079,9 @@ mod tests {
     async fn build_cmd_output(script: &str, env_vars: &[(String, String)]) -> Vec<String> {
         let working_dir = tempfile::tempdir().expect("tempdir should succeed");
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel();
+        let cmd = [script.to_string()];
         run_build_cmd(
-            Some(&vec![script.to_string()]),
+            Some(cmd.as_slice()),
             working_dir.path(),
             env_vars,
             &Announcer::new(scratch_log(), feedback_tx),
