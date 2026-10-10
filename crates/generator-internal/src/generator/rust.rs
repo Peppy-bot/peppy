@@ -964,8 +964,6 @@ impl LanguageGenerator for RustGenerator {
         let action_prefix = to_camel_case(&base_name);
 
         let mut context = GenerationContext::default();
-        // Methods on `impl ActionHandle` (expose + handle_goal_next_request).
-        let mut action_handle_methods: Vec<TokenStream> = Vec::new();
         // Methods on `impl GoalContext` (request/goal_id/cancel_signal/... plus
         // publish_feedback and complete/complete_cancelled when applicable).
         let mut goal_context_methods: Vec<TokenStream> = Vec::new();
@@ -980,8 +978,9 @@ impl LanguageGenerator for RustGenerator {
         // Every action is goal-driven in the concurrent model: clients fire a
         // goal, the server accepts/rejects and (when accepted) drives it through
         // a GoalContext. An absent `goal_service` simply means the goal carries
-        // no request/response payload.
-        {
+        // no request/response payload. The block yields the
+        // `handle_goal_next_request` method of `impl ActionHandle`.
+        let handle_goal_method = {
             let goal_service = action.goal_service.as_ref();
             let label = format!("{base_name}_goal");
             let schema_struct_prefix = format!("{action_prefix}Goal");
@@ -1080,11 +1079,11 @@ impl LanguageGenerator for RustGenerator {
                 None
             };
 
-            action_handle_methods.push(build_handle_goal_next_request(
+            build_handle_goal_next_request(
                 goal_request_data_struct.is_some(),
                 response_serialization,
-            ));
-        }
+            )
+        };
 
         // Every action hands out a GoalContext with these base methods.
         goal_context_methods.push(build_goal_context_base_methods());
@@ -1161,10 +1160,6 @@ impl LanguageGenerator for RustGenerator {
             ));
         }
 
-        if action_handle_methods.is_empty() {
-            return Ok(());
-        }
-
         let action_handle_struct = build_action_handle_struct();
         let goal_context_struct = build_goal_context_struct();
         let expose_method = build_action_expose_method(has_feedback, origin);
@@ -1177,7 +1172,7 @@ impl LanguageGenerator for RustGenerator {
         items.push(quote! {
             impl ActionHandle {
                 #expose_method
-                #( #action_handle_methods )*
+                #handle_goal_method
             }
         });
         items.push(quote! {
