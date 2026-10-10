@@ -7,7 +7,9 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::common::{emulate_startup_services, setup, stack_graph, test_node_target};
+use super::common::{
+    emulate_startup_services, node_add_command, setup, stack_graph, test_node_target,
+};
 
 #[test]
 fn node_remove_command_succeeds() {
@@ -45,26 +47,9 @@ fn node_remove_command_succeeds() {
 
     peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect("node add command should succeed");
 
     // Assert there is one node + the core node in the node stack after add
     let messenger_handle = node_ctx

@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::common::{
-    emulate_startup_services, serve_app_context, setup, stack_graph, test_node_target,
+    emulate_startup_services, node_add_command, node_run_command, serve_app_context, setup,
+    stack_graph, test_node_target,
 };
 
 #[test]
@@ -54,26 +55,9 @@ fn node_add_command_succeeds() {
     peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     // Now add the node to the node stack
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect("node add command should succeed");
 
     // Verify the logs contain success message
     let logs = log_capture.logs();
@@ -279,25 +263,7 @@ fn node_add_after_failed_sync_succeeds() {
     peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     // 3. Run `node add .` on that node, it'll fail due to git hash mismatch
-    let add_result = NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx);
+    let add_result = node_add_command(&node_path).execute(&node_ctx);
 
     assert!(
         add_result.is_err(),
@@ -324,26 +290,9 @@ fn node_add_after_failed_sync_succeeds() {
     .expect("node sync command should succeed");
 
     // 5. Run `node add .` again. This time it should succeed
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed after sync");
+    node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect("node add command should succeed after sync");
 
     // Verify the logs contain success message
     let logs = log_capture.logs();
@@ -752,25 +701,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     std::fs::write(&git_hash_path, "wrong-hash\n").expect("failed to write wrong git hash");
 
     // 3. `node add` without `--sync` should fail with a git hash mismatch
-    let add_result = NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx);
+    let add_result = node_add_command(&node_path).execute(&node_ctx);
     assert!(
         add_result.is_err(),
         "node add without --sync should fail on stale git.hash"
@@ -985,26 +916,9 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
         &producer_path.join("peppy.json5"),
         &instances.sentinel(),
     );
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(producer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer node add should succeed");
+    node_add_command(&producer_path)
+        .execute(&node_ctx)
+        .expect("producer node add should succeed");
 
     // Consumer with a single declared link_id. A `--link` on a key that
     // names no declared slot must be rejected by the chained run.
@@ -1102,26 +1016,9 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
         &producer_path.join("peppy.json5"),
         &instances.sentinel(),
     );
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(producer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer node add should succeed");
+    node_add_command(&producer_path)
+        .execute(&node_ctx)
+        .expect("producer node add should succeed");
 
     // Spawn an instance of the producer so the binding's VALUE resolves
     // to a real running instance_id.
@@ -1132,24 +1029,9 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
         producer_name,
         producer_instance_id,
     ));
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(producer_instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer run should succeed");
+    node_run_command(producer_instance_id, producer_name, Vec::new(), Vec::new())
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
 
     let consumer_dir = write_consumer_with_pinned_depends_on(
         work_dir.path(),
@@ -1243,26 +1125,9 @@ fn node_add_with_run_rejects_dead_binding_key() {
         &producer_path.join("peppy.json5"),
         &instances.sentinel(),
     );
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(producer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer node add should succeed");
+    node_add_command(&producer_path)
+        .execute(&node_ctx)
+        .expect("producer node add should succeed");
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     rt.block_on(emulate_startup_services(
@@ -1271,24 +1136,9 @@ fn node_add_with_run_rejects_dead_binding_key() {
         producer_name,
         producer_instance_id,
     ));
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(producer_instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer run should succeed");
+    node_run_command(producer_instance_id, producer_name, Vec::new(), Vec::new())
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
 
     let consumer_dir = write_consumer_with_pinned_depends_on(
         work_dir.path(),
@@ -1381,26 +1231,9 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         &producer_path.join("peppy.json5"),
         &instances.sentinel(),
     );
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(producer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer node add should succeed");
+    node_add_command(&producer_path)
+        .execute(&node_ctx)
+        .expect("producer node add should succeed");
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     rt.block_on(emulate_startup_services(
@@ -1416,24 +1249,9 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         producer_right_id,
     ));
     for instance_id in [producer_left_id, producer_right_id] {
-        NodeCommand {
-            command: NodeCommands::Run {
-                clock: None,
-                publish_clock: None,
-                node_ref: None,
-                node_name: Some(producer_name.to_string()),
-                tag: Some("v1".to_string()),
-                args: Vec::new(),
-                instance_id: Some(instance_id.to_string()),
-                links: Vec::new(),
-                vacant_links: Vec::new(),
-                idle_timeout: 60,
-                max_timeout: 3600,
-                build: false,
-            },
-        }
-        .execute(&node_ctx)
-        .expect("producer run should succeed");
+        node_run_command(instance_id, producer_name, Vec::new(), Vec::new())
+            .execute(&node_ctx)
+            .expect("producer run should succeed");
     }
 
     // Stand up + run the bystander consumer with both pins bound.
@@ -1760,11 +1578,9 @@ fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
         Some(r#"{ services: { consumes: [{ link_id: "rec", name: "finish_session" }] } }"#),
     );
 
-    super::common::node_add_command(&consumer_dir)
-        .execute(&node_ctx)
-        .expect(
-            "adding a consumer whose optional dependency lives only in the repo cache should succeed",
-        );
+    node_add_command(&consumer_dir).execute(&node_ctx).expect(
+        "adding a consumer whose optional dependency lives only in the repo cache should succeed",
+    );
 
     let messenger_handle = node_ctx
         .messenger_handle()
@@ -1803,7 +1619,7 @@ fn node_add_refuses_optional_dependency_resolvable_nowhere() {
         Some(r#"{ services: { consumes: [{ link_id: "rec", name: "finish_session" }] } }"#),
     );
 
-    let err = super::common::node_add_command(&consumer_dir)
+    let err = node_add_command(&consumer_dir)
         .execute(&node_ctx)
         .expect_err("a dependency resolvable nowhere must refuse the add");
     let msg = err.to_string();
