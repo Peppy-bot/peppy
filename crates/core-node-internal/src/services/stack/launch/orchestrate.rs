@@ -307,10 +307,10 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
         root_config.manifest.tag.as_str(),
     );
 
-    let mut configs_by_key: HashMap<NodeKey, config::node::NodeConfig> = HashMap::new();
-    configs_by_key.insert(root_key.clone(), root_config.clone());
+    let mut configs_by_key: HashMap<NodeKey, &config::node::NodeConfig> = HashMap::new();
+    configs_by_key.insert(root_key.clone(), &root_config);
     for item in planned {
-        configs_by_key.insert(item.key(), item.config.clone());
+        configs_by_key.insert(item.key(), &item.config);
     }
 
     let planned_keys: HashSet<NodeKey> = planned.iter().map(PlannedDeployment::key).collect();
@@ -327,7 +327,11 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
                 &item.node_name,
                 &item.node_tag,
                 config::node::MissingDependencyPolicy::AllowAbsentWhenSlotAdmitsEmpty,
-                |name, tag| configs_by_key.get(&NodeKey::new(name, tag)).cloned(),
+                |name, tag| {
+                    configs_by_key
+                        .get(&NodeKey::new(name, tag))
+                        .map(|config| (*config).clone())
+                },
             )
         })
         .collect();
