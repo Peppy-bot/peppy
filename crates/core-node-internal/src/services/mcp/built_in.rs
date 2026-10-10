@@ -100,7 +100,7 @@ fn own_executable(current_exe: &Path, expected: &str) -> Option<PeppyExecutable>
     None
 }
 
-/// The spawn recipe of a built-in node whose documents live in `dir`.
+/// The spawn recipe of a built-in node whose serve spec is at `spec_path`.
 fn built_in_launch(executable: PathBuf, peppy_dirs: &PeppyDirs, spec_path: &Path) -> BuiltInLaunch {
     BuiltInLaunch {
         executable,

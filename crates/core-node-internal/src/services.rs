@@ -135,7 +135,8 @@ pub struct CoreNodeConfig {
     pub messenger: Arc<Mutex<Messenger>>,
     /// Explicit node name; `None` derives a deterministic machine-based default.
     pub node_name: Option<String>,
-    /// Timeouts, intervals, and the daemon-wide sim-time flag.
+    /// Timeouts, intervals, the health-monitor policy and the settle window of
+    /// the boot name claim.
     pub arguments: CoreNodeArguments,
     /// Root directory the node stack is anchored at.
     pub root_dir: PathBuf,
@@ -300,7 +301,7 @@ struct ListenerCtx<'a> {
 
 /// Why a daemon-side registration for a registry method deliberately does
 /// not exist. Every variant is a documented decision surfaced by the
-/// exhaustive match in [`CoreNode::service_task`] — not a silent gap.
+/// exhaustive match in [`CoreNode::service_task`], not a silent gap.
 enum NotHostedHere {
     /// Hosted by spawned nodes; the daemon is the caller (`clock_offset`).
     SpawnedNode,
@@ -470,7 +471,7 @@ impl CoreNode {
     /// The daemon-side registration for one registry **service**, or the
     /// documented reason it does not exist here.
     ///
-    /// EXHAUSTIVE on purpose — no wildcard arm: a new [`ServiceId`] variant
+    /// EXHAUSTIVE on purpose, with no wildcard arm: a new [`ServiceId`] variant
     /// fails compilation here until the daemon decides how (or explicitly
     /// why not) to host it.
     fn service_task<'a>(
@@ -687,7 +688,7 @@ impl CoreNode {
 
     /// The daemon-side registration for one registry **action**. All actions
     /// are daemon-hosted, so unlike [`Self::service_task`] there is no
-    /// not-hosted-here escape. EXHAUSTIVE — no wildcard arm.
+    /// not-hosted-here escape. EXHAUSTIVE: no wildcard arm.
     fn action_task<'a>(&'a self, id: ActionId, ctx: &ListenerCtx<'a>) -> ListenerSetup<'a> {
         match id {
             ActionId::StackLaunch
@@ -783,7 +784,7 @@ impl CoreNode {
     }
 
     /// The daemon-side task fulfilling one registry **topic**. All topics are
-    /// daemon-hosted. EXHAUSTIVE — no wildcard arm.
+    /// daemon-hosted. EXHAUSTIVE: no wildcard arm.
     fn topic_task<'a>(&'a self, id: TopicId, ctx: &ListenerCtx<'a>) -> ListenerSetup<'a> {
         match id {
             // The daemon publishes its own machine's wall ticks whatever its
@@ -995,7 +996,7 @@ impl CoreNode {
         // Wait for all service handlers, surfacing the FIRST task that returns
         // an error while the others still run. (`try_join_all` over
         // `JoinHandle`s short-circuits only on a panic; an inner `Err` would
-        // wait for every other listener — which run until shutdown — and never
+        // wait for all the other listeners, which run until shutdown, and never
         // surface.) A listener dying with an error leaves the daemon broken;
         // aborting the core node lets the daemon exit for its supervisor
         // instead of running on half-alive.

@@ -14,8 +14,8 @@
 //!
 //! Concurrency is serialized with an in-process mutex map keyed by
 //! `<slug>-<hash>` so two concurrent batches inside the same daemon
-//! can't race on the same directory. Cross-process safety is not a
-//! concern yet; the daemon is the only writer.
+//! can't race on the same directory. The locks do not span processes:
+//! the daemon is the only writer.
 
 use super::super::checkout_repo_ref;
 use super::super::git_utils::{clone_repo_shallow, fetch_with_progress, head_commit};
@@ -67,7 +67,7 @@ fn forget_reuse_announced(dir: &Path) {
 /// How long a checkout that no cache entry names any more is kept.
 ///
 /// A caller is handed a path and reads from it after the lock is released
-/// — `node add` copies the tree out — so a checkout that stops being
+/// (`node add` copies the tree out), so a checkout that stops being
 /// referenced mid-add must not vanish underneath it. The window runs from
 /// the last hand-out, which is long enough to cover any single add and
 /// short enough that a superseded pin does not linger for a day.
@@ -184,8 +184,8 @@ pub fn materialized_checkout(
 /// directory.
 ///
 /// The clone brings every head the remote publishes at depth 1, so a
-/// commit that is any of their tips — which is what a pin read from a
-/// freshly refreshed repository is — is already here and the checkout is
+/// commit that is any of their tips (which is what a pin read from a
+/// freshly refreshed repository is) is already here and the checkout is
 /// the whole job. A commit the refs have since moved past is fetched by
 /// its own hash, falling back to deepening `read_ref`, the ref the entry was
 /// read at; one the remote no longer holds is refused rather than silently
@@ -252,7 +252,7 @@ pub fn ensure_checkout_at_commit(
 /// tree again the first time anything from it is added.
 ///
 /// `dir` must be a working tree whose HEAD is `commit`, and must sit on the
-/// same filesystem as the cache — both hold for a clone made under
+/// same filesystem as the cache. Both hold for a clone made under
 /// [`PeppyDirs::tmp_dir`]. Ownership of `dir` passes here either way.
 ///
 /// Best-effort, and infallible from the caller's side: whatever goes wrong,
@@ -702,7 +702,7 @@ mod tests {
     /// The donation is the whole point of the cache being keyed by commit:
     /// a clone somebody else already paid for is the same bytes, so nothing
     /// is fetched afterwards. Proven by deleting the source repository
-    /// before asking for the checkout — a clone or fetch would fail.
+    /// before asking for the checkout: a clone or fetch would fail.
     #[test]
     fn adopt_checkout_takes_over_a_clone_made_elsewhere() {
         let repo = SourceRepo::new(&["first"]);
@@ -734,7 +734,7 @@ mod tests {
     }
 
     /// A key that already holds the commit already holds the same bytes, so
-    /// the donation is dropped rather than swapped in — and the donor never
+    /// the donation is dropped rather than swapped in, and the donor never
     /// leaks either way.
     #[test]
     fn adopt_checkout_keeps_the_checkout_already_at_the_key() {
@@ -781,7 +781,7 @@ mod tests {
     }
 
     /// A caller is handed a path and keeps reading from it after the lock
-    /// is released — `node add` copies the tree out — so a refresh that
+    /// is released (`node add` copies the tree out), so a refresh that
     /// supersedes the pin mid-add must not pull the directory out from
     /// under it.
     #[test]
