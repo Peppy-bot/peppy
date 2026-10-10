@@ -528,7 +528,7 @@ impl NodeEntity {
     /// `Building` with a matching generation. Deliberately does NOT bump the
     /// generation: this is the same entity, re-presented as buildable, and the
     /// superseding build captures the current generation via its own lookup.
-    pub fn rollback_building_to_added(&mut self, working_dir: Arc<WorkingDirGuard>) {
+    pub(crate) fn rollback_building_to_added(&mut self, working_dir: Arc<WorkingDirGuard>) {
         let NodeStage::Building { config_path } = &self.stage else {
             debug_assert!(
                 false,
@@ -1546,7 +1546,7 @@ impl TrackedNodeInstance {
     }
 
     /// Records the clock the change that started this instance resolved.
-    pub fn with_clock(mut self, clock: config::runtime::ClockBinding) -> Self {
+    pub(crate) fn with_clock(mut self, clock: config::runtime::ClockBinding) -> Self {
         self.clock = clock;
         self
     }
@@ -1559,7 +1559,7 @@ impl TrackedNodeInstance {
     }
 
     /// Records the launch the change that started this instance belongs to.
-    pub fn with_launch(mut self, launch: Option<LaunchIdentity>) -> Self {
+    pub(crate) fn with_launch(mut self, launch: Option<LaunchIdentity>) -> Self {
         self.launch = launch;
         self
     }
@@ -1571,7 +1571,7 @@ impl TrackedNodeInstance {
     }
 
     /// Records the copy this instance belongs to.
-    pub fn with_copy(mut self, copy: Option<config::runtime::Name>) -> Self {
+    pub(crate) fn with_copy(mut self, copy: Option<config::runtime::Name>) -> Self {
         self.copy = copy;
         self
     }
