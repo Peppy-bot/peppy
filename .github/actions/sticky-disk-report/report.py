@@ -162,7 +162,10 @@ def load_record(path: Path) -> tuple[Record | None, str | None]:
     except (OSError, ValueError) as error:
         return None, f"The record of the previous job could not be read ({error})."
     if not isinstance(data, dict) or data.get("version") != RECORD_VERSION:
-        return None, "The record of the previous job has another format; the restore column is empty."
+        return (
+            None,
+            "The record of the previous job has another format; the restore column is empty.",
+        )
     try:
         return (
             Record(
@@ -222,7 +225,9 @@ def shorten_path(path: str, places: list[tuple[str, str]]) -> str:
     return path
 
 
-def label_directory(key: str, mount_points: dict[str, str], places: list[tuple[str, str]]) -> str:
+def label_directory(
+    key: str, mount_points: dict[str, str], places: list[tuple[str, str]]
+) -> str:
     """Name a directory under `mounts/` by the path the job sees it at."""
     cache, _, rest = key.partition("/")
     point = mount_points.get(cache)
@@ -251,15 +256,27 @@ def directory_rows(
     ]
 
 
-def cache_rows(measurement: Measurement, record: Record | None, mount_points: dict[str, str], places: list[tuple[str, str]]) -> list[Row]:
+def cache_rows(
+    measurement: Measurement,
+    record: Record | None,
+    mount_points: dict[str, str],
+    places: list[tuple[str, str]],
+) -> list[Row]:
     caches = sorted(k for k in measurement.directories if "/" not in k)
     return directory_rows(caches, measurement, record, mount_points, places)
 
 
-def largest_rows(measurement: Measurement, record: Record | None, mount_points: dict[str, str], places: list[tuple[str, str]]) -> list[Row]:
+def largest_rows(
+    measurement: Measurement,
+    record: Record | None,
+    mount_points: dict[str, str],
+    places: list[tuple[str, str]],
+) -> list[Row]:
     inner = [k for k in measurement.directories if "/" in k]
     inner.sort(key=lambda k: (-measurement.directories[k], k))
-    return directory_rows(inner[:LARGEST_DIRECTORIES], measurement, record, mount_points, places)
+    return directory_rows(
+        inner[:LARGEST_DIRECTORIES], measurement, record, mount_points, places
+    )
 
 
 def render_table(rows: list[Row], has_record: bool) -> list[str]:
@@ -267,7 +284,9 @@ def render_table(rows: list[Row], has_record: bool) -> list[str]:
     for row in rows:
         before = "-" if row.at_restore is None else format_bytes(row.at_restore)
         change = format_change(row.at_restore, row.now) if has_record else "-"
-        lines.append(f"| `{row.label}` | {before} | {format_bytes(row.now)} | {change} |")
+        lines.append(
+            f"| `{row.label}` | {before} | {format_bytes(row.now)} | {change} |"
+        )
     return lines
 
 
@@ -305,7 +324,10 @@ def render_report(
         lines += [""]
         largest = largest_rows(measurement, record, mount_points, places)
         if largest:
-            lines += [f"#### Largest directories in the caches (up to {LARGEST_DIRECTORIES})", ""]
+            lines += [
+                f"#### Largest directories in the caches (up to {LARGEST_DIRECTORIES})",
+                "",
+            ]
             lines += render_table(largest, record is not None)
             lines += [""]
     for note in notes:
@@ -331,11 +353,25 @@ def measure(disk_dir: str) -> Measurement:
             timeout=DU_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        return Measurement(disk=disk, directories={}, notes=[f"du did not finish within {DU_TIMEOUT_SECONDS} seconds; no directory sizes."])
+        return Measurement(
+            disk=disk,
+            directories={},
+            notes=[
+                f"du did not finish within {DU_TIMEOUT_SECONDS} seconds; no directory sizes."
+            ],
+        )
     if du.returncode != 0:
-        first_error = du.stderr.strip().splitlines()[0] if du.stderr.strip() else f"exit code {du.returncode}"
-        notes.append(f"du could not read everything, so some sizes are low: {first_error}")
-    return Measurement(disk=disk, directories=parse_du(du.stdout, caches_dir), notes=notes)
+        first_error = (
+            du.stderr.strip().splitlines()[0]
+            if du.stderr.strip()
+            else f"exit code {du.returncode}"
+        )
+        notes.append(
+            f"du could not read everything, so some sizes are low: {first_error}"
+        )
+    return Measurement(
+        disk=disk, directories=parse_du(du.stdout, caches_dir), notes=notes
+    )
 
 
 def write_record(path: Path, record: Record) -> str | None:
@@ -370,16 +406,22 @@ def main() -> int:
     name = os.environ.get("RUNS_ON_STICKYDISK_NAME", "sticky disk")
     unavailable = os.environ.get("RUNS_ON_STICKYDISK_UNAVAILABLE_FILE")
     if unavailable and os.path.exists(unavailable):
-        append_summary(f"### Sticky disk `{name}`\n\nThe disk was not available, so this job ran without its caches.\n")
+        append_summary(
+            f"### Sticky disk `{name}`\n\nThe disk was not available, so this job ran without its caches.\n"
+        )
         return 0
     if not disk_dir or not os.path.ismount(disk_dir):
-        print("::warning title=Sticky disk report::This job has no sticky disk mounted; give its runs-on label a sticky= disk or remove the action.")
+        print(
+            "::warning title=Sticky disk report::This job has no sticky disk mounted; give its runs-on label a sticky= disk or remove the action."
+        )
         return 0
 
     measurement = measure(disk_dir)
     record_path = Path(disk_dir) / RECORD_NAME
     record, record_note = load_record(record_path)
-    mount_points = cache_mount_points(parse_mountinfo(Path("/proc/self/mountinfo").read_text()), disk_dir)
+    mount_points = cache_mount_points(
+        parse_mountinfo(Path("/proc/self/mountinfo").read_text()), disk_dir
+    )
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     write_note = write_record(
         record_path,
@@ -399,7 +441,9 @@ def main() -> int:
         (os.environ.get("GITHUB_WORKSPACE", ""), "$GITHUB_WORKSPACE"),
         (os.environ.get("HOME", ""), "~"),
     ]
-    append_summary(render_report(name, measurement, record, notes, mount_points, places))
+    append_summary(
+        render_report(name, measurement, record, notes, mount_points, places)
+    )
     return 0
 
 

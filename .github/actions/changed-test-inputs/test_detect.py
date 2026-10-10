@@ -29,17 +29,13 @@ def select(*files):
 
 def cargo_packages(selection):
     """The peppy-shared packages a selection names, without the `-p` flags."""
-    return [
-        word for word in selection["peppy_shared_packages"].split() if word != "-p"
-    ]
+    return [word for word in selection["peppy_shared_packages"].split() if word != "-p"]
 
 
 def selected(selection):
     """Every output of a selection that names something to run."""
     return {
-        gate: value
-        for gate, value in selection.items()
-        if value not in ("", "false")
+        gate: value for gate, value in selection.items() if value not in ("", "false")
     }
 
 
@@ -351,7 +347,14 @@ class ChangedFiles(unittest.TestCase):
 
     def git(self, *arguments):
         return subprocess.run(
-            ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", *arguments],
+            [
+                "git",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                *arguments,
+            ],
             cwd=self.repository,
             check=True,
             capture_output=True,
@@ -404,7 +407,10 @@ class Report(unittest.TestCase):
                 **environment,
             }
             stdout = io.StringIO()
-            with mock.patch.dict(os.environ, environment), contextlib.redirect_stdout(stdout):
+            with (
+                mock.patch.dict(os.environ, environment),
+                contextlib.redirect_stdout(stdout),
+            ):
                 function(*arguments)
             return summary.read_text(), outputs.read_text(), stdout.getvalue()
 
