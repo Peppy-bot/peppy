@@ -208,32 +208,27 @@ pub(crate) struct ResolvedSchemaFileStem {
 /// Sanitizes the key to snake_case, falls back to `"message"` if empty,
 /// and appends `"_message"` suffix when not already present.
 pub(crate) fn resolve_schema_file_stem(schema_key: &str) -> ResolvedSchemaFileStem {
-    let key_component = sanitize_component(schema_key);
-    let base_name = if key_component.is_empty() {
-        "message".to_string()
-    } else {
-        key_component
-    };
+    let base_name = sanitize_or(schema_key, "message");
 
-    if base_name.ends_with("_message") {
-        let stem_base = base_name.strip_suffix("_message").unwrap().to_string();
-        ResolvedSchemaFileStem {
-            base_name: stem_base,
+    if let Some(stem_base) = base_name.strip_suffix("_message") {
+        return ResolvedSchemaFileStem {
+            base_name: stem_base.to_string(),
             file_stem: base_name,
-        }
-    } else {
-        let file_stem = format!("{base_name}_message");
-        ResolvedSchemaFileStem {
-            base_name,
-            file_stem,
-        }
+        };
+    }
+
+    let file_stem = format!("{base_name}_message");
+    ResolvedSchemaFileStem {
+        base_name,
+        file_stem,
     }
 }
 
 /// Sanitizes `raw` via [`sanitize_component`]; if the result is empty,
-/// substitutes `fallback`. Used by the shared schema-key helpers below so
-/// degenerate inputs (empty producer or entity name) produce a stable,
-/// non-empty schema_key in both the Rust and Python generators.
+/// substitutes `fallback`. Used by the shared schema-key and schema-file-stem
+/// helpers of this module so degenerate inputs (empty producer or entity
+/// name) produce a stable, non-empty name in both the Rust and Python
+/// generators.
 pub(crate) fn sanitize_or(raw: &str, fallback: &str) -> String {
     let component = sanitize_component(raw);
     if component.is_empty() {
