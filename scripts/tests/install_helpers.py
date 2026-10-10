@@ -103,6 +103,16 @@ def diagnostic(
     )
 
 
+def assert_installed(result: subprocess.CompletedProcess[str]) -> None:
+    """Assert install.sh exited 0 and reported where it installed peppy."""
+    assert result.returncode == 0, (
+        f"install.sh exited with {result.returncode}{diagnostic(result)}"
+    )
+    assert "peppy installed to" in result.stdout, (
+        f"Missing 'peppy installed to' in the output{diagnostic(result)}"
+    )
+
+
 def run_as_root(script: str, *, timeout: int = 600) -> None:
     """Run a shell script as root to set up what a test starts from.
 

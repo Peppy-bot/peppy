@@ -21,7 +21,13 @@ from pathlib import Path
 
 import pytest
 
-from .install_helpers import INSTALL_SCRIPT, diagnostic, linux_only, release_archive
+from .install_helpers import (
+    INSTALL_SCRIPT,
+    assert_installed,
+    diagnostic,
+    linux_only,
+    release_archive,
+)
 
 pytestmark = [pytest.mark.install, linux_only]
 
@@ -99,12 +105,7 @@ def test_install_inside_container() -> None:
     """Inside a container install.sh installs peppy and skips the host setup."""
     result = _run_in_container(UBUNTU_IMAGE, _container_install_cmd())
 
-    assert result.returncode == 0, (
-        f"install.sh exited with {result.returncode}{diagnostic(result)}"
-    )
-    assert "peppy installed to" in result.stdout, (
-        f"Missing 'peppy installed to' in the output{diagnostic(result)}"
-    )
+    assert_installed(result)
     assert "Skipped Apptainer setup (running inside a container)." in result.stdout, (
         f"Missing the container skip message{diagnostic(result)}"
     )
@@ -155,12 +156,7 @@ def test_install_admits_a_distribution_built_on_ubuntu(tmp_path: Path) -> None:
         os_release=os_release,
     )
 
-    assert result.returncode == 0, (
-        f"install.sh exited with {result.returncode}{diagnostic(result)}"
-    )
-    assert "peppy installed to" in result.stdout, (
-        f"Missing 'peppy installed to' in the output{diagnostic(result)}"
-    )
+    assert_installed(result)
 
 
 def test_install_reads_usr_lib_os_release_without_etc_os_release() -> None:
@@ -172,12 +168,7 @@ def test_install_reads_usr_lib_os_release_without_etc_os_release() -> None:
 
     result = _run_in_container(UBUNTU_IMAGE, script)
 
-    assert result.returncode == 0, (
-        f"install.sh exited with {result.returncode}{diagnostic(result)}"
-    )
-    assert "peppy installed to" in result.stdout, (
-        f"Missing 'peppy installed to' in the output{diagnostic(result)}"
-    )
+    assert_installed(result)
 
 
 @pytest.mark.parametrize(
