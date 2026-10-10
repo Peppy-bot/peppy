@@ -77,7 +77,6 @@ struct NodeBuildRun {
 /// Drives a build for the entity named `(node_name, node_tag)` that is
 /// currently in `Added`. The caller supplies the log file/path and the
 /// feedback channel; everything else is recovered from the entity itself.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_node_build_for_entity(
     node_name: String,
     node_tag: String,
