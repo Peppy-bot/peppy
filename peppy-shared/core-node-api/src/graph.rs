@@ -328,6 +328,21 @@ mod tests {
     use super::*;
     use config::runtime::ProducerRef;
 
+    /// An instance whose every other field holds what an absent field
+    /// decodes to: healthy, on wall time, with no slot binding, pairing slot
+    /// or endpoint.
+    fn make_instance(instance_id: &str, state: InstanceState) -> SerializedInstance {
+        SerializedInstance {
+            instance_id: instance_id.into(),
+            state,
+            healthy: true,
+            clock: ClockBinding::Wall,
+            slot_bindings: BTreeMap::new(),
+            pairing_slots: BTreeMap::new(),
+            endpoints: Vec::new(),
+        }
+    }
+
     fn make_node(name: &str, tag: &str, instances: &[(&str, InstanceState)]) -> SerializedNode {
         SerializedNode {
             name: name.into(),
@@ -338,15 +353,7 @@ mod tests {
             stage: NodeStage::Ready,
             instances: instances
                 .iter()
-                .map(|(id, st)| SerializedInstance {
-                    instance_id: (*id).into(),
-                    state: *st,
-                    healthy: true,
-                    clock: ClockBinding::Wall,
-                    slot_bindings: BTreeMap::new(),
-                    pairing_slots: BTreeMap::new(),
-                    endpoints: Vec::new(),
-                })
+                .map(|(id, state)| make_instance(id, *state))
                 .collect(),
         }
     }
@@ -414,39 +421,23 @@ mod tests {
     }
 
     #[test]
-    fn by_node_err_when_name_mismatch() {
-        let graph = SerializedNodeGraph {
-            nodes: vec![make_node("foo", "v1", &[("r1", InstanceState::Running)])],
-            edges: vec![],
-        };
-        assert_eq!(
-            graph.running_instance_ids_by_node("bar", "v1"),
-            Err(NodeNotFound::new("bar", "v1"))
-        );
-    }
-
-    #[test]
-    fn by_node_err_when_tag_mismatch() {
-        let graph = SerializedNodeGraph {
-            nodes: vec![make_node("foo", "v1", &[("r1", InstanceState::Running)])],
-            edges: vec![],
-        };
-        assert_eq!(
-            graph.running_instance_ids_by_node("foo", "v2"),
-            Err(NodeNotFound::new("foo", "v2"))
-        );
-    }
-
-    #[test]
-    fn by_node_err_on_empty_graph() {
-        let graph = SerializedNodeGraph {
-            nodes: vec![],
-            edges: vec![],
-        };
-        assert_eq!(
-            graph.running_instance_ids_by_node("foo", "v1"),
-            Err(NodeNotFound::new("foo", "v1"))
-        );
+    fn by_node_err_when_no_node_matches() {
+        let foo_v1 = || vec![make_node("foo", "v1", &[("r1", InstanceState::Running)])];
+        for (case, nodes, name, tag) in [
+            ("name mismatch", foo_v1(), "bar", "v1"),
+            ("tag mismatch", foo_v1(), "foo", "v2"),
+            ("empty graph", vec![], "foo", "v1"),
+        ] {
+            let graph = SerializedNodeGraph {
+                nodes,
+                edges: vec![],
+            };
+            assert_eq!(
+                graph.running_instance_ids_by_node(name, tag),
+                Err(NodeNotFound::new(name, tag)),
+                "{case}"
+            );
+        }
     }
 
     #[test]
@@ -499,13 +490,8 @@ mod tests {
         );
         bindings.insert("spare_cameras".to_string(), BoundProducers::default());
         let instance = SerializedInstance {
-            instance_id: "i1".to_string(),
-            state: InstanceState::Running,
-            healthy: true,
-            clock: ClockBinding::Wall,
             slot_bindings: bindings,
-            pairing_slots: BTreeMap::new(),
-            endpoints: Vec::new(),
+            ..make_instance("i1", InstanceState::Running)
         };
 
         let json = serde_json::to_string(&instance).expect("serialize");
@@ -516,12 +502,6 @@ mod tests {
     #[test]
     fn instance_endpoints_round_trip_with_their_kind_and_are_always_on_the_wire() {
         let served = SerializedInstance {
-            instance_id: "mcp".to_string(),
-            state: InstanceState::Running,
-            healthy: true,
-            clock: ClockBinding::Wall,
-            slot_bindings: BTreeMap::new(),
-            pairing_slots: BTreeMap::new(),
             endpoints: vec![
                 InstanceEndpoint {
                     label: "camera_v1".to_string(),
@@ -537,6 +517,7 @@ mod tests {
                     ],
                 },
             ],
+            ..make_instance("mcp", InstanceState::Running)
         };
         let json = serde_json::to_string(&served).expect("serialize");
         assert!(json.contains(r#""kind":"mcp""#), "{json}");
@@ -561,15 +542,7 @@ mod tests {
     fn instance_without_slot_bindings_omits_the_field_and_reads_it_back_empty() {
         // No bindings -> `skip_serializing_if` keeps the field out of the wire
         // form, and an absent field reads back empty.
-        let instance = SerializedInstance {
-            instance_id: "i1".to_string(),
-            state: InstanceState::Running,
-            healthy: true,
-            clock: ClockBinding::Wall,
-            slot_bindings: BTreeMap::new(),
-            pairing_slots: BTreeMap::new(),
-            endpoints: Vec::new(),
-        };
+        let instance = make_instance("i1", InstanceState::Running);
         let json = serde_json::to_string(&instance).expect("serialize");
         assert!(
             !json.contains("slot_bindings"),
@@ -610,13 +583,8 @@ mod tests {
             },
         );
         let instance = SerializedInstance {
-            instance_id: "ctrl_1".to_string(),
-            state: InstanceState::Running,
-            healthy: true,
-            clock: ClockBinding::Wall,
-            slot_bindings: BTreeMap::new(),
             pairing_slots,
-            endpoints: Vec::new(),
+            ..make_instance("ctrl_1", InstanceState::Running)
         };
 
         let json = serde_json::to_string(&instance).expect("serialize");
