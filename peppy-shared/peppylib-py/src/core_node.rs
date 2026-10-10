@@ -4,8 +4,7 @@
 //! `crates/peppylib/src/lib.rs`: takes a `NodeRunner` directly and returns
 //! fully-typed responses.
 
-use core_node_api::SerializedNodeGraph;
-use core_node_api::encoding::{ContainerInfo, CopyInfo, InfoResponse, StackListResponse};
+use core_node_api::encoding::{ContainerInfo, InfoResponse, StackListResponse};
 use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -207,46 +206,41 @@ impl PyStackListResponse {
 /// wrapping six more classes.
 #[pyclass(name = "StackList")]
 pub struct PyStackList {
-    graph: SerializedNodeGraph,
-    copies: Vec<CopyInfo>,
-    shutdown_grace_secs: u64,
-    core_node: String,
-    instance_id: String,
-    host_name: String,
+    inner: peppylib::stack::StackList,
 }
 
 #[pymethods]
 impl PyStackList {
     #[getter]
     fn copies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        Ok(pythonize(py, &self.copies)?)
+        Ok(pythonize(py, &self.inner.copies)?)
     }
 
     #[getter]
     fn shutdown_grace_secs(&self) -> u64 {
-        self.shutdown_grace_secs
+        self.inner.shutdown_grace_secs
     }
 
     #[getter]
     fn graph<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        pythonize(py, &self.graph).map_err(|e| {
+        pythonize(py, &self.inner.graph).map_err(|e| {
             PyRuntimeError::new_err(format!("failed to convert graph to Python dict: {e}"))
         })
     }
 
     #[getter]
     fn core_node(&self) -> &str {
-        &self.core_node
+        &self.inner.core_node
     }
 
     #[getter]
     fn instance_id(&self) -> &str {
-        &self.instance_id
+        &self.inner.instance_id
     }
 
     #[getter]
     fn host_name(&self) -> &str {
-        &self.host_name
+        &self.inner.host_name
     }
 
     /// Externally visible instance ids for the node identified by
@@ -259,7 +253,8 @@ impl PyStackList {
         node_name: &str,
         node_tag: &str,
     ) -> PyResult<Vec<String>> {
-        self.graph
+        self.inner
+            .graph
             .running_instance_ids_by_node(node_name, node_tag)
             .map(|ids| ids.into_iter().map(str::to_owned).collect())
             .map_err(|err| PyKeyError::new_err(err.to_string()))
@@ -300,14 +295,7 @@ fn stack_list<'py>(
         let result = peppylib::stack::list(&runner, timeout)
             .await
             .map_err(to_py_err)?;
-        Ok(PyStackList {
-            graph: result.graph,
-            copies: result.copies,
-            shutdown_grace_secs: result.shutdown_grace_secs,
-            core_node: result.core_node,
-            instance_id: result.instance_id,
-            host_name: result.host_name,
-        })
+        Ok(PyStackList { inner: result })
     })
 }
 
