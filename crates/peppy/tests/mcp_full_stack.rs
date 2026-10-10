@@ -838,7 +838,7 @@ fn point_manifest_at_binary(node_dir: &Path, binary: &Path) {
 /// A launched stack: the emulated daemon, its CLI context, and the hub it
 /// resolves from.
 struct Stack {
-    serve: ServeCommandEmulation,
+    _serve: ServeCommandEmulation,
     ctx: Arc<AppContext>,
     peppy_dirs: PeppyDirs,
     _hub: tempfile::TempDir,
@@ -940,7 +940,7 @@ impl Stack {
         let log_guard = log_capture.install();
 
         Self {
-            serve,
+            _serve: serve,
             ctx,
             peppy_dirs,
             _hub: hub_dir,
@@ -1062,7 +1062,7 @@ impl Stack {
 
     /// The run logs of every instance, for readable panics.
     fn run_logs(&self) -> String {
-        let dir = self.serve.temp_dir().join("logs/run");
+        let dir = self.peppy_dirs.logs_dir_run();
         let mut logs = String::new();
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
