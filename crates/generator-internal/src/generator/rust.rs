@@ -684,7 +684,60 @@ impl SchemaInfo {
     }
 }
 
+/// The name of the struct a topic subscription decodes into, also the prefix
+/// of the structs nested in it.
+const SUBSCRIBED_MESSAGE_STRUCT_NAME: &str = "Message";
+
+/// The `Message` struct a topic subscription decodes into: the context that
+/// holds it and its nested structs, its fields as parameters, the name of
+/// the helper that decodes it and the encoding registered for its schema.
+struct SubscribedMessage {
+    context: GenerationContext,
+    params: Vec<FunctionParam>,
+    struct_ident: Ident,
+    helper_fn_ident: Ident,
+    encoding: MessageEncodingSpec,
+}
+
 impl RustGenerator {
+    /// Prepares the [`SubscribedMessage`] of a topic schema. The bound-set
+    /// and the pairing consumers both build their subscription on it, so a
+    /// topic decodes into the same struct through the same helper whichever
+    /// way it is consumed.
+    fn prepare_subscribed_message(
+        &mut self,
+        schema_key: &str,
+        struct_prefix: &str,
+        format_artifacts: &CapnpSchemaArtifacts,
+    ) -> Result<SubscribedMessage> {
+        let mut context = GenerationContext::default();
+        let params = collect_function_params(
+            Some(format_artifacts),
+            None,
+            SUBSCRIBED_MESSAGE_STRUCT_NAME,
+            &mut context,
+            None,
+        )?;
+
+        let struct_ident = Ident::new(SUBSCRIBED_MESSAGE_STRUCT_NAME, Span::call_site());
+        let fields = params
+            .iter()
+            .map(|param| (param.ident.clone(), param.ty.clone()))
+            .collect();
+        context.add_struct(struct_ident.clone(), fields);
+
+        let encoding = self
+            .prepare_message_encoding(schema_key, struct_prefix, Some(format_artifacts), &params)?
+            .expect("message encoding spec exists because the format artifacts are given");
+        Ok(SubscribedMessage {
+            context,
+            params,
+            struct_ident,
+            helper_fn_ident: Ident::new("deseralize_payload", Span::call_site()),
+            encoding,
+        })
+    }
+
     /// Shared consume-side scaffold for peer and observer pairing topics. The
     /// two modes differ only in their module header, subscription runtime, and
     /// artifact classification.
@@ -704,41 +757,16 @@ impl RustGenerator {
                 topic: topic.name.clone(),
             })?;
 
-        let mut context = GenerationContext::default();
-        let message_struct_name = String::from("Message");
-        let params = collect_function_params(
-            Some(&format_artifacts),
-            None,
-            &message_struct_name,
-            &mut context,
-            None,
-        )?;
-        let encoding_params = params.clone();
-
-        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
-        let args_fields = params
-            .iter()
-            .map(|param| (param.ident.clone(), param.ty.clone()))
-            .collect();
-        context.add_struct(args_struct_ident.clone(), args_fields);
-
-        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
-        let encoding = self
-            .prepare_message_encoding(
-                &schema_key,
-                &struct_prefix,
-                Some(&format_artifacts),
-                &encoding_params,
-            )?
-            .expect("message encoding spec should exist when message format is provided");
+        let message =
+            self.prepare_subscribed_message(&schema_key, &struct_prefix, &format_artifacts)?;
         let spec = PeerTopicSubscriptionSpec {
-            helper_fn_ident: &helper_fn_ident,
-            args_struct_ident: &args_struct_ident,
-            params: &params,
+            helper_fn_ident: &message.helper_fn_ident,
+            args_struct_ident: &message.struct_ident,
+            params: &message.params,
             artifacts: &format_artifacts,
-            encoding: &encoding,
+            encoding: &message.encoding,
             qos_profile: &topic.qos_profile,
-            struct_prefix: &message_struct_name,
+            struct_prefix: SUBSCRIBED_MESSAGE_STRUCT_NAME,
         };
         let (header_tokens, method_tokens, artifact_kind) = match kind {
             PairTopicConsumerKind::Peer => (
@@ -752,7 +780,7 @@ impl RustGenerator {
                 InterfaceKind::ObservedTopic,
             ),
         };
-        let mut items = context.into_tokens();
+        let mut items = message.context.into_tokens();
         items.push(method_tokens);
         let rendered = render_tokens(quote! {
             #header_tokens
@@ -1231,46 +1259,20 @@ impl LanguageGenerator for RustGenerator {
         let format_artifacts = map_message_format(&schema_key, Some(&arguments))?
             .expect("message encoding spec should exist when message format is provided");
 
-        let mut context = GenerationContext::default();
-        let message_struct_name = String::from("Message");
-        let params = collect_function_params(
-            Some(&format_artifacts),
-            None,
-            &message_struct_name,
-            &mut context,
-            None,
-        )?;
-        let encoding_params = params.clone();
-
-        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
-        let args_fields: Vec<(Ident, TokenStream)> = params
-            .iter()
-            .map(|param| (param.ident.clone(), param.ty.clone()))
-            .collect();
-        context.add_struct(args_struct_ident.clone(), args_fields);
-
-        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
-
-        let encoding = self
-            .prepare_message_encoding(
-                &schema_key,
-                &struct_prefix,
-                Some(&format_artifacts),
-                &encoding_params,
-            )?
-            .expect("message encoding spec should exist when message format is provided");
+        let message =
+            self.prepare_subscribed_message(&schema_key, &struct_prefix, &format_artifacts)?;
         let method_tokens = build_consumed_topic_subscription(ConsumedTopicSubscriptionSpec {
-            helper_fn_ident: &helper_fn_ident,
-            args_struct_ident: &args_struct_ident,
-            params: &params,
+            helper_fn_ident: &message.helper_fn_ident,
+            args_struct_ident: &message.struct_ident,
+            params: &message.params,
             artifacts: &format_artifacts,
-            encoding: &encoding,
+            encoding: &message.encoding,
             topic,
             retention,
-            struct_prefix: &message_struct_name,
+            struct_prefix: SUBSCRIBED_MESSAGE_STRUCT_NAME,
             dependency,
         })?;
-        let mut items = context.into_tokens();
+        let mut items = message.context.into_tokens();
         items.push(method_tokens);
 
         let tokens: TokenStream = quote! {
