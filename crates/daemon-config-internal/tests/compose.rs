@@ -1456,6 +1456,27 @@ fn a_selection_the_constraints_refuse_does_not_launch() {
     );
 }
 
+/// A refusal of a constraint with several `requires` alternatives lists
+/// them all, so the operator sees every way to satisfy it.
+#[test]
+fn a_refusal_lists_every_requires_alternative() {
+    let launcher = constrained_launcher(
+        r#"{ requires: [{ robot: "real" }, { recorder: "on" }],
+             reason: "a run needs the physical rig or a recording" }"#,
+    );
+    let err = compose(&launcher, Path::new("family.json5"), &words(&["mujoco"]))
+        .expect_err("no alternative holds for this member");
+    assert!(
+        matches!(err, CompositionError::ConstraintUnsatisfied { .. }),
+        "got: {err}"
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("the launcher requires one of `robot=real`, `recorder=on`, which"),
+        "got: {message}"
+    );
+}
+
 /// The file's entry fills an axis exactly as an explicit word does, and the
 /// refusal's echo marks it, so the operator sees which axis they never
 /// named.

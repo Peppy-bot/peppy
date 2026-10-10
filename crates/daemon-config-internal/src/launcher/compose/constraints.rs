@@ -215,13 +215,10 @@ fn render_condition(in_play: ConstraintInPlay<'_>) -> String {
 }
 
 fn render_alternatives(alternatives: &[SelectionCondition]) -> String {
-    let rendered: Vec<String> = alternatives
-        .iter()
-        .map(|alternative| format!("`{}`", render_guard(alternative)))
-        .collect();
-    match rendered.as_slice() {
-        [single] => single.clone(),
-        many => format!("one of {}", many.join(", ")),
+    let quoted = crate::error::format_quoted_list(alternatives.iter().map(render_guard));
+    match alternatives {
+        [_] => quoted,
+        _ => format!("one of {quoted}"),
     }
 }
 
