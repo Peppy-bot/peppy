@@ -12,17 +12,12 @@ use std::path::Path;
 use std::time::Duration;
 use tempfile::tempdir;
 
-fn write_node_config(node_dir: &Path, peppy_json5: &str) {
-    let config_path = node_dir.join(NODE_CONFIG_FILE);
-    fs::write(&config_path, peppy_json5).expect("failed to write peppy.json5");
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_sync_success() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -242,7 +237,7 @@ async fn listen_for_node_sync_invalid_peppy_json5_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(node_dir.path(), r#"{ manifest: [unclosed"#);
+    common::write_plain_peppy_json5(node_dir.path(), r#"{ manifest: [unclosed"#);
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
@@ -279,7 +274,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
     let node_dir = tempdir().expect("failed to create temp node directory");
     // The node subscribes to `video_stream` from `uvc_camera:v1`, but this node doesn't exist in the node stack
     // so the generation fails since it can't sync the Rust interfaces
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"
         {
@@ -360,7 +355,7 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
     let node_dir = tempdir().expect("failed to create temp node directory");
     // The node subscribes to topics from multiple non-existent nodes, including
     // duplicate subscriptions to the same node (uvc_camera appears twice)
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"
         {
@@ -442,7 +437,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         uvc_camera_node_dir.path(),
         r#"
         {
@@ -535,7 +530,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
 
     // The second node depends on the first, and it should work since the first node is now in the node stack
     let brain_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         brain_node_dir.path(),
         r#"
         {
@@ -656,7 +651,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         uvc_camera_node_dir.path(),
         r#"
         {
@@ -733,7 +728,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
     );
 
     let brain_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         brain_node_dir.path(),
         r#"
         {
@@ -815,7 +810,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         uvc_camera_node_dir.path(),
         r#"
         {
@@ -894,7 +889,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
     );
 
     let brain_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         brain_node_dir.path(),
         r#"
         {
@@ -976,7 +971,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let action_server_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         action_server_node_dir.path(),
         r#"
         {
@@ -1061,7 +1056,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
     );
 
     let controller_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         controller_node_dir.path(),
         r#"
         {
@@ -1143,7 +1138,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"
         {
@@ -1254,7 +1249,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -1351,7 +1346,7 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
     let node_dir = tempdir().expect("failed to create temp node directory");
     // The node consumes a topic from link_id "nonexistent", but this
     // link_id is not declared in depends_on.nodes, so sync should fail.
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"
         {
@@ -1528,13 +1523,13 @@ async fn include_repositories_false_does_not_resolve_fs_dep_from_repository() {
     // Camera lives only in the repository cache; flag=false means the
     // resolver never looks there, so the dep is missing from the stack.
     let camera_dir = tempdir().expect("camera tempdir");
-    write_node_config(camera_dir.path(), camera_config());
+    common::write_plain_peppy_json5(camera_dir.path(), camera_config());
     TestPackagesCache::new()
         .fs_entry("uvc_camera", "v1", camera_dir.path())
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(brain_dir.path(), brain_consumes_camera_config());
+    common::write_plain_peppy_json5(brain_dir.path(), brain_consumes_camera_config());
 
     let response = sync_with_flag(&started, brain_dir.path(), false).await;
 
@@ -1553,13 +1548,13 @@ async fn include_repositories_true_resolves_fs_dep_from_repository() {
     let started = start_core_node_with_mock_messenger().await;
 
     let camera_dir = tempdir().expect("camera tempdir");
-    write_node_config(camera_dir.path(), camera_config());
+    common::write_plain_peppy_json5(camera_dir.path(), camera_config());
     TestPackagesCache::new()
         .fs_entry("uvc_camera", "v1", camera_dir.path())
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(brain_dir.path(), brain_consumes_camera_config());
+    common::write_plain_peppy_json5(brain_dir.path(), brain_consumes_camera_config());
 
     let response = sync_with_flag(&started, brain_dir.path(), true).await;
 
@@ -1662,7 +1657,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
 
     // Brain depends on both deps and consumes one topic from each.
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         brain_dir.path(),
         r#"
         {
@@ -1760,7 +1755,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
 
     // Repo version has only `topic_y`, missing `topic_x`.
     let repo_camera_dir = tempdir().expect("repo camera tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         repo_camera_dir.path(),
         r#"
         {
@@ -1784,7 +1779,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
 
     // Brain consumes `topic_x`; only the stack version exposes it.
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         brain_dir.path(),
         r#"
         {
@@ -1841,7 +1836,7 @@ async fn include_repositories_true_walks_transitive_dep() {
     // All three live only in the repo cache; the BFS in
     // materialize_repo_deps must walk through every level.
     let c_dir = tempdir().expect("c tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         c_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -1856,7 +1851,7 @@ async fn include_repositories_true_walks_transitive_dep() {
         }"#,
     );
     let b_dir = tempdir().expect("b tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         b_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -1875,7 +1870,7 @@ async fn include_repositories_true_walks_transitive_dep() {
         }"#,
     );
     let a_dir = tempdir().expect("a tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         a_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -1900,7 +1895,7 @@ async fn include_repositories_true_walks_transitive_dep() {
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         brain_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -1950,7 +1945,7 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
     TestPackagesCache::new().write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(brain_dir.path(), brain_consumes_camera_config());
+    common::write_plain_peppy_json5(brain_dir.path(), brain_consumes_camera_config());
 
     let response = sync_with_flag(&started, brain_dir.path(), true).await;
 
@@ -2036,7 +2031,7 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
     // fix, `handle_node_sync_request` errored here
     // with "failed to read cached contract ... at cameras/depth_camera.json5".
     let node_dir = tempdir().expect("node tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"{
             peppy_schema: "node/v1",
