@@ -184,6 +184,18 @@ pub(crate) struct PairTopicSpec {
     pub format: MessageFormat,
 }
 
+impl PairTopicSpec {
+    /// The spec of a pairing or observed topic. A topic without a message
+    /// format carries the empty format.
+    fn from_topic(topic: &NativeEmittedTopic) -> Self {
+        Self {
+            name: topic.name.clone(),
+            qos: topic.qos_profile.clone(),
+            format: topic.message_format.clone().unwrap_or_default(),
+        }
+    }
+}
+
 /// The mock peer for one pairing slot: publishes what the node consumes,
 /// subscribes (triple-pinned) to what the node emits.
 #[derive(Debug, Clone)]
@@ -352,21 +364,15 @@ impl TestGenRegistry {
     }
 
     pub fn record_peer_emitted_topic(&mut self, topic: &NativeEmittedTopic, peer: &PeerContext) {
-        let spec = PairTopicSpec {
-            name: topic.name.clone(),
-            qos: topic.qos_profile.clone(),
-            format: topic.message_format.clone().unwrap_or_default(),
-        };
-        self.pairing_entry(peer).node_emits.push(spec);
+        self.pairing_entry(peer)
+            .node_emits
+            .push(PairTopicSpec::from_topic(topic));
     }
 
     pub fn record_peer_consumed_topic(&mut self, topic: &NativeEmittedTopic, peer: &PeerContext) {
-        let spec = PairTopicSpec {
-            name: topic.name.clone(),
-            qos: topic.qos_profile.clone(),
-            format: topic.message_format.clone().unwrap_or_default(),
-        };
-        self.pairing_entry(peer).node_consumes.push(spec);
+        self.pairing_entry(peer)
+            .node_consumes
+            .push(PairTopicSpec::from_topic(topic));
     }
 
     pub fn record_observed_topic(
@@ -384,11 +390,7 @@ impl TestGenRegistry {
                 topics: Vec::new(),
             })
             .topics
-            .push(PairTopicSpec {
-                name: topic.name.clone(),
-                qos: topic.qos_profile.clone(),
-                format: topic.message_format.clone().unwrap_or_default(),
-            });
+            .push(PairTopicSpec::from_topic(topic));
     }
 
     pub fn record_emitted_topic(
