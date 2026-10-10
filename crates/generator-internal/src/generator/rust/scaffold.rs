@@ -488,13 +488,7 @@ impl TreeWriter for RustTreeWriter<'_> {
         raw_name: &str,
         artifacts: &[InterfaceArtifact],
     ) -> Result<()> {
-        write_leaf_module(
-            dir,
-            module_name,
-            raw_name,
-            artifacts.to_vec(),
-            self.category,
-        )
+        write_leaf_module(dir, module_name, raw_name, artifacts, self.category)
     }
 
     fn write_index(&mut self, dir: &Path, entries: &[ModuleEntry], is_root: bool) -> Result<()> {
@@ -519,7 +513,7 @@ fn write_leaf_module(
     base_dir: &Path,
     module_name: &str,
     original_name: &str,
-    artifacts: Vec<InterfaceArtifact>,
+    artifacts: &[InterfaceArtifact],
     category: ModuleCategory,
 ) -> Result<()> {
     let mut items: Vec<Item> = Vec::new();
