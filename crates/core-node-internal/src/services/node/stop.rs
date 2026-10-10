@@ -200,10 +200,10 @@ async fn handle_node_stop_request_inner(
     // Cooperative-then-force, identical to the SIGINT teardown for this one
     // instance: ask the node to shut down, give it a bounded grace window, then
     // SIGKILL its process group if it ignored us, and wait for it to be gone.
-    // A stuck/non-responsive node is now force-killed (and reported as success)
-    // rather than left alive behind a timeout error. We deliberately keep the
-    // live registry entry until after the kill+reap so a retried or racing
-    // caller can still observe the in-flight shutdown.
+    // A stuck or non-responsive node is force-killed and reported as success,
+    // not left alive behind a timeout error. The live registry entry stays
+    // until after the kill and reap, so a retried or racing caller can still
+    // observe the in-flight shutdown.
     let target = DoomedInstance {
         node_name: node_name.clone(),
         node_tag: node_tag.clone(),

@@ -449,9 +449,6 @@ pub(crate) fn write_repo_entries(
 
 #[cfg(test)]
 mod tests {
-    // Coverage for `source_identity` (relocated here from `core-node-api`
-    // alongside the function, which moved out of the pure wire-codec crate
-    // because its `Fs` arm canonicalizes against the real filesystem).
     use super::{
         ListedRepo, RepoEntryError, RepoOwners, listed_repositories, nodes_by_repository,
         parse_repo_entry, source_identity,

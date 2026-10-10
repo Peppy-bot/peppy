@@ -483,8 +483,8 @@ pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Resu
 /// would be an arbitrary choice presented as an answer.
 ///
 /// `repo refresh` refuses a repository that contains such a conflict, so
-/// reaching this at lookup means the cache predates that check or was
-/// hand-edited.
+/// reaching this at lookup means the cache was edited by hand or written
+/// without that check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoAmbiguity {
     /// Singular kind label ("node", "launcher", ...).
@@ -1584,7 +1584,7 @@ mod tests {
         );
     }
 
-    /// A nodes cache written before links were recorded is refused whole,
+    /// A nodes cache whose entries have no `links` field is refused whole,
     /// with the message that names the fix. Reading it with empty links
     /// instead would answer "nobody uses it" for every identity until the
     /// user happened to refresh.
@@ -1781,12 +1781,9 @@ mod tests {
         assert_eq!(resolved, abs);
     }
 
-    /// Regression for the launcher side of the bug class: a git-sourced
-    /// `LauncherCacheEntry` records a repo-relative `path`, so resolution
-    /// must materialize the checkout and join the relative path on top,
-    /// not just read `entry.path` from the CWD. This test covered nothing
-    /// before; the missing coverage is what let the symmetric contract
-    /// bug land.
+    /// A git-sourced `LauncherCacheEntry` records a repo-relative `path`,
+    /// so resolution must materialize the checkout and join the relative
+    /// path on top, not read `entry.path` from the CWD.
     #[test]
     fn resolve_launcher_git_materializes_checkout() {
         let peppy_tmp = tempfile::tempdir().unwrap();
