@@ -24,7 +24,7 @@ use crate::services::response::into_service_response;
 
 pub(crate) async fn listen_for_clock_list(
     messenger: &MessengerHandle,
-    core_node_node: &str,
+    core_node_name: &str,
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
@@ -32,7 +32,7 @@ pub(crate) async fn listen_for_clock_list(
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
-        core_node_node,
+        core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         ServiceId::ClockList.name(),
@@ -40,22 +40,22 @@ pub(crate) async fn listen_for_clock_list(
     .await?;
 
     let messenger = messenger.clone();
-    let core_node = core_node_node.to_owned();
-    let instance = instance_id.to_owned();
+    let core_node_name = core_node_name.to_owned();
+    let instance_id = instance_id.to_owned();
     let handle = tokio::spawn(async move {
         endpoint
             .handle_requests(move |context| {
                 let node_stack = Arc::clone(&node_stack);
                 let watches = Arc::clone(&watches);
                 let messenger = messenger.clone();
-                let core_node = core_node.clone();
-                let instance = instance.clone();
+                let core_node_name = core_node_name.clone();
+                let instance_id = instance_id.clone();
                 async move {
                     handle_clock_list(
                         context,
                         &messenger,
-                        &core_node,
-                        &instance,
+                        &core_node_name,
+                        &instance_id,
                         &node_stack,
                         &watches,
                     )

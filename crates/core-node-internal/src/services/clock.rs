@@ -20,14 +20,14 @@ use tracing::warn;
 
 pub async fn listen_for_clock(
     messenger: &MessengerHandle,
-    core_node_node: &str,
+    core_node_name: &str,
     instance_id: &str,
     node_name: &str,
     source: Arc<dyn ClockSource>,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
-        core_node_node,
+        core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         ServiceId::Clock.name(),
