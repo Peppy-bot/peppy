@@ -192,6 +192,31 @@ def test_prod_gate_valid_chain_passes() -> None:
     probe.assert_called_once_with("health.zenoh.example", 7443)
 
 
+def test_prod_gate_trusted_cert_passes_after_the_handshake() -> None:
+    # The handshake runs on the connected socket and checks the certificate
+    # against the name of the host. A probe that returns has passed it, and
+    # leaves neither socket open.
+    connected = MagicMock()
+    conn_cm = MagicMock()
+    conn_cm.__enter__.return_value = connected
+    conn_cm.__exit__.return_value = False
+    fake_ctx = MagicMock()
+    with (
+        patch("functions.cli.ssl.create_default_context", return_value=fake_ctx),
+        patch(
+            "functions.cli.socket.create_connection", return_value=conn_cm
+        ) as connect,
+    ):
+        _probe_publicly_trusted_tls("health.zenoh.example", 7443)
+
+    connect.assert_called_once_with(("health.zenoh.example", 7443), timeout=10.0)
+    fake_ctx.wrap_socket.assert_called_once_with(
+        connected, server_hostname="health.zenoh.example"
+    )
+    fake_ctx.wrap_socket.return_value.__exit__.assert_called_once()
+    conn_cm.__exit__.assert_called_once()
+
+
 def test_prod_gate_untrusted_cert_raises() -> None:
     # A self-signed / private-CA / expired / wrong-name cert surfaces as an
     # SSLCertVerificationError ⇒ "NOT publicly trusted" ReleaseError.
