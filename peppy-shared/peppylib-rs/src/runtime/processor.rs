@@ -225,18 +225,9 @@ impl Processor {
         // bad binding. Duplicate seeded producers are rejected here, where
         // `BoundProducers::try_from` mirrors the boot-config parse rule.
         let mut slot_bindings = config::runtime::SlotBindings::new();
-        let declared_slots: std::collections::BTreeSet<&str> = node_config
-            .manifest
-            .depends_on
-            .as_ref()
-            .map(|deps| {
-                deps.nodes
-                    .iter()
-                    .map(|dep| dep.link_id.as_str())
-                    .chain(deps.contracts.iter().map(|dep| dep.link_id.as_str()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let declared_slots: BTreeSet<&str> = consumer_slots(&node_config)
+            .map(|(link_id, _)| link_id)
+            .collect();
         for (link_id, pins) in &config.bound_producers {
             if !declared_slots.contains(link_id.as_str()) {
                 tracing::warn!(
@@ -863,6 +854,24 @@ fn build_pairing_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Car
         .collect()
 }
 
+/// The consumer slots `node_config` declares, with their cardinalities: its
+/// `depends_on.nodes` entries, then its `depends_on.contracts` entries. Both
+/// the slot caches and the standalone seed filter read the slots through it,
+/// so they agree on which slots exist.
+fn consumer_slots(node_config: &NodeConfig) -> impl Iterator<Item = (&str, Cardinality)> {
+    node_config.manifest.depends_on.iter().flat_map(|deps| {
+        let node_slots = deps
+            .nodes
+            .iter()
+            .map(|dep| (dep.link_id.as_str(), dep.cardinality));
+        let contract_slots = deps
+            .contracts
+            .iter()
+            .map(|dep| (dep.link_id.as_str(), dep.cardinality));
+        node_slots.chain(contract_slots)
+    })
+}
+
 /// Seed every `link_id` declared in the consumer manifest's `depends_on` from
 /// the daemon-supplied `slot_bindings`: a live channel for a set slot, the
 /// producer its deployment bound for a scalar one. Each slot's declared
@@ -888,42 +897,35 @@ fn build_bound_slots(
 ) -> Result<BoundSlots> {
     let mut sets = BTreeMap::new();
     let mut scalars = BTreeMap::new();
-    if let Some(deps) = node_config.manifest.depends_on.as_ref() {
-        let slot_bindings = &runtime_config.node_instance.slot_bindings;
-        let node_slots = deps.nodes.iter().map(|dep| (&dep.link_id, dep.cardinality));
-        let contract_slots = deps
-            .contracts
-            .iter()
-            .map(|dep| (&dep.link_id, dep.cardinality));
-        for (link_id, cardinality) in node_slots.chain(contract_slots) {
-            let bound = match slot_bindings.get(link_id) {
-                Some(bound) => bound.clone(),
-                None if cardinality.allows_empty() => config::runtime::BoundProducers::default(),
-                None => {
-                    return Err(Error::SlotUnbound {
-                        link_id: link_id.clone(),
-                        cardinality,
-                    });
-                }
-            };
-            if !cardinality.admits(bound.len()) {
-                return Err(Error::SlotCardinalityViolated {
-                    link_id: link_id.clone(),
+    let slot_bindings = &runtime_config.node_instance.slot_bindings;
+    for (link_id, cardinality) in consumer_slots(node_config) {
+        let bound = match slot_bindings.get(link_id) {
+            Some(bound) => bound.clone(),
+            None if cardinality.allows_empty() => config::runtime::BoundProducers::default(),
+            None => {
+                return Err(Error::SlotUnbound {
+                    link_id: link_id.to_string(),
                     cardinality,
-                    bound: bound.len(),
                 });
             }
-            let (channel, _rx) = watch::channel(BoundSetState::seeded(bound));
-            if cardinality.is_scalar() {
-                let producer = channel
-                    .borrow()
-                    .producers
-                    .first()
-                    .map(|member| member.producer.clone());
-                scalars.insert(link_id.clone(), ScalarSlot { producer, channel });
-            } else {
-                sets.insert(link_id.clone(), SlotChannel::new(cardinality, channel));
-            }
+        };
+        if !cardinality.admits(bound.len()) {
+            return Err(Error::SlotCardinalityViolated {
+                link_id: link_id.to_string(),
+                cardinality,
+                bound: bound.len(),
+            });
+        }
+        let (channel, _rx) = watch::channel(BoundSetState::seeded(bound));
+        if cardinality.is_scalar() {
+            let producer = channel
+                .borrow()
+                .producers
+                .first()
+                .map(|member| member.producer.clone());
+            scalars.insert(link_id.to_string(), ScalarSlot { producer, channel });
+        } else {
+            sets.insert(link_id.to_string(), SlotChannel::new(cardinality, channel));
         }
     }
     Ok(BoundSlots {
