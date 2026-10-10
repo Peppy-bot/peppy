@@ -1,9 +1,8 @@
-// The test-environment machinery this module used to define inline (the
-// pre-main ZENOH_RUNTIME ctor, the fd-limit FFI, the mesh-serialization
-// mutex, the ephemeral router context) now ships once in `crate::testing`
-// (enabled for this crate's own tests via the cyclic self-dev-dependency),
-// where generated node test code shares it. These tests double as the
-// regression net for those helpers.
+// The test-environment machinery (the pre-main ZENOH_RUNTIME ctor, the
+// fd-limit FFI, the mesh-serialization mutex, the ephemeral router context)
+// lives in `crate::testing`, enabled for this crate's tests by the cyclic
+// self-dev-dependency and shared with generated node test code. These tests
+// are also the regression net for those helpers.
 
 use crate::types::Payload;
 use config::node::{QoSProfile, TopicRetention};
@@ -22,14 +21,13 @@ use crate::messaging::{
 };
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
-/// invalid names — tests use known-good values only.
+/// invalid names; tests use known-good values only.
 fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, "v1").expect("test node target")
 }
 
-/// Declares a publisher and publishes a single payload. The publisher is the
-/// only topic-publish path, so a test that publishes once just declares then
-/// publishes; the arguments mirror the old one-shot emit.
+/// Declares a publisher and publishes one payload, for a test that publishes
+/// once.
 async fn publish_once(
     messenger: &MessengerHandle,
     as_core_node: &str,
@@ -109,8 +107,8 @@ impl ActionClientCase {
 /// which owns every router/test-environment semantic these tests rely on: the
 /// pre-main ZENOH_RUNTIME worker ctor, the fd-limit raise, the per-process
 /// mesh-serialization guard (held for this context's lifetime), the zenoh-open
-/// readiness probe, and connect retries. Kept as a local name so the ~40 tests
-/// below read unchanged and panic with the same messages they always did.
+/// readiness probe, and connect retries. Each setup failure panics with a
+/// message that names the failed step.
 struct TestRouterContext {
     router: crate::testing::EphemeralRouter,
 }
@@ -411,7 +409,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
 /// Fan-in is N declared slots, each wire-pinned to its own producer: a
 /// consumer wanting P1 and P2 holds two subscriptions, and each surfaces
 /// only its bound producer's messages. A third producer P3 of the same
-/// `(name, tag)` reaches neither — there is no wildcard fallback and no
+/// `(name, tag)` reaches neither: there is no wildcard fallback and no
 /// in-process filtering; the wire pin is the whole mechanism.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn per_slot_pinned_subscriptions_isolate_producers() {
@@ -861,11 +859,11 @@ async fn topic_publish_reliable_5000hz_messages() {
     )
     .await;
 
-    // Drain concurrently with publishing. Peer mode removes the router buffer
-    // that used to sit between publisher and subscriber, so publishing all
-    // messages before draining would block a Reliable (Block-congestion)
-    // publisher once the subscriber's bounded channel fills. A real stream is
-    // drained continuously, so emit in a background task while the main task
+    // Drain concurrently with publishing. In peer mode no router buffer sits
+    // between publisher and subscriber, so publishing all messages before
+    // draining would block a Reliable (Block-congestion) publisher once the
+    // subscriber's bounded channel fills. A real stream is drained
+    // continuously, so emit in a background task while the main task
     // receives.
     let publisher = TopicMessenger::declare_publisher(
         &sender_handle,
@@ -890,7 +888,7 @@ async fn topic_publish_reliable_5000hz_messages() {
         }
     });
 
-    // Identity check runs once on the first received message — the wire-format
+    // Identity check runs once on the first received message: the wire-format
     // contract is pinned in `pmi::wire::zenoh_format::tests`, so this loop only needs
     // to verify peppylib-level addressing and ordering.
     let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
@@ -1010,7 +1008,7 @@ async fn service_communication_poll_no_instance_id_target() {
     // Second listener with the same service shape. Discovery sends a probe
     // to both listeners; the probe is auto-replied in the request loop
     // before the user handler runs, so the winner is whichever probe reply
-    // reaches the caller first — a race with no inherent ordering.
+    // reaches the caller first, a race with no inherent ordering.
     // Whichever listener loses, its user handler simply never executes.
     let listener_core_node2 = "listener_core_node2";
     let listener_instance_id2 = "listener_instance2";
@@ -1471,7 +1469,7 @@ async fn assert_poll_to_absent_producer_is_unreachable(
 /// `ServiceTarget::CoreNode` scopes discovery to one core node: with two
 /// listeners exposing the SAME service shape (same node name + tag + service)
 /// on DIFFERENT core nodes, a core-node-scoped poll must always be answered
-/// by the listener on that core node — the foreign one can never win the
+/// by the listener on that core node. The foreign one can never win the
 /// discovery probe because the scoped selector never matches its queryable.
 /// With `ServiceTarget::Any` this would be a wire-level race either listener
 /// could win (see `service_communication_poll_no_instance_id_target`).
@@ -1667,7 +1665,7 @@ async fn sized_probe_gets_sized_reply_without_running_the_handler() {
             });
             ready_tx.send(()).unwrap();
             // A probe is auto-answered inside the request loop, so the handler
-            // never fires — it parks until the timeout.
+            // never fires; it parks until the timeout.
             let _ = tokio::time::timeout(wait, handler).await;
             Ok::<(), Error>(())
         })
@@ -1731,7 +1729,7 @@ async fn service_communication_fails_service_timeouts() {
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
     // Gate that holds back the *second* request's response. The listener ACKs
     // that request (which tells the caller it is reachable) and then parks on
-    // this gate, emitting no response until the main task fires it — which it
+    // this gate, emitting no response until the main task fires it, which it
     // does only after observing the `ServiceTimeout`. The response is absent
     // for the entire failure budget, so the caller deterministically times out
     // waiting for it; the budget only needs to outlast a single ACK round-trip.
@@ -1784,7 +1782,7 @@ async fn service_communication_fails_service_timeouts() {
             }
 
             // Second request: the framework auto-ACKs the moment the request
-            // arrives — that ACK is what makes the caller classify the outcome
+            // arrives; that ACK is what makes the caller classify the outcome
             // as `ServiceTimeout` rather than `ServiceUnreachable`. The handler
             // then parks on the release gate and emits no response until the
             // main task fires it, after the timeout has been observed.
@@ -2026,10 +2024,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
     // Caller core node (shared by all callers)
     const CALLER_CORE_NODE: &str = "caller_core_node";
 
-    // Peer-mode sessions are heavier than the old client sessions: each caller
-    // opens its own peer that forms direct links and discovers via gossip, so
-    // many fresh peers connecting at once is far more load than the client/router
-    // star. Keep the concurrency modest; this still exercises many unique
+    // Each caller opens its own peer-mode session, which forms direct links
+    // and discovers through gossip, so many fresh peers connecting at once is
+    // heavy load. Keep the concurrency modest; this still exercises many unique
     // concurrent request/response pairs across independent caller sessions.
     let caller_count = 20;
     let requests_per_caller = 5;
@@ -2293,7 +2290,7 @@ impl OneGoalExchange {
                         request.message().instance_id(),
                         caller_for_result.instance_id
                     );
-                    // Result requests now carry the goal_id envelope (empty body).
+                    // A result request carries the goal_id envelope with an empty body.
                     let request_payload = request.message().payload();
                     let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
                         .expect("result request must carry a goal_id envelope");
@@ -2656,7 +2653,7 @@ async fn action_communication_goal_cancelled() {
 
             assert_eq!(cancel_context.message().core_node(), CALLER_CORE_NODE);
             assert_eq!(cancel_context.message().instance_id(), CALLER_INSTANCE_ID);
-            // Cancel requests now carry the goal_id envelope (empty body).
+            // A cancel request carries the goal_id envelope with an empty body.
             let cancel_payload = cancel_context.message().payload();
             let (goal_id, body) = super::unwrap_goal_payload(cancel_payload.as_ref())
                 .expect("cancel request must carry a goal_id envelope");
@@ -2908,7 +2905,7 @@ async fn single_action_communication_multiple_polls() {
             for _ in 0..client_total {
                 let handler = result_service
                     .spawn_next_request_handler(move |request| async move {
-                        // Result requests now carry the goal_id envelope (empty body).
+                        // A result request carries the goal_id envelope with an empty body.
                         let request_payload = request.message().payload();
                         let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
                             .expect("result request must carry a goal_id envelope");
@@ -3037,7 +3034,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     // Two producer processes expose the same action and a consumer sends
     // a wildcard goal (the infra discover-then-pin path; generated dep
     // slots always pin). With discover-then-pin, only ONE producer's goal
-    // handler must run — the one that responds first to the discovery
+    // handler must run: the one that responds first to the discovery
     // probe. The loser sees the probe (filtered internally, no handler
     // invocation) but never sees the real goal. The subsequent
     // `cancel_goal` also targets only the winner because the wire sender
@@ -3233,10 +3230,9 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
 
 /// A FULL-wildcard `poll` (`target: None`) issued against two producers
 /// that share an `instance_id` but live on different `core_node`s must
-/// run discover-then-pin so exactly ONE handler runs. The pre-`ProducerRef`
-/// half-pinned shape (core_node wildcard + instance_id pin) is
-/// unrepresentable now that producer identity travels as a full
-/// `(core_node, instance_id)` pair.
+/// run discover-then-pin so exactly ONE handler runs. A half-pinned shape
+/// (core_node wildcard plus instance_id pin) is unrepresentable, because
+/// producer identity travels as a full `(core_node, instance_id)` pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_poll_full_wildcard_discovers() {
     let router = TestRouterContext::start().await;
@@ -3332,7 +3328,7 @@ async fn service_communication_poll_full_wildcard_discovers() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            ServiceTarget::Any, // full-wildcard target — must trigger discovery
+            ServiceTarget::Any, // full-wildcard target: must trigger discovery
             request_payload.clone(),
             Duration::from_secs(1),
         )
@@ -3375,10 +3371,10 @@ async fn service_communication_poll_full_wildcard_discovers() {
 /// Action mirror of [`service_communication_poll_full_wildcard_discovers`]:
 /// a FULL-wildcard `send_goal` (`target: None`) against two producers
 /// sharing an `instance_id` on different `core_node`s must run
-/// discover-then-pin so exactly ONE goal handler runs — both executing
-/// would violate the safety contract for actions with side effects. The
-/// pre-`ProducerRef` half-pinned shape (core_node wildcard + instance_id
-/// pin) is unrepresentable now that producer identity travels as a full
+/// discover-then-pin so exactly ONE goal handler runs; both executing
+/// would violate the safety contract for actions with side effects. A
+/// half-pinned shape (core_node wildcard plus instance_id pin) is
+/// unrepresentable, because producer identity travels as a full
 /// `(core_node, instance_id)` pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn action_send_goal_full_wildcard_discovers() {
@@ -3478,7 +3474,7 @@ async fn action_send_goal_full_wildcard_discovers() {
         "caller_inst",
         action_target,
         action_name,
-        None, // full-wildcard target — must trigger discovery
+        None, // full-wildcard target: must trigger discovery
         Payload::from_static(b"go"),
         QoSProfile::Reliable,
         FeedbackBuffer::KeepLatest,
@@ -3630,7 +3626,7 @@ async fn service_poll_same_core_distinct_instances_pinned_routes_to_pinned() {
 /// not parked in the service recv loop for a window longer than
 /// `DISCOVERY_TIMEOUT` (exactly like a generated node whose accept-loop
 /// is executing user work between `recv` parks). A pinned poll with a
-/// caller budget much larger than the busy window must still succeed —
+/// caller budget much larger than the busy window must still succeed:
 /// the call may not die at a discovery cliff the caller never asked for.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_poll_same_core_pinned_producer_busy_waits_caller_budget() {
@@ -3828,8 +3824,8 @@ async fn action_send_goal_same_core_distinct_instances_pinned_routes_to_pinned()
 }
 
 /// Action mirror of
-/// [`service_poll_same_core_pinned_producer_busy_waits_caller_budget`] —
-/// this is the exact shape of the bimanual `fire_goal` timeout from the
+/// [`service_poll_same_core_pinned_producer_busy_waits_caller_budget`].
+/// This is the exact shape of the bimanual `fire_goal` timeout from the
 /// field: the pinned arm is alive but mid-work (not parked in
 /// `recv_next_goal`), and the pinned goal must wait out the caller's own
 /// `goal_timeout` rather than failing at a 2s discovery cliff.
@@ -3865,7 +3861,7 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
             ready_tx.send(()).unwrap();
 
             // Busy: exactly what a generated accept-loop looks like while
-            // user code executes a goal — the queryable exists, but nothing
+            // user code executes a goal: the queryable exists, but nothing
             // is parked in the goal recv loop.
             tokio::time::sleep(busy_window).await;
 
@@ -3921,15 +3917,14 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
     router.shutdown().await;
 }
 
-/// Acceptance criterion 1, observed on the wire rather than by reading
-/// code: a fully pinned `ServiceMessenger::poll` and
-/// `ActionMessenger::send_goal` issue ZERO discovery probes, while a
-/// `None`-target call issues at least one.
+/// A fully pinned `ServiceMessenger::poll` and `ActionMessenger::send_goal`
+/// issue ZERO discovery probes, while a `None`-target call issues at least
+/// one.
 ///
 /// Mechanism: a raw zenoh client session declares a `**` queryable that
 /// never replies. Every peppy service query is sent with
 /// `QueryTarget::All` + `ConsolidationMode::None`, so each query is
-/// delivered to every matching queryable — replying or not — and the
+/// delivered to every matching queryable (replying or not), and the
 /// watcher observes exactly the queries the caller puts on the wire.
 /// Dropping the query without replying finalizes it for the watcher, so
 /// the watched calls are not delayed. The mandatory query attachment is
@@ -4110,7 +4105,7 @@ async fn pinned_calls_issue_zero_probes() {
     };
 
     // Open the caller before the settle so the fresh peer has time to learn
-    // both the producers' queryables and the watcher's `**` interest —
+    // both the producers' queryables and the watcher's `**` interest;
     // otherwise its first queries would not be routed to the watcher and
     // the meaningfulness guard below would fail.
     let caller_handle = router.messenger().await;
@@ -4273,12 +4268,11 @@ async fn pinned_calls_issue_zero_probes() {
     router.shutdown().await;
 }
 
-/// Acceptance criterion 2 — the cross-core same-`instance_id` leak is
-/// closed: topic subscriptions pin the full `(core_node, instance_id)`
-/// pair on the wire, never `instance_id` alone. Two producers share
-/// `instance_id` "inst1" on different core_nodes; the subscription bound
-/// to `(core_a, inst1)` must never surface core_b's publishes even though
-/// they carry the same instance_id on the same topic.
+/// Topic subscriptions pin the full `(core_node, instance_id)` pair on the
+/// wire, never `instance_id` alone. Two producers share `instance_id`
+/// "inst1" on different core_nodes; the subscription bound to
+/// `(core_a, inst1)` must never surface core_b's publishes even though they
+/// carry the same instance_id on the same topic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn topic_pinned_subscription_compares_full_pairs() {
     let router = TestRouterContext::start().await;
@@ -4349,7 +4343,7 @@ async fn topic_pinned_subscription_compares_full_pairs() {
     let emitter_a = spawn_emitter(router.messenger().await, core_a, payload_a.clone());
     let emitter_b = spawn_emitter(router.messenger().await, core_b, payload_b.clone());
 
-    // Both wire slots are pinned to (core_a, inst1) — every delivered
+    // Both wire slots are pinned to (core_a, inst1): every delivered
     // message must carry that pair even though core_b publishes the same
     // instance_id on the same topic throughout.
     for _ in 0..3 {
@@ -4379,7 +4373,7 @@ async fn topic_pinned_subscription_compares_full_pairs() {
 /// NOT parked in its service recv loop (busy in user code, exactly like a
 /// generated accept-loop between `recv` parks) must still answer probes
 /// within the probe budget, because the pmi transport adapter answers
-/// `ServiceQueryKind::Probe` queries in its dispatch callback — never the
+/// `ServiceQueryKind::Probe` queries in its dispatch callback, never in the
 /// endpoint recv loop. The busy window (3s) exceeds both `PROBE_TIMEOUT`
 /// (500ms) and `DISCOVERY_TIMEOUT` (2s): if probes were answered by the
 /// recv loop, both probe calls below would starve inside the window.
@@ -4413,7 +4407,7 @@ async fn probes_answered_while_pinned_producer_is_busy() {
 
             ready_tx.send(()).unwrap();
             // Busy: the queryable is declared, but nobody is parked in the
-            // recv loop — only the adapter can answer wire traffic.
+            // recv loop; only the adapter can answer wire traffic.
             tokio::time::sleep(busy_window).await;
 
             let handler = service.handle_next_request(|_request| {
@@ -4483,7 +4477,7 @@ async fn probes_answered_while_pinned_producer_is_busy() {
     );
 
     // The pinned user request still reaches the handler once the producer
-    // wakes — the adapter's probe path and the user path stay independent.
+    // wakes: the adapter's probe path and the user path stay independent.
     let response = ServiceMessenger::poll(
         &caller_handle,
         "caller_core_node",
