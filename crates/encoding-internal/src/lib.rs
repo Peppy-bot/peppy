@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use tempfile::tempdir;
 
-use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
+use config::node::{ArraySchema, MessageFormat, PrimitiveSchema, SchemaType, TypeToken};
 use facade::CapnpFacade;
 use indexmap::IndexMap;
 use wire_layout::{SchemaNodes, StructLayout};
@@ -196,14 +196,10 @@ impl MessageFormatMapper {
 
         fn hash_schema(mut hash: u64, schema: &SchemaType) -> u64 {
             match schema {
-                SchemaType::Type(token) => {
+                SchemaType::Type(token)
+                | SchemaType::Primitive(PrimitiveSchema { kind: token, .. }) => {
                     hash = update(hash, b"type");
                     let (capnp_discriminant, _) = type_token_strings(token);
-                    hash = update(hash, capnp_discriminant.as_bytes());
-                }
-                SchemaType::Primitive(schema) => {
-                    hash = update(hash, b"type");
-                    let (capnp_discriminant, _) = type_token_strings(&schema.kind);
                     hash = update(hash, capnp_discriminant.as_bytes());
                 }
                 SchemaType::Array(array) => {
@@ -377,12 +373,9 @@ impl CapnpSchemaGenerator {
         depth: usize,
     ) -> Result<TypeResolution> {
         match schema {
-            SchemaType::Type(token) => Ok(TypeResolution {
+            SchemaType::Type(token)
+            | SchemaType::Primitive(PrimitiveSchema { kind: token, .. }) => Ok(TypeResolution {
                 type_name: self.capnp_type_for_token(token).to_string(),
-                nested: Vec::new(),
-            }),
-            SchemaType::Primitive(primitive) => Ok(TypeResolution {
-                type_name: self.capnp_type_for_token(&primitive.kind).to_string(),
                 nested: Vec::new(),
             }),
             SchemaType::Array(array) => {

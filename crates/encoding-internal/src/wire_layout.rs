@@ -14,7 +14,7 @@
 
 use crate::{Error, Result, capnp_type_name, sanitize_field_name};
 use capnp::schema_capnp::{code_generator_request, field, node, type_};
-use config::node::{ArraySchema, SchemaType, TypeToken};
+use config::node::{ArraySchema, PrimitiveSchema, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
@@ -272,9 +272,8 @@ fn layout_field(
     compiled: type_::Reader<'_>,
 ) -> Result<FieldKind> {
     match schema {
-        SchemaType::Type(token) => layout_token(nodes, path, token, offset, compiled),
-        SchemaType::Primitive(primitive) => {
-            layout_token(nodes, path, &primitive.kind, offset, compiled)
+        SchemaType::Type(token) | SchemaType::Primitive(PrimitiveSchema { kind: token, .. }) => {
+            layout_token(nodes, path, token, offset, compiled)
         }
         SchemaType::Array(array) => layout_array(nodes, path, array, offset, compiled),
         SchemaType::Object(object) => {
