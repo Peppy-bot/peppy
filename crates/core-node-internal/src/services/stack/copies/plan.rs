@@ -94,22 +94,7 @@ impl ResolvedJoin {
             .collect();
         let mut resolved = resolve_deployments(ctx, missing, &placements).await?;
         resolve::mint_doc_pins(ctx, &mut resolved, &placements).await?;
-        let planned: Vec<_> = combined
-            .deployments
-            .iter()
-            .map(|deployment| {
-                let item = active
-                    .resolved
-                    .iter()
-                    .chain(&resolved)
-                    .find(|item| item.deployment.source == deployment.source)
-                    .expect("every deployment was resolved by the launch or by this join");
-                PlannedDeployment {
-                    deployment: deployment.clone(),
-                    ..item.clone()
-                }
-            })
-            .collect();
+        let planned = planned_from(&combined, active.resolved.iter().chain(&resolved));
 
         Ok(Self {
             combined,
@@ -121,6 +106,30 @@ impl ResolvedJoin {
             resolved,
         })
     }
+}
+
+/// The deployments the launcher holds, each carrying the pins the launch or
+/// a join resolved for its source. A join and a removal plan the stack they
+/// leave through this one rule, so the pins a removal plans are the ones the
+/// joins before it planned.
+pub(super) fn planned_from<'a>(
+    launcher: &PeppyLauncher,
+    resolved: impl Iterator<Item = &'a PlannedDeployment> + Clone,
+) -> Vec<PlannedDeployment> {
+    launcher
+        .deployments
+        .iter()
+        .map(|deployment| {
+            let item = resolved
+                .clone()
+                .find(|item| item.deployment.source == deployment.source)
+                .expect("every deployment on the stack was resolved by the launch or by a join");
+            PlannedDeployment {
+                deployment: deployment.clone(),
+                ..item.clone()
+            }
+        })
+        .collect()
 }
 
 fn instance_ids(flat: &PeppyLauncher) -> HashSet<String> {
