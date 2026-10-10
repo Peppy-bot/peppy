@@ -33,7 +33,7 @@ const CHECK_COPY: &str = "composition_check";
 /// The checked copy's name over `bare`: the first of `composition_check`,
 /// `composition_check_2`, ... that the stack neither declares as a core
 /// node link nor prefixes an instance id with.
-fn check_copy_name(bare: &Expanded) -> Name {
+fn pick_checked_copy_name(bare: &Expanded) -> Name {
     let ids: Vec<&str> = bare
         .deployments
         .iter()
@@ -450,7 +450,7 @@ fn check_copies_over(
                     // Reported once, by the stack pass.
                     continue;
                 };
-                let name = check_copy_name(bare);
+                let name = pick_checked_copy_name(bare);
                 let chosen = copy_selection.own_choices(&item.axis.name);
                 // The copy as a join composes it: the option entry's
                 // settings under the selection's own choices.
