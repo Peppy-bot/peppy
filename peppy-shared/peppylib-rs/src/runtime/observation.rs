@@ -546,7 +546,6 @@ mod tests {
     /// read-time filter and its converge task agree on the followed set.
     #[test]
     fn is_followed_agrees_with_desired() {
-        use crate::runtime::slot_stream::FollowedSlot;
         let state = ObservationState::seeded(vec![member("arm_1", 1), member("arm_2", 1)]);
         let desired = ObservedFollow::desired(&state);
         assert_eq!(desired.len(), 2);

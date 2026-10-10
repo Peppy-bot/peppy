@@ -555,7 +555,6 @@ mod tests {
     /// converge task agree on the followed set.
     #[test]
     fn is_followed_agrees_with_desired() {
-        use crate::runtime::slot_stream::FollowedSlot;
         let state = PeerSetState::seeded(vec![member("arm_1"), member("arm_2")]);
         let desired = PeerFollow::desired(&state);
         assert_eq!(desired.len(), 2);

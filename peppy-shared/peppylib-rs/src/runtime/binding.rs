@@ -188,7 +188,6 @@ pub async fn subscribe_bound_set_with_watch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::slot_stream::FollowedSlot;
     use config::runtime::BoundProducers;
 
     /// `is_followed` answers as `desired` does, member by member, so the
