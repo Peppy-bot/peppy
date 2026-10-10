@@ -11,6 +11,7 @@ tests.yml runs them before it trusts what the detection says.
 """
 
 import contextlib
+import io
 import os
 import subprocess
 import tempfile
@@ -383,6 +384,61 @@ class ChangedFiles(unittest.TestCase):
         # quoted form matches no glob and no crate directory.
         self.commit_new_file("docs/café.md")
         self.assertEqual(self.changed_files(), ["docs/café.md"])
+
+
+class Report(unittest.TestCase):
+    """What the detection tells the workflow and the reader of its run."""
+
+    def run_in_step(self, function, *arguments, **environment):
+        """Run `function` as the step does, with scratch files for the step
+        summary and the outputs. Returns what it wrote to each, and to
+        stdout."""
+        with tempfile.TemporaryDirectory() as scratch:
+            summary = Path(scratch) / "summary.md"
+            outputs = Path(scratch) / "outputs"
+            summary.touch()
+            outputs.touch()
+            environment = {
+                "GITHUB_STEP_SUMMARY": str(summary),
+                "GITHUB_OUTPUT": str(outputs),
+                **environment,
+            }
+            stdout = io.StringIO()
+            with mock.patch.dict(os.environ, environment), contextlib.redirect_stdout(stdout):
+                function(*arguments)
+            return summary.read_text(), outputs.read_text(), stdout.getvalue()
+
+    def test_the_summary_names_what_each_job_runs_and_why_one_is_skipped(self):
+        selection = {
+            output: "false" for outputs in detect.JOBS.values() for output in outputs
+        }
+        selection["workspace"] = "true"
+        selection["peppy_shared_packages"] = "-p json5-pretty"
+        summary, _, stdout = self.run_in_step(
+            detect.report, selection, "0123456789abcdef"
+        )
+        self.assertIn("Measured against the diff vs `0123456789ab`.\n", summary)
+        self.assertIn("- **workspace-tests** runs\n", summary)
+        self.assertIn("- **peppy-shared** runs: `-p json5-pretty`\n", summary)
+        self.assertIn(
+            "- **container-e2e** is skipped: nothing it builds from or reads changed\n",
+            summary,
+        )
+        self.assertIn(
+            '::notice::Skipped "container-e2e": none of the files it builds from '
+            "or reads changed vs 0123456789ab\n",
+            stdout,
+        )
+        self.assertNotIn('Skipped "workspace-tests"', stdout)
+
+    def test_an_unknowable_change_set_writes_every_output_selected(self):
+        _, outputs, stdout = self.run_in_step(detect.main, INPUT_BASE="")
+        self.assertIn("running every suite", stdout)
+        self.assertEqual(len(outputs.splitlines()), len(detect.select_everything()))
+        self.assertIn("workspace=true\n", outputs)
+        self.assertIn(
+            "peppy_shared_packages=--workspace --exclude peppylib-py\n", outputs
+        )
 
 
 if __name__ == "__main__":
