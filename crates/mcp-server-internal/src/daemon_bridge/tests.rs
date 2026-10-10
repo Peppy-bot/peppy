@@ -15,9 +15,9 @@ use crate::serve::ServeError;
 use crate::test_support::{Events, PausedRuntime, ScriptedSurface};
 use config::runtime::{CoreNodeName, Name};
 use core_node_api::encoding::{
-    CopyInfo, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse, LaunchResult,
-    NodeRunLogEntry, STACK_BUSY_REASON, StackJoinGoal, StackListRequest, StackListResponse,
-    StackRemoveGoal,
+    CopyAction, CopyChange, CopyInfo, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse,
+    LaunchResult, NodeRunLogEntry, STACK_BUSY_REASON, StackJoinGoal, StackListRequest,
+    StackListResponse, StackRemoveGoal,
 };
 use core_node_api::names::CORE_NODE_TAG;
 use core_node_api::{ActionGoal, ServiceRequest};
@@ -207,8 +207,15 @@ fn rejected(reason: &str) -> peppylib::types::Payload {
 impl FakeDaemon {
     /// The daemon answers the next read of its stack with `copies`.
     fn lists(&self, copies: &[CopyInfo]) {
+        self.lists_during(copies, None);
+    }
+
+    /// The daemon answers the next read of its stack with `copies` and the
+    /// copy change `change` that holds it.
+    fn lists_during(&self, copies: &[CopyInfo], change: Option<CopyChange>) {
         let mut answer = StackListResponse::new("{}", COORDINATOR, DAEMON_INSTANCE, "host");
         answer.copies = copies.to_vec();
+        answer.copy_change = change;
         self.list
             .enqueue_response(answer.encode().expect("the answer encodes"));
     }
@@ -262,6 +269,24 @@ impl FakeDaemon {
             .await
             .expect("the daemon admits the removal")
     }
+}
+
+/// The change of copy `copy_name` of `option` that `action` makes.
+fn copy_change(action: CopyAction, copy_name: &str, option: &str) -> CopyChange {
+    CopyChange {
+        action,
+        name: name(copy_name),
+        option: option.to_owned(),
+    }
+}
+
+/// Polls `future` once, in the calling task, and tells whether it is still
+/// pending.
+async fn pending_after_one_poll<F: std::future::Future + Unpin>(future: &mut F) -> bool {
+    std::future::poll_fn(|context| {
+        std::task::Poll::Ready(std::pin::Pin::new(&mut *future).poll(context).is_pending())
+    })
+    .await
 }
 
 /// The join the bridge sends for `copy_name` of `option`: no selection, no
@@ -449,6 +474,79 @@ async fn list_answers_the_scope_and_its_copies_in_name_order() {
         daemon.list.captured()[0].message.instance_id(),
         SERVER_INSTANCE,
         "the server asks as itself"
+    );
+}
+
+/// `list` reports the join or the removal that holds the stack when its
+/// copy is of a scoped option, and leaves out the change of any other copy,
+/// as it leaves out the copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn list_reports_the_change_of_a_scoped_copy_only() {
+    let (mesh, daemon) = mesh().await;
+    let bridge = mesh.bridge(simulation_scope());
+    for action in [CopyAction::Join, CopyAction::Remove] {
+        daemon.lists_during(&[], Some(copy_change(action, "bravo", "so101_sim")));
+        let listed = bridge
+            .list(Duration::from_secs(5))
+            .await
+            .expect("the daemon lists the stack");
+        assert_eq!(
+            listed["change"],
+            json!({ "action": action.as_str(), "name": "bravo", "option": "so101_sim" })
+        );
+    }
+    daemon.lists_during(
+        &[copy("zulu", "web_commander")],
+        Some(copy_change(CopyAction::Remove, "zulu", "web_commander")),
+    );
+    let listed = bridge
+        .list(Duration::from_secs(5))
+        .await
+        .expect("the daemon lists the stack");
+    assert_eq!(listed.get("change"), None, "{listed}");
+}
+
+/// A `list` while the daemon has not answered a join of the bridge waits
+/// for the answer, so it reads the stack once the daemon reports the join
+/// as its copy change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn list_waits_for_the_admission_of_a_join_of_the_bridge() {
+    let (mesh, mut daemon) = mesh().await;
+    let bridge = mesh.bridge(simulation_scope());
+    let surface = Arc::new(ScriptedSurface::new());
+    daemon.lists(&[]);
+    let call = spawn_join(&bridge, &surface, "bravo", "so101_sim");
+    let pending = daemon
+        .join
+        .next_goal(READINESS_TIMEOUT)
+        .await
+        .expect("the join reaches the daemon");
+
+    let mut listing = Box::pin(bridge.list(Duration::from_secs(5)));
+    assert!(
+        pending_after_one_poll(&mut listing).await,
+        "the list waits while the daemon has not answered the join"
+    );
+    assert_eq!(daemon.reads(), 1, "only the join read the stack");
+    let joining = copy_change(CopyAction::Join, "bravo", "so101_sim");
+    daemon.lists_during(&[], Some(joining));
+    let context = pending
+        .accept(admitted())
+        .await
+        .expect("the daemon admits the join");
+
+    let listed = tokio::time::timeout(READINESS_TIMEOUT, listing)
+        .await
+        .expect("the list answers")
+        .expect("the daemon lists the stack");
+    assert_eq!(
+        listed["change"],
+        json!({ "action": "join", "name": "bravo", "option": "so101_sim" })
+    );
+    complete(&context, &LaunchResult::success(STACK_LOG)).await;
+    assert_eq!(
+        ended(call).await,
+        Ok(json!({ "success": true, "message": "bravo (so101_sim) is on the stack" }))
     );
 }
 

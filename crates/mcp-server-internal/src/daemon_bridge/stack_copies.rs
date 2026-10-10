@@ -2,7 +2,9 @@
 //! copies of the running launch, within the scope of a target.
 //!
 //! - `list` answers the scope's options with their descriptions, the copies
-//!   whose option is in the scope, in name order, and `max_copies`.
+//!   whose option is in the scope, in name order, `max_copies`, and the
+//!   `change` that runs now when it adds or removes a copy of a scoped
+//!   option.
 //! - `join` parses the name as a copy name, takes the bridge's lock, reads
 //!   the copies of the stack, refuses a name a copy has and a stack that
 //!   holds `max_copies` copies of the scope's options, and sends the join of
@@ -16,12 +18,20 @@
 //! call ended; a `join` that finds it held is refused with the daemon's busy
 //! text. A `remove` takes no lock: the daemon refuses it while another stack
 //! change runs. How a call follows the change it sent is in [`change`].
+//!
+//! The daemon reports a join in its list from the moment it admits the
+//! goal. A `join` also holds the admission lock of the bridge until the
+//! daemon admitted or refused its goal, and `list` waits for that lock
+//! before it reads the stack, so `list` reports each addition of the bridge
+//! under `change` from the moment the bridge takes it until it ends.
 
 mod change;
 
 use super::OwnDaemon;
-use change::{Change, start_change, wait_for_change};
-use core_node_api::encoding::{CopyInfo, STACK_BUSY_REASON, StackJoinGoal, StackRemoveGoal};
+use change::{Change, JoinLocks, start_change, wait_for_change};
+use core_node_api::encoding::{
+    CopyChange, CopyInfo, STACK_BUSY_REASON, StackJoinGoal, StackRemoveGoal,
+};
 use daemon_config::daemon_interface::{ScopedOption, StackCopiesScope};
 use daemon_config::launcher::parse_copy_name;
 use peppy_mcp_runtime::{ActionExit, ToolCallError};
@@ -44,6 +54,9 @@ pub(crate) struct StackCopies {
     /// Held by a `join` from before it reads the stack until the daemon's
     /// work on it ends, so the bridge runs one `join` at a time.
     joins: Arc<Mutex<()>>,
+    /// Held by a `join` from before it reads the stack until the daemon
+    /// admitted or refused its goal. `list` waits for it.
+    admission: Arc<Mutex<()>>,
 }
 
 impl StackCopies {
@@ -51,6 +64,7 @@ impl StackCopies {
         Self {
             daemon,
             joins: Arc::new(Mutex::new(())),
+            admission: Arc::new(Mutex::new(())),
         }
     }
 
@@ -98,10 +112,12 @@ impl ScopedStackCopies {
     }
 
     /// `list`: the scope's options, the copies of them on the stack in name
-    /// order, and `max_copies`. The daemon has `deadline`, the tool's own,
-    /// to answer.
+    /// order, `max_copies`, and the change of a copy of them that runs now.
+    /// It first waits until no `join` of the bridge waits for the daemon's
+    /// admission. The daemon has `deadline`, the tool's own, to answer.
     pub(crate) async fn list(&self, deadline: Duration) -> Result<Value, ToolCallError> {
-        let copies = stack_goal::list_copies(self.bridge.daemon.route(), deadline)
+        drop(self.bridge.admission.lock().await);
+        let listed = stack_goal::list_copies(self.bridge.daemon.route(), deadline)
             .await
             .map_err(|error| {
                 ToolCallError::Failed(format!("the daemon did not list the stack: {error}"))
@@ -112,15 +128,22 @@ impl ScopedStackCopies {
             .iter()
             .map(|entry| json!({ "option": entry.option.as_str(), "description": entry.description }))
             .collect();
-        let copies: Vec<Value> = scoped_copies(&self.scope, &copies)
+        let copies: Vec<Value> = scoped_copies(&self.scope, &listed.copies)
             .into_iter()
             .map(|copy| json!({ "name": copy.name.as_str(), "option": copy.option }))
             .collect();
-        Ok(json!({
+        let mut answer = json!({
             "options": options,
             "copies": copies,
             "max_copies": self.scope.max_copies().get(),
-        }))
+        });
+        if let Some(change) = listed
+            .copy_change
+            .filter(|change| in_scope(&self.scope, &change.option))
+        {
+            answer["change"] = change_answer(&change);
+        }
+        Ok(answer)
     }
 
     /// `join`: adds a copy of a scoped option, and follows the addition for
@@ -135,9 +158,10 @@ impl ScopedStackCopies {
         let input: JoinInput = parse_input(input)?;
         let name = parse_copy_name(&input.name).map_err(ActionExit::Failed)?;
         let option = self.scoped_option(&input.option)?.option.clone();
-        let lock = Arc::clone(&self.bridge.joins)
+        let join = Arc::clone(&self.bridge.joins)
             .try_lock_owned()
             .map_err(|_| ActionExit::Failed(STACK_BUSY_REASON.to_owned()))?;
+        let admission = Arc::clone(&self.bridge.admission).lock_owned().await;
         let change = Change::Addition {
             name: name.clone(),
             option: option.clone(),
@@ -149,7 +173,13 @@ impl ScopedStackCopies {
             refuse_join(&scope, &copies, &name)?;
             Ok(StackJoinGoal::new(name, option.as_str(), DEFAULT_BUDGETS))
         };
-        let started = start_change(self.bridge.daemon.clone(), Some(lock), change.clone(), goal);
+        let locks = JoinLocks { join, admission };
+        let started = start_change(
+            self.bridge.daemon.clone(),
+            Some(locks),
+            change.clone(),
+            goal,
+        );
         wait_for_change(started, &change, surface, window).await
     }
 
@@ -202,22 +232,36 @@ fn parse_input<T: serde::de::DeserializeOwned>(input: &Value) -> Result<T, Actio
 async fn read_copies(daemon: &OwnDaemon) -> Result<Vec<CopyInfo>, String> {
     stack_goal::list_copies(daemon.route(), STACK_READ_TIMEOUT)
         .await
+        .map(|listed| listed.copies)
         .map_err(|error| format!("the daemon did not list the stack: {error}"))
+}
+
+/// Whether `option` is an option of the scope.
+fn in_scope(scope: &StackCopiesScope, option: &str) -> bool {
+    scope
+        .options()
+        .iter()
+        .any(|entry| entry.option.as_str() == option)
 }
 
 /// The copies of the scope's options, in name order.
 fn scoped_copies<'a>(scope: &StackCopiesScope, copies: &'a [CopyInfo]) -> Vec<&'a CopyInfo> {
     let mut scoped: Vec<&CopyInfo> = copies
         .iter()
-        .filter(|copy| {
-            scope
-                .options()
-                .iter()
-                .any(|entry| entry.option.as_str() == copy.option)
-        })
+        .filter(|copy| in_scope(scope, &copy.option))
         .collect();
     scoped.sort_by(|left, right| left.name.as_str().cmp(right.name.as_str()));
     scoped
+}
+
+/// The `change` field of `list`: the action, the copy's name and its
+/// option.
+fn change_answer(change: &CopyChange) -> Value {
+    json!({
+        "action": change.action.as_str(),
+        "name": change.name.as_str(),
+        "option": change.option,
+    })
 }
 
 /// Step 2 of `join`: a name a copy on the stack has, of any option, and a

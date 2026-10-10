@@ -8,8 +8,9 @@
   interfaces: {
     services: [
       {
-        // The options of the scope, and the copies of these options on the
-        // stack, in name order.
+        // The options of the scope, the copies of these options on the
+        // stack, in name order, and the addition or removal of a copy of one
+        // of them that runs now.
         name: "list",
         response_message_format: {
           options: {
@@ -35,6 +36,17 @@
           // The most copies of the scope's options on the stack: `join`
           // refuses when the stack holds this many.
           max_copies: "u16",
+          // The addition or removal of a copy of a scoped option that runs on
+          // the stack now; absent while none runs. A copy that joins is in
+          // `copies` only once its join ends.
+          change: {
+            $type: "object",
+            $optional: true,
+            // join or remove.
+            action: "string",
+            name: "string",
+            option: "string",
+          },
         },
       },
     ],

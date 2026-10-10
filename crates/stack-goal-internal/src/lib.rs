@@ -29,7 +29,8 @@
 //!    it until the daemon's work ends.
 //!
 //! [`list_copies`] reads the copies of the stack along the same route, with
-//! the name and the option of each.
+//! the name and the option of each, and the join or the removal of a copy
+//! that holds the stack.
 //!
 //! # Budgets
 //!
@@ -119,4 +120,4 @@ pub use budgets::{
 pub use goal::{
     DaemonRoute, FollowError, RunningStackGoal, SendError, StackGoal, StackGoalEvent, send,
 };
-pub use list::list_copies;
+pub use list::{StackCopies, list_copies};

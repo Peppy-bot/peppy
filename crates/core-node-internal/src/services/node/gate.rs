@@ -38,6 +38,7 @@
 //! only while that generation is still current. A superseded task's release is
 //! thus a safe no-op.
 
+use core_node_api::encoding::CopyChange;
 use parking_lot::Mutex;
 use peppylib::messaging::GoalContext;
 use peppylib::types::Payload;
@@ -300,6 +301,33 @@ pub(crate) struct StackState {
     /// write guard; node goals hold read guards to completion.
     mutation: Arc<tokio::sync::RwLock<()>>,
     cancellation: Mutex<CancellationToken>,
+    /// The join or the removal of a copy that holds the stack now, as the
+    /// [`StackHold`] of that change reported it.
+    copy_change: Arc<Mutex<Option<CopyChange>>>,
+}
+
+/// One stack change's hold on the stack. Dropping it frees the stack, after
+/// it clears the copy change it reported, so `stack list` never reports the
+/// change of a hold that ended.
+#[must_use = "the stack is free again once the hold is dropped"]
+pub(crate) struct StackHold {
+    copy_change: Arc<Mutex<Option<CopyChange>>>,
+    _write: tokio::sync::OwnedRwLockWriteGuard<()>,
+}
+
+impl StackHold {
+    /// Reports `change` in `stack list` for as long as this hold lasts.
+    pub(crate) fn report(&self, change: CopyChange) {
+        *self.copy_change.lock() = Some(change);
+    }
+}
+
+impl Drop for StackHold {
+    fn drop(&mut self) {
+        // The fields drop after this body, so the record clears while the
+        // write guard still keeps every other change out.
+        self.copy_change.lock().take();
+    }
 }
 
 impl StackState {
@@ -309,13 +337,22 @@ impl StackState {
 
     /// Takes the stack for one change, refusing while a change or a node
     /// goal holds it.
-    pub(crate) fn try_begin_change(
-        &self,
-    ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, StackBusy> {
-        self.mutation
+    pub(crate) fn try_begin_change(&self) -> Result<StackHold, StackBusy> {
+        let write = self
+            .mutation
             .clone()
             .try_write_owned()
-            .map_err(|_| StackBusy)
+            .map_err(|_| StackBusy)?;
+        Ok(StackHold {
+            copy_change: Arc::clone(&self.copy_change),
+            _write: write,
+        })
+    }
+
+    /// The join or the removal of a copy that holds the stack now. `None`
+    /// while no change holds it, and while a change that is neither holds it.
+    pub(crate) fn copy_change(&self) -> Option<CopyChange> {
+        self.copy_change.lock().clone()
     }
 
     /// Admits one node goal beside the others, refusing while a change
@@ -365,6 +402,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_node_api::encoding::CopyAction;
 
     fn is_running(gate: &ConcurrencyGate) -> bool {
         gate.state.lock().running.is_some()
@@ -557,6 +595,27 @@ mod tests {
         assert_eq!(state.try_begin_change().err(), Some(StackBusy));
         drop(change);
         assert!(state.try_begin_change().is_ok());
+    }
+
+    /// The hold of a join or a removal reports its copy change until the
+    /// hold ends, and a hold that reports none leaves no change behind.
+    #[test]
+    fn a_hold_reports_its_copy_change_until_it_ends() {
+        let state = StackState::default();
+        let launch = state.try_begin_change().unwrap();
+        assert_eq!(state.copy_change(), None);
+        drop(launch);
+        let join = state.try_begin_change().unwrap();
+        let bravo = CopyChange {
+            action: CopyAction::Join,
+            name: config::runtime::Name::new("bravo").unwrap(),
+            option: "so101_sim".to_owned(),
+        };
+        join.report(bravo.clone());
+        assert_eq!(state.copy_change(), Some(bravo));
+        drop(join);
+        assert_eq!(state.copy_change(), None);
+        assert!(state.try_begin_change().is_ok(), "the stack is free again");
     }
 
     #[tokio::test]

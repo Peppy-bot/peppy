@@ -14,8 +14,8 @@ use crate::services::node::gate::{
 use crate::services::node::{DaemonDefaults, HealthMonitorPolicy, RelationshipCoordinators};
 use core_node_api::ActionId;
 use core_node_api::encoding::{
-    DEFAULT_IDLE_TIMEOUT_SECS, LaunchGoal, LaunchGoalResponse, LaunchResult, StackBudgets,
-    StackBuildGoal, StackJoinGoal, StackRemoveGoal,
+    CopyAction, CopyChange, DEFAULT_IDLE_TIMEOUT_SECS, LaunchGoal, LaunchGoalResponse,
+    LaunchResult, StackBudgets, StackBuildGoal, StackJoinGoal, StackRemoveGoal,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -131,6 +131,26 @@ impl StackRequest {
             Self::Launch(goal) => Some(goal.launch_id.clone()),
             Self::Build(goal) => Some(goal.launch().launch_id.clone()),
             Self::Join(_) | Self::Remove(_) => active.map(|active| active.launch_id.clone()),
+        }
+    }
+
+    /// The change of one copy the request makes, which `stack list` reports
+    /// while the request holds the stack: the join of a copy, or the removal
+    /// of a copy that `active` holds. A launch and a build change no single
+    /// copy.
+    fn copy_change(&self, active: Option<&ActiveLaunch>) -> Option<CopyChange> {
+        match self {
+            Self::Join(goal) => Some(CopyChange {
+                action: CopyAction::Join,
+                name: goal.name.clone(),
+                option: goal.option.clone(),
+            }),
+            Self::Remove(goal) => Some(CopyChange {
+                action: CopyAction::Remove,
+                name: goal.name.clone(),
+                option: active?.copy_option(&goal.name)?.to_owned(),
+            }),
+            Self::Launch(_) | Self::Build(_) => None,
         }
     }
 
@@ -424,7 +444,13 @@ async fn handle_stack_request(
         action.id().name()
     );
 
-    let launch_id = goal.launch_id(action_context.slice_ownership.active.lock().as_ref());
+    let (launch_id, copy_change) = {
+        let active = action_context.slice_ownership.active.lock();
+        (
+            goal.launch_id(active.as_ref()),
+            goal.copy_change(active.as_ref()),
+        )
+    };
     let log = match ActionLog::for_stack_action(
         &action_context.peppy_dirs,
         action_context.node_stack.log_exporter().clone(),
@@ -447,6 +473,12 @@ async fn handle_stack_request(
         log_path.display()
     );
 
+    // Reported before the reply, so a client that hears the acceptance finds
+    // the change in `stack list`. A goal that is not accepted drops the hold,
+    // which clears it.
+    if let Some(change) = copy_change {
+        mutation.report(change);
+    }
     // `accept` registers the per-goal context before replying accepted.
     let Some(goal_ctx) = accept_goal(pending, encode_accepted(action, &log_path)).await else {
         gate.clear_running();

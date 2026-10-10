@@ -14,8 +14,9 @@ use std::time::Duration;
 use config::runtime::CoreNodeName;
 use config::runtime::Name;
 use core_node_api::encoding::{
-    CopyInfo, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse, LaunchResult,
-    NodeRunLogEntry, STACK_BUSY_REASON, StackJoinGoal, StackListRequest, StackListResponse,
+    CopyAction, CopyChange, CopyInfo, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse,
+    LaunchResult, NodeRunLogEntry, STACK_BUSY_REASON, StackJoinGoal, StackListRequest,
+    StackListResponse,
 };
 use core_node_api::names::CORE_NODE_TAG;
 use core_node_api::{ActionGoal, ServiceRequest};
@@ -407,14 +408,26 @@ async fn the_copies_are_read_from_the_daemon_along_the_route() {
         option: "so101_sim".to_owned(),
         set_members: Vec::new(),
     };
-    let mut answer = StackListResponse::new("{}", COORDINATOR, DAEMON_INSTANCE, "host");
+    let charlie = CopyChange {
+        action: CopyAction::Join,
+        name: Name::new("charlie").unwrap(),
+        option: "so101_sim".to_owned(),
+    };
+    let mut answer = StackListResponse::new("{}", COORDINATOR, DAEMON_INSTANCE, "host")
+        .with_copy_change(charlie.clone());
     answer.copies = vec![bravo.clone()];
     list.enqueue_response(answer.encode().unwrap());
 
-    let copies = stack_goal::list_copies(mesh.route(), STEP)
+    let listed = stack_goal::list_copies(mesh.route(), STEP)
         .await
         .expect("the daemon answers");
-    assert_eq!(copies, [bravo]);
+    assert_eq!(
+        listed,
+        stack_goal::StackCopies {
+            copies: vec![bravo],
+            copy_change: Some(charlie),
+        }
+    );
     let asked = list.captured();
     assert_eq!(asked.len(), 1, "one request");
     assert_eq!(asked[0].message.instance_id(), BRIDGE_INSTANCE);

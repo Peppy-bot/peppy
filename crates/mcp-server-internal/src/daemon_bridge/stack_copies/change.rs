@@ -197,15 +197,22 @@ pub(super) struct StartedChange {
     events: mpsc::UnboundedReceiver<ChangeEvent>,
 }
 
-/// Starts `change` in a task of its own, which holds `lock` until the
-/// daemon's work ends. The task awaits `goal`, which reads the stack and
-/// gives the goal to send or a refusal, sends the goal to `daemon`, and
-/// follows it to its end. It reports to the call the returned
-/// [`StartedChange`] reads, and goes on to the end when the call stops
-/// reading.
+/// The locks of the bridge that a `join` holds: `join` until the daemon's
+/// work ends, and `admission` until the daemon admitted or refused the goal.
+pub(super) struct JoinLocks {
+    pub(super) join: OwnedMutexGuard<()>,
+    pub(super) admission: OwnedMutexGuard<()>,
+}
+
+/// Starts `change` in a task of its own, which holds the `locks` of a
+/// `join`, each for as long as [`JoinLocks`] says. The task awaits `goal`,
+/// which reads the stack and gives the goal to send or a refusal, sends the
+/// goal to `daemon`, and follows it to its end. It reports to the call the
+/// returned [`StartedChange`] reads, and goes on to the end when the call
+/// stops reading.
 pub(super) fn start_change<G>(
     daemon: OwnDaemon,
-    lock: Option<OwnedMutexGuard<()>>,
+    locks: Option<JoinLocks>,
     change: Change,
     goal: impl Future<Output = Result<G, String>> + Send + 'static,
 ) -> StartedChange
@@ -215,7 +222,12 @@ where
     let (start_sender, start) = oneshot::channel();
     let (event_sender, events) = mpsc::unbounded_channel();
     tokio::spawn(async move {
-        let running = match admit_goal(&daemon, &change, goal).await {
+        let (lock, admission) = locks
+            .map(|JoinLocks { join, admission }| (join, admission))
+            .unzip();
+        let admitted = admit_goal(&daemon, &change, goal).await;
+        drop(admission);
+        let running = match admitted {
             Ok(running) => running,
             Err(refusal) => {
                 drop(lock);

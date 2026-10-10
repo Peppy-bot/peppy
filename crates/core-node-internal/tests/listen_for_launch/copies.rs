@@ -1,6 +1,8 @@
 use super::*;
 use config::node::Cardinality;
-use core_node_api::encoding::{StackJoinGoal, StackListRequest, StackRemoveGoal};
+use core_node_api::encoding::{
+    CopyAction, CopyChange, StackJoinGoal, StackListRequest, StackRemoveGoal,
+};
 use peppylib::core_node::transport::{poll, send_goal};
 use peppylib::services::slot_update::SlotChannel;
 
@@ -392,8 +394,9 @@ async fn join_and_remove_require_an_active_launcher() {
     assert_eq!(started.node_stack.len(), 1);
 }
 
-/// While a join builds, another join and a remove are refused as busy; a
-/// reset interrupts the build and a fresh launch follows.
+/// While a join builds, `stack list` reports the join as its copy change,
+/// and another join and a remove are refused as busy; a reset interrupts the
+/// build, after which no change holds the stack, and a fresh launch follows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
     let started = start_core_node_with_mock_messenger().await;
@@ -442,6 +445,16 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
                 .and_then(|value| value.trim().parse::<u32>().ok())
         })
         .await;
+        let list = participant_request(&started, &StackListRequest::new()).await;
+        assert_eq!(
+            list.copy_change,
+            Some(CopyChange {
+                action: CopyAction::Join,
+                name: Name::new("alpha").unwrap(),
+                option: "simulated".to_owned(),
+            })
+        );
+        assert!(list.copies.is_empty(), "a joining copy is no copy yet");
         let busy = core_node_api::encoding::STACK_BUSY_REASON;
         assert!(
             refusal(&started, &robot_goal("bravo", "simulated"))
@@ -462,6 +475,11 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
     },);
     assert!(!result.success);
     assert!(result.error_message.unwrap().contains("reset"));
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    assert_eq!(
+        list.copy_change, None,
+        "the interrupted join reports nothing"
+    );
     let result = execute(&started, &launch).await;
     assert!(result.success, "{:?}", result.error_message);
 }
@@ -552,6 +570,65 @@ fn instance_pid(started: &StartedCoreNode, node: &str, instance_id: &str) -> u32
         .expect("instance in the stack")
         .pid()
         .expect("running process")
+}
+
+/// While a removal stops its copy, `stack list` reports the removal, with
+/// the copy's option, as the copy change; once the removal ends, it reports
+/// none. The copy's instance hears the shutdown request and exits only when
+/// the test kills it, under a grace that outlasts the test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_list_reports_a_removal_while_it_stops_its_copy() {
+    let started = common::start_core_node_with_shutdown_grace(3600).await;
+    let (_directory, launcher) = fleet_with_a_shared_node(
+        &started,
+        r#"{ robot: "real", instances: [{ instance_id: "alpha" }] }"#,
+    );
+    let mut responders = answer_readiness(&started, "shared_node", "shared_inst").await;
+    responders.extend(answer_readiness(&started, "named_robot", "alpha_arm_inst").await);
+    let launch = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        "removal-change-test",
+        StackBudgets::new(30, 30, 30, Some(120)),
+    );
+    let result = execute(&started, &launch).await;
+    assert!(result.success, "{:?}", result.error_message);
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    assert_eq!(list.copy_change, None, "no change holds the stack");
+
+    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let (_listener, shutdown) = peppylib::services::shutdown::listen_for_shutdown(
+        &messenger,
+        &started.core_node_name,
+        "alpha_arm_inst",
+        common::test_node_target("named_robot"),
+    )
+    .await
+    .unwrap();
+    let alpha_pid = instance_pid(&started, "named_robot", "alpha_arm_inst");
+    let removal = StackRemoveGoal::new(Name::new("alpha").unwrap());
+    let (result, ()) = tokio::join!(execute(&started, &removal), async {
+        shutdown
+            .await
+            .expect("the removal asks the copy to shut down");
+        let list = participant_request(&started, &StackListRequest::new()).await;
+        assert_eq!(
+            list.copy_change,
+            Some(CopyChange {
+                action: CopyAction::Remove,
+                name: Name::new("alpha").unwrap(),
+                option: "real".to_owned(),
+            })
+        );
+        std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(alpha_pid.to_string())
+            .status()
+            .expect("kill runs");
+    });
+    assert!(result.success, "{:?}", result.error_message);
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    assert_eq!(list.copy_change, None);
+    assert!(list.copies.is_empty());
 }
 
 #[tokio::test]

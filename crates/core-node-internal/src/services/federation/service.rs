@@ -16,6 +16,7 @@
 use super::{Lease, ReserveOutcome, SliceOwnership};
 use crate::Result;
 use crate::services::node::RelationshipCoordinators;
+use crate::services::node::gate::StackHold;
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
@@ -151,7 +152,7 @@ fn admit_slice_change(
     context: &FederationServiceContext,
     launch_id: &str,
     undone: &str,
-) -> std::result::Result<tokio::sync::OwnedRwLockWriteGuard<()>, FederationVerdict> {
+) -> std::result::Result<StackHold, FederationVerdict> {
     let mutation = context
         .ownership
         .stack

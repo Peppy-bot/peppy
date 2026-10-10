@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use core_node_api::SerializedNodeGraph;
-use core_node_api::encoding::{CopyInfo, StackListRequest};
+use core_node_api::encoding::{CopyChange, CopyInfo, StackListRequest};
 
 use crate::core_node::transport::poll;
 use crate::error::{Error, Result};
@@ -24,6 +24,9 @@ pub struct StackList {
     pub graph: SerializedNodeGraph,
     /// The copies the serving coordinator runs.
     pub copies: Vec<CopyInfo>,
+    /// The join or the removal of a copy that holds the serving daemon's
+    /// stack now. A copy that joins is in `copies` only once its join ends.
+    pub copy_change: Option<CopyChange>,
     /// The cooperative shutdown grace the serving daemon is configured with,
     /// which a caller sizes a destructive request's budget from.
     pub shutdown_grace_secs: u64,
@@ -59,6 +62,7 @@ pub async fn list(
     Ok(StackList {
         graph,
         copies: response.copies,
+        copy_change: response.copy_change,
         shutdown_grace_secs: response.shutdown_grace_secs,
         core_node: response.core_node,
         instance_id: response.instance_id,

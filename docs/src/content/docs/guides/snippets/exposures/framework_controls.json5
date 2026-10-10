@@ -26,7 +26,7 @@
         {
           member: "list",
           tool: "stack.list",
-          description: "Report the robot options this stack can add, the robots of these options on the stack, and the most robots it holds.",
+          description: "Report the robot options this stack can add, the robots of these options on the stack, the most robots it holds, and the addition or removal of a robot that runs now.",
           operation: "read_only",
           deadline_ms: 5000,
         },
