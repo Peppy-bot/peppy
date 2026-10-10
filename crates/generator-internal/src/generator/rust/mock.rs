@@ -305,9 +305,11 @@ fn render_dep_link(
             module_ident,
         )?);
     }
+    let mut action_stops: Vec<TokenStream> = Vec::with_capacity(spec.actions.len());
     for action in &spec.actions {
         let member = dep_member_name(link_id, &action.module_link, &action.name);
         let module_ident = claim_member_name(link_id, &member, &mut owners)?;
+        action_stops.push(quote!(self.#module_ident.stop();));
         members.push(render_dep_action(
             generator,
             &spec.producer_name,
@@ -324,15 +326,6 @@ fn render_dep_link(
         constructs,
         field_names,
     } = member_parts(&members);
-    let action_stops: Vec<TokenStream> = spec
-        .actions
-        .iter()
-        .map(|action| {
-            let member = dep_member_name(link_id, &action.module_link, &action.name);
-            let ident = Ident::new(&sanitize_rust_module_name(&member), Span::call_site());
-            quote!(self.#ident.stop();)
-        })
-        .collect();
 
     let doc = format!(
         "Mock producer for the `{link_id}` dependency slot: plays the dependency over the \
