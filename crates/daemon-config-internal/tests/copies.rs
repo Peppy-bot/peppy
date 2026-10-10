@@ -1935,9 +1935,10 @@ fn the_repository_check_composes_every_launch_and_every_join() {
     );
 }
 
-/// A simulation declares the slot a robot's relay pairs into vacant, for
-/// the launch without a robot; the relay's fragment drops the vacancy and
-/// the relay links into the slot with `arm_links`.
+/// A simulation whose `arm` slot holds `slot` (a vacancy for the launch
+/// without a robot, or a bound target), and a `sim` robot option whose
+/// adjustment unsets that slot; the robot's `arm_inst` takes `arm_links`,
+/// which pair it into the slot or leave it unpaired.
 fn simulation_with_arm_slot_document(slot: &str, arm_links: &str) -> String {
     format!(
         r#"{{
@@ -2600,7 +2601,8 @@ fn load_error(document: &str) -> CompositionError {
 }
 
 /// A launcher whose copies of `robot` may run beside copies of `cameras`,
-/// with `extra` written into the `sim` robot option.
+/// with `extra` written into the `sim` robot option and `constraints`
+/// into the launcher's `constraints` list.
 fn two_copy_axes(extra: &str, constraints: &str) -> String {
     format!(
         r#"{{
