@@ -540,11 +540,24 @@ mod tests {
         }
     }
 
+    fn format_with_config(config_json5: &str) -> String {
+        let config = NodeConfigParser::from_content(config_json5).expect("parse config");
+        let mut out = String::new();
+        format_node_info(
+            &mut out,
+            &NodeInfo {
+                config,
+                ..sample_response()
+            },
+        );
+        out
+    }
+
     /// A native emitted topic's line states its QoS, and its retention when it
     /// retains.
     #[test]
     fn print_node_info_states_the_retention_of_a_retaining_topic() {
-        let config = NodeConfigParser::from_content(
+        let out = format_with_config(
             r#"{
                 peppy_schema: "node/v1",
                 manifest: { name: "arm", tag: "v1" },
@@ -556,16 +569,6 @@ mod tests {
                 },
                 execution: { language: "rust", run_cmd: ["./bin"] },
             }"#,
-        )
-        .expect("parse config");
-
-        let mut out = String::new();
-        format_node_info(
-            &mut out,
-            &NodeInfo {
-                config,
-                ..sample_response()
-            },
         );
 
         assert!(out.contains("  - joint_state (qos: SensorData)\n"), "{out}");
@@ -788,5 +791,115 @@ mod tests {
             out.contains("  tags: array[string]"),
             "array parameter should render with item type:\n{out}"
         );
+    }
+
+    /// Every interface section lists its non-empty kinds in a fixed order,
+    /// each under its own heading.
+    #[test]
+    fn print_node_info_renders_dependencies_and_interface_sections() {
+        let out = format_with_config(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: {
+                    name: "relay",
+                    tag: "v1",
+                    implements: [{ name: "rgb_camera", tag: "v1", link_id: "camera" }],
+                    depends_on: {
+                        nodes: [
+                            { name: "camera_node", tag: "v1", link_id: "source" },
+                            { name: "config_node", tag: "v1", link_id: "config" },
+                            { name: "nav_node", tag: "v1", link_id: "nav" },
+                        ],
+                    },
+                },
+                interfaces: {
+                    topics: {
+                        emits: [
+                            { name: "joint_state", qos_profile: "sensor_data", message_format: { position: "f64" } },
+                            { link_id: "camera", name: "video_stream" },
+                        ],
+                        consumes: [
+                            { link_id: "source", name: "video_stream" },
+                            { link_id: "source", name: "depth_stream" },
+                        ],
+                    },
+                    services: {
+                        exposes: [{ name: "get_status" }],
+                        consumes: [{ link_id: "config", name: "get_config" }],
+                    },
+                    actions: {
+                        exposes: [{ name: "calibrate" }],
+                        consumes: [{ link_id: "nav", name: "go_to_pose" }],
+                    },
+                },
+                execution: { language: "rust", run_cmd: ["./bin"] },
+            }"#,
+        );
+
+        let rule = "-".repeat(50);
+        let expected = [
+            "",
+            "Dependencies",
+            &rule,
+            "  - config",
+            "  - nav",
+            "  - source",
+            "",
+            "Exposed Interfaces",
+            &rule,
+            "Emitted Topics:",
+            "  - joint_state (qos: SensorData)",
+            "  - video_stream (via implements slot: camera)",
+            "Services:",
+            "  - get_status",
+            "Actions:",
+            "  - calibrate",
+            "",
+            "Consumed Interfaces",
+            &rule,
+            "Consumed Topics:",
+            "  - video_stream (via slot: source)",
+            "  - depth_stream (via slot: source)",
+            "Services:",
+            "  - get_config (via slot: config)",
+            "Actions:",
+            "  - go_to_pose (via slot: nav)",
+            "",
+            "Integrity",
+        ]
+        .join("\n");
+        assert!(out.contains(&format!("\n{expected}\n")), "{out}");
+    }
+
+    /// An interface section with only empty lists is left out, and a kind
+    /// with an empty list gets no line under a section that is shown.
+    #[test]
+    fn print_node_info_omits_empty_interface_lists() {
+        let out = format_with_config(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "quiet", tag: "v1" },
+                interfaces: {
+                    topics: { emits: [], consumes: [] },
+                    services: { exposes: [{ name: "get_status" }], consumes: [] },
+                    actions: { exposes: [], consumes: [] },
+                },
+                execution: { language: "rust", run_cmd: ["./bin"] },
+            }"#,
+        );
+
+        let rule = "-".repeat(50);
+        let expected = [
+            "    - inst-def: /tmp/peppy/logs/run/inst-def.log",
+            "",
+            "Exposed Interfaces",
+            &rule,
+            "Services:",
+            "  - get_status",
+            "",
+            "Integrity",
+        ]
+        .join("\n");
+        assert!(out.contains(&format!("{expected}\n")), "{out}");
     }
 }
