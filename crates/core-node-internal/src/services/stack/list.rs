@@ -62,11 +62,11 @@ async fn handle_stack_list_request(
 ) -> PeppyResult<Payload> {
     into_service_response(
         &context,
-        handle_node_list_request_inner(&context, node_stack, core_node, instance_id, &ownership),
+        handle_stack_list_request_inner(&context, node_stack, core_node, instance_id, &ownership),
     )
 }
 
-fn handle_node_list_request_inner(
+fn handle_stack_list_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
     core_node: String,
