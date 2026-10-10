@@ -44,12 +44,17 @@ use types::{DeploymentInterface, LanguageGenerator};
 /// - creates `node_dir/.peppy/` and the `peppygen` output directory;
 /// - **(Rust only)** creates or updates the node's own `node_dir/Cargo.toml`, adding/overwriting
 ///   the `peppygen` and `peppylib` path dependencies (overwriting any stale paths);
-/// - deploys five vendored crates (`peppylib`, `peppy-messaging-interface`, `config`, `core-node-api`,
-///   `build-helpers`) into `node_dir/.peppy/libs/` (a sibling of `peppygen`), either as
-///   symlinks into a host-wide shared cache or as physical copies, per `deploy_mode`;
-/// - populates that **host-wide shared crate cache** under `peppy_dirs` (using file locking and a
-///   per-process staging dir); cache entries are keyed by content-hash + crate version and are not
-///   pruned;
+/// - **(Rust only)** deploys five vendored crates (`peppylib`, `peppy-messaging-interface`,
+///   `config`, `core-node-api`, `build-helpers`) into `node_dir/.peppy/libs/` (a sibling of
+///   `peppygen`), either as symlinks into a host-wide shared cache or as physical copies, per
+///   `deploy_mode`; Python generation ignores `deploy_mode`;
+/// - **(Rust only)** populates that **host-wide shared crate cache** under `peppy_dirs` (using
+///   file locking and a per-process staging dir); cache entries are keyed by content-hash +
+///   crate version and are not pruned;
+/// - **(Python only)** deploys the standalone peppylib Python project (the wrappers and the
+///   native extension of the host, or of Linux when the node runs in a container) at
+///   `node_dir/.peppy/libs/peppylib`, copied from a lock-protected host-wide cache under
+///   `peppy_dirs`, and runs ruff over the generated library;
 /// - writes the config fingerprint `…/peppygen/peppy.json5.sha256` and, for the node's own
 ///   source tree, `node_dir/.peppy/git.hash`, but **only after** generation succeeds, so a
 ///   failed run leaves neither behind.
