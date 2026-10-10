@@ -20,7 +20,7 @@ use crate::router_id::RouterId;
 use crate::zenohd::ZenohNetProtocol;
 use config::namespace::Namespace;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// TLS material for a `tls/` (or `quic/`) session, rendered into the zenoh
 /// `transport.link.tls` block. One type serves every role: a router/listener
@@ -200,7 +200,7 @@ pub async fn probe_tls_reachable(
 /// Every certificate of the PEM bundle at `path`, in the order written. An
 /// error names the bundle as `label` does; an empty bundle is an error.
 fn read_pem_certificates(
-    path: &std::path::Path,
+    path: &Path,
     label: &str,
 ) -> Result<Vec<tokio_rustls::rustls::pki_types::CertificateDer<'static>>, String> {
     let bytes = std::fs::read(path)
@@ -426,17 +426,17 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
         let mut tls_json = json!({
             "verify_name_on_connect": tls.verify_name_on_connect,
         });
-        let mut put_path = |key: &str, value: &Option<PathBuf>| {
+        let mut put_path = |key: &str, value: Option<&Path>| {
             if let Some(path) = value {
                 tls_json[key] = json!(path.to_string_lossy());
             }
         };
-        put_path("root_ca_certificate", &tls.root_ca_certificate);
-        put_path("listen_certificate", &tls.listen_certificate);
-        put_path("listen_private_key", &tls.listen_private_key);
+        put_path("root_ca_certificate", tls.root_ca_certificate.as_deref());
+        put_path("listen_certificate", tls.listen_certificate.as_deref());
+        put_path("listen_private_key", tls.listen_private_key.as_deref());
         if let Some(identity) = &tls.connect_identity {
-            put_path("connect_certificate", &Some(identity.certificate.clone()));
-            put_path("connect_private_key", &Some(identity.private_key.clone()));
+            put_path("connect_certificate", Some(&identity.certificate));
+            put_path("connect_private_key", Some(&identity.private_key));
         }
         if tls.connect_identity.is_some() || tls.require_client_certificate {
             tls_json["enable_mtls"] = json!(true);
