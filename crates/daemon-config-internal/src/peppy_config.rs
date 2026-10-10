@@ -325,14 +325,9 @@ pub enum LocalNodesTopology {
 }
 
 impl LocalNodesTopology {
-    /// Whether this is the peer topology (direct peer-to-peer links).
-    pub fn is_peer(self) -> bool {
-        matches!(self, LocalNodesTopology::Peer)
-    }
-
     /// LocalNodesTopology to gossip mapping: peer enables gossip, router disables it.
     pub fn gossip(self) -> bool {
-        self.is_peer()
+        matches!(self, LocalNodesTopology::Peer)
     }
 }
 
@@ -1372,7 +1367,6 @@ mod tests {
         let managed = managed(&cfg);
         assert_eq!(cfg.core_node_name, None);
         assert_eq!(managed.local_nodes_topology, LocalNodesTopology::Peer);
-        assert!(managed.local_nodes_topology.is_peer());
         assert!(cfg.zenoh.gossip());
         assert!(!LocalNodesTopology::Router.gossip());
         assert_eq!(
