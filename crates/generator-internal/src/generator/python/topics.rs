@@ -4,7 +4,7 @@ use super::deserialization;
 use super::serialization;
 use super::services::sender_target_python_expr;
 use super::type_mapping::{
-    collect_fields_from_format, qos_profile_python, retention_python, uses_optional,
+    PythonField, collect_fields_from_format, qos_profile_python, retention_python, uses_optional,
 };
 use crate::error::Result;
 use crate::generator::types::{PairTopicConsumerKind, SubscriptionTag, retention_doc};
@@ -60,6 +60,33 @@ pub(crate) fn emit_capnp_schema_loader(
     emit_capnp_loader_fn(builder, schema_info);
 }
 
+/// Emits what a publisher module needs before its `build_message`, shared by
+/// the plain and peer publisher modules: the `Optional` import when a field
+/// uses it, the capnp schema loader when the topic has a schema, and the
+/// nested dataclasses of the message. Returns the top-level fields, the
+/// parameters of `build_message`. A topic without a message format has no
+/// fields.
+fn emit_published_message_types(
+    builder: &mut PythonCodeBuilder,
+    message_format: Option<&MessageFormat>,
+    schema_info: Option<&PythonSchemaInfo>,
+) -> Result<Vec<PythonField>> {
+    let mut nested_classes = Vec::new();
+    let fields = message_format
+        .map(|format| collect_fields_from_format(format, "Message", &mut nested_classes))
+        .transpose()?
+        .unwrap_or_default();
+
+    if uses_optional(&fields, &nested_classes) {
+        builder.add_import("from typing import Optional");
+    }
+    if let Some(info) = schema_info {
+        emit_capnp_schema_loader(builder, info);
+    }
+    emit_nested_classes(builder, &nested_classes);
+    Ok(fields)
+}
+
 /// Emits the pure `build_message(...) -> bytes` serializer shared by the
 /// plain and peer publisher modules. Pure (no node_runner, no I/O), so a
 /// publish loop can build the payload off the asyncio event loop thread
@@ -67,7 +94,7 @@ pub(crate) fn emit_capnp_schema_loader(
 /// serialization off the loop's GIL time.
 fn emit_build_message_fn(
     builder: &mut PythonCodeBuilder,
-    fields: &[super::type_mapping::PythonField],
+    fields: &[PythonField],
     schema_info: Option<&PythonSchemaInfo>,
     message_format: Option<&MessageFormat>,
 ) {
@@ -189,27 +216,8 @@ pub fn build_emitted_topic(
     origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
-    let mut nested_classes = Vec::new();
-
-    // Collect fields from message format
-    let fields = topic
-        .message_format
-        .as_ref()
-        .map(|fmt| collect_fields_from_format(fmt, "Message", &mut nested_classes))
-        .transpose()?
-        .unwrap_or_default();
-
-    if uses_optional(&fields, &nested_classes) {
-        builder.add_import("from typing import Optional");
-    }
-
-    // Add capnp imports and a lazy, cached schema loader.
-    if let Some(info) = schema_info {
-        emit_capnp_schema_loader(&mut builder, info);
-    }
-
-    // Emit nested dataclasses (e.g., MessageHeader)
-    emit_nested_classes(&mut builder, &nested_classes);
+    let fields =
+        emit_published_message_types(&mut builder, topic.message_format.as_ref(), schema_info)?;
 
     builder.add_import("import peppylib");
 
@@ -332,22 +340,8 @@ pub fn build_peer_emitted_topic(
     peer: &crate::generator::types::PeerContext,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
-    let mut nested_classes = Vec::new();
-
-    let fields = topic
-        .message_format
-        .as_ref()
-        .map(|fmt| collect_fields_from_format(fmt, "Message", &mut nested_classes))
-        .transpose()?
-        .unwrap_or_default();
-
-    if uses_optional(&fields, &nested_classes) {
-        builder.add_import("from typing import Optional");
-    }
-    if let Some(info) = schema_info {
-        emit_capnp_schema_loader(&mut builder, info);
-    }
-    emit_nested_classes(&mut builder, &nested_classes);
+    let fields =
+        emit_published_message_types(&mut builder, topic.message_format.as_ref(), schema_info)?;
 
     let qos = qos_profile_python(&topic.qos_profile);
     emit_peer_module_header(&mut builder, &topic.name, qos, peer);
