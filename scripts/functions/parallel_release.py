@@ -59,6 +59,7 @@ from .build import (
     BuildArtifact,
     _release_rustflags,
     build_and_package,
+    build_cache_root,
     release_archive_name,
     release_dist_dir,
 )
@@ -198,15 +199,6 @@ class ReleasePlan:
 def _triple_arch(triple: str) -> str:
     """The CPU architecture a target triple names: 'aarch64' or 'x86_64'."""
     return triple.split("-", 1)[0]
-
-
-def _build_cache_root() -> Path:
-    """The persistent cache the Rust build scripts share.
-
-    build-helpers' `cache_dir` roots it at `$HOME/.peppy/tmp` whatever
-    PEPPY_HOME says; `lima._prebuilt_peppylib_so_dir` resolves the same root.
-    """
-    return Path.home() / ".peppy" / "tmp"
 
 
 def _apptainer_cache_pattern(arch: str) -> str:
@@ -438,7 +430,7 @@ def run_bindings(output_dir: Path) -> None:
 
 def _single_apptainer_cache(arch: str) -> Path:
     """The one complete apptainer cache for *arch* under the build cache."""
-    root = _build_cache_root()
+    root = build_cache_root()
     caches = [
         cache
         for cache in sorted(root.glob(_apptainer_cache_pattern(arch)))
@@ -484,7 +476,7 @@ def _install_pinned_go(arch: str) -> Path:
     apptainers with the same Go whatever the runner image carries.
     """
     go_arch, sha256 = _GO_TARBALLS[arch]
-    go_root = _build_cache_root() / f"go-{GO_VERSION}-{go_arch}"
+    go_root = build_cache_root() / f"go-{GO_VERSION}-{go_arch}"
     go_bin = go_root / "bin"
     if (go_bin / "go").is_file():
         return go_bin
@@ -536,7 +528,7 @@ def run_apptainer(output_dir: Path) -> None:
 def _seed_apptainer_cache(provisioned_dir: Path, arch: str) -> Path:
     """Unpack the provisioned apptainer for *arch* where the build looks for it."""
     tree = _extract_tree(
-        provisioned_dir / apptainer_archive_name(arch), _build_cache_root()
+        provisioned_dir / apptainer_archive_name(arch), build_cache_root()
     )
     if not fnmatch.fnmatch(tree.name, _apptainer_cache_pattern(arch)):
         raise ReleaseError(

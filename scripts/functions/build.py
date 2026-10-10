@@ -212,6 +212,15 @@ def release_dist_dir(repo_root: Path) -> Path:
     return Path(os.environ.get("PEPPY_DIST_DIR", str(repo_root / "dist")))
 
 
+def build_cache_root() -> Path:
+    """The persistent cache the Rust build scripts share.
+
+    build-helpers' `cache_dir` roots it at `$HOME/.peppy/tmp` whatever
+    PEPPY_HOME says.
+    """
+    return Path.home() / ".peppy" / "tmp"
+
+
 def release_archive_name(target_triple: str) -> str:
     """The file name of the release archive of *target_triple*.
 

@@ -8,7 +8,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from .build import _get_target_dir
+from .build import _get_target_dir, build_cache_root
 from .cli import ReleaseError, console
 
 LIMA_HOME = Path.home() / ".peppy" / "lima-build"
@@ -82,12 +82,7 @@ def find_limactl(repo_root: Path) -> Path:
     `lima-99.0.0-Darwin-arm64` would win over the verified download.
     """
     cached = (
-        Path.home()
-        / ".peppy"
-        / "tmp"
-        / f"lima-{LIMA_VERSION}-Darwin-arm64"
-        / "bin"
-        / "limactl"
+        build_cache_root() / f"lima-{LIMA_VERSION}-Darwin-arm64" / "bin" / "limactl"
     )
     if cached.is_file():
         return cached
@@ -329,13 +324,13 @@ def _prebuilt_peppylib_so_dir() -> Path:
     """Host directory holding the peppylib native bindings the release embeds.
 
     Mirrors the release profile's slot of the generator build script's cache,
-    build-helpers' `cache_dir("peppylib-py")/so/release`, rooted at $HOME exactly
-    as the Rust side resolves it (not the PEPPY_HOME override). The native
-    aarch64-apple-darwin release build populates it. Lima mounts the host home
-    into the guest at the same path, so the in-VM build reads the bindings
-    straight from here via PEPPYLIB_PREBUILT_SO_DIR, with no cargo-cache staging.
+    build-helpers' `cache_dir("peppylib-py")/so/release` under build_cache_root.
+    The native aarch64-apple-darwin release build populates it. Lima mounts the
+    host home into the guest at the same path, so the in-VM build reads the
+    bindings straight from here via PEPPYLIB_PREBUILT_SO_DIR, with no
+    cargo-cache staging.
     """
-    return Path.home() / ".peppy" / "tmp" / "peppylib-py" / "so" / "release"
+    return build_cache_root() / "peppylib-py" / "so" / "release"
 
 
 def require_prebuilt_peppylib_so() -> Path:
