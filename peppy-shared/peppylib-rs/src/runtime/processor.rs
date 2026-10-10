@@ -514,7 +514,6 @@ impl Processor {
     /// `node_runner.processor().sole_bound_producer(<link_id>)`.
     pub fn sole_bound_producer(&self, link_id: &str) -> &crate::messaging::ProducerRef {
         self.scalar_binding(link_id, Cardinality::One)
-            .as_ref()
             .unwrap_or_else(|| {
                 panic!(
                     "consumer slot `{link_id}` is bound to no producer but the generated \
@@ -534,7 +533,6 @@ impl Processor {
     /// splice `node_runner.processor().optional_bound_producer(<link_id>)`.
     pub fn optional_bound_producer(&self, link_id: &str) -> Option<&crate::messaging::ProducerRef> {
         self.scalar_binding(link_id, Cardinality::ZeroOrOne)
-            .as_ref()
     }
 
     /// The producer set bound to a `cardinality: "one_or_more"` consumer slot,
@@ -596,7 +594,7 @@ impl Processor {
         &self,
         link_id: &str,
         accessor: Cardinality,
-    ) -> &Option<crate::messaging::ProducerRef> {
+    ) -> Option<&crate::messaging::ProducerRef> {
         if self.bound_slots.sets.contains_key(link_id) {
             panic!(
                 "consumer slot `{link_id}` holds a producer set, but the generated accessor \
@@ -605,10 +603,10 @@ impl Processor {
                 super::RESYNC_REMEDY
             );
         }
-        match self.bound_slots.scalars.get(link_id) {
-            Some(slot) => &slot.producer,
-            None => undeclared_consumer_slot(link_id),
-        }
+        let Some(slot) = self.bound_slots.scalars.get(link_id) else {
+            undeclared_consumer_slot(link_id)
+        };
+        slot.producer.as_ref()
     }
 
     /// The watch channel for the consumer slot declared at `link_id`, or `None`
