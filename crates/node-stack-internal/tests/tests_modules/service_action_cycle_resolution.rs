@@ -48,82 +48,49 @@ fn new_stack() -> NodeStack {
 }
 
 #[test]
-fn mutual_service_through_contracts_rejected_when_second_node_added() {
-    let stack = new_stack();
-
-    // `a` depends on `contract_b` for a service and implements `contract_b`'s
-    // counterpart `contract_a`. No provider for `contract_b` exists yet, so this adds
-    // cleanly.
-    let a = contract_node(
-        "a",
-        "contract_a",
-        "contract_b",
-        "to_b",
-        r#"services: { consumes: [{ link_id: "to_b", name: "do_b" }] }"#,
-    );
-    stack
-        .push_config(a, false, PathBuf::from("/tmp"))
-        .expect("first node adds with no provider present yet");
-    assert_eq!(stack.len(), 2, "core + a");
-
-    // `b` closes the cycle: it implements `contract_b` (so it provides what `a`
-    // consumes) and consumes a service from `contract_a` (which `a` provides).
-    let b = contract_node(
-        "b",
-        "contract_b",
-        "contract_a",
-        "to_a",
-        r#"services: { consumes: [{ link_id: "to_a", name: "do_a" }] }"#,
-    );
-    let err = stack
-        .push_config(b, false, PathBuf::from("/tmp"))
-        .expect_err("mutual service through contracts must be rejected");
-
-    match err {
-        NodeStackError::ServiceActionContractCycle { kind, .. } => assert_eq!(kind, "service"),
-        other => panic!("expected ServiceActionContractCycle, got {other:?}"),
-    }
-    assert_eq!(stack.len(), 2, "rejected node must not be added");
-    assert!(!stack.contains("b", "v1"));
-}
-
-#[test]
-fn mutual_service_through_contracts_rejected_on_permissive_add() {
+fn mutual_service_through_contracts_is_rejected_for_strict_and_permissive_adds() {
     // `node add` pushes with `allow_missing_dependencies = true`, which skips
     // the dependency check. That must NOT skip the cycle check: a permissive
     // add that closes a service/action cycle has to be rejected just like a
     // strict one.
-    let stack = new_stack();
+    for (add, allow_missing_dependencies) in [("strict add", false), ("permissive add", true)] {
+        let stack = new_stack();
 
-    let a = contract_node(
-        "a",
-        "contract_a",
-        "contract_b",
-        "to_b",
-        r#"services: { consumes: [{ link_id: "to_b", name: "do_b" }] }"#,
-    );
-    stack
-        .push_config(a, true, PathBuf::from("/tmp"))
-        .expect("first node adds permissively with no provider present yet");
-    assert_eq!(stack.len(), 2, "core + a");
+        // `a` depends on `contract_b` for a service and implements `contract_b`'s
+        // counterpart `contract_a`. No provider for `contract_b` exists yet, so this adds
+        // cleanly.
+        let a = contract_node(
+            "a",
+            "contract_a",
+            "contract_b",
+            "to_b",
+            r#"services: { consumes: [{ link_id: "to_b", name: "do_b" }] }"#,
+        );
+        stack
+            .push_config(a, allow_missing_dependencies, PathBuf::from("/tmp"))
+            .unwrap_or_else(|e| {
+                panic!("first node adds with no provider present yet ({add}): {e:?}")
+            });
+        assert_eq!(stack.len(), 2, "core + a ({add})");
 
-    let b = contract_node(
-        "b",
-        "contract_b",
-        "contract_a",
-        "to_a",
-        r#"services: { consumes: [{ link_id: "to_a", name: "do_a" }] }"#,
-    );
-    let err = stack
-        .push_config(b, true, PathBuf::from("/tmp"))
-        .expect_err("a permissive add must still reject a service cycle");
-
-    match err {
-        NodeStackError::ServiceActionContractCycle { kind, .. } => assert_eq!(kind, "service"),
-        other => panic!("expected ServiceActionContractCycle, got {other:?}"),
+        // `b` closes the cycle: it implements `contract_b` (so it provides what `a`
+        // consumes) and consumes a service from `contract_a` (which `a` provides).
+        let b = contract_node(
+            "b",
+            "contract_b",
+            "contract_a",
+            "to_a",
+            r#"services: { consumes: [{ link_id: "to_a", name: "do_a" }] }"#,
+        );
+        match stack.push_config(b, allow_missing_dependencies, PathBuf::from("/tmp")) {
+            Err(NodeStackError::ServiceActionContractCycle { kind, .. }) => {
+                assert_eq!(kind, "service", "{add}")
+            }
+            other => panic!("expected ServiceActionContractCycle ({add}), got {other:?}"),
+        }
+        assert_eq!(stack.len(), 2, "rejected node must not be added ({add})");
+        assert!(!stack.contains("b", "v1"), "{add}");
     }
-    assert_eq!(stack.len(), 2, "rejected node must not be added");
-    assert!(!stack.contains("b", "v1"));
 }
 
 #[test]
