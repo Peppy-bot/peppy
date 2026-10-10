@@ -683,11 +683,7 @@ impl ResponseToken {
     /// `ServiceTimeout` (ACK received but handler didn't reply in time).
     pub async fn respond_ack(&self) -> Result<()> {
         let empty = Payload::from_bytes(bytes::Bytes::new());
-        match self {
-            #[cfg(feature = "zenoh")]
-            ResponseToken::Zenoh(t) => t.respond_with_kind(empty, ServiceReplyKind::Ack).await,
-            ResponseToken::Mock(t) => t.respond_with_kind(empty, ServiceReplyKind::Ack).await,
-        }
+        self.respond_with_kind(empty, ServiceReplyKind::Ack).await
     }
 
     /// Sends the terminal user response (`ServiceReplyKind::Response`).
@@ -697,17 +693,8 @@ impl ResponseToken {
     /// must NOT use [`Self::respond_ack`] because the consumer's poll
     /// loop would otherwise skip the only reply the probe path produces.
     pub async fn respond_response(self, payload: Payload) -> Result<()> {
-        match self {
-            #[cfg(feature = "zenoh")]
-            ResponseToken::Zenoh(t) => {
-                t.respond_with_kind(payload, ServiceReplyKind::Response)
-                    .await
-            }
-            ResponseToken::Mock(t) => {
-                t.respond_with_kind(payload, ServiceReplyKind::Response)
-                    .await
-            }
-        }
+        self.respond_with_kind(payload, ServiceReplyKind::Response)
+            .await
     }
 
     /// Sends a handler-error reply: the reason rides in the payload as
@@ -717,16 +704,17 @@ impl ResponseToken {
     /// token.
     pub async fn respond_handler_error(self, reason: String) -> Result<()> {
         let payload = Payload::from_bytes(bytes::Bytes::from(reason.into_bytes()));
+        self.respond_with_kind(payload, ServiceReplyKind::HandlerError)
+            .await
+    }
+
+    /// Sends one reply of `kind` through the transport that delivered the
+    /// request.
+    async fn respond_with_kind(&self, payload: Payload, kind: ServiceReplyKind) -> Result<()> {
         match self {
             #[cfg(feature = "zenoh")]
-            ResponseToken::Zenoh(t) => {
-                t.respond_with_kind(payload, ServiceReplyKind::HandlerError)
-                    .await
-            }
-            ResponseToken::Mock(t) => {
-                t.respond_with_kind(payload, ServiceReplyKind::HandlerError)
-                    .await
-            }
+            ResponseToken::Zenoh(token) => token.respond_with_kind(payload, kind).await,
+            ResponseToken::Mock(token) => token.respond_with_kind(payload, kind).await,
         }
     }
 }
