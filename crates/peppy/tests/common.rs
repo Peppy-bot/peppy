@@ -276,6 +276,37 @@ pub fn run_cmd_json5(run_cmd: &[impl AsRef<str>]) -> String {
         .join(", ")
 }
 
+/// Writes the smallest manifest a test node runs from: a name, a tag and an
+/// explicit `run_cmd` (so the daemon's build phase is skipped), staged via
+/// [`install_node_manifest`].
+pub fn write_minimal_node_config(
+    nodes_directory: &std::path::Path,
+    node_name: &str,
+    node_tag: &str,
+    git_hash: &str,
+    run_cmd: &[&str],
+) -> std::path::PathBuf {
+    let run_cmd_json5 = run_cmd_json5(run_cmd);
+    install_node_manifest(
+        nodes_directory,
+        node_name,
+        git_hash,
+        &format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{
+                    name: "{node_name}",
+                    tag: "{node_tag}",
+                }},
+                execution: {{
+                    language: "rust",
+                    run_cmd: [{run_cmd_json5}]
+                }}
+            }}"#
+        ),
+    )
+}
+
 /// Writes a minimal peppy.json5 with an explicit `run_cmd` (so the daemon's
 /// build phase is skipped), optional `depends_on` / `implements` manifest
 /// blocks, and an optional top-level `interfaces` block, staged via

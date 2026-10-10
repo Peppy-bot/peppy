@@ -23,8 +23,8 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use super::common::{
     build_count, build_logs_for, built_artifacts_for, counting_build_cmd,
     emulate_cooperative_shutdown, emulate_pairing_node_services, emulate_startup_services,
-    install_node_manifest, read_daemon_git_hash, register_repo_caches, run_cmd_json5, stack_graph,
-    test_node_target, write_node_config_for_helper,
+    install_node_manifest, read_daemon_git_hash, register_repo_caches, stack_graph,
+    test_node_target, write_minimal_node_config, write_node_config_for_helper,
 };
 
 /// The budgets these tests launch and build under: idle windows generous
@@ -51,34 +51,6 @@ fn launcher_args(launcher_config_path: PathBuf, max_timeout_secs: Option<u64>) -
         timeouts: timeouts(max_timeout_secs),
         rebuild: false,
     }
-}
-
-fn write_node_config(
-    nodes_directory: &Path,
-    node_name: &str,
-    node_tag: &str,
-    git_hash: &str,
-    run_cmd: &[&str],
-) -> PathBuf {
-    let run_cmd_json5 = run_cmd_json5(run_cmd);
-    install_node_manifest(
-        nodes_directory,
-        node_name,
-        git_hash,
-        &format!(
-            r#"{{
-                peppy_schema: "node/v1",
-                manifest: {{
-                    name: "{node_name}",
-                    tag: "{node_tag}",
-                }},
-                execution: {{
-                    language: "rust",
-                    run_cmd: [{run_cmd_json5}]
-                }}
-            }}"#
-        ),
-    )
 }
 
 /// Stages a checked-in hub fixture node into a temp nodes directory, ready for
@@ -148,7 +120,7 @@ async fn node_launch_command_succeed() {
     let node_b_name = "launch_succeed_node_b";
     let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let node_a_path = write_node_config(
+    let node_a_path = write_minimal_node_config(
         nodes_dir.path(),
         node_a_name,
         node_tag,
@@ -363,14 +335,14 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
     let node_b_name = "launch_node_b";
     let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let node_a_path = write_node_config(
+    let node_a_path = write_minimal_node_config(
         nodes_dir.path(),
         node_a_name,
         node_tag,
         &git_hash,
         &["sh", "-c", "exit 0"],
     );
-    let node_b_path = write_node_config(
+    let node_b_path = write_minimal_node_config(
         nodes_dir.path(),
         node_b_name,
         node_tag,
@@ -1246,14 +1218,14 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    let camera_path = write_node_config(
+    let camera_path = write_minimal_node_config(
         nodes_dir.path(),
         camera_name,
         node_tag,
         &git_hash,
         &["sh", "-c", "sleep 30"],
     );
-    let lidar_path = write_node_config(
+    let lidar_path = write_minimal_node_config(
         nodes_dir.path(),
         lidar_name,
         node_tag,
@@ -2462,7 +2434,7 @@ async fn stack_launch_rejects_unbound_slot() {
     let link_id = "main_cam";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    let producer_path = write_node_config(
+    let producer_path = write_minimal_node_config(
         nodes_dir.path(),
         producer_name,
         node_tag,
@@ -3847,7 +3819,7 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
     let link_id = "recorder";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    let recorder_path = write_node_config(
+    let recorder_path = write_minimal_node_config(
         nodes_dir.path(),
         recorder_name,
         node_tag,
@@ -3934,7 +3906,7 @@ async fn stack_launch_flattens_a_composed_launcher() {
     let node_tag = "v1";
     let instance_id = "beta_inst";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let node_path = write_node_config(
+    let node_path = write_minimal_node_config(
         nodes_dir.path(),
         node_name,
         node_tag,
@@ -5289,8 +5261,9 @@ async fn stack_build_builds_the_nodes_the_selection_runs() {
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let run_cmd = ["sh", "-c", "exit 0"];
     let alpha_path =
-        write_node_config(nodes_dir.path(), "alpha_backend", "v1", &git_hash, &run_cmd);
-    let beta_path = write_node_config(nodes_dir.path(), "beta_backend", "v1", &git_hash, &run_cmd);
+        write_minimal_node_config(nodes_dir.path(), "alpha_backend", "v1", &git_hash, &run_cmd);
+    let beta_path =
+        write_minimal_node_config(nodes_dir.path(), "beta_backend", "v1", &git_hash, &run_cmd);
     register_repo_caches(
         serve.temp_dir(),
         &[
@@ -5430,7 +5403,7 @@ async fn stack_launch_prints_the_endpoint_blocks_after_the_log_files() {
     let keep_alive: Vec<&str> = keep_alive.iter().map(String::as_str).collect();
 
     let page_node = "launch_page_node";
-    let page_path = write_node_config(
+    let page_path = write_minimal_node_config(
         nodes_dir.path(),
         page_node,
         node_tag,
@@ -5446,7 +5419,8 @@ async fn stack_launch_prints_the_endpoint_blocks_after_the_log_files() {
         )],
     );
     let mcp_node = "launch_mcp_node";
-    let mcp_path = write_node_config(nodes_dir.path(), mcp_node, node_tag, &git_hash, &keep_alive);
+    let mcp_path =
+        write_minimal_node_config(nodes_dir.path(), mcp_node, node_tag, &git_hash, &keep_alive);
     peppy::test_support::declare_endpoints(
         &mcp_path.join(NODE_CONFIG_FILE),
         &[(
