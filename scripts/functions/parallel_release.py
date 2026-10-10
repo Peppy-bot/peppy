@@ -83,6 +83,7 @@ from .github import (
     delete_draft_release,
     find_draft_releases,
     find_published_release,
+    get_release,
     github_api,
     github_repo_slug,
     parse_release_response,
@@ -887,16 +888,13 @@ def _write_release_notes(
     rather than from the plan alone.
     """
     console.print("Fetching release notes...")
-    body_html = fetch_release_body_html(client, release.release_id, slug)
-    release_details = github_api(
+    release_details = get_release(client, release.release_id, slug)
+    body_html = fetch_release_body_html(
         client,
-        "GET",
-        f"{slug.api_url}/releases/{release.release_id}",
+        release.release_id,
+        slug,
+        markdown_body=release_details.get("body") or "",
     )
-    if not isinstance(release_details, dict):
-        raise ReleaseError(
-            "unexpected GitHub API response for the release (expected JSON object)"
-        )
     notes_input = ReleaseNotesInput(
         tag=plan.tag,
         description=plan.content.description,

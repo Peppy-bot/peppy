@@ -463,6 +463,20 @@ def find_draft_releases(
         page += 1
 
 
+def get_release(
+    client: httpx.Client,
+    release_id: int,
+    slug: RepoSlug,
+) -> dict[str, Any]:
+    """Return the JSON of the release with ID *release_id*, draft or not."""
+    release = github_api(client, "GET", f"{slug.api_url}/releases/{release_id}")
+    if not isinstance(release, dict):
+        raise ReleaseError(
+            "unexpected GitHub API response for the release (expected JSON object)"
+        )
+    return release
+
+
 def delete_draft_release(
     client: httpx.Client,
     release_id: int,
@@ -474,15 +488,10 @@ def delete_draft_release(
     GitHub, so the release a failure cleans up may already be live; that one
     is left alone. Returns True when the draft was deleted.
     """
-    url = f"{slug.api_url}/releases/{release_id}"
-    release = github_api(client, "GET", url)
-    if not isinstance(release, dict):
-        raise ReleaseError(
-            "unexpected GitHub API response for the release (expected JSON object)"
-        )
+    release = get_release(client, release_id, slug)
     if release.get("draft") is not True:
         return False
-    github_api(client, "DELETE", url)
+    github_api(client, "DELETE", f"{slug.api_url}/releases/{release_id}")
     return True
 
 

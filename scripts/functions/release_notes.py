@@ -160,28 +160,18 @@ def fetch_release_body_html(
     client: httpx.Client,
     release_id: int,
     slug: RepoSlug,
+    markdown_body: str,
 ) -> str:
     """Fetch the release body as HTML from the GitHub API.
 
-    Makes two API calls:
-    1. GET release details (JSON format) to get the markdown body as fallback
-    2. GET release details (HTML format via Accept header)
-
-    If the HTML body is empty but markdown exists, wraps markdown in <pre><code>.
+    Makes one API call, a GET of the release in its HTML representation. If
+    the HTML body is empty but *markdown_body*, the release body the caller
+    already holds, is not, wraps the escaped markdown in <pre><code>.
     """
-    release_url = f"{slug.api_url}/releases/{release_id}"
-
-    # Get markdown body as fallback
-    details_json = github_api(client, "GET", release_url)
-    markdown_body = ""
-    if isinstance(details_json, dict):
-        markdown_body = details_json.get("body", "") or ""
-
-    # Get HTML body
     details_html = github_api(
         client,
         "GET",
-        release_url,
+        f"{slug.api_url}/releases/{release_id}",
         accept="application/vnd.github.v3.html+json",
     )
     body_html = ""

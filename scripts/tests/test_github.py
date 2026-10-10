@@ -470,6 +470,22 @@ def test_delete_draft_release_leaves_a_published_release(
     assert delete.call_count == 0
 
 
+def test_delete_draft_release_raises_on_an_answer_that_is_not_an_object(
+    mock_api: respx.MockRouter,
+    github_client: httpx.Client,
+) -> None:
+    mock_api.get(f"{API_BASE}/releases/42").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    delete = mock_api.delete(f"{API_BASE}/releases/42").mock(
+        return_value=httpx.Response(204)
+    )
+
+    with pytest.raises(ReleaseError, match=r"for the release \(expected JSON object\)"):
+        delete_draft_release(github_client, 42, SLUG)
+    assert delete.call_count == 0
+
+
 # --- find_draft_releases ---
 
 
