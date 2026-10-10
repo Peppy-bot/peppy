@@ -102,6 +102,14 @@ impl ObserverRecord {
     fn source(&self) -> SourceKey {
         SourceKey::from_producer(&self.pin.producer)
     }
+
+    /// Whether this record observes the `source` instance. Compares the
+    /// address in place instead of building the record's key, because the
+    /// registry scans ask it of every record on every lifecycle event.
+    fn observes(&self, source: &SourceKey) -> bool {
+        self.pin.producer.core_node == source.core_node
+            && self.pin.producer.instance_id == source.instance_id
+    }
 }
 
 /// One observer slot: the instance that declares it and its own link_id. The
@@ -616,7 +624,7 @@ impl ObservationCoordinator {
             .flat_map(|(observer_id, records)| {
                 records
                     .iter()
-                    .filter(|record| &record.source() == source)
+                    .filter(|record| record.observes(source))
                     .map(move |record| SlotKey {
                         observer_instance_id: observer_id.clone(),
                         observer_link_id: record.observer_link_id.clone(),
@@ -682,7 +690,7 @@ impl ObservationCoordinator {
             .by_observer
             .values()
             .flatten()
-            .any(|record| &record.source() == source);
+            .any(|record| record.observes(source));
         if !still_observed {
             registry.source_generation.remove(source);
         }
