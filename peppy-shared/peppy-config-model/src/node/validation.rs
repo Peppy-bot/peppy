@@ -82,20 +82,17 @@ pub fn collect_contract_implementation_edges(
             continue;
         };
         for dep in &depends_on.contracts {
-            let contract_name = dep.name.as_str();
-            let contract_tag = dep.tag.as_str();
-            for provider in configs {
-                if node_implements(provider, contract_name, contract_tag) {
-                    edges.push(ContractImplementationEdge {
-                        consumer_name: consumer.manifest.name.as_str().to_owned(),
-                        consumer_tag: consumer.manifest.tag.clone(),
-                        provider_name: provider.manifest.name.as_str().to_owned(),
-                        provider_tag: provider.manifest.tag.clone(),
-                        contract_name: contract_name.to_owned(),
-                        contract_tag: contract_tag.to_owned(),
-                    });
-                }
-            }
+            let providers = configs
+                .iter()
+                .filter(|provider| node_implements(provider, dep.name.as_str(), &dep.tag));
+            edges.extend(providers.map(|provider| ContractImplementationEdge {
+                consumer_name: consumer.manifest.name.as_str().to_owned(),
+                consumer_tag: consumer.manifest.tag.clone(),
+                provider_name: provider.manifest.name.as_str().to_owned(),
+                provider_tag: provider.manifest.tag.clone(),
+                contract_name: dep.name.as_str().to_owned(),
+                contract_tag: dep.tag.clone(),
+            }));
         }
     }
     edges
