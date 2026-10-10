@@ -270,6 +270,8 @@ mod tests {
         assert_eq!(RepoSourceKind::parse("bogus"), None);
         assert_eq!(RepoSourceKind::parse(""), None);
         assert_eq!(RepoSourceKind::parse("Fs"), None);
+        assert_eq!(RepoSourceKind::parse("ftp"), None);
+        assert_eq!(RepoSourceKind::parse("FS"), None);
     }
 
     #[test]

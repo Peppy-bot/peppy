@@ -364,22 +364,6 @@ mod tests {
     }
 
     #[test]
-    fn repo_source_kind_as_str_parse_round_trip() {
-        for kind in [RepoSourceKind::Fs, RepoSourceKind::Git] {
-            assert_eq!(RepoSourceKind::parse(kind.as_str()), Some(kind));
-        }
-        assert_eq!(RepoSourceKind::Fs.as_str(), "fs");
-        assert_eq!(RepoSourceKind::Git.as_str(), "git");
-    }
-
-    #[test]
-    fn repo_source_kind_parse_rejects_unknown() {
-        assert_eq!(RepoSourceKind::parse("ftp"), None);
-        assert_eq!(RepoSourceKind::parse(""), None);
-        assert_eq!(RepoSourceKind::parse("FS"), None);
-    }
-
-    #[test]
     fn list_response_decode_rejects_unknown_source_type() {
         // A peer that puts an unrecognized source type on the wire is rejected.
         let mut builder = Builder::new_default();
