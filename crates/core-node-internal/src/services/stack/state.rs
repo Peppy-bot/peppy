@@ -166,7 +166,7 @@ pub(super) fn copy_in_start_order(
         .flat_map(|key| {
             planned
                 .iter()
-                .filter(move |item| key == &NodeKey::new(&item.node_name, &item.node_tag))
+                .filter(move |item| item.node_name == key.name && item.node_tag == key.tag)
         })
         .flat_map(|item| &item.deployment.instances)
         .filter_map(|instance| {
