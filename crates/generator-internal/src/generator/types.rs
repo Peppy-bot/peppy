@@ -353,33 +353,7 @@ impl DependencyContext {
             ],
         }
     }
-}
 
-/// The sentence a subscription's doc carries on a set slot, whose members a
-/// join grows and a removal shrinks; a scalar slot's subscription has none.
-pub fn follows_the_set_doc(cardinality: Cardinality) -> Option<&'static str> {
-    (!cardinality.is_scalar())
-        .then_some("The subscription follows the set as a join grows it or a removal shrinks it.")
-}
-
-/// The sentence a topic's generated publisher and subscription docs carry
-/// when the topic retains; a live-only topic's docs have none.
-pub fn retention_doc(retention: TopicRetention) -> Option<String> {
-    let TopicRetention::Latest { depth } = retention else {
-        return None;
-    };
-    Some(match depth.get() {
-        1 => "The topic retains its newest message: a subscription that starts later also \
-              receives it."
-            .to_string(),
-        depth => format!(
-            "The topic retains its newest {depth} messages: a subscription that starts later \
-             also receives them."
-        ),
-    })
-}
-
-impl DependencyContext {
     /// Pre-wrapped doc lines for the `bound_members()` accessor a set slot
     /// carries beside `bound_producers()`: the same set, each member with the
     /// copy its instance belongs to. `None` for a scalar slot, whose one
@@ -407,6 +381,30 @@ impl DependencyContext {
             ]),
         }
     }
+}
+
+/// The sentence a subscription's doc carries on a set slot, whose members a
+/// join grows and a removal shrinks; a scalar slot's subscription has none.
+pub fn follows_the_set_doc(cardinality: Cardinality) -> Option<&'static str> {
+    (!cardinality.is_scalar())
+        .then_some("The subscription follows the set as a join grows it or a removal shrinks it.")
+}
+
+/// The sentence a topic's generated publisher and subscription docs carry
+/// when the topic retains; a live-only topic's docs have none.
+pub fn retention_doc(retention: TopicRetention) -> Option<String> {
+    let TopicRetention::Latest { depth } = retention else {
+        return None;
+    };
+    Some(match depth.get() {
+        1 => "The topic retains its newest message: a subscription that starts later also \
+              receives it."
+            .to_string(),
+        depth => format!(
+            "The topic retains its newest {depth} messages: a subscription that starts later \
+             also receives them."
+        ),
+    })
 }
 
 /// Pre-wrapped doc lines for an observer module's source accessor, the
@@ -1081,6 +1079,128 @@ fn validate_sibling_type_name_collisions(
     Ok(())
 }
 
+/// One generated Cap'n Proto schema file, keyed by its file stem.
+///
+/// `source` is the schema text exactly as the message-format mapper rendered
+/// it (root struct still named `Message`); `schema` is what gets written to
+/// disk, with the root struct renamed to the generator's chosen identity.
+/// The unsubstituted `source` is what `register_schema` compares when a
+/// second registration lands on the same file stem: identical text is the
+/// consumer and the mock of one slot sharing a file, anything else is a
+/// naming collision that must fail loudly.
+#[derive(Clone)]
+pub struct CapnpSchema {
+    schema_key: String,
+    file_stem: String,
+    struct_module: String,
+    source: String,
+    schema: String,
+}
+
+impl CapnpSchema {
+    pub fn new(
+        schema_key: String,
+        file_stem: String,
+        struct_module: String,
+        source: String,
+        schema: String,
+    ) -> Self {
+        Self {
+            schema_key,
+            file_stem,
+            struct_module,
+            source,
+            schema,
+        }
+    }
+
+    /// The raw schema key the first registration used for this file.
+    pub fn schema_key(&self) -> &str {
+        &self.schema_key
+    }
+
+    pub fn file_stem(&self) -> &str {
+        &self.file_stem
+    }
+
+    pub fn struct_module(&self) -> &str {
+        &self.struct_module
+    }
+
+    /// The mapper's schema text before the root-struct rename.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// The schema text written to disk.
+    pub fn schema(&self) -> &str {
+        &self.schema
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ModuleCategory {
+    EmittedTopics,
+    ConsumedTopics,
+    ExposedServices,
+    ConsumedServices,
+    ExposedActions,
+    ConsumedActions,
+    /// Both directions of every pairing slot: `paired_topics/<link_id>/<topic>`.
+    PairedTopics,
+    /// Test-only per-link mocks: `mock/{deps,pairings,observed}/<link_id>`.
+    /// Compilation is gated behind the peppygen `testing` cargo feature.
+    Mock,
+    /// Test-only harness + own-surface observation clients:
+    /// `fixtures/{harness,emitted_topics,exposed_services,exposed_actions}`.
+    /// Compilation is gated behind the peppygen `testing` cargo feature.
+    Fixtures,
+}
+
+impl ModuleCategory {
+    pub const ALL: [Self; 9] = [
+        Self::EmittedTopics,
+        Self::ConsumedTopics,
+        Self::ExposedServices,
+        Self::ConsumedServices,
+        Self::ExposedActions,
+        Self::ConsumedActions,
+        Self::PairedTopics,
+        Self::Mock,
+        Self::Fixtures,
+    ];
+
+    pub fn from_kind(kind: InterfaceKind) -> Self {
+        match kind {
+            InterfaceKind::EmittedTopic => Self::EmittedTopics,
+            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
+            InterfaceKind::ExposedService => Self::ExposedServices,
+            InterfaceKind::ConsumedService => Self::ConsumedServices,
+            InterfaceKind::ExposedAction => Self::ExposedActions,
+            InterfaceKind::ConsumedAction => Self::ConsumedActions,
+            InterfaceKind::PeerEmittedTopic
+            | InterfaceKind::PeerConsumedTopic
+            | InterfaceKind::ObservedTopic => Self::PairedTopics,
+            InterfaceKind::Mock => Self::Mock,
+            InterfaceKind::Fixture => Self::Fixtures,
+        }
+    }
+
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            Self::EmittedTopics => "emitted_topics",
+            Self::ConsumedTopics => "consumed_topics",
+            Self::ExposedServices => "exposed_services",
+            Self::ConsumedServices => "consumed_services",
+            Self::ExposedActions => "exposed_actions",
+            Self::ConsumedActions => "consumed_actions",
+            Self::PairedTopics => "paired_topics",
+            Self::Mock => "mock",
+            Self::Fixtures => "fixtures",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1375,127 +1495,5 @@ mod tests {
         assert_eq!(type_name, "MessageOuterFramesItem");
         assert_eq!(first_field, "frames");
         assert_eq!(second_field, "frames_item");
-    }
-}
-
-/// One generated Cap'n Proto schema file, keyed by its file stem.
-///
-/// `source` is the schema text exactly as the message-format mapper rendered
-/// it (root struct still named `Message`); `schema` is what gets written to
-/// disk, with the root struct renamed to the generator's chosen identity.
-/// The unsubstituted `source` is what `register_schema` compares when a
-/// second registration lands on the same file stem: identical text is the
-/// consumer and the mock of one slot sharing a file, anything else is a
-/// naming collision that must fail loudly.
-#[derive(Clone)]
-pub struct CapnpSchema {
-    schema_key: String,
-    file_stem: String,
-    struct_module: String,
-    source: String,
-    schema: String,
-}
-
-impl CapnpSchema {
-    pub fn new(
-        schema_key: String,
-        file_stem: String,
-        struct_module: String,
-        source: String,
-        schema: String,
-    ) -> Self {
-        Self {
-            schema_key,
-            file_stem,
-            struct_module,
-            source,
-            schema,
-        }
-    }
-
-    /// The raw schema key the first registration used for this file.
-    pub fn schema_key(&self) -> &str {
-        &self.schema_key
-    }
-
-    pub fn file_stem(&self) -> &str {
-        &self.file_stem
-    }
-
-    pub fn struct_module(&self) -> &str {
-        &self.struct_module
-    }
-
-    /// The mapper's schema text before the root-struct rename.
-    pub fn source(&self) -> &str {
-        &self.source
-    }
-
-    /// The schema text written to disk.
-    pub fn schema(&self) -> &str {
-        &self.schema
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum ModuleCategory {
-    EmittedTopics,
-    ConsumedTopics,
-    ExposedServices,
-    ConsumedServices,
-    ExposedActions,
-    ConsumedActions,
-    /// Both directions of every pairing slot: `paired_topics/<link_id>/<topic>`.
-    PairedTopics,
-    /// Test-only per-link mocks: `mock/{deps,pairings,observed}/<link_id>`.
-    /// Compilation is gated behind the peppygen `testing` cargo feature.
-    Mock,
-    /// Test-only harness + own-surface observation clients:
-    /// `fixtures/{harness,emitted_topics,exposed_services,exposed_actions}`.
-    /// Compilation is gated behind the peppygen `testing` cargo feature.
-    Fixtures,
-}
-
-impl ModuleCategory {
-    pub const ALL: [Self; 9] = [
-        Self::EmittedTopics,
-        Self::ConsumedTopics,
-        Self::ExposedServices,
-        Self::ConsumedServices,
-        Self::ExposedActions,
-        Self::ConsumedActions,
-        Self::PairedTopics,
-        Self::Mock,
-        Self::Fixtures,
-    ];
-
-    pub fn from_kind(kind: InterfaceKind) -> Self {
-        match kind {
-            InterfaceKind::EmittedTopic => Self::EmittedTopics,
-            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
-            InterfaceKind::ExposedService => Self::ExposedServices,
-            InterfaceKind::ConsumedService => Self::ConsumedServices,
-            InterfaceKind::ExposedAction => Self::ExposedActions,
-            InterfaceKind::ConsumedAction => Self::ConsumedActions,
-            InterfaceKind::PeerEmittedTopic
-            | InterfaceKind::PeerConsumedTopic
-            | InterfaceKind::ObservedTopic => Self::PairedTopics,
-            InterfaceKind::Mock => Self::Mock,
-            InterfaceKind::Fixture => Self::Fixtures,
-        }
-    }
-
-    pub fn dir_name(self) -> &'static str {
-        match self {
-            Self::EmittedTopics => "emitted_topics",
-            Self::ConsumedTopics => "consumed_topics",
-            Self::ExposedServices => "exposed_services",
-            Self::ConsumedServices => "consumed_services",
-            Self::ExposedActions => "exposed_actions",
-            Self::ConsumedActions => "consumed_actions",
-            Self::PairedTopics => "paired_topics",
-            Self::Mock => "mock",
-            Self::Fixtures => "fixtures",
-        }
     }
 }
