@@ -33,7 +33,7 @@ use tracing::{debug, warn};
 pub(crate) trait SlotUpdate: Sized {
     /// The per-slot watch payload this update replaces. Compared whole, so a
     /// repeat of a sequence is checked against what the slot already holds.
-    type State: Clone + PartialEq + Send + Sync + 'static;
+    type State: PartialEq + Send + Sync + 'static;
 
     /// Wire service name, also used in the daemon-only rejection message.
     const SERVICE: &'static str;
