@@ -332,19 +332,21 @@ fn validate_execution(execution: &Execution) -> Result<()> {
         _ => {}
     }
 
+    let Some(container) = &execution.container else {
+        return Ok(());
+    };
+
     // Validate container mount paths (reject top-level system directories).
-    if let Some(container) = &execution.container
-        && let Err((path, blocked_list)) = container.validate()
-    {
-        return Err(ParsingError::InvalidMountPath(path, blocked_list).into());
-    }
+    container
+        .validate()
+        .map_err(|(path, blocked_list)| ParsingError::InvalidMountPath(path, blocked_list))?;
 
     // Validate ${parameters:...} references in mount paths.
-    if let Some(container) = &execution.container
-        && let Err((ref_path, reason)) = container.validate_parameter_refs(&execution.parameters)
-    {
-        return Err(ParsingError::InvalidMountPathParameterRef(ref_path, reason).into());
-    }
+    container
+        .validate_parameter_refs(&execution.parameters)
+        .map_err(|(ref_path, reason)| {
+            ParsingError::InvalidMountPathParameterRef(ref_path, reason)
+        })?;
 
     Ok(())
 }
