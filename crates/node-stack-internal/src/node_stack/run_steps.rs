@@ -4,11 +4,8 @@
 //! [`super::entity::NodeEntity::prepare_and_spawn`] and
 //! [`super::entity::NodeEntity::commit_started`].
 
-use parking_lot::Mutex as StdMutex;
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
@@ -20,6 +17,7 @@ use tracing::{debug, warn};
 
 use crate::action_log::{ActionLog, Announcer, STDERR_TAIL_HEADER};
 use crate::archive::extract_tar_zst;
+use crate::build_io::StderrTail;
 
 /// Per-process counter used to name temporary runtime config files uniquely.
 ///
@@ -619,7 +617,7 @@ pub(super) async fn kill_and_collect_error(
     mut child: Child,
     instance_id_str: &str,
     error: &str,
-    stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
+    stderr_buffer: StderrTail,
     output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
 ) -> String {
     if let Err(kill_err) = child.kill().await {
@@ -637,12 +635,7 @@ pub(super) async fn kill_and_collect_error(
         let _ = handle.await;
     }
 
-    let stderr_output = stderr_buffer
-        .lock()
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n");
+    let stderr_output = stderr_buffer.lines().join("\n");
 
     if !stderr_output.is_empty() {
         debug!(

@@ -1,5 +1,4 @@
-use parking_lot::{Mutex as StdMutex, RwLock};
-use std::collections::VecDeque;
+use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -20,7 +19,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::action_log::Announcer;
-use crate::build_io::{OutputReaderHooks, spawn_output_reader_async};
+use crate::build_io::{OutputReaderHooks, StderrTail, spawn_output_reader_async};
 use crate::error::{Error, Result};
 
 use super::build_artifact_cache::{ArtifactKind, prune_siblings, resolve_slot, reuse_line};
@@ -333,7 +332,7 @@ pub struct OutputSinks {
 pub struct StartedInstanceCtx {
     pub(crate) instance_dir: PathBuf,
     pub(crate) runtime_config_path: PathBuf,
-    pub(crate) stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
+    pub(crate) stderr_buffer: StderrTail,
     pub(crate) output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
     /// Snapshot of the entity's `generation` taken at `prepare_and_spawn`
     /// time. `commit_started`/`abort_started` compare this against the
@@ -1079,9 +1078,7 @@ impl NodeEntity {
         })?;
 
         // ---- Phase 4: wire output streaming ----
-        let stderr_buffer = Arc::new(StdMutex::new(VecDeque::with_capacity(
-            crate::build_io::STDERR_TAIL_LINES,
-        )));
+        let stderr_buffer = StderrTail::new();
         let mut output_reader_handles = Vec::new();
 
         let sinks = &ctx.output_sinks;
@@ -1108,7 +1105,7 @@ impl NodeEntity {
                 Arc::clone(&sinks.publish_enabled),
                 Arc::clone(&sinks.hooks),
                 Iostream::Stderr,
-                Some(Arc::clone(&stderr_buffer)),
+                Some(stderr_buffer.clone()),
                 sinks.announcer.log().clone(),
             ));
         }
@@ -1862,7 +1859,7 @@ mod tests {
                 StartedInstanceCtx {
                     instance_dir: instance_dir.clone(),
                     runtime_config_path: instance_dir.join("peppy_runtime.json5"),
-                    stderr_buffer: Arc::new(StdMutex::new(VecDeque::new())),
+                    stderr_buffer: StderrTail::new(),
                     output_reader_handles: Vec::new(),
                     generation,
                 },

@@ -1,7 +1,7 @@
 //! I/O primitives for streaming child-process output to a feedback channel and
 //! a log file.
 //!
-//! [`spawn_output_reader_async`] reads raw bytes from a
+//! `spawn_output_reader_async` reads raw bytes from a
 //! `tokio::process::ChildStdout`/`ChildStderr` and splits them into lines on
 //! `\n`, `\r`, and `\r\n` (see [`LineSplitter`]), so TTY-style `\r` progress
 //! repaints surface as feedback instead of accumulating silently inside one
@@ -17,7 +17,7 @@
 use crate::action_log::ActionLog;
 use containers::BuildActivity;
 use log_export::Iostream;
-use parking_lot::Mutex as StdMutex;
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -114,7 +114,7 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Hooks called by [`spawn_output_reader_async`] at meaningful moments in the
+/// Hooks called by `spawn_output_reader_async` at meaningful moments in the
 /// reader loop. This trait exists so `node-stack-internal` does not have to
 /// know about the daemon's `FeedbackSync` drain primitive: the daemon
 /// implements `OutputReaderHooks` for its `FeedbackSync` and threads it through
@@ -157,14 +157,31 @@ pub trait OutputReaderHooks: Send + Sync {
     fn on_reader_exit(&self, _was_idle: bool) {}
 }
 
-/// Pushes a line into a bounded ring buffer of stderr output.
-/// When the buffer is full, the oldest line is dropped.
-pub fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
-    let mut guard = buffer.lock();
-    if guard.len() == STDERR_TAIL_LINES {
-        guard.pop_front();
+/// The last [`STDERR_TAIL_LINES`] lines a child printed on stderr, which the
+/// error of a failed build or start quotes. Clones share one buffer.
+#[derive(Clone, Debug)]
+pub(crate) struct StderrTail(Arc<Mutex<VecDeque<String>>>);
+
+impl StderrTail {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(Mutex::new(VecDeque::with_capacity(
+            STDERR_TAIL_LINES,
+        ))))
     }
-    guard.push_back(line.to_string());
+
+    /// Appends `line`. When the tail is full, the oldest line is dropped.
+    fn push(&self, line: &str) {
+        let mut lines = self.0.lock();
+        if lines.len() == STDERR_TAIL_LINES {
+            lines.pop_front();
+        }
+        lines.push_back(line.to_string());
+    }
+
+    /// The lines of the tail, oldest first.
+    pub(crate) fn lines(&self) -> Vec<String> {
+        self.0.lock().iter().cloned().collect()
+    }
 }
 
 pub use process_wrap::tokio::ChildWrapper;
@@ -212,13 +229,7 @@ pub async fn stream_child_output(
     collect_stderr_tail: bool,
     cancel_token: &CancellationToken,
 ) -> std::result::Result<(std::process::ExitStatus, Vec<String>), String> {
-    let stderr_tail: Option<Arc<StdMutex<VecDeque<String>>>> = if collect_stderr_tail {
-        Some(Arc::new(StdMutex::new(VecDeque::with_capacity(
-            STDERR_TAIL_LINES,
-        ))))
-    } else {
-        None
-    };
+    let stderr_tail = collect_stderr_tail.then(StderrTail::new);
 
     let mut reader_handles = Vec::new();
 
@@ -317,10 +328,7 @@ pub async fn stream_child_output(
         return Err(err);
     }
 
-    let tail_lines = match stderr_tail {
-        Some(ref tail) => tail.lock().iter().cloned().collect::<Vec<_>>(),
-        None => Vec::new(),
-    };
+    let tail_lines = stderr_tail.map(|tail| tail.lines()).unwrap_or_default();
 
     Ok((status, tail_lines))
 }
@@ -460,13 +468,13 @@ impl RepaintCoalescer {
 /// continues running past the return of `prepare_and_spawn`/`commit_started`
 /// for as long as the spawned node is alive, which is the desired behavior so
 /// the daemon keeps streaming the running node's stdout/stderr.
-pub fn spawn_output_reader_async<R>(
+pub(crate) fn spawn_output_reader_async<R>(
     mut reader: R,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     publish_enabled: Arc<AtomicBool>,
     hooks: Arc<dyn OutputReaderHooks>,
     stream: Iostream,
-    stderr_buffer: Option<Arc<StdMutex<VecDeque<String>>>>,
+    stderr_buffer: Option<StderrTail>,
     log: ActionLog,
 ) -> JoinHandle<std::io::Result<()>>
 where
@@ -505,7 +513,7 @@ where
                 && terminator != LineTerminator::CarriageReturn
                 && let Some(buffer) = &stderr_buffer
             {
-                push_stderr_line(buffer, &line);
+                buffer.push(&line);
             }
 
             if !publish_enabled.load(Ordering::Acquire) {
@@ -696,7 +704,7 @@ mod tests {
     /// Hooks that keep every line [`OutputReaderHooks::on_line`] receives.
     #[derive(Default)]
     struct LineRecordingHooks {
-        lines: StdMutex<Vec<String>>,
+        lines: Mutex<Vec<String>>,
     }
 
     impl OutputReaderHooks for LineRecordingHooks {
@@ -779,7 +787,7 @@ mod tests {
     /// feedback channel and the stderr tail it collected.
     async fn read_stderr(input: &[u8]) -> (Vec<String>, Vec<String>) {
         let log = scratch_log();
-        let tail = Arc::new(StdMutex::new(VecDeque::new()));
+        let tail = StderrTail::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
             std::io::Cursor::new(input.to_vec()),
@@ -787,7 +795,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             Arc::new(LineRecordingHooks::default()) as Arc<dyn OutputReaderHooks>,
             Iostream::Stderr,
-            Some(Arc::clone(&tail)),
+            Some(tail.clone()),
             log,
         );
         handle
@@ -798,8 +806,7 @@ mod tests {
         while let Ok(line) = rx.try_recv() {
             forwarded.push(line.line);
         }
-        let tail = tail.lock().iter().cloned().collect();
-        (forwarded, tail)
+        (forwarded, tail.lines())
     }
 
     /// The stderr tail explains a failure, so the progress bar cargo repaints
