@@ -1830,6 +1830,89 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     );
 }
 
+/// A node that spawns and then exits before its ready signal is torn down by
+/// the daemon, and the run log is where an operator reads why: the node's own
+/// output alone does not say that the daemon gave up on it, or what to do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_run_logs_why_a_node_that_exits_before_ready_never_started() {
+    const TARGET_NODE_NAME: &str = "early_exit_node";
+    const TARGET_NODE_TAG: &str = "v1";
+    const TARGET_INSTANCE_ID: &str = "early_exit_instance";
+    const EXIT_REASON: &str = "node process exited during startup";
+
+    let started = start_core_node_with_mock_messenger().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["sh", "-c", "exit 3"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let start_response = send_node_run_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        common::default_instance_plan(TARGET_INSTANCE_ID),
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(20),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete");
+
+    assert!(
+        !start_response.result.success,
+        "node_run should fail because the node exits before it is ready"
+    );
+    let error_msg = start_response
+        .result
+        .error_message
+        .as_ref()
+        .expect("error_message should be present");
+    assert!(
+        error_msg.contains(EXIT_REASON),
+        "error should say the node exited during startup, got: {error_msg}"
+    );
+
+    let log_path = &start_response.goal_response.log_path;
+    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
+    assert!(
+        log_content
+            .lines()
+            .any(|line| line.contains("[error]") && line.contains(EXIT_REASON)),
+        "log file should contain the daemon's reason as an [error] entry, got:
+{log_content}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     const TARGET_NODE_NAME: &str = "health_monitor_node";

@@ -1394,6 +1394,7 @@ async fn process_node_run(
             &instance_id,
         )
         .await;
+        ctx.announcer.log().error(&msg);
         feedback_sync
             .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
             .await;
@@ -1479,6 +1480,7 @@ async fn process_node_run(
                     &instance_id,
                 )
                 .await;
+                ctx.announcer.log().error(&msg);
                 feedback_sync
                     .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
                     .await;
