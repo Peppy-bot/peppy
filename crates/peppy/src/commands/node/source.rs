@@ -328,8 +328,8 @@ mod tests {
 
     #[test]
     fn rejects_ref_for_local_source() {
-        // Note: This test will fail to canonicalize the path since it doesn't exist,
-        // but it still validates that --ref is rejected for local sources
+        // The path does not exist: the refusal of `--ref` comes before the
+        // path is resolved.
         let err = parse_node_source("some/local/path", Some("v0.1.0".to_string()))
             .expect_err("should reject --ref for local sources");
 
