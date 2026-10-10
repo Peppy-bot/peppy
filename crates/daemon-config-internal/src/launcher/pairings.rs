@@ -374,42 +374,36 @@ fn resolve_pair_declaration(
         !d.cardinality.is_scalar() || peers_of(&slot, claims, already_paired).next().is_none()
     };
 
-    let resolved_peer_link = if let Some(peer_link) = requested_peer_link {
+    let resolved_peer_link = match requested_peer_link {
         // Explicit disambiguation: the named slot must exist and be
         // complementary; claimed-ness is reported precisely below.
-        match complementary.iter().find(|d| d.link_id == peer_link) {
-            Some(dep) => dep.link_id.clone(),
-            None => return Err(not_complementary()),
+        Some(peer_link) => {
+            let Some(dep) = complementary.iter().find(|d| d.link_id == peer_link) else {
+                return Err(not_complementary());
+            };
+            dep.link_id.clone()
         }
-    } else {
         // No explicit slot: exactly one OPEN complementary slot must remain
         // (in-plan claim tracking).
-        let available: Vec<&&PairingParticipantDependency> =
-            complementary.iter().filter(|d| open(d)).collect();
-        match available.as_slice() {
-            [] => {
-                // Distinguish "the target has no such slot at all" from
-                // "its complementary slot(s) are taken". A slot taken by
-                // another declaration in THIS plan is a disagreement
-                // between declarations (PairingConflict); one taken in
-                // the running stack is plain exclusivity.
-                let taken_in_plan = complementary.iter().find_map(|d| {
-                    let slot = (target_instance.to_string(), d.link_id.clone());
-                    claims
-                        .get(&slot)
-                        .and_then(|peers| peers.first())
-                        .map(|peer| (d.link_id.clone(), peer.clone()))
-                });
-                let taken_running = complementary.iter().find_map(|d| {
-                    let slot = (target_instance.to_string(), d.link_id.clone());
-                    already_paired
-                        .get(&slot)
-                        .and_then(|peers| peers.first())
-                        .map(|(inst, link)| (d.link_id.clone(), peer_label(inst, link)))
-                });
-                return Err(
+        None => {
+            let available: Vec<&&PairingParticipantDependency> =
+                complementary.iter().filter(|d| open(d)).collect();
+            match available.as_slice() {
+                [] => {
+                    // Distinguish "the target has no such slot at all" from
+                    // "its complementary slot(s) are taken". A slot taken by
+                    // another declaration in THIS plan is a disagreement
+                    // between declarations (PairingConflict); one taken in
+                    // the running stack is plain exclusivity.
+                    let taken_in_plan = complementary.iter().find_map(|d| {
+                        let slot = (target_instance.to_string(), d.link_id.clone());
+                        claims
+                            .get(&slot)
+                            .and_then(|peers| peers.first())
+                            .map(|peer| (d.link_id.clone(), peer.clone()))
+                    });
                     if let Some((taken_link, (peer_inst, peer_link))) = taken_in_plan {
-                        ParsingError::PairingConflict(Box::new(PairingConflict {
+                        return Err(ParsingError::PairingConflict(Box::new(PairingConflict {
                             instance_a: target_instance.to_string(),
                             link_a: taken_link,
                             // Same `<instance>/<link_id>` notation as the raw
@@ -419,27 +413,39 @@ fn resolve_pair_declaration(
                             instance_b: owner_id.to_string(),
                             link_b: key.to_string(),
                             target_b: target.to_string(),
-                        }))
-                    } else if let Some((taken_link, peer_label)) = taken_running {
-                        slot_taken(target_instance.to_string(), taken_link, peer_label)
-                    } else {
-                        not_complementary()
-                    },
-                );
-            }
-            [single] => single.link_id.clone(),
-            multiple => {
-                let candidates: Vec<&str> = multiple.iter().map(|d| d.link_id.as_str()).collect();
-                return Err(ParsingError::PairingTargetAmbiguous(Box::new(
-                    PairingTargetAmbiguous {
-                        owner_instance_id: owner_id.to_string(),
-                        key: key.to_string(),
-                        target_instance_id: target_instance.to_string(),
-                        pairing_name: own_dep.name.as_str().to_string(),
-                        pairing_tag: own_dep.tag.clone(),
-                        candidate_link_ids: candidates.join(", "),
-                    },
-                )));
+                        })));
+                    }
+                    let taken_running = complementary.iter().find_map(|d| {
+                        let slot = (target_instance.to_string(), d.link_id.clone());
+                        already_paired
+                            .get(&slot)
+                            .and_then(|peers| peers.first())
+                            .map(|(inst, link)| (d.link_id.clone(), peer_label(inst, link)))
+                    });
+                    if let Some((taken_link, existing_peer)) = taken_running {
+                        return Err(slot_taken(
+                            target_instance.to_string(),
+                            taken_link,
+                            existing_peer,
+                        ));
+                    }
+                    return Err(not_complementary());
+                }
+                [single] => single.link_id.clone(),
+                multiple => {
+                    let candidates: Vec<&str> =
+                        multiple.iter().map(|d| d.link_id.as_str()).collect();
+                    return Err(ParsingError::PairingTargetAmbiguous(Box::new(
+                        PairingTargetAmbiguous {
+                            owner_instance_id: owner_id.to_string(),
+                            key: key.to_string(),
+                            target_instance_id: target_instance.to_string(),
+                            pairing_name: own_dep.name.as_str().to_string(),
+                            pairing_tag: own_dep.tag.clone(),
+                            candidate_link_ids: candidates.join(", "),
+                        },
+                    )));
+                }
             }
         }
     };
@@ -937,34 +943,44 @@ mod tests {
     #[test]
     fn already_paired_running_slot_is_exclusive() {
         // arm_1 is running and its slot is already paired (e.g. to a live
-        // controller); a new controller naming it explicitly must be told.
+        // controller). A new controller that names the slot explicitly, or
+        // names only the instance whose one complementary slot is taken, is
+        // told which pair holds the slot.
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_pairing_deps = arm_deps();
-        let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_2", links: { arm: "arm_1/controller" } }]"#);
         let ctrl_pairing_deps = controller_deps();
-        let items = vec![
-            preexisting("robot_arm", &arm_instances, &arm_pairing_deps),
-            item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
-        ];
         let already: AlreadyPairedSlots = [(
             ("arm_1".to_string(), "controller".to_string()),
             vec![("ctrl_1".to_string(), "arm".to_string())],
         )]
         .into_iter()
         .collect();
-        let out = validate(&items, &already);
-        let info = out
-            .errors
-            .iter()
-            .find_map(|e| match e {
-                ParsingError::PairingSlotAlreadyPaired(info) => Some(info),
-                _ => None,
-            })
-            .expect("expected PairingSlotAlreadyPaired");
-        assert_eq!(info.instance_id, "arm_1");
-        assert_eq!(info.link_id, "controller");
-        assert_eq!(info.existing_peer, "ctrl_1:arm");
+        for target in ["arm_1/controller", "arm_1"] {
+            let ctrl_instances = parse_instances(&format!(
+                r#"[{{ instance_id: "ctrl_2", links: {{ arm: "{target}" }} }}]"#
+            ));
+            let items = vec![
+                preexisting("robot_arm", &arm_instances, &arm_pairing_deps),
+                item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
+            ];
+            let out = validate(&items, &already);
+            assert!(
+                out.planned.is_empty(),
+                "{target}: planned: {:?}",
+                out.planned
+            );
+            let info = out
+                .errors
+                .iter()
+                .find_map(|e| match e {
+                    ParsingError::PairingSlotAlreadyPaired(info) => Some(info),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{target}: expected PairingSlotAlreadyPaired"));
+            assert_eq!(info.instance_id, "arm_1", "{target}");
+            assert_eq!(info.link_id, "controller", "{target}");
+            assert_eq!(info.existing_peer, "ctrl_1:arm", "{target}");
+        }
     }
 
     /// A required slot's uncovered message offers a peer and the manifest key
