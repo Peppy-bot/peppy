@@ -582,33 +582,25 @@ async fn run_uv_cache_prune_child(
 /// `build_cmd` so that variable references in multi-element commands work even
 /// though the command is executed directly (not through a shell).
 pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String {
-    // Single-pass scanner: walk the string looking for `${...}`, resolve each
-    // match against `env_vars`, and leave unknown references untouched. The
-    // previous implementation did a linear `contains` + `replace` per env var,
-    // which reallocated the whole string for every match and scaled with
-    // O(len(s) * len(env_vars)) even when nothing needed expanding.
-    let bytes = s.as_bytes();
+    // Single pass: each `${NAME}` is resolved against `env_vars`, and an
+    // unknown reference is left untouched. A `${` with no `}` after it has no
+    // later reference either, so it and the rest stay as they are.
     let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'$'
-            && i + 1 < bytes.len()
-            && bytes[i + 1] == b'{'
-            && let Some(end_rel) = s[i + 2..].find('}')
-        {
-            let end = i + 2 + end_rel;
-            let key = &s[i + 2..end];
-            if let Some((_, value)) = env_vars.iter().find(|(k, _)| k == key) {
-                out.push_str(value);
-            } else {
-                out.push_str(&s[i..end + 1]);
-            }
-            i = end + 1;
-            continue;
+    let mut rest = s;
+    while let Some(start) = rest.find("${") {
+        let after_open = &rest[start + 2..];
+        let Some(name_len) = after_open.find('}') else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        let name = &after_open[..name_len];
+        match env_vars.iter().find(|(key, _)| key == name) {
+            Some((_, value)) => out.push_str(value),
+            None => out.push_str(&rest[start..start + 2 + name_len + 1]),
         }
-        out.push(s[i..].chars().next().unwrap());
-        i += s[i..].chars().next().unwrap().len_utf8();
+        rest = &after_open[name_len + 1..];
     }
+    out.push_str(rest);
     out
 }
 
@@ -1514,6 +1506,20 @@ mod tests {
         assert_eq!(expand_env_vars("${UNKNOWN}", &env), "${UNKNOWN}");
         // Plain strings pass through unchanged.
         assert_eq!(expand_env_vars("nothing here", &env), "nothing here");
+    }
+
+    #[test]
+    fn expand_env_vars_keeps_what_is_no_braced_ref() {
+        let env = vec![("FOO".to_string(), "bar".to_string())];
+        // A `${` with no `}` after it stays as it is, and so does the rest.
+        assert_eq!(expand_env_vars("a ${FOO", &env), "a ${FOO");
+        assert_eq!(expand_env_vars("${FOO} ${FOO", &env), "bar ${FOO");
+        // Multi-byte characters around a reference are copied whole.
+        assert_eq!(expand_env_vars("é${FOO}ü", &env), "ébarü");
+        // A `$` before a reference is copied.
+        assert_eq!(expand_env_vars("$${FOO}", &env), "$bar");
+        // The name of a reference ends at its first `}`.
+        assert_eq!(expand_env_vars("${${FOO}}", &env), "${${FOO}}");
     }
 
     /// The exact stderr shape of a registry answering apptainer's image fetch
