@@ -7,7 +7,10 @@
 #![cfg(feature = "build_zenoh")]
 #![allow(dead_code)]
 
-use pmi::{SenderTarget, TopicWireReceiver, TopicWireSender};
+use pmi::{
+    IncomingRequest, SenderTarget, ServiceQueryable, Subscription, TopicMessage, TopicWireReceiver,
+    TopicWireSender,
+};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
@@ -18,6 +21,33 @@ use tokio::sync::Mutex;
 pub static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
 
 pub const RECV_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The next message `subscription` reads, within `bound`. Panics, naming
+/// `label`, when the bound elapses first or the subscription closes.
+pub async fn next_message_within(
+    bound: Duration,
+    subscription: &Subscription,
+    label: &str,
+) -> TopicMessage {
+    tokio::time::timeout(bound, subscription.rx.recv_async())
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {label}"))
+        .unwrap_or_else(|_| panic!("the subscription closed before {label}"))
+}
+
+/// The next message `subscription` reads, within [`RECV_TIMEOUT`].
+pub async fn next_message(subscription: &Subscription, label: &str) -> TopicMessage {
+    next_message_within(RECV_TIMEOUT, subscription, label).await
+}
+
+/// The next request `queryable` receives, within [`RECV_TIMEOUT`]. Panics,
+/// naming `label`, when the bound elapses first or the queryable closes.
+pub async fn next_request(queryable: &ServiceQueryable, label: &str) -> IncomingRequest {
+    tokio::time::timeout(RECV_TIMEOUT, queryable.rx.recv_async())
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {label}"))
+        .unwrap_or_else(|_| panic!("the queryable closed before {label}"))
+}
 
 pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, "v1").expect("test node target")

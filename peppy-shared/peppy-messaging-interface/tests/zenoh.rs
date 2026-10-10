@@ -4,7 +4,7 @@ mod common;
 
 mod zenoh_tests {
     use crate::common::{
-        RECV_TIMEOUT, ZENOH_SERIAL, receiver, sender, wait_for_subscriber_discovery,
+        RECV_TIMEOUT, ZENOH_SERIAL, next_message, receiver, sender, wait_for_subscriber_discovery,
     };
     use bytes::Bytes;
     use config::node::TopicRetention;
@@ -13,19 +13,6 @@ mod zenoh_tests {
         SubscriberQoS, ZenohAdapter, ZenohNetProtocol,
     };
     use std::time::{Duration, Instant};
-
-    /// Awaits a single message on `rx` or fails the test on timeout. The
-    /// `label` is included in both timeout and channel-closed panics so test
-    /// failures in CI pinpoint which subscription stalled.
-    async fn recv_or_timeout(
-        rx: &mut flume::Receiver<pmi::TopicMessage>,
-        label: &str,
-    ) -> pmi::TopicMessage {
-        tokio::time::timeout(RECV_TIMEOUT, rx.recv_async())
-            .await
-            .unwrap_or_else(|_| panic!("timed out waiting for message on {label}"))
-            .unwrap_or_else(|_| panic!("channel closed before message on {label}"))
-    }
 
     /// Opens a fresh (non-reconnecting) publisher session against the router at
     /// `host:port`, retrying briefly in case the router is still settling after
@@ -129,7 +116,7 @@ mod zenoh_tests {
                 )
                 .await
                 .expect("baseline publish");
-            let got = recv_or_timeout(&mut subscription.rx, "baseline").await;
+            let got = next_message(&subscription, "baseline").await;
             assert_eq!(got.payload(), &Bytes::from_static(b"before-restart"));
         }
 
@@ -190,7 +177,7 @@ mod zenoh_tests {
             .start_session()
             .await
             .expect("subscriber start_session");
-        let mut subscription = subscriber
+        let subscription = subscriber
             .subscribe_topic(
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
@@ -218,7 +205,7 @@ mod zenoh_tests {
             )
             .await
             .expect("baseline publish");
-        let baseline = recv_or_timeout(&mut subscription.rx, "baseline").await;
+        let baseline = next_message(&subscription, "baseline").await;
         assert_eq!(baseline.payload(), &Bytes::from_static(b"before-stop"));
         tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -293,7 +280,7 @@ mod zenoh_tests {
             .start_session()
             .await
             .expect("subscriber start_session");
-        let mut subscription = subscriber
+        let subscription = subscriber
             .subscribe_topic(
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
@@ -327,7 +314,7 @@ mod zenoh_tests {
             )
             .await
             .expect("publish");
-        let msg = recv_or_timeout(&mut subscription.rx, "router-mode").await;
+        let msg = next_message(&subscription, "router-mode").await;
         assert_eq!(msg.payload(), &Bytes::from_static(b"router-mode"));
 
         // Keep the router alive until the end: client-mode delivery depends on it.
@@ -364,7 +351,7 @@ mod zenoh_tests {
             .start_session()
             .await
             .expect("subscriber start_session");
-        let mut subscription = subscriber
+        let subscription = subscriber
             .subscribe_topic(
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
@@ -398,7 +385,7 @@ mod zenoh_tests {
             )
             .await
             .expect("publish");
-        let msg = recv_or_timeout(&mut subscription.rx, "stamped").await;
+        let msg = next_message(&subscription, "stamped").await;
         assert_eq!(msg.payload(), &Bytes::from_static(b"stamped"));
         assert!(
             msg.source_timestamp_nanos().is_some(),
@@ -459,7 +446,7 @@ mod zenoh_tests {
             .start_session()
             .await
             .expect("subscriber start_session");
-        let mut subscription = subscriber
+        let subscription = subscriber
             .subscribe_topic(
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
@@ -488,7 +475,7 @@ mod zenoh_tests {
                 )
                 .await
                 .expect("publish");
-            let msg = recv_or_timeout(&mut subscription.rx, "custom-buffer").await;
+            let msg = next_message(&subscription, "custom-buffer").await;
             assert_eq!(msg.payload(), &body);
         }
         drop(instance);
@@ -531,7 +518,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start session");
 
-        let mut sub = instance
+        let sub = instance
             .messenger()
             .subscribe_topic(
                 &receiver("basic_topic"),
@@ -555,7 +542,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish");
 
-        let received = recv_or_timeout(&mut sub.rx, "test_basic_publish_subscribe sub").await;
+        let received = next_message(&sub, "test_basic_publish_subscribe sub").await;
         assert_eq!(received.instance_id(), "test_instance");
         assert_eq!(received.core_node(), "test_core_node");
         assert_eq!(received.payload(), &body);
@@ -574,7 +561,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start session");
 
-        let mut sub1 = instance
+        let sub1 = instance
             .messenger()
             .subscribe_topic(
                 &receiver("topic1"),
@@ -583,7 +570,7 @@ mod zenoh_tests {
             )
             .await
             .expect("Failed to subscribe to topic1");
-        let mut sub2 = instance
+        let sub2 = instance
             .messenger()
             .subscribe_topic(
                 &receiver("topic2"),
@@ -619,10 +606,10 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish to topic2");
 
-        let received1 = recv_or_timeout(&mut sub1.rx, "test_multiple_topics sub1").await;
+        let received1 = next_message(&sub1, "test_multiple_topics sub1").await;
         assert_eq!(received1.payload(), &body1);
 
-        let received2 = recv_or_timeout(&mut sub2.rx, "test_multiple_topics sub2").await;
+        let received2 = next_message(&sub2, "test_multiple_topics sub2").await;
         assert_eq!(received2.payload(), &body2);
     }
 
@@ -639,7 +626,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start session");
 
-        let mut sub = instance
+        let sub = instance
             .messenger()
             .subscribe_topic(
                 &receiver("multi_topic"),
@@ -671,8 +658,7 @@ mod zenoh_tests {
         }
 
         for expected in &messages {
-            let received =
-                recv_or_timeout(&mut sub.rx, "test_multiple_messages_same_topic sub").await;
+            let received = next_message(&sub, "test_multiple_messages_same_topic sub").await;
             assert_eq!(received.payload(), expected);
         }
     }
@@ -702,7 +688,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish early message");
 
-        let mut late_sub = instance
+        let late_sub = instance
             .messenger()
             .subscribe_topic(
                 &receiver("late_topic"),
@@ -726,7 +712,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish new message");
 
-        let received = recv_or_timeout(&mut late_sub.rx, "test_late_subscription late_sub").await;
+        let received = next_message(&late_sub, "test_late_subscription late_sub").await;
         assert_eq!(received.payload(), &new_body);
     }
 
@@ -1058,7 +1044,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start router session");
 
-        let mut sub = router_instance
+        let sub = router_instance
             .messenger()
             .subscribe_topic(
                 &receiver("connect_test"),
@@ -1081,7 +1067,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish from client");
 
-        let received = recv_or_timeout(&mut sub.rx, "test_connect_to_existing_router sub").await;
+        let received = next_message(&sub, "test_connect_to_existing_router sub").await;
         assert_eq!(received.payload(), &body);
     }
 
@@ -1105,7 +1091,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start session");
 
-        let mut sub = instance
+        let sub = instance
             .messenger()
             .subscribe_topic(
                 &receiver("port_test"),
@@ -1129,11 +1115,8 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish");
 
-        let received = recv_or_timeout(
-            &mut sub.rx,
-            "test_start_router_ephemeral_with_specific_port sub",
-        )
-        .await;
+        let received =
+            next_message(&sub, "test_start_router_ephemeral_with_specific_port sub").await;
         assert_eq!(received.payload(), &body);
     }
 
@@ -1204,7 +1187,7 @@ mod zenoh_tests {
                 )
                 .await
                 .expect("same-namespace publish");
-            let got = recv_or_timeout(&mut subscription.rx, "same-namespace").await;
+            let got = next_message(&subscription, "same-namespace").await;
             assert_eq!(got.payload(), &Bytes::from_static(b"same-namespace"));
         }
 
@@ -1542,7 +1525,7 @@ mod zenoh_tests {
                 )
                 .await
                 .expect("local publish");
-            let got = recv_or_timeout(&mut subscription.rx, "local").await;
+            let got = next_message(&subscription, "local").await;
             assert_eq!(got.payload(), &Bytes::from_static(b"local-payload"));
         }
 

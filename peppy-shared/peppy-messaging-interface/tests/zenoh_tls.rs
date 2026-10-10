@@ -16,7 +16,7 @@ mod common;
 
 mod zenoh_tls_tests {
     use crate::common::{
-        RECV_TIMEOUT, ZENOH_SERIAL, receiver, sender, wait_for_subscriber_discovery,
+        ZENOH_SERIAL, next_message, receiver, sender, wait_for_subscriber_discovery,
     };
     use bytes::Bytes;
     use config::node::TopicRetention;
@@ -312,12 +312,7 @@ mod zenoh_tls_tests {
 
     /// The payload `subscription` reads next, within [`RECV_TIMEOUT`].
     async fn next_payload(subscription: &Subscription, label: &str) -> Bytes {
-        tokio::time::timeout(RECV_TIMEOUT, subscription.rx.recv_async())
-            .await
-            .unwrap_or_else(|_| panic!("timed out waiting for {label}"))
-            .expect("subscription channel open")
-            .payload()
-            .to_bytes()
+        next_message(subscription, label).await.payload().to_bytes()
     }
 
     /// How long the inter-router link gets to come up. A link that comes up

@@ -14,7 +14,10 @@
 #![cfg(feature = "build_zenoh")]
 
 mod common;
-use common::{RECV_TIMEOUT, ZENOH_SERIAL, test_node_target, wait_for_subscriber_discovery};
+use common::{
+    RECV_TIMEOUT, ZENOH_SERIAL, next_message, next_request, test_node_target,
+    wait_for_subscriber_discovery,
+};
 
 use bytes::Bytes;
 use config::node::TopicRetention;
@@ -28,11 +31,8 @@ use std::time::Duration;
 const NO_MESSAGE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Asserts the subscriber receives a payload exactly equal to `expected`.
-async fn expect_payload(sub: &mut Subscription, expected: &Bytes, label: &str) {
-    let msg = tokio::time::timeout(RECV_TIMEOUT, sub.rx.recv_async())
-        .await
-        .unwrap_or_else(|_| panic!("timed out waiting for message on {label}"))
-        .unwrap_or_else(|_| panic!("channel closed before message on {label}"));
+async fn expect_payload(sub: &Subscription, expected: &Bytes, label: &str) {
+    let msg = next_message(sub, label).await;
     assert_eq!(
         msg.payload(),
         expected,
@@ -151,9 +151,9 @@ async fn topic_node_vs_contract_no_collision() {
         .await
         .unwrap();
 
-    expect_payload(&mut node_sub, &node_payload, "node-pinned subscriber").await;
+    expect_payload(&node_sub, &node_payload, "node-pinned subscriber").await;
     expect_payload(
-        &mut contract_sub,
+        &contract_sub,
         &contract_payload,
         "contract-pinned subscriber",
     )
@@ -237,10 +237,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_contract() {
     // Collect both payloads (in either order — both publishers race).
     let mut seen = Vec::with_capacity(2);
     for _ in 0..2 {
-        let msg = tokio::time::timeout(RECV_TIMEOUT, sub.rx.recv_async())
-            .await
-            .expect("untargeted subscriber should see both publishers")
-            .expect("subscription channel should not close");
+        let msg = next_message(&sub, "both publishers on the untargeted subscriber").await;
         seen.push(msg.payload().clone());
     }
     assert!(
@@ -342,9 +339,11 @@ async fn service_node_vs_contract_no_collision() {
         .unwrap();
 
     // The node server must receive ONLY the node-shaped query.
-    let node_request = recv_first_query(&mut node_server_queryable)
-        .await
-        .expect("node server should receive its caller's query");
+    let node_request = next_request(
+        &node_server_queryable,
+        "the node server's query from its caller",
+    )
+    .await;
     assert_eq!(
         node_request.payload.to_bytes(),
         node_request_payload,
@@ -353,24 +352,17 @@ async fn service_node_vs_contract_no_collision() {
     assert_no_further_query(&mut node_server_queryable, "node server").await;
 
     // The contract server must receive ONLY the contract-shaped query.
-    let contract_request = recv_first_query(&mut contract_server_queryable)
-        .await
-        .expect("contract server should receive its caller's query");
+    let contract_request = next_request(
+        &contract_server_queryable,
+        "the contract server's query from its caller",
+    )
+    .await;
     assert_eq!(
         contract_request.payload.to_bytes(),
         contract_request_payload,
         "contract server received the wrong payload (collision)"
     );
     assert_no_further_query(&mut contract_server_queryable, "contract server").await;
-}
-
-/// Waits for the first inbound request on the service queryable's fan-in
-/// channel. Returns `None` on timeout.
-async fn recv_first_query(queryable: &mut ServiceQueryable) -> Option<pmi::IncomingRequest> {
-    tokio::time::timeout(RECV_TIMEOUT, queryable.rx.recv_async())
-        .await
-        .ok()
-        .and_then(|r| r.ok())
 }
 
 /// Fails the test if the queryable yields another request within

@@ -20,7 +20,7 @@
 #![cfg(feature = "build_zenoh")]
 
 mod common;
-use common::{RECV_TIMEOUT, ZENOH_SERIAL, receiver, sender, test_node_target};
+use common::{RECV_TIMEOUT, ZENOH_SERIAL, next_message_within, receiver, sender, test_node_target};
 
 use bytes::Bytes;
 use config::node::TopicRetention;
@@ -139,10 +139,7 @@ async fn next(subscription: &Subscription, label: &str) -> u64 {
 }
 
 async fn next_within(bound: Duration, subscription: &Subscription, label: &str) -> u64 {
-    let message = tokio::time::timeout(bound, subscription.rx.recv_async())
-        .await
-        .unwrap_or_else(|_| panic!("timed out waiting for {label}"))
-        .unwrap_or_else(|_| panic!("the subscription closed before {label}"));
+    let message = next_message_within(bound, subscription, label).await;
     String::from_utf8_lossy(&message.payload().as_bytes())
         .parse()
         .expect("a number")
