@@ -194,12 +194,17 @@ def test_parse_release_content_requires_a_boolean_verdict(verdict: object) -> No
 # --- generate_release_content (mocked run_claude) ---
 
 
-def _capture_prompt(captured: dict[str, object]) -> object:
-    def _fake_run_claude(prompt: str, **kwargs: object) -> dict:
-        captured["prompt"] = prompt
+def _drafting_prompt(changes: ReleaseChanges, tag: str, cwd: Path) -> str:
+    """The prompt generate_release_content hands Claude to draft *changes*."""
+    prompts: list[str] = []
+
+    def fake_run_claude(prompt: str, **kwargs: object) -> dict:
+        prompts.append(prompt)
         return DRAFTED
 
-    return _fake_run_claude
+    with patch("functions.release_summary.run_claude", side_effect=fake_run_claude):
+        generate_release_content(changes, tag, cwd)
+    return prompts[-1]
 
 
 def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> None:
@@ -254,7 +259,6 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
 def test_generate_release_content_feeds_both_diffs_and_their_paths(
     tmp_path: Path,
 ) -> None:
-    captured: dict[str, object] = {}
     changes = _changes(
         code=PathDiff(
             "+fn main() {}",
@@ -262,11 +266,8 @@ def test_generate_release_content_feeds_both_diffs_and_their_paths(
         ),
         docs=PathDiff("+## The clock", ("docs/src/content/docs/x.mdx",)),
     )
-    with patch("functions.release_summary.run_claude", side_effect=_capture_prompt(captured)):
-        generate_release_content(changes, "v0.12.0", tmp_path)
 
-    prompt = captured["prompt"]
-    assert isinstance(prompt, str)
+    prompt = _drafting_prompt(changes, "v0.12.0", tmp_path)
     assert (
         "Changed code paths:\ncrates/peppy/src/main.rs\ncrates/peppy/src/cli.rs\n"
         in prompt
@@ -279,16 +280,12 @@ def test_generate_release_content_feeds_both_diffs_and_their_paths(
 def test_generate_release_content_truncates_each_diff_separately(
     tmp_path: Path,
 ) -> None:
-    captured: dict[str, object] = {}
     changes = _changes(
         code=PathDiff("c" * 500_000, ("crates/peppy/src/main.rs",)),
         docs=PathDiff("d" * 1000, ("docs/src/content/docs/x.mdx",)),
     )
-    with patch("functions.release_summary.run_claude", side_effect=_capture_prompt(captured)):
-        generate_release_content(changes, "v0.12.0", tmp_path)
 
-    prompt = captured["prompt"]
-    assert isinstance(prompt, str)
+    prompt = _drafting_prompt(changes, "v0.12.0", tmp_path)
     # The oversized code diff is cut, and the docs diff survives untouched.
     assert prompt.count("diff truncated") == 1
     assert "d" * 1000 in prompt
@@ -296,26 +293,18 @@ def test_generate_release_content_truncates_each_diff_separately(
 
 
 def test_generate_release_content_names_an_empty_code_diff(tmp_path: Path) -> None:
-    captured: dict[str, object] = {}
     changes = _changes(subjects=(), code=NO_DIFF)
-    with patch("functions.release_summary.run_claude", side_effect=_capture_prompt(captured)):
-        generate_release_content(changes, "v0.12.0", tmp_path)
 
-    prompt = captured["prompt"]
-    assert isinstance(prompt, str)
+    prompt = _drafting_prompt(changes, "v0.12.0", tmp_path)
     assert "(no commits since the last release)" in prompt
     assert prompt.count("(no code changes)") == 2
     assert "(no user documentation changes)" not in prompt
 
 
 def test_generate_release_content_names_an_empty_docs_diff(tmp_path: Path) -> None:
-    captured: dict[str, object] = {}
     changes = _changes(docs=NO_DIFF)
-    with patch("functions.release_summary.run_claude", side_effect=_capture_prompt(captured)):
-        generate_release_content(changes, "v0.12.0", tmp_path)
 
-    prompt = captured["prompt"]
-    assert isinstance(prompt, str)
+    prompt = _drafting_prompt(changes, "v0.12.0", tmp_path)
     assert prompt.count("(no user documentation changes)") == 2
     assert "(no code changes)" not in prompt
 
@@ -350,14 +339,10 @@ def test_generate_release_content_pins_hubs_only_when_claude_finds_no_user_facin
 
 
 def test_generate_release_content_without_a_previous_release(tmp_path: Path) -> None:
-    captured: dict[str, object] = {}
     changes = ReleaseChanges(commit_subjects=("initial commit",), diffs=None)
-    with patch("functions.release_summary.run_claude", side_effect=_capture_prompt(captured)):
-        generate_release_content(changes, "v0.1.0", tmp_path)
 
     # The full history counts as changed: Claude judges it.
-    prompt = captured["prompt"]
-    assert isinstance(prompt, str)
+    prompt = _drafting_prompt(changes, "v0.1.0", tmp_path)
     assert "the previous release is none: no release has been published yet" in prompt
     assert "- initial commit" in prompt
     # Every diff section says why it is empty rather than claiming no changes.
