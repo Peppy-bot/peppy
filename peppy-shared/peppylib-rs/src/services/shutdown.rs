@@ -15,13 +15,13 @@ type ShutdownSender = Arc<Mutex<Option<oneshot::Sender<()>>>>;
 
 pub async fn listen_for_shutdown(
     messenger: &MessengerHandle,
-    core_node_node: &str,
+    core_node: &str,
     instance_id: &str,
     as_identity: SenderTarget,
 ) -> PeppyResult<(TaskHandle<PeppyResult<()>>, ShutdownReceiver)> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
-        core_node_node,
+        core_node,
         instance_id,
         as_identity,
         super::super::messaging::SHUTDOWN_SERVICE,
