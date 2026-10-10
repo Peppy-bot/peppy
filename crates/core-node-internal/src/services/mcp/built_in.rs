@@ -25,19 +25,19 @@ const SPEC_FILE: &str = "mcp_serve.json5";
 
 /// The `peppy` executable a built-in node's recipe runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeppyExecutable {
+struct PeppyExecutable {
     /// The path the recipe spawns.
-    pub path: PathBuf,
+    path: PathBuf,
     /// This daemon's own file when it was unlinked after the daemon started,
     /// as a rebuild or an upgrade does: `path` then reaches the daemon's
     /// still-running image instead.
-    pub replaced: Option<PathBuf>,
+    replaced: Option<PathBuf>,
 }
 
 impl PeppyExecutable {
     /// What the operator is told when the recipe runs the daemon's image
     /// rather than the file on disk.
-    pub fn warning(&self) -> Option<String> {
+    fn warning(&self) -> Option<String> {
         self.replaced.as_ref().map(|file| {
             format!(
                 "{} was replaced on disk after this daemon started; built-in MCP nodes run the \
@@ -51,7 +51,7 @@ impl PeppyExecutable {
 /// Where the `peppy` executable that serves built-in nodes is: this daemon's
 /// own executable when it is `peppy`, otherwise the installed one in the
 /// Peppy home's bin directory.
-pub fn resolve_peppy_executable(peppy_dirs: &PeppyDirs) -> Result<PeppyExecutable, String> {
+fn resolve_peppy_executable(peppy_dirs: &PeppyDirs) -> Result<PeppyExecutable, String> {
     let expected = format!("peppy{}", std::env::consts::EXE_SUFFIX);
     let own = std::env::current_exe().ok();
     if let Some(executable) = own

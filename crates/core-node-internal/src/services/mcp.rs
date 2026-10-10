@@ -15,7 +15,6 @@ mod resolve;
 #[cfg(test)]
 mod tests;
 
-pub use built_in::{PeppyExecutable, resolve_peppy_executable};
 pub use catalog::derive_exposure_catalog;
 pub use index_check::{ExposureFinding, check_repository_exposures};
 pub use resolve::resolve_exposure_plan;

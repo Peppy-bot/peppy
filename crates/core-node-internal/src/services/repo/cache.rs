@@ -699,10 +699,6 @@ pub fn pairings_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     repo_cache_path::<PairingCacheEntry>(peppy_dirs)
 }
 
-pub fn mcp_exposures_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
-    repo_cache_path::<McpExposureCacheEntry>(peppy_dirs)
-}
-
 pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs
         .conf_dir()
