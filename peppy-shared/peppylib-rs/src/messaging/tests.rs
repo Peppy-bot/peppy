@@ -2237,7 +2237,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
             caller_requests.push((caller_name, requests));
         }
 
-        let mut rng = rand::rng();
+        // Fixed seed so a failure reproduces the same request order run to
+        // run.
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
         caller_requests.shuffle(&mut rng);
 
         let mut handles = Vec::with_capacity(caller_count);
@@ -3189,7 +3191,8 @@ async fn single_action_communication_multiple_polls() {
 
     let total_clients = cases.len();
     let mut shuffled_cases = cases.as_ref().clone();
-    let mut rng = rand::rng();
+    // Fixed seed so a failure reproduces the same client order run to run.
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
     shuffled_cases.shuffle(&mut rng);
 
     let mut client_handles = Vec::with_capacity(total_clients);
