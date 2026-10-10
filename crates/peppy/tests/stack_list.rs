@@ -153,19 +153,15 @@ async fn stack_list_command_succeeds() {
         "core_node_name should not be empty"
     );
 
-    // Create a temp directory for the nodes
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for nodes");
     let provider_name = "test_list_provider";
     let consumer_name = "test_list_consumer";
 
-    // Create AppContext pointing to the temp directory
     let node_ctx = serve_app_context(&serve, node_dir.path());
 
-    // Set up logging
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // Create both nodes using the init command
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(provider_name).expect("valid node name"),
@@ -207,12 +203,11 @@ async fn stack_list_command_succeeds() {
     // Make the consumer depend on the provider by subscribing to a topic exposed by the provider.
     make_consumer_depend_on_provider(&provider_peppy_json5, &consumer_peppy_json5, provider_name);
 
-    // Add the provider
     node_add_command(&provider_path)
         .execute(&node_ctx)
         .expect("provider node add command should succeed");
 
-    // Add the consumer, it depends on the provider
+    // The consumer goes in second: it depends on the provider.
     node_add_command(&consumer_path)
         .execute(&node_ctx)
         .expect("consumer node add command should succeed");
@@ -339,10 +334,11 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         &consumer_path.join("peppy.json5"),
         provider_name,
     );
-    // Both instances have to be alive at the `list_nodes_collecting` below —
-    // the assertions read the cross-daemon binding row off the rendered
-    // output — and the provider is spawned a full round-trip before the
-    // consumer. A fixed 4s lifetime would race the rest of the test.
+    // Both instances have to be alive at the `list_nodes_collecting` below,
+    // whose rendered output the assertions read the cross-daemon binding row
+    // from, and the provider is spawned a full round-trip before the
+    // consumer. So each instance lives as long as `instances`, not a fixed
+    // time that would race the rest of the test.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(
         &provider_path.join("peppy.json5"),

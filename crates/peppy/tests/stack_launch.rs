@@ -326,7 +326,6 @@ async fn stack_launch_command_succeeds() {
             .collect::<Vec<_>>()
     );
 
-    // TODO we shouldn't need to stop the instances manually. If the core node stops, all child instances pid should stop too
     NodeCommand {
         command: NodeCommands::Stop {
             instance_id: instance_id.to_string(),
@@ -437,10 +436,10 @@ async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_sta
 
     let graph = stack_graph(messenger_handle, &core_node_name).await;
 
-    // New contract: a launch replaces the whole stack, tearing it down at the
-    // clear step, so a failed launch leaves a clean stack with only the root
-    // core node. node_a is not rolled back; it is torn down along with the
-    // partial new stack. This mirrors the core-node-internal contract test
+    // A launch replaces the whole stack, tearing it down at the clear step,
+    // so a failed launch leaves a clean stack with only the root core node.
+    // node_a is not rolled back; it is torn down along with the partial new
+    // stack. This mirrors the core-node-internal contract test
     // listen_for_launch_configuration_fails_when_one_node_never_becomes_healthy_and_clears_stack.
     assert!(
         !graph
@@ -468,10 +467,8 @@ async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_sta
     );
 }
 
-/// Common setup for the timeout-firing tests. Returns the launcher path and the temp node
-/// peppy.json5, with node_b initialized via `node init` so the caller can `override_*_cmd`
-/// before launch. The error message bubbles up via the returned `Result` from
-/// `StackCommand::execute`, so we don't need a `LogCapture` here.
+/// The daemon, the context and the `node init`-scaffolded node_b that the
+/// timeout and build-failure tests launch.
 struct TimeoutTestHarness {
     ctx: Arc<AppContext>,
     node_b_name: &'static str,
@@ -485,6 +482,10 @@ struct TimeoutTestHarness {
     _nodes_dir: tempfile::TempDir,
 }
 
+/// Scaffolds node_b with `node init` and writes a launcher that deploys one
+/// instance of it, so the caller can `override_*_cmd` before the launch. A
+/// failure reaches the caller through the `Result` of `StackCommand::execute`,
+/// so the setup installs no `LogCapture`.
 async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
     let serve = ServeCommandEmulation::with_mock()
         .await
@@ -665,14 +666,10 @@ async fn stack_launch_fails_when_the_max_timeout_is_hit() {
     );
 }
 
-/// Regression for the launcher's `bindings` field actually wiring
-/// producer `link_ids` at launch time. The dummy `sh` run_cmd dumps the
-/// `RuntimeConfig` it received from the daemon (via the
-/// `PEPPY_RUNTIME_CONFIG` env var, which points at a JSON5 file) to a
-/// known location; the test then parses that dump and asserts the
-/// producer's `link_ids` vec was populated from the consumer's binding.
-/// Without the fix the vec stays empty (defaulted to `_` later by the
-/// runtime), so this is the boundary that surfaces the silent-loss bug.
+/// The launcher's `links` entry reaches the consumer's runtime config as a
+/// slot binding stamped with the daemon's core node, and the producer carries
+/// no slot binding. Each dummy `sh` run_cmd copies the file that
+/// `PEPPY_RUNTIME_CONFIG` names to a dump the test parses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
     // Instances must stay in the stack until the assertions below have read
@@ -776,10 +773,10 @@ async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
     .execute(&ctx)
     .expect("launch command should succeed");
 
-    // The `sh` wrappers copy the runtime config before sleeping. Poll
-    // BOTH dumps before stopping anything: stopping the consumer before
-    // its dump has flushed would race with the negative-case assertion
-    // below.
+    // The `sh` wrappers copy the runtime config before keeping alive until
+    // the test drops `instances`. Poll BOTH dumps before stopping anything:
+    // stopping the consumer before its dump has flushed would race with the
+    // negative-case assertion below.
     let [producer_config, consumer_config] =
         read_runtime_config_dumps([&producer_dump, &consumer_dump]).await;
 
@@ -948,8 +945,6 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
 /// validation, before any node is added, built, or spawned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_array_binding_on_a_one_slot() {
-    // Instances must stay in the stack until the assertions below have read
-    // them; a fixed `sleep` would make that a race against machine load.
     let instances = peppy::test_support::InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_mock()
         .await
@@ -1070,10 +1065,10 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // Two completely separate node types both claiming `shared_inst`
-    // as their instance_id. Under the new spec, this is rejected at
-    // the launcher level: instance_ids must be unique across the
-    // entire stack, not merely within a `(node_name, node_tag)` group.
+    // Two completely separate node types both claiming `shared_inst` as
+    // their instance_id. This is rejected at the launcher level:
+    // instance_ids must be unique across the entire stack, not merely
+    // within a `(node_name, node_tag)` group.
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
@@ -1419,8 +1414,6 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
         }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
-    // After any refresh in this test: refresh rewrites nodes.json5, so
-    // registration must come later to survive.
     register_repo_caches(
         serve.temp_dir(),
         &[
@@ -1551,8 +1544,6 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
         }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
-    // After any refresh in this test: refresh rewrites nodes.json5, so
-    // registration must come later to survive.
     register_repo_caches(
         serve.temp_dir(),
         &[
@@ -1587,7 +1578,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
 /// address, and the stack must come up regardless of deployment order.
 /// This is the end-to-end counterpart to the unit-level binding
 /// validator tests and the wire-level flow test in
-/// `peppylib/tests/topics.rs`.
+/// `peppy-shared/peppylib-rs/tests/topics.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_binds_contract_slots_in_both_directions() {
     // Instances must stay in the stack until the assertions below have read
@@ -1722,7 +1713,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     }
 
     // Bind both directions: the controller's slot to the arm and the
-    // arm's slot to the controller — an unbound slot would be rejected
+    // arm's slot to the controller. An unbound slot would be rejected
     // at the validation step.
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -1763,7 +1754,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     .execute(&ctx)
     .expect("launch should succeed with both contract slots bound");
 
-    // Both `sh` wrappers snapshot their runtime config before sleeping.
+    // Both `sh` wrappers snapshot their runtime config before keeping alive.
     let [controller_config, arm_config] =
         read_runtime_config_dumps([&controller_dump, &arm_dump]).await;
 
@@ -1974,8 +1965,8 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
 }
 
 /// Every declared `depends_on` slot must be bound: a launcher that omits a
-/// binding entry for a declared slot is rejected at the validation step —
-/// before anything is added or spawned — with an error naming the instance
+/// binding entry for a declared slot is rejected at the validation step
+/// (before anything is added or spawned) with an error naming the instance
 /// and the unfulfilled slot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_unbound_slot() {
@@ -2078,11 +2069,11 @@ async fn stack_launch_rejects_unbound_slot() {
     );
 }
 
-/// Launcher `pairings:` establish pairs at launch: the earlier-started
-/// endpoint boots with its slot covered, the later one carries the request,
-/// and both
-/// running instances receive their `peer_update` pins live. The dummy `sh`
-/// nodes expose ready/health/shutdown/peer_update from the test process.
+/// A launcher `links:` entry on a pairing slot establishes the pair at launch:
+/// the earlier-started endpoint boots with its slot covered, the later one
+/// carries the request, and both running instances receive their
+/// `peer_update` pins live. The dummy `sh` nodes expose
+/// ready/health/shutdown/peer_update from the test process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_establishes_launcher_pairings() {
     let serve = ServeCommandEmulation::with_zenoh()
@@ -2367,7 +2358,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
 /// after the instance reaches Running. A recorder observing the `arm` role of
 /// `arm_link/v1` declares three slots: a `one` slot linked to `arm_1`, a
 /// `one_or_more` slot linked to `["arm_2", "arm_1"]`, and a `zero_or_more` slot
-/// the launcher omits entirely — the one slot with nothing to seed and nothing
+/// the launcher omits entirely: the one slot with nothing to seed and nothing
 /// to deliver, asserted empty on both boundaries rather than populated. The
 /// sources are `robot_arm` instances whose own participant slots are declared
 /// vacant, so they boot unpaired but still publish their role's topics.
@@ -2394,9 +2385,10 @@ async fn stack_launch_delivers_observer_member_sets() {
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    // Keep-alive rather than `sleep 30`: both instances must be live for the
-    // pin assertions, and the teardown below ends them explicitly instead of
-    // leaving the daemon to wait out its force-kill deadline once per instance.
+    // Keep-alive rather than `sleep 30`: every instance must be live for the
+    // member-set assertions, and the teardown below ends them explicitly
+    // instead of leaving the daemon to wait out its force-kill deadline once
+    // per instance.
     let instances = peppy::test_support::InstanceLifetime::new();
     let run_cmd = instances.keep_alive_argv();
     // The recorder copies the boot config the daemon wrote before keeping alive,
