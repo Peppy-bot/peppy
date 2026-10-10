@@ -20,8 +20,9 @@ pub(crate) enum ServeOutcome {
     /// A real stop (SIGINT/SIGTERM, `peppy service stop`, or all tasks done):
     /// the daemon exits 0 and the supervisor (systemd/launchd) leaves it stopped.
     Stop,
-    /// A namespace change requested an in-process restart: tear the generation
-    /// down and rebuild a fresh one under the same PID.
+    /// An identity change (enroll or unenroll) requested an in-process
+    /// restart: tear the generation down and rebuild a fresh one under the
+    /// same PID.
     Restart,
 }
 
@@ -90,6 +91,8 @@ impl CompositeCommand {
     }
 }
 
+/// One daemon generation: the serve tasks, and the coordinator that runs them
+/// until a stop, a restart request, or a failed task.
 pub(crate) struct Serve {
     composite_command: CompositeCommand,
     /// External shutdown injection (tests / embedders): when `Some` and
@@ -107,16 +110,10 @@ pub(crate) struct Serve {
     /// `handle_conn` (after it has written, or failed to write, the
     /// `Restarting` ack) makes the coordinator record
     /// [`ServeOutcome::Restart`]. `None` when no federation control task exists
-    /// (mock engine).
+    /// (an external zenoh router or the mock engine).
     restart_rx: Option<watch::Receiver<bool>>,
 }
 
-/// The serve command is the command that runs as a daemon in systemd and maintains a "node stack" (a graph representation of nodes)
-/// It's installed using the `install` command.
-/// It operates as follow:
-/// 1. Starts a zenohd separate process
-/// 2. Creates an internal "node stack" (a graph of nodes that depends on each other)
-/// 3. Starts a "core node" that listen for incoming commands
 impl Serve {
     fn log_task_result(result: std::result::Result<Result<()>, JoinError>) {
         match result {
@@ -470,7 +467,7 @@ fn finalize_before_restart(router_adopted: bool) {
     }
 
     // Verify the messaging listen endpoint is free before the next generation's
-    // start_router. TCP-only today (the local router listens on tcp/); if the old
+    // start_router. The local router listens on TCP only (`tcp/`); if the old
     // zenohd has not released the port after a short bounded retry the in-process
     // loop cannot recover, so exit for the supervisor rather than spin.
     let port = crate::builder::extract_messaging_port();

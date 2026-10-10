@@ -36,9 +36,8 @@ const WATCHDOG_POST_RESTART_BACKOFF: Duration = Duration::from_secs(10);
 /// Sized to the core node's worst-case stop: `force_kill_deadline` (hook grace +
 /// event-loop join + interpreter finalize) for a stuck node, plus the reap
 /// budget and a one-second margin. Derived from the same `force_kill_deadline`
-/// the teardown itself uses so the two cannot drift apart. An earlier regression
-/// was exactly that drift: the deadline grew but this budget did not, so the
-/// router closed the session out from under a node still stopping over it.
+/// the teardown itself uses so the two cannot drift apart: a budget shorter
+/// than the deadline closes the session under a node that still stops over it.
 pub(super) fn teardown_budget_for(shutdown_grace_secs: u64) -> Duration {
     core_node::force_kill_deadline(Duration::from_secs(shutdown_grace_secs))
         + core_node::TEARDOWN_REAP_BUDGET
@@ -357,9 +356,8 @@ mod tests {
         // its worst-case teardown, or a node still stopping cooperatively over
         // that session is cut off and force-killed. Pin the budget strictly above
         // the daemon's force-kill deadline plus its reap budget across every
-        // accepted grace (minimum accepted is 1s), so a future change to
-        // `force_kill_deadline` cannot silently outgrow this budget again (the
-        // original regression was exactly that drift).
+        // accepted grace (minimum accepted is 1s), so a change to
+        // `force_kill_deadline` cannot outgrow this budget.
         for grace_secs in 1..=600 {
             let budget = super::teardown_budget_for(grace_secs);
             let worst_case = core_node::force_kill_deadline(Duration::from_secs(grace_secs))

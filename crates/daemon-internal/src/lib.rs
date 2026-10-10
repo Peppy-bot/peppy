@@ -1,7 +1,7 @@
 //! The peppy daemon process body.
 //!
 //! Boundary contract: this crate owns the supervised generation loop
-//! ([`serve`]: build a generation, run it, restart in-process on a namespace
+//! ([`serve`]: build a generation, run it, restart in-process on an identity
 //! change), the zenoh router host and its watchdog, the core-node runner, the
 //! router-federation lifecycle and its UDS control socket, the renewal of the
 //! peer certificate of an enrolled machine, and the two

@@ -24,7 +24,7 @@ use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(600); // 10 minutes
+const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(600);
 const DEFAULT_NODE_START_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct ServeCommandBuilder {
@@ -116,9 +116,9 @@ impl ServeCommandBuilder {
     }
 
     /// Supplies the daemon-global config (messaging mode + subscriber buffer sizes)
-    /// read once at startup. Must be called before [`with_messaging_router`]
-    /// (Self::with_messaging_router) so the daemon's own session is built in the
-    /// configured mode.
+    /// read once at startup. Must be called before
+    /// [`with_messaging_router`](Self::with_messaging_router) so the daemon's own
+    /// session is built in the configured mode.
     pub fn with_peppy_config(mut self, peppy_config: PeppyConfig) -> Self {
         self.peppy_config = peppy_config;
         self
@@ -135,7 +135,10 @@ impl ServeCommandBuilder {
             .map(|messaging| Arc::clone(&messaging.messenger))
     }
 
-    /// The messaging router (Zenoh/MQTT etc...) is reponsible for message passing between the nodes and between the nodes and the peppy program
+    /// Selects the messaging engine (`zenoh`, or `mock`, which an unknown
+    /// engine also falls back to with a warning) and adds the messaging router
+    /// task, which carries the messages between the nodes and between the
+    /// nodes and the daemon.
     pub fn with_messaging_router(mut self, engine: &str) -> Result<Self> {
         let adapter = match engine.to_lowercase().as_str() {
             "zenoh" => MessengerAdapter::Zenoh(self.build_zenoh_adapter()?),
@@ -283,14 +286,14 @@ impl ServeCommandBuilder {
         // Capture the shutdown grace before `peppy_config` is moved into
         // the runner, so the daemon state file can advertise it to clients.
         let shutdown_grace_secs = self.peppy_config.lifecycle.shutdown_grace_secs;
-        // Federated daemons (a managed router with configured
-        // `connect` links — an operator-pinned mesh) hold the boot
-        // presence claim open for the settle window, so the claim
-        // observes an incumbent whose token is still propagating
-        // across the freshly-established links. Standalone routers
-        // (and the mock/external engines) are authoritative
-        // immediately and skip the wait. The probe only reads the
-        // active router config; nothing has started yet.
+        // Federated daemons (a managed router with configured `connect`
+        // links: the project's cloud router when enrolled, or an
+        // operator-pinned mesh) hold the boot presence claim open for the
+        // settle window, so the claim observes an incumbent whose token is
+        // still propagating across the freshly-established links.
+        // Standalone routers (and the mock/external engines) are
+        // authoritative immediately and skip the wait. The probe only reads
+        // the active router config; nothing has started yet.
         let has_router_links = messaging
             .messenger
             .blocking_lock()
@@ -414,8 +417,8 @@ impl ServeCommandBuilder {
 /// Builds the state-file payload from the messenger endpoint selected by the
 /// builder. Keeping endpoint extraction and [`DaemonState::new`] together makes
 /// the full locator (including an operator-configured host and port) the single
-/// source used by [`ServeCommandBuilder::build`]. Mock backends retain the
-/// historical loopback-host fallback.
+/// source used by [`ServeCommandBuilder::build`]. A backend with no locator
+/// (the mock) records the default loopback host and the messenger's port.
 fn daemon_state_for_messenger(
     messenger: &Messenger,
     core_node_name: &str,

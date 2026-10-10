@@ -328,10 +328,9 @@ mod tests {
 
         // Bind before the client can run, so the connect below is deterministic:
         // a bound listener queues connections in the backlog even while the
-        // accept loop is still waiting to be scheduled. (Polling for the socket
-        // *file* instead was flaky under load: the file appears between `bind`
-        // and `listen`, and the listener task may not even bind within a fixed
-        // poll window.)
+        // accept loop is still waiting to be scheduled. Polling for the socket
+        // file is not enough: the file appears between `bind` and `listen`, and
+        // a fixed poll window can end before the listener task binds.
         let listener = bind_listener(&socket).expect("bind control socket");
         let (restart_tx, _restart_rx) = watch::channel(false);
         let control = tokio::spawn(accept_loop(listener, trigger_tx, restart_tx));
