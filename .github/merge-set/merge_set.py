@@ -2137,13 +2137,6 @@ def git_failure(
 # The sync --------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class RunContext:
-    bot_login: str
-    # The URL of this run of the Merge set workflow.
-    run_url: str
-
-
 def read_set(gateway: GitHubGateway, name: str) -> SetState:
     heads = {
         repository: gateway.branch_head(repository, name) for repository in REPOSITORIES
@@ -2377,7 +2370,7 @@ def merge_the_set(
     dashboards: Mapping[str, Dashboard],
     request: Request,
     requesters: Sequence[str],
-    context: RunContext,
+    run_url: str,
 ) -> None:
     asked_on = request.dashboard.pull_request
     admin = is_admin_of_the_set(gateway, state, request.requester)
@@ -2398,7 +2391,7 @@ def merge_the_set(
     ]
     for pull_request in pull_requests:
         gateway.post_gate(
-            pull_request, merging_gate(state.name, request.requester, context.run_url)
+            pull_request, merging_gate(state.name, request.requester, run_url)
         )
     merge_states = [
         (
@@ -2463,7 +2456,7 @@ def handle_requests(
     state: SetState,
     dashboards: Mapping[str, Dashboard],
     requests: Sequence[Request],
-    context: RunContext,
+    run_url: str,
 ) -> None:
     """Act on each action once, for the first user who asked for it with
     write access to every repository of the set. The re-run goes first: a
@@ -2490,7 +2483,7 @@ def handle_requests(
             rerun_out_of_date(gateway, state, reports, allowed, requesters)
         else:
             merge_the_set(
-                gateway, state, reports, dashboards, allowed, requesters, context
+                gateway, state, reports, dashboards, allowed, requesters, run_url
             )
 
 
@@ -2525,7 +2518,7 @@ def no_set_gate(pull_request: PullRequest) -> Gate:
     )
 
 
-def sync(gateway: GitHubGateway, event: Event, context: RunContext) -> None:
+def sync(gateway: GitHubGateway, event: Event, run_url: str) -> None:
     set_name = event.set_name
     if set_name is None:
         if event.pull_request is None:
@@ -2540,7 +2533,7 @@ def sync(gateway: GitHubGateway, event: Event, context: RunContext) -> None:
     dashboards = read_dashboards(gateway, state)
     requests = read_requests(gateway, dashboards) if not state.is_alone else []
     if requests:
-        handle_requests(gateway, state, dashboards, requests, context)
+        handle_requests(gateway, state, dashboards, requests, run_url)
         state = read_set(gateway, set_name)
     publish(gateway, state, dashboards)
 
@@ -2719,17 +2712,16 @@ def run_sync(environment: Mapping[str, str]) -> None:
         head_repository=environment.get("EVENT_HEAD_REPOSITORY", ""),
         pull_request=environment.get("EVENT_PULL_REQUEST", ""),
     )
-    context = RunContext(
-        bot_login=required(environment, "MERGE_SET_BOT_LOGIN"),
-        run_url=(
-            f"{required(environment, 'GITHUB_SERVER_URL')}/"
-            f"{required(environment, 'GITHUB_REPOSITORY')}/actions/runs/"
-            f"{required(environment, 'GITHUB_RUN_ID')}"
-        ),
+    bot_login = required(environment, "MERGE_SET_BOT_LOGIN")
+    # The URL of this run of the Merge set workflow.
+    run_url = (
+        f"{required(environment, 'GITHUB_SERVER_URL')}/"
+        f"{required(environment, 'GITHUB_REPOSITORY')}/actions/runs/"
+        f"{required(environment, 'GITHUB_RUN_ID')}"
     )
     token = required(environment, "MERGE_SET_TOKEN")
-    gateway = GitHubGateway(GitHubApi(token), context.bot_login, GitMerges(token))
-    sync(gateway, event, context)
+    gateway = GitHubGateway(GitHubApi(token), bot_login, GitMerges(token))
+    sync(gateway, event, run_url)
 
 
 def run_repositories() -> None:

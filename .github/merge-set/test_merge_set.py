@@ -57,7 +57,6 @@ PRIVATE_NODES_HUB = merge_set.REPOSITORIES_BY_NAME["private-nodes-hub"]
 SET_NAME = "feat/gripper-force"
 BOT = "peppy-merge-set[bot]"
 RUN_URL = "https://github.com/Peppy-bot/peppy/actions/runs/99"
-CONTEXT = merge_set.RunContext(bot_login=BOT, run_url=RUN_URL)
 TEST_CHECK = RequiredCheck("test", 15368)
 # The ruleset of the integration branches that requires an approval.
 APPROVAL_RULESET = 20864833
@@ -1802,7 +1801,7 @@ def sync(
         head_repository or repository.full_name,
         str(pull_request),
     )
-    merge_set.sync(github, event, CONTEXT)
+    merge_set.sync(github, event, RUN_URL)
 
 
 class SyncAlone(unittest.TestCase):
@@ -2916,7 +2915,51 @@ class GitMergesOnDisk(unittest.TestCase):
         )
 
 
+# The environment that the Merge set workflow gives the sync for an event of
+# pull request 7 of nodes-hub.
+SYNC_ENVIRONMENT = {
+    "EVENT_REPOSITORY": "nodes-hub",
+    "EVENT_BRANCH": SET_NAME,
+    "EVENT_HEAD_REPOSITORY": "Peppy-bot/nodes-hub",
+    "EVENT_PULL_REQUEST": "7",
+    "MERGE_SET_BOT_LOGIN": BOT,
+    "GITHUB_SERVER_URL": "https://github.com",
+    "GITHUB_REPOSITORY": "Peppy-bot/peppy",
+    "GITHUB_RUN_ID": "99",
+    "MERGE_SET_TOKEN": "token",
+}
+
+
 class Commands(unittest.TestCase):
+    def test_the_sync_runs_as_the_bot_for_the_event_of_its_environment(self):
+        with patch.object(merge_set, "sync") as sync:
+            merge_set.run_sync(SYNC_ENVIRONMENT)
+        gateway, event, run_url = sync.call_args.args
+        self.assertEqual(gateway.bot_login, BOT)
+        self.assertEqual(gateway.api.token, "token")
+        self.assertEqual(
+            event,
+            merge_set.parse_event("nodes-hub", SET_NAME, "Peppy-bot/nodes-hub", "7"),
+        )
+        self.assertEqual(run_url, RUN_URL)
+
+    def test_the_sync_reads_the_variables_of_its_workflow_in_order(self):
+        names = [
+            "MERGE_SET_BOT_LOGIN",
+            "GITHUB_SERVER_URL",
+            "GITHUB_REPOSITORY",
+            "GITHUB_RUN_ID",
+            "MERGE_SET_TOKEN",
+        ]
+        for index, name in enumerate(names):
+            # This variable and every later one are missing.
+            environment = {**SYNC_ENVIRONMENT, **dict.fromkeys(names[index:], "")}
+            with self.subTest(name=name), patch.object(merge_set, "sync") as sync:
+                with self.assertRaises(MergeSetError) as refused:
+                    merge_set.run_sync(environment)
+                self.assertTrue(str(refused.exception).startswith(f"{name} is not set"))
+                sync.assert_not_called()
+
     def test_the_repositories_command_names_them_in_the_step_output(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
