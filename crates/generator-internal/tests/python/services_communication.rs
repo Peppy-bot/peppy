@@ -1,14 +1,13 @@
 use crate::helpers::{
     CONSUMED_SERVICE_NO_REQUEST_EXAMPLE, CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE,
-    EXPOSED_SERVICE_EXAMPLE, EXPOSED_SERVICE_NO_REQUEST_EXAMPLE, TEST_CORE_NODE,
-    assert_exited_successfully, bind_slot, generate_node_project, python_consumer_stub_node_config,
-    save_runtime_config, test_node_runtime_config,
+    ConsumerExposerOutput, EXPOSED_SERVICE_EXAMPLE, EXPOSED_SERVICE_NO_REQUEST_EXAMPLE,
+    TEST_CORE_NODE, assert_exited_successfully, bind_slot, generate_node_project,
+    python_consumer_stub_node_config, save_runtime_config, test_node_runtime_config,
 };
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
     init_python_project_venv, init_python_user_node, native_dep, send_shutdown, spawn_python_run,
-    try_send_shutdown, wait_for_child, wait_for_health_service_reachable_or_exit,
-    wait_for_service_reachable_or_exit,
+    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use config::node::{ConsumedService, MessageFormat, NativeExposedService};
@@ -45,6 +44,198 @@ const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
+/// The instance ids of the consumer and the exposer of the single-exposer
+/// service tests.
+const SOLE_CONSUMER_INSTANCE_ID: &str = "the_consumer";
+const SOLE_EXPOSER_INSTANCE_ID: &str = "the_exposer";
+
+/// One consumed service and the exposed service that answers it, as the
+/// consumer and the exposer of a single-exposer test declare them.
+struct ServicePair {
+    consumed: ConsumedService,
+    request_format: MessageFormat,
+    response_format: MessageFormat,
+    exposed: NativeExposedService,
+}
+
+/// Runs one consumer of `service` against its one exposer. The consumer's
+/// `uvc_camera` slot is bound to the exposer, the exposer starts first, and
+/// both nodes are shut down once the consumer printed
+/// `expected_consumer_log`. Returns what the two nodes printed; both exited
+/// successfully.
+async fn run_single_exposer_service_flow(
+    topology: crate::helpers::LocalNodesTopology,
+    service: ServicePair,
+    consumer_main: &str,
+    exposer_main: &str,
+    expected_consumer_log: &str,
+) -> ConsumerExposerOutput {
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    // --- Consumer (client) project
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
+    let user_node_consumer = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_consumer,
+        &python_consumer_stub_node_config("uvc_camera", "v1", "uvc_camera"),
+        |generator| {
+            generator
+                .add_consumed_service(
+                    &service.consumed,
+                    &service.request_format,
+                    &service.response_format,
+                    &native_dep("uvc_camera", "v1", "uvc_camera"),
+                )
+                .unwrap();
+        },
+    );
+    let consumer_runtime_config = test_node_runtime_config(
+        &router_host,
+        router_port,
+        CONSUMER_NODE_NAME,
+        SOLE_CONSUMER_INSTANCE_ID,
+    );
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "uvc_camera",
+        TEST_CORE_NODE,
+        SOLE_EXPOSER_INSTANCE_ID,
+    );
+    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
+    init_python_user_node(&user_node_consumer);
+    fs::write(user_node_consumer.join("main.py"), consumer_main)
+        .expect("failed to write consumer main.py");
+
+    // --- Exposer (server) project
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
+    let user_node_exposer = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_exposer,
+        STUB_PYTHON_NODE_CONFIG,
+        |generator| {
+            generator
+                .add_exposed_service(&service.exposed, None)
+                .unwrap();
+        },
+    );
+    let exposer_runtime_config = test_node_runtime_config(
+        &router_host,
+        router_port,
+        UVC_CAMERA_NODE_NAME,
+        SOLE_EXPOSER_INSTANCE_ID,
+    );
+    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
+    init_python_user_node(&user_node_exposer);
+    fs::write(user_node_exposer.join("main.py"), exposer_main)
+        .expect("failed to write exposer main.py");
+
+    init_python_project_venv(&user_node_consumer);
+    init_python_project_venv(&user_node_exposer);
+
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
+    let ctx = WaitContext {
+        messenger: &messenger,
+        bound_core_node: TEST_CORE_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_core_node: TEST_CORE_NODE,
+    };
+
+    // Spawn exposer first so it's ready to handle requests
+    let mut exposer_child = spawn_python_run(
+        &user_node_exposer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
+    );
+
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        &service.exposed.name,
+        Some(SOLE_EXPOSER_INSTANCE_ID),
+        &mut exposer_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    let mut consumer = CapturedChild::new(spawn_python_run(
+        &user_node_consumer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
+    ));
+
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        CONSUMER_NODE_NAME,
+        SOLE_CONSUMER_INSTANCE_ID,
+        &mut consumer.child,
+        &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        SOLE_EXPOSER_INSTANCE_ID,
+        &mut exposer_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    // Consumer's poll runs as a background task created in `setup`. Wait
+    // for the result line to appear in its stdout before sending shutdown,
+    // otherwise the event loop can stop mid-poll and the print is lost.
+    consumer.wait_for_stdout_contains(
+        expected_consumer_log,
+        Duration::from_secs(10),
+        &user_node_consumer,
+    );
+
+    send_shutdown(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        CONSUMER_NODE_NAME,
+        TEST_CORE_NODE,
+        SOLE_CONSUMER_INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
+    send_shutdown(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        UVC_CAMERA_NODE_NAME,
+        TEST_CORE_NODE,
+        SOLE_EXPOSER_INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
+    let exposer_output = wait_for_child(
+        &mut exposer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
+    let (consumer_stdout, consumer_stderr) =
+        assert_exited_successfully("consumer process", &consumer_output);
+    let (exposer_stdout, exposer_stderr) =
+        assert_exited_successfully("exposer process", &exposer_output);
+    ConsumerExposerOutput {
+        consumer_stdout,
+        consumer_stderr,
+        exposer_stdout,
+        exposer_stderr,
+    }
+}
+
 #[rstest::rstest]
 #[case::peer(crate::helpers::LocalNodesTopology::Peer)]
 #[case::router(crate::helpers::LocalNodesTopology::Router)]
@@ -52,52 +243,12 @@ const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 async fn services_communication_no_target_instance_id(
     #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
-    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-
-    // --- Consumer (client) project
-    let consumer_instance_id = "the_consumer";
-    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
-    let consumed_service: ConsumedService =
-        serde_json5::from_str(CONSUMED_SERVICE_EXAMPLE).unwrap();
-    let consumed_request_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
-    let consumed_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
-    let user_node_consumer = generate_node_project::<generator::PythonGenerator>(
-        &temp_dir_consumer,
-        &python_consumer_stub_node_config("uvc_camera", "v1", "uvc_camera"),
-        |generator| {
-            generator
-                .add_consumed_service(
-                    &consumed_service,
-                    &consumed_request_format,
-                    &consumed_response_format,
-                    &native_dep("uvc_camera", "v1", "uvc_camera"),
-                )
-                .unwrap();
-        },
-    );
-
-    let consumer_runtime_config = test_node_runtime_config(
-        &router_host,
-        router_port,
-        CONSUMER_NODE_NAME,
-        consumer_instance_id,
-    );
-    let consumer_runtime_config = bind_slot(
-        consumer_runtime_config,
-        "uvc_camera",
-        TEST_CORE_NODE,
-        "the_exposer",
-    );
-    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let user_node_consumer_config_str =
-        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
-
-    init_python_user_node(&user_node_consumer);
+    let service = ServicePair {
+        consumed: serde_json5::from_str(CONSUMED_SERVICE_EXAMPLE).unwrap(),
+        request_format: serde_json5::from_str(CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap(),
+        response_format: serde_json5::from_str(CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap(),
+        exposed: serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap(),
+    };
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -122,35 +273,6 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_consumer.join("main.py");
-    fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
-
-    // --- Exposer (server) project
-    let exposer_instance_id = "the_exposer";
-    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
-    let exposed_service: NativeExposedService =
-        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let user_node_exposer = generate_node_project::<generator::PythonGenerator>(
-        &temp_dir_exposer,
-        STUB_PYTHON_NODE_CONFIG,
-        |generator| {
-            generator
-                .add_exposed_service(&exposed_service, None)
-                .unwrap();
-        },
-    );
-
-    let exposer_runtime_config = test_node_runtime_config(
-        &router_host,
-        router_port,
-        UVC_CAMERA_NODE_NAME,
-        exposer_instance_id,
-    );
-    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let user_node_exposer_runtime_config_str =
-        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
-
-    init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -178,124 +300,26 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_exposer.join("main.py");
-    fs::write(main_file, exposer_main).expect("failed to write exposer main.py");
-
-    println!(
-        "User node consumer PEPPY_RUNTIME_CONFIG=\"{}\"",
-        user_node_consumer_config_str
-    );
-    println!("User node consumer = {}", user_node_consumer.display());
-    println!(
-        "User node exposer PEPPY_RUNTIME_CONFIG=\"{}\"",
-        user_node_exposer_runtime_config_str
-    );
-    println!("User node exposer = {}", user_node_exposer.display());
-
-    init_python_project_venv(&user_node_consumer);
-    init_python_project_venv(&user_node_exposer);
-
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger for test control");
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-
-    // Spawn exposer first so it's ready to handle requests
-    let mut exposer_child = spawn_python_run(
-        &user_node_exposer,
-        &[(
-            RUNTIME_CONFIG_VAR_NAME,
-            &user_node_exposer_runtime_config_str,
-        )],
-    );
-
-    wait_for_service_reachable_or_exit(
-        &ctx,
-        UVC_CAMERA_NODE_NAME,
-        "enable_camera",
-        Some(exposer_instance_id),
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    let mut consumer = CapturedChild::new(spawn_python_run(
-        &user_node_consumer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &user_node_consumer_config_str)],
-    ));
-
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        CONSUMER_NODE_NAME,
-        consumer_instance_id,
-        &mut consumer.child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        UVC_CAMERA_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    // Consumer's poll runs as a background task created in `setup`. Wait
-    // for the result line to appear in its stdout before sending shutdown,
-    // otherwise the event loop can stop mid-poll and the print is lost.
     let expected_consumer_log = format!(
-        "enable_camera result: service_id={} enabled=True error=handled",
-        exposer_instance_id
+        "enable_camera result: service_id={SOLE_EXPOSER_INSTANCE_ID} enabled=True error=handled"
     );
-    consumer.wait_for_stdout_contains(
+    let ConsumerExposerOutput {
+        consumer_stdout,
+        consumer_stderr,
+        exposer_stdout,
+        exposer_stderr,
+    } = run_single_exposer_service_flow(
+        topology,
+        service,
+        consumer_main,
+        exposer_main,
         &expected_consumer_log,
-        Duration::from_secs(10),
-        &user_node_consumer,
-    );
-
-    // The consumer may have already exited after completing the request.
-    try_send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        UVC_CAMERA_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
     )
     .await;
 
-    let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
-    let exposer_output = wait_for_child(
-        &mut exposer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_exposer,
-    );
-
-    let (consumer_stdout, consumer_stderr) =
-        assert_exited_successfully("consumer process", &consumer_output);
-    // `wait_for_stdout_contains` above already proved the line was printed,
-    // but we re-assert here so the failure points at the right location if
-    // the captured-output flow ever regresses.
+    // `wait_for_stdout_contains` in the flow already proved the line was
+    // printed, but we re-assert here so the failure points at the right
+    // location if the captured-output flow ever regresses.
     assert!(
         consumer_stdout.contains(&expected_consumer_log),
         "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
@@ -304,12 +328,8 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let (exposer_stdout, exposer_stderr) =
-        assert_exited_successfully("exposer process", &exposer_output);
-    let expected_request_log = format!(
-        "received enable_camera request from {}: enable = True",
-        consumer_instance_id
-    );
+    let expected_request_log =
+        format!("received enable_camera request from {SOLE_CONSUMER_INSTANCE_ID}: enable = True");
     assert!(
         exposer_stdout.contains(&expected_request_log)
             && exposer_stdout.contains("enable_camera handler finished"),
@@ -326,51 +346,13 @@ if __name__ == "__main__":
 async fn services_communication_exposed_service_without_request_body(
     #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
-    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-
-    // --- Consumer (client) project
-    let consumer_instance_id = "the_consumer";
-    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
-    let consumed_service: ConsumedService =
-        serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
-    let consumed_request_format = crate::helpers::empty_message_format();
-    let consumed_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE).unwrap();
-    let user_node_consumer = generate_node_project::<generator::PythonGenerator>(
-        &temp_dir_consumer,
-        &python_consumer_stub_node_config("uvc_camera", "v1", "uvc_camera"),
-        |generator| {
-            generator
-                .add_consumed_service(
-                    &consumed_service,
-                    &consumed_request_format,
-                    &consumed_response_format,
-                    &native_dep("uvc_camera", "v1", "uvc_camera"),
-                )
-                .unwrap();
-        },
-    );
-
-    let consumer_runtime_config = test_node_runtime_config(
-        &router_host,
-        router_port,
-        CONSUMER_NODE_NAME,
-        consumer_instance_id,
-    );
-    let consumer_runtime_config = bind_slot(
-        consumer_runtime_config,
-        "uvc_camera",
-        TEST_CORE_NODE,
-        "the_exposer",
-    );
-    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_str =
-        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
-
-    init_python_user_node(&user_node_consumer);
+    let service = ServicePair {
+        consumed: serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_EXAMPLE).unwrap(),
+        request_format: crate::helpers::empty_message_format(),
+        response_format: serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE)
+            .unwrap(),
+        exposed: serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap(),
+    };
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -393,35 +375,6 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_consumer.join("main.py");
-    fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
-
-    // --- Exposer (server) project
-    let exposer_instance_id = "the_exposer";
-    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
-    let exposed_service: NativeExposedService =
-        serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
-    let user_node_exposer = generate_node_project::<generator::PythonGenerator>(
-        &temp_dir_exposer,
-        STUB_PYTHON_NODE_CONFIG,
-        |generator| {
-            generator
-                .add_exposed_service(&exposed_service, None)
-                .unwrap();
-        },
-    );
-
-    let exposer_runtime_config = test_node_runtime_config(
-        &router_host,
-        router_port,
-        UVC_CAMERA_NODE_NAME,
-        exposer_instance_id,
-    );
-    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_str =
-        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
-
-    init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -446,109 +399,25 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_exposer.join("main.py");
-    fs::write(main_file, exposer_main).expect("failed to write exposer main.py");
-
-    init_python_project_venv(&user_node_consumer);
-    init_python_project_venv(&user_node_exposer);
-
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger for test control");
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-
-    // Spawn exposer first so it's ready to handle requests
-    let mut exposer_child = spawn_python_run(
-        &user_node_exposer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
-    );
-
-    wait_for_service_reachable_or_exit(
-        &ctx,
-        UVC_CAMERA_NODE_NAME,
-        "get_system_status",
-        Some(exposer_instance_id),
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    let mut consumer = CapturedChild::new(spawn_python_run(
-        &user_node_consumer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    ));
-
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        CONSUMER_NODE_NAME,
-        consumer_instance_id,
-        &mut consumer.child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        UVC_CAMERA_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    // Consumer's poll runs as a background task created in `setup`. Wait
-    // for the result line to appear in its stdout before sending shutdown,
-    // otherwise the event loop can stop mid-poll and the print is lost.
-    let expected_consumer_log = format!(
-        "get_system_status result: service_id={} healthy=True",
-        exposer_instance_id
-    );
-    consumer.wait_for_stdout_contains(
+    let expected_consumer_log =
+        format!("get_system_status result: service_id={SOLE_EXPOSER_INSTANCE_ID} healthy=True");
+    let ConsumerExposerOutput {
+        consumer_stdout,
+        consumer_stderr,
+        exposer_stdout,
+        exposer_stderr,
+    } = run_single_exposer_service_flow(
+        topology,
+        service,
+        consumer_main,
+        exposer_main,
         &expected_consumer_log,
-        Duration::from_secs(10),
-        &user_node_consumer,
-    );
-
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        UVC_CAMERA_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
     )
     .await;
 
-    let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
-    let exposer_output = wait_for_child(
-        &mut exposer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_exposer,
-    );
-
-    let (consumer_stdout, consumer_stderr) =
-        assert_exited_successfully("consumer process", &consumer_output);
-    // `wait_for_stdout_contains` above already proved the line was printed,
-    // but we re-assert here so the failure points at the right location if
-    // the captured-output flow ever regresses.
+    // `wait_for_stdout_contains` in the flow already proved the line was
+    // printed, but we re-assert here so the failure points at the right
+    // location if the captured-output flow ever regresses.
     assert!(
         consumer_stdout.contains(&expected_consumer_log),
         "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
@@ -557,12 +426,8 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let (exposer_stdout, exposer_stderr) =
-        assert_exited_successfully("exposer process", &exposer_output);
-    let expected_request_log = format!(
-        "received get_system_status request from {}",
-        consumer_instance_id
-    );
+    let expected_request_log =
+        format!("received get_system_status request from {SOLE_CONSUMER_INSTANCE_ID}");
     assert!(
         exposer_stdout.contains(&expected_request_log)
             && exposer_stdout.contains("get_system_status handler finished"),

@@ -721,6 +721,15 @@ fn lossy_snapshot(buf: &Arc<Mutex<Vec<u8>>>) -> String {
     String::from_utf8_lossy(&buf.lock().unwrap()).into_owned()
 }
 
+/// What the consumer and the exposer of a two-node communication test
+/// printed, read once both exited successfully.
+pub struct ConsumerExposerOutput {
+    pub consumer_stdout: String,
+    pub consumer_stderr: String,
+    pub exposer_stdout: String,
+    pub exposer_stderr: String,
+}
+
 /// Asserts that the process behind `output` exited with success and returns
 /// its stdout and stderr as text for the caller's content checks. `label`
 /// names the process in the failure message.
