@@ -295,4 +295,82 @@ mod tests {
         std::fs::write(peppygen.join("peppy.json5.sha256"), b"deadbeef").unwrap();
         assert!(!needs_sync(tmp.path()));
     }
+
+    const ROOT_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: { name: "core_root", tag: "v1" },
+        execution: { language: "rust", run_cmd: ["true"] },
+    }"#;
+
+    /// Runs [`auto_sync_if_missing`] for a node without dependencies in
+    /// `node_dir`, against an empty stack and an empty peppy root. The node
+    /// directory holds no `peppy.json5`, so a generation that runs fails.
+    fn auto_sync_node_without_config(node_dir: &std::path::Path) -> crate::Result<()> {
+        let stack_dir = tempfile::tempdir().unwrap();
+        let root_config = config::node::NodeConfigParser::from_content(ROOT_CONFIG).unwrap();
+        let node_stack = NodeStack::new(root_config, None, stack_dir.path());
+        let peppy_home = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_home.path().to_path_buf());
+        let manifest: config::node::Manifest =
+            serde_json5::from_str(r#"{ name: "fresh_node", tag: "v1" }"#).unwrap();
+        let interfaces = config::node::Interfaces::default();
+        auto_sync_if_missing(
+            AutoSyncParams {
+                node_dir,
+                execution_language: config::node::PeppygenLanguage::Rust,
+                manifest: &manifest,
+                interfaces: &interfaces,
+                git_hash: "abc123",
+                on_feedback: &|_| {},
+            },
+            &node_stack,
+            &peppy_dirs,
+        )
+    }
+
+    fn entry_names(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn auto_sync_leaves_a_complete_peppy_dir_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy = tmp.path().join(".peppy");
+        let peppygen = peppy.join("libs/peppygen");
+        std::fs::create_dir_all(&peppygen).unwrap();
+        std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
+        std::fs::write(peppygen.join("peppy.json5.sha256"), b"deadbeef").unwrap();
+
+        auto_sync_node_without_config(tmp.path()).expect("a complete .peppy needs no sync");
+
+        assert_eq!(entry_names(tmp.path()), vec![".peppy".to_owned()]);
+        assert_eq!(std::fs::read(peppy.join("git.hash")).unwrap(), b"abc123");
+    }
+
+    #[test]
+    fn auto_sync_restores_the_previous_peppy_dir_when_generation_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy = tmp.path().join(".peppy");
+        std::fs::create_dir_all(&peppy).unwrap();
+        std::fs::write(peppy.join("marker"), b"previous").unwrap();
+
+        let result = auto_sync_node_without_config(tmp.path());
+
+        assert!(
+            matches!(result, Err(crate::Error::GeneratorError(_))),
+            "a missing peppy.json5 must fail the generation, got {result:?}"
+        );
+        assert_eq!(std::fs::read(peppy.join("marker")).unwrap(), b"previous");
+        assert_eq!(entry_names(&peppy), vec!["marker".to_owned()]);
+        assert_eq!(
+            entry_names(tmp.path()),
+            vec![".peppy".to_owned()],
+            "no backup directory may remain next to the restored .peppy"
+        );
+    }
 }
