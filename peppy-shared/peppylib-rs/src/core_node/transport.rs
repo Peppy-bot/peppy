@@ -60,19 +60,6 @@ struct ServiceRoute<'a> {
     target: ServiceTarget<'a>,
 }
 
-/// Routing parameters for a single goal send. Same rationale as
-/// [`ServiceRoute`].
-struct GoalRoute<'a> {
-    messenger: &'a MessengerHandle,
-    as_core_node: &'a str,
-    as_instance_id: &'a str,
-    action_name: &'a str,
-    /// Core node whose daemon hosts the action; used only to build the
-    /// `SenderTarget` service root. `None` falls back to the caller's own
-    /// core_node.
-    to_core_node: Option<&'a str>,
-}
-
 async fn poll_core_node_service<Response>(
     route: ServiceRoute<'_>,
     request_payload: Payload,
@@ -91,27 +78,6 @@ async fn poll_core_node_service<Response>(
     )
     .await?;
     decode_response(response.payload_bytes().as_ref()).map_err(Into::into)
-}
-
-async fn send_core_node_goal(
-    route: GoalRoute<'_>,
-    goal_payload: Payload,
-    goal_timeout: Duration,
-) -> Result<ActionGoalHandle> {
-    let to_core = route.to_core_node.unwrap_or(route.as_core_node);
-    ActionMessenger::send_goal(
-        route.messenger,
-        route.as_core_node,
-        route.as_instance_id,
-        SenderTarget::node(to_core, names::CORE_NODE_TAG)?,
-        route.action_name,
-        None,
-        goal_payload,
-        QoSProfile::default(),
-        DAEMON_GOAL_FEEDBACK,
-        goal_timeout,
-    )
-    .await
 }
 
 /// Polls a daemon-hosted core-node service. The request codec's
@@ -145,6 +111,10 @@ pub async fn poll<R: ServiceRequest>(
 /// Sends a goal to a daemon-hosted core-node action. The goal codec's
 /// [`ActionGoal`] impl (emitted by the registry) supplies the wire name:
 /// `send_goal(&LaunchGoal { … }, …)` starts a `stack_launch`.
+///
+/// `to_core_node` is the core node whose daemon hosts the action, used only
+/// to build the `SenderTarget` service root; `None` targets the caller's own
+/// core node, `as_core_node`.
 pub async fn send_goal<G: ActionGoal>(
     goal: &G,
     messenger: &MessengerHandle,
@@ -153,15 +123,18 @@ pub async fn send_goal<G: ActionGoal>(
     to_core_node: Option<&str>,
     goal_timeout: Duration,
 ) -> Result<ActionGoalHandle> {
-    send_core_node_goal(
-        GoalRoute {
-            messenger,
-            as_core_node,
-            as_instance_id,
-            action_name: G::ID.name(),
-            to_core_node,
-        },
-        goal.encode_goal()?,
+    let goal_payload = goal.encode_goal()?;
+    let to_core_node = to_core_node.unwrap_or(as_core_node);
+    ActionMessenger::send_goal(
+        messenger,
+        as_core_node,
+        as_instance_id,
+        SenderTarget::node(to_core_node, names::CORE_NODE_TAG)?,
+        G::ID.name(),
+        None,
+        goal_payload,
+        QoSProfile::default(),
+        DAEMON_GOAL_FEEDBACK,
         goal_timeout,
     )
     .await
