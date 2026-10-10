@@ -40,45 +40,6 @@ impl DeploymentSource {
     }
 }
 
-/// A `<name>:<tag>` reference to a tagged repository item, held to the
-/// identity rules every cache keys on. The one parser for a reference a
-/// user types, whatever kind of item it names; `label` is the kind, so a
-/// refusal says which reference was malformed (`exposure reference ...`,
-/// `search reference ...`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ItemRef {
-    pub name: String,
-    pub tag: String,
-}
-
-impl ItemRef {
-    pub fn parse(raw: &str, label: &str) -> Result<Self, String> {
-        let Some((name, tag)) = raw.trim().split_once(':') else {
-            return Err(format!(
-                "{label} reference `{raw}` must be written as `<name>:<tag>`"
-            ));
-        };
-        if tag.contains(':') {
-            return Err(format!(
-                "{label} reference `{raw}` must contain at most one ':' separating name and tag"
-            ));
-        }
-        let (name, tag) = (name.trim(), tag.trim());
-        config::repo_node_id::validate_repo_node_name(name, &format!("{label} name"))?;
-        config::repo_node_id::validate_repo_node_tag(tag, &format!("{label} tag"))?;
-        Ok(Self {
-            name: name.to_owned(),
-            tag: tag.to_owned(),
-        })
-    }
-}
-
-impl fmt::Display for ItemRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.name, self.tag)
-    }
-}
-
 /// One `<name>:<tag>` exposure reference of an `exposures` deployment,
 /// held to the same identity rules as a node reference.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -89,8 +50,23 @@ pub struct ExposureRef {
 
 impl ExposureRef {
     pub fn parse(raw: &str) -> Result<Self, String> {
-        let ItemRef { name, tag } = ItemRef::parse(raw, "exposure")?;
-        Ok(Self { name, tag })
+        let Some((name, tag)) = raw.trim().split_once(':') else {
+            return Err(format!(
+                "exposure reference `{raw}` must be written as `<name>:<tag>`"
+            ));
+        };
+        if tag.contains(':') {
+            return Err(format!(
+                "exposure reference `{raw}` must contain at most one ':' separating name and tag"
+            ));
+        }
+        let (name, tag) = (name.trim(), tag.trim());
+        config::repo_node_id::validate_repo_node_name(name, "exposure name")?;
+        config::repo_node_id::validate_repo_node_tag(tag, "exposure tag")?;
+        Ok(Self {
+            name: name.to_owned(),
+            tag: tag.to_owned(),
+        })
     }
 }
 
@@ -510,39 +486,32 @@ mod tests {
         assert!(msg.contains("not both"), "unexpected: {msg}");
     }
 
-    /// A reference of any kind is refused with the kind in the message,
-    /// and parsed with its whitespace trimmed.
+    /// An exposure reference is refused with the part that is wrong named in
+    /// the message, and parsed with its whitespace trimmed.
     #[test]
-    fn item_reference_refusals_name_the_kind() {
-        let err = |raw: &str| ItemRef::parse(raw, "search").expect_err("malformed");
+    fn exposure_reference_refusals_name_the_part_and_trim() {
+        let err = |raw: &str| ExposureRef::parse(raw).expect_err("malformed");
         assert_eq!(
             err("rgb_camera"),
-            "search reference `rgb_camera` must be written as `<name>:<tag>`"
+            "exposure reference `rgb_camera` must be written as `<name>:<tag>`"
+        );
+        assert_eq!(
+            err("a:v1:x"),
+            "exposure reference `a:v1:x` must contain at most one ':' separating name and tag"
         );
         assert!(
-            err("a:v1:x").contains("at most one ':'"),
-            "{}",
-            err("a:v1:x")
-        );
-        assert!(
-            err("camera:1v").contains("search tag"),
+            err("camera:1v").contains("exposure tag"),
             "{}",
             err("camera:1v")
         );
         assert!(
-            err("cam era:v1").contains("search name"),
+            err("cam era:v1").contains("exposure name"),
             "{}",
             err("cam era:v1")
         );
 
-        let parsed = ItemRef::parse(" rgb_camera : v1 ", "search").expect("parses");
-        assert_eq!(
-            parsed,
-            ItemRef {
-                name: "rgb_camera".to_owned(),
-                tag: "v1".to_owned()
-            }
-        );
+        let parsed = ExposureRef::parse(" rgb_camera : v1 ").expect("parses");
+        assert_eq!(parsed, exposure("rgb_camera", "v1"));
         assert_eq!(parsed.to_string(), "rgb_camera:v1");
     }
 
