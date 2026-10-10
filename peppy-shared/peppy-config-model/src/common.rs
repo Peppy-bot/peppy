@@ -277,11 +277,7 @@ impl ParameterSpec {
                 let mut out = BTreeMap::new();
                 let mut all_present = true;
                 for (k, sub) in map {
-                    let sub_path = if path.is_empty() {
-                        k.clone()
-                    } else {
-                        format!("{path}.{k}")
-                    };
+                    let sub_path = join_field_path(path, k);
                     match sub.synthesize_default(&sub_path, missing) {
                         Some(v) => {
                             out.insert(k.clone(), v);
@@ -517,7 +513,7 @@ fn parse_array_spec(map: BTreeMap<String, AnyType>, path: &str) -> Result<Parame
             display_path(path)
         )
     })?;
-    let item_path = format!("{}[]", if path.is_empty() { "<root>" } else { path });
+    let item_path = format!("{}[]", display_path(path));
     let item_spec = parameter_spec_from_any(items, &item_path)?;
     Ok(ParameterSpec::Array {
         items: Box::new(item_spec),
@@ -556,11 +552,7 @@ fn parse_explicit_group(
                 ));
             }
             field => {
-                let sub_path = if path.is_empty() {
-                    field.to_string()
-                } else {
-                    format!("{path}.{field}")
-                };
+                let sub_path = join_field_path(path, field);
                 let parsed = parameter_spec_from_any(value, &sub_path)?;
                 out.insert(field.to_string(), parsed);
             }
@@ -579,11 +571,7 @@ fn parse_group_object(map: BTreeMap<String, AnyType>, path: &str) -> Result<Para
                 display_path(path)
             ));
         }
-        let sub_path = if path.is_empty() {
-            key.clone()
-        } else {
-            format!("{path}.{key}")
-        };
+        let sub_path = join_field_path(path, &key);
         let parsed = parameter_spec_from_any(value, &sub_path)?;
         out.insert(key, parsed);
     }
@@ -768,6 +756,15 @@ fn display_path(path: &str) -> &str {
     if path.is_empty() { "<root>" } else { path }
 }
 
+/// The dot-path of `field` inside `parent`. A field at the root (empty
+/// `parent`) is its own path.
+pub(crate) fn join_field_path(parent: &str, field: &str) -> String {
+    if parent.is_empty() {
+        return field.to_owned();
+    }
+    format!("{parent}.{field}")
+}
+
 /// Type alias for parameter type specifications declared in `peppy.json5`.
 ///
 /// Each key is a parameter name and each value is a typed [`ParameterSpec`]
@@ -849,11 +846,7 @@ fn merge_defaults(
     match (spec, value) {
         (ParameterSpec::Group(fields), AnyType::Object(map)) => {
             for (key, sub_spec) in fields {
-                let sub_path = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{path}.{key}")
-                };
+                let sub_path = join_field_path(path, key);
                 match map.get_mut(key) {
                     Some(child) => merge_defaults(child, sub_spec, &sub_path, missing),
                     None => {
@@ -1484,6 +1477,17 @@ mod tests {
             ParameterSpec::Array { length, .. } => assert_eq!(length, Some(3)),
             other => panic!("expected array, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn array_item_errors_name_the_item_path() {
+        let err = serde_json5::from_str::<ParameterSpec>(r#"{ $type: "array", $items: "u17" }"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("at `<root>[]`: unknown primitive type `u17`"),
+            "got: {err}"
+        );
     }
 
     #[test]
