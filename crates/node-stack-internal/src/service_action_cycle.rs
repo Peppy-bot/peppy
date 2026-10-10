@@ -421,8 +421,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn three_node_service_cycle_detected() {
+    /// Nodes a, b and c, each of which consumes as a service the contract
+    /// that the next one implements, so that they call each other in the ring
+    /// a -> b -> c -> a.
+    fn three_node_service_ring() -> [NodeConfig; 3] {
         let a = NodeSpec::new("a")
             .implements("contract_a", "v1")
             .contract_dep("contract_b", "v1", "to_b")
@@ -438,9 +440,36 @@ mod tests {
             .contract_dep("contract_a", "v1", "to_a")
             .consumes_service("to_a")
             .build();
+        [a, b, c]
+    }
 
-        let cycle = find_cycle(&[a, b, c]).expect("three-node service cycle should be detected");
+    #[test]
+    fn three_node_service_cycle_detected() {
+        let cycle = find_cycle(&three_node_service_ring())
+            .expect("three-node service cycle should be detected");
         assert_eq!(cycle.nodes.len(), 3);
+    }
+
+    /// The closing dependency of a cycle is the edge between the smallest
+    /// (from, to) node labels, whatever order the nodes come in. The edge list
+    /// follows the node order, so the three orders put the edge from a to b
+    /// first, last, and in the middle of it.
+    #[test]
+    fn closing_dependency_is_the_edge_between_the_smallest_labels() {
+        let [a, b, c] = three_node_service_ring();
+
+        for order in [[&a, &b, &c], [&c, &b, &a], [&b, &a, &c]] {
+            let configs: Vec<NodeConfig> = order.into_iter().cloned().collect();
+            let node_names: Vec<&str> = configs
+                .iter()
+                .map(|config| config.manifest.name.as_str())
+                .collect();
+            let cycle = find_cycle(&configs).expect("three-node service cycle should be detected");
+            assert_eq!(
+                cycle.closing_dependency, "contract_b:v1",
+                "node order {node_names:?}"
+            );
+        }
     }
 
     #[test]
