@@ -620,18 +620,20 @@ impl Command for NodeCommand {
                 };
                 run::run_node(
                     ctx,
-                    node_name,
-                    tag,
-                    args,
-                    instance_id,
-                    run::ClockChoice {
-                        clock,
-                        publish_clock,
+                    run::RunNodeParams {
+                        node_name,
+                        tag,
+                        args,
+                        instance_id,
+                        clock: run::ClockChoice {
+                            clock,
+                            publish_clock,
+                        },
+                        links: merge_link_flags(&links, &vacant_links)
+                            .map_err(CommandError::ExecutionFailed)?,
+                        timeouts,
+                        build,
                     },
-                    merge_link_flags(&links, &vacant_links)
-                        .map_err(CommandError::ExecutionFailed)?,
-                    timeouts,
-                    build,
                 )
             }
             NodeCommands::Stop { instance_id } => {

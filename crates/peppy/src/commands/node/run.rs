@@ -991,20 +991,24 @@ pub async fn run_instance_async(
     Ok(instance_id)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn run_node(
-    ctx: &Arc<AppContext>,
-    node_name: String,
-    tag: String,
-    args: Vec<(String, String)>,
-    instance_id: Option<String>,
-    clock: ClockChoice,
-    links: BTreeMap<String, LinkValue>,
-    timeouts: TimeoutConfig,
-    build: bool,
-) -> Result<()> {
-    crate::commands::block_on(run_node_async(
-        ctx,
+/// The flags of `peppy node run`, as `run_node` receives them.
+pub struct RunNodeParams {
+    pub node_name: String,
+    pub tag: String,
+    pub args: Vec<(String, String)>,
+    pub instance_id: Option<String>,
+    pub clock: ClockChoice,
+    pub links: BTreeMap<String, LinkValue>,
+    pub timeouts: TimeoutConfig,
+    pub build: bool,
+}
+
+pub fn run_node(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<()> {
+    crate::commands::block_on(run_node_async(ctx, params))
+}
+
+async fn run_node_async(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<()> {
+    let RunNodeParams {
         node_name,
         tag,
         args,
@@ -1013,21 +1017,7 @@ pub fn run_node(
         links,
         timeouts,
         build,
-    ))
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_node_async(
-    ctx: &Arc<AppContext>,
-    node_name: String,
-    tag: String,
-    args: Vec<(String, String)>,
-    instance_id: Option<String>,
-    clock: ClockChoice,
-    links: BTreeMap<String, LinkValue>,
-    timeouts: TimeoutConfig,
-    build: bool,
-) -> Result<()> {
+    } = params;
     let conn = ctx.connect_to_daemon().await?;
 
     // Every step below addresses `conn.core_node_name`, this machine's daemon,
