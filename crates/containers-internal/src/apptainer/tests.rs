@@ -388,6 +388,24 @@ fn test_bind_with_opts() {
     );
 }
 
+/// Options need a destination in the spec to ride on, so a bind that mirrors
+/// its source writes the source out as the destination instead of dropping
+/// the options: a read-only bind must not silently become a writable one.
+#[test]
+fn test_bind_without_dest_keeps_its_opts() {
+    let facade = native_facade();
+
+    let cmd = facade.run("image.sif").bind("/data", None, Some("ro"));
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    let bind_idx = args.iter().position(|a| a == "--bind").unwrap();
+    assert_eq!(
+        args[bind_idx + 1],
+        "/data:/data:ro",
+        "bind spec should mirror the source and keep the options, got: {args:?}"
+    );
+}
+
 /// A value with a comma in it reaches the node whole: it rides the process
 /// environment under the `APPTAINERENV_` prefix and never the `--env` flag,
 /// whose argument apptainer splits at every comma.

@@ -1665,7 +1665,12 @@ impl<'a> ApptainerCommand<'a> {
             match (&bind.dest, &bind.opts) {
                 (Some(dest), Some(opts)) => args.push(format!("{translated_src}:{dest}:{opts}")),
                 (Some(dest), None) => args.push(format!("{translated_src}:{dest}")),
-                (None, _) => args.push(translated_src),
+                // Options ride after a destination, so a mirrored bind that
+                // carries options writes its source out as the destination.
+                (None, Some(opts)) => {
+                    args.push(format!("{translated_src}:{translated_src}:{opts}"))
+                }
+                (None, None) => args.push(translated_src),
             }
         }
 
