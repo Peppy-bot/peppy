@@ -30,11 +30,14 @@ fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
 
 fn rendered_harness(registry: &TestGenRegistry) -> String {
     let node_dir = TempDir::new().unwrap();
-    rendered_harness_in(registry, node_dir.path())
+    rendered_harness_in(PythonGenerator::new(), registry, node_dir.path())
 }
 
-fn rendered_harness_in(registry: &TestGenRegistry, node_dir: &Path) -> String {
-    let mut generator = PythonGenerator::new();
+fn rendered_harness_in(
+    mut generator: PythonGenerator,
+    registry: &TestGenRegistry,
+    node_dir: &Path,
+) -> String {
     super::super::fixtures::render(&mut generator, registry, node_dir).unwrap();
     generator
         .into_artifacts()
@@ -257,7 +260,7 @@ fn a_node_directory_with_a_combining_character_bakes_as_a_python_literal() {
     std::fs::create_dir(&node_dir).unwrap();
     let canonical = std::fs::canonicalize(&node_dir).unwrap();
 
-    let rendered = rendered_harness_in(&registry, &node_dir);
+    let rendered = rendered_harness_in(PythonGenerator::new(), &registry, &node_dir);
 
     let expected = format!("_SYNC_TIME_NODE_DIR = \"{}\"", canonical.display());
     assert!(
@@ -267,5 +270,35 @@ fn a_node_directory_with_a_combining_character_bakes_as_a_python_literal() {
     assert!(
         !rendered.contains("\\u{"),
         "no Rust-only `\\u{{...}}` escape may reach the Python source"
+    );
+}
+
+/// A schema whose every leaf has a default, nested group included, bakes
+/// the defaults as one dict literal in which the group is a nested dict.
+#[test]
+fn fully_defaulted_parameters_bake_a_nested_dict_literal() {
+    let mut registry = TestGenRegistry::default();
+    registry.record_node_identity("relay_node", "v1");
+    let parameters: config::ParameterSchema = serde_json5::from_str(
+        r#"{
+            frame_rate: { $type: "u32", $default: 30 },
+            calibration: {
+                $type: "object",
+                offset: { $type: "f64", $default: 0.5 },
+                enabled: { $type: "bool", $default: true }
+            }
+        }"#,
+    )
+    .unwrap();
+    let mut generator = PythonGenerator::new();
+    generator.set_parameters(parameters);
+    let node_dir = TempDir::new().unwrap();
+
+    let rendered = rendered_harness_in(generator, &registry, node_dir.path());
+
+    let expected = r#"_DEFAULT_PARAMETERS = {"calibration": {"enabled": True, "offset": 0.5}, "frame_rate": 30}"#;
+    assert!(
+        rendered.contains(expected),
+        "expected `{expected}` in:\n{rendered}"
     );
 }

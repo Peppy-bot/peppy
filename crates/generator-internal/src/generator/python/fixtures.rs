@@ -741,12 +741,13 @@ struct SlotKwarg {
     doc: String,
 }
 
-/// The `_DEFAULT_PARAMETERS` dict literal, synthesized from the schema's
-/// declared defaults; `None` when any reachable leaf lacks one (the node's
-/// own boot validation then raises the canonical missing-parameter error).
-fn default_parameters_literal(parameters: &config::ParameterSchema) -> Option<String> {
+/// The dict literal of a parameter group, the schema itself (the harness's
+/// `_DEFAULT_PARAMETERS`) or a nested group, synthesized from the declared
+/// defaults; `None` when any reachable leaf lacks one (the node's own boot
+/// validation then raises the canonical missing-parameter error).
+fn default_group_literal(fields: &config::ParameterSchema) -> Option<String> {
     let mut parts = Vec::new();
-    for (key, spec) in parameters {
+    for (key, spec) in fields {
         parts.push(format!(
             "{}: {}",
             serde_json::to_string(key).ok()?,
@@ -767,17 +768,7 @@ fn default_spec_literal(spec: &config::ParameterSpec) -> Option<String> {
         }
         config::ParameterSpec::Primitive { default: None, .. } => None,
         config::ParameterSpec::Array { .. } => None,
-        config::ParameterSpec::Group(fields) => {
-            let mut parts = Vec::new();
-            for (key, sub) in fields {
-                parts.push(format!(
-                    "{}: {}",
-                    serde_json::to_string(key).ok()?,
-                    default_spec_literal(sub)?
-                ));
-            }
-            Some(format!("{{{}}}", parts.join(", ")))
-        }
+        config::ParameterSpec::Group(fields) => default_group_literal(fields),
     }
 }
 
@@ -1114,7 +1105,7 @@ fn render_harness(
         Some(node_dir) => format!("_SYNC_TIME_NODE_DIR = {}", python_string_literal(node_dir)),
         None => "_SYNC_TIME_NODE_DIR = None".to_string(),
     });
-    match default_parameters_literal(parameters) {
+    match default_group_literal(parameters) {
         Some(literal) => builder.line(&format!("_DEFAULT_PARAMETERS = {literal}")),
         None => builder.py(r#"
 # At least one parameter has no schema default: `parameters=None`
