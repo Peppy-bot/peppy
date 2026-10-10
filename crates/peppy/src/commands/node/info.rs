@@ -407,14 +407,9 @@ fn format_default_value_inline(d: &DefaultValue) -> String {
         DefaultValue::Bool(b) => b.to_string(),
         // Use serde_json to escape quotes, backslashes, control chars, etc.
         // so the rendered output is a valid quoted string for any input.
-        DefaultValue::String(s) => serde_json::to_string(s).unwrap_or_else(|_| {
-            format!(
-                "\"{}\"",
-                s.replace('\\', "\\\\")
-                    .replace('"', "\\\"")
-                    .replace('\n', "\\n")
-            )
-        }),
+        DefaultValue::String(s) => {
+            serde_json::to_string(s).expect("a string always serializes to JSON")
+        }
         DefaultValue::Int(i) => i.to_string(),
         DefaultValue::UInt(u) => u.to_string(),
         DefaultValue::Float(f) => f.to_string(),
