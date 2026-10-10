@@ -313,6 +313,31 @@ mod tests {
     use tempfile::TempDir;
     use toml::Value;
 
+    /// The string at `keys` in `doc`, walked one table key at a time.
+    fn string_at<'a>(doc: &'a Value, keys: &[&str]) -> &'a str {
+        let mut value = doc;
+        for key in keys {
+            value = value
+                .get(key)
+                .unwrap_or_else(|| panic!("should have {}", keys.join(".")));
+        }
+        value
+            .as_str()
+            .unwrap_or_else(|| panic!("{} should be a string", keys.join(".")))
+    }
+
+    /// Asserts the peppygen and peppylib path dependencies.
+    fn assert_peppy_path_dependencies(doc: &Value) {
+        assert_eq!(
+            string_at(doc, &["dependencies", "peppygen", "path"]),
+            config::consts::PEPPYGEN_OUTPUT_PATH
+        );
+        assert_eq!(
+            string_at(doc, &["dependencies", "peppylib", "path"]),
+            daemon_config::consts::PEPPYLIB_OUTPUT_PATH
+        );
+    }
+
     /// Asserts the dev-dependency the testing feature rides in on.
     fn assert_testing_dev_dependency(doc: &Value) {
         let dev = doc
@@ -348,28 +373,9 @@ mod tests {
         let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
         let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
 
-        let package_name = doc
-            .get("package")
-            .and_then(|p| p.get("name"))
-            .and_then(|n| n.as_str())
-            .expect("should have package.name");
-        assert_eq!(package_name, "my_test_node");
+        assert_eq!(string_at(&doc, &["package", "name"]), "my_test_node");
 
-        let peppygen_path = doc
-            .get("dependencies")
-            .and_then(|d| d.get("peppygen"))
-            .and_then(|p| p.get("path"))
-            .and_then(|p| p.as_str())
-            .expect("should have peppygen dependency with path");
-        assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
-
-        let peppylib_path = doc
-            .get("dependencies")
-            .and_then(|d| d.get("peppylib"))
-            .and_then(|p| p.get("path"))
-            .and_then(|p| p.as_str())
-            .expect("should have peppylib dependency with path");
-        assert_eq!(peppylib_path, daemon_config::consts::PEPPYLIB_OUTPUT_PATH);
+        assert_peppy_path_dependencies(&doc);
 
         assert_testing_dev_dependency(&doc);
     }
@@ -396,35 +402,11 @@ mod tests {
         let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
         let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
 
-        let package_name = doc
-            .get("package")
-            .and_then(|p| p.get("name"))
-            .and_then(|n| n.as_str())
-            .expect("should have package.name");
-        assert_eq!(package_name, "existing_node");
+        assert_eq!(string_at(&doc, &["package", "name"]), "existing_node");
 
-        let serde_dep = doc
-            .get("dependencies")
-            .and_then(|d| d.get("serde"))
-            .and_then(|s| s.as_str())
-            .expect("should have serde dependency");
-        assert_eq!(serde_dep, "1.0");
+        assert_eq!(string_at(&doc, &["dependencies", "serde"]), "1.0");
 
-        let peppygen_path = doc
-            .get("dependencies")
-            .and_then(|d| d.get("peppygen"))
-            .and_then(|p| p.get("path"))
-            .and_then(|p| p.as_str())
-            .expect("should have peppygen dependency with path");
-        assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
-
-        let peppylib_path = doc
-            .get("dependencies")
-            .and_then(|d| d.get("peppylib"))
-            .and_then(|p| p.get("path"))
-            .and_then(|p| p.as_str())
-            .expect("should have peppylib dependency with path");
-        assert_eq!(peppylib_path, daemon_config::consts::PEPPYLIB_OUTPUT_PATH);
+        assert_peppy_path_dependencies(&doc);
 
         assert_testing_dev_dependency(&doc);
     }
@@ -457,20 +439,7 @@ mod tests {
             Some("1.0"),
             "the existing dependency must be kept"
         );
-        assert_eq!(
-            dependencies
-                .get("peppygen")
-                .and_then(|p| p.get("path"))
-                .and_then(|p| p.as_str()),
-            Some(config::consts::PEPPYGEN_OUTPUT_PATH),
-        );
-        assert_eq!(
-            dependencies
-                .get("peppylib")
-                .and_then(|p| p.get("path"))
-                .and_then(|p| p.as_str()),
-            Some(daemon_config::consts::PEPPYLIB_OUTPUT_PATH),
-        );
+        assert_peppy_path_dependencies(&doc);
         assert_testing_dev_dependency(&doc);
     }
 
@@ -536,47 +505,22 @@ mod tests {
         let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
         let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
 
-        let package_name = doc
-            .get("package")
-            .and_then(|p| p.get("name"))
-            .and_then(|n| n.as_str())
-            .expect("should have package.name");
-        assert_eq!(package_name, "node_with_stale_paths");
-
-        let package_version = doc
-            .get("package")
-            .and_then(|p| p.get("version"))
-            .and_then(|v| v.as_str())
-            .expect("should have package.version");
-        assert_eq!(package_version, "2.0.0");
-
-        let serde_dep = doc
-            .get("dependencies")
-            .and_then(|d| d.get("serde"))
-            .and_then(|s| s.as_str())
-            .expect("should have serde dependency");
-        assert_eq!(serde_dep, "1.0");
-
-        let peppygen_path = doc
-            .get("dependencies")
-            .and_then(|d| d.get("peppygen"))
-            .and_then(|p| p.get("path"))
-            .and_then(|p| p.as_str())
-            .expect("should have peppygen dependency with path");
         assert_eq!(
-            peppygen_path,
+            string_at(&doc, &["package", "name"]),
+            "node_with_stale_paths"
+        );
+
+        assert_eq!(string_at(&doc, &["package", "version"]), "2.0.0");
+
+        assert_eq!(string_at(&doc, &["dependencies", "serde"]), "1.0");
+
+        assert_eq!(
+            string_at(&doc, &["dependencies", "peppygen", "path"]),
             config::consts::PEPPYGEN_OUTPUT_PATH,
             "stale peppygen path should be overwritten"
         );
-
-        let peppylib_path = doc
-            .get("dependencies")
-            .and_then(|d| d.get("peppylib"))
-            .and_then(|p| p.get("path"))
-            .and_then(|p| p.as_str())
-            .expect("should have peppylib dependency with path");
         assert_eq!(
-            peppylib_path,
+            string_at(&doc, &["dependencies", "peppylib", "path"]),
             daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
             "stale peppylib path should be overwritten"
         );
