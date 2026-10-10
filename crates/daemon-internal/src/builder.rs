@@ -164,7 +164,7 @@ impl ServeCommandBuilder {
                 .add_async_command(Box::new(MessagingRouter::new(
                     messenger,
                     messaging_ready_tx,
-                    Some(core_node_done_rx),
+                    core_node_done_rx,
                     teardown_budget,
                     self.teardown_token.clone(),
                 )));
