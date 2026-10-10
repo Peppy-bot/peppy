@@ -133,28 +133,7 @@ pub(super) async fn apply(
         return RewrittenLocks::none();
     };
 
-    let mut rewritten = RewrittenLocks::none();
-    if !on_mirror.is_empty() {
-        let mirror = mirror.clone();
-        let written =
-            tokio::task::spawn_blocking(move || write_redirected_locks(locks, &mirror, &on_mirror))
-                .await;
-        match written {
-            Ok(written) => {
-                for warning in written.warnings {
-                    feedback.warning(warning);
-                }
-                for (outcome, redirected_files) in outcomes.iter_mut().zip(written.redirected_files)
-                {
-                    outcome.redirected_files = redirected_files;
-                }
-                rewritten = written.rewritten;
-            }
-            Err(e) => feedback.warning(every_file_from_pypi(format!(
-                "the uv.lock files could not be written ({e})"
-            ))),
-        }
-    }
+    let rewritten = redirect_staged_locks(locks, mirror, on_mirror, &mut outcomes, feedback).await;
 
     if outcomes.is_empty() {
         feedback.line(format!(
@@ -409,6 +388,42 @@ impl ProgressThrottle {
         self.last_line = now;
         true
     }
+}
+
+/// Points the files of `locks` that `on_mirror` holds at `mirror`, sets in
+/// `outcomes` how many files of each lock now come from the mirror, and
+/// returns the locks it rewrote. Writes nothing when the mirror has none of
+/// the files.
+async fn redirect_staged_locks(
+    locks: Vec<StagedLock>,
+    mirror: &PackagesBaseUrl,
+    on_mirror: HashSet<PypiFile>,
+    outcomes: &mut [LockOutcome],
+    feedback: &BuildFeedback,
+) -> RewrittenLocks {
+    if on_mirror.is_empty() {
+        return RewrittenLocks::none();
+    }
+    let mirror = mirror.clone();
+    let written =
+        tokio::task::spawn_blocking(move || write_redirected_locks(locks, &mirror, &on_mirror))
+            .await;
+    let written = match written {
+        Ok(written) => written,
+        Err(e) => {
+            feedback.warning(every_file_from_pypi(format!(
+                "the uv.lock files could not be written ({e})"
+            )));
+            return RewrittenLocks::none();
+        }
+    };
+    for warning in written.warnings {
+        feedback.warning(warning);
+    }
+    for (outcome, redirected_files) in outcomes.iter_mut().zip(written.redirected_files) {
+        outcome.redirected_files = redirected_files;
+    }
+    written.rewritten
 }
 
 /// For each lock, in order, how many of its file entries point at the mirror
