@@ -650,9 +650,13 @@ pub(super) async fn kill_and_collect_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build_io::FeedbackLine;
-    use crate::build_io::FeedbackStream;
-    use log_export::{LogExporter, LogKind};
+    use crate::action_log::test_support::scratch_log;
+    use crate::build_io::{
+        FeedbackLine, FeedbackStream, OutputReaderHooks, spawn_output_reader_async,
+    };
+    use log_export::{Iostream, LogExporter, LogKind};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use tokio::sync::mpsc;
 
     /// An announcer whose run log is in `dir`, with the receiving end of its
@@ -779,6 +783,47 @@ mod tests {
                 bind.is_device_passthrough(),
                 expected,
                 "src {src}, dest {dest:?}, opts {opts:?}"
+            );
+        }
+    }
+
+    /// Output reader hooks that ignore every event.
+    struct NoOpHooks;
+
+    impl OutputReaderHooks for NoOpHooks {}
+
+    /// Kills a `sleep` child through `kill_and_collect_error`, whose stderr
+    /// reader read `stderr`, and returns the error it reports.
+    async fn collect_error_after_stderr(stderr: &[u8]) -> String {
+        let child = Command::new("sleep").arg("5").spawn().expect("spawn sleep");
+        let stderr_buffer = StderrTail::new();
+        let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
+        let reader = spawn_output_reader_async(
+            std::io::Cursor::new(stderr.to_vec()),
+            feedback_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(NoOpHooks),
+            Iostream::Stderr,
+            Some(stderr_buffer.clone()),
+            scratch_log(),
+        );
+        kill_and_collect_error(child, "sensor_inst", "failed", stderr_buffer, vec![reader]).await
+    }
+
+    /// The error quotes the stderr tail after its header, and is the error
+    /// alone when the child printed nothing on stderr.
+    #[tokio::test]
+    async fn kill_and_collect_error_quotes_the_stderr_tail() {
+        let cases: [(&[u8], String); 3] = [
+            (b"", "failed".to_owned()),
+            (b"boom\n", format!("failed{STDERR_TAIL_HEADER}boom")),
+            (b"one\ntwo\n", format!("failed{STDERR_TAIL_HEADER}one\ntwo")),
+        ];
+        for (stderr, expected) in cases {
+            assert_eq!(
+                collect_error_after_stderr(stderr).await,
+                expected,
+                "stderr {stderr:?}"
             );
         }
     }
