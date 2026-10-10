@@ -170,8 +170,8 @@ impl Processor {
     /// Create processor for standalone mode.
     ///
     /// Uses provided configuration or defaults:
-    /// - messaging_host: DEFAULT_ZENOH_HOST or user-provided
-    /// - messaging_port: DEFAULT_ZENOH_PORT or user-provided
+    /// - messaging_host: DEFAULT_MESSAGING_HOST or user-provided
+    /// - messaging_port: DEFAULT_MESSAGING_PORT or user-provided
     /// - instance_id: "standalone" or user-provided
     /// - node_name: from peppy.json5 or user-provided
     ///

@@ -53,13 +53,14 @@ use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
 /// A handle to a task running in the background.
 ///
-/// This is a wrapper around the underlying runtime's join handle (currently `tokio::task::JoinHandle`).
+/// Wraps the `tokio::task::JoinHandle` of the spawned task.
 pub struct TaskHandle<T>(TokioJoinHandle<T>);
 
 impl<T> TaskHandle<T> {
     /// Abort the task associated with the handle.
     ///
-    /// The task will be cancelled, and waiting on the handle will return a `JoinError::Cancelled`.
+    /// Awaiting the handle of a task that the abort stops returns a
+    /// [`JoinError`] whose [`is_cancelled`](JoinError::is_cancelled) is `true`.
     pub fn abort(&self) {
         self.0.abort();
     }

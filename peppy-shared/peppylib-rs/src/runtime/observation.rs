@@ -82,8 +82,7 @@ impl ObservationSlot {
 
     /// The observed source of a `zero_or_one` slot, or `None` where the
     /// deployment wrote it vacant. Purely local configuration state; there is no
-    /// health-derived helper, because a third node's health is not knowable here
-    /// (see the design's "Generated observer API").
+    /// health-derived helper, because a third node's health is not knowable here.
     ///
     /// Generated `source()` module functions of `zero_or_one` slots call this; a
     /// `one` slot reads [`Self::sole_source`] instead, which has no empty case.

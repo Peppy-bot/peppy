@@ -63,8 +63,8 @@ pub enum PinnedInstance {
 /// Configuration for standalone execution.
 ///
 /// All fields are optional with sensible defaults:
-/// - `messaging_host`: DEFAULT_ZENOH_HOST ("127.0.0.1")
-/// - `messaging_port`: DEFAULT_ZENOH_PORT (7448)
+/// - `messaging_host`: DEFAULT_MESSAGING_HOST ("127.0.0.1")
+/// - `messaging_port`: DEFAULT_MESSAGING_PORT (7448)
 /// - `instance_id`: "standalone"
 /// - `node_name`: from peppy.json5 manifest
 /// - `parameters`: empty (must be provided if node requires them)
@@ -76,9 +76,9 @@ pub struct StandaloneConfig {
     pub node_name: Option<String>,
     /// Instance ID (defaults to "standalone")
     pub instance_id: Option<String>,
-    /// Messaging host (defaults to DEFAULT_ZENOH_HOST)
+    /// Messaging host (defaults to DEFAULT_MESSAGING_HOST)
     pub messaging_host: Option<String>,
-    /// Messaging port (defaults to DEFAULT_ZENOH_PORT)
+    /// Messaging port (defaults to DEFAULT_MESSAGING_PORT)
     pub messaging_port: Option<u16>,
     /// Daemon-less stand-in for a launcher's `framework.clock`: the one clock
     /// this node reads, and its role in that clock's domain. Lands verbatim in
