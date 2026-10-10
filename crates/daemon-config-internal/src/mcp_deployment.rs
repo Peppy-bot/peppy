@@ -11,6 +11,7 @@
 
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
 use crate::internal::launcher::MemberAddressing;
+use crate::internal::mcp_exposure::PeppyMcpExposureParser;
 use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedItem};
 use crate::internal::source::ExposureRef;
 use config::node::{NodeConfig, NodeConfigParser};
@@ -535,7 +536,7 @@ impl McpServeSpec {
             &self.exposures,
             PinKind::McpExposure,
             "an exposure",
-            |content| crate::error::deserialize_json5_with_path(content).map_err(|e| e.to_string()),
+            |content| PeppyMcpExposureParser::from_content(content).map_err(|e| e.to_string()),
         )?;
         let contracts = parse_all(
             &self.contracts,
@@ -577,7 +578,6 @@ mod tests {
     use crate::internal::repository::{
         EntryOrigin, GitCommit, ItemName, ItemTag, RepoRelativePath,
     };
-    use peppy_mcp_catalog::McpExposure;
 
     const CAMERA_CONTRACT: &str = r#"{
         peppy_schema: "contract/v1",
@@ -678,8 +678,7 @@ mod tests {
     }
 
     fn exposure(content: &str) -> PinnedExposure {
-        let document: McpExposure =
-            crate::error::deserialize_json5_with_path(content).expect("exposure parses");
+        let document = PeppyMcpExposureParser::from_content(content).expect("exposure parses");
         PinnedExposure {
             pin: pin(
                 PinKind::McpExposure,
