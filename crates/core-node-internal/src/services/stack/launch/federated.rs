@@ -491,7 +491,7 @@ impl ParticipantSlices {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::stack::fixtures::test_root_pin as pin;
+    use crate::services::stack::fixtures::{placements_with, test_root_pin as pin};
     use daemon_config::launcher::DeploymentInstance;
 
     fn instance(id: &str) -> DeploymentInstance {
@@ -508,16 +508,6 @@ mod tests {
 
     fn core_node(name: &str) -> config::runtime::CoreNodeName {
         config::runtime::CoreNodeName::new(name).expect("valid test core node name")
-    }
-
-    fn placements(pairs: &[(&str, &str)]) -> Placements {
-        Placements::new(
-            core_node("cn-robot"),
-            pairs
-                .iter()
-                .map(|(id, target)| ((*id).to_owned(), core_node(target)))
-                .collect(),
-        )
     }
 
     fn partition(
@@ -568,7 +558,10 @@ mod tests {
                 vec![pin("planner_dep")],
             ),
         ];
-        let partitioned = partition(&items, &placements(&[("planner_1", "cn-atlas")]));
+        let partitioned = partition(
+            &items,
+            &placements_with("cn-robot", &[("planner_1", "cn-atlas")]),
+        );
         assert_eq!(
             partitioned.keys().cloned().collect::<Vec<_>>(),
             ["cn-atlas"]
@@ -596,7 +589,10 @@ mod tests {
             pin("uvc_camera"),
             Vec::new(),
         )];
-        let partitioned = partition(&items, &placements(&[("cam_cloud", "cn-atlas")]));
+        let partitioned = partition(
+            &items,
+            &placements_with("cn-robot", &[("cam_cloud", "cn-atlas")]),
+        );
         assert_eq!(
             partitioned.keys().cloned().collect::<Vec<_>>(),
             ["cn-atlas"]

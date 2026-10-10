@@ -648,10 +648,9 @@ pub(in crate::services::stack) async fn mint_doc_pins(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::stack::fixtures::{placements_with, test_root_pin};
     use daemon_config::launcher::{DeploymentInstance, DeploymentSource};
-    use daemon_config::repository::{
-        EntryOrigin, GitCommit, ItemName, ItemTag, ManifestFingerprint, PinKind, RepoRelativePath,
-    };
+    use daemon_config::repository::EntryOrigin;
 
     fn source(json5: &str) -> DeploymentSource {
         serde_json5::from_str(json5).expect("valid deployment source")
@@ -669,33 +668,13 @@ mod tests {
         }
     }
 
-    fn placed(pairs: &[(&str, &str)]) -> Placements {
-        Placements::new(
-            core_node("cn-robot"),
-            pairs
-                .iter()
-                .map(|(id, target)| ((*id).to_owned(), core_node(target)))
-                .collect(),
-        )
-    }
-
-    fn test_pin(origin: EntryOrigin) -> PinnedItem {
-        PinnedItem {
-            kind: PinKind::Node,
-            name: ItemName::parse("planner").expect("valid name"),
-            tag: ItemTag::parse("v1").expect("valid tag"),
-            sha256: ManifestFingerprint::parse(&"a".repeat(64)).expect("valid sha"),
-            origin,
-        }
-    }
-
     /// A deployment with every instance on the coordinator obliges its pins
     /// to nothing; one with any instance elsewhere obliges every pin it
     /// resolves to to be readable off this machine.
     #[test]
     fn only_off_coordinator_instances_oblige_portable_pins() {
         let local_only = deployment(r#"{ name: "planner", tag: "v1" }"#, &["planner_1"]);
-        let placements = placed(&[("cam_cloud", "cn-atlas")]);
+        let placements = placements_with("cn-robot", &[("cam_cloud", "cn-atlas")]);
         assert!(!has_remote_instances(&local_only, &placements));
 
         let split = deployment(
@@ -710,21 +689,18 @@ mod tests {
     /// machine can read, and the message says what still works.
     #[test]
     fn a_filesystem_backed_pin_is_refused_for_a_remote_placement() {
-        let fs_pin = test_pin(EntryOrigin::Fs {
-            path: "/repo/planner/peppy.json5".into(),
-        });
+        let fs_pin = PinnedItem {
+            origin: EntryOrigin::Fs {
+                path: "/repo/planner/peppy.json5".into(),
+            },
+            ..test_root_pin("planner")
+        };
         let error = refuse_unportable_pins("planner:v1", std::iter::once(&fs_pin))
             .expect_err("a filesystem origin cannot cross machines");
         assert!(error.contains("coordinator's filesystem"), "got: {error}");
         assert!(error.contains("git repository"), "got: {error}");
 
-        let git_pin = test_pin(EntryOrigin::Git {
-            repo_url: "https://example.com/hub".to_owned(),
-            repo_ref: Some("main".to_owned()),
-            read_ref: Some(core_node_api::encoding::ReadRef::Named("main".to_owned())),
-            commit: GitCommit::parse(&"b".repeat(40)).expect("valid commit"),
-            path: RepoRelativePath::parse("planner/peppy.json5").expect("valid path"),
-        });
+        let git_pin = test_root_pin("planner");
         assert!(refuse_unportable_pins("planner:v1", std::iter::once(&git_pin)).is_ok());
     }
 

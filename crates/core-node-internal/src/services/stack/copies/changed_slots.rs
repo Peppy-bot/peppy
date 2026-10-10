@@ -454,7 +454,7 @@ async fn replace_on_participant(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::stack::fixtures::planned_deployment;
+    use crate::services::stack::fixtures::{placements_with, planned_deployment};
     use config::runtime::ProducerRef;
     use core_node_api::encoding::ObservationTarget;
     use core_node_api::encoding::SetMember;
@@ -671,11 +671,7 @@ mod tests {
     #[test]
     fn a_set_on_a_machine_that_is_not_live_is_refused_at_join_and_set_aside_at_removal() {
         use super::super::live::{check_hosts_live, split_by_liveness};
-        let core_node = |name: &str| config::runtime::CoreNodeName::new(name).unwrap();
-        let placements = Placements::new(
-            core_node("cn-robot"),
-            BTreeMap::from([("monitor_inst".to_string(), core_node("cn-cloud"))]),
-        );
+        let placements = placements_with("cn-robot", &[("monitor_inst", "cn-cloud")]);
         let slots = || slots_of(&[("robots", "alpha_arm_inst")], Change::Join).unwrap();
         let alpha = Name::new("alpha").unwrap();
         let coordinator_alone = BTreeSet::from(["cn-robot".to_string()]);
