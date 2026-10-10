@@ -1155,6 +1155,82 @@ mod tests {
         assert_eq!(reply.message().payload().to_bytes().as_ref(), b"pong");
     }
 
+    /// A producer acks a request, then fails it: the caller reads an empty
+    /// Ack reply, then a HandlerError reply that carries the reason, and the
+    /// reply stream ends once the consumed token is gone.
+    #[tokio::test]
+    async fn mock_service_reply_stream_carries_an_ack_then_a_handler_error() {
+        use crate::wire::{
+            SenderTarget, ServiceKind, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
+            ServiceWireSender,
+        };
+
+        let mut adapter = MockAdapter::default();
+        adapter.start_session().await.expect("session should start");
+        let target = SenderTarget::contract("depth_camera", "v1").expect("contract target");
+        let receiver = ServiceWireReceiver::new(
+            "server_core",
+            "server_inst",
+            target.clone(),
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid receiver");
+        let sender = ServiceWireSender::new(
+            "caller_core",
+            "caller_inst",
+            None,
+            target,
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid sender");
+        let queryable = adapter
+            .listen_service(&receiver)
+            .await
+            .expect("queryable declare should succeed");
+        let mut reply_stream = adapter
+            .call_service(
+                &sender,
+                Payload::from_bytes(bytes::Bytes::from_static(b"ping?")),
+                ServiceQueryKind::UserRequest,
+                None,
+            )
+            .await
+            .expect("call_service should succeed");
+
+        let incoming = queryable
+            .rx
+            .recv_async()
+            .await
+            .expect("producer should receive the query");
+        incoming.token.respond_ack().await.expect("ack should send");
+        incoming
+            .token
+            .respond_handler_error("handler failed".to_string())
+            .await
+            .expect("handler error should send");
+
+        let ack = reply_stream
+            .rx
+            .recv()
+            .await
+            .expect("caller should read the ack");
+        assert_eq!(ack.kind(), ServiceReplyKind::Ack);
+        assert!(ack.message().payload().is_empty());
+        let failure = reply_stream
+            .rx
+            .recv()
+            .await
+            .expect("caller should read the handler error");
+        assert_eq!(failure.kind(), ServiceReplyKind::HandlerError);
+        assert_eq!(
+            failure.message().payload().to_bytes().as_ref(),
+            b"handler failed"
+        );
+        assert!(reply_stream.rx.recv().await.is_none());
+    }
+
     /// Probes are answered by the adapter's dispatch path — one
     /// Response-kind reply — and never reach the producer's endpoint
     /// channel, so a producer busy in user code (not parked in its recv
