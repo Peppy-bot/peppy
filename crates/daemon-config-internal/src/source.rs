@@ -108,7 +108,7 @@ where
     de::Error::custom(err.json5_message())
 }
 
-fn split_name_and_tag<E>(raw_name: String, raw_tag: Option<&str>) -> Result<(String, String), E>
+fn split_name_and_tag<E>(raw_name: &str, raw_tag: Option<&str>) -> Result<(String, String), E>
 where
     E: de::Error,
 {
@@ -119,34 +119,32 @@ where
         ));
     }
 
-    let (name, tag) = if let Some((n, t)) = name_trimmed.split_once(':') {
-        if raw_tag.is_some() {
+    let (name, tag) = match (name_trimmed.split_once(':'), raw_tag) {
+        (Some(_), Some(_)) => {
             return Err(invalid_deployment_source::<E>(
                 "deployment source cannot combine `name: \"<name>:<tag>\"` with a separate `tag` field",
             ));
         }
-        if t.contains(':') {
+        (Some((_, tag)), None) if tag.contains(':') => {
             return Err(invalid_deployment_source::<E>(
                 "deployment source `name` must contain at most one ':' separating name and tag",
             ));
         }
-        (n.trim().to_owned(), t.trim().to_owned())
-    } else {
-        let tag = raw_tag.map(str::trim).unwrap_or("");
-        if tag.is_empty() {
+        (Some((name, tag)), None) => (name.trim(), tag.trim()),
+        (None, Some(tag)) if !tag.trim().is_empty() => (name_trimmed, tag.trim()),
+        (None, _) => {
             return Err(invalid_deployment_source::<E>(
                 "deployment source requires a non-empty `tag` (or the combined `name: \"<name>:<tag>\"` form)",
             ));
         }
-        (name_trimmed.to_owned(), tag.to_owned())
     };
 
-    config::repo_node_id::validate_repo_node_name(&name, "deployment source name")
+    config::repo_node_id::validate_repo_node_name(name, "deployment source name")
         .map_err(invalid_deployment_source::<E>)?;
-    config::repo_node_id::validate_repo_node_tag(&tag, "deployment source tag")
+    config::repo_node_id::validate_repo_node_tag(tag, "deployment source tag")
         .map_err(invalid_deployment_source::<E>)?;
 
-    Ok((name, tag))
+    Ok((name.to_owned(), tag.to_owned()))
 }
 
 /// The exposure list of an `exposures` deployment: non-empty, every entry a
@@ -238,7 +236,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                  or `exposures` (`{ exposures: [\"<name>:<tag>\", ...] }`)",
             )
         })?;
-        let (name, tag) = split_name_and_tag::<D::Error>(name_raw, raw.tag.as_deref())?;
+        let (name, tag) = split_name_and_tag::<D::Error>(&name_raw, raw.tag.as_deref())?;
         Ok(DeploymentSource::Node { name, tag })
     }
 }
@@ -277,6 +275,34 @@ mod tests {
     fn deployment_source_rejects_name_without_tag() {
         let err: serde_json5::Error =
             serde_json5::from_str::<DeploymentSource>("{ name: \"foo\" }").unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(msg.contains("non-empty `tag`"), "unexpected: {msg}");
+    }
+
+    /// Both forms trim the whitespace around the name and the tag, and a
+    /// blank `tag` counts as no tag.
+    #[test]
+    fn deployment_source_trims_its_parts_and_refuses_a_blank_tag() {
+        for body in [
+            "{ name: \" robot_brain \", tag: \" v1 \" }",
+            "{ name: \" robot_brain : v1 \" }",
+        ] {
+            let src: DeploymentSource = serde_json5::from_str(body).unwrap();
+            assert_eq!(
+                src,
+                DeploymentSource::Node {
+                    name: "robot_brain".to_owned(),
+                    tag: "v1".to_owned()
+                },
+                "{body}"
+            );
+        }
+
+        let err: serde_json5::Error =
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"  \" }")
+                .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
         };
