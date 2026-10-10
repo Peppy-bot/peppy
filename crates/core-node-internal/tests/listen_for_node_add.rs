@@ -109,10 +109,14 @@ fn create_minimal_http_bundle(node_name: &str, node_tag: &str) -> (TempDir, Vec<
             }}
         }}"#
     );
-    let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
-    std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
+    // The archive goes next to the source dir, not inside it: the archive
+    // file exists while the dir is walked, so inside it would be archived too.
+    let source_dir = bundle_dir.path().join("source");
+    std::fs::create_dir(&source_dir).expect("failed to create bundle source dir");
+    std::fs::write(source_dir.join(NODE_CONFIG_FILE), &peppy_json5)
+        .expect("failed to write manifest");
     let bundle_path = bundle_dir.path().join("node.tar.zst");
-    create_tar_zst_from_dir(bundle_dir.path(), &bundle_path, ".");
+    create_tar_zst_from_dir(&source_dir, &bundle_path, ".");
     let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
     (bundle_dir, bundle_bytes)
 }
@@ -130,10 +134,10 @@ fn serve_bundle_over_http(bundle_bytes: Vec<u8>) -> (Server, url::Url) {
     (server, url)
 }
 
-/// Lists all file entries in a tar.zst archive (normalized paths without leading "./").
-fn list_archive_entries(archive_path: &Path) -> Vec<String> {
-    let file = std::fs::File::open(archive_path).expect("failed to open archive");
-    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
+/// Lists all file entries in tar.zst archive bytes (normalized paths without leading "./").
+fn list_archive_entries(archive_bytes: &[u8]) -> Vec<String> {
+    let decoder =
+        zstd::stream::read::Decoder::new(archive_bytes).expect("failed to create decoder");
     let mut archive = tar::Archive::new(decoder);
     archive
         .entries()
@@ -148,6 +152,13 @@ fn list_archive_entries(archive_path: &Path) -> Vec<String> {
             if s.is_empty() { None } else { Some(s) }
         })
         .collect()
+}
+
+#[test]
+fn minimal_http_bundle_holds_only_the_node_config() {
+    let (_bundle_dir, bundle_bytes) = create_minimal_http_bundle("bundle_node", "v1");
+
+    assert_eq!(list_archive_entries(&bundle_bytes), [NODE_CONFIG_FILE]);
 }
 
 fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
