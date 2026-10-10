@@ -91,34 +91,22 @@ fn node_config_with_execution(name: &str, tag: &str, execution_body: &str) -> St
     )
 }
 
-/// Creates a minimal node bundle (peppy.json5 + tar.zst) suitable for HTTP source tests.
-/// Returns the temp directory (must be kept alive) and the compressed bundle bytes.
-fn create_minimal_http_bundle(node_name: &str, node_tag: &str) -> (TempDir, Vec<u8>) {
+/// Creates a minimal node bundle (a [`minimal_node_config`] in a tar.zst)
+/// suitable for HTTP source tests, and returns the compressed bundle bytes.
+fn create_minimal_http_bundle(node_name: &str, node_tag: &str) -> Vec<u8> {
     let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
-    let peppy_json5 = format!(
-        r#"{{
-            peppy_schema: "node/v1",
-            manifest: {{
-                name: "{node_name}",
-                tag: "{node_tag}",
-            }},
-            interfaces: {{}},
-            execution: {{
-                language: "rust",
-                run_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
     // The archive goes next to the source dir, not inside it: the archive
     // file exists while the dir is walked, so inside it would be archived too.
     let source_dir = bundle_dir.path().join("source");
     std::fs::create_dir(&source_dir).expect("failed to create bundle source dir");
-    std::fs::write(source_dir.join(NODE_CONFIG_FILE), &peppy_json5)
-        .expect("failed to write manifest");
+    std::fs::write(
+        source_dir.join(NODE_CONFIG_FILE),
+        minimal_node_config(node_name, node_tag, &[]),
+    )
+    .expect("failed to write manifest");
     let bundle_path = bundle_dir.path().join("node.tar.zst");
     create_tar_zst_from_dir(&source_dir, &bundle_path, ".");
-    let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
-    (bundle_dir, bundle_bytes)
+    std::fs::read(&bundle_path).expect("failed to read bundle")
 }
 
 /// Starts an HTTP mock server serving `bundle_bytes` at `/bundles/node.tar.zst`.
@@ -156,7 +144,7 @@ fn list_archive_entries(archive_bytes: &[u8]) -> Vec<String> {
 
 #[test]
 fn minimal_http_bundle_holds_only_the_node_config() {
-    let (_bundle_dir, bundle_bytes) = create_minimal_http_bundle("bundle_node", "v1");
+    let bundle_bytes = create_minimal_http_bundle("bundle_node", "v1");
 
     assert_eq!(list_archive_entries(&bundle_bytes), [NODE_CONFIG_FILE]);
 }

@@ -259,7 +259,7 @@ async fn listen_for_node_http_add_rejects_wrong_sha256() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
 
-    let (_bundle_dir, bundle_bytes) = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let bundle_bytes = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
     let (_server, url) = serve_bundle_over_http(bundle_bytes);
 
     let wrong_sha256 = "a".repeat(64);
@@ -300,7 +300,7 @@ async fn listen_for_node_http_add_accepts_correct_sha256() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
 
-    let (_bundle_dir, bundle_bytes) = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let bundle_bytes = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     use sha2::{Digest, Sha256};
     let correct_sha256: String = Sha256::digest(&bundle_bytes)
@@ -394,7 +394,7 @@ async fn listen_for_node_http_add_emits_download_feedback() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    let (_bundle_dir, bundle_bytes) = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let bundle_bytes = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
     let (server, url) = serve_bundle_over_http(bundle_bytes);
 
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
