@@ -1761,30 +1761,12 @@ impl Interfaces {
     /// contributes entries; the chain over all three exists to give the
     /// arms a single concrete iterator type.
     pub fn produced(&self, kind: InterfaceKind) -> impl Iterator<Item = (Option<&str>, &str)> {
-        let topics: &[EmittedTopic] = match kind {
-            InterfaceKind::Topic => self
-                .topics
-                .as_ref()
-                .and_then(|t| t.emits.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
-        let services: &[ExposedService] = match kind {
-            InterfaceKind::Service => self
-                .services
-                .as_ref()
-                .and_then(|s| s.exposes.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
-        let actions: &[ExposedAction] = match kind {
-            InterfaceKind::Action => self
-                .actions
-                .as_ref()
-                .and_then(|a| a.exposes.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
+        let (topics, services, actions): (&[EmittedTopic], &[ExposedService], &[ExposedAction]) =
+            match kind {
+                InterfaceKind::Topic => (self.emitted_topics(), &[], &[]),
+                InterfaceKind::Service => (&[], self.exposed_services(), &[]),
+                InterfaceKind::Action => (&[], &[], self.exposed_actions()),
+            };
         topics
             .iter()
             .map(|e| (e.link_id(), e.name()))
@@ -1797,30 +1779,12 @@ impl Interfaces {
     /// parse-time validation checks against the slot it names. Same shape as
     /// [`Interfaces::produced`].
     pub fn consumed(&self, kind: InterfaceKind) -> impl Iterator<Item = (&str, &str, bool)> {
-        let topics: &[ConsumedTopic] = match kind {
-            InterfaceKind::Topic => self
-                .topics
-                .as_ref()
-                .and_then(|t| t.consumes.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
-        let services: &[ConsumedService] = match kind {
-            InterfaceKind::Service => self
-                .services
-                .as_ref()
-                .and_then(|s| s.consumes.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
-        let actions: &[ConsumedAction] = match kind {
-            InterfaceKind::Action => self
-                .actions
-                .as_ref()
-                .and_then(|a| a.consumes.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
+        let (topics, services, actions): (&[ConsumedTopic], &[ConsumedService], &[ConsumedAction]) =
+            match kind {
+                InterfaceKind::Topic => (self.consumed_topics(), &[], &[]),
+                InterfaceKind::Service => (&[], self.consumed_services(), &[]),
+                InterfaceKind::Action => (&[], &[], self.consumed_actions()),
+            };
         topics
             .iter()
             .map(|c| (c.link_id.as_str(), c.name.as_str(), c.refine.is_some()))
@@ -1840,34 +1804,19 @@ impl Interfaces {
     /// shapes. Document-backed entries are skipped: their shapes live in the
     /// contract or pairing document the entry's slot resolves to.
     pub fn native_emits(&self) -> impl Iterator<Item = &NativeEmittedTopic> {
-        self.topics
-            .as_ref()
-            .and_then(|t| t.emits.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|e| e.as_native())
+        self.emitted_topics().iter().filter_map(|e| e.as_native())
     }
 
     /// The natively-declared entries of `services.exposes`. Same
     /// native-only contract as [`Interfaces::native_emits`].
     pub fn native_service_exposes(&self) -> impl Iterator<Item = &NativeExposedService> {
-        self.services
-            .as_ref()
-            .and_then(|s| s.exposes.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|e| e.as_native())
+        self.exposed_services().iter().filter_map(|e| e.as_native())
     }
 
     /// The natively-declared entries of `actions.exposes`. Same
     /// native-only contract as [`Interfaces::native_emits`].
     pub fn native_action_exposes(&self) -> impl Iterator<Item = &NativeExposedAction> {
-        self.actions
-            .as_ref()
-            .and_then(|a| a.exposes.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|e| e.as_native())
+        self.exposed_actions().iter().filter_map(|e| e.as_native())
     }
 
     /// Every document-backed produced entry across the three sections,
@@ -1879,30 +1828,65 @@ impl Interfaces {
     /// partition the stream by looking each `link_id` up in the manifest.
     pub fn linked_entries(&self) -> impl Iterator<Item = LinkedMember<'_>> {
         let topics = self
-            .topics
-            .as_ref()
-            .and_then(|t| t.emits.as_deref())
-            .unwrap_or_default()
+            .emitted_topics()
             .iter()
             .filter_map(|e| e.as_linked())
             .map(LinkedMember::Topic);
         let services = self
-            .services
-            .as_ref()
-            .and_then(|s| s.exposes.as_deref())
-            .unwrap_or_default()
+            .exposed_services()
             .iter()
             .filter_map(|e| e.as_linked())
             .map(LinkedMember::Service);
         let actions = self
-            .actions
-            .as_ref()
-            .and_then(|a| a.exposes.as_deref())
-            .unwrap_or_default()
+            .exposed_actions()
             .iter()
             .filter_map(|e| e.as_linked())
             .map(LinkedMember::Action);
         topics.chain(services).chain(actions)
+    }
+
+    /// The `topics.emits` entries, empty when the section or the list is
+    /// absent. The five accessors below read their sections the same way.
+    fn emitted_topics(&self) -> &[EmittedTopic] {
+        self.topics
+            .as_ref()
+            .and_then(|topics| topics.emits.as_deref())
+            .unwrap_or_default()
+    }
+
+    fn consumed_topics(&self) -> &[ConsumedTopic] {
+        self.topics
+            .as_ref()
+            .and_then(|topics| topics.consumes.as_deref())
+            .unwrap_or_default()
+    }
+
+    fn exposed_services(&self) -> &[ExposedService] {
+        self.services
+            .as_ref()
+            .and_then(|services| services.exposes.as_deref())
+            .unwrap_or_default()
+    }
+
+    fn consumed_services(&self) -> &[ConsumedService] {
+        self.services
+            .as_ref()
+            .and_then(|services| services.consumes.as_deref())
+            .unwrap_or_default()
+    }
+
+    fn exposed_actions(&self) -> &[ExposedAction] {
+        self.actions
+            .as_ref()
+            .and_then(|actions| actions.exposes.as_deref())
+            .unwrap_or_default()
+    }
+
+    fn consumed_actions(&self) -> &[ConsumedAction] {
+        self.actions
+            .as_ref()
+            .and_then(|actions| actions.consumes.as_deref())
+            .unwrap_or_default()
     }
 }
 
@@ -3628,6 +3612,111 @@ mod tests {
         let reparsed: ExposedAction =
             serde_json5::from_str(&serde_json5::to_string(&action).unwrap()).unwrap();
         assert_eq!(action, reparsed);
+    }
+
+    /// Each accessor of `Interfaces` reads its own section, keeps declaration
+    /// order, and reads an absent section or list as empty.
+    #[test]
+    fn interfaces_accessors_read_each_section() {
+        let interfaces: Interfaces = serde_json5::from_str(
+            r#"{
+                topics: {
+                    emits: [
+                        { name: "native_topic", message_format: { x: "f64" } },
+                        { link_id: "cam", name: "linked_topic" },
+                    ],
+                    consumes: [{ link_id: "dep", name: "consumed_topic" }],
+                },
+                services: {
+                    exposes: [
+                        { link_id: "cam", name: "linked_service" },
+                        {
+                            name: "native_service",
+                            request_message_format: { id: "u8" },
+                            response_message_format: { ok: "bool" },
+                        },
+                    ],
+                    consumes: [{ link_id: "dep", name: "consumed_service" }],
+                },
+                actions: {
+                    exposes: [
+                        {
+                            name: "native_action",
+                            result_service: { response_message_format: { ok: "bool" } },
+                        },
+                        { link_id: "arm", name: "linked_action" },
+                    ],
+                },
+            }"#,
+        )
+        .expect("interfaces parse");
+
+        let produced = |kind| interfaces.produced(kind).collect::<Vec<_>>();
+        assert_eq!(
+            produced(InterfaceKind::Topic),
+            [(None, "native_topic"), (Some("cam"), "linked_topic")]
+        );
+        assert_eq!(
+            produced(InterfaceKind::Service),
+            [(Some("cam"), "linked_service"), (None, "native_service")]
+        );
+        assert_eq!(
+            produced(InterfaceKind::Action),
+            [(None, "native_action"), (Some("arm"), "linked_action")]
+        );
+
+        let consumed = |kind| interfaces.consumed(kind).collect::<Vec<_>>();
+        assert_eq!(
+            consumed(InterfaceKind::Topic),
+            [("dep", "consumed_topic", false)]
+        );
+        assert_eq!(
+            consumed(InterfaceKind::Service),
+            [("dep", "consumed_service", false)]
+        );
+        assert_eq!(consumed(InterfaceKind::Action), []);
+
+        let native_emits: Vec<&str> = interfaces.native_emits().map(|e| e.name.as_str()).collect();
+        assert_eq!(native_emits, ["native_topic"]);
+        let native_services: Vec<&str> = interfaces
+            .native_service_exposes()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(native_services, ["native_service"]);
+        let native_actions: Vec<&str> = interfaces
+            .native_action_exposes()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(native_actions, ["native_action"]);
+
+        let linked: Vec<(InterfaceKind, String, String)> = interfaces
+            .linked_entries()
+            .map(|member| {
+                let link_id = member.link_id().to_owned();
+                (member.kind(), link_id, member.name().to_owned())
+            })
+            .collect();
+        let expected = [
+            (InterfaceKind::Topic, "cam", "linked_topic"),
+            (InterfaceKind::Service, "cam", "linked_service"),
+            (InterfaceKind::Action, "arm", "linked_action"),
+        ]
+        .map(|(kind, link_id, name)| (kind, link_id.to_owned(), name.to_owned()));
+        assert_eq!(linked, expected);
+
+        let empty = Interfaces::default();
+        for kind in [
+            InterfaceKind::Topic,
+            InterfaceKind::Service,
+            InterfaceKind::Action,
+        ] {
+            assert_eq!(empty.produced(kind).count(), 0);
+            assert_eq!(empty.consumed(kind).count(), 0);
+        }
+        assert_eq!(empty.native_emits().count(), 0);
+        assert_eq!(empty.native_service_exposes().count(), 0);
+        assert_eq!(empty.native_action_exposes().count(), 0);
+        assert_eq!(empty.linked_entries().count(), 0);
     }
 
     #[test]
