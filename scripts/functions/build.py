@@ -86,7 +86,10 @@ def cargo_build(
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
+            # Build scripts forward output of any encoding: a strict decode
+            # would raise in the middle of the stream and lose the tail.
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
     except OSError as exc:

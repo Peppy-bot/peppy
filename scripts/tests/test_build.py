@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
@@ -13,6 +15,7 @@ from functions.build import (
     _get_target_dir,
     _release_rustflags,
     build_and_package,
+    cargo_build,
     find_build_dir,
     find_peppy_binary,
     find_zenohd_binary,
@@ -322,6 +325,34 @@ def test_release_rustflags_without_inherited_flags(tmp_path: Path) -> None:
 
     assert not flags.startswith(" ")
     assert flags.count("--remap-path-prefix") == 2
+
+
+def test_cargo_build_survives_output_that_is_not_utf8(tmp_path: Path) -> None:
+    """A byte that is not UTF-8 in cargo's output still ends in the cargo tail.
+
+    Build scripts forward output of any encoding, so a strict decode would
+    stop the release with a traceback and leave cargo running.
+    """
+    real_popen = subprocess.Popen
+    child = (
+        "import sys; sys.stdout.buffer.write(b'bad \\xff byte\\n'); sys.exit(3)"
+    )
+
+    def popen_a_cargo_that_prints_invalid_utf8(
+        _args: list[str], **kwargs: object
+    ) -> subprocess.Popen[str]:
+        return real_popen([sys.executable, "-c", child], **kwargs)
+
+    with (
+        patch(
+            "functions.build.subprocess.Popen",
+            side_effect=popen_a_cargo_that_prints_invalid_utf8,
+        ),
+        pytest.raises(ReleaseError, match=r"cargo build failed \(exit 3\)") as err,
+    ):
+        cargo_build("v0.1.0", "x86_64-unknown-linux-gnu", tmp_path)
+
+    assert "bad \ufffd byte" in str(err.value)
 
 
 def test_build_and_package_rejects_unsupported_triple(tmp_path: Path) -> None:
