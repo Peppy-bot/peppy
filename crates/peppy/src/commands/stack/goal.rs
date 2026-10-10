@@ -218,18 +218,14 @@ pub(super) async fn drive_stack_goal<G: StackGoal>(
         if let Some(deadline) = absolute_deadline
             && now >= deadline
         {
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
+            clear_scrolling_output(&mut scrolling_output);
             return Err(Error::ExecutionFailed(format!(
                 "{operation} timed out: max timeout exceeded. Log file: {}",
                 goal_response.log_path.display()
             )));
         }
         if now.duration_since(last_activity) >= cli_idle_timeout {
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
+            clear_scrolling_output(&mut scrolling_output);
             // Name the phase that went quiet and the flag that raises its
             // budget, so a slow-connection user is pointed at the fix instead
             // of a bare timeout.
@@ -275,65 +271,65 @@ pub(super) async fn drive_stack_goal<G: StackGoal>(
             .max(Duration::from_secs(1)),
         None => Duration::from_secs(30),
     };
-    match ActionMessenger::request_result(conn.messenger, &action_handle, result_timeout).await {
-        Ok(reply) => {
-            let body = match reply.status {
-                ResultStatus::Completed | ResultStatus::Cancelled => reply.body,
-                ResultStatus::Abandoned => {
-                    if let Some(output) = scrolling_output.as_mut() {
-                        output.clear();
-                    }
-                    return Err(Error::ExecutionFailed(format!(
-                        "{operation} was abandoned by its worker before producing a result"
-                    )));
-                }
-                ResultStatus::Expired => {
-                    if let Some(output) = scrolling_output.as_mut() {
-                        output.clear();
-                    }
-                    return Err(Error::ExecutionFailed(format!(
-                        "{operation} result expired before it could be fetched"
-                    )));
-                }
-            };
-            let result = LaunchResult::decode(body.as_ref()).map_err(|err| {
-                Error::ExecutionFailed(format!("Failed to decode {operation} result: {err}"))
-            })?;
-
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
-
-            display_node_log_files(
-                &result.node_add_logs,
-                &result.node_build_logs,
-                &result.node_run_logs,
-            );
-            crate::commands::log_endpoints(&result.instance_endpoints);
-
-            if !result.success {
-                let error_msg = result
-                    .error_message
-                    .unwrap_or_else(|| "unknown error".to_string());
-                return Err(Error::ExecutionFailed(format!(
-                    "{operation} failed: {}. Log file: {}",
-                    error_msg,
-                    result.log_path.display()
-                )));
-            }
-
-            info!("{operation} completed successfully");
-            Ok(())
-        }
+    let fetched =
+        ActionMessenger::request_result(conn.messenger, &action_handle, result_timeout).await;
+    let reply = match fetched {
+        Ok(reply) => reply,
         Err(err) => {
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
-            Err(Error::ExecutionFailed(format!(
-                "Failed to get {operation} result: {}",
-                err
-            )))
+            clear_scrolling_output(&mut scrolling_output);
+            return Err(Error::ExecutionFailed(format!(
+                "Failed to get {operation} result: {err}"
+            )));
         }
+    };
+    let body = match reply.status {
+        ResultStatus::Completed | ResultStatus::Cancelled => reply.body,
+        ResultStatus::Abandoned => {
+            clear_scrolling_output(&mut scrolling_output);
+            return Err(Error::ExecutionFailed(format!(
+                "{operation} was abandoned by its worker before producing a result"
+            )));
+        }
+        ResultStatus::Expired => {
+            clear_scrolling_output(&mut scrolling_output);
+            return Err(Error::ExecutionFailed(format!(
+                "{operation} result expired before it could be fetched"
+            )));
+        }
+    };
+    let result = LaunchResult::decode(body.as_ref()).map_err(|err| {
+        Error::ExecutionFailed(format!("Failed to decode {operation} result: {err}"))
+    })?;
+
+    clear_scrolling_output(&mut scrolling_output);
+
+    display_node_log_files(
+        &result.node_add_logs,
+        &result.node_build_logs,
+        &result.node_run_logs,
+    );
+    crate::commands::log_endpoints(&result.instance_endpoints);
+
+    if !result.success {
+        let error_msg = result
+            .error_message
+            .unwrap_or_else(|| "unknown error".to_string());
+        return Err(Error::ExecutionFailed(format!(
+            "{operation} failed: {}. Log file: {}",
+            error_msg,
+            result.log_path.display()
+        )));
+    }
+
+    info!("{operation} completed successfully");
+    Ok(())
+}
+
+/// Clears the scrolling output region, when one is on screen, so the next
+/// line the CLI writes does not land inside it.
+fn clear_scrolling_output(scrolling_output: &mut Option<ScrollingOutput>) {
+    if let Some(output) = scrolling_output.as_mut() {
+        output.clear();
     }
 }
 
