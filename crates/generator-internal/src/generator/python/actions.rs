@@ -520,17 +520,16 @@ class ResultStatus(IntEnum):
                 "async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, {request_param}timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:"
             ),
             |builder| {
-                // A multi-paragraph docstring, so it opens and closes by hand
-                // rather than through `docstring`.
-                builder.py(r#"
-"""Fires this goal at `target`, a member of the slot's bound set.
-
-A target outside the set fails before anything reaches the wire. The
-handle retains the target: feedback, result, and cancel stay pinned
-to it.
-"#);
-                builder.lines(dependency.target_selection_doc());
-                builder.line("\"\"\"");
+                builder.multiline_docstring(
+                    "Fires this goal at `target`, a member of the slot's bound set.",
+                    [
+                        "A target outside the set fails before anything reaches the wire. The",
+                        "handle retains the target: feedback, result, and cancel stay pinned",
+                        "to it.",
+                    ]
+                    .into_iter()
+                    .chain(dependency.target_selection_doc().iter().copied()),
+                );
                 crate::generator::python::services::emit_target_membership_check(builder);
 
                 // Serialize request payload

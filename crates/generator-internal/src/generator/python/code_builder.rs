@@ -135,6 +135,19 @@ impl PythonCodeBuilder {
         self.line(&format!("\"\"\"{text}\"\"\""));
     }
 
+    /// A docstring of several paragraphs: `"""summary`, a blank line, the
+    /// body lines, then the closing `"""` on a line of its own.
+    pub fn multiline_docstring<S: AsRef<str>>(
+        &mut self,
+        summary: &str,
+        body: impl IntoIterator<Item = S>,
+    ) {
+        self.line(&format!("\"\"\"{summary}"));
+        self.blank_line();
+        self.lines(body);
+        self.line("\"\"\"");
+    }
+
     /// Appends a block of literal Python, written as a Rust raw string.
     ///
     /// The text must open with a newline (`r#"` followed by a line break). The

@@ -87,15 +87,7 @@ pub(crate) fn emit_bound_producer_accessor_fn(
     builder.block(
         &format!("def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"),
         |builder| {
-            // A multi-paragraph docstring, so it opens and closes by hand
-            // rather than through `docstring`.
-            builder.line(&format!("\"\"\"{}", doc[0]));
-            builder.blank_line();
-            builder.lines(&doc[1..]);
-            if let Some(note) = api_note {
-                builder.line(note);
-            }
-            builder.line("\"\"\"");
+            builder.multiline_docstring(doc[0], doc[1..].iter().copied().chain(api_note));
             builder.line(&format!(
                 "return node_runner.{runtime_method}({:?})",
                 dependency.link_id
@@ -124,13 +116,7 @@ fn emit_bound_members_accessor_fn(
     builder.block(
         "def bound_members(node_runner: peppylib.NodeRunner) -> List[peppylib.BoundMember]:",
         |builder| {
-            builder.line(&format!("\"\"\"{}", doc[0]));
-            builder.blank_line();
-            builder.lines(&doc[1..]);
-            if let Some(note) = api_note {
-                builder.line(note);
-            }
-            builder.line("\"\"\"");
+            builder.multiline_docstring(doc[0], doc[1..].iter().copied().chain(api_note));
             builder.line(&format!(
                 "return node_runner.bound_members({:?})",
                 dependency.link_id
@@ -383,13 +369,11 @@ pub fn build_consumed_service(
         &format!("{:?}", dependency.producer_tag),
     );
     builder.block(&signature, |builder| {
-        // A multi-paragraph docstring, so it opens and closes by hand rather
-        // than through `docstring`.
-        builder.line("\"\"\"Polls this service on `target`, a member of the slot's bound set.");
-        builder.blank_line();
-        builder.line("A target outside the set fails before anything reaches the wire.");
-        builder.lines(dependency.target_selection_doc());
-        builder.line("\"\"\"");
+        builder.multiline_docstring(
+            "Polls this service on `target`, a member of the slot's bound set.",
+            std::iter::once("A target outside the set fails before anything reaches the wire.")
+                .chain(dependency.target_selection_doc().iter().copied()),
+        );
         emit_target_membership_check(builder);
 
         // Serialize the request payload

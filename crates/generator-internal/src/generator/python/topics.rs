@@ -284,10 +284,7 @@ fn emit_peer_module_header(
             builder.block(
                 "def peers(node_runner: peppylib.NodeRunner) -> List[peppylib.PeerMember]:",
                 |builder| {
-                    builder.line(&format!("\"\"\"{}", doc.summary));
-                    builder.blank_line();
-                    builder.lines(doc.body_lines());
-                    builder.line("\"\"\"");
+                    builder.multiline_docstring(doc.summary, doc.body_lines());
                     builder.line("return node_runner.peer_set(LINK_ID).members()");
                 },
             );
@@ -437,12 +434,7 @@ fn emit_observer_module_header(
     builder.block(
         &format!("def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"),
         |builder| {
-            // A multi-paragraph docstring, so it opens and closes by hand
-            // rather than through `docstring`.
-            builder.line(&format!("\"\"\"{}", doc.summary));
-            builder.blank_line();
-            builder.lines(doc.body_lines());
-            builder.line("\"\"\"");
+            builder.multiline_docstring(doc.summary, doc.body_lines());
             builder.line(&format!(
                 "return node_runner.{handle}(LINK_ID).{runtime_method}()"
             ));
