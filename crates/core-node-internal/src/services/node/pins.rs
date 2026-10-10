@@ -51,7 +51,7 @@ pub(crate) struct MaterializedPin {
 
 /// A root's resolved node closure: every node to add, root first, then in
 /// discovery order. The contract and pairing documents their manifests name
-/// are minted separately ([`doc_pins_for_manifests`]) so a launch can run
+/// are minted separately ([`doc_pins_for_manifest_sets`]) so a launch can run
 /// its graph validation, whose refusals are the more actionable ones,
 /// before any document is looked up.
 pub(crate) struct PinnedClosure {
@@ -149,9 +149,9 @@ type MaterializeOutput = (
 
 /// One bounded materialization, ready to push onto a `FuturesUnordered`.
 ///
-/// Both closure walkers below go through this, so the concurrency policy —
-/// how a permit is taken and what a completed materialization reports back —
-/// is stated once rather than restated per walker.
+/// Both closure walkers below go through this, so the concurrency policy (how
+/// a permit is taken and what a completed materialization reports back) is
+/// stated once rather than restated per walker.
 fn spawn_materialize<'a>(
     semaphore: &Arc<Semaphore>,
     peppy_dirs: &'a PeppyDirs,
@@ -208,8 +208,8 @@ pub(crate) async fn materialize_pin_set(
             is_root,
         });
     }
-    // Root first, so `PinnedClosure::root` and the executor's is-root
-    // handling do not depend on completion order.
+    // Root first, so the executor finds the root at the head of the list
+    // (add_batch reads `nodes.first()`) whatever the completion order.
     nodes.sort_by_key(|node| !node.is_root);
     Ok(nodes)
 }

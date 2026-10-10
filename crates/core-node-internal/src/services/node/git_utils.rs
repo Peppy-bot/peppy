@@ -135,16 +135,6 @@ fn tag_refspec(tag: &str) -> String {
     format!("+{tag}:{tag}")
 }
 
-/// Clone `repo_url` into `dst` and check out `repo_ref` if set, emitting
-/// throttled (~500ms) `transfer_progress` lines via `on_progress` so callers
-/// can surface live byte/object counts instead of sitting silent for the
-/// duration of the clone.
-///
-/// Each progress line is formatted as
-/// `"Cloning {repo_url}: received {recv}/{total} objects ({bytes})"`.
-///
-/// `shallow` requests a `depth=1` fetch, but is silently downgraded to a
-/// full clone when `repo_url` targets the local transport.
 /// The commit `repo`'s working tree is sitting on.
 ///
 /// The one place a `git2::Oid` becomes a [`GitCommit`], so a caller that
@@ -184,6 +174,16 @@ pub(crate) fn clone_repo_shallow(
     clone_with_progress(repo_url, None, dst, true, on_progress)
 }
 
+/// Clone `repo_url` into `dst` and check out `repo_ref` if set, emitting
+/// throttled (~500ms) `transfer_progress` lines via `on_progress` so callers
+/// can surface live byte/object counts instead of sitting silent for the
+/// duration of the clone.
+///
+/// Each progress line is formatted as
+/// `"Cloning {repo_url}: received {recv}/{total} objects ({bytes})"`.
+///
+/// `shallow` requests a `depth=1` fetch, but is silently downgraded to a
+/// full clone when `repo_url` targets the local transport.
 pub(crate) fn clone_with_progress(
     repo_url: &str,
     repo_ref: Option<&str>,

@@ -151,10 +151,10 @@ struct Registry {
     /// answer different questions: the generation is an incarnation counter
     /// that is deliberately RETAINED across a source's own down/up (so a
     /// restart is strictly newer), while this is the up/down state itself.
-    /// Reading liveness off the retained generation reported a remote source
-    /// live for as long as anything still observed it, which is precisely
-    /// after it went down. A local source needs no entry here: the node stack
-    /// is the authority for instances this daemon runs.
+    /// Liveness cannot be read off the retained generation: that would report
+    /// a remote source live for as long as anything still observes it,
+    /// including after it went down. A local source needs no entry here: the
+    /// node stack is the authority for instances this daemon runs.
     remote_live: BTreeSet<SourceKey>,
 }
 
@@ -211,7 +211,7 @@ impl ObservationCoordinator {
     /// the whole stack down at once, so without this a re-run of the same
     /// instance ids inherits stale observations and a source coming back up
     /// would deliver a pin the user never linked this time. `stack launch` does
-    /// not need it because [`register_planned`] already replaces the registry.
+    /// not need it because [`Self::register_planned`] already replaces the registry.
     pub fn clear(&self) {
         *self.registry.lock().unwrap() = Registry::default();
     }
@@ -243,7 +243,7 @@ impl ObservationCoordinator {
     }
 
     /// Registers ONE `node run` instance's observer slots into the live
-    /// registry without disturbing the rest of it. Unlike [`register_planned`]
+    /// registry without disturbing the rest of it. Unlike [`Self::register_planned`]
     /// (which replaces the whole stack at launch), a `node run` adds a single
     /// instance to an already-running stack, so any prior records for this same
     /// observer id (a re-run) are cleared and its new ones merged in.
@@ -348,8 +348,8 @@ impl ObservationCoordinator {
             .collect()
     }
 
-    /// Inserts one resolved observer record. Shared by [`register_planned`]
-    /// and [`register_instance`].
+    /// Inserts one resolved observer record. Shared by
+    /// [`Self::register_planned`] and [`Self::register_instance`].
     fn insert_record(registry: &mut Registry, observer_instance_id: &str, record: ObserverRecord) {
         registry
             .by_observer
@@ -464,8 +464,8 @@ impl ObservationCoordinator {
         // and the observer registers itself later) still hand that observer a
         // generation >= 1, distinct from the boot sentinel 0, when the observer
         // comes up and reads it. Under `stack launch` observers are registered
-        // first, so this already held; making it unconditional makes the two
-        // paths deliver identically regardless of start order.
+        // first; bumping unconditionally makes the two orderings deliver
+        // identically.
         let is_local_source = source.core_node == self.updates.core_node_name();
         let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
         let deliveries = {
@@ -613,6 +613,7 @@ impl ObservationCoordinator {
     /// One function for the up and down paths because they must reach exactly
     /// the same slots: a "went down" addressed to fewer slots than the matching
     /// "came up" leaves the difference permanently stale.
+    ///
     /// A set, not a list: one slot may observe a source through several of the
     /// source's own participant slots, and it is still one delivery. Collecting
     /// into a `BTreeSet` is what makes that true here and at every caller, so
