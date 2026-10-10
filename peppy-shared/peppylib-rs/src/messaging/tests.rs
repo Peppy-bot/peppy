@@ -4514,20 +4514,20 @@ async fn topic_pinned_subscription_compares_full_pairs() {
 
     // Emit loops: each producer publishes every 50ms until stopped, so the
     // assertions below never depend on a single publish surviving
-    // peer-mode discovery propagation.
-    let stop_emitters = Arc::new(tokio::sync::Notify::new());
+    // peer-mode discovery propagation. The stop is a cancellation token
+    // because it stays set: an emitter task that the scheduler first runs
+    // after the stop still sees it and ends.
+    let stop_emitters = crate::runtime::CancellationToken::new();
     let spawn_emitter = |handle: MessengerHandle, core: &'static str, payload: Payload| {
-        let stop = Arc::clone(&stop_emitters);
+        let stop = stop_emitters.clone();
         let qos = qos.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_millis(50));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            let stop_notified = stop.notified();
-            tokio::pin!(stop_notified);
             loop {
                 tokio::select! {
                     biased;
-                    _ = stop_notified.as_mut() => break,
+                    _ = stop.cancelled() => break,
                     _ = ticker.tick() => {
                         publish_once(
                             &handle,
@@ -4567,7 +4567,7 @@ async fn topic_pinned_subscription_compares_full_pairs() {
 
     // Stop the emit loops before tearing the router down so no emit races
     // the shutdown.
-    stop_emitters.notify_waiters();
+    stop_emitters.cancel();
     emitter_a.await.expect("emitter A panicked");
     emitter_b.await.expect("emitter B panicked");
 
