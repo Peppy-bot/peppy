@@ -1363,24 +1363,31 @@ impl HarnessCore {
         self.cancellation_token.cancel();
         let grace = self.node_runner.processor().shutdown_grace();
         let setup_result = match self.setup_task.take() {
-            Some(mut task) => match tokio::time::timeout(grace, &mut task).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(join_error)) if join_error.is_cancelled() => Ok(()),
-                Ok(Err(join_error)) => Err(Error::Io(std::io::Error::other(format!(
-                    "the node's setup task panicked: {join_error}"
-                )))),
-                Err(_elapsed) => {
-                    // A setup that parks forever without watching the node's
-                    // cancellation token; production drops it at shutdown the
-                    // same way.
-                    task.abort();
-                    Ok(())
-                }
-            },
+            Some(task) => join_setup_within(task, grace).await,
             None => Ok(()),
         };
         self.node_runner.run_shutdown_hooks(grace).await;
         setup_result
+    }
+}
+
+/// Joins the node's `setup` task, bounded by `grace`: the setup's own result
+/// when it returns in time, `Ok` when it was cancelled or when it parks past
+/// the window (it is then aborted), and an error when it panicked.
+async fn join_setup_within(mut task: TaskHandle<Result<()>>, grace: Duration) -> Result<()> {
+    match tokio::time::timeout(grace, &mut task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(join_error)) if join_error.is_cancelled() => Ok(()),
+        Ok(Err(join_error)) => Err(Error::Io(std::io::Error::other(format!(
+            "the node's setup task panicked: {join_error}"
+        )))),
+        Err(_elapsed) => {
+            // A setup that parks forever without watching the node's
+            // cancellation token; production drops it at shutdown the same
+            // way.
+            task.abort();
+            Ok(())
+        }
     }
 }
 

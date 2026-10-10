@@ -524,6 +524,49 @@ async fn harness_core_shutdown_propagates_setup_error() {
     router.shutdown().await.expect("router shutdown");
 }
 
+/// A setup that panics: what a node whose entry point hits a bug looks like
+/// to its harness.
+async fn panicking_setup(
+    _params: EmptyParameters,
+    _node_runner: Arc<NodeRunner>,
+) -> peppylib::PeppyResult<()> {
+    panic!("setup panics on purpose");
+}
+
+/// A setup panic is not swallowed by teardown either: `shutdown()` turns the
+/// panicked task into an error naming the panic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn harness_core_shutdown_reports_a_setup_panic() {
+    let router = EphemeralRouter::start().await.expect("start router");
+    let temp_dir = TempDir::new().expect("temp dir");
+    let peppy_config_path = write_peppy_config(&temp_dir);
+
+    let standalone_config = StandaloneConfig::new()
+        .with_messaging(router.host(), router.port())
+        .with_instance_id("panicking_setup_instance");
+
+    let harness = HarnessCore::start::<EmptyParameters, _, _>(
+        peppy_config_path,
+        standalone_config,
+        &[],
+        &[],
+        panicking_setup,
+    )
+    .await
+    .expect("harness start itself should succeed");
+
+    let err = harness
+        .shutdown()
+        .await
+        .expect_err("shutdown must report the setup panic");
+    assert!(
+        err.to_string().contains("the node's setup task panicked"),
+        "expected the setup panic, got: {err}"
+    );
+
+    router.shutdown().await.expect("router shutdown");
+}
+
 /// The statically pinned peer subscription matches a pairing publisher
 /// exactly (producer identity, pairing target, producer-side link_id, and
 /// the mock's own slot as the recipient), so a mock peer receives what the
