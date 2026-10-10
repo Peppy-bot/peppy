@@ -1788,6 +1788,129 @@ mod tests {
         assert_eq!(cfg.buffer_sizes.high_throughput, 4096);
     }
 
+    /// Every operation that needs the session refuses to run before
+    /// `start_session` opened it. Building the adapter opens nothing, so no
+    /// router is needed.
+    #[tokio::test]
+    async fn operations_before_start_session_report_the_missing_session() {
+        use crate::error::test_support::assert_session_not_initialized;
+        use crate::wire::{SenderTarget, ServiceKind};
+
+        let mut adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", 7447)
+            .expect("build a client adapter");
+        let node = SenderTarget::node("arm", "v1").expect("node target");
+        let topic_sender = TopicWireSender::new("core", "instance", node.clone(), None, "joints")
+            .expect("valid topic sender");
+        let topic_receiver = TopicWireReceiver::new(
+            "core",
+            "instance",
+            None,
+            None,
+            Some(node.clone()),
+            None,
+            "joints",
+        )
+        .expect("valid topic receiver");
+        let service_receiver = ServiceWireReceiver::new(
+            "core",
+            "instance",
+            node.clone(),
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid service receiver");
+        let service_sender = ServiceWireSender::new(
+            "caller_core",
+            "caller_instance",
+            None,
+            node.clone(),
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid service sender");
+        let action_receiver = ActionWireReceiver::new("core", "instance", node.clone(), "move")
+            .expect("valid action receiver");
+        let action_sender =
+            ActionWireSender::new("caller_core", "caller_instance", None, node, "move")
+                .expect("valid action sender");
+        let core_node = Segment::try_from("core").expect("valid segment");
+        let instance = Segment::try_from("instance").expect("valid segment");
+        let timeout = std::time::Duration::from_secs(1);
+        let payload = || Payload::from_bytes(bytes::Bytes::from_static(b"payload"));
+
+        assert_session_not_initialized(
+            "publish_topic",
+            adapter
+                .publish_topic(&topic_sender, payload(), PublisherQoS::Standard, true)
+                .await,
+        );
+        assert_session_not_initialized(
+            "subscribe_topic",
+            adapter
+                .subscribe_topic(
+                    &topic_receiver,
+                    SubscriberQoS::Standard,
+                    TopicRetention::LiveOnly,
+                )
+                .await,
+        );
+        assert_session_not_initialized(
+            "declare_topic_publisher",
+            adapter.declare_topic_publisher(
+                &topic_sender,
+                PublisherQoS::Standard,
+                TopicRetention::LiveOnly,
+            ),
+        );
+        assert_session_not_initialized(
+            "topic_subscriber_wait",
+            adapter.topic_subscriber_wait(&topic_sender),
+        );
+        assert_session_not_initialized(
+            "listen_service",
+            adapter.listen_service(&service_receiver).await,
+        );
+        assert_session_not_initialized(
+            "call_service",
+            adapter
+                .call_service(
+                    &service_sender,
+                    payload(),
+                    ServiceQueryKind::UserRequest,
+                    None,
+                )
+                .await,
+        );
+        assert_session_not_initialized(
+            "declare_action_liveliness",
+            adapter.declare_action_liveliness(&action_receiver).await,
+        );
+        assert_session_not_initialized(
+            "watch_action_producer",
+            adapter.watch_action_producer(&action_sender).await,
+        );
+        assert_session_not_initialized(
+            "probe_action_producer",
+            adapter.probe_action_producer(&action_sender, timeout).await,
+        );
+        assert_session_not_initialized(
+            "declare_core_node_presence",
+            adapter
+                .declare_core_node_presence(&core_node, &instance)
+                .await,
+        );
+        assert_session_not_initialized(
+            "watch_core_node_presence",
+            adapter.watch_core_node_presence(None).await,
+        );
+        assert_session_not_initialized(
+            "list_core_node_presence",
+            adapter
+                .list_core_node_presence(PresenceScope::Session, None, timeout)
+                .await,
+        );
+    }
+
     #[cfg(feature = "router")]
     #[test]
     fn external_ipv6_locator_preserves_the_legacy_socket_address() {

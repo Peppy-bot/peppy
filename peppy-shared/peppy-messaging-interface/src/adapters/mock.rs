@@ -1410,6 +1410,52 @@ mod tests {
         Segment::try_from(value).expect("valid keyexpr segment")
     }
 
+    /// The liveliness and presence operations refuse to run before
+    /// `start_session`, with the error the zenoh adapter reports too.
+    #[tokio::test]
+    async fn mock_liveliness_and_presence_operations_need_a_started_session() {
+        use crate::error::test_support::assert_session_not_initialized;
+        use crate::wire::{ActionWireReceiver, ActionWireSender, SenderTarget};
+
+        let adapter = MockAdapter::default();
+        let target = SenderTarget::node("arm", "v1").expect("node target");
+        let receiver =
+            ActionWireReceiver::new("server_core", "server_inst", target.clone(), "move")
+                .expect("valid receiver");
+        let sender = ActionWireSender::new("caller_core", "caller_inst", None, target, "move")
+            .expect("valid sender");
+        let timeout = std::time::Duration::from_secs(1);
+
+        assert_session_not_initialized(
+            "declare_action_liveliness",
+            adapter.declare_action_liveliness(&receiver).await,
+        );
+        assert_session_not_initialized(
+            "watch_action_producer",
+            adapter.watch_action_producer(&sender).await,
+        );
+        assert_session_not_initialized(
+            "probe_action_producer",
+            adapter.probe_action_producer(&sender, timeout).await,
+        );
+        assert_session_not_initialized(
+            "declare_core_node_presence",
+            adapter
+                .declare_core_node_presence(&seg("core"), &seg("instance"))
+                .await,
+        );
+        assert_session_not_initialized(
+            "watch_core_node_presence",
+            adapter.watch_core_node_presence(None).await,
+        );
+        assert_session_not_initialized(
+            "list_core_node_presence",
+            adapter
+                .list_core_node_presence(PresenceScope::Session, None, timeout)
+                .await,
+        );
+    }
+
     /// Issues and collects a presence list (the mock answers instantly, so
     /// the timeout is irrelevant).
     async fn list_presence(
