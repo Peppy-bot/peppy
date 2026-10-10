@@ -4,7 +4,8 @@
 
 use super::super::composition::{
     ComponentAxis, CopySettings, Fragment, LauncherFragmentParser, OptionDeployment, OptionSpec,
-    OriginatedAdjustment, option_origin, validate_fragment_references, validate_guard,
+    OriginatedAdjustment, SelectionCondition, option_origin, validate_fragment_references,
+    validate_guard,
 };
 use super::super::types::PeppyLauncher;
 use super::adjustments::{CopyAxis, LauncherAdjustment, Routed, ids_beside, route};
@@ -691,26 +692,16 @@ fn check_file_copies(
             };
             for OriginatedAdjustment { adjustment, origin } in &adjustments {
                 if let Some(when) = &adjustment.when {
-                    if let Some(copy_axis) = launcher
-                        .repeatable_axes()
-                        .find(|copy_axis| names_axis(Some(when), &copy_axis.name))
-                    {
-                        return Err(CompositionError::CopyAdjustmentOnCopyAxis {
-                            origin: origin.clone(),
-                            axis: copy_axis.name.clone(),
-                        });
-                    }
-                    validate_guard(when, &in_reach, origin)
-                        .map_err(|detail| CompositionError::AdjustmentGuard { detail })?;
+                    check_copy_guard(launcher, when, &in_reach, origin)?;
                 }
                 // An unguarded adjustment writes what the copy runs; a
                 // guarded one may await an option another selection brings.
-                let reachable: &dyn Fn(&str) -> bool = if adjustment.when.is_some() {
-                    &|target| definable.contains(target)
-                } else {
-                    &|target| defined.contains(target)
+                let target = adjustment.target.as_str();
+                let is_reachable = match &adjustment.when {
+                    Some(_) => definable.contains(target),
+                    None => defined.contains(target),
                 };
-                if !reachable(adjustment.target.as_str()) {
+                if !is_reachable {
                     return Err(CompositionError::CopyAdjustmentTarget {
                         origin: origin.clone(),
                         target: adjustment.target.to_string(),
@@ -730,6 +721,28 @@ fn check_file_copies(
         }
     }
     Ok(())
+}
+
+/// A file copy's adjustment guard reads the stack's axes and the copy's
+/// own. A guard naming a copy axis is refused, since the copy's name
+/// alone fills every copy axis.
+fn check_copy_guard(
+    launcher: &PeppyLauncher,
+    when: &SelectionCondition,
+    in_reach: &[&ComponentAxis],
+    origin: &str,
+) -> Result<(), CompositionError> {
+    if let Some(copy_axis) = launcher
+        .repeatable_axes()
+        .find(|copy_axis| names_axis(Some(when), &copy_axis.name))
+    {
+        return Err(CompositionError::CopyAdjustmentOnCopyAxis {
+            origin: origin.to_owned(),
+            axis: copy_axis.name.clone(),
+        });
+    }
+    validate_guard(when, in_reach, origin)
+        .map_err(|detail| CompositionError::AdjustmentGuard { detail })
 }
 
 /// Reads fragment files once each, resolving every path inside the
