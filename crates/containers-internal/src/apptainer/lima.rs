@@ -215,12 +215,22 @@ if [ -n "$leader" ]; then
 fi
 exit 0"#;
 
+/// A `limactl` command pointed at peppy's LIMA_HOME. Every `limactl` command
+/// that reaches an instance goes through here: one without LIMA_HOME talks to
+/// the user's default Lima home instead of the peppy instance. The version
+/// check of [`check_lima_version`] reads no instance and needs no LIMA_HOME.
+fn limactl_command(limactl: &Path, lima_home: &Path) -> Command {
+    let mut cmd = Command::new(limactl);
+    cmd.env("LIMA_HOME", lima_home);
+    cmd
+}
+
 /// Build a `limactl shell <instance>` command pre-configured with LIMA_HOME,
 /// stopping before the `--` separator so callers can inject `limactl`-level flags
 /// (e.g. `lima_shell_extra_args`) between the instance and the guest command.
 pub(crate) fn lima_shell_base(limactl: &Path, lima_home: &Path, instance: &str) -> Command {
-    let mut cmd = Command::new(limactl);
-    cmd.env("LIMA_HOME", lima_home).args(["shell", instance]);
+    let mut cmd = limactl_command(limactl, lima_home);
+    cmd.args(["shell", instance]);
     cmd
 }
 
@@ -319,8 +329,7 @@ fn query_instance_status(
     lima_home: &Path,
     instance: &str,
 ) -> Result<Option<String>> {
-    let mut child = Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
+    let mut child = limactl_command(limactl, lima_home)
         .args(["list", "--format", "{{.Status}}", instance])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -391,13 +400,11 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
                 "Lima {} instance reports Running but SSH is unresponsive; restarting...",
                 LIMA_INSTANCE
             );
-            let _ = Command::new(limactl)
-                .env("LIMA_HOME", lima_home)
+            let _ = limactl_command(limactl, lima_home)
                 .args(["stop", "--force", LIMA_INSTANCE])
                 .output();
 
-            let start = Command::new(limactl)
-                .env("LIMA_HOME", lima_home)
+            let start = limactl_command(limactl, lima_home)
                 .args(["start", LIMA_INSTANCE])
                 .output()?;
 
@@ -410,8 +417,7 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
         }
         Some(_) => {
             tracing::info!("Starting Lima {} instance...", LIMA_INSTANCE);
-            let start = Command::new(limactl)
-                .env("LIMA_HOME", lima_home)
+            let start = limactl_command(limactl, lima_home)
                 .args(["start", LIMA_INSTANCE])
                 .output()?;
 
@@ -429,8 +435,7 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
                 template
             );
             let name_flag = format!("--name={}", LIMA_INSTANCE);
-            let create = Command::new(limactl)
-                .env("LIMA_HOME", lima_home)
+            let create = limactl_command(limactl, lima_home)
                 .args([
                     "start",
                     &name_flag,
@@ -838,8 +843,7 @@ pub(crate) fn stop_instance(limactl: &Path, lima_home: &Path, instance: &str) ->
         instance,
         || query_instance_status(limactl, lima_home, instance),
         || {
-            Command::new(limactl)
-                .env("LIMA_HOME", lima_home)
+            limactl_command(limactl, lima_home)
                 .args(["stop", instance])
                 .output()
                 .map_err(Error::from)
@@ -1189,6 +1193,30 @@ mod tests {
             content.contains("/data/shared"),
             "config should contain new mount, got:\n{content}"
         );
+    }
+
+    /// Every `limactl` command that reaches an instance carries peppy's
+    /// LIMA_HOME: without it, `limactl` talks to the user's default Lima home
+    /// instead of the peppy instance.
+    #[test]
+    fn lima_shell_base_points_limactl_at_the_peppy_lima_home() {
+        let cmd = lima_shell_base(
+            Path::new("/opt/lima/bin/limactl"),
+            Path::new("/home/u/.lima"),
+            "peppy",
+        );
+
+        assert_eq!(cmd.get_program(), "/opt/lima/bin/limactl");
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert_eq!(
+            envs,
+            [(
+                std::ffi::OsStr::new("LIMA_HOME"),
+                Some(std::ffi::OsStr::new("/home/u/.lima"))
+            )]
+        );
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args, ["shell", "peppy"]);
     }
 
     // These tests previously spawned fake `limactl` shell scripts via tempdirs
