@@ -468,7 +468,7 @@ pub fn node_add_command(source: &std::path::Path) -> peppy::commands::node::Node
 /// Writes a node config and adds/builds it without running an instance.
 pub fn add_built_node(ctx: &Arc<AppContext>, dir: &std::path::Path, config: &str) {
     use peppy::commands::Command;
-    std::fs::write(dir.join("peppy.json5"), config).expect("write node config");
+    std::fs::write(dir.join(config::consts::NODE_CONFIG_FILE), config).expect("write node config");
     node_add_command(dir)
         .execute(ctx)
         .expect("node add should succeed");
@@ -606,7 +606,7 @@ pub fn pairing_node_config(
             peppy_schema: "node/v1",
             manifest: {{
                 name: "{name}",
-                tag: "v1",
+                tag: "{TEST_NODE_TAG}",
                 depends_on: {{
                     pairings: [
                         {{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}", cardinality: "{cardinality}" }}
