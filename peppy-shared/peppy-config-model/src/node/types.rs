@@ -302,9 +302,9 @@ pub enum ArrayKind {
 pub struct ObjectSchema {
     #[serde(rename = "$type")]
     pub kind: ObjectKind,
-    #[serde(default, flatten)]
+    #[serde(flatten)]
     pub fields: IndexMap<String, SchemaType>,
-    #[serde(rename = "$optional", default, skip_serializing_if = "is_false")]
+    #[serde(rename = "$optional", skip_serializing_if = "is_false")]
     pub optional: bool,
 }
 
@@ -1246,7 +1246,7 @@ pub struct PairingParticipantDependency {
     /// Size constraint on the slot's set of pairs. Same four spellings and the
     /// same default as [`NodeDependency::cardinality`]. Serialized only when
     /// set so a manifest that omits it round-trips byte-identical.
-    #[serde(default, skip_serializing_if = "Cardinality::is_one")]
+    #[serde(skip_serializing_if = "Cardinality::is_one")]
     pub cardinality: Cardinality,
 }
 
@@ -1283,7 +1283,7 @@ pub struct PairingObserverDependency {
     /// and the same default as [`NodeDependency::cardinality`]; the per-kind
     /// difference is that an observed set changes while the node runs, so only
     /// the count the planner accepts is validated.
-    #[serde(default, skip_serializing_if = "Cardinality::is_one")]
+    #[serde(skip_serializing_if = "Cardinality::is_one")]
     pub cardinality: Cardinality,
 }
 
@@ -1559,7 +1559,6 @@ where
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Execution {
     pub language: PeppygenLanguage,
-    #[serde(default)]
     pub parameters: ParameterSchema,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_cmd: Option<Vec<String>>,
@@ -1569,7 +1568,7 @@ pub struct Execution {
     pub container: Option<ContainerConfig>,
     /// The sockets this node binds during setup, keyed by label. Empty for a
     /// node that serves nothing.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub endpoints: EndpointDeclarations,
 }
 
