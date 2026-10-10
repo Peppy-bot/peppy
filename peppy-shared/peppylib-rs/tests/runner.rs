@@ -13,7 +13,7 @@ use peppylib::runtime::{NodeBuilder, StandaloneConfig};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const TEST_CORE_NODE: &str = "test_core";
@@ -33,39 +33,37 @@ struct EnvAndDirGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
-static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 impl EnvAndDirGuard {
-    fn new(temp_dir: &Path, runtime_config_path: &Path) -> Self {
+    /// Takes the env lock and records the runtime config variable and the
+    /// current dir that `Drop` restores.
+    fn lock_and_record() -> Self {
         let lock = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
             .lock()
             .expect("env lock poisoned by a previous test panic");
 
-        let previous_runtime_config = std::env::var(RUNTIME_CONFIG_VAR_NAME).ok();
-        let previous_dir = std::env::current_dir().expect("current dir should be readable");
+        Self {
+            previous_runtime_config: std::env::var(RUNTIME_CONFIG_VAR_NAME).ok(),
+            previous_dir: std::env::current_dir().expect("current dir should be readable"),
+            _lock: lock,
+        }
+    }
+
+    fn new(temp_dir: &Path, runtime_config_path: &Path) -> Self {
+        let guard = Self::lock_and_record();
 
         // SAFETY: environment mutation is guarded by a global mutex to avoid races.
         unsafe { std::env::set_var(RUNTIME_CONFIG_VAR_NAME, runtime_config_path) };
         std::env::set_current_dir(temp_dir).expect("set_current_dir should succeed");
 
-        Self {
-            previous_runtime_config,
-            previous_dir,
-            _lock: lock,
-        }
+        guard
     }
 
     /// Create a guard that ensures the runtime config env var is NOT set.
     /// Used by standalone tests to prevent races with daemon tests.
     fn new_standalone() -> Self {
-        let lock = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock poisoned by a previous test panic");
-
-        let previous_runtime_config = std::env::var(RUNTIME_CONFIG_VAR_NAME).ok();
-        let previous_dir = std::env::current_dir().expect("current dir should be readable");
+        let guard = Self::lock_and_record();
 
         // SAFETY: environment mutation is guarded by a global mutex to avoid races.
         // Remove the env var to ensure standalone mode is used.
@@ -73,11 +71,7 @@ impl EnvAndDirGuard {
             std::env::remove_var(RUNTIME_CONFIG_VAR_NAME);
         };
 
-        Self {
-            previous_runtime_config,
-            previous_dir,
-            _lock: lock,
-        }
+        guard
     }
 }
 
