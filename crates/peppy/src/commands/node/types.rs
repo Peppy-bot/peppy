@@ -89,4 +89,30 @@ mod tests {
         assert!(NodeName::new("node@name").is_err()); // contains invalid character
         assert!(NodeName::new("node.name").is_err()); // contains dot
     }
+
+    #[test]
+    fn node_name_refusals_name_the_broken_rule() {
+        let refusal = |name: &str| {
+            NodeName::new(name)
+                .expect_err("the name should be refused")
+                .to_string()
+        };
+
+        assert_eq!(refusal(""), "Invalid node name: Node name cannot be empty");
+        assert_eq!(
+            refusal("1node"),
+            "Invalid node name: Node name '1node' must start with a letter"
+        );
+        assert_eq!(
+            refusal("node name"),
+            "Invalid node name: Node name 'node name' contains invalid characters"
+        );
+    }
+
+    #[test]
+    fn node_name_displays_the_name_as_given() {
+        let name = NodeName::new("My-node_2").expect("valid node name");
+
+        assert_eq!(name.to_string(), "My-node_2");
+    }
 }
