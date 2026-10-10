@@ -195,12 +195,7 @@ pub fn build_exposed_service(
     builder.blank_line();
 
     // _deserialize_request helper (when request format exists)
-    if let Some((fmt, info)) = service
-        .request_message_format
-        .as_ref()
-        .filter(|f| !f.0.is_empty())
-        .zip(request_schema_info)
-    {
+    if let Some((fmt, info)) = request_format.zip(request_schema_info) {
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
@@ -235,12 +230,7 @@ request = Request(instance_id=instance_id, core_node=core_node, data=request_dat
                 builder.line("request = Request(instance_id=instance_id, core_node=core_node)");
             }
 
-            let Some((resp_fmt, resp_info)) = service
-                .response_message_format
-                .as_ref()
-                .filter(|f| !f.0.is_empty())
-                .zip(response_schema_info)
-            else {
+            let Some((resp_fmt, resp_info)) = response_format.zip(response_schema_info) else {
                 builder.py(r#"
 maybe_response = handler(request)
 if hasattr(maybe_response, "__await__"):
@@ -377,15 +367,16 @@ pub fn build_consumed_service(
 
     emit_bound_producer_accessor_fn(&mut builder, dependency);
 
-    let signature = if has_request {
-        format!(
-            "async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: Request, timeout: float){return_type}:"
-        )
+    // A body-less service takes no `request` parameter at all, so the
+    // parameter list is spliced rather than the whole signature written twice.
+    let request_param = if has_request {
+        "request: Request, "
     } else {
-        format!(
-            "async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float){return_type}:"
-        )
+        ""
     };
+    let signature = format!(
+        "async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, {request_param}timeout: float){return_type}:"
+    );
     let target_expr = sender_target_python_expr(
         dependency.origin.as_ref(),
         "NODE_NAME",
