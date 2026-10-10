@@ -363,9 +363,11 @@ def test_require_prebuilt_peppylib_so_raises_when_incomplete(tmp_path: Path) -> 
     # Only one platform's binding is present; the rest and the marker are missing.
     (so_dir / RELEASE_PLATFORM_SO[0]).write_bytes(b"x")
 
-    with patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
-        with pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"):
-            require_prebuilt_peppylib_so()
+    with (
+        patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir),
+        pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"),
+    ):
+        require_prebuilt_peppylib_so()
 
 
 def test_stop_lima_vm_issues_stop(tmp_path: Path) -> None:
@@ -393,15 +395,15 @@ def test_cargo_build_in_lima_requires_prebuilt_so(tmp_path: Path) -> None:
     with (
         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir),
         patch("functions.lima._lima_shell") as mock_shell,
+        pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"),
     ):
-        with pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"):
-            cargo_build_in_lima(
-                limactl,
-                "v0.1.0",
-                "x86_64-unknown-linux-gnu",
-                repo_root,
-                target_dir=tmp_path / "target-x86",
-            )
+        cargo_build_in_lima(
+            limactl,
+            "v0.1.0",
+            "x86_64-unknown-linux-gnu",
+            repo_root,
+            target_dir=tmp_path / "target-x86",
+        )
 
     # The VM build must not start when the host bindings are absent.
     mock_shell.assert_not_called()

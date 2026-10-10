@@ -394,9 +394,9 @@ def test_run_empty_tag_raises() -> None:
     with (
         patch("functions.docker.validate_docker_environment"),
         patch("functions.docker.prompt", return_value=""),
+        pytest.raises(ReleaseError, match="tag cannot be empty"),
     ):
-        with pytest.raises(ReleaseError, match="tag cannot be empty"):
-            _run()
+        _run()
 
 
 def test_run_calls_build_all_with_tag() -> None:

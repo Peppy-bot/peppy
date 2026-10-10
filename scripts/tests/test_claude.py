@@ -169,16 +169,18 @@ def test_run_claude_raises_on_a_bad_answer(
     mock.returncode = returncode
     mock.stdout = stdout
     mock.stderr = stderr
-    with patch("functions.claude.subprocess.run", return_value=mock):
-        with pytest.raises(ReleaseError, match=match):
-            run_claude(
-                "p",
-                allowed_tools="Read",
-                permission_mode="bypassPermissions",
-                cwd=tmp_path,
-                json_schema=_SCHEMA,
-                activity="judging",
-            )
+    with (
+        patch("functions.claude.subprocess.run", return_value=mock),
+        pytest.raises(ReleaseError, match=match),
+    ):
+        run_claude(
+            "p",
+            allowed_tools="Read",
+            permission_mode="bypassPermissions",
+            cwd=tmp_path,
+            json_schema=_SCHEMA,
+            activity="judging",
+        )
 
 
 def test_run_claude_raises_on_missing_structured_output(tmp_path: Path) -> None:

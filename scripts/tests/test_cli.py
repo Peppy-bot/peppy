@@ -70,9 +70,9 @@ def test_validate_release_environment_missing_token() -> None:
     with (
         patch.dict(os.environ, {}, clear=True),
         patch("functions.cli.verify_prod_router_publicly_trusted"),
+        pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"),
     ):
-        with pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"):
-            validate_release_environment(required_commands=())
+        validate_release_environment(required_commands=())
 
 
 def test_validate_release_environment_valid_token() -> None:
@@ -114,11 +114,9 @@ def test_validate_release_environment_skip_prod_router_check_still_requires_toke
     with (
         patch.dict(os.environ, {}, clear=True),
         patch("functions.cli.verify_prod_router_publicly_trusted") as gate,
+        pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"),
     ):
-        with pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"):
-            validate_release_environment(
-                required_commands=(), skip_prod_router_check=True
-            )
+        validate_release_environment(required_commands=(), skip_prod_router_check=True)
     gate.assert_not_called()
 
 
@@ -126,18 +124,18 @@ def test_validate_release_environment_missing_command() -> None:
     with (
         patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "test-token"}),
         patch("functions.cli.verify_prod_router_publicly_trusted"),
+        pytest.raises(ReleaseError, match="missing required command"),
     ):
-        with pytest.raises(ReleaseError, match="missing required command"):
-            validate_release_environment(required_commands=("nonexistent_cmd_xyz",))
+        validate_release_environment(required_commands=("nonexistent_cmd_xyz",))
 
 
 def test_validate_release_environment_whitespace_token_is_empty() -> None:
     with (
         patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "  "}),
         patch("functions.cli.verify_prod_router_publicly_trusted"),
+        pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"),
     ):
-        with pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"):
-            validate_release_environment(required_commands=())
+        validate_release_environment(required_commands=())
 
 
 def test_require_job_token_reads_the_job_token() -> None:
@@ -147,24 +145,30 @@ def test_require_job_token_reads_the_job_token() -> None:
 
 @pytest.mark.parametrize("environment", [{}, {"PEPPY_JOB_TOKEN": "  "}])
 def test_require_job_token_refuses_a_missing_token(environment: dict[str, str]) -> None:
-    with patch.dict(os.environ, environment, clear=True):
-        with pytest.raises(ReleaseError, match="PEPPY_JOB_TOKEN env var is required"):
-            require_job_token()
+    with (
+        patch.dict(os.environ, environment, clear=True),
+        pytest.raises(ReleaseError, match="PEPPY_JOB_TOKEN env var is required"),
+    ):
+        require_job_token()
 
 
 # --- Publicly-trusted prod-router release gate ---
 
 
 def test_prod_gate_unset_endpoint_raises() -> None:
-    with patch.dict(os.environ, {}, clear=True):
-        with pytest.raises(ReleaseError, match=PROD_ROUTER_ENDPOINT_ENV):
-            verify_prod_router_publicly_trusted()
+    with (
+        patch.dict(os.environ, {}, clear=True),
+        pytest.raises(ReleaseError, match=PROD_ROUTER_ENDPOINT_ENV),
+    ):
+        verify_prod_router_publicly_trusted()
 
 
 def test_prod_gate_malformed_endpoint_raises() -> None:
-    with patch.dict(os.environ, {PROD_ROUTER_ENDPOINT_ENV: "no-port-here"}):
-        with pytest.raises(ReleaseError, match="host:port"):
-            verify_prod_router_publicly_trusted()
+    with (
+        patch.dict(os.environ, {PROD_ROUTER_ENDPOINT_ENV: "no-port-here"}),
+        pytest.raises(ReleaseError, match="host:port"),
+    ):
+        verify_prod_router_publicly_trusted()
 
 
 @pytest.mark.parametrize("bad_port", ["0", "-1", "65536", "99999"])
@@ -176,9 +180,9 @@ def test_prod_gate_out_of_range_port_raises(bad_port: str) -> None:
             os.environ, {PROD_ROUTER_ENDPOINT_ENV: f"health.zenoh.example:{bad_port}"}
         ),
         patch("functions.cli._probe_publicly_trusted_tls") as probe,
+        pytest.raises(ReleaseError, match="1-65535"),
     ):
-        with pytest.raises(ReleaseError, match="1-65535"):
-            verify_prod_router_publicly_trusted()
+        verify_prod_router_publicly_trusted()
     probe.assert_not_called()
 
 
@@ -230,9 +234,9 @@ def test_prod_gate_untrusted_cert_raises() -> None:
     with (
         patch("functions.cli.ssl.create_default_context", return_value=fake_ctx),
         patch("functions.cli.socket.create_connection", return_value=conn_cm),
+        pytest.raises(ReleaseError, match="NOT publicly trusted"),
     ):
-        with pytest.raises(ReleaseError, match="NOT publicly trusted"):
-            _probe_publicly_trusted_tls("health.zenoh.example", 7443)
+        _probe_publicly_trusted_tls("health.zenoh.example", 7443)
 
 
 def test_prod_gate_unreachable_raises() -> None:
@@ -322,9 +326,9 @@ def test_get_native_triple_unsupported_platform() -> None:
     with (
         patch("functions.cli.platform.system", return_value="Windows"),
         patch("functions.cli.platform.machine", return_value="AMD64"),
+        pytest.raises(ReleaseError, match="unsupported platform"),
     ):
-        with pytest.raises(ReleaseError, match="unsupported platform"):
-            get_native_triple()
+        get_native_triple()
 
 
 def test_get_targets_for_platform_macos_returns_all() -> None:
@@ -350,6 +354,6 @@ def test_get_targets_for_platform_unsupported() -> None:
     with (
         patch("functions.cli.platform.system", return_value="Windows"),
         patch("functions.cli.platform.machine", return_value="AMD64"),
+        pytest.raises(ReleaseError, match="unsupported platform"),
     ):
-        with pytest.raises(ReleaseError, match="unsupported platform"):
-            get_targets_for_platform()
+        get_targets_for_platform()

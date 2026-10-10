@@ -61,9 +61,11 @@ def test_find_peppy_binary_not_found(tmp_path: Path) -> None:
     triple = "aarch64-apple-darwin"
     (tmp_path / "target").mkdir()
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
-        with pytest.raises(ReleaseError, match="peppy binary not found"):
-            find_peppy_binary(triple, tmp_path)
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}),
+        pytest.raises(ReleaseError, match="peppy binary not found"),
+    ):
+        find_peppy_binary(triple, tmp_path)
 
 
 def test_find_zenohd_binary_found(tmp_path: Path) -> None:
@@ -91,9 +93,11 @@ def test_find_zenohd_binary_not_found_raises(tmp_path: Path) -> None:
     build_dir = tmp_path / "target" / triple / "release" / "build"
     build_dir.mkdir(parents=True)
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
-        with pytest.raises(ReleaseError, match="zenohd binary not found"):
-            find_zenohd_binary(triple, tmp_path)
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}),
+        pytest.raises(ReleaseError, match="zenohd binary not found"),
+    ):
+        find_zenohd_binary(triple, tmp_path)
 
 
 def test_find_build_dir_found(tmp_path: Path) -> None:
@@ -122,14 +126,16 @@ def test_find_build_dir_not_found(tmp_path: Path) -> None:
     build_dir = tmp_path / "target" / triple / "release" / "build"
     build_dir.mkdir(parents=True)
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
-        with pytest.raises(ReleaseError, match="apptainer install directory not found"):
-            find_build_dir(
-                triple,
-                tmp_path,
-                "containers-*/out/apptainer-install",
-                "apptainer install",
-            )
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}),
+        pytest.raises(ReleaseError, match="apptainer install directory not found"),
+    ):
+        find_build_dir(
+            triple,
+            tmp_path,
+            "containers-*/out/apptainer-install",
+            "apptainer install",
+        )
 
 
 @dataclass(frozen=True)

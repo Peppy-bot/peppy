@@ -91,11 +91,13 @@ def _probe_publicly_trusted_tls(host: str, port: int, timeout: float = 10.0) -> 
     """
     ctx = ssl.create_default_context()  # system roots, verify on, check_hostname on
     try:
-        with socket.create_connection((host, port), timeout=timeout) as sock:
+        with (
+            socket.create_connection((host, port), timeout=timeout) as sock,
             # wrap_socket performs the handshake (and cert + hostname validation)
             # immediately for a connected socket; a clean return means it passed.
-            with ctx.wrap_socket(sock, server_hostname=host):
-                pass
+            ctx.wrap_socket(sock, server_hostname=host),
+        ):
+            pass
     except ssl.SSLCertVerificationError as e:
         raise ReleaseError(
             f"prod router {host}:{port} is NOT publicly trusted: {e}. The shipped CLI "

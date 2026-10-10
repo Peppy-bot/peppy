@@ -230,11 +230,11 @@ def test_diff_getters_skip_the_diff_when_nothing_matches(
 
 
 def test_get_code_diff_raises_when_git_fails(tmp_path: Path) -> None:
-    with patch("functions.docs.subprocess.run", _mock_git_diff("", returncode=128)):
-        with pytest.raises(
-            ReleaseError, match="git diff --name-only v9.9.9..HEAD failed"
-        ):
-            get_code_diff("v9.9.9", "HEAD", tmp_path)
+    with (
+        patch("functions.docs.subprocess.run", _mock_git_diff("", returncode=128)),
+        pytest.raises(ReleaseError, match="git diff --name-only v9.9.9..HEAD failed"),
+    ):
+        get_code_diff("v9.9.9", "HEAD", tmp_path)
 
 
 # --- the schemas the CLI enforces ---
@@ -847,9 +847,15 @@ def test_check_docs_starts_no_part_once_one_fails(tmp_path: Path) -> None:
     repo, diff, cap, claude = _patched_parts(tmp_path, calls, paths)
     # One run at a time: the run judging part 1 fails before any other starts.
     one_at_a_time = patch("functions.docs._CHECK_CONCURRENCY", 1)
-    with repo, diff, cap, claude, one_at_a_time:
-        with pytest.raises(ReleaseError, match="crates/a.rs broke"):
-            check_docs("BASE", "HEAD")
+    with (
+        repo,
+        diff,
+        cap,
+        claude,
+        one_at_a_time,
+        pytest.raises(ReleaseError, match="crates/a.rs broke"),
+    ):
+        check_docs("BASE", "HEAD")
 
     assert calls.judged == ["crates/a.rs"]
 
@@ -865,9 +871,14 @@ def test_check_docs_raises_the_failure_of_the_first_failing_part(
         rendezvous=threading.Barrier(2),
     )
     repo, diff, cap, claude = _patched_parts(tmp_path, calls)
-    with repo, diff, cap, claude:
-        with pytest.raises(ReleaseError, match="crates/a.rs broke"):
-            check_docs("BASE", "HEAD")
+    with (
+        repo,
+        diff,
+        cap,
+        claude,
+        pytest.raises(ReleaseError, match="crates/a.rs broke"),
+    ):
+        check_docs("BASE", "HEAD")
 
     assert sorted(calls.judged) == ["crates/a.rs", "crates/b.rs"]
 
@@ -1067,9 +1078,14 @@ def test_update_docs_refuses_a_gap_naming_a_part_the_diff_lacks(
     calls = _ClaudeCalls()
     changes = (RequiredChange("docs/b.mdx", "say b", "blocking", diff_part=3),)
     repo, diff, cap, claude = _patched_parts(tmp_path, calls)
-    with repo, diff, cap, claude:
-        with pytest.raises(ReleaseError, match="has 2 part\\(s\\), but these changes"):
-            update_docs("BASE", "HEAD", changes)
+    with (
+        repo,
+        diff,
+        cap,
+        claude,
+        pytest.raises(ReleaseError, match="has 2 part\\(s\\), but these changes"),
+    ):
+        update_docs("BASE", "HEAD", changes)
 
     assert calls.prompts == []
 
@@ -1112,9 +1128,9 @@ def test_check_docs_raises_on_claude_nonzero(tmp_path: Path) -> None:
             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
         ),
         patch("functions.claude.subprocess.run", return_value=mock),
+        pytest.raises(ReleaseError, match="claude CLI failed"),
     ):
-        with pytest.raises(ReleaseError, match="claude CLI failed"):
-            check_docs("BASE", "HEAD")
+        check_docs("BASE", "HEAD")
 
 
 def test_check_docs_raises_on_missing_structured_output(tmp_path: Path) -> None:
@@ -1130,18 +1146,18 @@ def test_check_docs_raises_on_missing_structured_output(tmp_path: Path) -> None:
             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
         ),
         patch("functions.claude.subprocess.run", return_value=mock),
+        pytest.raises(ReleaseError, match="missing 'structured_output'"),
     ):
-        with pytest.raises(ReleaseError, match="missing 'structured_output'"):
-            check_docs("BASE", "HEAD")
+        check_docs("BASE", "HEAD")
 
 
 def test_update_docs_rejects_an_empty_change_list(tmp_path: Path) -> None:
     with (
         patch("functions.docs.get_repo_root", return_value=tmp_path),
         patch("functions.claude.subprocess.run") as mock_run,
+        pytest.raises(ReleaseError, match="no changes to implement"),
     ):
-        with pytest.raises(ReleaseError, match="no changes to implement"):
-            update_docs("BASE", "HEAD", ())
+        update_docs("BASE", "HEAD", ())
     mock_run.assert_not_called()
 
 

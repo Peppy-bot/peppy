@@ -349,19 +349,23 @@ def test_merge_into_current_branch_fast_forwards_when_it_can() -> None:
 def test_merge_into_current_branch_raises_on_a_conflict() -> None:
     conflict = _mock_git("CONFLICT (add/add): Merge conflict in docs/v1.html", 1)
     conflict.stderr = ""
-    with patch("functions.repo.subprocess.run", return_value=conflict):
-        with pytest.raises(ReleaseError, match="CONFLICT"):
-            merge_into_current_branch("abc123", "Merge the notes")
+    with (
+        patch("functions.repo.subprocess.run", return_value=conflict),
+        pytest.raises(ReleaseError, match="CONFLICT"),
+    ):
+        merge_into_current_branch("abc123", "Merge the notes")
 
 
 # --- worktrees ---
 
 
 def test_detached_worktree_is_removed_when_its_body_fails() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
-        with pytest.raises(ReleaseError, match="the body failed"):
-            with detached_worktree("abc123") as tree:
-                raise ReleaseError("the body failed")
+    with (
+        patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run,
+        pytest.raises(ReleaseError, match="the body failed"),
+        detached_worktree("abc123") as tree,
+    ):
+        raise ReleaseError("the body failed")
 
     add_cmd, remove_cmd = (c.args[0] for c in run.call_args_list)
     assert add_cmd == [
@@ -379,10 +383,12 @@ def test_detached_worktree_is_removed_when_its_body_fails() -> None:
 
 
 def test_detached_worktree_raises_when_it_cannot_be_added() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 128)) as run:
-        with pytest.raises(ReleaseError, match="failed to add a worktree at 'abc123'"):
-            with detached_worktree("abc123"):
-                pass
+    with (
+        patch("functions.repo.subprocess.run", return_value=_mock_git("", 128)) as run,
+        pytest.raises(ReleaseError, match="failed to add a worktree at 'abc123'"),
+        detached_worktree("abc123"),
+    ):
+        pass
 
     # Nothing was added, so nothing is removed.
     assert run.call_count == 1
