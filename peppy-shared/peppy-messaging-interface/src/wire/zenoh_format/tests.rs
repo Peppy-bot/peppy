@@ -523,57 +523,22 @@ fn parse_topic_keyexpr_roundtrips_through_topic_publish() {
 }
 
 #[test]
-fn parse_topic_keyexpr_missing_core_node_errors() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("only_one_segment").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::MissingSegment("caller_core_node")
-    ));
-}
-
-#[test]
-fn parse_topic_keyexpr_empty_core_node_errors() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("a//c/d/rest").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::MissingSegment("caller_core_node")
-    ));
-}
-
-#[test]
-fn parse_topic_keyexpr_missing_instance_id_errors() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("a/b/c").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::MissingSegment("caller_instance_id")
-    ));
-}
-
-#[test]
-fn parse_topic_keyexpr_empty_instance_id_errors() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("a/b/c//rest").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::MissingSegment("caller_instance_id")
-    ));
-}
-
-#[test]
-fn parse_topic_keyexpr_rejects_wildcard_in_caller_core_node() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("a/*/c/d/rest").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::WildcardInCallerSegment("caller_core_node")
-    ));
-}
-
-#[test]
-fn parse_topic_keyexpr_rejects_wildcard_in_caller_instance_id() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("a/b/c/*/rest").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::WildcardInCallerSegment("caller_instance_id")
-    ));
+fn parse_topic_keyexpr_rejects_a_missing_empty_or_wildcard_caller_slot() {
+    use ZenohWireParseError::{MissingSegment, WildcardInCallerSegment};
+    for (keyexpr, expected) in [
+        ("only_one_segment", MissingSegment("caller_core_node")),
+        ("a//c/d/rest", MissingSegment("caller_core_node")),
+        ("a/b/c", MissingSegment("caller_instance_id")),
+        ("a/b/c//rest", MissingSegment("caller_instance_id")),
+        ("a/*/c/d/rest", WildcardInCallerSegment("caller_core_node")),
+        (
+            "a/b/c/*/rest",
+            WildcardInCallerSegment("caller_instance_id"),
+        ),
+    ] {
+        let err = ZenohWireFormat::parse_topic_keyexpr(keyexpr).unwrap_err();
+        assert_eq!(err, expected, "{keyexpr}");
+    }
 }
 
 // ─── Services: queryable declare ──────────────────────────────────────────
@@ -1404,17 +1369,16 @@ fn parse_inbound_query_node_receiver_rejects_contract_shaped_query() {
 // ─── Topic attachment ────────────────────────────────────────────────────
 
 #[test]
-fn topic_attachment_primary_roundtrip() {
-    let encoded = TopicAttachment { is_primary: true }.encode();
-    assert_eq!(encoded.as_ref(), &[0x01u8]);
-    assert!(TopicAttachment::decode(&encoded).is_primary);
-}
-
-#[test]
-fn topic_attachment_secondary_roundtrip() {
-    let encoded = TopicAttachment { is_primary: false }.encode();
-    assert_eq!(encoded.as_ref(), &[0x00u8]);
-    assert!(!TopicAttachment::decode(&encoded).is_primary);
+fn topic_attachment_roundtrips_through_its_marker_byte() {
+    for (is_primary, marker) in [(true, 0x01u8), (false, 0x00u8)] {
+        let encoded = TopicAttachment { is_primary }.encode();
+        assert_eq!(encoded.as_ref(), &[marker], "is_primary: {is_primary}");
+        assert_eq!(
+            TopicAttachment::decode(&encoded).is_primary,
+            is_primary,
+            "marker: {marker:#04x}"
+        );
+    }
 }
 
 #[test]
@@ -1437,23 +1401,13 @@ fn topic_attachment_unknown_byte_decodes_as_primary() {
 // ─── Service query attachment (kind only) ────────────────────────────────
 
 #[test]
-fn service_query_attachment_user_request_roundtrips() {
-    let attachment = ServiceQueryAttachment {
-        kind: ServiceQueryKind::UserRequest,
-    };
-    let decoded = ServiceQueryAttachment::decode(attachment.encode().as_ref())
-        .expect("encoded attachment decodes");
-    assert_eq!(decoded.kind, ServiceQueryKind::UserRequest);
-}
-
-#[test]
-fn service_query_attachment_probe_kind_roundtrips() {
-    let attachment = ServiceQueryAttachment {
-        kind: ServiceQueryKind::Probe,
-    };
-    let decoded = ServiceQueryAttachment::decode(attachment.encode().as_ref())
-        .expect("encoded attachment decodes");
-    assert_eq!(decoded.kind, ServiceQueryKind::Probe);
+fn service_query_attachment_roundtrips_every_kind() {
+    for kind in [ServiceQueryKind::UserRequest, ServiceQueryKind::Probe] {
+        let attachment = ServiceQueryAttachment { kind };
+        let decoded = ServiceQueryAttachment::decode(attachment.encode().as_ref())
+            .expect("encoded attachment decodes");
+        assert_eq!(decoded.kind, kind);
+    }
 }
 
 #[test]
@@ -1496,33 +1450,17 @@ fn service_query_attachment_decode_rejects_truncated_payload() {
 // ─── Service reply attachment (Ack / Response / HandlerError) ────────────
 
 #[test]
-fn service_reply_attachment_ack_roundtrips() {
-    let attachment = ServiceReplyAttachment {
-        kind: ServiceReplyKind::Ack,
-    };
-    let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())
-        .expect("encoded reply attachment decodes");
-    assert_eq!(decoded.kind, ServiceReplyKind::Ack);
-}
-
-#[test]
-fn service_reply_attachment_response_roundtrips() {
-    let attachment = ServiceReplyAttachment {
-        kind: ServiceReplyKind::Response,
-    };
-    let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())
-        .expect("encoded reply attachment decodes");
-    assert_eq!(decoded.kind, ServiceReplyKind::Response);
-}
-
-#[test]
-fn service_reply_attachment_handler_error_roundtrips() {
-    let attachment = ServiceReplyAttachment {
-        kind: ServiceReplyKind::HandlerError,
-    };
-    let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())
-        .expect("encoded reply attachment decodes");
-    assert_eq!(decoded.kind, ServiceReplyKind::HandlerError);
+fn service_reply_attachment_roundtrips_every_kind() {
+    for kind in [
+        ServiceReplyKind::Ack,
+        ServiceReplyKind::Response,
+        ServiceReplyKind::HandlerError,
+    ] {
+        let attachment = ServiceReplyAttachment { kind };
+        let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())
+            .expect("encoded reply attachment decodes");
+        assert_eq!(decoded.kind, kind);
+    }
 }
 
 #[test]
