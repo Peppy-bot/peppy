@@ -2158,27 +2158,36 @@ echo "=== Apptainer build complete ==="
         };
 
         // Copy Lima installation to OUT_DIR for the crate to reference at compile time.
-        // Use a sentinel to skip the copy when the source hasn't changed. The
-        // sentinel stores a digest of the cache path, not the path itself:
-        // `.copy-source` ships inside release archives and must not name the
-        // building machine.
-        let out_lima_dir = PathBuf::from(out_dir).join("lima-install");
-        let lima_sentinel_path = out_lima_dir.join(".copy-source");
-        let lima_sentinel_content = cache_path_digest(&lima_cache_dir);
-        let lima_needs_copy = !lima_sentinel_path.exists()
-            || std::fs::read_to_string(&lima_sentinel_path)
-                .map_or(true, |s| s.trim() != lima_sentinel_content.trim());
-        if lima_needs_copy {
-            if out_lima_dir.exists() {
-                std::fs::remove_dir_all(&out_lima_dir).ok();
-            }
-            if let Err(e) = copy_dir_recursive(&lima_cache_dir, &out_lima_dir) {
-                panic!("Failed to copy Lima installation to OUT_DIR: {}", e);
-            }
-            std::fs::write(&lima_sentinel_path, &lima_sentinel_content).ok();
-        }
+        copy_tree_to_out_dir(
+            &lima_cache_dir,
+            &PathBuf::from(out_dir).join("lima-install"),
+            &cache_path_digest(&lima_cache_dir),
+            "Lima installation",
+        );
 
         lima
+    }
+
+    /// Copies the tree at `source` to `dest` under OUT_DIR, unless the
+    /// `.copy-source` stamp in `dest` already holds `stamp`. Skipping the copy
+    /// of an unchanged source avoids mtime bumps that trigger unnecessary
+    /// recompilation. The stamp holds a digest of the source path, never the
+    /// path itself: `.copy-source` ships inside release archives and must not
+    /// name the building machine. `what` names the tree in the panic of a
+    /// failed copy.
+    fn copy_tree_to_out_dir(source: &Path, dest: &Path, stamp: &str, what: &str) {
+        let stamp_path = dest.join(".copy-source");
+        let is_current = std::fs::read_to_string(&stamp_path)
+            .is_ok_and(|current| current.trim() == stamp.trim());
+        if is_current {
+            return;
+        }
+        if dest.exists() {
+            std::fs::remove_dir_all(dest).ok();
+        }
+        copy_dir_recursive(source, dest)
+            .unwrap_or_else(|e| panic!("Failed to copy {what} to OUT_DIR: {e}"));
+        std::fs::write(&stamp_path, stamp).ok();
     }
 
     /// Pre-build apptainer for all target architectures via Lima VMs.
@@ -2452,30 +2461,20 @@ echo "=== Apptainer build complete ==="
         println!("cargo:rerun-if-changed={}", cache_sentinel.display());
 
         // Step 3: Copy apptainer installation to OUT_DIR for release packaging.
-        // Use a sentinel to skip the copy when the source hasn't changed,
-        // avoiding mtime bumps that trigger unnecessary recompilation. Like
-        // the Lima sentinel, it stores a digest of the source path so the
-        // building machine's directories never ship in release archives.
-        let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
-        let sentinel_path = out_install_dir.join(".copy-source");
+        // The stamp also names the bundled gocryptfs and squashfuse versions:
+        // a bump of either changes the tree in the same cache path.
         let sentinel_content = format!(
             "{}\ngocryptfs={}\nsquashfuse={}",
             cache_path_digest(&cache_dir),
             GOCRYPTFS_VERSION,
             SQUASHFUSE_VERSION
         );
-        let needs_copy = !sentinel_path.exists()
-            || std::fs::read_to_string(&sentinel_path)
-                .map_or(true, |s| s.trim() != sentinel_content.trim());
-        if needs_copy {
-            if out_install_dir.exists() {
-                std::fs::remove_dir_all(&out_install_dir).ok();
-            }
-            copy_dir_recursive(&cache_dir, &out_install_dir).unwrap_or_else(|e| {
-                panic!("Failed to copy apptainer installation to OUT_DIR: {}", e)
-            });
-            std::fs::write(&sentinel_path, &sentinel_content).ok();
-        }
+        copy_tree_to_out_dir(
+            &cache_dir,
+            &PathBuf::from(&out_dir).join("apptainer-install"),
+            &sentinel_content,
+            "apptainer installation",
+        );
     }
 }
 
