@@ -437,12 +437,7 @@ impl NodeRunGoal {
             goal.set_tag(&self.tag);
 
             let env_var_count = capnp_list_len(self.env_vars.len(), "NodeRunGoal.env_vars")?;
-            let mut env_vars = goal.reborrow().init_env_vars(env_var_count);
-            for (idx, (key, value)) in self.env_vars.iter().enumerate() {
-                let mut env_var = env_vars.reborrow().get(idx as u32);
-                env_var.set_key(key);
-                env_var.set_value(value);
-            }
+            super::write_env_vars(goal.reborrow().init_env_vars(env_var_count), &self.env_vars);
 
             goal.reborrow().set_timeout_secs(self.timeout_secs);
 
@@ -486,15 +481,7 @@ impl NodeRunGoal {
         let reader = decode_message(data)?;
         let goal = reader.get_root::<node_capnp::node_run_goal::Reader>()?;
 
-        let env_vars_reader = goal.get_env_vars()?;
-        let mut env_vars = Vec::with_capacity(env_vars_reader.len() as usize);
-        for idx in 0..env_vars_reader.len() {
-            let env_var = env_vars_reader.get(idx);
-            env_vars.push((
-                env_var.get_key()?.to_str()?.to_owned(),
-                env_var.get_value()?.to_str()?.to_owned(),
-            ));
-        }
+        let env_vars = super::read_env_vars(goal.get_env_vars()?)?;
 
         // Cap'n Proto defaults an absent field to the empty string, so a goal
         // from a peppy that still ships an assembled runtime config decodes
