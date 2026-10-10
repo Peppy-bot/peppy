@@ -1,4 +1,6 @@
 pub mod common;
+#[cfg(test)]
+mod golden_support;
 pub(crate) mod naming;
 pub(crate) mod scaffold_tree;
 #[cfg(test)]
