@@ -272,9 +272,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     // `node remove --stop-instances` must dissolve the removed node's pairs
     // and live-notify each surviving peer Unpaired, exactly as `node stop`
     // does. Removing arm_controller tears down its paired instance ctrl_3, so
-    // arm_1's slot must go Unpaired. Before the remove path threaded the
-    // PairingCoordinator, this notification never happened and the arm kept
-    // pinning a dead peer.
+    // arm_1's slot must go Unpaired.
     NodeCommand {
         command: NodeCommands::Remove {
             node_ref: ("arm_controller".to_string(), "v1".to_string()),

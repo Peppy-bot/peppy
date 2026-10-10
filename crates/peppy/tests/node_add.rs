@@ -27,11 +27,9 @@ fn node_add_command_succeeds() {
 
     let node_name = "test_add_node";
 
-    // Set up logging
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // First, create a node using the init command
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
@@ -43,7 +41,6 @@ fn node_add_command_succeeds() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    // Get the path to the node directory
     let node_path = node_dir.path().join(node_name);
     let peppy_json5_path = node_path.join("peppy.json5");
     assert!(
@@ -54,12 +51,10 @@ fn node_add_command_succeeds() {
 
     peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
-    // Now add the node to the node stack
     node_add_command(&node_path)
         .execute(&node_ctx)
         .expect("node add command should succeed");
 
-    // Verify the logs contain success message
     let logs = log_capture.logs();
     assert!(
         logs.contains(&format!("Added node {}:", node_name)),
@@ -67,19 +62,16 @@ fn node_add_command_succeeds() {
         logs
     );
 
-    // Regression: a first-time `node add` runs a `NodeInfoRequest` preflight
-    // to check for existing instances before overwriting. When the node
-    // isn't in the stack (the happy-path case here), that lookup used to
-    // surface as a daemon-side ERROR log from `run_handler` even though the
-    // CLI intentionally swallows the rejection. Assert that no such spurious
-    // service-handler error is emitted during a clean add.
+    // A first-time `node add` runs a `NodeInfoRequest` preflight to look for
+    // existing instances before it overwrites. The node is not in the stack
+    // here, so the daemon answers `NotInStack`, and a clean add emits no
+    // service-handler error log.
     assert!(
         !logs.contains("service handler returned error"),
         "first-time node add should not emit a service-handler error log. Logs:\n{}",
         logs
     );
 
-    // Query the node stack to verify the node was added
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
@@ -118,11 +110,9 @@ fn node_add_command_with_run_arg_succeeds() {
     let node_name = "test_add_run_node";
     let instance_id = "test_add_run_instance";
 
-    // Set up logging
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // First, create a node using the init command
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
@@ -134,7 +124,6 @@ fn node_add_command_with_run_arg_succeeds() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    // Get the path to the node directory
     let node_path = node_dir.path().join(node_name);
     let peppy_json5_path = node_path.join("peppy.json5");
     assert!(
@@ -179,7 +168,6 @@ fn node_add_command_with_run_arg_succeeds() {
     .execute(&node_ctx)
     .expect("node add command with run should succeed");
 
-    // Verify the logs contain success messages for both add and start
     let logs = log_capture.logs();
     assert!(
         logs.contains(&format!("Added node {}:", node_name)),
@@ -192,7 +180,6 @@ fn node_add_command_with_run_arg_succeeds() {
         logs
     );
 
-    // Query the node stack to verify the node was added with an instance
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
@@ -229,7 +216,6 @@ fn node_add_after_failed_sync_succeeds() {
 
     let node_name = "test_sync_then_add_node";
 
-    // Set up logging
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
@@ -245,7 +231,6 @@ fn node_add_after_failed_sync_succeeds() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    // Get the path to the node directory
     let node_path = node_dir.path().join(node_name);
     let peppy_dir = node_path.join(PEPPY_OUTPUT_DIR);
     let git_hash_path = peppy_dir.join("git.hash");
@@ -258,7 +243,6 @@ fn node_add_after_failed_sync_succeeds() {
     );
     std::fs::write(&git_hash_path, "wrong-hash\n").expect("failed to write wrong git hash");
 
-    // Disable build_cmd to avoid build step
     let peppy_json5_path = node_path.join("peppy.json5");
     peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
@@ -291,7 +275,6 @@ fn node_add_after_failed_sync_succeeds() {
         .execute(&node_ctx)
         .expect("node add command should succeed after sync");
 
-    // Verify the logs contain success message
     let logs = log_capture.logs();
     assert!(
         logs.contains(&format!("Added node {}:", node_name)),
@@ -299,14 +282,12 @@ fn node_add_after_failed_sync_succeeds() {
         logs
     );
 
-    // Query the node stack to verify the node was added
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
     let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
-    // Verify the node is in the graph
     let added_node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the added node. Got: {:?}",
@@ -338,11 +319,9 @@ fn node_add_same_node_shutdown_existing_instances() {
     let node_name = "test_shutdown_node";
     let instance_id = "test_shutdown_instance";
 
-    // Set up logging
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // First, create a node using the init command
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
@@ -354,7 +333,6 @@ fn node_add_same_node_shutdown_existing_instances() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    // Get the path to the node directory
     let node_path = node_dir.path().join(node_name);
     let peppy_json5_path = node_path.join("peppy.json5");
     assert!(
@@ -364,8 +342,8 @@ fn node_add_same_node_shutdown_existing_instances() {
     );
 
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
-    // The instance this spawns is the premise of the test — it has to still be
-    // running when the second `add` re-adds the node — so its lifetime is tied
+    // The instance this spawns is the premise of the test: it has to still be
+    // running when the second `add` re-adds the node, so its lifetime is tied
     // to the test rather than to a fixed `sleep`.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
@@ -393,7 +371,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         drop(instances);
     });
 
-    // Step 1: Add the node with start=true to create an instance
+    // Step 1: Add the node with `run: true` to create an instance
     NodeCommand {
         command: NodeCommands::Add {
             clock: None,
@@ -476,7 +454,6 @@ fn node_add_same_node_shutdown_existing_instances() {
         "should have 0 instances after re-add with force (instance should be stopped)"
     );
 
-    // Verify the logs show the node was added successfully
     let logs = log_capture.logs();
     assert!(
         logs.contains(&format!("Added node {}:", node_name)),
@@ -496,7 +473,6 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // Init the node
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
@@ -519,9 +495,8 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     // This instance is the premise: the confirmation path under test only
     // engages because `fetch_node_info` finds a RUNNING instance to warn
     // about. It has to survive the git repo construction between the two
-    // adds, so tie it to the test instead of a fixed `sleep` —
-    // otherwise a loaded machine turns this into a silent no-op that
-    // confirms nothing.
+    // adds, so tie it to the test instead of a fixed `sleep`; otherwise a
+    // loaded machine turns this into a silent no-op that confirms nothing.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
@@ -548,7 +523,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         drop(instances);
     });
 
-    // Step 1: Add the node from local filesystem with start=true
+    // Step 1: Add the node from the local filesystem with `run: true`
     NodeCommand {
         command: NodeCommands::Add {
             clock: None,
@@ -778,8 +753,8 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
 /// daemon round-trip is attempted.
 #[test]
 fn node_add_with_sync_flag_rejects_remote_source() {
-    // No daemon / runtime setup needed; the error fires during local arg
-    // validation before any async work. We still need a minimal AppContext.
+    // The error fires during local argument validation, before any request
+    // reaches the daemon; the emulated daemon only backs the AppContext.
     let (_rt, _serve, node_ctx, _node_dir) = setup();
 
     let err = NodeCommand {
@@ -812,17 +787,12 @@ fn node_add_with_sync_flag_rejects_remote_source() {
 
 // ─── `node add --run` shares binding validation with `node run` ────────────
 //
-// These tests pin down the contract introduced when fixing the
-// `peppy node add -sbr` bypass: chaining a run from `node add` must go
-// through the same launcher binding rules as a standalone `peppy node run`.
-// Before the fix, `add -r` constructed the launch with an empty
-// `slot_bindings` map and skipped `validate_bindings`, so a consumer with
-// pinned `depends_on` would silently spawn unbound, exactly the
-// regression spec'd at the top of this file.
+// A run chained from `node add` goes through the same launcher binding rules
+// as a standalone `peppy node run`, so a consumer with pinned `depends_on`
+// cannot spawn unbound.
 
 /// Writes a consumer manifest declaring `depends_on.nodes` pinned to
-/// `(producer_name, "v1")`. Mirrors the helper in `tests/node_run.rs`;
-/// duplicated here so this file has no cross-module test dependency.
+/// `(producer_name, "v1")`.
 fn write_consumer_with_pinned_depends_on(
     work_dir: &std::path::Path,
     consumer_name: &str,
@@ -869,10 +839,8 @@ fn write_consumer_with_pinned_depends_on(
 /// `peppy node add . -sbr` (sync + build + run) runs the chained spawn
 /// through the same binding validation as `node run`: a `--link` whose
 /// KEY names no declared slot MUST fail before any spawn side-effect.
-/// Before the fix the chained-run path called `run_instance_async`
-/// directly, bypassing validation entirely; the fix routes both `node
-/// run` and `node add -r` through `validate_and_run_instance`, so the
-/// same error fires for both.
+/// Both `node run` and `node add -r` go through
+/// `validate_and_run_instance`, so the same error fires for both.
 #[test]
 fn node_add_with_run_rejects_unknown_binding_slot() {
     let (_rt, _serve, node_ctx, work_dir) = setup();
@@ -997,9 +965,9 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
     let producer_path = work_dir.path().join(producer_name);
     // `cam_a` has to still be in the stack when the consumer's
     // `add -r --link wrist_left@cam_a` is validated, several CLI round-trips
-    // later. a fixed `sleep 4` would make that a race
-    // against the machine's load, so gate the instance on the test's own
-    // lifetime instead of on a duration.
+    // later. A fixed `sleep 4` would make that a race against the machine's
+    // load, so gate the instance on the test's own lifetime instead of on a
+    // duration.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(
         &producer_path.join("peppy.json5"),
@@ -1037,8 +1005,7 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
         consumer_instance_id,
     ));
 
-    // `node add -r --link wrist_left@cam_a`, exactly the invocation the
-    // reproducer at the top of this file wanted to work.
+    // `node add -r --link wrist_left@cam_a`.
     NodeCommand {
         command: NodeCommands::Add {
             clock: None,
@@ -1073,9 +1040,8 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
 /// `--link KEY@VALUE` on `node add -r` where KEY is NOT in the consumer's
 /// `depends_on` is a dead-binding. The launcher's `validate_bindings`
 /// flags it on `node run`; chaining the run from `node add` must surface
-/// the same rejection (same code path now). Catches the symmetric
-/// regression: not only "missing binding is detected", but also "a bogus
-/// binding KEY is detected" through the chained-run path.
+/// the same rejection. This covers the bogus-KEY side of binding validation
+/// on the chained-run path, next to the missing-binding side.
 #[test]
 fn node_add_with_run_rejects_dead_binding_key() {
     let (rt, serve, node_ctx, work_dir) = setup();
@@ -1211,10 +1177,10 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     // Both producer instances must still be in the stack at the final
     // `add -r` below, which binds `only_pin` to `cam_left`. That is several
     // CLI round-trips away (the bystander's whole add+build+run, plus this
-    // consumer's), so a fixed `sleep 4` made the test a
-    // race: once the machine is loaded enough for that stretch to take >4s,
-    // the producers exit, the daemon reaps them, and the binding fails with
-    // `unknown instance_id cam_left`. Tie their lifetime to the test instead.
+    // consumer's), so their lifetime is tied to the test rather than to a
+    // fixed `sleep` that a loaded machine outlasts: the producers would exit,
+    // the daemon would reap them, and the binding would fail with
+    // `unknown instance_id cam_left`.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(
         &producer_path.join("peppy.json5"),
@@ -1340,12 +1306,10 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     );
 }
 
-/// Regression: `peppy node add --build --force` must forward `--force` to the
-/// chained build. With a build already in flight for the node, the chained
-/// build supersedes it (the daemon cancels the old task with "build cancelled
-/// by --force") instead of being rejected with "action already in progress".
-/// Pins the fix for the chained `build_node_async` call hardcoding
-/// `force: false` in `add_node_async`.
+/// `peppy node add --build --force` must forward `--force` to the chained
+/// build. With a build already in flight for the node, the chained build
+/// supersedes it (the daemon cancels the old task with "build cancelled by
+/// --force") instead of being rejected with "action already in progress".
 #[test]
 fn node_add_build_force_supersedes_inflight_build() {
     let (rt, serve, node_ctx, node_dir) = setup();
@@ -1457,7 +1421,7 @@ fn node_add_build_force_supersedes_inflight_build() {
     // build must finish instantly once it supersedes the blocked one.
     peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
-    // The user's repro: `node add --build --force` while a build is in flight.
+    // `node add --build --force` while a build is in flight.
     NodeCommand {
         command: NodeCommands::Add {
             clock: None,

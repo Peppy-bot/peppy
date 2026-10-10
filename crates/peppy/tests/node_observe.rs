@@ -1,12 +1,11 @@
 //! End-to-end observer flow over an in-process daemon (mock messaging),
 //! exercised through the SAME `node run` CLI path a user drives, NOT the
-//! launcher. It proves two things the launcher path already had but the lone
-//! `node run` path did not:
+//! launcher. It proves two things:
 //!
 //! 1. `node run --link <observer>@<source>` carries the resolved observation on
 //!    the goal, so the daemon registers it and delivers the source pin the
 //!    moment the observer commits to Running, exactly as a `stack launch`
-//!    observer is served. Without it the observer booted validated but silent.
+//!    observer is served. An observer without it boots validated but silent.
 //! 2. Stopping OR removing the source runs the single teardown seam, so the
 //!    observer is live-notified its source went down (`source_live = false`,
 //!    pin retained), identically to how a paired peer is notified. Every
@@ -157,9 +156,10 @@ async fn emulate_observer_services(
     rx
 }
 
-/// The slot's sole member. Most of these tests drive a `cardinality: "one"`
-/// slot, whose state is either empty (undelivered) or exactly one member; any
-/// other size would be the version-skew shape the node runtime refuses.
+/// The slot's sole member. Most of these tests drive a scalar (`zero_or_one`)
+/// observer slot, whose state is either empty (undelivered) or exactly one
+/// member; any other size would be the version-skew shape the node runtime
+/// refuses.
 fn sole_member(state: &ObservationState, context: &str) -> ObservedMemberState {
     match state.members.as_slice() {
         [sole] => sole.clone(),
@@ -284,8 +284,8 @@ async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationSt
     .execute(&fx.ctx)
     .expect("observer run with --link should succeed");
 
-    // FIX #1: the lone `node run` observer received its source pin live, at a
-    // bumped incarnation generation, exactly as a launcher observer would.
+    // The `node run` observer receives its source pin live, at a bumped
+    // incarnation generation, exactly as a launcher observer does.
     let state = obs_rx.borrow_and_update().clone();
     let member = sole_member(&state, "rec_1's observer slot after node run");
     assert_eq!(member.source.producer.instance_id, "arm_1");
@@ -323,13 +323,13 @@ fn config_dumping_observer_config(dump: &Path, instances: &InstanceLifetime) -> 
 }
 
 /// The spawn-time membership seed. A node's setup runs strictly before the
-/// on-Running delivery the FIX #1 tests assert, so the boot config itself
-/// must carry each observer slot's planned member set: it is what lets a
-/// node discover the robot's shape during setup instead of settle-polling a
-/// live set it cannot distinguish from "bound to nothing". The seed's
-/// stamping matches the live delivery's (same source pin, a real generation,
-/// liveness at spawn), so the first `observation_update` replaces it without
-/// redeclaring anything.
+/// on-Running delivery that `run_source_then_observer` asserts, so the boot
+/// config itself must carry each observer slot's planned member set: it is
+/// what lets a node discover the robot's shape during setup instead of
+/// settle-polling a live set it cannot distinguish from "bound to nothing".
+/// The seed's stamping matches the live delivery's (same source pin, a real
+/// generation, liveness at spawn), so the first `observation_update` replaces
+/// it without redeclaring anything.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn observer_boot_config_seeds_membership_at_spawn() {
     let fx = setup().await;
@@ -397,8 +397,8 @@ async fn observer_boot_config_seeds_membership_at_spawn() {
     );
 }
 
-/// Fix #1 (delivery on the CLI path) + fix #2 (a `node stop` of the source runs
-/// the teardown seam and live-notifies the observer).
+/// Delivery on the CLI path, and a `node stop` of the source running the
+/// teardown seam that live-notifies the observer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_observer_receives_source_pin_and_stop_notifies() {
     let fx = setup().await;
@@ -432,8 +432,8 @@ async fn node_run_observer_receives_source_pin_and_stop_notifies() {
 
     let mut obs_rx = run_source_then_observer(&fx).await;
 
-    // FIX #2: stopping the source runs the same teardown seam a paired peer's
-    // death runs, live-notifying the observer that its source went down. The pin
+    // Stopping the source runs the same teardown seam a paired peer's death
+    // runs, live-notifying the observer that its source went down. The pin
     // is retained (the observer keeps its subscription declared), only
     // `source_live` flips false.
     NodeCommand {
@@ -569,7 +569,7 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
     );
 }
 
-/// Fix #2 on the remove path: `node remove --stop-instances` of the source tears
+/// On the remove path: `node remove --stop-instances` of the source tears
 /// down its observed instance through the same seam, so a running observer is
 /// live-notified its source went down, exactly as `node stop` does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -599,7 +599,7 @@ async fn node_remove_source_notifies_running_observer() {
     );
 }
 
-/// Fix #2 on the whole-stack teardown path: `service reset` mass-stops every
+/// On the whole-stack teardown path: `service reset` mass-stops every
 /// instance (bypassing the per-instance seam, since mark_stopping makes the exit
 /// watchers bail), so it must clear the observation registry the same way
 /// `node_stack.reset()` clears the pairing registry. If it did not, the source's
@@ -650,8 +650,8 @@ async fn service_reset_clears_the_observation_registry() {
         .expect("source run should succeed");
 
     // Reset: mass teardown (the source's shutdown service kills its process, so
-    // this returns promptly) + node_stack.reset() (clears pairing) + the fix
-    // under test (observation.clear()).
+    // this returns promptly) + node_stack.reset() (clears pairing) + the
+    // observation registry clear under test (observation.clear()).
     StackCommand {
         command: StackCommands::Reset { federated: false },
     }

@@ -32,14 +32,11 @@ fn node_cargo_init_command_success() {
 
     let node_name = "test_node";
 
-    // Set up logging for the node command
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // Execute the node create command
     init_cargo_node(&node_ctx, node_name, false);
 
-    // Verify the node directory was created
     let created_node_dir = node_dir.path().join(node_name);
     assert!(
         created_node_dir.exists(),
@@ -47,19 +44,16 @@ fn node_cargo_init_command_success() {
         created_node_dir.display()
     );
 
-    // Verify peppy.json5 was created
     assert!(
         created_node_dir.join("peppy.json5").exists(),
         "peppy.json5 should exist in the node directory"
     );
 
-    // Verify Cargo.toml was created (for Rust build system)
     assert!(
         created_node_dir.join("Cargo.toml").exists(),
         "Cargo.toml should exist in the node directory"
     );
 
-    // Verify src/main.rs was created
     assert!(
         created_node_dir.join("src/main.rs").exists(),
         "src/main.rs should exist in the node directory"
@@ -95,13 +89,11 @@ fn node_cargo_init_command_success() {
         "Cargo.toml should carry the testing-featured peppygen dev-dependency:\n{cargo_toml}"
     );
 
-    // Verify .gitignore was created
     assert!(
         created_node_dir.join(".gitignore").exists(),
         ".gitignore should exist in the node directory"
     );
 
-    // Verify the logs contain success message
     let logs = log_capture.logs();
     assert!(
         logs.contains(&format!("Successfully created node '{}'", node_name)),

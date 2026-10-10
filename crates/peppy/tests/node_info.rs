@@ -356,10 +356,9 @@ fn node_info_no_dependencies_when_no_consumes() {
 }
 
 /// Asking for a node that was never added returns a *successful*
-/// `NodeInfoResponse::NotInStack`. Prior to the response-shape change,
-/// the daemon answered with `InvalidServiceRequest`, a protocol error
-/// that produced a spurious ERROR log on every first-time `peppy node
-/// add` because the preflight check passes through this same path.
+/// `NodeInfoResponse::NotInStack`, not a protocol error: the preflight of
+/// every first-time `peppy node add` asks this question, so an error answer
+/// would log a spurious ERROR.
 #[test]
 fn node_info_returns_not_in_stack_when_node_not_in_stack() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
@@ -371,9 +370,8 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
 
     let caller_handle = peppylib::MessengerHandle::from_shared(shared_messenger);
 
-    // Also capture daemon-side logs so we can assert that no
-    // service-handler ERROR is emitted for the negative lookup; the
-    // original regression pollution came from this path.
+    // Capture daemon-side logs to assert that the negative lookup emits no
+    // service-handler ERROR.
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
