@@ -1061,10 +1061,7 @@ async fn measure_topic_delivery(
     let mut out = Vec::new();
     let mut had_implausible = false;
 
-    loop {
-        if measured >= samples {
-            break;
-        }
+    while measured < samples {
         match tokio::time::timeout(per_sample_timeout, subscription.on_next_message()).await {
             Ok(Some(msg)) => {
                 // Every session enables timestamping for its own role (see
