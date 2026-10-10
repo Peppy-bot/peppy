@@ -3,9 +3,7 @@
 use super::daemon::StartedCoreNode;
 use super::fixtures::write_peppy_json5;
 use super::poll::AbortOnDrop;
-use super::{CALLER_INSTANCE_ID, TEST_GIT_HASH, core_node_target, test_node_target};
-use config::node::QoSProfile;
-use core_node_api::ActionId;
+use super::{CALLER_INSTANCE_ID, TEST_GIT_HASH, test_node_target};
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
     NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback, NodeRunGoal,
@@ -13,9 +11,12 @@ use core_node_api::encoding::{
 };
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use gix_url::Url as GitUrl;
+use peppylib::core_node::transport::send_goal;
 use peppylib::messaging::{ActionGoalHandle, MessengerHandle, ResultStatus};
 use peppylib::services::health::listen_for_node_health;
 use peppylib::{ActionMessenger, PeppyError};
+use std::fmt::Display;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -89,14 +90,93 @@ pub fn default_instance_plan(instance_id: &str) -> config::runtime::NodeInstance
     instance_plan(instance_id, Default::default())
 }
 
-/// Why [`drain_node_run_feedback`] returned.
+/// Why [`drain_feedback`] returned.
 enum FeedbackDrainOutcome {
-    /// `stop_when` became true after a feedback line was collected.
-    Predicate,
+    /// The feedback handler asked to stop after a feedback line.
+    Stopped,
     /// The server closed the feedback stream, i.e. the action completed.
     Closed,
-    /// The absolute or idle deadline elapsed before either of the above.
+    /// The absolute deadline elapsed before either of the above.
     TimedOut,
+}
+
+/// Drains feedback from a live action handle, decoding each line with
+/// `decode` and handing it to `on_feedback`. Returns as soon as `on_feedback`
+/// breaks, the server closes the stream, or the absolute deadline elapses.
+async fn drain_feedback<F>(
+    action_handle: &mut ActionGoalHandle,
+    decode: impl Fn(&[u8]) -> F,
+    mut on_feedback: impl FnMut(F) -> ControlFlow<()>,
+    absolute_deadline: tokio::time::Instant,
+) -> FeedbackDrainOutcome {
+    loop {
+        if tokio::time::Instant::now() >= absolute_deadline {
+            return FeedbackDrainOutcome::TimedOut;
+        }
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                if on_feedback(decode(msg.payload().as_ref())).is_break() {
+                    return FeedbackDrainOutcome::Stopped;
+                }
+            }
+            Ok(Err(_)) => return FeedbackDrainOutcome::Closed,
+            Err(_) => {}
+        }
+    }
+}
+
+/// A feedback handler for [`drain_feedback`] that forwards every line to
+/// `feedback_tx`, when there is one, and never stops: the drain runs until the
+/// action completes.
+fn forward_until_closed<F>(
+    feedback_tx: Option<&UnboundedSender<F>>,
+) -> impl FnMut(F) -> ControlFlow<()> + '_ {
+    move |feedback| {
+        if let Some(tx) = feedback_tx {
+            let _ = tx.send(feedback);
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+/// Fetches the buffered result of a completed action and decodes it with
+/// `decode`. `what` names the result in the errors.
+async fn fetch_result<R, E: Display>(
+    messenger: &MessengerHandle,
+    action_handle: &ActionGoalHandle,
+    fetch_timeout: Duration,
+    decode: impl Fn(&[u8]) -> Result<R, E>,
+    what: &str,
+) -> Result<R, String> {
+    let reply = ActionMessenger::request_result(messenger, action_handle, fetch_timeout)
+        .await
+        .map_err(|err| format!("Failed to get {what}: {err}"))?;
+    match reply.status {
+        ResultStatus::Completed | ResultStatus::Cancelled => {
+            decode(reply.body.as_ref()).map_err(|err| format!("Failed to decode {what}: {err}"))
+        }
+        other => Err(format!("action did not complete with a result: {other:?}")),
+    }
+}
+
+/// Sends `goal` to the daemon action it belongs to on `core_node_name`, from
+/// the test caller.
+async fn send_daemon_goal(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    goal: &impl core_node_api::ActionGoal,
+    goal_timeout: Duration,
+) -> Result<ActionGoalHandle, PeppyError> {
+    send_goal(
+        goal,
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        Some(core_node_name),
+        goal_timeout,
+    )
+    .await
 }
 
 /// Sends a `node_run` goal and returns the live action handle plus its decoded
@@ -115,24 +195,9 @@ async fn send_node_run_goal(
     env_vars: Vec<(String, String)>,
 ) -> Result<(ActionGoalHandle, NodeRunGoalResponse), String> {
     let goal = NodeRunGoal::new(instance_plan, node_name, tag, result_secs).with_env_vars(env_vars);
-    let goal_payload = goal
-        .encode()
-        .map_err(|e| format!("Failed to encode goal: {}", e))?;
-
-    let action_handle = ActionMessenger::send_goal(
-        messenger,
-        core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(core_node_name),
-        ActionId::NodeRun.name(),
-        None,
-        goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
-        goal_timeout,
-    )
-    .await
-    .map_err(|e| format!("Failed to send goal: {}", e))?;
+    let action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
+        .await
+        .map_err(|e| format!("Failed to send goal: {}", e))?;
 
     let goal_response = NodeRunGoalResponse::decode(&action_handle.goal_reply().body)
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
@@ -164,51 +229,24 @@ async fn drain_node_run_feedback(
     feedback_tx: Option<&UnboundedSender<NodeRunFeedback>>,
     collected: &mut Vec<NodeRunFeedback>,
     absolute_deadline: tokio::time::Instant,
-    idle_timeout: Duration,
     stop_when: impl Fn(&[NodeRunFeedback]) -> bool,
 ) -> FeedbackDrainOutcome {
-    let mut last_activity = tokio::time::Instant::now();
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= absolute_deadline || now.duration_since(last_activity) >= idle_timeout {
-            return FeedbackDrainOutcome::TimedOut;
-        }
-        let drain_timeout = Duration::from_millis(50);
-        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                last_activity = tokio::time::Instant::now();
-                let feedback = NodeRunFeedback::decode(msg.payload().as_ref())
-                    .expect("failed to decode NodeRunFeedback");
-                if let Some(tx) = feedback_tx {
-                    let _ = tx.send(feedback.clone());
-                }
-                collected.push(feedback);
-                if stop_when(collected) {
-                    return FeedbackDrainOutcome::Predicate;
-                }
+    drain_feedback(
+        action_handle,
+        |payload| NodeRunFeedback::decode(payload).expect("failed to decode NodeRunFeedback"),
+        |feedback| {
+            if let Some(tx) = feedback_tx {
+                let _ = tx.send(feedback.clone());
             }
-            Ok(Err(_)) => return FeedbackDrainOutcome::Closed,
-            Err(_) => {}
-        }
-    }
-}
-
-/// Fetches the buffered result of a completed `node_run` action and decodes it.
-async fn fetch_node_run_result(
-    messenger: &MessengerHandle,
-    action_handle: &ActionGoalHandle,
-    fetch_timeout: Duration,
-) -> Result<NodeRunResult, String> {
-    match ActionMessenger::request_result(messenger, action_handle, fetch_timeout).await {
-        Ok(reply) => match reply.status {
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                NodeRunResult::decode(reply.body.as_ref())
-                    .map_err(|err| format!("Failed to decode result: {}", err))
+            collected.push(feedback);
+            if stop_when(collected) {
+                return ControlFlow::Break(());
             }
-            other => Err(format!("action did not complete with a result: {other:?}")),
+            ControlFlow::Continue(())
         },
-        Err(err) => Err(format!("Failed to get result: {}", err)),
-    }
+        absolute_deadline,
+    )
+    .await
 }
 
 /// Waits for a live action to finish without ever fetching its result: reads
@@ -259,23 +297,29 @@ async fn send_node_run_and_wait_internal(
 
     let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
     let mut collected = Vec::new();
-    // Drain feedback until the server closes the stream on completion, honoring
-    // the idle / max-timeout budgets, then fetch the buffered result once.
-    if let FeedbackDrainOutcome::TimedOut = drain_node_run_feedback(
+    // Drain feedback until the server closes the stream on completion, within
+    // the result budget, then fetch the buffered result once.
+    let drained = drain_node_run_feedback(
         &mut action_handle,
         feedback_tx.as_ref(),
         &mut collected,
         absolute_deadline,
-        timeouts.result,
         |_| false,
     )
-    .await
-    {
+    .await;
+    if matches!(drained, FeedbackDrainOutcome::TimedOut) {
         return Err("Timeout waiting for node_run result".to_string());
     }
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
-    let result = fetch_node_run_result(messenger, &action_handle, fetch_timeout).await?;
+    let result = fetch_result(
+        messenger,
+        &action_handle,
+        fetch_timeout,
+        NodeRunResult::decode,
+        "result",
+    )
+    .await?;
     Ok(NodeRunTestResponse {
         goal_response,
         result,
@@ -326,12 +370,11 @@ pub async fn send_node_run_with_delayed_health(
         None,
         &mut feedback,
         absolute_deadline,
-        timeouts.result,
         &expected_output,
     )
     .await
     {
-        FeedbackDrainOutcome::Predicate => {}
+        FeedbackDrainOutcome::Stopped => {}
         FeedbackDrainOutcome::Closed => {
             return Err("feedback stream closed before the expected output streamed".to_string());
         }
@@ -359,13 +402,19 @@ pub async fn send_node_run_with_delayed_health(
         None,
         &mut feedback,
         absolute_deadline,
-        timeouts.result,
         |_| false,
     )
     .await;
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
-    let result = fetch_node_run_result(caller_messenger, &action_handle, fetch_timeout).await?;
+    let result = fetch_result(
+        caller_messenger,
+        &action_handle,
+        fetch_timeout,
+        NodeRunResult::decode,
+        "result",
+    )
+    .await?;
     Ok((
         NodeRunTestResponse {
             goal_response,
@@ -440,30 +489,14 @@ async fn send_node_add_and_wait_internal<'a>(
     .with_env_vars(env_vars)
     .with_force(force);
 
-    let goal_payload = goal
-        .encode()
-        .map_err(|e| format!("Failed to encode goal: {}", e))?;
-
-    let mut action_handle = ActionMessenger::send_goal(
-        messenger,
-        core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(core_node_name),
-        ActionId::NodeAdd.name(),
-        None,
-        goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
-        goal_timeout,
-    )
-    .await
-    .map_err(|e| format!("Failed to send goal: {}", e))?;
+    let mut action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
+        .await
+        .map_err(|e| format!("Failed to send goal: {}", e))?;
 
     // Check if the goal was rejected - if so, return a failure result immediately.
     // This matches the behavior of the CLI client which doesn't poll for results
     // when the goal is rejected.
-    let goal_response_payload = action_handle.goal_reply().body.clone();
-    let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
+    let goal_response = NodeAddGoalResponse::decode(&action_handle.goal_reply().body)
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
 
     if !goal_response.accepted {
@@ -476,46 +509,32 @@ async fn send_node_add_and_wait_internal<'a>(
     }
 
     let absolute_deadline = tokio::time::Instant::now() + result_timeout;
-    let mut last_activity = tokio::time::Instant::now();
-    let feedback_tx = feedback_tx.as_ref();
 
     // Drain feedback until the server closes the stream on completion, then
     // fetch the buffered result once.
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= absolute_deadline {
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| NodeAddFeedback::decode(payload).expect("failed to decode NodeAddFeedback"),
+        forward_until_closed(feedback_tx.as_ref()),
+        absolute_deadline,
+    )
+    .await;
+    match drained {
+        FeedbackDrainOutcome::TimedOut => {
             return Err("Timeout waiting for node_add result".to_string());
         }
-        if now.duration_since(last_activity) >= result_timeout {
-            return Err("Timeout waiting for node_add result (idle)".to_string());
-        }
-        let drain_timeout = Duration::from_millis(50);
-        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                last_activity = tokio::time::Instant::now();
-                let payload = msg.payload();
-                let feedback = NodeAddFeedback::decode(payload.as_ref())
-                    .expect("failed to decode NodeAddFeedback");
-                if let Some(tx) = feedback_tx {
-                    let _ = tx.send(feedback);
-                }
-            }
-            Ok(Err(_)) => break,
-            Err(_) => {}
-        }
+        FeedbackDrainOutcome::Stopped | FeedbackDrainOutcome::Closed => {}
     }
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
-    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
-        Ok(reply) => match reply.status {
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                NodeAddResult::decode(reply.body.as_ref())
-                    .map_err(|err| format!("Failed to decode result: {}", err))
-            }
-            other => Err(format!("action did not complete with a result: {other:?}")),
-        },
-        Err(err) => Err(format!("Failed to get result: {}", err)),
-    }
+    fetch_result(
+        messenger,
+        &action_handle,
+        fetch_timeout,
+        NodeAddResult::decode,
+        "result",
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -585,27 +604,11 @@ async fn send_node_build_and_wait_internal(
     let goal = NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs())
         .with_env_vars(env_vars)
         .with_force(force);
-    let goal_payload = goal
-        .encode()
-        .map_err(|e| format!("Failed to encode build goal: {}", e))?;
+    let mut action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
+        .await
+        .map_err(|e| format!("Failed to send build goal: {}", e))?;
 
-    let mut action_handle = ActionMessenger::send_goal(
-        messenger,
-        core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(core_node_name),
-        ActionId::NodeBuild.name(),
-        None,
-        goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
-        goal_timeout,
-    )
-    .await
-    .map_err(|e| format!("Failed to send build goal: {}", e))?;
-
-    let goal_response_payload = action_handle.goal_reply().body.clone();
-    let goal_response = NodeBuildGoalResponse::decode(&goal_response_payload)
+    let goal_response = NodeBuildGoalResponse::decode(&action_handle.goal_reply().body)
         .map_err(|e| format!("Failed to decode build goal response: {}", e))?;
 
     if !goal_response.accepted {
@@ -616,48 +619,33 @@ async fn send_node_build_and_wait_internal(
                 .unwrap_or_else(|| "Build goal rejected without reason".to_string()),
         ));
     }
-    let feedback_tx = feedback_tx;
-    let feedback_tx = feedback_tx.as_ref();
-
     let absolute_deadline = tokio::time::Instant::now() + result_timeout;
-    let mut last_activity = tokio::time::Instant::now();
 
     // Drain feedback until the server closes the stream on completion, then
     // fetch the buffered result once.
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= absolute_deadline {
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| NodeBuildFeedback::decode(payload).expect("failed to decode NodeBuildFeedback"),
+        forward_until_closed(feedback_tx.as_ref()),
+        absolute_deadline,
+    )
+    .await;
+    match drained {
+        FeedbackDrainOutcome::TimedOut => {
             return Err("Timeout waiting for node_build result".to_string());
         }
-        if now.duration_since(last_activity) >= result_timeout {
-            return Err("Timeout waiting for node_build result (idle)".to_string());
-        }
-        let drain_timeout = Duration::from_millis(50);
-        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                last_activity = tokio::time::Instant::now();
-                let feedback = NodeBuildFeedback::decode(msg.payload().as_ref())
-                    .expect("failed to decode NodeBuildFeedback");
-                if let Some(tx) = feedback_tx {
-                    let _ = tx.send(feedback);
-                }
-            }
-            Ok(Err(_)) => break,
-            Err(_) => {}
-        }
+        FeedbackDrainOutcome::Stopped | FeedbackDrainOutcome::Closed => {}
     }
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
-    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
-        Ok(reply) => match reply.status {
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                NodeBuildResult::decode(reply.body.as_ref())
-                    .map_err(|err| format!("Failed to decode build result: {}", err))
-            }
-            other => Err(format!("action did not complete with a result: {other:?}")),
-        },
-        Err(err) => Err(format!("Failed to get build result: {}", err)),
-    }
+    fetch_result(
+        messenger,
+        &action_handle,
+        fetch_timeout,
+        NodeBuildResult::decode,
+        "build result",
+    )
+    .await
 }
 
 /// Helper function to send a node_add goal and wait for the result.
