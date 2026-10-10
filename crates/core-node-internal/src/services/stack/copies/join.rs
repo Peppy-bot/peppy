@@ -349,15 +349,14 @@ async fn rollback_join(
         }
         if plan.removes_added_nodes {
             for hosted in scope.added_nodes() {
-                if scope.fresh_hosts.contains(&hosted.core_node.to_string()) {
+                let is_on_fresh_host = scope
+                    .fresh_hosts
+                    .iter()
+                    .any(|host| host == hosted.core_node.as_str());
+                if is_on_fresh_host {
                     continue;
                 }
-                let present = landed(&logs.add, hosted)
-                    || match logs.unresolved.iter().find(|add| add.hosted == *hosted) {
-                        Some(add) => holds_node(ctx, hosted, &add.config_sha256).await?,
-                        None => false,
-                    };
-                if present {
+                if holds_added_node(ctx, logs, hosted).await? {
                     remove_node(ctx, launch_id, hosted).await?;
                 }
             }
@@ -386,6 +385,23 @@ async fn rollback_join(
     })?;
     *active = previous;
     Ok(())
+}
+
+/// Whether the join left `hosted` on its machine: its add landed, or an add
+/// that outlived its budget left the join's entity there. The machine is
+/// asked only in the second case.
+async fn holds_added_node(
+    ctx: &StackChangeContext,
+    logs: &JoinLogs,
+    hosted: &HostedNode,
+) -> ChangeResult<bool> {
+    if landed(&logs.add, hosted) {
+        return Ok(true);
+    }
+    let Some(add) = logs.unresolved.iter().find(|add| add.hosted == *hosted) else {
+        return Ok(false);
+    };
+    holds_node(ctx, hosted, &add.config_sha256).await
 }
 
 /// Whether `hosted`'s machine holds the node the join added, asked after
