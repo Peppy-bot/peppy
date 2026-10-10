@@ -227,15 +227,7 @@ fn shallow_validate_config(
         .map_err(|e| ShallowCheckError::ShallowFetchFailed(format!("Failed to get tree: {}", e)))?;
 
     // Navigate the tree to find the config blob.
-    let config_tree_path = if repo_relative_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
-    {
-        repo_relative_path.to_path_buf()
-    } else {
-        repo_relative_path.join(NODE_CONFIG_FILE)
-    };
+    let config_tree_path = node_config_path(repo_relative_path);
 
     let entry = tree.get_path(&config_tree_path).map_err(|e| {
         ShallowCheckError::InvalidConfig(format!(
@@ -373,25 +365,29 @@ async fn clone_repo_to_temp(
     Ok(checkout_dir)
 }
 
-/// Phase 3 of [`resolve_git_source`]: locate and parse the node config inside
-/// the cloned checkout (a `.json5` repo_path points at the file itself,
-/// anything else is a directory containing the default config file). On parse
-/// failure the checkout is removed.
+/// The node config a repository path names: a path with a `.json5`
+/// extension (of any case) is the config file itself, any other path is the
+/// directory holding [`NODE_CONFIG_FILE`]. The shallow probe and the full
+/// clone both resolve the repo path here, so they read the same file.
+fn node_config_path(path: &Path) -> PathBuf {
+    let names_config_file = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"));
+    if names_config_file {
+        return path.to_path_buf();
+    }
+    path.join(NODE_CONFIG_FILE)
+}
+
+/// Phase 3 of [`resolve_git_source`]: locate the node config inside the
+/// cloned checkout with [`node_config_path`] and parse it. On parse failure
+/// the checkout is removed.
 fn parse_config_from_checkout(
     checkout_dir: PathBuf,
     repo_relative_path: &Path,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
-    let candidate_path = checkout_dir.join(repo_relative_path);
-
-    let config_path = if candidate_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
-    {
-        candidate_path
-    } else {
-        candidate_path.join(NODE_CONFIG_FILE)
-    };
+    let config_path = node_config_path(&checkout_dir.join(repo_relative_path));
 
     let node_root_dir = config_path
         .parent()
@@ -1702,6 +1698,23 @@ mod tests {
 
         let err = download_http_bundle(&url, &dest, None, None).unwrap_err();
         assert!(err.contains("404"), "error should carry the status: {err}");
+    }
+
+    #[test]
+    fn node_config_path_names_a_json5_file_or_a_directory() {
+        let cases = [
+            ("nodes/camera", "nodes/camera/peppy.json5"),
+            ("nodes/camera/custom.json5", "nodes/camera/custom.json5"),
+            ("nodes/camera/CUSTOM.JSON5", "nodes/camera/CUSTOM.JSON5"),
+            ("nodes/camera.json", "nodes/camera.json/peppy.json5"),
+        ];
+        for (repo_path, expected) in cases {
+            assert_eq!(
+                node_config_path(Path::new(repo_path)),
+                PathBuf::from(expected),
+                "repo path {repo_path}"
+            );
+        }
     }
 
     #[test]
