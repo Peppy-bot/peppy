@@ -45,7 +45,7 @@ from functions.docs import (
     update_docs,
 )
 
-from .helpers import claude_answer, flag_value
+from .helpers import claude_answer, flag_value, unwrapped
 
 
 def _blocking(file: str = "docs/x.mdx", change: str = "add flag") -> RequiredChange:
@@ -729,7 +729,7 @@ def test_check_docs_says_how_much_claude_reads(
 
     _check_docs_with_diff(tmp_path, diff, ["crates/a.rs", "crates/b.rs"])
 
-    err = " ".join(capfd.readouterr().err.split())
+    err = unwrapped(capfd.readouterr().err)
     assert (
         f"2 changed code path(s), {len(diff) // 1024} KB of diff, judged in 1 part(s)."
         in err
@@ -807,7 +807,7 @@ def test_check_docs_judges_a_large_diff_in_parts(
     assert "part 2 of 2 of the whole change set" in second
     assert _diff_of("crates/b.rs") in second
     assert "crates/a.rs" not in second
-    err = " ".join(capfd.readouterr().err.split())
+    err = unwrapped(capfd.readouterr().err)
     assert "judged in 2 part(s)." in err
     assert "Asking Claude to judge part 1 of 2 of the diff (1 path(s)," in err
     assert "Asking Claude to judge part 2 of 2 of the diff (1 path(s)," in err
@@ -895,7 +895,7 @@ def test_check_docs_drops_a_blocking_gap_the_code_refutes(
     assert result.minor == (
         RequiredChange("docs/a.mdx", "reword the intro", "minor", diff_part=1),
     )
-    err = " ".join(capfd.readouterr().err.split())
+    err = unwrapped(capfd.readouterr().err)
     assert "Dropped a gap the code does not confirm:" in err
     assert "docs/a.mdx: keys are restricted" in err
     assert "foo.rs:12 accepts any key" in err

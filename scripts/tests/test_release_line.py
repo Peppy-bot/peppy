@@ -15,7 +15,7 @@ from functions.release_line import (
     verify_release_branch_state,
 )
 
-from .helpers import ancestry_resolver
+from .helpers import ancestry_resolver, unwrapped
 
 DEV_COMMIT = "1111111111111111111111111111111111111111"
 MAIN_COMMIT = "2222222222222222222222222222222222222222"
@@ -253,7 +253,7 @@ def test_verify_publish_branch_state_refuses_dev_without_the_release_commit(
     with pytest.raises(ReleaseError) as excinfo:
         verify_publish_branch_state(RELEASE_COMMIT)
 
-    message = " ".join(str(excinfo.value).split())
+    message = unwrapped(str(excinfo.value))
     assert f"'dev' is at {DEV_COMMIT[:12]}, which does not hold {RELEASE_COMMIT[:12]}" in (
         message
     )

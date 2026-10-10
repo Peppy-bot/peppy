@@ -18,7 +18,7 @@ from functions.claude import (
 )
 from functions.cli import ReleaseError
 
-from .helpers import claude_answer, flag_value
+from .helpers import claude_answer, flag_value, unwrapped
 
 _SCHEMA: dict = {
     "type": "object",
@@ -216,7 +216,7 @@ def test_heartbeat_says_the_minutes_so_far_until_stopped(
     with patch("functions.claude.time.monotonic", side_effect=[70.0, 130.0]):
         _heartbeat("judging the diff", stop, 10.0)
 
-    err = " ".join(capfd.readouterr().err.split())
+    err = unwrapped(capfd.readouterr().err)
     assert "Still judging the diff (1 min so far)..." in err
     assert "Still judging the diff (2 min so far)..." in err
     stop.wait.assert_called_with(HEARTBEAT_SECONDS)

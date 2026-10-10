@@ -11,6 +11,8 @@ from functions.build import BuildArtifact
 from functions.build_release import _build_all_targets, _run_local, main
 from functions.cli import ReleaseError
 
+from .helpers import unwrapped
+
 
 @patch("functions.build_release._build_all_targets")
 @patch(
@@ -160,7 +162,7 @@ def test_main_refuses_to_run_without_a_mode(
         main()
 
     assert exited.value.code == 2
-    err = " ".join(capsys.readouterr().err.split())
+    err = unwrapped(capsys.readouterr().err)
     assert 'releases publish only from the "Parallel release" workflow' in err
     assert (
         "Pass --local to build the release archives on this host without "

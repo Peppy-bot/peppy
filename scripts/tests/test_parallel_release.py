@@ -1282,7 +1282,7 @@ def test_publish_rerun_does_not_commit_notes_already_committed(
     assert release_repo.remote_commit("dev") == notes_commit
     assert release_repo.remote_commit("main") == notes_commit
     assert github.uploads == []
-    assert "already committed" in " ".join(capfd.readouterr().err.split())
+    assert "already committed" in unwrapped(capfd.readouterr().err)
 
 
 def test_publish_rerun_does_not_push_main_already_aligned(
@@ -1651,7 +1651,7 @@ def test_publish_rerun_after_a_failed_push_finishes_only_the_git_side(
 
     # The release is live, so the failure points at the re-run, which does
     # only what is left.
-    message = " ".join(str(excinfo.value).split())
+    message = unwrapped(str(excinfo.value))
     assert "rejected" in message
     assert "The GitHub release v0.3.0 is published" in message
     assert "Re-run the failed publish job" in message
