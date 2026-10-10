@@ -1964,6 +1964,39 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
     );
 }
 
+/// A dependency that resolves through the repository still has its
+/// exposure checked: consuming a topic it does not emit fails the sync,
+/// names the topic and the dependency, and generates nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn include_repositories_true_topic_the_dependency_does_not_emit_fails() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let camera_dir = tempdir().expect("camera tempdir");
+    common::write_plain_peppy_json5(camera_dir.path(), camera_config());
+    TestPackagesCache::new()
+        .fs_entry("uvc_camera", "v1", camera_dir.path())
+        .write(&started.peppy_dirs);
+
+    let brain_dir = tempdir().expect("brain tempdir");
+    common::write_plain_peppy_json5(
+        brain_dir.path(),
+        &brain_consumes_camera_config().replace("video_stream", "depth_image"),
+    );
+
+    let response = sync_with_flag(&started, brain_dir.path(), true).await;
+
+    assert!(!response.success, "sync should fail on an unexposed topic");
+    assert_eq!(
+        response.error_message,
+        "`my_robot_brain:v1` expects topic `depth_image` from `uvc_camera:v1`, \
+         but it is not exposed"
+    );
+    assert!(
+        !brain_dir.path().join(PEPPYGEN_OUTPUT_PATH).exists(),
+        "a failed sync must not generate peppygen"
+    );
+}
+
 /// End-to-end regression for the user-reported bug: a `manifest.implements`
 /// slot resolved from a git-sourced contract cache must materialize the repo
 /// checkout before reading the contract manifest. The contract cache
