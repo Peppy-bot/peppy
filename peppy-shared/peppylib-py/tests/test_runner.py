@@ -812,7 +812,9 @@ async def test_shutdown_joins_event_loop_thread(monkeypatch):
                 TEST_NODE_NAME
             )
 
-            for iteration in range(SHUTDOWN_REPEAT):
+            # One node run per call, so the closures below bind the queues of
+            # their own run rather than variables a later loop pass rebinds.
+            async def run_and_shut_down_one_node(iteration: int) -> None:
                 token_queue: queue.Queue = queue.Queue()
                 started_queue: queue.Queue = queue.Queue()
                 lingering_queue: queue.Queue = queue.Queue()
@@ -880,6 +882,9 @@ async def test_shutdown_joins_event_loop_thread(monkeypatch):
                     f"event-loop thread still alive after run() returned "
                     f"(iteration {iteration}): {lingering}"
                 )
+
+            for iteration in range(SHUTDOWN_REPEAT):
+                await run_and_shut_down_one_node(iteration)
 
 
 @pytest.mark.asyncio
