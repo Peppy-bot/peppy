@@ -67,7 +67,7 @@ pub fn children_of(parent_pid: u32) -> Vec<u32> {
 
 /// The state of an instance regardless of lifecycle stage, including terminal
 /// (`Finished`/`Failed`) instances that the `Running`-only
-/// `NodeStack::find_by_instance_id` no longer returns. Lets a test observe the
+/// `NodeStack::find_by_instance_id` does not return. Lets a test observe the
 /// exit watcher's terminal transition, or confirm an instance is gone from every
 /// state (not lingering as terminal after a stop/reset).
 pub fn instance_state_in_any_state(
@@ -85,9 +85,9 @@ pub fn instance_state_in_any_state(
 }
 
 /// Polls `ServiceMessenger::is_reachable` until the named service responds or
-/// `deadline` expires. Replaces fixed sleeps used as broker-propagation
-/// barriers in tests that spawn a `handle_requests` task and then need to
-/// be sure callers can route to it.
+/// `deadline` expires. It is the broker-propagation barrier for tests that
+/// spawn a `handle_requests` task and then need to be sure callers can route
+/// to it.
 pub async fn wait_until_service_reachable(
     messenger: &MessengerHandle,
     bound_core_node: &str,

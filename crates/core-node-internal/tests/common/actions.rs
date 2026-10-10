@@ -68,10 +68,10 @@ pub struct NodeRunTestResponse {
 
 /// Builds the instance plan a `node_run` goal carries.
 ///
-/// Note what a test can no longer choose: the messaging endpoint, the bound
-/// core node, and the node identity. Those belong to the daemon that spawns the
-/// node, so the goal has nowhere to put them and a test cannot accidentally
-/// pin a node to the wrong daemon.
+/// A test cannot choose the messaging endpoint, the bound core node, or the
+/// node identity. Those belong to the daemon that spawns the node, so the
+/// goal has nowhere to put them and a test cannot accidentally pin a node to
+/// the wrong daemon.
 pub fn instance_plan(
     instance_id: &str,
     arguments: std::collections::BTreeMap<String, config::AnyType>,

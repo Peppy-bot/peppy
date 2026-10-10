@@ -666,8 +666,7 @@ pub async fn spawn_real_starting_instance(
 
 /// For tests that push a config directly (bypassing `process_node_add`): drives
 /// the real `NodeEntity::build` (process-node archive path, no container) and
-/// then a real `prepare_and_spawn` + `commit_started`. Replaces the old
-/// `force_built_and_start_instance` backdoor helper.
+/// then a real `prepare_and_spawn` + `commit_started`.
 pub async fn real_build_and_spawn_instance(
     started: &StartedCoreNode,
     name: &str,
