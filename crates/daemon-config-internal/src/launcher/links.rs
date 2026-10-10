@@ -103,7 +103,7 @@ pub fn validate_link_plan(
 
 /// Run the cross-family key/vacancy checks over the plan. Returns aggregated
 /// errors only; the per-mechanism validators produce the resolved plans.
-pub fn validate_link_slots(items: &[BindingValidationItem<'_>]) -> Vec<ParsingError> {
+fn validate_link_slots(items: &[BindingValidationItem<'_>]) -> Vec<ParsingError> {
     let mut errors = Vec::new();
 
     for item in items {

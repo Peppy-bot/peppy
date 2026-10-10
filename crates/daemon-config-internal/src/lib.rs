@@ -113,7 +113,7 @@ pub mod launcher {
         Selection, SkipReason, SkippedAdjustment, UnitSelection, VacantReason, WALL_CLOCK,
         check_composition, mint_incarnation, participant_vacancies, resolve_clocks,
         split_link_target, validate_bindings, validate_clock_connections, validate_link_plan,
-        validate_link_slots, validate_pairings,
+        validate_pairings,
     };
 }
 

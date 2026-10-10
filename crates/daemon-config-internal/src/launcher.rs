@@ -22,7 +22,7 @@ pub use compose::{
     SELF_COPY_NAME_REFUSAL, SkipReason, SkippedAdjustment, UnitSelection, check_composition,
 };
 pub use composition::{ComponentAxis, LauncherFragmentParser, OptionSpec};
-pub use links::{validate_link_plan, validate_link_slots};
+pub use links::validate_link_plan;
 pub use observations::PlannedObservation;
 pub use pairings::{
     AlreadyPairedSlots, ExternallyCoveredSlots, PairingValidationItem, PlannedPairEndpoint,

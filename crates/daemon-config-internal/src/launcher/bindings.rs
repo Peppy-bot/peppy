@@ -135,8 +135,8 @@ pub struct ValidatedBindings {
 ///    more than one on a scalar slot is
 ///    [`ParsingError::BindingSingleSlotMultipleTargets`]. A vacancy has no
 ///    shape to size and is not judged here; whether the slot may be vacant
-///    at all is [`super::links::validate_link_slots`]'s answer, given
-///    before this validator runs.
+///    at all is `validate_link_slots`'s answer, given before this
+///    validator runs.
 /// 3. Every target in the slot's set exists in the snapshot
 ///    ([`ParsingError::UnknownInstanceId`] otherwise) and satisfies the
 ///    slot, checked per bound instance: node slots match the target's
