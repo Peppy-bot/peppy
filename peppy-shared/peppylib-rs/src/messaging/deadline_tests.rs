@@ -9,8 +9,8 @@ use futures::{
     task::{ArcWake, waker_ref},
 };
 use pmi::{
-    Messenger, MessengerAdapter, MessengerBackend, MockAdapter, ServiceKind, ServiceQueryKind,
-    ServiceQueryable, ServiceWireReceiver, ServiceWireSender,
+    Messenger, MessengerAdapter, MessengerBackend, MockAdapter, ResponseToken, ServiceKind,
+    ServiceQueryKind, ServiceQueryable, ServiceWireReceiver, ServiceWireSender,
 };
 use std::{
     cell::Cell,
@@ -100,6 +100,29 @@ impl ArcWake for CallWake {
 fn poll_once<F: Future>(future: Pin<&mut F>, wake: &Arc<CallWake>) -> Poll<F::Output> {
     let _ = wake.0.notified().now_or_never();
     future.poll(&mut Context::from_waker(&waker_ref(wake)))
+}
+
+/// Sends the producer's ACK for `token`'s request and checks that `call`
+/// takes it and keeps waiting for the terminal reply.
+async fn acknowledge<F: Future>(token: &ResponseToken, call: Pin<&mut F>, wake: &Arc<CallWake>) {
+    token.respond_ack().await.unwrap();
+    wake.0.notified().await;
+    assert!(poll_once(call, wake).is_pending());
+}
+
+fn assert_handler_error(result: Result<Message>) {
+    match result.unwrap_err() {
+        Error::ServiceError {
+            instance_id,
+            service_name,
+            reason,
+        } => {
+            assert_eq!(instance_id.as_deref(), Some(PRODUCER));
+            assert_eq!(service_name, SERVICE);
+            assert_eq!(reason, "handler failed");
+        }
+        error => panic!("expected the handler error, got {error:?}"),
+    }
 }
 
 async fn assert_no_request(handle: &MessengerHandle, queryable: &ServiceQueryable) {
@@ -229,9 +252,12 @@ async fn lock_wait_is_subtracted_from_the_transport_budget() {
     assert!(poll_once(immediate.as_mut(), &immediate_wake).is_pending());
     assert!(poll_once(delayed.as_mut(), &delayed_wake).is_pending());
     let immediate_request = immediate_service.rx.recv_async().await.unwrap();
-    immediate_request.token.respond_ack().await.unwrap();
-    immediate_wake.0.notified().await;
-    assert!(poll_once(immediate.as_mut(), &immediate_wake).is_pending());
+    acknowledge(
+        &immediate_request.token,
+        immediate.as_mut(),
+        &immediate_wake,
+    )
+    .await;
 
     let lock_wait = Duration::from_millis(250);
     advance(lock_wait).await;
@@ -239,9 +265,7 @@ async fn lock_wait_is_subtracted_from_the_transport_budget() {
     delayed_wake.0.notified().await;
     assert!(poll_once(delayed.as_mut(), &delayed_wake).is_pending());
     let delayed_request = delayed_service.rx.recv_async().await.unwrap();
-    delayed_request.token.respond_ack().await.unwrap();
-    delayed_wake.0.notified().await;
-    assert!(poll_once(delayed.as_mut(), &delayed_wake).is_pending());
+    acknowledge(&delayed_request.token, delayed.as_mut(), &delayed_wake).await;
 
     advance(BUDGET - lock_wait).await;
     tokio::join!(immediate_wake.0.notified(), delayed_wake.0.notified());
@@ -283,9 +307,7 @@ async fn pending_reply_expiry_preserves_ack_classification() {
         assert!(poll_once(call.as_mut(), &wake).is_pending());
         let request = queryable.rx.recv_async().await.unwrap();
         if received_ack {
-            request.token.respond_ack().await.unwrap();
-            wake.0.notified().await;
-            assert!(poll_once(call.as_mut(), &wake).is_pending());
+            acknowledge(&request.token, call.as_mut(), &wake).await;
         }
         sleep_until(deadline).await;
         let Poll::Ready(result) = poll_once(call.as_mut(), &wake) else {
@@ -312,9 +334,7 @@ async fn a_terminal_reply_in_hand_wins_when_the_caller_resumes_after_expiry() {
             assert!(poll_once(call.as_mut(), &wake).is_pending());
             let request = queryable.rx.recv_async().await.unwrap();
             if received_ack {
-                request.token.respond_ack().await.unwrap();
-                wake.0.notified().await;
-                assert!(poll_once(call.as_mut(), &wake).is_pending());
+                acknowledge(&request.token, call.as_mut(), &wake).await;
             }
             // Keep the caller parked after its timer fires. The transport
             // still accepts a terminal reply during its independent grace, and
@@ -339,18 +359,7 @@ async fn a_terminal_reply_in_hand_wins_when_the_caller_resumes_after_expiry() {
             wake.0.notified().await;
             let result = call.await;
             if handler_error {
-                match result.unwrap_err() {
-                    Error::ServiceError {
-                        instance_id,
-                        service_name,
-                        reason,
-                    } => {
-                        assert_eq!(instance_id.as_deref(), Some(PRODUCER));
-                        assert_eq!(service_name, SERVICE);
-                        assert_eq!(reason, "handler failed");
-                    }
-                    error => panic!("expected the handler error in hand, got {error:?}"),
-                }
+                assert_handler_error(result);
             } else {
                 assert_eq!(
                     result.unwrap().payload(),
@@ -385,18 +394,7 @@ async fn timely_terminal_replies_preserve_payloads_and_handler_errors() {
                     .respond_handler_error("handler failed".into())
                     .await
                     .unwrap();
-                match call.await.unwrap_err() {
-                    Error::ServiceError {
-                        instance_id,
-                        service_name,
-                        reason,
-                    } => {
-                        assert_eq!(instance_id.as_deref(), Some(PRODUCER));
-                        assert_eq!(service_name, SERVICE);
-                        assert_eq!(reason, "handler failed");
-                    }
-                    error => panic!("expected handler error, got {error:?}"),
-                }
+                assert_handler_error(call.await);
             } else {
                 request
                     .token
@@ -430,9 +428,7 @@ async fn stream_closure_without_a_retry_preserves_ack_classification() {
         assert!(poll_once(call.as_mut(), &wake).is_pending());
         let request = queryable.rx.recv_async().await.unwrap();
         if received_ack {
-            request.token.respond_ack().await.unwrap();
-            wake.0.notified().await;
-            assert!(poll_once(call.as_mut(), &wake).is_pending());
+            acknowledge(&request.token, call.as_mut(), &wake).await;
         }
         drop(request);
         wake.0.notified().await;
