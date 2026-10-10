@@ -1,4 +1,3 @@
-use super::interfaces::action_message_from_exposed;
 use crate::services::node::cache as node_cache;
 use crate::services::repo::cache as repo_cache;
 use core_node_api::encoding::RepoResolvedEntry;
@@ -254,7 +253,7 @@ pub(super) fn build_dependency_offerings(
     for exposed in dep_config.interfaces.native_action_exposes() {
         actions
             .entry(exposed.name.trim().to_string())
-            .or_insert_with(|| action_message_from_exposed(exposed));
+            .or_insert_with(|| ConsumedActionMessage::from(exposed));
     }
 
     DependencyOfferings {

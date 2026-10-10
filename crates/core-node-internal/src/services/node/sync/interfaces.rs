@@ -241,7 +241,7 @@ pub fn collect_consumed_interfaces(
                         .find(|a| a.name.trim() == name)?;
                     Some(
                         refined_ref(consumed_action.refine.as_deref(), exposed)
-                            .map(|exposed| action_message_from_exposed(&exposed)),
+                            .map(|exposed| ConsumedActionMessage::from(exposed.as_ref())),
                     )
                 },
             )?
@@ -352,12 +352,6 @@ impl ResolvedDependencies {
     }
 }
 
-pub(super) fn action_message_from_exposed(
-    exposed_action: &config::node::NativeExposedAction,
-) -> ConsumedActionMessage {
-    ConsumedActionMessage::from(exposed_action)
-}
-
 #[cfg(test)]
 mod action_message_tests {
     use super::*;
@@ -380,7 +374,7 @@ mod action_message_tests {
             .as_ref()
             .and_then(|service| service.response_message_format.clone());
 
-        let messages = action_message_from_exposed(&exposed_action);
+        let messages = ConsumedActionMessage::from(&exposed_action);
 
         assert_eq!(messages.goal_response, declared);
         assert_eq!(
