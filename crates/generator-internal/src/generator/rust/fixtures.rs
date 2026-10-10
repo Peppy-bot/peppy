@@ -26,7 +26,7 @@ use super::{
     render_tokens,
 };
 use crate::error::Result;
-use crate::generator::naming::to_camel_case;
+use crate::generator::naming::{sanitize_node_display_name, to_camel_case};
 use crate::generator::types::{InterfaceArtifact, InterfaceKind, scoped_schema_key};
 use config::node::Cardinality;
 use proc_macro2::{Ident, Span, TokenStream};
@@ -196,14 +196,10 @@ fn render_emitted_topic(
         None => topic_name.to_string(),
     };
     let field = Ident::new(&sanitize_rust_module_name(&field_name), Span::call_site());
-    let production_path = {
-        let segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
-        production_module("fixtures", &{
-            let mut all = vec!["emitted_topics"];
-            all.extend(segments);
-            all
-        })
-    };
+    // The module path already starts with the `emitted_topics` category, so
+    // it is the whole path of this module under `crate::fixtures`.
+    let segments: Vec<&str> = module_path.iter().map(String::as_str).collect();
+    let production_path = production_module("fixtures", &segments);
     Ok((
         InterfaceArtifact {
             module_path,
@@ -241,12 +237,8 @@ fn render_exposed_service(
         Some(origin) => module_path.extend(origin.module_path_for(service_name)),
         None => module_path.push(service_name.to_string()),
     }
-    let production = {
-        let segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
-        let mut all = vec!["exposed_services"];
-        all.extend(segments);
-        production_module_raw(&all)
-    };
+    let surface_segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
+    let production = production_module("exposed_services", &surface_segments);
 
     let serialize_ident = Ident::new("serialize_request", Span::call_site());
     let deserialize_ident = Ident::new("deserialize_response", Span::call_site());
@@ -360,12 +352,6 @@ fn render_exposed_service(
     })
 }
 
-/// Path to a production module from raw segments (first segment is the
-/// category, the rest are sanitized).
-fn production_module_raw(segments: &[&str]) -> TokenStream {
-    production_module(segments[0], &segments[1..])
-}
-
 // ---------------------------------------------------------------------------
 // exposed actions
 // ---------------------------------------------------------------------------
@@ -393,14 +379,10 @@ fn render_exposed_action(
     let mut module_path = vec!["exposed_actions".to_string()];
     match &spec.origin {
         Some(origin) => module_path.extend(origin.module_path_for(action_name)),
-        None => module_path.push(sanitize_display(action_name)),
+        None => module_path.push(sanitize_node_display_name(action_name)),
     }
-    let production = {
-        let segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
-        let mut all = vec!["exposed_actions"];
-        all.extend(segments);
-        production_module_raw(&all)
-    };
+    let surface_segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
+    let production = production_module("exposed_actions", &surface_segments);
 
     let mut reexports: Vec<TokenStream> = Vec::new();
     let mut codecs: Vec<TokenStream> = Vec::new();
@@ -679,10 +661,6 @@ fn render_exposed_action(
         kind: InterfaceKind::Fixture,
         code_output: render_tokens(module),
     })
-}
-
-fn sanitize_display(name: &str) -> String {
-    crate::generator::naming::sanitize_node_display_name(name)
 }
 
 // ---------------------------------------------------------------------------
