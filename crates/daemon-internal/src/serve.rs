@@ -375,7 +375,7 @@ pub fn serve(options: ServeOptions) -> Result<()> {
             ServeOutcome::Stop => return Ok(()),
             ServeOutcome::Restart => {
                 finalize_before_restart(router_adopted);
-                if flap.record_and_is_flapping() {
+                if flap.record_and_is_flapping(Instant::now()) {
                     error!(
                         "daemon restarted more than {FLAP_CAP} times within {:?}; \
                          exiting ({RESTART_EXIT_CODE}) for the supervisor to recover",
@@ -437,9 +437,9 @@ impl FlapWindow {
         }
     }
 
-    /// Records a restart and reports whether the recent rate exceeds the cap.
-    fn record_and_is_flapping(&mut self) -> bool {
-        let now = Instant::now();
+    /// Records a restart at `now` and reports whether the recent rate exceeds
+    /// the cap. The caller passes the time so that a test can drive the window.
+    fn record_and_is_flapping(&mut self, now: Instant) -> bool {
         self.restarts
             .retain(|t| now.duration_since(*t) < FLAP_WINDOW);
         self.restarts.push(now);
@@ -724,5 +724,33 @@ mod tests {
         let outcome = execute_alone(Serve::new(composite).with_teardown_token(teardown))
             .expect("serve run failed");
         assert_eq!(outcome, ServeOutcome::Stop);
+    }
+
+    /// The restart past the cap within one window is a flap.
+    #[test]
+    fn more_than_the_cap_of_restarts_within_the_window_is_a_flap() {
+        let start = Instant::now();
+        let mut flap = FlapWindow::new();
+        for second in 0..FLAP_CAP as u64 {
+            assert!(
+                !flap.record_and_is_flapping(start + Duration::from_secs(second)),
+                "restart {} of {FLAP_CAP} is within the cap",
+                second + 1
+            );
+        }
+        assert!(flap.record_and_is_flapping(start + Duration::from_secs(FLAP_CAP as u64)));
+    }
+
+    /// Restarts that are one window apart never accumulate into a flap.
+    #[test]
+    fn restarts_spaced_beyond_the_window_never_flap() {
+        let start = Instant::now();
+        let mut flap = FlapWindow::new();
+        for restart in 0..=2 * FLAP_CAP as u32 {
+            assert!(
+                !flap.record_and_is_flapping(start + FLAP_WINDOW * restart),
+                "restart {restart} is alone in its window"
+            );
+        }
     }
 }
