@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 
 from functions.hub_ci import resolve
 
@@ -22,6 +22,20 @@ def hub_set_document(refs: Mapping[str, str] | None = None) -> dict:
             for name, commit in HUB_COMMITS.items()
         }
     }
+
+
+def ancestry_resolver(
+    ancestry: Mapping[tuple[str, str], bool],
+) -> Callable[[str, str], bool]:
+    """An is_ancestor stub answering the given (ancestor, descendant) pairs;
+    any other pair raises KeyError."""
+    return lambda ancestor, descendant: ancestry[(ancestor, descendant)]
+
+
+def flag_value(cmd: Sequence[str], flag: str) -> str:
+    """Return the argv element following *flag* in *cmd*."""
+    assert flag in cmd, f"{flag} not in {cmd}"
+    return cmd[cmd.index(flag) + 1]
 
 
 def unwrapped(text: str) -> str:

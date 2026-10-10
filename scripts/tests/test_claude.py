@@ -18,17 +18,13 @@ from functions.claude import (
 )
 from functions.cli import ReleaseError
 
+from .helpers import flag_value
+
 _SCHEMA: dict = {
     "type": "object",
     "properties": {"ok": {"type": "boolean"}},
     "required": ["ok"],
 }
-
-
-def _flag_value(cmd: list[str], flag: str) -> str:
-    """Return the argv element following ``flag`` in ``cmd``."""
-    assert flag in cmd, f"{flag} not in {cmd}"
-    return cmd[cmd.index(flag) + 1]
 
 
 def _mock_run(
@@ -119,11 +115,11 @@ def test_run_claude_pins_model_effort_and_pipes_prompt_via_stdin(
     cmd = capture["cmd"]
     assert cmd[0] == "claude"
     assert "-p" in cmd
-    assert _flag_value(cmd, "--model") == CLAUDE_MODEL
-    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
-    assert _flag_value(cmd, "--output-format") == "json"
-    assert _flag_value(cmd, "--permission-mode") == "bypassPermissions"
-    assert _flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
+    assert flag_value(cmd, "--model") == CLAUDE_MODEL
+    assert flag_value(cmd, "--effort") == CLAUDE_EFFORT
+    assert flag_value(cmd, "--output-format") == "json"
+    assert flag_value(cmd, "--permission-mode") == "bypassPermissions"
+    assert flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
     # The prompt is piped via stdin, never placed on the command line.
     assert capture["input"] == "the-prompt"
     assert "the-prompt" not in cmd
@@ -132,7 +128,7 @@ def test_run_claude_pins_model_effort_and_pipes_prompt_via_stdin(
 def test_run_claude_passes_schema_as_json(tmp_path: Path) -> None:
     cmd = _captured_cmd(tmp_path)
     # The schema rides argv as serialized JSON the CLI can validate against.
-    assert json.loads(_flag_value(cmd, "--json-schema")) == _SCHEMA
+    assert json.loads(flag_value(cmd, "--json-schema")) == _SCHEMA
 
 
 def test_run_claude_disables_tools_when_tools_empty(tmp_path: Path) -> None:
@@ -140,24 +136,24 @@ def test_run_claude_disables_tools_when_tools_empty(tmp_path: Path) -> None:
         tmp_path, allowed_tools="", permission_mode="bypassPermissions", tools=""
     )
     # `--tools ""` disables all tools; an empty allowlist is omitted entirely.
-    assert _flag_value(cmd, "--tools") == ""
+    assert flag_value(cmd, "--tools") == ""
     assert "--allowed-tools" not in cmd
 
 
 def test_run_claude_effort_override(tmp_path: Path) -> None:
     cmd = _captured_cmd(tmp_path, effort="low")
-    assert _flag_value(cmd, "--effort") == "low"
+    assert flag_value(cmd, "--effort") == "low"
 
 
 def test_run_claude_defaults_to_pinned_effort(tmp_path: Path) -> None:
     cmd = _captured_cmd(tmp_path)
-    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
+    assert flag_value(cmd, "--effort") == CLAUDE_EFFORT
 
 
 def test_run_claude_omits_tools_flag_by_default(tmp_path: Path) -> None:
     cmd = _captured_cmd(tmp_path)
     assert "--tools" not in cmd
-    assert _flag_value(cmd, "--allowed-tools") == "Read"
+    assert flag_value(cmd, "--allowed-tools") == "Read"
 
 
 @pytest.mark.parametrize(

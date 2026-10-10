@@ -22,23 +22,12 @@ from functions.release_docs_gate import (
     verify_docs_gate,
 )
 
-from .helpers import unwrapped
+from .helpers import ancestry_resolver, unwrapped
 
 DEV_COMMIT = "1111111111111111111111111111111111111111"
 
-
-@pytest.fixture(autouse=True)
-def _no_prompts() -> object:
-    """The gate never asks anything: every prompt fails the test."""
-    with patch(
-        "functions.cli.Prompt.ask", side_effect=AssertionError("prompted")
-    ), patch("functions.cli.Confirm.ask", side_effect=AssertionError("prompted")):
-        yield
-
-
-def _ancestry_resolver(ancestry: dict[tuple[str, str], bool]):
-    """Return an is_ancestor stub answering the given (ancestor, descendant) pairs."""
-    return lambda ancestor, descendant: ancestry[(ancestor, descendant)]
+# The gate never asks anything: every prompt fails the test.
+pytestmark = pytest.mark.usefixtures("no_prompts")
 
 
 # --- the last shipped commit ---
@@ -62,7 +51,7 @@ def test_last_shipped_commit_is_origin_main_once_aligned_to_the_latest_release(
     mock_tag: MagicMock, mock_is_ancestor: MagicMock
 ) -> None:
     # main sits one notes commit past the tag, as a finished release leaves it.
-    mock_is_ancestor.side_effect = _ancestry_resolver(
+    mock_is_ancestor.side_effect = ancestry_resolver(
         {(LATEST_TAG, "origin/main"): True}
     )
 
@@ -78,7 +67,7 @@ def test_last_shipped_commit_is_the_latest_release_tag_when_main_lags_it(
 ) -> None:
     # A release published but never aligned: the tag is past main, on the way
     # to the commit being released.
-    mock_is_ancestor.side_effect = _ancestry_resolver(
+    mock_is_ancestor.side_effect = ancestry_resolver(
         {
             (LATEST_TAG, "origin/main"): False,
             ("origin/main", LATEST_TAG): True,
@@ -115,7 +104,7 @@ def test_last_shipped_commit_stays_origin_main_when_the_tag_is_off_the_release_l
     mock_is_ancestor: MagicMock,
     ancestry: dict[tuple[str, str], bool],
 ) -> None:
-    mock_is_ancestor.side_effect = _ancestry_resolver(ancestry)
+    mock_is_ancestor.side_effect = ancestry_resolver(ancestry)
 
     assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
 
@@ -167,7 +156,7 @@ _ON_THE_RELEASE_LINE = {
 def test_judged_commit_of_a_merged_docs_sync_pull_request(
     mock_is_ancestor: MagicMock,
 ) -> None:
-    mock_is_ancestor.side_effect = _ancestry_resolver(_ON_THE_RELEASE_LINE)
+    mock_is_ancestor.side_effect = ancestry_resolver(_ON_THE_RELEASE_LINE)
 
     judged = _judged_commit_of(_docs_sync_pull(), "origin/main", DEV_COMMIT)
 
@@ -219,7 +208,7 @@ def test_judged_commit_of_is_none_for_a_pull_request_that_settles_nothing(
 def test_judged_commit_of_is_none_off_the_way_to_the_release(
     mock_is_ancestor: MagicMock, ancestry: dict[tuple[str, str], bool]
 ) -> None:
-    mock_is_ancestor.side_effect = _ancestry_resolver(ancestry)
+    mock_is_ancestor.side_effect = ancestry_resolver(ancestry)
 
     assert _judged_commit_of(_docs_sync_pull(), "origin/main", DEV_COMMIT) is None
 
@@ -261,7 +250,7 @@ def test_last_judged_commit_is_the_latest_one_on_the_way_to_the_release(
         _docs_sync_pull(),
         _docs_sync_pull(branch_prefix="fix-the-router-"),
     ]
-    mock_is_ancestor.side_effect = _ancestry_resolver(
+    mock_is_ancestor.side_effect = ancestry_resolver(
         {
             **_ON_THE_RELEASE_LINE,
             ("origin/main", EARLIER_JUDGED_COMMIT): True,

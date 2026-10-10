@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -39,6 +41,16 @@ def pytest_collection_modifyitems(
     for item in items:
         if item.get_closest_marker("install"):
             item.add_marker(skip_install)
+
+
+@pytest.fixture()
+def no_prompts() -> Iterator[None]:
+    """Fail the test at any prompt."""
+    with (
+        patch("functions.cli.Prompt.ask", side_effect=AssertionError("prompted")),
+        patch("functions.cli.Confirm.ask", side_effect=AssertionError("prompted")),
+    ):
+        yield
 
 
 @pytest.fixture()

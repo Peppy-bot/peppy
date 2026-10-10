@@ -45,11 +45,7 @@ from functions.docs import (
     update_docs,
 )
 
-
-def _flag_value(cmd: list[str], flag: str) -> str:
-    """Return the argv element following ``flag`` in ``cmd``."""
-    assert flag in cmd, f"{flag} not in {cmd}"
-    return cmd[cmd.index(flag) + 1]
+from .helpers import flag_value
 
 
 def _blocking(file: str = "docs/x.mdx", change: str = "add flag") -> RequiredChange:
@@ -72,7 +68,7 @@ _REFUTED: dict = {"verdict": "refuted", "evidence": "foo.rs:12 accepts any key"}
 
 def _is_gap_review(cmd: list[str]) -> bool:
     """True when *cmd* is the claude run confirming a gap, not one judging a diff."""
-    return json.loads(_flag_value(cmd, "--json-schema")) == _CONFIRM_SCHEMA
+    return json.loads(flag_value(cmd, "--json-schema")) == _CONFIRM_SCHEMA
 
 
 # --- _is_code_path ---
@@ -999,10 +995,10 @@ def test_check_docs_confirms_gaps_with_the_schema_and_readonly_tools(
 
     (cmd,) = reviews
     # Read-only for the same reason the judging runs are.
-    assert _flag_value(cmd, "--tools") == "Read Grep Glob"
-    assert _flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
-    assert _flag_value(cmd, "--model") == CLAUDE_MODEL
-    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
+    assert flag_value(cmd, "--tools") == "Read Grep Glob"
+    assert flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
+    assert flag_value(cmd, "--model") == CLAUDE_MODEL
+    assert flag_value(cmd, "--effort") == CLAUDE_EFFORT
 
 
 def test_update_docs_hands_each_part_its_own_gaps(tmp_path: Path) -> None:
@@ -1094,12 +1090,12 @@ def test_check_docs_enforces_schema_and_readonly_tools(tmp_path: Path) -> None:
     cmd = capture["cmd"]
     # The verdict shape is enforced CLI-side, so prose answers cannot crash
     # the release.
-    assert json.loads(_flag_value(cmd, "--json-schema")) == _CHECK_SCHEMA
+    assert json.loads(flag_value(cmd, "--json-schema")) == _CHECK_SCHEMA
     # tools (not just the allowlist) is restricted: under bypassPermissions
     # the allowlist approves rather than limits, and the check must stay
     # read-only.
-    assert _flag_value(cmd, "--tools") == "Read Grep Glob"
-    assert _flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
+    assert flag_value(cmd, "--tools") == "Read Grep Glob"
+    assert flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
 
 
 def test_check_docs_raises_on_claude_nonzero(tmp_path: Path) -> None:
@@ -1174,7 +1170,7 @@ def test_update_docs_scopes_the_prompt_to_the_requested_changes(
     assert "- `docs/x.mdx`: add flag" in prompt
     assert "- `docs/z.mdx`: document subcommand" in prompt
     assert "THE-CODE-DIFF" in prompt
-    assert json.loads(_flag_value(capture["cmd"], "--json-schema")) == _UPDATE_SCHEMA
+    assert json.loads(flag_value(capture["cmd"], "--json-schema")) == _UPDATE_SCHEMA
 
 
 def test_update_docs_invokes_claude_with_edit_permissions(tmp_path: Path) -> None:
@@ -1194,9 +1190,9 @@ def test_update_docs_invokes_claude_with_edit_permissions(tmp_path: Path) -> Non
     assert result.summary == "edited 3 files"
     cmd = capture["cmd"]
     assert cmd[0] == "claude"
-    assert _flag_value(cmd, "--permission-mode") == "acceptEdits"
-    assert _flag_value(cmd, "--tools") == "Read Edit Write Grep Glob"
-    allowed = _flag_value(cmd, "--allowed-tools")
+    assert flag_value(cmd, "--permission-mode") == "acceptEdits"
+    assert flag_value(cmd, "--tools") == "Read Edit Write Grep Glob"
+    allowed = flag_value(cmd, "--allowed-tools")
     assert "Edit" in allowed
     assert "Write" in allowed
 
@@ -1228,8 +1224,8 @@ def test_check_docs_pins_model_and_effort(tmp_path: Path) -> None:
         tmp_path,
         {"required_changes": []},
     )
-    assert _flag_value(cmd, "--model") == CLAUDE_MODEL
-    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
+    assert flag_value(cmd, "--model") == CLAUDE_MODEL
+    assert flag_value(cmd, "--effort") == CLAUDE_EFFORT
 
 
 def test_update_docs_pins_model_and_effort(tmp_path: Path) -> None:
@@ -1238,8 +1234,8 @@ def test_update_docs_pins_model_and_effort(tmp_path: Path) -> None:
         tmp_path,
         {"results": [], "summary": "edited 1 file"},
     )
-    assert _flag_value(cmd, "--model") == CLAUDE_MODEL
-    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
+    assert flag_value(cmd, "--model") == CLAUDE_MODEL
+    assert flag_value(cmd, "--effort") == CLAUDE_EFFORT
 
 
 # --- em-dashes added under docs/ (real git, mocked claude) ---

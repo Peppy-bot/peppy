@@ -68,6 +68,9 @@ PLAN = ReleasePlan(tag="v0.3.0", release_commit=RELEASE_COMMIT, content=CONTENT)
 SLUG = RepoSlug(owner="test-owner", repo="test-repo")
 APPTAINER_CACHE = "apptainer-1.5.2-{arch}-nosuid"
 
+# No stage may ask anything: every prompt fails the test.
+pytestmark = pytest.mark.usefixtures("no_prompts")
+
 
 @pytest.fixture(autouse=True)
 def _isolated_host(
@@ -79,15 +82,6 @@ def _isolated_host(
     # Registered so the value the build stage sets is undone after each test.
     monkeypatch.setenv("PEPPYLIB_PREBUILT_SO_DIR", "")
     monkeypatch.chdir(tmp_path)
-
-
-@pytest.fixture(autouse=True)
-def _no_prompts() -> object:
-    """No stage may ask anything: every prompt fails the test."""
-    with patch(
-        "functions.cli.Prompt.ask", side_effect=AssertionError("prompted")
-    ), patch("functions.cli.Confirm.ask", side_effect=AssertionError("prompted")):
-        yield
 
 
 def _cache_root(tmp_path: Path) -> Path:
