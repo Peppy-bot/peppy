@@ -1252,6 +1252,26 @@ fn sync_python_project(dir: &Path) {
     );
 }
 
+/// Installs the generated packages of the Python project at `project_dir`
+/// into its venv and runs `script` with the venv's interpreter, failing with
+/// both output streams when the script fails. `what` names the check in that
+/// failure.
+pub fn run_python_check(project_dir: &Path, script: &str, what: &str) {
+    init_python_user_node(project_dir);
+    init_python_project_venv(project_dir);
+    let output = Command::new(project_dir.join(".venv/bin/python"))
+        .args(["-c", script])
+        .current_dir(project_dir)
+        .output()
+        .expect("failed to run venv python");
+    assert!(
+        output.status.success(),
+        "{what} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Spawns `uv run python main.py` inside the given project directory.
 pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
     let mut command = Command::new("uv");

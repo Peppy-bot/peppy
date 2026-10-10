@@ -14,8 +14,8 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use crate::helpers::{
-    STUB_PYTHON_NODE_CONFIG, copy_config_to_output, init_python_project_venv,
-    init_python_user_node, init_test_env, test_peppy_dirs,
+    STUB_PYTHON_NODE_CONFIG, copy_config_to_output, init_test_env, run_python_check,
+    test_peppy_dirs,
 };
 
 const JOINT_COMMANDS: &str = r#"
@@ -105,9 +105,6 @@ fn generated_peer_modules_import_from_venv() {
         );
     }
 
-    init_python_user_node(&user_node);
-    init_python_project_venv(&user_node);
-
     let check = r#"
 import inspect
 from peppygen.paired_topics.controller import joint_states, joint_commands
@@ -134,17 +131,7 @@ assert inspect.isclass(joint_commands.Subscription)
 assert inspect.iscoroutinefunction(joint_commands.wait_paired)
 print("peer modules imported")
 "#;
-    let output = std::process::Command::new(user_node.join(".venv/bin/python"))
-        .args(["-c", check])
-        .current_dir(&user_node)
-        .output()
-        .expect("failed to run venv python");
-    assert!(
-        output.status.success(),
-        "importing generated peer modules failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    run_python_check(&user_node, check, "importing generated peer modules");
 }
 
 /// A multi participant slot in Python: `peers()` annotates
@@ -185,9 +172,6 @@ fn generated_multi_peer_modules_are_cardinality_typed() {
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    init_python_user_node(&user_node);
-    init_python_project_venv(&user_node);
-
     let check = r#"
 import inspect
 from typing import List
@@ -223,17 +207,7 @@ assert inspect.iscoroutinefunction(joint_commands.subscribe)
 assert inspect.isclass(joint_commands.Subscription)
 print("multi peer modules imported")
 "#;
-    let output = std::process::Command::new(user_node.join(".venv/bin/python"))
-        .args(["-c", check])
-        .current_dir(&user_node)
-        .output()
-        .expect("failed to run venv python");
-    assert!(
-        output.status.success(),
-        "importing generated multi peer modules failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    run_python_check(&user_node, check, "importing generated multi peer modules");
 }
 
 /// The observer half of the same surface, and the cardinality typing that goes
@@ -302,9 +276,6 @@ fn generated_observer_modules_are_cardinality_typed() {
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    init_python_user_node(&user_node);
-    init_python_project_venv(&user_node);
-
     let check = r#"
 import inspect
 from typing import List, Optional
@@ -364,15 +335,5 @@ for module in (sole, maybe, many, spare):
     assert "ObservedSource" in return_annotation, return_annotation
 print("observer modules imported")
 "#;
-    let output = std::process::Command::new(user_node.join(".venv/bin/python"))
-        .args(["-c", check])
-        .current_dir(&user_node)
-        .output()
-        .expect("failed to run venv python");
-    assert!(
-        output.status.success(),
-        "importing generated observer modules failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    run_python_check(&user_node, check, "importing generated observer modules");
 }

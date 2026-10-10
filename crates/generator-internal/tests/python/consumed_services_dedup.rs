@@ -7,9 +7,7 @@
 //! per producer), not a single deduplicated one, so the two producers'
 //! formats stay apart even when they differ completely.
 
-use crate::helpers::{
-    generate_test_peppygen_lib, init_python_project_venv, init_python_user_node, native_dep, run_uv,
-};
+use crate::helpers::{generate_test_peppygen_lib, native_dep, run_python_check};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedService, MessageFormat, PeppygenLanguage};
 use generator::{DeploymentInterface, InterfaceVariant};
@@ -195,17 +193,9 @@ fn python_cross_producer_same_service_name_keeps_schemas_separate() {
         "rear request capnp should encode `intensity`, got:\n{rear_request_text}"
     );
 
-    init_python_user_node(&user_node_dir);
-    init_python_project_venv(&user_node_dir);
-
-    let output = run_uv(&user_node_dir, &["run", "python", "-c", PYTHON_PROBE]);
-
-    assert!(
-        output.status.success(),
-        "Python probe failed for cross-producer same-service-name scenario.\n\
-         stdout:\n{}\n\
-         stderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    run_python_check(
+        &user_node_dir,
+        PYTHON_PROBE,
+        "Python probe for the cross-producer same-service-name scenario",
     );
 }

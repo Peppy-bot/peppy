@@ -16,9 +16,7 @@
 //! in `consumed_topics_distinct_formats.rs`.
 
 use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
-use crate::helpers::{
-    generate_test_peppygen_lib, init_python_project_venv, init_python_user_node, native_dep, run_uv,
-};
+use crate::helpers::{generate_test_peppygen_lib, native_dep, run_python_check};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage, TopicRetention};
 use generator::{DeploymentInterface, InterfaceVariant};
@@ -139,17 +137,9 @@ fn python_handles_two_consumed_topics_sharing_topic_name() {
         right_module.display()
     );
 
-    init_python_user_node(&user_node_dir);
-    init_python_project_venv(&user_node_dir);
-
-    let output = run_uv(&user_node_dir, &["run", "python", "-c", PYTHON_PROBE]);
-
-    assert!(
-        output.status.success(),
-        "Python probe failed for two-consumed-topics dedup scenario.\n\
-         stdout:\n{}\n\
-         stderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    run_python_check(
+        &user_node_dir,
+        PYTHON_PROBE,
+        "Python probe for the two-consumed-topics dedup scenario",
     );
 }

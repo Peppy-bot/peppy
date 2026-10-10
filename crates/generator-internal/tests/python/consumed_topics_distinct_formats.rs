@@ -14,10 +14,7 @@
 //!
 //! This is the Python counterpart of `tests/rust/consumed_topics_distinct_formats.rs`.
 
-use crate::helpers::{
-    contract_dep, generate_test_peppygen_lib, init_python_project_venv, init_python_user_node,
-    run_uv,
-};
+use crate::helpers::{contract_dep, generate_test_peppygen_lib, run_python_check};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage, TopicRetention};
 use generator::{DeploymentInterface, InterfaceVariant};
@@ -201,18 +198,10 @@ fn generate_and_probe(order: [Slot; 2]) {
         shared_stem.display()
     );
 
-    init_python_user_node(&user_node_dir);
-    init_python_project_venv(&user_node_dir);
-
-    let output = run_uv(&user_node_dir, &["run", "python", "-c", PYTHON_PROBE]);
-
-    assert!(
-        output.status.success(),
-        "Python probe failed for same-named consumed topics with distinct formats.\n\
-         stdout:\n{}\n\
-         stderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    run_python_check(
+        &user_node_dir,
+        PYTHON_PROBE,
+        "Python probe for same-named consumed topics with distinct formats",
     );
 }
 
