@@ -16,7 +16,6 @@ pub struct ServiceResponseSpec<'a> {
     pub format: &'a MessageFormat,
     pub struct_ident: Ident,
     pub builder_type: TokenStream,
-    pub include_service_instance_id: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -80,18 +79,6 @@ pub fn build_exposed_service_method(
         })
         .unwrap_or_else(|| quote!(()));
 
-    let needs_service_instance_id = response_spec
-        .map(|spec| spec.include_service_instance_id)
-        .unwrap_or(false);
-    let service_instance_param_ident = if needs_service_instance_id {
-        Some(Ident::new("service_instance_id", Span::call_site()))
-    } else {
-        None
-    };
-    let service_instance_call_arg = service_instance_param_ident
-        .as_ref()
-        .map(|_| quote!(service_instance_id.as_str()));
-
     let request_ident = Ident::new("request", Span::call_site());
     let callback_call = quote!(handler(#request_ident));
     let request_pattern = if request_data_struct.is_some() {
@@ -101,11 +88,7 @@ pub fn build_exposed_service_method(
         quote!(())
     };
 
-    let response_serialization = build_response_serialization_code(
-        response_spec,
-        &callback_call,
-        service_instance_param_ident.as_ref(),
-    )?;
+    let response_serialization = build_response_serialization_code(response_spec, &callback_call)?;
     let handler_helper_name = handler_helper_name_override.cloned().unwrap_or_else(|| {
         Ident::new(
             &format!("{}_handle_request_payload", fn_name),
@@ -133,9 +116,6 @@ pub fn build_exposed_service_method(
     helper_params.push(quote!(handler: &F));
     helper_params.push(quote!(core_node: String));
     helper_params.push(quote!(instance_id: String));
-    if let Some(instance_ident) = service_instance_param_ident.as_ref() {
-        helper_params.push(quote!(#instance_ident: &str));
-    }
 
     // Build helper function body preamble from independent concerns.
     let mut body_preamble: Vec<TokenStream> = Vec::new();
@@ -180,8 +160,8 @@ pub fn build_exposed_service_method(
     };
     helper_tokens.push(helper_fn);
 
-    // The helper call: the message's identity, its payload when the service
-    // takes one, and the service instance when the response names it.
+    // The helper call: the message's identity, and its payload when the
+    // service takes one.
     let request_context_ident = Ident::new("request_context", Span::call_site());
     let mut call_preamble: Vec<TokenStream> = Vec::new();
     let mut helper_args: Vec<TokenStream> = Vec::new();
@@ -196,10 +176,6 @@ pub fn build_exposed_service_method(
     call_preamble.push(quote!(let instance_id = message.instance_id().to_string();));
     helper_args.push(quote!(core_node));
     helper_args.push(quote!(instance_id));
-
-    if let Some(arg) = &service_instance_call_arg {
-        helper_args.push(arg.clone());
-    }
 
     let helper_call_tokens = quote!({
         #(#call_preamble)*
@@ -318,7 +294,6 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
 pub fn build_response_serialization_code(
     response_spec: Option<&ServiceResponseSpec>,
     callback_call: &TokenStream,
-    service_instance_ident: Option<&Ident>,
 ) -> Result<TokenStream> {
     let Some(spec) = response_spec else {
         return Ok(quote!({
@@ -329,16 +304,9 @@ pub fn build_response_serialization_code(
 
     let error_context = quote!(format!("handle_request_payload {}", SERVICE_NAME));
     let response_ident = Ident::new("response", Span::call_site());
-    let serialization = build_response_payload_tokens(
-        spec,
-        &response_ident,
-        &error_context,
-        service_instance_ident,
-    )?;
+    let serialization = build_response_payload_tokens(spec, &response_ident, &error_context)?;
 
-    let uses_response_data = spec.format.0.iter().any(|(field_name, _)| {
-        !(spec.include_service_instance_id && field_name.as_str() == "instance_id")
-    });
+    let uses_response_data = !spec.format.0.is_empty();
     let response_stmt = if uses_response_data {
         quote!(let response = #callback_call?;)
     } else {
@@ -427,7 +395,6 @@ pub fn build_response_payload_tokens(
     spec: &ServiceResponseSpec,
     response_ident: &Ident,
     error_context: &TokenStream,
-    service_instance_ident: Option<&Ident>,
 ) -> Result<TokenStream> {
     let format = spec.format;
     let builder_ident = Ident::new("root", Span::call_site());
@@ -436,17 +403,6 @@ pub fn build_response_payload_tokens(
     let mut names = NameGenerator::new();
 
     for (field_name, schema) in &format.0 {
-        if spec.include_service_instance_id && field_name == "instance_id" {
-            let instance_ident =
-                service_instance_ident.ok_or_else(|| Error::InvariantViolation {
-                    context: String::from(
-                        "service instance identifier should be available when required",
-                    ),
-                })?;
-            assignments.push(quote!(#builder_ident.set_instance_id(#instance_ident);));
-            continue;
-        }
-
         let field_ident = Ident::new(
             &sanitize_rust_identifier(field_name.as_str()),
             Span::call_site(),

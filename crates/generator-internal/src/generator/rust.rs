@@ -933,7 +933,6 @@ impl LanguageGenerator for RustGenerator {
                 format: return_artifacts.message_format(),
                 struct_ident: generic_response_ident.clone(),
                 builder_type: schema_info.builder_type_tokens(),
-                include_service_instance_id: false,
             })
         } else {
             None
@@ -1099,7 +1098,6 @@ impl LanguageGenerator for RustGenerator {
                     format: return_artifacts.message_format(),
                     struct_ident: Ident::new("GoalResponse", Span::call_site()),
                     builder_type: schema_info.builder_type_tokens(),
-                    include_service_instance_id: false,
                 };
                 let response_ident = Ident::new("response", Span::call_site());
                 let error_context =
@@ -1108,7 +1106,6 @@ impl LanguageGenerator for RustGenerator {
                     &spec,
                     &response_ident,
                     &error_context,
-                    None,
                 )?)
             } else {
                 None
