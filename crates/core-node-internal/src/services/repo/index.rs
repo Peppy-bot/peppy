@@ -103,7 +103,7 @@ pub struct RepoConflict {
 /// `name:tag`, or the bare name when the tag is empty. The empty string is
 /// how the walk and caches spell an untagged identity (launchers), so this is
 /// the single place that renders a `(name, tag)` pair as its label.
-fn format_identity(name: &str, tag: &str) -> String {
+pub(super) fn format_identity(name: &str, tag: &str) -> String {
     if tag.is_empty() {
         name.to_owned()
     } else {

@@ -297,11 +297,7 @@ pub(crate) trait RepoCacheEntry:
 
     /// `name:tag` label for log messages (bare name for untagged kinds).
     fn display_id(&self) -> String {
-        if self.tag().is_empty() {
-            self.name().to_owned()
-        } else {
-            format!("{}:{}", self.name(), self.tag())
-        }
+        super::index::format_identity(self.name(), self.tag())
     }
 }
 
