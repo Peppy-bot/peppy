@@ -1062,6 +1062,14 @@ mod tests {
         json5(s)
     }
 
+    /// Parses `source` as a parameter spec, which must be rejected, and
+    /// returns the error message.
+    fn spec_error(source: &str) -> String {
+        serde_json5::from_str::<ParameterSpec>(source)
+            .expect_err("the spec must be rejected")
+            .to_string()
+    }
+
     // ---- Shorthand and long-form parsing ----
 
     #[test]
@@ -1184,73 +1192,56 @@ mod tests {
 
     #[test]
     fn default_type_mismatch_at_parse_time() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "u16", $default: "thirty" }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "u16", $default: "thirty" }"#);
         assert!(err.contains("$default"), "got: {err}");
         assert!(err.contains("u16"), "got: {err}");
     }
 
     #[test]
     fn default_out_of_range_u8() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "u8", $default: 300 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "u8", $default: 300 }"#);
         assert!(err.contains("u8"), "got: {err}");
         assert!(err.contains("300"), "got: {err}");
     }
 
     #[test]
     fn default_out_of_range_i16() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "i16", $default: 70000 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "i16", $default: 70000 }"#);
         assert!(err.contains("i16"), "got: {err}");
     }
 
     #[test]
     fn default_negative_for_unsigned() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "u32", $default: -1 }"#);
-        assert!(result.is_err());
+        spec_error(r#"{ $type: "u32", $default: -1 }"#);
     }
 
     #[test]
     fn default_on_group_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ width: "u16", $default: 5 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ width: "u16", $default: 5 }"#);
         assert!(err.contains("$default"), "got: {err}");
     }
 
     #[test]
     fn optional_on_parameter_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "string", $optional: true }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "string", $optional: true }"#);
         assert!(err.contains("$optional"), "got: {err}");
         assert!(err.contains("$default"), "got: {err}");
     }
 
     #[test]
     fn unknown_dollar_key_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "string", $frobnicate: 1 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "string", $frobnicate: 1 }"#);
         assert!(err.contains("$frobnicate"), "got: {err}");
     }
 
     #[test]
     fn unknown_type_rejected() {
-        let result: Result<ParameterSpec, _> = serde_json5::from_str(r#""qubit""#);
-        assert!(result.is_err());
+        spec_error(r#""qubit""#);
     }
 
     #[test]
     fn unknown_shorthand_type_names_the_root_path() {
-        let err = serde_json5::from_str::<ParameterSpec>(r#""qubit""#)
-            .unwrap_err()
-            .to_string();
+        let err = spec_error(r#""qubit""#);
         assert!(
             err.contains("at `<root>`: unknown primitive type `qubit`"),
             "got: {err}"
@@ -1259,25 +1250,19 @@ mod tests {
 
     #[test]
     fn type_object_with_extra_field_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "u16", whatever: 1 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "u16", whatever: 1 }"#);
         assert!(err.contains("whatever"), "got: {err}");
     }
 
     #[test]
     fn default_on_bytes_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "bytes", $default: "abc" }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "bytes", $default: "abc" }"#);
         assert!(err.contains("bytes"), "got: {err}");
     }
 
     #[test]
     fn default_on_time_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "time", $default: 1 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "time", $default: 1 }"#);
         assert!(err.contains("time"), "got: {err}");
     }
 
@@ -1309,26 +1294,20 @@ mod tests {
 
     #[test]
     fn f32_default_rejects_int_above_lossless_range() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "f32", $default: 16777217 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "f32", $default: 16777217 }"#);
         assert!(err.contains("f32"), "got: {err}");
         assert!(err.contains("lossless"), "got: {err}");
     }
 
     #[test]
     fn f32_default_rejects_negative_int_below_lossless_range() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "f32", $default: -16777217 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "f32", $default: -16777217 }"#);
         assert!(err.contains("f32"), "got: {err}");
     }
 
     #[test]
     fn f32_default_rejects_float_overflow() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "f32", $default: 1e100 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "f32", $default: 1e100 }"#);
         assert!(err.contains("f32"), "got: {err}");
         assert!(err.contains("range"), "got: {err}");
     }
@@ -1447,9 +1426,7 @@ mod tests {
             r#"{ $type: "array", $items: "u8", $length: -1 }"#,
             r#"{ $type: "array", $items: "u8", $length: "3" }"#,
         ] {
-            let err = serde_json5::from_str::<ParameterSpec>(source)
-                .unwrap_err()
-                .to_string();
+            let err = spec_error(source);
             assert!(
                 err.contains("at `<root>`: `$length` must be a non-negative integer"),
                 "{source} got: {err}"
@@ -1459,9 +1436,7 @@ mod tests {
 
     #[test]
     fn array_item_errors_name_the_item_path() {
-        let err = serde_json5::from_str::<ParameterSpec>(r#"{ $type: "array", $items: "u17" }"#)
-            .unwrap_err()
-            .to_string();
+        let err = spec_error(r#"{ $type: "array", $items: "u17" }"#);
         assert!(
             err.contains("at `<root>[]`: unknown primitive type `u17`"),
             "got: {err}"
@@ -1470,9 +1445,7 @@ mod tests {
 
     #[test]
     fn array_default_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "array", $items: "string", $default: ["a"] }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "array", $items: "string", $default: ["a"] }"#);
         assert!(err.contains("$default"), "got: {err}");
         assert!(err.contains("array"), "got: {err}");
     }
@@ -1501,9 +1474,7 @@ mod tests {
 
     #[test]
     fn explicit_object_with_default_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "object", x: "u8", $default: {} }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "object", x: "u8", $default: {} }"#);
         assert!(err.contains("$default"), "got: {err}");
         assert!(err.contains("object"), "got: {err}");
     }
@@ -1786,10 +1757,7 @@ mod tests {
 
     #[test]
     fn unsigned_range_errors_name_the_range() {
-        let default_err =
-            serde_json5::from_str::<ParameterSpec>(r#"{ $type: "u8", $default: 300 }"#)
-                .unwrap_err()
-                .to_string();
+        let default_err = spec_error(r#"{ $type: "u8", $default: 300 }"#);
         assert!(
             default_err.contains("`$default` value 300 is outside the range of `u8` [0, 255]"),
             "got: {default_err}"
