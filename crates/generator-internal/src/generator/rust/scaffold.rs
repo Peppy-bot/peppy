@@ -179,12 +179,13 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
     Ok(())
 }
 
-/// Whether the `[package]` field `key` takes its value from the workspace
-/// (`key.workspace = true`).
+/// Whether the `[package]` field `key` takes its value from the workspace,
+/// in the dotted form (`key.workspace = true`) or the inline-table form
+/// (`key = { workspace = true }`).
 fn inherits_from_workspace(package: &toml_edit::Table, key: &str) -> bool {
     package
         .get(key)
-        .and_then(|field| field.as_table())
+        .and_then(|field| field.as_table_like())
         .and_then(|table| table.get("workspace"))
         .and_then(|workspace| workspace.as_bool())
         == Some(true)
@@ -635,6 +636,21 @@ mod tests {
              version.workspace = true\n\
              authors.workspace = true\n\
              edition.workspace = true\n",
+        );
+
+        assert_eq!(package["version"].as_str(), Some("1.2.3"));
+        assert_eq!(package["edition"].as_str(), Some("2024"));
+        assert!(package.get("authors").is_none());
+    }
+
+    #[test]
+    fn localize_cargo_toml_resolves_inline_table_workspace_inheritance() {
+        let package = localized_package(
+            "[package]\n\
+             name = \"core-node-api\"\n\
+             version = { workspace = true }\n\
+             authors = { workspace = true }\n\
+             edition = { workspace = true }\n",
         );
 
         assert_eq!(package["version"].as_str(), Some("1.2.3"));
