@@ -24,8 +24,17 @@ use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::registry::Registry;
 
 const SERVICE: &str = "late_reply_ping";
+const SERVICE_NODE: &str = "robot_arm";
 const SERVER_CORE: &str = "server_core";
 const SERVER_INSTANCE: &str = "server_instance";
+const CLIENT_CORE: &str = "client_core";
+const CLIENT_INSTANCE: &str = "client_instance";
+/// The trace message `peppylib::messaging` emits when a producer acknowledges
+/// a service request.
+const ACKNOWLEDGED_EVENT: &str = "service request acknowledged";
+/// The message the pmi zenoh adapter logs when it drops a reply that arrives
+/// after its caller stopped waiting.
+const DISCARDED_EVENT: &str = "discarding service reply after caller stopped waiting";
 const CALL_BUDGET: Duration = Duration::from_secs(3600);
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -109,8 +118,8 @@ impl<S: Subscriber> Layer<S> for RecordingLayer {
         event.record(&mut fields);
         if fields.message.starts_with("Register query ")
             || fields.message.starts_with("Close query ")
-            || fields.message == "service request acknowledged"
-            || fields.message == "discarding service reply after caller stopped waiting"
+            || fields.message == ACKNOWLEDGED_EVENT
+            || fields.message == DISCARDED_EVENT
         {
             events.handoffs.push(format!(
                 "{target}: {} (service={}, key={})",
@@ -122,12 +131,10 @@ impl<S: Subscriber> Layer<S> for RecordingLayer {
                 .noisy
                 .push(format!("{level} {target}: {}", fields.message));
         }
-        if fields.message == "service request acknowledged" && fields.service_name == SERVICE {
+        if fields.message == ACKNOWLEDGED_EVENT && fields.service_name == SERVICE {
             events.acknowledged = true;
         }
-        if fields.message == "discarding service reply after caller stopped waiting"
-            && fields.key_expr.contains(SERVICE)
-        {
+        if fields.message == DISCARDED_EVENT && fields.key_expr.contains(SERVICE) {
             events.discarded = true;
         }
         if target == "zenoh::api::session" {
@@ -191,16 +198,16 @@ async fn run_routed_late_reply(recorder: &Arc<Recorder>) {
         &server,
         SERVER_CORE,
         SERVER_INSTANCE,
-        test_node_target("robot_arm"),
+        test_node_target(SERVICE_NODE),
         SERVICE,
     )
     .await
     .expect("declare producer service");
     wait_service_reachable(
         &client,
-        "client_core",
-        "client_instance",
-        test_node_target("robot_arm"),
+        CLIENT_CORE,
+        CLIENT_INSTANCE,
+        test_node_target(SERVICE_NODE),
         SERVICE,
         &ProducerRef::new(SERVER_CORE, SERVER_INSTANCE),
         IO_TIMEOUT,
@@ -234,9 +241,9 @@ async fn run_routed_late_reply(recorder: &Arc<Recorder>) {
             let call = tokio::spawn(async move {
                 ServiceMessenger::poll(
                     &caller_handle,
-                    "client_core",
-                    "client_instance",
-                    test_node_target("robot_arm"),
+                    CLIENT_CORE,
+                    CLIENT_INSTANCE,
+                    test_node_target(SERVICE_NODE),
                     SERVICE,
                     ServiceTarget::Producer(&ProducerRef::new(SERVER_CORE, SERVER_INSTANCE)),
                     Payload::from_static(b"ping?"),
