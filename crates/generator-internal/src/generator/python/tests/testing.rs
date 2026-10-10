@@ -8,7 +8,7 @@ use super::*;
 use crate::generator::testgen::{
     DepLinkSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
-use config::node::{Cardinality, MessageFormat, TopicRetention};
+use config::node::{Cardinality, MessageFormat, NativeEmittedTopic, TopicRetention};
 use tempfile::TempDir;
 
 fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
@@ -214,4 +214,27 @@ fn a_retaining_topic_reaches_its_mock_publisher_and_its_fixture_subscription() {
         ),
         "the fixture subscription declares the retention"
     );
+}
+
+/// Production keys an emitted topic's schema on the raw topic name, so a
+/// name that is a Rust keyword stays `loop`. The fixture subscription decodes
+/// on that same key: both land on one capnp file instead of colliding on the
+/// shared `loop_message` stem.
+#[test]
+fn an_emitted_topic_named_after_a_rust_keyword_shares_its_production_schema() {
+    let mut generator = PythonGenerator::new();
+    generator.set_node_identity("node", "v1");
+    let topic: NativeEmittedTopic =
+        serde_json5::from_str(r#"{ name: "loop", message_format: { x: "u8" } }"#).unwrap();
+    generator.add_emitted_topic(&topic, None).unwrap();
+
+    let registry = std::mem::take(&mut generator.testgen);
+    let node_dir = TempDir::new().unwrap();
+    let rendered = super::super::fixtures::render(&mut generator, &registry, node_dir.path());
+
+    assert!(
+        rendered.is_ok(),
+        "the fixture codec must reuse the production schema, got: {rendered:?}"
+    );
+    assert_eq!(generator.schemas.len(), 1);
 }

@@ -12,7 +12,6 @@
 //! harness cannot pin the node's own targets without the manifest identity.
 
 use super::super::common::NodeTree;
-use super::super::naming::non_empty_str;
 use super::super::testgen::{
     DepLinkSpec, EmittedSpec, ExposedActionSpec, ExposedServiceSpec, FIXTURE_CORE_NODE,
     FIXTURE_INSTANCE_ID, TargetSpec, TestGenRegistry, claim_sanitized_name,
@@ -178,12 +177,9 @@ fn render_emitted_topic(
     spec: &EmittedSpec,
 ) -> Result<(InterfaceArtifact, EmittedMember)> {
     let topic_name = spec.name.as_str();
-    // Key derivation copied from the Rust fixtures renderer, which itself
-    // copies the production emitted-topic key: both resolve to the same capnp
-    // file stem, so no new schema file appears.
-    let fn_name =
-        crate::generator::rust::identifiers::prefixed_name("", non_empty_str(topic_name), "topic");
-    let schema_key = scoped_schema_key(spec.origin.as_ref(), &fn_name);
+    // Same key the Python production module registered, so the codec lands
+    // on the identical capnp file.
+    let schema_key = scoped_schema_key(spec.origin.as_ref(), topic_name);
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
     let qos = qos_profile_python(&spec.qos);
 
