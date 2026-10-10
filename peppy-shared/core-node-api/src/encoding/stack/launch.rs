@@ -43,8 +43,8 @@ impl LauncherOrigin {
 /// How a launch places the core node links its launcher declares.
 ///
 /// The INTENT, not its expansion. Only the coordinator holds the resolved
-/// launcher — a [`LauncherOrigin::Repository`] is read from the daemon's own
-/// cache, which the caller may never have seen — so the caller cannot know
+/// launcher: a [`LauncherOrigin::Repository`] is read from the daemon's own
+/// cache, which the caller may never have seen, so the caller cannot know
 /// what the document declares. Sending what the user asked for, and expanding
 /// it where the document lives, is what makes `--local` mean the same thing
 /// for both origins instead of working only for the one the caller can read.
@@ -932,8 +932,8 @@ mod tests {
         assert_eq!(goal, decoded);
     }
 
-    /// A goal that sets no placement decodes as empty `places`, which is what
-    /// "neither `--place` nor `--local`" has always meant.
+    /// A goal that sets no placement decodes as empty `places`, which means
+    /// neither `--place` nor `--local` was given.
     #[test]
     fn launch_goal_without_placement_decodes_as_no_places() {
         let goal = LaunchGoal::new(
