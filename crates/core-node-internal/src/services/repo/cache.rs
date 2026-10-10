@@ -1938,6 +1938,66 @@ mod tests {
         assert_eq!(bytes, pinned_body.as_bytes());
     }
 
+    /// A local entry whose file cannot be read is a miss as well: the pin
+    /// falls through to its own origin, and the feedback names the read
+    /// failure.
+    #[test]
+    fn an_unreadable_local_copy_falls_through_to_the_pins_origin() {
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+
+        let source_parent = tempfile::tempdir().unwrap();
+        let source_repo_dir = source_parent.path().join("hub");
+        std::fs::create_dir_all(&source_repo_dir).unwrap();
+        let pinned_body = "{ the pinned bytes }";
+        let (branch, commit) =
+            init_repo_with_file(&source_repo_dir, "camera/peppy.json5", pinned_body);
+        let sha = ManifestFingerprint::of_bytes(pinned_body.as_bytes());
+
+        // A local entry claims the content, but its file is gone.
+        let missing = peppy_tmp.path().join("missing.json5");
+        let mut local_entry = node_entry(
+            "camera",
+            "v1",
+            fs_origin(missing.to_string_lossy().as_ref()),
+        );
+        local_entry.sha256 = sha.clone();
+
+        let pin = pin_for(
+            "camera",
+            "v1",
+            sha,
+            EntryOrigin::Git {
+                repo_url: source_repo_dir.display().to_string(),
+                read_ref: Some(ReadRef::Named(branch.clone())),
+                repo_ref: Some(branch),
+                commit,
+                path: RepoRelativePath::parse("camera/peppy.json5").unwrap(),
+            },
+        );
+
+        let steps = std::cell::RefCell::new(Vec::new());
+        let (path, bytes) = resolve_pin_to_bytes(
+            &peppy_dirs,
+            std::slice::from_ref(&local_entry),
+            &pin,
+            &|report| {
+                if let Report::Step(line) = report {
+                    steps.borrow_mut().push(line.to_owned());
+                }
+            },
+        )
+        .expect("the pin's own origin serves it");
+        assert_ne!(path, missing);
+        assert_eq!(bytes, pinned_body.as_bytes());
+        let unusable = format!("is unusable (failed to read {}: ", missing.display());
+        assert!(
+            steps.borrow().iter().any(|line| line.contains(&unusable)),
+            "feedback should name the read failure: {:?}",
+            steps.borrow()
+        );
+    }
+
     /// Content fetched from the pin's origin that does not fingerprint to
     /// the pin is a refusal naming both fingerprints: the remote moved under
     /// the pin or the location resolved to something else, and neither may
