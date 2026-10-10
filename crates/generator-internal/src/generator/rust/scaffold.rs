@@ -138,33 +138,15 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
         .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
 
     if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
-        if package
-            .get("version")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
+        if inherits_from_workspace(package, "version") {
             package.insert("version", value(metadata.version));
         }
 
-        if package
-            .get("edition")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
+        if inherits_from_workspace(package, "edition") {
             package.insert("edition", value(metadata.edition));
         }
 
-        if package
-            .get("authors")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
+        if inherits_from_workspace(package, "authors") {
             package.remove("authors");
         }
 
@@ -195,6 +177,17 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
 
     fs::write(cargo_toml_path, doc.to_string())?;
     Ok(())
+}
+
+/// Whether the `[package]` field `key` takes its value from the workspace
+/// (`key.workspace = true`).
+fn inherits_from_workspace(package: &toml_edit::Table, key: &str) -> bool {
+    package
+        .get(key)
+        .and_then(|field| field.as_table())
+        .and_then(|table| table.get("workspace"))
+        .and_then(|workspace| workspace.as_bool())
+        == Some(true)
 }
 
 /// Crate directories the vendored `.peppy/libs` cache lays out as flat siblings.
@@ -616,5 +609,56 @@ mod tests {
     fn sanitize_module_name_snake_cases_and_guards_a_leading_digit() {
         assert_eq!(sanitize_rust_module_name("Video-Stream"), "video_stream");
         assert_eq!(sanitize_rust_module_name("9lives"), "_9lives");
+    }
+
+    const TEST_METADATA: WorkspacePackageMetadata = WorkspacePackageMetadata {
+        version: "1.2.3",
+        edition: "2024",
+    };
+
+    /// Writes `manifest` to a temporary `Cargo.toml`, localizes it with
+    /// [`TEST_METADATA`] and returns the resulting `[package]` table.
+    fn localized_package(manifest: &str) -> toml_edit::Table {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cargo_toml = dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, manifest).unwrap();
+        localize_cargo_toml(&cargo_toml, &TEST_METADATA).unwrap();
+        let doc: DocumentMut = fs::read_to_string(&cargo_toml).unwrap().parse().unwrap();
+        doc["package"].as_table().unwrap().clone()
+    }
+
+    #[test]
+    fn localize_cargo_toml_resolves_workspace_inherited_package_fields() {
+        let package = localized_package(
+            "[package]\n\
+             name = \"core-node-api\"\n\
+             version.workspace = true\n\
+             authors.workspace = true\n\
+             edition.workspace = true\n",
+        );
+
+        assert_eq!(package["version"].as_str(), Some("1.2.3"));
+        assert_eq!(package["edition"].as_str(), Some("2024"));
+        assert!(package.get("authors").is_none());
+    }
+
+    #[test]
+    fn localize_cargo_toml_keeps_concrete_package_fields() {
+        let package = localized_package(
+            "[package]\n\
+             name = \"core-node-api\"\n\
+             version = \"0.1.0\"\n\
+             authors = [\"Peppy\"]\n\
+             edition = \"2021\"\n",
+        );
+
+        assert_eq!(package["version"].as_str(), Some("0.1.0"));
+        assert_eq!(package["edition"].as_str(), Some("2021"));
+        assert_eq!(
+            package["authors"]
+                .as_array()
+                .and_then(|authors| authors.get(0)?.as_str()),
+            Some("Peppy")
+        );
     }
 }
