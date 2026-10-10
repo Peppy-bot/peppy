@@ -596,9 +596,9 @@ async fn node_stage(
 /// Hand-crafts a peppy.json5 declaring `depends_on.nodes` against
 /// `(producer_name, "v1")` with one entry per supplied slot, each carrying its
 /// own explicit `cardinality` (`None` leaves the manifest's `one` default). The
-/// consumer carries no interfaces and a no-op `run_cmd`, so the
-/// daemon's dependency-spec validator is happy with the dep being
-/// declared but never actually consumed. Returns the path to the
+/// consumer carries no interfaces and the keep-alive `run_cmd` of
+/// `instances`, so the daemon's dependency-spec validator is happy with the
+/// dep being declared but never actually consumed. Returns the path to the
 /// consumer directory ready to feed into `NodeCommands::Add`.
 fn write_consumer_with_slots(
     work_dir: &std::path::Path,
@@ -773,8 +773,8 @@ async fn node_run_rejects_unbound_slots() {
 }
 
 /// `--link` with a KEY that isn't declared in the consumer's
-/// `depends_on` is a hard error. The launcher's `validate_bindings`
-/// raises it as `BindingUnknownSlot`; the CLI surfaces the message and
+/// `depends_on` is a hard error. The launcher's `validate_link_slots`
+/// raises it as `LinkUnknownSlot`; the CLI surfaces the message and
 /// aborts the run before any spawn side-effect.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_bind_rejects_dead_key() {
@@ -992,8 +992,8 @@ async fn node_run_bind_rejects_target_mismatch() {
 /// two pinned `link_id`s on `cam`. Spawn two `cam` instances and
 /// `cons_a` with valid `--link`s satisfying both pins. Then spawn a
 /// THIRD `cam` instance: `cons_a` is running clean, the new
-/// invocation has no binds at all, and Rule 1 must NOT fire against
-/// `cons_a`.
+/// invocation has no binds at all, and the unfulfilled-slot check must not
+/// fire against `cons_a`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     let serve = ServeCommandEmulation::with_mock()
@@ -1111,9 +1111,9 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     let core_node_name = serve.core_node_name().to_string();
 
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
-    let producer_name = "test_rule1_still_fires_producer";
-    let consumer_a_name = "test_rule1_still_fires_cons_a";
-    let consumer_b_name = "test_rule1_still_fires_cons_b";
+    let producer_name = "test_own_slot_only_producer";
+    let consumer_a_name = "test_own_slot_only_cons_a";
+    let consumer_b_name = "test_own_slot_only_cons_b";
     let producer_left_id = "cam_left";
     let producer_right_id = "cam_right";
     let consumer_a_instance_id = "cons_a_inst";
