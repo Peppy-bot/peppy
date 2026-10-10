@@ -1,4 +1,4 @@
-//! Generate-and-import fixture for pairing peer modules (Python) — twin of
+//! Generate-and-import fixture for pairing peer modules (Python), twin of
 //! the Rust `pairing_lib` test: a synthetic two-role pairing (`arm_link/v1`,
 //! seen from the arm side) generates `paired_topics/<link_id>/<topic>` modules, and
 //! importing them from the project venv proves the generated code parses and

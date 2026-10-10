@@ -5,11 +5,12 @@
 //! so each slot writes its own file from its own format and each per-slot
 //! `_deserialize_payload` decodes through the schema it was generated from.
 //!
-//! Before per-slot keying both slots resolved `on_next_video_stream_message`
-//! and the last registration overwrote the file, so every consumer decoded
-//! through whichever format was declared last: rgb declared last made every
-//! rgbd frame raise on `alignMode`, rgbd declared last silently read an empty
-//! `align_mode` on rgb frames. Both declaration orders are covered.
+//! Keyed by topic name alone, both slots would resolve
+//! `on_next_video_stream_message` and the last registration would overwrite
+//! the file, so every consumer would decode through whichever format was
+//! declared last: rgb declared last would make every rgbd frame raise on
+//! `alignMode`, rgbd declared last would silently read an empty `align_mode`
+//! on rgb frames. Both declaration orders are covered.
 //!
 //! This is the Python counterpart of `tests/rust/consumed_topics_distinct_formats.rs`.
 

@@ -170,13 +170,12 @@ fn nests_contract_backed_topics_under_link_id() {
     assert!(uvc_v1_src.contains("uvc_v1_marker"));
 
     // Capnp schemas are resolved via `importlib.resources.files("peppygen")`,
-    // which is independent of the calling file's depth. This regressed once
-    // when the loader used `_PKG_DIR = Path(__file__).parent.parent` (fine
-    // for the flat native path but one level short for nested contract-backed
-    // artifacts at `peppygen/<category>/<link_id>/<leaf>.py`), which made
-    // `capnp.load()` raise silently inside the asyncio loop and hung the
-    // consumer. All four files (native + three contract-backed) should now produce
-    // the same loader form.
+    // which is independent of the calling file's depth. A loader relative to
+    // the calling file (`_PKG_DIR = Path(__file__).parent.parent`) fits the
+    // flat native path but is one level short for nested contract-backed
+    // artifacts at `peppygen/<category>/<link_id>/<leaf>.py`: `capnp.load()`
+    // raises silently inside the asyncio loop and the consumer hangs. All four
+    // files (native and three contract-backed) use the same loader form.
     let expected_loader = "files(\"peppygen\") / \"capnp\" /";
     for (label, src) in [
         ("native", &native_src),
@@ -190,7 +189,7 @@ fn nests_contract_backed_topics_under_link_id() {
         );
         assert!(
             !src.contains("_PKG_DIR"),
-            "{label} source should no longer reference the legacy `_PKG_DIR` \
+            "{label} source must not reference a file-relative `_PKG_DIR` \
              constant:\n{src}",
         );
     }

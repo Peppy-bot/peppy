@@ -129,7 +129,7 @@ const PEPPYLIB_DIST_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+peppy")
 
 /// peppylib must be deployed as a standalone installable project at
 /// `.peppy/libs/peppylib` (sibling of peppygen, mirroring the Rust layout),
-/// and no longer nested inside the peppygen project.
+/// never nested inside the peppygen project.
 #[test]
 fn generate_peppygen_lib_deploys_standalone_peppylib_project() {
     let (_temp_dir, peppygen_dir) =
@@ -163,7 +163,7 @@ fn generate_peppygen_lib_deploys_standalone_peppylib_project() {
 
     assert!(
         !peppygen_dir.join("peppylib").exists(),
-        "peppylib must no longer be nested inside the peppygen project"
+        "peppylib must not be nested inside the peppygen project"
     );
 
     let peppygen_pyproject = fs::read_to_string(peppygen_dir.join("pyproject.toml"))
@@ -174,11 +174,11 @@ fn generate_peppygen_lib_deploys_standalone_peppylib_project() {
     );
     assert!(
         !peppygen_pyproject.contains("peppylib*"),
-        "peppygen must not package the peppylib package anymore:\n{peppygen_pyproject}"
+        "peppygen must not package the peppylib package:\n{peppygen_pyproject}"
     );
     assert!(
         !peppygen_pyproject.contains(r#"exclude = ["peppylib"]"#),
-        "the ruff exclude for the nested peppylib copy should be gone:\n{peppygen_pyproject}"
+        "peppygen must not carry a ruff exclude for a nested peppylib copy:\n{peppygen_pyproject}"
     );
 }
 

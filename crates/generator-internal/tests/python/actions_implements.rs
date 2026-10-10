@@ -119,7 +119,7 @@ fn nests_contract_backed_actions_under_link_id() {
         );
         assert!(
             !src.contains("_PKG_DIR"),
-            "{label} action should no longer reference the legacy `_PKG_DIR` \
+            "{label} action must not reference a file-relative `_PKG_DIR` \
              constant:\n{src}",
         );
     }

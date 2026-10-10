@@ -2474,8 +2474,8 @@ if __name__ == "__main__":
     // exit status is deliberately not asserted: being killed is the point.
     // `spawn_python_run` wraps the node in `uv run`, and SIGKILLing only the
     // wrapper orphans the python node (it keeps running and publishing), so
-    // the node's own process must be killed first: take out every descendant
-    // of the wrapper, then the wrapper.
+    // the node's own process must be killed first: kill the wrapper's direct
+    // children (`pkill -P`), the node among them, then the wrapper.
     std::process::Command::new("pkill")
         .args(["-KILL", "-P", &exposer_child.id().to_string()])
         .status()

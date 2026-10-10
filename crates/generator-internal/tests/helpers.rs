@@ -464,9 +464,8 @@ pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std:
 /// from background threads into shared buffers. This lets a test
 /// inspect stdout while the child is still running (for example, to
 /// wait for a specific line to appear before sending shutdown) without
-/// blocking on the pipe. Existing helpers that take a plain
-/// `&mut std::process::Child` keep working against the exposed `child`
-/// field.
+/// blocking on the pipe. Helpers that take a plain
+/// `&mut std::process::Child` use the exposed `child` field.
 pub struct CapturedChild {
     pub child: std::process::Child,
     stdout: Arc<Mutex<Vec<u8>>>,
@@ -567,8 +566,8 @@ impl CapturedChild {
 
     /// Waits for the child to exit and returns the captured output.
     /// Mirrors [`wait_for_child`] but pulls from the background buffers
-    /// instead of reading the pipes directly (the drainer threads now
-    /// own them).
+    /// instead of reading the pipes directly (the drainer threads own
+    /// them).
     pub fn wait(
         mut self,
         timeout: Option<Duration>,
@@ -739,8 +738,8 @@ pub fn compile_project(dir: impl AsRef<Path>) {
         String::from_utf8_lossy(&cargo_output.stderr)
     );
 
-    // The shared target dir is still useful for dependency reuse, but each test
-    // wrapper has a unique package + binary name. That gives Cargo disjoint
+    // The shared target dir gives dependency reuse, and each test wrapper
+    // has a unique package + binary name. That gives Cargo disjoint
     // fingerprints and output artifact paths while preserving the fixed local
     // launch path that `spawn_cargo_run` expects.
     let shared_binary = target_dir
@@ -1262,13 +1261,13 @@ pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std
 
 // ---------------------------------------------------------------------------
 // Interface/config fixtures shared verbatim by the Rust and Python twin test
-// suites. Only constants whose values were byte-identical across the pair
+// suites. Only constants whose values are byte-identical across the pair
 // live here; per-language fixtures stay inline in their test file.
 // ---------------------------------------------------------------------------
 
 /// A contract member that keeps its joint vectors generic: the length is the
 /// implementing arm's to pin. Shared by the Rust and Python `refine`
-/// wire-compatibility capstones, which are twins of each other — one member,
+/// wire-compatibility capstones, which are twins of each other: one member,
 /// so the two cannot drift apart and quietly stop testing the same thing.
 pub const JOINTS_CONTRACT_NAME: &str = "limb_motion";
 

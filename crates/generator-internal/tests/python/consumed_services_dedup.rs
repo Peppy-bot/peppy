@@ -4,9 +4,8 @@
 //! Locks down the per-producer scoping of consumed-service cap'n proto
 //! schemas: two consumed services sharing a `name` but coming from
 //! different producer nodes must produce two distinct capnp files (one
-//! per producer), not a single deduplicated one. That's why the
-//! consumed-topic divergence bug doesn't apply here even when the two
-//! producers expose services with completely different message formats.
+//! per producer), not a single deduplicated one, so the two producers'
+//! formats stay apart even when they differ completely.
 
 use crate::helpers::{
     init_python_project_venv, init_python_user_node, native_dep, run_uv, test_peppy_dirs,
