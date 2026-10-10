@@ -636,38 +636,28 @@ impl ZenohAdapter {
             seed_peers
         };
 
-        let zenoh_config = if gossip {
+        let (mode, listen_endpoints) = if gossip {
             // A `peer` binds a wildcard listener and forms direct peer-to-peer
             // links via gossip; the endpoint must be non-loopback for zenoh
             // 1.10 to advertise it (see [`peer_listen_endpoint`]).
-            render_config(&ZenohConfigSpec {
-                mode: SessionMode::Peer,
-                connect_endpoints: seeds.clone(),
-                listen_endpoints: vec![peer_listen_endpoint(protocol)],
-                reconnect,
-                gossip: true,
-                tls: tls.clone(),
-                namespace: namespace.clone(),
-                // Application sessions are process-scoped and identified by their
-                // declarations, not by a zid, so nothing pins one here.
-                id: None,
-            })
+            (SessionMode::Peer, vec![peer_listen_endpoint(protocol)])
         } else {
             // A plain `client` routes only through the selected router (no
             // listener or peer discovery).
-            render_config(&ZenohConfigSpec {
-                mode: SessionMode::Client,
-                connect_endpoints: seeds.clone(),
-                listen_endpoints: Vec::new(),
-                reconnect,
-                gossip: false,
-                tls: tls.clone(),
-                namespace: namespace.clone(),
-                // Application sessions are process-scoped and identified by their
-                // declarations, not by a zid, so nothing pins one here.
-                id: None,
-            })
+            (SessionMode::Client, Vec::new())
         };
+        let zenoh_config = render_config(&ZenohConfigSpec {
+            mode,
+            connect_endpoints: seeds.clone(),
+            listen_endpoints,
+            reconnect,
+            gossip,
+            tls: tls.clone(),
+            namespace: namespace.clone(),
+            // Application sessions are process-scoped and identified by their
+            // declarations, not by a zid, so nothing pins one here.
+            id: None,
+        });
 
         ZenohClientConfig {
             zenoh_config,
