@@ -555,26 +555,6 @@ pub struct ResolvedFramework {
     pub clock: ClockBinding,
 }
 
-fn default_true() -> bool {
-    true
-}
-
-fn default_standard_buffer_size() -> usize {
-    crate::peppy_config::DEFAULT_STANDARD_BUFFER_SIZE
-}
-
-fn default_high_throughput_buffer_size() -> usize {
-    crate::peppy_config::DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
-}
-
-fn default_daemon_grace_secs() -> u64 {
-    crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS
-}
-
-fn default_shutdown_grace_secs() -> u64 {
-    crate::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
-}
-
 /// Node lifecycle settings the daemon resolves once (from `peppy_config.json5`)
 /// and ships to each spawned node. `daemon_grace_secs` is the grace period the
 /// node's daemon-liveness watchdog waits, after the daemon's heartbeat goes
@@ -583,20 +563,21 @@ fn default_shutdown_grace_secs() -> u64 {
 /// this long for a stopping node to exit before SIGKILL, and the node runtime
 /// bounds its registered shutdown hooks by the same window so cleanup can never
 /// hang a stop (or outlive a dead daemon) indefinitely.
+///
+/// `#[serde(default)]` fills any field a partial block omits from the
+/// `Default` impl, so a partial block and an absent one agree.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct LifecycleRuntimeConfig {
-    #[serde(default = "default_daemon_grace_secs")]
     pub daemon_grace_secs: u64,
-    #[serde(default = "default_shutdown_grace_secs")]
     pub shutdown_grace_secs: u64,
 }
 
 impl Default for LifecycleRuntimeConfig {
     fn default() -> Self {
         Self {
-            daemon_grace_secs: default_daemon_grace_secs(),
-            shutdown_grace_secs: default_shutdown_grace_secs(),
+            daemon_grace_secs: crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS,
+            shutdown_grace_secs: crate::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
         }
     }
 }
@@ -619,22 +600,21 @@ impl LifecycleRuntimeConfig {
 /// concern rather than a discovery one, but co-locating them keeps a single
 /// struct (and a single serialized block) travelling the daemon-to-node path,
 /// since this is already the value threaded into the node's session at startup.
+///
+/// `#[serde(default)]` fills any field a partial block omits from the
+/// `Default` impl, so a partial block and an absent one agree.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct DiscoveryConfig {
     /// Gossip seed endpoints (full Zenoh endpoints, e.g. `"tcp/127.0.0.1:7448"`).
     /// Empty means "derive the router endpoint from `messaging_host:messaging_port`".
-    #[serde(default)]
     pub seed_peers: Vec<String>,
     /// Enable gossip so peers form direct links. Setting this to `false` forces
     /// all traffic through the router (a rollback switch without a rebuild).
-    #[serde(default = "default_true")]
     pub gossip: bool,
     /// Subscriber channel buffer for the `Standard` QoS tier (in-flight messages).
-    #[serde(default = "default_standard_buffer_size")]
     pub standard_buffer_size: usize,
     /// Subscriber channel buffer for the `HighThroughput` QoS tier (e.g. sensor data).
-    #[serde(default = "default_high_throughput_buffer_size")]
     pub high_throughput_buffer_size: usize,
     /// Workspace namespace stamped by the daemon so each spawned node opens
     /// its session under the same namespace as the daemon (routing context
@@ -642,7 +622,7 @@ pub struct DiscoveryConfig {
     /// to the constant `local` namespace at session open. Typed: an invalid
     /// value fails runtime-config parsing instead of leaking toward a live
     /// session. Omitted from serialized configs when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<crate::internal::namespace::Namespace>,
 }
 
@@ -1044,6 +1024,37 @@ mod tests {
         );
         let reparsed: RuntimeConfig = serde_json5::from_str(&namespace_serialized).unwrap();
         assert_eq!(reparsed.discovery, with_namespace.discovery);
+    }
+
+    /// Every field a partial `discovery` or `lifecycle` block omits takes the
+    /// value of the struct's `Default`, so a partial block and an absent one
+    /// agree; an unknown key is still refused.
+    #[test]
+    fn partial_blocks_fill_every_omitted_field_from_default() {
+        let empty: DiscoveryConfig = serde_json5::from_str("{}").unwrap();
+        assert_eq!(empty, DiscoveryConfig::default());
+        let namespace_only: DiscoveryConfig =
+            serde_json5::from_str(r#"{ namespace: "550e8400-e29b-41d4-a716-446655440000" }"#)
+                .unwrap();
+        assert_eq!(
+            DiscoveryConfig {
+                namespace: None,
+                ..namespace_only
+            },
+            DiscoveryConfig::default()
+        );
+        assert!(serde_json5::from_str::<DiscoveryConfig>("{ multicast: true }").is_err());
+
+        let empty: LifecycleRuntimeConfig = serde_json5::from_str("{}").unwrap();
+        assert_eq!(empty, LifecycleRuntimeConfig::default());
+        assert_eq!(
+            empty,
+            LifecycleRuntimeConfig {
+                daemon_grace_secs: crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS,
+                shutdown_grace_secs: crate::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
+            }
+        );
+        assert!(serde_json5::from_str::<LifecycleRuntimeConfig>("{ grace: 1 }").is_err());
     }
 
     #[test]
