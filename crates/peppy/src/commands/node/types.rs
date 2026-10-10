@@ -14,21 +14,19 @@ impl NodeName {
     pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
 
-        if name.is_empty() {
+        let Some(first) = name.chars().next() else {
             return Err(Error::InvalidNodeName(
                 "Node name cannot be empty".to_string(),
             ));
-        }
+        };
 
-        // Check if the first character is a letter
-        if !name.chars().next().unwrap().is_ascii_alphabetic() {
+        if !first.is_ascii_alphabetic() {
             return Err(Error::InvalidNodeName(format!(
                 "Node name '{}' must start with a letter",
                 name
             )));
         }
 
-        // Check if all characters are alphanumeric, underscore, or hyphen
         if !name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
@@ -50,7 +48,7 @@ impl NodeName {
 
 impl fmt::Display for NodeName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        f.write_str(&self.0)
     }
 }
 
