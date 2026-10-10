@@ -77,12 +77,12 @@ pub(super) fn target_python_expr(target: &TargetSpec) -> String {
 /// Dotted import path of a production generated module:
 /// `peppygen.<category>.<segments…>`, each segment sanitized exactly like the
 /// tree writer sanitizes the on-disk module names.
-pub(super) fn production_module_path(category: &str, segments: &[&str]) -> String {
+pub(super) fn production_module_path<S: AsRef<str>>(category: &str, segments: &[S]) -> String {
     let mut parts = vec!["peppygen".to_string(), category.to_string()];
     parts.extend(
         segments
             .iter()
-            .map(|segment| sanitize_python_module_name(segment)),
+            .map(|segment| sanitize_python_module_name(segment.as_ref())),
     );
     parts.join(".")
 }
@@ -403,7 +403,10 @@ fn render_dep_topic(
         loaders,
         attr,
         PublisherVeneer {
-            production: production_module_path("consumed_topics", &[&spec.module_link, topic_name]),
+            production: production_module_path(
+                "consumed_topics",
+                &[spec.module_link.as_str(), topic_name],
+            ),
             schema_key,
             format: &spec.format,
             class_doc: format!(
@@ -536,8 +539,10 @@ fn render_dep_service(
     attr: String,
 ) -> Result<MockMember> {
     let service_name = spec.name.as_str();
-    let production =
-        production_module_path("consumed_services", &[&spec.module_link, service_name]);
+    let production = production_module_path(
+        "consumed_services",
+        &[spec.module_link.as_str(), service_name],
+    );
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&production, &alias));
     let camel = to_camel_case(&attr);
@@ -745,7 +750,10 @@ fn render_dep_action(
     attr: String,
 ) -> Result<MockMember> {
     let action_name = spec.name.as_str();
-    let production = production_module_path("consumed_actions", &[&spec.module_link, action_name]);
+    let production = production_module_path(
+        "consumed_actions",
+        &[spec.module_link.as_str(), action_name],
+    );
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&production, &alias));
     let camel = to_camel_case(&attr);

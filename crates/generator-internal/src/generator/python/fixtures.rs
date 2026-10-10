@@ -132,6 +132,22 @@ fn sync_time_node_dir(to_path: &Path) -> String {
     node_dir.to_string_lossy().into_owned()
 }
 
+/// The fixtures module path of one of the node's own interfaces: `category`
+/// first, then the leaf nested under its link when contract-backed, exactly
+/// as the production module of that interface nests.
+fn own_surface_module_path(
+    category: &str,
+    origin: Option<&crate::generator::types::ContractOrigin>,
+    name: &str,
+) -> Vec<String> {
+    let mut module_path = vec![category.to_string()];
+    match origin {
+        Some(origin) => module_path.extend(origin.module_path_for(name)),
+        None => module_path.push(name.to_string()),
+    }
+    module_path
+}
+
 /// The node's own publish/serve identity for a surface, baked at generation
 /// time: its contract target when contract-routed, else the manifest target.
 fn own_target_expr(
@@ -249,15 +265,8 @@ class Subscription:
         },
     );
 
-    let mut module_path = vec!["emitted_topics".to_string()];
-    match &spec.origin {
-        Some(origin) => module_path.extend(origin.module_path_for(topic_name)),
-        None => module_path.push(topic_name.to_string()),
-    }
-    let module = {
-        let segments: Vec<&str> = module_path.iter().map(String::as_str).collect();
-        production_module_path("fixtures", &segments)
-    };
+    let module_path = own_surface_module_path("emitted_topics", spec.origin.as_ref(), topic_name);
+    let module = production_module_path("fixtures", &module_path);
     let doc = format!(
         "Typed observation of the node's emitted topic `{topic_name}`: the harness \
          subscribes before the node boots (pinned to the node's identity) and barriers \
@@ -304,15 +313,9 @@ fn render_exposed_service(
     let response_key = scoped_schema_key(spec.origin.as_ref(), &format!("{service_name}_response"));
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
 
-    let mut module_path = vec!["exposed_services".to_string()];
-    match &spec.origin {
-        Some(origin) => module_path.extend(origin.module_path_for(service_name)),
-        None => module_path.push(service_name.to_string()),
-    }
-    let production = {
-        let segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
-        production_module_path("exposed_services", &segments)
-    };
+    let module_path =
+        own_surface_module_path("exposed_services", spec.origin.as_ref(), service_name);
+    let production = production_module_path("exposed_services", &module_path[1..]);
 
     let mut builder = PythonCodeBuilder::new();
     builder.add_import("import peppylib");
@@ -446,15 +449,8 @@ fn render_exposed_action(
     );
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
 
-    let mut module_path = vec!["exposed_actions".to_string()];
-    match &spec.origin {
-        Some(origin) => module_path.extend(origin.module_path_for(action_name)),
-        None => module_path.push(action_name.to_string()),
-    }
-    let production = {
-        let segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
-        production_module_path("exposed_actions", &segments)
-    };
+    let module_path = own_surface_module_path("exposed_actions", spec.origin.as_ref(), action_name);
+    let production = production_module_path("exposed_actions", &module_path[1..]);
 
     let mut builder = PythonCodeBuilder::new();
     builder.add_import("import peppylib");
