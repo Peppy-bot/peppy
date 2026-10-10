@@ -30,7 +30,6 @@ fn test_node_target(name: &str) -> SenderTarget {
 /// Declares a publisher and publishes a single payload. The publisher is the
 /// only topic-publish path, so a test that publishes once just declares then
 /// publishes; the arguments mirror the old one-shot emit.
-#[allow(clippy::too_many_arguments)]
 async fn publish_once(
     messenger: &MessengerHandle,
     as_core_node: &str,
