@@ -304,9 +304,10 @@ fn validate_lima_version_output(
     Ok(())
 }
 
-/// Drain an already-exited child's captured pipe to a string, best effort. The
-/// bounded `limactl` probes produce tiny output, so reading after the child has
-/// exited cannot deadlock on a full pipe buffer.
+/// Drain an already-exited child's captured pipe to a string, best effort.
+/// Reading only after the exit suits small outputs, such as those of the
+/// bounded `limactl` probes and the error lines of a failed host `tar`: a child
+/// that fills the pipe buffer before it exits blocks until someone reads it.
 fn read_child_pipe(pipe: Option<impl Read>) -> String {
     let mut buf = String::new();
     if let Some(mut pipe) = pipe {
@@ -670,11 +671,7 @@ pub(crate) fn ensure_guest_apptainer(
         .wait()
         .map_err(|e| Error::LimaSyncFailed(format!("failed to wait for host tar: {e}")))?;
     if !host_status.success() {
-        let mut stderr = String::new();
-        if let Some(mut pipe) = host_tar.stderr.take() {
-            use std::io::Read;
-            let _ = pipe.read_to_string(&mut stderr);
-        }
+        let stderr = read_child_pipe(host_tar.stderr.take());
         return Err(Error::LimaSyncFailed(format!(
             "host tar returned {host_status}: {}",
             stderr.trim()
