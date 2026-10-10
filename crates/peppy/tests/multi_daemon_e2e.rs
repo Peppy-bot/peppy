@@ -2867,38 +2867,37 @@ fn assert_scripted_history(
 ) {
     let mut previous = None;
     for (sample, value) in samples {
-        match value {
-            Some(value) => {
-                let tick = value / SCRIPTED_TICK_STEP_NS;
-                assert!(
-                    value % SCRIPTED_TICK_STEP_NS == 0 && (1..=SCRIPTED_TICK_COUNT).contains(&tick),
-                    "{}'s `{probe_instance}` served {value}, which no scripted tick ever was; \
-                     its machine is keeping its own time",
-                    daemon.name
-                );
-                if let Some(previous) = previous {
-                    assert!(
-                        *value >= previous,
-                        "{}'s `{probe_instance}` regressed from {previous} to {value} (sample \
-                         {sample}); a stale tick overtook the ramp",
-                        daemon.name
-                    );
-                }
-                previous = Some(*value);
-                if *sample > capped_after {
-                    assert_eq!(
-                        *value, SCRIPTED_FINAL_NS,
-                        "{}'s `{probe_instance}` moved after the ramp topped out (sample \
-                         {sample}); a capped source must hold every machine",
-                        daemon.name
-                    );
-                }
-            }
-            None => assert!(
+        let Some(value) = value else {
+            assert!(
                 previous.is_none(),
                 "{}'s `{probe_instance}` went unready after serving ticks (sample {sample})",
                 daemon.name
-            ),
+            );
+            continue;
+        };
+        let tick = value / SCRIPTED_TICK_STEP_NS;
+        assert!(
+            value % SCRIPTED_TICK_STEP_NS == 0 && (1..=SCRIPTED_TICK_COUNT).contains(&tick),
+            "{}'s `{probe_instance}` served {value}, which no scripted tick ever was; \
+             its machine is keeping its own time",
+            daemon.name
+        );
+        if let Some(previous) = previous {
+            assert!(
+                *value >= previous,
+                "{}'s `{probe_instance}` regressed from {previous} to {value} (sample \
+                 {sample}); a stale tick overtook the ramp",
+                daemon.name
+            );
+        }
+        previous = Some(*value);
+        if *sample > capped_after {
+            assert_eq!(
+                *value, SCRIPTED_FINAL_NS,
+                "{}'s `{probe_instance}` moved after the ramp topped out (sample \
+                 {sample}); a capped source must hold every machine",
+                daemon.name
+            );
         }
     }
 }
@@ -5359,12 +5358,13 @@ async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
             .wait_for_node_log(&instance, &format!("heard positions=[{value:?}, "))
             .await;
         for (other, other_value, _) in leaders {
-            if other != name {
-                assert!(
-                    !log.contains(&format!("heard positions=[{other_value:?}, ")),
-                    "{instance} heard {other}'s states:\n{log}"
-                );
+            if other == name {
+                continue;
             }
+            assert!(
+                !log.contains(&format!("heard positions=[{other_value:?}, ")),
+                "{instance} heard {other}'s states:\n{log}"
+            );
         }
     }
 
