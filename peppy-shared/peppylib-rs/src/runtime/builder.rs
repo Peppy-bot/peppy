@@ -450,7 +450,7 @@ where
     /// in-process against their own router and must not be redirected to a
     /// daemon by an environment variable inherited from the invoking shell.
     pub fn init_standalone(self) -> Result<NodeContext<Params>> {
-        if std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok() {
+        if is_launched_by_daemon() {
             tracing::warn!(
                 "{} is set but ignored: init_standalone always runs standalone \
                  (a test harness must not be hijacked into daemon mode by an \
@@ -508,12 +508,20 @@ where
         // Daemon mode takes precedence: the CLI sets PEPPY_RUNTIME_CONFIG when it
         // launches a node. This lets a node specify .standalone(config) as a
         // fallback while still running in daemon mode when launched by the CLI.
-        if std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok() {
+        if is_launched_by_daemon() {
             return ExecutionMode::Daemon;
         }
 
         ExecutionMode::Standalone(Box::new(self.standalone_config.clone().unwrap_or_default()))
     }
+}
+
+/// Whether the CLI launched this node. The CLI sets `PEPPY_RUNTIME_CONFIG`
+/// for every node it spawns, and any value counts: a value that is not UTF-8
+/// still selects daemon mode, where reading the launch-config path reports
+/// it, instead of the node silently running standalone.
+fn is_launched_by_daemon() -> bool {
+    std::env::var_os(config::consts::RUNTIME_CONFIG_VAR_NAME).is_some()
 }
 
 impl<Params> Default for NodeBuilder<Params>

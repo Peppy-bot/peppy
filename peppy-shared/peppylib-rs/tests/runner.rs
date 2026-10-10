@@ -1763,3 +1763,36 @@ fn init_parses_parameters_eagerly() {
     let params = ctx.take_parameters().expect("should take parameters");
     assert_eq!(params.value, 99);
 }
+
+/// The CLI sets `PEPPY_RUNTIME_CONFIG` for every node it launches, so a set
+/// value selects daemon mode even when it is not UTF-8. Daemon mode then
+/// reports the unreadable value instead of the node running standalone
+/// against the default router.
+#[cfg(unix)]
+#[test]
+fn init_takes_a_non_utf8_runtime_config_as_daemon_mode() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+    let peppy_config = write_value_param_config(temp_dir.path(), "i64");
+    let non_utf8_runtime_config = Path::new(OsStr::from_bytes(b"/tmp/\xffruntime.json5"));
+    let _env_guard = EnvAndDirGuard::new(temp_dir.path(), non_utf8_runtime_config);
+
+    // A standalone config with valid parameters, so a standalone init would
+    // succeed.
+    let config = StandaloneConfig::new().with_parameters_json(serde_json::json!({ "value": 7 }));
+
+    let Err(err) = NodeBuilder::<ValueParam>::new()
+        .with_config_path(&peppy_config)
+        .standalone(config)
+        .init()
+    else {
+        panic!("init should select daemon mode and fail on the non-UTF-8 value");
+    };
+
+    assert!(
+        matches!(err, PeppyError::MissingInstanceIdEnvVar { .. }),
+        "expected MissingInstanceIdEnvVar, got: {err:?}"
+    );
+}
