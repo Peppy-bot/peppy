@@ -31,8 +31,6 @@ use crate::common::{
 struct NodeConfigOptions<'a> {
     build_cmd: &'a [&'a str],
     run_cmd: &'a [&'a str],
-    expects_uvc_camera: bool,
-    emits_camera_stream: bool,
     /// The manifest's `depends_on` object, written as is; empty for none.
     depends_on: &'a str,
     /// The node's `interfaces` object, written as is; empty for none.
@@ -44,8 +42,6 @@ impl Default for NodeConfigOptions<'_> {
         Self {
             build_cmd: &["true"],
             run_cmd: &[],
-            expects_uvc_camera: false,
-            emits_camera_stream: false,
             depends_on: "",
             interfaces: "",
         }
@@ -165,24 +161,26 @@ const LAUNCHER_EXAMPLE1: &str = r#"
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The `depends_on` of a node that consumes the `camera_stream` of a
+/// `uvc_camera:v1` through its `front_camera` link.
+const DEPENDS_ON_FRONT_CAMERA: &str =
+    r#"{ nodes: [{ name: "uvc_camera", tag: "v1", link_id: "front_camera" }] }"#;
+/// The `interfaces` that go with [`DEPENDS_ON_FRONT_CAMERA`].
+const CONSUMES_FRONT_CAMERA_STREAM: &str =
+    r#"{ topics: { consumes: [{ link_id: "front_camera", name: "camera_stream" }] } }"#;
+
 fn write_node_config(
     nodes_directory: &Path,
     node_name: &str,
     node_tag: &str,
-    git_hash: &str,
     run_cmd: &[&str],
-    expects_uvc_camera: bool,
-    emits_camera_stream: bool,
 ) -> PathBuf {
     write_node_config_with_options(
         nodes_directory,
         node_name,
         node_tag,
-        git_hash,
         NodeConfigOptions {
             run_cmd,
-            expects_uvc_camera,
-            emits_camera_stream,
             ..Default::default()
         },
     )
@@ -192,25 +190,14 @@ fn write_node_config_with_options(
     nodes_directory: &Path,
     node_name: &str,
     node_tag: &str,
-    git_hash: &str,
     options: NodeConfigOptions<'_>,
 ) -> PathBuf {
     let NodeConfigOptions {
         build_cmd,
         run_cmd,
-        expects_uvc_camera,
-        emits_camera_stream,
         depends_on: raw_depends_on,
         interfaces: raw_interfaces,
     } = options;
-    assert!(
-        raw_depends_on.is_empty() || !expects_uvc_camera,
-        "a node config takes its `depends_on` from one option"
-    );
-    assert!(
-        raw_interfaces.is_empty() || !(emits_camera_stream || expects_uvc_camera),
-        "a node config takes its `interfaces` from one option"
-    );
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
 
@@ -226,48 +213,16 @@ fn write_node_config_with_options(
         .collect::<Vec<_>>()
         .join(", ");
 
-    let emits_topics = if emits_camera_stream {
-        r#"emits: [
-                  { name: "camera_stream" }
-                ],"#
+    let interfaces = if raw_interfaces.is_empty() {
+        String::new()
     } else {
-        ""
-    };
-
-    let expects_topics = if expects_uvc_camera {
-        r#"consumes: [
-                  { link_id: "front_camera", name: "camera_stream" }
-                ],"#
-    } else {
-        ""
-    };
-
-    let interfaces = if !raw_interfaces.is_empty() {
         format!("interfaces: {raw_interfaces},")
-    } else if emits_camera_stream || expects_uvc_camera {
-        format!(
-            r#"interfaces: {{
-                topics: {{
-                  {emits_topics}
-                  {expects_topics}
-                }}
-              }},"#
-        )
-    } else {
-        String::new()
     };
 
-    let depends_on = if !raw_depends_on.is_empty() {
-        format!("depends_on: {raw_depends_on},")
-    } else if expects_uvc_camera {
-        r#"depends_on: {
-                    nodes: [
-                        { name: "uvc_camera", tag: "v1", link_id: "front_camera" }
-                    ]
-                },"#
-        .to_string()
-    } else {
+    let depends_on = if raw_depends_on.is_empty() {
         String::new()
+    } else {
+        format!("depends_on: {raw_depends_on},")
     };
 
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
@@ -303,7 +258,8 @@ fn write_node_config_with_options(
 
     let peppy_output_dir = node_dir.join(PEPPY_OUTPUT_DIR);
     fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
-    fs::write(peppy_output_dir.join("git.hash"), git_hash).expect("failed to write node git hash");
+    fs::write(peppy_output_dir.join("git.hash"), common::TEST_GIT_HASH)
+        .expect("failed to write node git hash");
 
     node_dir
 }
@@ -687,14 +643,16 @@ async fn listen_for_launch_configuration_succeed() {
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
     let uvc_repo_path = create_uvc_camera_repo(nodes_dir.path(), NODE_TAG);
-    let robot_brain_path = write_node_config(
+    let robot_brain_path = write_node_config_with_options(
         nodes_dir.path(),
         ROBOT_NODE_NAME,
         NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        true,
-        false,
+        NodeConfigOptions {
+            run_cmd: &["sleep", "60"],
+            depends_on: DEPENDS_ON_FRONT_CAMERA,
+            interfaces: CONSUMES_FRONT_CAMERA_STREAM,
+            ..Default::default()
+        },
     );
 
     // Set up ready/health responders for all instances in LAUNCHER_EXAMPLE1.
@@ -963,24 +921,8 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
 
     // On-disk node configs referenced by the packages cache.
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
-    let brain_dir = write_node_config(
-        nodes_dir.path(),
-        BRAIN_NODE,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
-    let arm_dir = write_node_config(
-        nodes_dir.path(),
-        ARM_NODE,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
+    let brain_dir = write_node_config(nodes_dir.path(), BRAIN_NODE, NODE_TAG, &["sleep", "60"]);
+    let arm_dir = write_node_config(nodes_dir.path(), ARM_NODE, NODE_TAG, &["sleep", "60"]);
 
     // Map both nodes into the user-repo cache. This is what the
     // `{ name, tag }` launcher shape resolves against.
@@ -1102,15 +1044,8 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let existing_path = write_node_config(
-        nodes_dir.path(),
-        EXISTING_NODE,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
+    let existing_path =
+        write_node_config(nodes_dir.path(), EXISTING_NODE, NODE_TAG, &["sleep", "60"]);
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
         .expect("existing node config should parse");
     node_stack
@@ -1149,15 +1084,8 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let existing_path = write_node_config(
-        nodes_dir.path(),
-        EXISTING_NODE,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
+    let existing_path =
+        write_node_config(nodes_dir.path(), EXISTING_NODE, NODE_TAG, &["sleep", "60"]);
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
         .expect("existing node config should parse");
     node_stack
@@ -1261,15 +1189,8 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let existing_path = write_node_config(
-        nodes_dir.path(),
-        EXISTING_NODE,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
+    let existing_path =
+        write_node_config(nodes_dir.path(), EXISTING_NODE, NODE_TAG, &["sleep", "60"]);
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
         .expect("existing node config should parse");
     node_stack
@@ -1322,24 +1243,18 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let uvc_path = write_node_config(
-        nodes_dir.path(),
-        UVC_NODE_NAME,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        // Intentionally do NOT emit camera_stream so dependency validation fails.
-        false,
-    );
-    let brain_path = write_node_config(
+    // Intentionally do NOT emit camera_stream so dependency validation fails.
+    let uvc_path = write_node_config(nodes_dir.path(), UVC_NODE_NAME, NODE_TAG, &["sleep", "60"]);
+    let brain_path = write_node_config_with_options(
         nodes_dir.path(),
         ROBOT_NODE_NAME,
         NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        true,
-        false,
+        NodeConfigOptions {
+            run_cmd: &["sleep", "60"],
+            depends_on: DEPENDS_ON_FRONT_CAMERA,
+            interfaces: CONSUMES_FRONT_CAMERA_STREAM,
+            ..Default::default()
+        },
     );
 
     // Seed stack with a node so we can assert rollback behavior.
@@ -1347,10 +1262,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
         nodes_dir.path(),
         "existing_node",
         NODE_TAG,
-        "test-hash",
         &["sleep", "60"],
-        false,
-        false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
         .expect("existing node config should parse");
@@ -1402,24 +1314,8 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     let node_stack = started_core_node.node_stack.clone();
     let nodes_dir = tempdir().expect("failed to create nodes dir");
 
-    let node_a_path = write_node_config(
-        nodes_dir.path(),
-        "node_a",
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
-    let node_b_path = write_node_config(
-        nodes_dir.path(),
-        "node_b",
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
+    let node_a_path = write_node_config(nodes_dir.path(), "node_a", NODE_TAG, &["sleep", "60"]);
+    let node_b_path = write_node_config(nodes_dir.path(), "node_b", NODE_TAG, &["sleep", "60"]);
 
     let node_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
@@ -1561,15 +1457,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     .await;
 
     // Node to be launched: starts a real process but never reports healthy.
-    let node_b_path = write_node_config(
-        nodes_dir.path(),
-        "node_b",
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
+    let node_b_path = write_node_config(nodes_dir.path(), "node_b", NODE_TAG, &["sleep", "60"]);
 
     // Set up ONLY the ready responder. Do not set up health responder so it times out.
     let node_messenger =
@@ -1690,7 +1578,6 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
         nodes_dir.path(),
         "failing_node",
         NODE_TAG,
-        "test-hash",
         NodeConfigOptions {
             build_cmd: &["false"], // This command always fails with exit code 1
             run_cmd: &["sleep", "60"],
@@ -1781,7 +1668,6 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
         nodes_dir.path(),
         NODE_NAME,
         NODE_TAG,
-        "test-hash",
         NodeConfigOptions {
             build_cmd: &["true"],
             run_cmd: &["false"], // exits immediately with status 1
@@ -1921,10 +1807,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
         nodes_dir.path(),
         NODE_NAME,
         NODE_TAG,
-        "test-hash",
         &["printout", "60"], // run_cmd that sleeps via printout
-        false,
-        false,
     );
     let launch_json5 = format!(
         r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
@@ -2053,10 +1936,7 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
         nodes_dir.path(),
         NODE_NAME,
         NODE_TAG,
-        "test-hash",
         &["sh", "-c", probe_script.as_str()],
-        false,
-        false,
     );
 
     let launcher_json5 = format!(
@@ -2146,10 +2026,7 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
         nodes_dir.path(),
         ROBOT_NODE_NAME,
         NODE_TAG,
-        "test-hash",
         &["sleep", "60"],
-        false,
-        false,
     );
 
     let _ready_brain = AbortOnDrop(
@@ -2497,7 +2374,6 @@ async fn launch_scripted_node_above(
         nodes_dir.path(),
         "scripted_node",
         "v1",
-        "test-hash",
         NodeConfigOptions {
             build_cmd: &["sh", "-c", build_script],
             run_cmd: &["sh", "-c", run_script],

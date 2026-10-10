@@ -186,20 +186,11 @@ async fn appended_remote_watchers_receive_existing_source_stop_notifications() {
 async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() {
     let started = start_core_node_with_mock_messenger().await;
     let directory = tempdir().unwrap();
-    let robot = write_node_config(
-        directory.path(),
-        "named_robot",
-        "v1",
-        "test-hash",
-        &["sleep", "300"],
-        false,
-        false,
-    );
+    let robot = write_node_config(directory.path(), "named_robot", "v1", &["sleep", "300"]);
     let broken = write_node_config_with_options(
         directory.path(),
         "broken_robot",
         "v1",
-        "test-hash",
         NodeConfigOptions {
             build_cmd: &["false"],
             run_cmd: &["sleep", "300"],
@@ -366,7 +357,6 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
         directory.path(),
         "blocked_robot",
         "v1",
-        "test-hash",
         NodeConfigOptions {
             build_cmd: &[&command],
             run_cmd: &["true"],
@@ -436,24 +426,8 @@ fn fleet_with_a_shared_node(
     copies: &str,
 ) -> (tempfile::TempDir, PathBuf) {
     let directory = tempdir().unwrap();
-    let robot = write_node_config(
-        directory.path(),
-        "named_robot",
-        "v1",
-        "test-hash",
-        &["sleep", "300"],
-        false,
-        false,
-    );
-    let shared = write_node_config(
-        directory.path(),
-        "shared_node",
-        "v1",
-        "test-hash",
-        &["sleep", "300"],
-        false,
-        false,
-    );
+    let robot = write_node_config(directory.path(), "named_robot", "v1", &["sleep", "300"]);
+    let shared = write_node_config(directory.path(), "shared_node", "v1", &["sleep", "300"]);
     TestPackagesCache::new()
         .fs_entry("named_robot", "v1", &robot)
         .fs_entry("shared_node", "v1", &shared)
@@ -578,15 +552,7 @@ async fn a_copy_the_file_deploys_launches_with_the_stack_and_removal_keeps_the_s
 /// beside the copy `alpha` it lists.
 fn fleet_with_a_tool_axis(started: &StartedCoreNode, entry: &str) -> (tempfile::TempDir, PathBuf) {
     let directory = tempdir().unwrap();
-    let robot = write_node_config(
-        directory.path(),
-        "named_robot",
-        "v1",
-        "test-hash",
-        &["sleep", "300"],
-        false,
-        false,
-    );
+    let robot = write_node_config(directory.path(), "named_robot", "v1", &["sleep", "300"]);
     TestPackagesCache::new()
         .fs_entry("named_robot", "v1", &robot)
         .write(&started.peppy_dirs);
@@ -852,15 +818,7 @@ async fn a_participant_refuses_sets_for_another_launch_or_an_instance_it_does_no
 /// the launcher file starts nothing of its own.
 fn fleet_of_copies_only(started: &StartedCoreNode) -> (tempfile::TempDir, PathBuf) {
     let directory = tempdir().unwrap();
-    let robot = write_node_config(
-        directory.path(),
-        "named_robot",
-        "v1",
-        "test-hash",
-        &["sleep", "300"],
-        false,
-        false,
-    );
+    let robot = write_node_config(directory.path(), "named_robot", "v1", &["sleep", "300"]);
     TestPackagesCache::new()
         .fs_entry("named_robot", "v1", &robot)
         .write(&started.peppy_dirs);
@@ -949,7 +907,6 @@ fn fleet_with_a_monitor(
         directory.path(),
         "named_robot",
         "v1",
-        "test-hash",
         NodeConfigOptions {
             run_cmd: &["sleep", "300"],
             depends_on: MONITORED_ROBOT_DEPENDS_ON,
@@ -967,7 +924,6 @@ fn fleet_with_a_monitor(
         directory.path(),
         "monitor",
         "v1",
-        "test-hash",
         NodeConfigOptions {
             run_cmd: &["sleep", "300"],
             depends_on: &monitor_depends_on,
@@ -1361,15 +1317,7 @@ async fn a_joined_member_reads_as_not_live_while_its_source_is_down() {
 async fn the_last_copy_of_a_one_or_more_axis_stays_until_the_stack_goes() {
     let started = start_core_node_with_mock_messenger().await;
     let directory = tempdir().unwrap();
-    let robot = write_node_config(
-        directory.path(),
-        "named_robot",
-        "v1",
-        "test-hash",
-        &["sleep", "300"],
-        false,
-        false,
-    );
+    let robot = write_node_config(directory.path(), "named_robot", "v1", &["sleep", "300"]);
     TestPackagesCache::new()
         .fs_entry("named_robot", "v1", &robot)
         .write(&started.peppy_dirs);
