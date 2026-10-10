@@ -969,8 +969,7 @@ impl Daemon {
 
     /// Blocks until this daemon answers a request at all.
     ///
-    /// `stack list` is the cheapest thing every daemon serves, and it is
-    /// already how the restart test waits for a new generation to come up.
+    /// `stack list` is the cheapest request every daemon serves.
     async fn wait_until_serving(&self) {
         self.wait_for_stack(|_| true).await;
     }
@@ -1502,7 +1501,7 @@ const PEER_RUN_FAILURE_LAUNCHER: &str = r#"{
 }
 "#;
 
-/// The ticket-shaped fleet: a launch spanning the simulator machine and two
+/// The three-machine fleet: a launch spanning the simulator machine and two
 /// more. The launcher declares one clock domain and names the scripted source
 /// its publisher, which is what assigns that instance the domain; every
 /// machine, the coordinator included, runs a probe bound to it. One more probe
@@ -1700,8 +1699,7 @@ impl Daemon {
 
     /// Polls `instance_id`'s log until it holds `marker`, returning the log.
     ///
-    /// Polling every 250 ms under the same `TIMEOUT` as every other wait here
-    /// keeps the wait independent of how fast the host is.
+    /// Polls every 250 ms, up to the suite's `TIMEOUT`.
     async fn find_node_log(&self, instance_id: &str, marker: &str) -> Option<String> {
         let started = Instant::now();
         while started.elapsed() < TIMEOUT {
@@ -2655,9 +2653,8 @@ async fn a_finished_launch_releases_its_participants_so_the_next_one_can_run() {
     federation.cloud.wait_until_holding(&CLOUD_INSTANCES).await;
 }
 
-/// The case the rejected ownership model could not serve: a coordinator that
-/// restarted has no memory of who took part, and must find its own launch again
-/// by asking the federation.
+/// A coordinator that restarted has no memory of who took part, and must find
+/// its own launch again by asking the federation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them() {
     let federation = start_federation("peppy-fed-restart").await;
@@ -3063,16 +3060,16 @@ async fn launch_fleet_clock(fleet: &Fleet) -> String {
     launch.text
 }
 
-/// The ticket's testable shape, positive path: a launch spanning the simulator
-/// machine and two more. One scripted source on the coordinator supplies the
-/// domain a probe on each machine binds, and a fourth probe beside them binds
-/// none, so one daemon carries the domain and wall time at once. Every bound
-/// machine serves nothing but scripted instants, never regressing, reaches the
-/// same final instant, and holds there once the ramp tops out; then the source
-/// is stopped outright and, with no tick arriving at all, every bound machine
-/// still holds the same instant rather than drifting anywhere. Exact values,
-/// not cross-container timestamp comparison, which the header of this file
-/// rules out for good reason.
+/// The positive path: a launch spanning the simulator machine and two more. One
+/// scripted source on the coordinator supplies the domain a probe on each
+/// machine binds, and a fourth probe beside them binds none, so one daemon
+/// carries the domain and wall time at once. Every bound machine serves nothing
+/// but scripted instants, never regressing, reaches the same final instant, and
+/// holds there once the ramp tops out; then the source is stopped outright and,
+/// with no tick arriving at all, every bound machine still holds the same
+/// instant rather than drifting anywhere. Exact values, not a comparison of
+/// timestamps across containers, which would not be deterministic (see
+/// [`assert_starts_before`]).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fleet_of_three_machines_shares_one_scripted_clock_and_holds_its_cap() {
     let fleet = start_fleet("peppy-fleet-clock").await;
@@ -3155,7 +3152,7 @@ async fn a_fleet_of_three_machines_shares_one_scripted_clock_and_holds_its_cap()
     // The cap above held under a source still republishing its final instant.
     // Now make the loss real: stop the source, and with no tick arriving at
     // all every bound machine must keep the very same instant. Frozen, never
-    // drifting back to wall time: today's single-robot staleness behavior,
+    // drifting back to wall time: the single-robot staleness behavior,
     // fleet-wide.
     let stopped = fleet
         .coordinator
@@ -4738,8 +4735,8 @@ fn set_watch_launcher() -> String {
     )
 }
 
-/// How many times `marker` appears in `instance_id`'s log on `daemon`, polled
-/// until it reaches `count`.
+/// Polls `instance_id`'s log on `daemon` until `marker` appears at least
+/// `count` times.
 async fn wait_for_log_count(daemon: &Daemon, instance_id: &str, marker: &str, count: usize) {
     let started = Instant::now();
     while started.elapsed() < TIMEOUT {
@@ -5287,12 +5284,11 @@ async fn wait_for_more_hearings(daemon: &Daemon, instance_id: &str, value: f64, 
     panic!("{instance_id} heard no state carrying {value:?} after its neighbour left");
 }
 
-/// FRAMEWORK-220 across machines: a `zero_or_more` follower slot starts
-/// empty on the coordinator, three leaders pair into it one at a time, two
-/// of them from the second daemon, the hub lists them in join order and
-/// each leader hears only the states answered to it, removing the second
-/// leaves the other two paired and streaming, and rejoining under the same
-/// name pairs once.
+/// Across machines: a `zero_or_more` follower slot starts empty on the
+/// coordinator, three leaders pair into it one at a time, two of them from the
+/// second daemon, the hub lists them in join order and each leader hears only
+/// the states answered to it, removing the second leaves the other two paired
+/// and streaming, and rejoining under the same name pairs once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
     let federation = start_federation("peppy-pairing-fleet").await;
@@ -5561,13 +5557,12 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
     );
 }
 
-/// FRAMEWORK-221 with real nodes on two machines: a consuming instance on the
-/// coordinator and an observing instance on the peer both start with empty
-/// `zero_or_more` slots; two copies join, one of them on the peer, and both
-/// instances read the copies' members in join order and receive their
-/// emissions tagged with the member that sent them; removing one copy leaves
-/// the other; rejoining under the same name appears once, at the end, and is
-/// heard again.
+/// With real nodes on two machines: a consuming instance on the coordinator and
+/// an observing instance on the peer both start with empty `zero_or_more`
+/// slots; two copies join, one of them on the peer, and both instances read the
+/// copies' members in join order and receive their emissions tagged with the
+/// member that sent them; removing one copy leaves the other; rejoining under
+/// the same name appears once, at the end, and is heard again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     let federation = start_federation("peppy-set-watch").await;
