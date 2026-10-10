@@ -39,12 +39,14 @@ NO_USER_FACING_CHANGE = {
 }
 
 NO_DIFF = PathDiff("", ())
+CODE_DIFF = PathDiff("+fn main() {}", ("crates/peppy/src/main.rs",))
+DOCS_DIFF = PathDiff("+## The clock", ("docs/src/content/docs/x.mdx",))
 
 
 def _changes(
     subjects: tuple[str, ...] = ("fix(apptainer): pre-flight bind mounts",),
-    code: PathDiff = PathDiff("+fn main() {}", ("crates/peppy/src/main.rs",)),
-    docs: PathDiff = PathDiff("+## The clock", ("docs/src/content/docs/x.mdx",)),
+    code: PathDiff = CODE_DIFF,
+    docs: PathDiff = DOCS_DIFF,
 ) -> ReleaseChanges:
     return ReleaseChanges(
         commit_subjects=subjects,
