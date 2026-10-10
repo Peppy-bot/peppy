@@ -1,5 +1,4 @@
 use config::node::Toolchain;
-use peppy::commands::repo::{RepoCommand, RepoCommands};
 use peppy::test_support::{
     CACHED_BUILD_REUSE_PREFIX, InstanceLifetime, LogCapture, ServeCommandEmulation,
     override_build_cmd, override_run_cmd, override_run_cmd_silent,
@@ -1247,8 +1246,8 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     let link_id = "rear_camera";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    // Materialize the contract document on disk and register
-    // the containing directory as an fs-type repo. The launcher binding
+    // Materialize the contract document in a repo that `seed_docs_repo`
+    // registers and refreshes once the context exists. The launcher binding
     // validator only inspects `implements` claims, but the daemon's
     // node-add path also resolves the contract document from cache
     // for consumers declaring `depends_on.contracts`; without the
@@ -1261,8 +1260,6 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         contract_name,
         contract_tag,
     );
-    super::common::publish_repo_index(contract_repo_dir.path());
-    super::common::write_fs_repositories(&serve, &[contract_repo_dir.path()]);
 
     let producer_run_cmd = instances.keep_alive_argv();
     let producer_implements =
@@ -1305,11 +1302,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
 
     let ctx = serve_app_context(&serve, nodes_dir.path());
 
-    RepoCommand {
-        command: RepoCommands::Refresh { strict: false },
-    }
-    .execute(&ctx)
-    .expect("repo refresh should populate contract cache");
+    super::common::seed_docs_repo(&serve, &ctx, contract_repo_dir.path());
 
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
     emulate_startup_services(
@@ -1715,8 +1708,6 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
             max_velocity: "f64"
         }"#,
     );
-    super::common::publish_repo_index(contract_repo_dir.path());
-    super::common::write_fs_repositories(&serve, &[contract_repo_dir.path()]);
 
     // arm_controller: emits joint_commands (implements joint_command_source),
     // consumes joint_states through its `arm` slot (bound in the launcher).
@@ -1780,11 +1771,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
 
     let ctx = serve_app_context(&serve, nodes_dir.path());
 
-    RepoCommand {
-        command: RepoCommands::Refresh { strict: false },
-    }
-    .execute(&ctx)
-    .expect("repo refresh should populate contract cache");
+    super::common::seed_docs_repo(&serve, &ctx, contract_repo_dir.path());
 
     // The dummy `sh` subprocesses don't expose ready/health/shutdown, so
     // impersonate them from the test process for both instances (the
