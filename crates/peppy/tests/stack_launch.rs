@@ -4660,7 +4660,6 @@ async fn stack_launch_prints_the_endpoint_blocks_after_the_log_files() {
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let instances = InstanceLifetime::new();
     let keep_alive = instances.keep_alive_argv();
-    let keep_alive: Vec<&str> = keep_alive.iter().map(String::as_str).collect();
 
     let page_node = "launch_page_node";
     let page_path = write_minimal_node_config(

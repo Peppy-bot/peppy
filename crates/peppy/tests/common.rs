@@ -335,7 +335,7 @@ pub fn write_minimal_node_config(
     node_name: &str,
     node_tag: &str,
     git_hash: &str,
-    run_cmd: &[&str],
+    run_cmd: &[impl AsRef<str>],
 ) -> std::path::PathBuf {
     write_node_config_for_helper(
         nodes_directory,
