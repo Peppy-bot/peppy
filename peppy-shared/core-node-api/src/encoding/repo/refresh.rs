@@ -1,6 +1,6 @@
 use capnp::message::Builder;
 
-use crate::encoding::repo::add::RepoSourceKind;
+use crate::encoding::repo::add::{RepoSourceKind, decode_source_kind};
 use crate::encoding::{decode_message, encode_message, encode_message_non_empty, optional_text};
 use crate::repo_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
@@ -186,10 +186,7 @@ impl RepoRefreshFeedback {
                 let kind = RepoItemKind::parse(kind_str).ok_or_else(|| {
                     crate::Error::Decoding(format!("unknown repo item kind: {kind_str}"))
                 })?;
-                let source_type_str = d.get_source_type()?.to_str()?;
-                let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
-                    crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
-                })?;
+                let source_type = decode_source_kind(d.get_source_type()?.to_str()?)?;
                 Ok(Self::Discovered {
                     kind,
                     item_name: d.get_item_name()?.to_str()?.to_owned(),
@@ -200,10 +197,7 @@ impl RepoRefreshFeedback {
                 })
             }
             Which::Excluded(e) => {
-                let source_type_str = e.get_source_type()?.to_str()?;
-                let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
-                    crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
-                })?;
+                let source_type = decode_source_kind(e.get_source_type()?.to_str()?)?;
                 Ok(Self::Excluded {
                     source_type,
                     identity: e.get_identity()?.to_str()?.to_owned(),
@@ -344,6 +338,7 @@ impl crate::encoding::Wire for RepoRefreshResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::decoding_error;
 
     #[test]
     fn goal_roundtrips() {
@@ -481,6 +476,34 @@ mod tests {
             RepoRefreshFeedback::decode(bytes.as_ref()).expect("decode"),
             feedback
         );
+    }
+
+    /// Both feedback arms that name a source refuse a source type outside
+    /// the two kinds.
+    #[test]
+    fn feedback_decode_refuses_an_unknown_source_type() {
+        let mut discovered = Builder::new_default();
+        {
+            let feedback = discovered.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
+            let mut payload = feedback.init_payload().init_discovered();
+            payload.set_kind(RepoItemKind::Node.as_str());
+            payload.set_source_type("bogus");
+        }
+        let mut excluded = Builder::new_default();
+        {
+            let feedback = excluded.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
+            feedback
+                .init_payload()
+                .init_excluded()
+                .set_source_type("bogus");
+        }
+        for builder in [discovered, excluded] {
+            let payload = encode_message(&builder).expect("encode raw feedback");
+            assert_eq!(
+                decoding_error(RepoRefreshFeedback::decode(payload.as_ref())),
+                "unknown source type: bogus"
+            );
+        }
     }
 
     #[test]

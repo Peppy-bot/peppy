@@ -2,7 +2,7 @@ use std::fmt;
 
 use capnp::message::Builder;
 
-use crate::encoding::repo::add::RepoSourceKind;
+use crate::encoding::repo::add::{RepoSourceKind, decode_source_kind};
 use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
 use crate::repo_capnp;
 use crate::{Payload, Result};
@@ -186,10 +186,7 @@ impl RepoListResponse {
         let mut nodes = Vec::with_capacity(nodes_reader.len() as usize);
         for i in 0..nodes_reader.len() {
             let entry = nodes_reader.get(i);
-            let source_type_str = entry.get_source_type()?.to_str()?;
-            let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
-                crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
-            })?;
+            let source_type = decode_source_kind(entry.get_source_type()?.to_str()?)?;
             nodes.push(RepoListNodeEntry {
                 node_name: entry.get_node_name()?.to_str()?.to_owned(),
                 node_tag: entry.get_node_tag()?.to_str()?.to_owned(),
@@ -204,10 +201,7 @@ impl RepoListResponse {
         let mut repos = Vec::with_capacity(repos_reader.len() as usize);
         for i in 0..repos_reader.len() {
             let entry = repos_reader.get(i);
-            let source_type_str = entry.get_source_type()?.to_str()?;
-            let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
-                crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
-            })?;
+            let source_type = decode_source_kind(entry.get_source_type()?.to_str()?)?;
             // The empty kind is the "read succeeded" sentinel; anything
             // else has to be one of the two kinds we know how to route.
             let failure = match entry.get_failure_kind()?.to_str()? {
@@ -249,6 +243,7 @@ impl crate::encoding::Wire for RepoListResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::decoding_error;
 
     fn sample_entry() -> RepoListNodeEntry {
         RepoListNodeEntry {
@@ -407,6 +402,24 @@ mod tests {
         assert!(
             matches!(err, crate::Error::Decoding(_)),
             "expected Decoding error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn list_response_decode_rejects_unknown_repo_source_type() {
+        let mut builder = Builder::new_default();
+        {
+            let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
+            response.set_success(true);
+            let mut entry = response.init_repos(1).get(0);
+            entry.set_id(1);
+            entry.set_label("/abs/repo");
+            entry.set_source_type("bogus");
+        }
+        let payload = encode_message(&builder).expect("encode raw response");
+        assert_eq!(
+            decoding_error(RepoListResponse::decode(payload.as_ref())),
+            "unknown source type: bogus"
         );
     }
 

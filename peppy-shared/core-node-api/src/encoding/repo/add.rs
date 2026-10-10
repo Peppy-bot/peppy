@@ -35,6 +35,13 @@ impl RepoSourceKind {
     }
 }
 
+/// Decodes a `sourceType` text field as [`RepoSourceKind::as_str`] writes it;
+/// a kind outside the two fails the decode.
+pub(super) fn decode_source_kind(text: &str) -> Result<RepoSourceKind> {
+    RepoSourceKind::parse(text)
+        .ok_or_else(|| crate::Error::Decoding(format!("unknown source type: {text}")))
+}
+
 impl fmt::Display for RepoSourceKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
