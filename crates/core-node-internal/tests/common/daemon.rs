@@ -401,14 +401,22 @@ impl Drop for TestRunningInstance {
 struct NoOpOutputHooks;
 impl node_stack::build_io::OutputReaderHooks for NoOpOutputHooks {}
 
-fn make_real_output_sinks(
-    peppy_dirs: &PeppyDirs,
-    instance_id: &config::runtime::Name,
-) -> (
-    node_stack::OutputSinks,
+/// Opens a feedback channel for an announcer and spawns the task that
+/// discards its lines, as no test reads them.
+fn spawn_feedback_drain() -> (
     tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
     tokio::task::JoinHandle<()>,
 ) {
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
+    let drain = tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
+    (feedback_tx, drain)
+}
+
+fn make_real_output_sinks(
+    peppy_dirs: &PeppyDirs,
+    instance_id: &config::runtime::Name,
+) -> (node_stack::OutputSinks, tokio::task::JoinHandle<()>) {
     use std::sync::atomic::AtomicBool;
 
     let log = node_stack::ActionLog::create(
@@ -418,63 +426,40 @@ fn make_real_output_sinks(
         log_export::LogExporter::disabled(),
     )
     .expect("create run log");
-    let (feedback_tx, mut feedback_rx) =
-        tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
-    let drain = tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
+    let (feedback_tx, drain) = spawn_feedback_drain();
     let output_sinks = node_stack::OutputSinks {
-        announcer: node_stack::Announcer::new(log, feedback_tx.clone()),
+        announcer: node_stack::Announcer::new(log, feedback_tx),
         publish_enabled: Arc::new(AtomicBool::new(true)),
         hooks: Arc::new(NoOpOutputHooks),
     };
-    (output_sinks, feedback_tx, drain)
+    (output_sinks, drain)
 }
 
-/// Drives a real `prepare_and_spawn` + `commit_started` on the entity at
-/// `(name, tag)`, which must already be in `Ready`. Spawns a real child via
-/// the entity's existing `run_cmd`; callers are responsible for ensuring
-/// the node config's run_cmd is spawnable in the test environment (the
-/// listener tests use `["sleep", "10"]`). Also installs a `listen_for_shutdown`
-/// task on the messenger that SIGKILLs the entity-tracked pid when the
-/// production stop/remove flow sends a shutdown signal. This lets the
-/// production stop path observe the child as cooperatively terminated within
-/// its graceful window rather than having to force-kill a stubborn `sleep 10`.
-/// Returns a guard that SIGTERMs the child on drop.
-pub async fn spawn_real_running_instance(
+/// A child that `prepare_and_spawn` started for an instance whose start is
+/// not committed yet.
+struct PreparedChild {
+    handle: node_stack::EntityHandle,
+    child: tokio::process::Child,
+    started_ctx: node_stack::StartedInstanceCtx,
+    pid: u32,
+    feedback_drain: tokio::task::JoinHandle<()>,
+}
+
+/// Drives a real `prepare_and_spawn` on the entity at `(name, tag)`, which
+/// must already be in `Ready`. Spawns a real child via the entity's existing
+/// `run_cmd`; callers are responsible for ensuring the node config's run_cmd
+/// is spawnable in the test environment.
+async fn prepare_and_spawn_on_ready_entity(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
     instance_id: &config::runtime::Name,
-) -> TestRunningInstance {
-    spawn_real_running_instance_inner(started, name, tag, instance_id, true).await
-}
-
-/// Variant of [`spawn_real_running_instance`] that skips installing a
-/// shutdown listener. Used by tests that specifically want the production
-/// shutdown path to observe a stuck process that never terminates (e.g. the
-/// `node_add_same_node_with_running_instance_and_dependents_fails_on_stopped_node_stuck`
-/// regression test).
-pub async fn spawn_real_stuck_instance(
-    started: &StartedCoreNode,
-    name: &str,
-    tag: &str,
-    instance_id: &config::runtime::Name,
-) -> TestRunningInstance {
-    spawn_real_running_instance_inner(started, name, tag, instance_id, false).await
-}
-
-async fn spawn_real_running_instance_inner(
-    started: &StartedCoreNode,
-    name: &str,
-    tag: &str,
-    instance_id: &config::runtime::Name,
-    install_shutdown_listener: bool,
-) -> TestRunningInstance {
+) -> PreparedChild {
     let handle = started
         .node_stack
         .find(name, tag)
-        .expect("spawn_real_running_instance: entity should exist");
-    let (output_sinks, _feedback_tx, drain) =
-        make_real_output_sinks(&started.peppy_dirs, instance_id);
+        .expect("entity to spawn should exist");
+    let (output_sinks, feedback_drain) = make_real_output_sinks(&started.peppy_dirs, instance_id);
 
     let (child, started_ctx) = node_stack::NodeEntity::prepare_and_spawn(
         &handle,
@@ -494,6 +479,52 @@ async fn spawn_real_running_instance_inner(
     .await
     .expect("prepare_and_spawn should succeed on Ready entity");
     let pid = child.id().expect("child should have pid");
+    PreparedChild {
+        handle,
+        child,
+        started_ctx,
+        pid,
+        feedback_drain,
+    }
+}
+
+/// Drives a real `prepare_and_spawn` + `commit_started` on the entity at
+/// `(name, tag)`, which must already be in `Ready` (the listener tests use a
+/// `run_cmd` of `["sleep", "10"]`). Also installs the shutdown listener of
+/// [`install_kill_on_shutdown_listener`], so the production stop path observes
+/// the child as cooperatively terminated within its graceful window rather
+/// than having to force-kill a stubborn `sleep 10`. Returns a guard that
+/// SIGTERMs the child on drop.
+pub async fn spawn_real_running_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::runtime::Name,
+) -> TestRunningInstance {
+    let mut running = spawn_real_stuck_instance(started, name, tag, instance_id).await;
+    running._shutdown_listener =
+        Some(install_kill_on_shutdown_listener(started, name, instance_id, running.pid).await);
+    running
+}
+
+/// Variant of [`spawn_real_running_instance`] that skips installing a
+/// shutdown listener. Used by tests that specifically want the production
+/// shutdown path to observe a stuck process that never terminates (e.g. the
+/// `node_add_same_node_with_running_instance_and_dependents_fails_on_stopped_node_stuck`
+/// regression test).
+pub async fn spawn_real_stuck_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::runtime::Name,
+) -> TestRunningInstance {
+    let PreparedChild {
+        handle,
+        child,
+        started_ctx,
+        pid,
+        feedback_drain,
+    } = prepare_and_spawn_on_ready_entity(started, name, tag, instance_id).await;
     node_stack::NodeEntity::commit_started(
         &handle,
         child,
@@ -504,24 +535,13 @@ async fn spawn_real_running_instance_inner(
     .await
     .expect("commit_started should succeed");
 
-    // Optionally install a messenger-side shutdown listener that kills the
-    // child when the production stop/remove flow fires a SHUTDOWN_SERVICE
-    // signal, so the cooperative phase succeeds within its graceful window.
-    // Tests that want the production stop path to fall through to force-kill
-    // (a stuck process) use `spawn_real_stuck_instance`, which skips this.
-    let shutdown_listener = if install_shutdown_listener {
-        Some(install_kill_on_shutdown_listener(started, name, instance_id, pid).await)
-    } else {
-        None
-    };
-
     TestRunningInstance {
         pid,
         instance_id: instance_id.clone(),
         handle,
         _working_dir: None,
-        _feedback_drain: drain,
-        _shutdown_listener: shutdown_listener,
+        _feedback_drain: feedback_drain,
+        _shutdown_listener: None,
     }
 }
 
@@ -601,38 +621,20 @@ pub async fn spawn_real_starting_instance(
     tag: &str,
     instance_id: &config::runtime::Name,
 ) -> TestStartingInstance {
-    let handle = started
-        .node_stack
-        .find(name, tag)
-        .expect("spawn_real_starting_instance: entity should exist");
-    let (output_sinks, _feedback_tx, drain) =
-        make_real_output_sinks(&started.peppy_dirs, instance_id);
-
-    let (child, started_ctx) = node_stack::NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id,
-            copy: None,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &started.peppy_dirs,
-            output_sinks,
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed on Ready entity");
-    let pid = child.id().expect("child should have pid");
+    let PreparedChild {
+        child,
+        started_ctx,
+        pid,
+        feedback_drain,
+        ..
+    } = prepare_and_spawn_on_ready_entity(started, name, tag, instance_id).await;
 
     TestStartingInstance {
         pid,
         instance_id: instance_id.clone(),
         _child: child,
         _started_ctx: started_ctx,
-        _feedback_drain: drain,
+        _feedback_drain: feedback_drain,
     }
 }
 
@@ -658,10 +660,7 @@ pub async fn real_build_and_spawn_instance(
         log_export::LogExporter::disabled(),
     )
     .expect("create build log");
-    let (build_feedback_tx, mut build_feedback_rx) =
-        tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
-    let build_drain =
-        tokio::spawn(async move { while build_feedback_rx.recv().await.is_some() {} });
+    let (build_feedback_tx, build_drain) = spawn_feedback_drain();
 
     node_stack::NodeEntity::build(
         &handle,
