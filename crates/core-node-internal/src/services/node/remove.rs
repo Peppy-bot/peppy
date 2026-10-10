@@ -74,36 +74,36 @@ async fn handle_node_remove_request(
     let request = NodeRemoveRequest::decode(context.message().payload_bytes().as_ref())?;
     let _admission = match ownership.admit_node_goal(&request) {
         Ok(admission) => admission,
-        Err(reason) => {
-            return into_service_response(
-                &context,
-                NodeRemoveResponse::failure(reason)
-                    .encode()
-                    .map_err(Into::into),
-            );
-        }
+        Err(reason) => return encode_remove_outcome(&context, Err(reason)),
     };
-    into_service_response(
-        &context,
-        crate::services::node::gate::finish_on_reset(
-            handle_node_remove_request_inner(
-                &context,
-                &request,
-                &messenger,
-                &core_node_name,
-                &core_instance_id,
-                node_stack,
-                &relationships,
-            ),
-            &ownership.stack.cancellation(),
-            || {
-                NodeRemoveResponse::failure("node remove cancelled by stack reset")
-                    .encode()
-                    .map_err(Into::into)
-            },
-        )
-        .await,
+    let outcome = crate::services::node::gate::finish_on_reset(
+        handle_node_remove_request_inner(
+            &context,
+            &request,
+            &messenger,
+            &core_node_name,
+            &core_instance_id,
+            node_stack,
+            &relationships,
+        ),
+        &ownership.stack.cancellation(),
+        || Err("node remove cancelled by stack reset".to_owned()),
     )
+    .await;
+    encode_remove_outcome(&context, outcome)
+}
+
+/// Encodes the outcome of a node remove as its response: a success, or a
+/// failure that carries the message of the refusal.
+fn encode_remove_outcome(
+    context: &ServiceRequestContext,
+    outcome: std::result::Result<(), String>,
+) -> PeppyResult<Payload> {
+    let response = match outcome {
+        Ok(()) => NodeRemoveResponse::success(),
+        Err(message) => NodeRemoveResponse::failure(message),
+    };
+    into_service_response(context, response.encode().map_err(Into::into))
 }
 
 async fn handle_node_remove_request_inner(
@@ -114,7 +114,7 @@ async fn handle_node_remove_request_inner(
     core_instance_id: &str,
     node_stack: Arc<NodeStack>,
     relationships: &RelationshipCoordinators,
-) -> Result<Payload> {
+) -> std::result::Result<(), String> {
     let sender_instance_id = context.message().instance_id();
 
     debug!(
@@ -131,9 +131,7 @@ async fn handle_node_remove_request_inner(
         )
     };
     if request.node_name == root_node_name && request.tag == root_node_tag {
-        return NodeRemoveResponse::failure("Cannot remove the core node from the node stack")
-            .encode()
-            .map_err(Into::into);
+        return Err("Cannot remove the core node from the node stack".to_owned());
     }
 
     let matching_entity = node_stack.snapshot().into_iter().find(|handle| {
@@ -142,12 +140,10 @@ async fn handle_node_remove_request_inner(
             && guard.config().manifest.tag == request.tag
     });
     let Some(matching_entity) = matching_entity else {
-        return NodeRemoveResponse::failure(format!(
+        return Err(format!(
             "Node '{}:{}' not found in node stack",
             request.node_name, request.tag
-        ))
-        .encode()
-        .map_err(Into::into);
+        ));
     };
 
     // `targets` are live (`Running`) instances that get a reachability probe and
@@ -211,13 +207,11 @@ async fn handle_node_remove_request_inner(
         let reachable = match reachable {
             Ok(r) => r,
             Err(e) => {
-                return NodeRemoveResponse::failure(format!(
+                return Err(format!(
                     "Failed to check shutdown service for instance '{}': {}",
                     instance_id.as_str(),
                     e
-                ))
-                .encode()
-                .map_err(Into::into);
+                ));
             }
         };
         if reachable {
@@ -242,12 +236,11 @@ async fn handle_node_remove_request_inner(
             .or_else(|| unreachable_targets.first())
             .or_else(|| terminal_targets.first())
             .expect("one of the lists is non-empty");
-        return NodeRemoveResponse::failure(format!(
+        return Err(format!(
             "Node '{}' has tracked instances (e.g. '{}'); set stop_instances=true to clear them before removing",
             request.node_name,
             example.as_str(),
-        ))
-        .encode().map_err(Into::into);
+        ));
     }
 
     // With `stop_instances=true`, we proceed despite unreachable instances
@@ -296,13 +289,11 @@ async fn handle_node_remove_request_inner(
             .await;
         for (instance_id, res) in running_targets.iter().zip(shutdown_results) {
             if let Err(e) = res {
-                return NodeRemoveResponse::failure(format!(
+                return Err(format!(
                     "Failed to stop node instance '{}': {}",
                     instance_id.as_str(),
                     e
-                ))
-                .encode()
-                .map_err(Into::into);
+                ));
             }
         }
     }
@@ -353,14 +344,12 @@ async fn handle_node_remove_request_inner(
             );
         }
         Err(e) => {
-            return NodeRemoveResponse::failure(format!(
+            return Err(format!(
                 "Failed to remove node config '{}:{}': {}",
                 node_name, node_tag, e
-            ))
-            .encode()
-            .map_err(Into::into);
+            ));
         }
     }
 
-    NodeRemoveResponse::success().encode().map_err(Into::into)
+    Ok(())
 }

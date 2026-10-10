@@ -134,6 +134,43 @@ async fn listen_for_node_remove_node_name_not_found_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_remove_refuses_the_core_node() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+    let before_len = node_stack.len();
+    let (root_name, root_tag) = {
+        let root = node_stack.root();
+        let guard = root.read();
+        (
+            guard.config().manifest.name.as_str().to_owned(),
+            guard.config().manifest.tag.clone(),
+        )
+    };
+
+    let response = poll(
+        &NodeRemoveRequest::new(&root_name, &root_tag).with_stop_instances(true),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_remove request should complete");
+
+    assert!(!response.success, "node_remove should fail");
+    assert_eq!(
+        response.error_message.as_deref(),
+        Some("Cannot remove the core node from the node stack"),
+    );
+    assert!(
+        node_stack.contains(&root_name, &root_tag),
+        "the core node should still be in the stack"
+    );
+    assert_eq!(node_stack.len(), before_len, "stack should be unchanged");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_remove_stop_running_instances_first() {
     const TARGET_NODE_NAME: &str = "running_node";
     const TARGET_NODE_TAG: &str = "v1";
