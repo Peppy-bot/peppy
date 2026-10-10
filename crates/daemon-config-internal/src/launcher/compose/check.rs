@@ -173,6 +173,16 @@ fn above_ceiling(
     })
 }
 
+/// A stack selection the constraints admit, composed once for every pass
+/// that checks something over it.
+struct LegalStack {
+    selection: UnitSelection,
+    /// The flat stack and its expansion, or None when the stack does not
+    /// compose: the stack pass reports that once, and the copy passes skip
+    /// the stack.
+    composed: Option<(PeppyLauncher, Expanded)>,
+}
+
 /// Every stack selection the constraints admit, each composed; a
 /// selection that composes badly is reported and kept, since the copies
 /// are checked over it as well.
@@ -181,7 +191,7 @@ fn legal_stacks(
     ledger: &mut Ledger<'_>,
     label: &str,
     problems: &mut Vec<String>,
-) -> Vec<UnitSelection> {
+) -> Vec<LegalStack> {
     let mut legal = Vec::new();
     for selection in enumerate_stack(&prepared.launcher, &prepared.loaded) {
         if let Err(e) = check_reach(&prepared.launcher, &prepared.loaded, &selection.entries) {
@@ -193,10 +203,17 @@ fn legal_stacks(
         if ledger.judge(&in_play, &selection) {
             continue;
         }
-        if let Err(e) = prepared.flat_stack(&selection) {
-            problems.push(format!("{label} ({}): {e}", selection.echo()));
-        }
-        legal.push(selection);
+        let composed = match prepared.flat_stack(&selection) {
+            Ok(composed) => Some(composed),
+            Err(e) => {
+                problems.push(format!("{label} ({}): {e}", selection.echo()));
+                None
+            }
+        };
+        legal.push(LegalStack {
+            selection,
+            composed,
+        });
     }
     legal
 }
@@ -209,7 +226,7 @@ fn legal_stacks(
 /// file deploys must have a way to launch.
 fn check_file_copies_over(
     prepared: &PreparedLauncher,
-    stacks: &[UnitSelection],
+    stacks: &[LegalStack],
     ledger: &mut Ledger<'_>,
     label: &str,
 ) -> Vec<String> {
@@ -218,8 +235,12 @@ fn check_file_copies_over(
     let mut problems = Vec::new();
     // Each copy the file deploys, and whether some legal stack admits it.
     let mut admitted: BTreeMap<String, bool> = BTreeMap::new();
-    for stack in stacks {
-        let Ok((flat, bare)) = prepared.flat_stack(stack) else {
+    for LegalStack {
+        selection: stack,
+        composed,
+    } in stacks
+    {
+        let Some((flat, bare)) = composed else {
             // Reported once, by the stack pass.
             continue;
         };
@@ -294,7 +315,7 @@ fn check_file_copies_over(
                     match compose_copy(
                         prepared,
                         stack,
-                        &bare,
+                        bare,
                         CopyRequest {
                             axis: &entry.axis,
                             loaded,
@@ -321,13 +342,13 @@ fn check_file_copies_over(
                 taken.extend(links.into_iter().flatten());
             }
         }
-        if let Err(e) = combine(launcher, &bare, &flat.framework, &copies) {
+        if let Err(e) = combine(launcher, bare, &flat.framework, &copies) {
             problems.push(format!("{label} ({}): {e}", stack.echo()));
         }
         for (echo, variant) in variants {
             let mut together = copies.clone();
             together.push(variant);
-            if let Err(e) = combine(launcher, &bare, &flat.framework, &together) {
+            if let Err(e) = combine(launcher, bare, &flat.framework, &together) {
                 problems.push(format!("{label} ({echo}): {e}"));
             }
         }
@@ -399,7 +420,7 @@ fn launch_word_completions(
 fn check_copies_over(
     prepared: &PreparedLauncher,
     repeatable: &[Repeatable<'_>],
-    stacks: &[UnitSelection],
+    stacks: &[LegalStack],
     ledger: &mut Ledger<'_>,
     label: &str,
     problems: &mut Vec<String>,
@@ -410,7 +431,11 @@ fn check_copies_over(
     for item in repeatable {
         for copy_selection in enumerate_copy(item.loaded, &item.axis.name) {
             let mut legal_somewhere = false;
-            for stack in stacks {
+            for LegalStack {
+                selection: stack,
+                composed,
+            } in stacks
+            {
                 let over = copy_over_stack(
                     launcher,
                     stack,
@@ -422,12 +447,11 @@ fn check_copies_over(
                     continue;
                 }
                 legal_somewhere = true;
-                let (existing, bare) = match prepared.flat_stack(stack) {
-                    Ok(result) => result,
+                let Some((existing, bare)) = composed else {
                     // Reported once, by the stack pass.
-                    Err(_) => continue,
+                    continue;
                 };
-                let name = check_copy_name(&bare);
+                let name = check_copy_name(bare);
                 let chosen: BTreeMap<String, String> = copy_selection
                     .own_axes(&item.axis.name)
                     .filter_map(|entry| Some((entry.axis.clone(), entry.option.clone()?)))
@@ -459,7 +483,7 @@ fn check_copies_over(
                 let copy = match compose_copy(
                     prepared,
                     stack,
-                    &bare,
+                    bare,
                     CopyRequest {
                         axis: &item.axis.name,
                         loaded: item.loaded,
@@ -480,14 +504,14 @@ fn check_copies_over(
                 };
                 if let Err(e) = combine(
                     launcher,
-                    &bare,
+                    bare,
                     &existing.framework,
                     std::slice::from_ref(&copy),
                 ) {
                     problems.push(format!("{label} ({echo}): {e}"));
                     continue;
                 }
-                match attach(&existing, &copy) {
+                match attach(existing, &copy) {
                     Ok(_)
                     | Err(
                         CompositionError::JoinChangesExisting { .. }
@@ -509,7 +533,7 @@ fn check_copies_over(
 /// and an axis that can never stay off may stay unfilled in name only.
 fn dead_states(
     prepared: &PreparedLauncher,
-    stacks: &[UnitSelection],
+    stacks: &[LegalStack],
     repeatable: &[Repeatable<'_>],
     legal_copies: &[(String, UnitSelection)],
     label: &str,
@@ -520,7 +544,7 @@ fn dead_states(
         for state in axis_state_names(axis) {
             let reachable = stacks
                 .iter()
-                .any(|selection| selection_holds_state(selection, &axis.name, state));
+                .any(|stack| selection_holds_state(&stack.selection, &axis.name, state));
             if !reachable {
                 problems.push(dead_state(label, &axis.name, state));
             }
@@ -528,9 +552,9 @@ fn dead_states(
         for (option, loaded) in prepared.loaded.options_of(&axis.name) {
             for own in &loaded.axes {
                 for state in axis_state_names(own) {
-                    let reachable = stacks.iter().any(|selection| {
-                        selection.option_of(&axis.name) == Some(option.as_str())
-                            && selection_holds_state(selection, &own.name, state)
+                    let reachable = stacks.iter().any(|stack| {
+                        stack.selection.option_of(&axis.name) == Some(option.as_str())
+                            && selection_holds_state(&stack.selection, &own.name, state)
                     });
                     if !reachable {
                         problems.push(dead_state(label, &own.name, state));
