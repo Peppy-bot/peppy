@@ -579,17 +579,11 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
     let started = Instant::now();
     let result = StackCommand {
         command: StackCommands::Launch(LauncherArgs {
-            rebuild: false,
-            placement: Default::default(),
-            with: Default::default(),
-            joins: Default::default(),
-            launcher_config_path: harness.launcher_path.clone(),
             timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
                 node_build_idle_timeout_secs: 1,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: None,
+                ..timeouts(None)
             },
+            ..launcher_args(harness.launcher_path.clone(), None)
         }),
     }
     .execute(&harness.ctx);
@@ -623,17 +617,11 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
     let started = Instant::now();
     let result = StackCommand {
         command: StackCommands::Launch(LauncherArgs {
-            rebuild: false,
-            placement: Default::default(),
-            with: Default::default(),
-            joins: Default::default(),
-            launcher_config_path: harness.launcher_path.clone(),
             timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
                 node_run_idle_timeout_secs: 1,
-                max_timeout_secs: None,
+                ..timeouts(None)
             },
+            ..launcher_args(harness.launcher_path.clone(), None)
         }),
     }
     .execute(&harness.ctx);
