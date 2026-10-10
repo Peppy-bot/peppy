@@ -421,29 +421,7 @@ impl ParticipantSetsUpdateRequest {
             request.set_launch_id(&self.launch_id);
             let mut sets = request.init_sets(capnp_list_len(self.sets.len(), "sets")?);
             for (index, set) in self.sets.iter().enumerate() {
-                let mut wire = sets.reborrow().get(index as u32);
-                wire.set_instance_id(set.instance_id.as_str());
-                wire.set_link_id(&set.link_id);
-                let members = wire.init_members();
-                match &set.members {
-                    SlotMembers::Producers(producers) => {
-                        let mut list =
-                            members.init_producers(capnp_list_len(producers.len(), "producers")?);
-                        for (member_index, member) in producers.iter().enumerate() {
-                            write_bound_member(list.reborrow().get(member_index as u32), member);
-                        }
-                    }
-                    SlotMembers::Observed(targets) => {
-                        let mut list =
-                            members.init_observed(capnp_list_len(targets.len(), "observed")?);
-                        for (member_index, target) in targets.iter().enumerate() {
-                            write_observation_member(
-                                list.reborrow().get(member_index as u32),
-                                target,
-                            );
-                        }
-                    }
-                }
+                write_slot_set(sets.reborrow().get(index as u32), set)?;
             }
         }
         encode_message(&builder)
@@ -456,43 +434,7 @@ impl ParticipantSetsUpdateRequest {
         let sets = request
             .get_sets()?
             .iter()
-            .map(|wire| {
-                use federation_capnp::slot_set::members::Which;
-                let link_id = required_text(wire.get_link_id()?.to_str()?, "sets.link_id")?;
-                let members = match wire.get_members().which()? {
-                    Which::Producers(list) => {
-                        let members = list?
-                            .iter()
-                            .map(read_bound_member)
-                            .collect::<Result<Vec<_>>>()?;
-                        SlotMembers::Producers(BoundProducers::try_from(members).map_err(
-                            |error| crate::Error::Decoding(format!("slot `{link_id}`: {error}")),
-                        )?)
-                    }
-                    Which::Unset(()) => {
-                        return Err(crate::Error::Decoding(format!(
-                            "slot `{link_id}`: the set names neither producers nor observed \
-                             pairings"
-                        )));
-                    }
-                    Which::Observed(list) => {
-                        let targets = list?
-                            .iter()
-                            .map(read_observation_member)
-                            .collect::<Result<Vec<_>>>()?;
-                        SlotMembers::Observed(
-                            ObservationTargets::new(&link_id, targets).map_err(|duplicate| {
-                                crate::Error::Decoding(duplicate.to_string())
-                            })?,
-                        )
-                    }
-                };
-                Ok(SlotSet {
-                    instance_id: read_name(wire.get_instance_id()?.to_str()?, "sets.instance_id")?,
-                    link_id,
-                    members,
-                })
-            })
+            .map(read_slot_set)
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
@@ -503,6 +445,67 @@ impl ParticipantSetsUpdateRequest {
 
 impl crate::encoding::Wire for ParticipantSetsUpdateRequest {
     type Root = federation_capnp::participant_sets_update_request::Owned;
+}
+
+/// Writes one set slot and its members into an initialized `SlotSet` builder.
+fn write_slot_set(mut wire: federation_capnp::slot_set::Builder<'_>, set: &SlotSet) -> Result<()> {
+    wire.set_instance_id(set.instance_id.as_str());
+    wire.set_link_id(&set.link_id);
+    let members = wire.init_members();
+    match &set.members {
+        SlotMembers::Producers(producers) => {
+            let mut list = members.init_producers(capnp_list_len(producers.len(), "producers")?);
+            for (member_index, member) in producers.iter().enumerate() {
+                write_bound_member(list.reborrow().get(member_index as u32), member);
+            }
+        }
+        SlotMembers::Observed(targets) => {
+            let mut list = members.init_observed(capnp_list_len(targets.len(), "observed")?);
+            for (member_index, target) in targets.iter().enumerate() {
+                write_observation_member(list.reborrow().get(member_index as u32), target);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Inverse of [`write_slot_set`]. A set that names neither kind of member is
+/// refused, and so is a member set that repeats a member.
+fn read_slot_set(wire: federation_capnp::slot_set::Reader<'_>) -> Result<SlotSet> {
+    use federation_capnp::slot_set::members::Which;
+    let link_id = required_text(wire.get_link_id()?.to_str()?, "sets.link_id")?;
+    let members =
+        match wire.get_members().which()? {
+            Which::Producers(list) => {
+                let members = list?
+                    .iter()
+                    .map(read_bound_member)
+                    .collect::<Result<Vec<_>>>()?;
+                SlotMembers::Producers(BoundProducers::try_from(members).map_err(|error| {
+                    crate::Error::Decoding(format!("slot `{link_id}`: {error}"))
+                })?)
+            }
+            Which::Unset(()) => {
+                return Err(crate::Error::Decoding(format!(
+                    "slot `{link_id}`: the set names neither producers nor observed pairings"
+                )));
+            }
+            Which::Observed(list) => {
+                let targets = list?
+                    .iter()
+                    .map(read_observation_member)
+                    .collect::<Result<Vec<_>>>()?;
+                SlotMembers::Observed(
+                    ObservationTargets::new(&link_id, targets)
+                        .map_err(|duplicate| crate::Error::Decoding(duplicate.to_string()))?,
+                )
+            }
+        };
+    Ok(SlotSet {
+        instance_id: read_name(wire.get_instance_id()?.to_str()?, "sets.instance_id")?,
+        link_id,
+        members,
+    })
 }
 
 /// The reply to every federation exchange whose answer is "did you do it, and
