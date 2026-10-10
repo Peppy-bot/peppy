@@ -934,22 +934,15 @@ fn build_topic_deserialize_helper(
     ))
 }
 
-/// The `QoSProfile` variant an emitted reference spells, for renderers that
-/// reach the type through their own module path (generated peppygen code
-/// says `peppylib::config::QoSProfile`).
-pub fn qos_profile_variant(profile: &QoSProfile) -> Ident {
-    let variant = match profile {
-        QoSProfile::Standard => "Standard",
-        QoSProfile::Reliable => "Reliable",
-        QoSProfile::SensorData => "SensorData",
-        QoSProfile::Critical => "Critical",
-    };
-    Ident::new(variant, proc_macro2::Span::call_site())
-}
-
+/// The `peppylib::config::QoSProfile` value generated code states for a
+/// topic's QoS profile.
 pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
-    let variant_ident = qos_profile_variant(profile);
-    quote!(peppylib::config::QoSProfile::#variant_ident)
+    match profile {
+        QoSProfile::Standard => quote!(peppylib::config::QoSProfile::Standard),
+        QoSProfile::Reliable => quote!(peppylib::config::QoSProfile::Reliable),
+        QoSProfile::SensorData => quote!(peppylib::config::QoSProfile::SensorData),
+        QoSProfile::Critical => quote!(peppylib::config::QoSProfile::Critical),
+    }
 }
 
 /// The doc lines a retaining topic's generated API adds: a paragraph break and
