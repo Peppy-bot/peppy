@@ -15,6 +15,7 @@ use crate::services::repo::cache::{
     load_contract_cache, load_node_cache, load_pairing_cache, load_repo_cache, lookup_repo_entry,
     lookup_repo_entry_by_sha256,
 };
+use crate::services::repo::index::kind_rank;
 use crate::services::repo::{
     AttributedNode, ListedRepo, RepoNodes, listed_repositories, nodes_by_repository,
 };
@@ -487,17 +488,6 @@ fn matched_identities<E: RepoCacheEntry>(
 /// first, then name, tag and kind.
 fn match_order(item: &MatchedItem) -> (bool, &str, &str, u8) {
     (!item.exact, &item.name, &item.tag, kind_rank(item.kind))
-}
-
-/// Kinds in the order `repo refresh` discovers them.
-fn kind_rank(kind: RepoItemKind) -> u8 {
-    match kind {
-        RepoItemKind::Node => 0,
-        RepoItemKind::Launcher => 1,
-        RepoItemKind::Contract => 2,
-        RepoItemKind::Pairing => 3,
-        RepoItemKind::McpExposure => 4,
-    }
 }
 
 /// Who uses `name:tag`: the nodes whose cached links implement, consume,

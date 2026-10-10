@@ -131,21 +131,21 @@ impl std::fmt::Display for RepoConflict {
     }
 }
 
-/// Every path that claimed a given `(name, tag)` during one repository
-/// walk, in the order the walker met them. Recording all of them (rather
-/// than remembering only that the identity was seen) is what lets a
+/// Every path that claimed a given `(kind, name, tag)` during one
+/// repository walk, in the order the walker met them. Recording all of them
+/// (rather than remembering only that the identity was seen) is what lets a
 /// conflict name both files instead of silently keeping one.
-type ClaimMap = HashMap<(String, String), Vec<String>>;
+type ClaimMap = HashMap<(RepoItemKind, String, String), Vec<String>>;
 
-/// Turns one kind's claim map into the conflicts it holds: every identity
-/// with more than one claimant. Sorted by identity, with sorted paths, so
-/// the report never inherits the filesystem's walk order and stays
-/// comparable between machines.
-fn conflicts_from_claims(kind: RepoItemKind, claims: ClaimMap) -> Vec<RepoConflict> {
+/// Turns the claim map into the conflicts it holds: every identity with
+/// more than one claimant. Sorted by kind, then identity, with sorted
+/// paths, so the report never inherits the filesystem's walk order and
+/// stays comparable between machines.
+fn conflicts_from_claims(claims: ClaimMap) -> Vec<RepoConflict> {
     let mut conflicts: Vec<RepoConflict> = claims
         .into_iter()
         .filter(|(_, paths)| paths.len() > 1)
-        .map(|((name, tag), mut paths)| {
+        .map(|((kind, name, tag), mut paths)| {
             paths.sort();
             RepoConflict {
                 kind,
@@ -155,8 +155,21 @@ fn conflicts_from_claims(kind: RepoItemKind, claims: ClaimMap) -> Vec<RepoConfli
             }
         })
         .collect();
-    conflicts.sort_by(|a, b| (&a.name, &a.tag).cmp(&(&b.name, &b.tag)));
+    conflicts.sort_by(|a, b| {
+        (kind_rank(a.kind), &a.name, &a.tag).cmp(&(kind_rank(b.kind), &b.name, &b.tag))
+    });
     conflicts
+}
+
+/// Kinds in the order `repo refresh` discovers them.
+pub(crate) fn kind_rank(kind: RepoItemKind) -> u8 {
+    match kind {
+        RepoItemKind::Node => 0,
+        RepoItemKind::Launcher => 1,
+        RepoItemKind::Contract => 2,
+        RepoItemKind::Pairing => 3,
+        RepoItemKind::McpExposure => 4,
+    }
 }
 
 /// One item a repository publishes, resolved against the tree it was read
@@ -817,11 +830,7 @@ pub(crate) fn walk_directory(root: &Path) -> WalkResult {
         })
         .build();
 
-    let mut nodes_seen = ClaimMap::new();
-    let mut launchers_seen = ClaimMap::new();
-    let mut contracts_seen = ClaimMap::new();
-    let mut pairings_seen = ClaimMap::new();
-    let mut mcp_exposures_seen = ClaimMap::new();
+    let mut claims = ClaimMap::new();
     let mut items: Vec<WalkedItem> = Vec::new();
     let mut malformed: Vec<MalformedDocument> = Vec::new();
 
@@ -842,81 +851,42 @@ pub(crate) fn walk_directory(root: &Path) -> WalkResult {
                 continue;
             }
         };
+        let Some(kind) = peek_peppy_schema(&bytes).and_then(declared_item_kind) else {
+            continue;
+        };
         let ctx = EntryContext {
             root: &root,
             config_path,
             bytes: &bytes,
         };
-        let Some(schema) = peek_peppy_schema(&bytes) else {
-            continue;
-        };
-        match schema {
-            PeppySchema::NodeV1 => collect_item(
-                &ctx,
-                RepoItemKind::Node,
-                &mut nodes_seen,
-                &mut items,
-                &mut malformed,
-            ),
-            PeppySchema::LauncherV1 => collect_item(
-                &ctx,
-                RepoItemKind::Launcher,
-                &mut launchers_seen,
-                &mut items,
-                &mut malformed,
-            ),
-            PeppySchema::ContractV1 => collect_item(
-                &ctx,
-                RepoItemKind::Contract,
-                &mut contracts_seen,
-                &mut items,
-                &mut malformed,
-            ),
-            PeppySchema::PairingV1 => collect_item(
-                &ctx,
-                RepoItemKind::Pairing,
-                &mut pairings_seen,
-                &mut items,
-                &mut malformed,
-            ),
-            PeppySchema::McpExposureV1 => collect_item(
-                &ctx,
-                RepoItemKind::McpExposure,
-                &mut mcp_exposures_seen,
-                &mut items,
-                &mut malformed,
-            ),
-            // The repository's own index declares no item. It is the
-            // output of this walk, not an input to it.
-            PeppySchema::RepositoryV1 => {}
-            // A fragment file declares no item either: it is a piece of the
-            // launcher whose option references it. The walk recognizes the
-            // tag so a fragment is never mistaken for an unrecognized
-            // schema; the composition checks in `check_repository_index`
-            // read and validate the fragments each launcher references.
-            PeppySchema::LauncherFragmentV1 => {}
-        }
+        collect_item(&ctx, kind, &mut claims, &mut items, &mut malformed);
     }
-
-    let mut conflicts = conflicts_from_claims(RepoItemKind::Node, nodes_seen);
-    conflicts.extend(conflicts_from_claims(
-        RepoItemKind::Launcher,
-        launchers_seen,
-    ));
-    conflicts.extend(conflicts_from_claims(
-        RepoItemKind::Contract,
-        contracts_seen,
-    ));
-    conflicts.extend(conflicts_from_claims(RepoItemKind::Pairing, pairings_seen));
-    conflicts.extend(conflicts_from_claims(
-        RepoItemKind::McpExposure,
-        mcp_exposures_seen,
-    ));
 
     WalkResult {
         items,
-        conflicts,
+        conflicts: conflicts_from_claims(claims),
         malformed,
+    }
+}
+
+/// The kind of item a document of `schema` declares, or `None` for a
+/// schema that declares no item.
+fn declared_item_kind(schema: PeppySchema) -> Option<RepoItemKind> {
+    match schema {
+        PeppySchema::NodeV1 => Some(RepoItemKind::Node),
+        PeppySchema::LauncherV1 => Some(RepoItemKind::Launcher),
+        PeppySchema::ContractV1 => Some(RepoItemKind::Contract),
+        PeppySchema::PairingV1 => Some(RepoItemKind::Pairing),
+        PeppySchema::McpExposureV1 => Some(RepoItemKind::McpExposure),
+        // The repository's own index declares no item. It is the output of
+        // the walk, not an input to it.
+        PeppySchema::RepositoryV1 => None,
+        // A fragment file declares no item either: it is a piece of the
+        // launcher whose option references it. The walk recognizes the tag
+        // so a fragment is never mistaken for an unrecognized schema; the
+        // composition checks in `check_repository_index` read and validate
+        // the fragments each launcher references.
+        PeppySchema::LauncherFragmentV1 => None,
     }
 }
 
@@ -1003,7 +973,7 @@ fn collect_item(
         }
     };
 
-    let claimants = claims.entry((name.clone(), tag.clone())).or_default();
+    let claimants = claims.entry((kind, name.clone(), tag.clone())).or_default();
     claimants.push(relative_path.clone());
     if claimants.len() > 1 {
         return;
