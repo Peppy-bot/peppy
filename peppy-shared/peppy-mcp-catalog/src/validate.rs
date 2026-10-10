@@ -696,7 +696,7 @@ fn apply_restrictions(
             ));
             continue;
         };
-        let range = match integer_range(token) {
+        let range = match numeric_kind(token) {
             NumericKind::Integer(range) => Some(range),
             NumericKind::Float => None,
             NumericKind::DecimalString => {
@@ -769,7 +769,9 @@ enum NumericKind {
     NotNumeric,
 }
 
-fn integer_range(token: &TypeToken) -> NumericKind {
+/// How a `restrict` bound applies to a member of type `token`: checked
+/// against an integer range, passed through for a float, or refused.
+fn numeric_kind(token: &TypeToken) -> NumericKind {
     if let Some(range) = integer_bounds(token) {
         return NumericKind::Integer(range);
     }
