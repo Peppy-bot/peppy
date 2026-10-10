@@ -547,3 +547,41 @@ async fn listen_for_node_init_fails_if_directory_exists() {
         "peppygen output should not be created when node_dir already exists"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_init_fails_if_node_directory_cannot_be_created() {
+    const NODE_NAME: &str = "unreachable_node";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    // The nodes root is a regular file, so the node directory under it does
+    // not exist yet and cannot be created either.
+    let scratch = tempdir().expect("failed to create temp scratch directory");
+    let nodes_root = scratch.path().join("not_a_directory");
+    fs::write(&nodes_root, "a file, not a directory").expect("failed to write nodes root file");
+
+    let response = poll(
+        &NodeInitRequest::new(&nodes_root, NODE_NAME, "abc123", false, Toolchain::Cargo),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        NODE_INIT_TIMEOUT,
+    )
+    .await
+    .expect("node_init request should complete");
+
+    assert!(!response.success, "node_init should fail");
+    assert!(
+        response
+            .error_message
+            .starts_with("Failed to create node directory: "),
+        "error should say the node directory could not be created, got: {}",
+        response.error_message
+    );
+    assert_eq!(
+        fs::read_to_string(&nodes_root).expect("failed to read nodes root file"),
+        "a file, not a directory",
+        "the nodes root file should be left untouched"
+    );
+}
