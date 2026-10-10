@@ -11,7 +11,9 @@
 //! [`RustGenerator`] and [`PythonGenerator`] implement [`LanguageGenerator`]. Construct via
 //! `new()` / `Default`, optionally configure with `set_parameters` (both) / `set_container`
 //! (Python) in any order, register interfaces, then `build()` (which consumes the generator).
-//! Most callers never touch the backends directly; only the latency test harness does.
+//! Most callers never touch the backends directly; harnesses that build a node from
+//! hand-picked interfaces do (the core-node latency harness, the peppy MCP full-stack test,
+//! and this crate's own tests and example).
 //!
 //! # Value objects the caller builds
 //! [`DeploymentInterface`] wraps an [`InterfaceVariant`]; consumed variants carry a

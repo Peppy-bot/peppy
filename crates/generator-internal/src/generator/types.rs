@@ -202,15 +202,16 @@ pub fn ensure_no_peer_collision(
 /// `depends_on.nodes`, or the contract's `(name, tag)` when the consumer
 /// pulls in via `depends_on.contracts` (there's no producer node in that
 /// case, but the labels still need a stable identity). `origin` is `Some`
-/// exactly when the dependency is a contract document: node dependencies
-/// expose native interfaces only, so their consumed artifacts always carry
-/// the `node`-shaped wire discriminator.
+/// exactly when the dependency is a contract document, whose consumed
+/// artifacts address [`SenderTarget::Contract`]: node dependencies expose
+/// native interfaces only, so their consumed artifacts always address
+/// [`SenderTarget::Node`].
 ///
 /// `link_id` is the consumer manifest slot whose runtime binding resolves
-/// this dependency's bound producer set, sized per `cardinality`. In the
-/// harmonized wire model the consumer never pins by `link_id` on the wire
-/// (producers always advertise the `_` sentinel); instead the generated
-/// call sites splice processor bound-set lookups by `link_id`.
+/// this dependency's bound producer set, sized per `cardinality`. On the
+/// wire the consumer never pins by `link_id` (producers always advertise
+/// the `_` sentinel); instead the generated call sites splice processor
+/// bound-set lookups by `link_id`.
 /// `cardinality` picks the generated accessor shape so the launch-validated
 /// guarantee lives in the type: a `one` slot exposes `bound_producer()`
 /// returning the sole `&ProducerRef`, `zero_or_one` the same name returning an
@@ -550,7 +551,7 @@ impl DocLanguage {
 pub struct AccessorDoc {
     pub summary: &'static str,
     /// The rest of the prose, without [`Self::api_note`] or
-    /// [`Self::CLOSING_NOTE`].
+    /// [`Self::closing`].
     pub body: &'static [&'static str],
     /// The language-specific clause finishing [`Self::body`]'s last sentence,
     /// where the cardinality leaves one open. Resolved when the doc is built,
@@ -641,10 +642,9 @@ pub enum InterfaceVariant {
         topic: NativeEmittedTopic,
         observer: PeerContext,
         /// The observer slot's declared `cardinality`, which types the
-        /// generated accessor: `one` emits `source()`, the multi cardinalities
-        /// emit `sources()`. It rides beside `observer` rather than inside it
-        /// because [`PeerContext`] is shared with participant slots, which
-        /// carry no cardinality.
+        /// generated accessor: `one` and `zero_or_one` emit `source()`, the
+        /// multi cardinalities emit `sources()`. The generators read the
+        /// accessor shape from this field, not from `observer.cardinality`.
         cardinality: Cardinality,
     },
 }
@@ -868,7 +868,7 @@ pub trait LanguageGenerator {
         observer: &PeerContext,
         cardinality: Cardinality,
     ) -> Result<()>;
-    /// Finalizes the builder and return a path to the library
+    /// Consumes the generator and writes the generated library to `to_path`.
     fn build(
         self,
         to_path: impl AsRef<Path>,
