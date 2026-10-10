@@ -6,9 +6,10 @@ use node_stack::{NodeStack, NodeStackError};
 use crate::helpers::config_common::core_node_config;
 use crate::helpers::graph_query;
 
-#[test]
-fn topic_dependency_resolved_when_dependency_added_first() {
-    let brain_dependent: config::node::NodeConfig = serde_json5::from_str(
+/// The `brain` node, which consumes the `push_lidar_object` topic of
+/// `lidar:v1` over link_id `lidar`.
+fn brain_consuming_push_lidar_object() -> config::node::NodeConfig {
+    serde_json5::from_str(
         r#"{
             peppy_schema: "node/v1",
             manifest: {
@@ -36,7 +37,12 @@ fn topic_dependency_resolved_when_dependency_added_first() {
             },
         }"#,
     )
-    .expect("valid dependent node config");
+    .expect("valid dependent node config")
+}
+
+#[test]
+fn topic_dependency_resolved_when_dependency_added_first() {
+    let brain_dependent = brain_consuming_push_lidar_object();
 
     let lidar_dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
@@ -111,35 +117,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
 
 #[test]
 fn topic_dependency_fails_when_dependency_is_missing() {
-    let brain_dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-              name: "brain",
-              tag: "v1",
-              depends_on: {
-                nodes: [
-                  { name: "lidar", tag: "v1", link_id: "lidar" }
-                ]
-              },
-            },
-            interfaces: {
-                topics: {
-                    consumes: [
-                        {
-                          link_id: "lidar",
-                          name: "push_lidar_object"
-                        }
-                    ]
-                }
-            },
-            execution: {
-              language: "rust",
-              run_cmd: ["brain"]
-            },
-        }"#,
-    )
-    .expect("valid dependent node config");
+    let brain_dependent = brain_consuming_push_lidar_object();
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
@@ -162,35 +140,7 @@ fn topic_dependency_fails_when_dependency_is_missing() {
 fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
     // Test the scenario where a node subscribes to a topic from another node,
     // but the target node exists without exposing the requested topic
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-              name: "brain",
-              tag: "v1",
-              depends_on: {
-                nodes: [
-                  { name: "lidar", tag: "v1", link_id: "lidar" }
-                ]
-              },
-            },
-            interfaces: {
-                topics: {
-                    consumes: [
-                        {
-                          link_id: "lidar",
-                          name: "push_lidar_object"
-                        }
-                    ]
-                }
-            },
-            execution: {
-              language: "rust",
-              run_cmd: ["brain"]
-            },
-        }"#,
-    )
-    .expect("valid dependent node config");
+    let dependent = brain_consuming_push_lidar_object();
 
     // This node has the correct name but emits a different topic
     let dependency_wrong_topic: config::node::NodeConfig = serde_json5::from_str(
