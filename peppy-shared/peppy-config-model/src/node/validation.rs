@@ -178,46 +178,34 @@ pub fn validate_dependency_specs(
         }
     }
 
-    // Collect all declared link_ids so we can distinguish "declared but unresolved"
-    // (a reported MissingDependency, an admitted absence, or a contract-backed
-    // dep whose members resolve at node add/sync) from "never declared" (typo).
-    let declared_link_ids: HashSet<&str> = manifest
-        .depends_on
-        .as_ref()
-        .map(|d| {
-            d.nodes
-                .iter()
-                .map(|n| n.link_id.as_str())
-                .chain(d.contracts.iter().map(|i| i.link_id.as_str()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // A pairing slot (participant or observer) is a legal target for
-    // `topics.consumes`: a participant names the counterpart role's topics it
-    // wants a module for, an observer names the observed role's own topics.
-    // Neither is ever legal for `services.consumes` or `actions.consumes`,
-    // because a pairing document declares topics only. Kept separate from
-    // `declared_link_ids` so a service or action naming one gets a dedicated
-    // error rather than `UndeclaredLinkId`, and so a topic naming one skips the
-    // node-dependency exposure check that cannot apply to it. The topic
-    // direction (counterpart vs observed role) is resolved against the pairing
-    // document at node add/sync, not here.
-    let pairing_link_ids: HashSet<&str> = manifest
-        .depends_on
-        .as_ref()
-        .map(|d| d.pairing_link_ids().collect())
-        .unwrap_or_default();
-
-    // Implements slots are produced, not consumed, so a consumed item naming
-    // one gets a dedicated error too. Parse-time validation already rejects
-    // this for configs that went through `NodeConfigParser`, but this
-    // validator also runs on programmatically assembled configs.
-    let implements_link_ids: HashSet<&str> = manifest
-        .implements
-        .iter()
-        .map(|e| e.link_id.as_str())
-        .collect();
+    let links = DeclaredLinks {
+        resolved_dependencies: resolved_deps,
+        dependency_link_ids: manifest
+            .depends_on
+            .as_ref()
+            .map(|d| {
+                d.nodes
+                    .iter()
+                    .map(|n| n.link_id.as_str())
+                    .chain(d.contracts.iter().map(|i| i.link_id.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        pairing_link_ids: manifest
+            .depends_on
+            .as_ref()
+            .map(|d| d.pairing_link_ids().collect())
+            .unwrap_or_default(),
+        implements_link_ids: manifest
+            .implements
+            .iter()
+            .map(|e| e.link_id.as_str())
+            .collect(),
+    };
+    let dependant = Dependant {
+        name: dependant_name,
+        tag: dependant_tag,
+    };
 
     // Phase 2: Validate consumed interfaces reference valid link_ids
     // and that the dependency exposes the required interface
@@ -231,12 +219,8 @@ pub fn validate_dependency_specs(
                 .consumed(kind)
                 .map(|(link_id, name, _)| (link_id, name)),
             kind,
-            &resolved_deps,
-            &declared_link_ids,
-            &pairing_link_ids,
-            &implements_link_ids,
-            dependant_name,
-            dependant_tag,
+            &links,
+            &dependant,
             &mut errors,
         );
     }
@@ -252,26 +236,56 @@ struct ResolvedDependency<'a> {
     config: NodeConfig,
 }
 
+/// The link_ids a manifest declares, grouped by what a consumed item that
+/// names one of them is checked against.
+struct DeclaredLinks<'a> {
+    /// The `depends_on.nodes` entries that resolve, by link_id.
+    resolved_dependencies: HashMap<&'a str, ResolvedDependency<'a>>,
+    /// Every `depends_on.nodes` and `depends_on.contracts` link_id, so the
+    /// check can tell "declared but unresolved" (a reported
+    /// MissingDependency, an admitted absence, or a contract-backed dep whose
+    /// members resolve at node add/sync) from "never declared" (typo).
+    dependency_link_ids: HashSet<&'a str>,
+    /// The pairing slots (participant or observer), a legal target for
+    /// `topics.consumes`: a participant names the counterpart role's topics
+    /// it wants a module for, an observer names the observed role's own
+    /// topics. Neither is ever legal for `services.consumes` or
+    /// `actions.consumes`, because a pairing document declares topics only.
+    /// Kept apart from `dependency_link_ids` so a service or action naming
+    /// one gets a dedicated error rather than `UndeclaredLinkId`, and so a
+    /// topic naming one skips the node-dependency exposure check that cannot
+    /// apply to it. The topic direction (counterpart vs observed role) is
+    /// resolved against the pairing document at node add/sync, not here.
+    pairing_link_ids: HashSet<&'a str>,
+    /// The implements slots, which are produced, not consumed, so a consumed
+    /// item naming one gets a dedicated error too. Parse-time validation
+    /// already rejects this for configs that went through
+    /// `NodeConfigParser`, but this validator also runs on programmatically
+    /// assembled configs.
+    implements_link_ids: HashSet<&'a str>,
+}
+
+/// The node whose consumed interfaces are validated, as its errors name it.
+struct Dependant<'a> {
+    name: &'a str,
+    tag: &'a str,
+}
+
 /// Validates a set of consumed interfaces, checking that each `link_id` is declared
 /// and that the referenced dependency exposes the required interface.
-#[allow(clippy::too_many_arguments)]
 fn validate_consumed_items<'a>(
     items: impl Iterator<Item = (&'a str, &'a str)>,
     kind: InterfaceKind,
-    resolved_deps: &HashMap<&str, ResolvedDependency<'_>>,
-    declared_link_ids: &HashSet<&str>,
-    pairing_link_ids: &HashSet<&str>,
-    implements_link_ids: &HashSet<&str>,
-    dependant_name: &str,
-    dependant_tag: &str,
+    links: &DeclaredLinks<'_>,
+    dependant: &Dependant<'_>,
     errors: &mut Vec<ParsingError>,
 ) {
     for (link_id, name) in items {
-        if pairing_link_ids.contains(link_id) {
+        if links.pairing_link_ids.contains(link_id) {
             if kind != InterfaceKind::Topic {
                 errors.push(ParsingError::ConsumedItemReferencesPairingLinkId {
-                    dependant: dependant_name.to_owned(),
-                    dependant_tag: dependant_tag.to_owned(),
+                    dependant: dependant.name.to_owned(),
+                    dependant_tag: dependant.tag.to_owned(),
                     link_id: link_id.to_owned(),
                     section: kind.consumed_section().to_owned(),
                 });
@@ -280,31 +294,23 @@ fn validate_consumed_items<'a>(
             // node add/sync, not against a node dependency.
             continue;
         }
-        if implements_link_ids.contains(link_id) {
+        if links.implements_link_ids.contains(link_id) {
             errors.push(ParsingError::ConsumedItemReferencesImplementsLinkId {
                 link_id: link_id.to_owned(),
             });
             continue;
         }
-        let Some(dependency) = resolved_deps.get(link_id) else {
-            if !declared_link_ids.contains(link_id) {
+        let Some(dependency) = links.resolved_dependencies.get(link_id) else {
+            if !links.dependency_link_ids.contains(link_id) {
                 errors.push(ParsingError::UndeclaredLinkId {
-                    dependant: dependant_name.to_owned(),
-                    dependant_tag: dependant_tag.to_owned(),
+                    dependant: dependant.name.to_owned(),
+                    dependant_tag: dependant.tag.to_owned(),
                     link_id: link_id.to_owned(),
                 });
             }
             continue;
         };
-        validate_consumed_interface(
-            link_id,
-            name,
-            kind,
-            dependency,
-            dependant_name,
-            dependant_tag,
-            errors,
-        );
+        validate_consumed_interface(link_id, name, kind, dependency, dependant, errors);
     }
 }
 
@@ -318,8 +324,7 @@ fn validate_consumed_interface(
     interface_name: &str,
     kind: InterfaceKind,
     dependency: &ResolvedDependency<'_>,
-    dependant_name: &str,
-    dependant_tag: &str,
+    dependant: &Dependant<'_>,
     errors: &mut Vec<ParsingError>,
 ) {
     match find_exposure(&dependency.config, kind, interface_name.trim()) {
@@ -327,8 +332,8 @@ fn validate_consumed_interface(
         Exposure::ContractBackedOnly(entry) => {
             errors.push(ParsingError::ConsumedInterfaceOnlyContractBacked(Box::new(
                 ConsumedInterfaceOnlyContractBacked {
-                    dependant: dependant_name.to_owned(),
-                    dependant_tag: dependant_tag.to_owned(),
+                    dependant: dependant.name.to_owned(),
+                    dependant_tag: dependant.tag.to_owned(),
                     dependency: dependency.name.to_owned(),
                     dependency_tag: dependency.tag.to_owned(),
                     interface_kind: kind.label().to_owned(),
@@ -341,8 +346,8 @@ fn validate_consumed_interface(
         }
         Exposure::None => {
             errors.push(ParsingError::MissingInterface(Box::new(MissingInterface {
-                dependant: dependant_name.to_owned(),
-                dependant_tag: dependant_tag.to_owned(),
+                dependant: dependant.name.to_owned(),
+                dependant_tag: dependant.tag.to_owned(),
                 dependency: dependency.name.to_owned(),
                 dependency_tag: dependency.tag.to_owned(),
                 interface_kind: kind.label().to_owned(),
