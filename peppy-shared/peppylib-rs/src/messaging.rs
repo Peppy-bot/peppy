@@ -70,9 +70,10 @@ use crate::types::{Message, Payload};
 use config::node::{QoSProfile, TopicRetention};
 use pmi::{
     ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    Namespace, PresenceScope, PublisherQoS, Segment, ServiceQueryKind, ServiceReplyKind,
-    ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription as PmiSubscription,
-    TopicWireReceiver, TopicWireSender, ZenohAdapter, ZenohNetProtocol,
+    Namespace, PresenceScope, PublisherQoS, ReplyStream, Segment, ServiceQueryKind, ServiceReply,
+    ServiceReplyKind, ServiceWireReceiver, ServiceWireSender, SubscriberQoS,
+    Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender, ZenohAdapter,
+    ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -364,6 +365,77 @@ fn service_deadline_passed(deadline: Option<Instant>) -> bool {
     deadline.is_some_and(|deadline| Instant::now() >= deadline)
 }
 
+/// The call never reached the producer of `sender`'s service.
+fn service_unreachable(sender: &ServiceWireSender) -> Error {
+    Error::ServiceUnreachable {
+        instance_id: sender.target_instance_id().map(str::to_string),
+        service_name: sender.to_service_name().to_string(),
+    }
+}
+
+/// The producer of `sender`'s service acknowledged the call but sent no
+/// terminal reply in time.
+fn service_timed_out(sender: &ServiceWireSender) -> Error {
+    Error::ServiceTimeout {
+        instance_id: sender.target_instance_id().map(str::to_string),
+        service_name: sender.to_service_name().to_string(),
+    }
+}
+
+/// How one service query attempt ends when it ends without an error.
+enum QueryAttempt {
+    /// The first `Response` or `HandlerError` of the attempt.
+    Terminal(ServiceReply),
+    /// The query finalized with no reply and no `Ack` before it, so the
+    /// target was never reached and the caller may issue the query again.
+    NotReached,
+}
+
+/// Receives the replies of one query attempt up to its first terminal reply,
+/// skipping the `Ack` that the producer sends before its handler runs. An
+/// `Ack` proves the target was reached, so after one a deadline expiry or a
+/// closed stream is a `ServiceTimeout`; before one a deadline expiry is
+/// `ServiceUnreachable`.
+async fn receive_terminal_reply(
+    replies: &mut ReplyStream,
+    deadline: Option<Instant>,
+    sender: &ServiceWireSender,
+) -> Result<QueryAttempt> {
+    let mut received_ack = false;
+    loop {
+        let received = within_service_deadline(deadline, replies.rx.recv())
+            .await
+            .ok_or_else(|| {
+                if received_ack {
+                    service_timed_out(sender)
+                } else {
+                    service_unreachable(sender)
+                }
+            })?;
+
+        // `None`: the query finalized with no reply.
+        let Some(reply) = received else {
+            if received_ack {
+                return Err(service_timed_out(sender));
+            }
+            return Ok(QueryAttempt::NotReached);
+        };
+        match reply.kind() {
+            ServiceReplyKind::Ack => {
+                received_ack = true;
+                tracing::trace!(
+                    service_name = %sender.to_service_name(),
+                    target_instance_id = ?sender.target_instance_id(),
+                    "service request acknowledged"
+                );
+            }
+            ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
+                return Ok(QueryAttempt::Terminal(reply));
+            }
+        }
+    }
+}
+
 impl MessengerHandle {
     /// Build a handle from an already-shared `pmi::Messenger`. This is the
     /// escape hatch for consumers that construct and own the messenger
@@ -539,17 +611,6 @@ impl MessengerHandle {
     ) -> Result<Message> {
         let response_timeout: Option<Duration> = response_timeout.into();
 
-        let to_service_name = sender.to_service_name().to_string();
-        let target_instance_id = sender.target_instance_id().map(str::to_string);
-        let unreachable = || Error::ServiceUnreachable {
-            instance_id: target_instance_id.clone(),
-            service_name: to_service_name.clone(),
-        };
-        let timed_out = || Error::ServiceTimeout {
-            instance_id: target_instance_id.clone(),
-            service_name: to_service_name.clone(),
-        };
-
         // Re-issue the query (cheap `Bytes` clone per attempt) on a cold-start
         // miss; see the retry rationale below.
         let request_bytes = request_payload.into_inner();
@@ -570,18 +631,18 @@ impl MessengerHandle {
         // Ack arrives the target is reachable, so a later miss is a genuine
         // `ServiceTimeout`, never a retry. This adds no happy-path overhead:
         // retries only fire on an actual cold-start miss.
-        let reply = 'attempts: loop {
-            let mut response_subscription = {
+        let reply = loop {
+            let mut replies = {
                 let messenger = within_service_deadline(deadline, self.messenger.lock())
                     .await
-                    .ok_or_else(unreachable)?;
+                    .ok_or_else(|| service_unreachable(sender))?;
                 // A query is issued only while the caller still waits for it. A
                 // lock acquired past the deadline (a contended lock, a retry
                 // backoff that ran late) would otherwise put a request on the
                 // wire that the producer executes while this caller reports it
                 // as unreachable.
                 if service_deadline_passed(deadline) {
-                    return Err(unreachable());
+                    return Err(service_unreachable(sender));
                 }
                 let attempt_timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
                 within_service_deadline(
@@ -594,55 +655,24 @@ impl MessengerHandle {
                     ),
                 )
                 .await
-                .ok_or_else(unreachable)?
+                .ok_or_else(|| service_unreachable(sender))?
                 .map_err(Error::PeppyMessagingInterface)?
             };
 
-            let mut received_ack = false;
-            loop {
-                let received = within_service_deadline(deadline, response_subscription.rx.recv())
-                    .await
-                    .ok_or_else(|| {
-                        if received_ack {
-                            timed_out()
-                        } else {
-                            unreachable()
-                        }
-                    })?;
-
-                match received {
-                    Some(reply) => match reply.kind() {
-                        ServiceReplyKind::Ack => {
-                            received_ack = true;
-                            tracing::trace!(
-                                service_name = %to_service_name,
-                                ?target_instance_id,
-                                "service request acknowledged"
-                            );
-                            continue;
-                        }
-                        ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
-                            break 'attempts reply;
-                        }
-                    },
-                    // Query finalized with no reply.
-                    None => {
-                        if received_ack {
-                            return Err(timed_out());
-                        }
-                        // Cold-start retry only makes sense against a bounded
-                        // budget. With no timeout there is nothing to bound the
-                        // retry, so fail fast rather than re-probing forever.
-                        let Some(deadline) = deadline else {
-                            return Err(unreachable());
-                        };
-                        let remaining = deadline.saturating_duration_since(Instant::now());
-                        if remaining.is_zero() {
-                            return Err(unreachable());
-                        }
-                        sleep(COLD_START_BACKOFF.min(remaining)).await;
-                        continue 'attempts;
+            match receive_terminal_reply(&mut replies, deadline, sender).await? {
+                QueryAttempt::Terminal(reply) => break reply,
+                QueryAttempt::NotReached => {
+                    // Cold-start retry only makes sense against a bounded
+                    // budget. With no timeout there is nothing to bound the
+                    // retry, so fail fast rather than re-probing forever.
+                    let Some(deadline) = deadline else {
+                        return Err(service_unreachable(sender));
+                    };
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(service_unreachable(sender));
                     }
+                    sleep(COLD_START_BACKOFF.min(remaining)).await;
                 }
             }
         };
@@ -656,8 +686,8 @@ impl MessengerHandle {
                     Err(_) => "service returned a non-UTF8 error payload".to_string(),
                 };
                 Err(Error::ServiceError {
-                    instance_id: target_instance_id,
-                    service_name: to_service_name,
+                    instance_id: sender.target_instance_id().map(str::to_string),
+                    service_name: sender.to_service_name().to_string(),
                     reason,
                 })
             }
