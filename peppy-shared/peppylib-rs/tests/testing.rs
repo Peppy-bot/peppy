@@ -12,14 +12,15 @@ use std::time::Duration;
 use config::node::{QoSProfile, TopicRetention};
 use peppylib::PeppyError;
 use peppylib::messaging::{
-    ActionMessenger, FeedbackBuffer, NonEmptyPayload, ProducerRef, SenderTarget, ServiceMessenger,
-    ServiceTarget, TopicMessenger,
+    ActionMessenger, FeedbackBuffer, NonEmptyPayload, PeerInfo, ProducerRef, SenderTarget,
+    ServiceMessenger, ServiceTarget, TopicMessenger,
 };
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use peppylib::testing::{
     EphemeralRouter, HarnessClock, HarnessCore, MOCK_CLOCK_INSTANCE_ID, MockActionServerCore,
-    MockClock, MockServiceCore, PublisherReadiness, STANDALONE_CORE_NODE, TestTopicPublisher,
-    wait_action_reachable, wait_service_reachable,
+    MockClock, MockServiceCore, PublisherReadiness, STANDALONE_CORE_NODE, ServiceReadiness,
+    ServiceReadinessKind, TestTopicPublisher, subscribe_peer_pinned, wait_action_reachable,
+    wait_service_reachable,
 };
 use peppylib::types::Payload;
 use tempfile::TempDir;
@@ -393,7 +394,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
     // The harness-side observation subscription exists before the node does;
     // the barrier below is what guarantees the node's session has discovered
     // it before setup's first publish.
-    let node_producer = ProducerRef::new("standalone-core", instance_id);
+    let node_producer = ProducerRef::new(STANDALONE_CORE_NODE, instance_id);
     let mut status_sub = TopicMessenger::subscribe(
         &observer_handle,
         CALLER_CORE,
@@ -420,7 +421,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
     // A mock service declared before the node exists: the reachability half
     // of the barrier must make it visible to the node's session pre-setup.
     let mock_handle = router.connect().await.expect("mock session");
-    let mock_service = peppylib::testing::MockServiceCore::listen(
+    let mock_service = MockServiceCore::listen(
         &mock_handle,
         "mock-core",
         "mock-1",
@@ -429,11 +430,11 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
     )
     .await
     .expect("mock service listens");
-    let service_readiness = [peppylib::testing::ServiceReadiness {
+    let service_readiness = [ServiceReadiness {
         target: node_target("dep_node"),
         name: "get_info".to_string(),
-        producer: peppylib::messaging::ProducerRef::new("mock-core", "mock-1"),
-        kind: peppylib::testing::ServiceReadinessKind::Service,
+        producer: ProducerRef::new("mock-core", "mock-1"),
+        kind: ServiceReadinessKind::Service,
     }];
 
     let hook_ran = Arc::new(AtomicBool::new(false));
@@ -579,7 +580,7 @@ async fn subscribe_peer_pinned_receives_slot_scoped_publishes() {
     let mock_handle = router.connect().await.expect("mock session");
 
     let pairing = SenderTarget::pairing("arm_link", "v1").expect("pairing target");
-    let mut subscription = peppylib::testing::subscribe_peer_pinned(
+    let mut subscription = subscribe_peer_pinned(
         &mock_handle,
         "mock-core",
         "mock-arm",
@@ -603,7 +604,7 @@ async fn subscribe_peer_pinned_receives_slot_scoped_publishes() {
         "arm",
         "joint_commands",
         QoSProfile::Reliable,
-        peppylib::messaging::PeerInfo {
+        PeerInfo {
             producer: ProducerRef::new("mock-core", "mock-arm"),
             peer_link_id: "controller".to_string(),
         },
