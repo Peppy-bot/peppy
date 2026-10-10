@@ -1,10 +1,6 @@
-//! Archive extraction primitives shared by node-stack and core-node.
-//!
-//! Lives at the crate root (rather than under `node_stack::start_steps`)
-//! because the same `.tar.zst` format is used by two unrelated callers:
-//! the start lifecycle's process-node archive extraction, and core-node's
-//! node-add source resolution. Keeping this here avoids the start pipeline
-//! "owning" a helper that has nothing to do with the start lifecycle.
+//! Extraction of the `.tar.zst` archive of a node, shared by the run steps of
+//! process nodes (`node_stack::run_steps`) and by core-node's node-add source
+//! resolution.
 
 use std::path::{Component, Path};
 use tar::Archive;

@@ -428,10 +428,9 @@ pub(super) async fn build_container_command(
     //     `/sys`), accept it; those nodes are created by the kernel and
     //     may not exist on the host running the daemon.
     //   - Otherwise, `mkdir -p` the source so node-owned scratch / output
-    //     directories Just Work. This used to be silent, which masked file
-    //     bind typos by turning them into empty directories. We now emit a
-    //     loud warning to the per-instance start log for every auto-create
-    //     so an unintended mkdir is still visible to the operator.
+    //     directories Just Work, and emit a loud warning to the per-instance
+    //     start log for every auto-create: a silent mkdir would turn a file
+    //     bind typo into an empty directory that nobody notices.
     ensure_bind_sources(&binds[1..], announcer)?;
 
     // Ensure host paths outside $HOME are accessible in the Lima VM. The

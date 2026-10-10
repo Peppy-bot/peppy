@@ -273,7 +273,7 @@ async fn a_remote_pair_survives_reads_and_is_dissolved_only_by_its_owners_notice
 /// instance?" (via `with_pairs`) BEFORE it dissolves, and by then the stop
 /// path has already removed the instance from the stack. A pruning read there
 /// would drop the very pair that names the recipients, and the survivor would
-/// never be told its peer died — so `with_pairs` must report the registry as
+/// never be told its peer died. So `with_pairs` must report the registry as
 /// recorded, leaving dissolution the only thing that removes a pair.
 #[tokio::test]
 async fn reading_pairs_for_notification_does_not_prune_the_dissolution_away() {

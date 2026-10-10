@@ -129,7 +129,7 @@ impl Pairing {
     }
 }
 
-/// The pair store. Plain `Vec` — stacks hold at most a handful of pairs, and
+/// The pair store. Plain `Vec`: stacks hold at most a handful of pairs, and
 /// every access already happens under the stack's `RwLock`.
 #[derive(Debug, Default)]
 pub(crate) struct PairingRegistry {

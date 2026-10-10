@@ -363,9 +363,8 @@ fn spawn_output_reader<R: Read + Send + 'static>(
 /// whether it forwards unconditionally or is subject to repaint coalescing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LineTerminator {
-    /// `\n` or `\r\n`: a real line. Always forwarded — this is the
-    /// compatibility guarantee that keeps output containing no bare `\r`
-    /// byte-identical to the previous `BufRead::lines` behavior.
+    /// `\n` or `\r\n`: a real line. Always forwarded, so output that holds
+    /// no bare `\r` splits into the same lines as `BufRead::lines` gives.
     Newline,
     /// A bare `\r`: a terminal repaint (progress bars). Forwarded at most
     /// once per coalescing interval.
@@ -454,8 +453,7 @@ pub(crate) const REPAINT_FORWARD_MIN_INTERVAL: Duration = Duration::from_millis(
 /// Decides which fragments forward: real lines (`\n`-terminated, or cut off by
 /// the end of the stream) always do, bare-`\r` repaints only when at least
 /// [`REPAINT_FORWARD_MIN_INTERVAL`] has passed since the last forwarded line.
-/// Suppressed fragments are dropped entirely (no log write, no stderr tail),
-/// matching their pre-`\r`-splitting invisibility.
+/// Suppressed fragments are dropped entirely (no log write, no stderr tail).
 #[derive(Default)]
 pub(crate) struct RepaintCoalescer {
     last_forward: Option<Instant>,

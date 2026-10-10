@@ -463,8 +463,10 @@ impl NodeStackInner {
     /// `.sif`/archive of the previous build is the caller's responsibility to
     /// clean up; `push_config` only manages the in-memory entity.
     ///
-    /// Dependency checks and rewiring only occur when interfaces change.
+    /// Dependency checks and rewiring occur only when the interfaces or the
+    /// dependencies change.
     /// Returns `Err(CannotModifyRootNode)` if trying to modify the root node config.
+    /// Returns `Err(CannotOverwriteNodeWithLiveInstances)` if the entity still tracks instances.
     /// Returns `Err(CannotOverwriteNodeWithDependents)` if interfaces change and the node has dependents.
     fn push_config_impl<P: Into<PathBuf>>(
         &mut self,
@@ -624,7 +626,7 @@ impl NodeStackInner {
     // ── Pairing ──────────────────────────────────────────────────────────
 
     /// Instance liveness for pairing purposes: tracked with a non-terminal
-    /// state (`Starting` counts — the reserve-before-spawn path pairs a
+    /// state (`Starting` counts: the reserve-before-spawn path pairs a
     /// slot while its instance is still starting).
     fn instance_is_live_for_pairing(&self, instance_id: &str) -> bool {
         self.find_map_entity(false, |_, entity| {
@@ -1029,7 +1031,7 @@ impl NodeStack {
     /// The root node (core node) is the parent of all other nodes in the graph
     /// and cannot be removed from the stack.
     ///
-    /// If `instance_id` is `None`, a random instance ID will be generated for
+    /// If `instance_id` is `None`, a random instance ID is generated for
     /// the root node. The root entity's lifecycle is degenerate: it represents
     /// the running daemon itself and has no buildable artifact, so it is
     /// constructed directly in `Ready { instances: [Running] }` via
@@ -1451,7 +1453,7 @@ impl NodeStack {
     ///
     /// The lifecycle paths ask "who else needs to hear about this instance?"
     /// on every start and stop, and cloning the whole registry to answer a
-    /// question about one instance is the bulk of that cost — on stacks with
+    /// question about one instance is the bulk of that cost, on stacks with
     /// no pairs at all as much as on federated ones.
     ///
     /// Deliberately NOT pruned, unlike [`Self::pairs`]. The question is asked
