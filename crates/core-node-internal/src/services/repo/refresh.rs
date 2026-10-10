@@ -17,8 +17,8 @@ use crate::services::repo::{
 use crate::source_url::SourceUrl;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
-    GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, ReadRef, RepoRefreshFeedback, RepoRefreshGoal,
-    RepoRefreshGoalResponse, RepoRefreshResult, RepoSource, RepoSourceKind,
+    GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, ReadRef, RepoItemKind, RepoRefreshFeedback,
+    RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource, RepoSourceKind,
 };
 use core_node_api::names;
 use daemon_config::consts::{PeppyDirs, peppy_build};
@@ -786,16 +786,12 @@ pub(crate) fn process_refresh(
     })
 }
 
-/// Every repository's entries, merged in id order, with the `(name, tag)`
-/// identities of each kind seen so far.
+/// Every repository's entries, merged in id order, with the
+/// `(kind, name, tag)` identities seen so far.
 #[derive(Default)]
 struct MergedItems {
     items: RepoItems,
-    seen_nodes: HashSet<(String, String)>,
-    seen_launchers: HashSet<(String, String)>,
-    seen_contracts: HashSet<(String, String)>,
-    seen_pairings: HashSet<(String, String)>,
-    seen_mcp_exposures: HashSet<(String, String)>,
+    seen: HashSet<(RepoItemKind, String, String)>,
 }
 
 impl MergedItems {
@@ -806,31 +802,31 @@ impl MergedItems {
     fn merge(&mut self, items: RepoItems, on_feedback: &mut dyn FnMut(RepoRefreshFeedback)) {
         merge_published(
             items.nodes,
-            &mut self.seen_nodes,
+            &mut self.seen,
             &mut self.items.nodes,
             on_feedback,
         );
         merge_published(
             items.launchers,
-            &mut self.seen_launchers,
+            &mut self.seen,
             &mut self.items.launchers,
             on_feedback,
         );
         merge_published(
             items.contracts,
-            &mut self.seen_contracts,
+            &mut self.seen,
             &mut self.items.contracts,
             on_feedback,
         );
         merge_published(
             items.pairings,
-            &mut self.seen_pairings,
+            &mut self.seen,
             &mut self.items.pairings,
             on_feedback,
         );
         merge_published(
             items.mcp_exposures,
-            &mut self.seen_mcp_exposures,
+            &mut self.seen,
             &mut self.items.mcp_exposures,
             on_feedback,
         );
@@ -839,17 +835,22 @@ impl MergedItems {
 
 /// Appends one repository's entries to the running cross-repo collection,
 /// emitting a `Discovered` feedback the first time each `(name, tag)`
-/// identity is seen. Every entry is kept (including same-identity
-/// duplicates from lower-priority repositories); feedback fires only for
-/// the highest-priority repository, which is read first.
+/// identity of `E`'s kind is seen. Every entry is kept (including
+/// same-identity duplicates from lower-priority repositories); feedback
+/// fires only for the highest-priority repository, which is read first.
 fn merge_published<E: RepoCacheEntry>(
     published: Vec<E>,
-    global_seen: &mut HashSet<(String, String)>,
+    global_seen: &mut HashSet<(RepoItemKind, String, String)>,
     all: &mut Vec<E>,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) {
     for entry in published {
-        if global_seen.insert((entry.name().to_owned(), entry.tag().to_owned())) {
+        let identity = (
+            E::ITEM_KIND,
+            entry.name().to_owned(),
+            entry.tag().to_owned(),
+        );
+        if global_seen.insert(identity) {
             on_feedback(RepoRefreshFeedback::Discovered {
                 kind: E::ITEM_KIND,
                 item_name: entry.name().to_owned(),
