@@ -54,21 +54,18 @@ fn check_process_alive(child: &mut Child, log_path: &Path) -> std::result::Resul
     }
 }
 
+/// How many trailing lines of the zenohd log an exit error quotes.
+const LOG_EXCERPT_LINES: usize = 20;
+
 /// Builds a short suffix describing why zenohd exited by reading the tail of
 /// its redirected log file. Used only on the error path; falls back to the log
 /// path when the file is empty or unreadable.
 fn zenohd_log_excerpt(log_path: &Path) -> String {
     match std::fs::read_to_string(log_path) {
         Ok(contents) if !contents.trim().is_empty() => {
-            let tail = contents
-                .lines()
-                .rev()
-                .take(20)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
+            let mut tail: Vec<&str> = contents.lines().rev().take(LOG_EXCERPT_LINES).collect();
+            tail.reverse();
+            let tail = tail.join("\n");
             format!(" – last zenohd log lines:\n{tail}")
         }
         _ => format!(" (see zenohd log at {})", log_path.display()),
@@ -1105,6 +1102,20 @@ mod tests {
             facade.router_process.as_ref().map(Child::id),
             Some(child_id),
             "a repeated start must not replace the original child handle"
+        );
+    }
+
+    #[test]
+    fn zenohd_log_excerpt_quotes_the_last_lines_in_file_order() {
+        let dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let log_path = dir.path().join("zenohd_0.log");
+        let lines: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
+        std::fs::write(&log_path, lines.join("\n")).expect("write log");
+
+        let expected_tail = lines[5..].join("\n");
+        assert_eq!(
+            zenohd_log_excerpt(&log_path),
+            format!(" – last zenohd log lines:\n{expected_tail}")
         );
     }
 
