@@ -3568,13 +3568,10 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
     )
     .expect("launcher");
 
-    let (document, report) = peppy::commands::stack::resolve_rendered(
-        &empty_peppy_dirs(),
-        launcher,
-        &["recorder=on".to_owned()],
-        &[],
-    )
-    .expect("resolves");
+    let (dirs, _root) = empty_peppy_root();
+    let (document, report) =
+        peppy::commands::stack::resolve_rendered(&dirs, launcher, &["recorder=on".to_owned()], &[])
+            .expect("resolves");
 
     assert!(
         document.contains("recorder_inst") && document.contains("panel_inst"),
@@ -3640,8 +3637,9 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
     )
     .expect("launcher");
 
+    let (dirs, _root) = empty_peppy_root();
     let err = peppy::commands::stack::resolve_rendered(
-        &empty_peppy_dirs(),
+        &dirs,
         launcher.clone(),
         &["mujoco".to_owned(), "cameras".to_owned()],
         &[],
@@ -3655,13 +3653,9 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
         "the refusal names the guard, the requirement, and the reason: {msg}"
     );
 
-    let (document, _report) = peppy::commands::stack::resolve_rendered(
-        &empty_peppy_dirs(),
-        launcher,
-        &["cameras".to_owned()],
-        &[],
-    )
-    .expect("the legal sibling resolves");
+    let (document, _report) =
+        peppy::commands::stack::resolve_rendered(&dirs, launcher, &["cameras".to_owned()], &[])
+            .expect("the legal sibling resolves");
     assert!(
         document.contains("cam_inst") && document.contains("arm_inst"),
         "the flat document carries the selected options: {document}"
@@ -3675,10 +3669,11 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
 /// A peppy root whose nodes cache holds nothing, for resolve tests that are
 /// about composition rather than the link rules: the check reports itself
 /// skipped instead of reading whatever this machine's real caches hold.
-fn empty_peppy_dirs() -> daemon_config::consts::PeppyDirs {
-    static EMPTY_ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    let dir = EMPTY_ROOT.get_or_init(|| tempfile::tempdir().expect("temp peppy root"));
-    daemon_config::consts::PeppyDirs::new(dir.path())
+/// Returns the dirs and the root, which is removed when the caller drops it.
+fn empty_peppy_root() -> (daemon_config::consts::PeppyDirs, tempfile::TempDir) {
+    let root = tempfile::tempdir().expect("temp peppy root");
+    let dirs = daemon_config::consts::PeppyDirs::new(root.path());
+    (dirs, root)
 }
 
 /// The node every pairing root publishes: one manifest declaring a single
@@ -3953,9 +3948,9 @@ fn stack_resolve_reports_the_check_skipped_on_an_empty_cache() {
     let launcher = dir.path().join("solo.json5");
     fs::write(&launcher, UNCOVERED_VIEWER_LAUNCHER).expect("launcher");
 
-    let (_document, report) =
-        peppy::commands::stack::resolve_rendered(&empty_peppy_dirs(), launcher, &[], &[])
-            .expect("an empty cache skips the link check");
+    let (dirs, _root) = empty_peppy_root();
+    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
+        .expect("an empty cache skips the link check");
     let report_text = report.join("\n");
     assert!(
         report_text.contains("link rules not checked") && report_text.contains("repo refresh"),
