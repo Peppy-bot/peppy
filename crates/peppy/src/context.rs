@@ -100,19 +100,20 @@ impl AppContext {
         messaging_host: &str,
         messaging_port: u16,
         namespace: config::namespace::Namespace,
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<&MessengerHandle> {
         // Open the control session as a pure Zenoh client under the typed
         // namespace recorded by the daemon generation: no listener,
         // no gossip discovery, every request relayed through the daemon's
         // router.
-        self.messenger_handle
+        let messenger = self
+            .messenger_handle
             .get_or_try_init(|| async {
                 MessengerHandle::connect(messaging_host, messaging_port)
                     .scope(SessionScope::Namespace(namespace))
                     .await
             })
             .await?;
-        Ok(())
+        Ok(messenger)
     }
 
     pub fn messenger_handle(&self) -> Option<&MessengerHandle> {
@@ -146,15 +147,13 @@ pub(crate) struct DaemonConnection<'a> {
 impl AppContext {
     pub(crate) async fn connect_to_daemon(&self) -> crate::error::Result<DaemonConnection<'_>> {
         let daemon_state = self.read_daemon_state()?;
-        self.connect_with_endpoint(
-            &daemon_state.messaging_host,
-            daemon_state.messaging_port,
-            daemon_state.namespace.clone(),
-        )
-        .await?;
         let messenger = self
-            .messenger_handle()
-            .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
+            .connect_with_endpoint(
+                &daemon_state.messaging_host,
+                daemon_state.messaging_port,
+                daemon_state.namespace,
+            )
+            .await?;
         let target_is_override = self.core_node_override.is_some();
         let target_core_node = self
             .core_node_override
