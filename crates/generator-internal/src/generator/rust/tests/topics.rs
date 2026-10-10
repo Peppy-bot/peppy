@@ -324,6 +324,84 @@ fn emit_two_topics() {
     assert_artifact_contains(&artifacts, "push_lidar_object_message_capnp");
 }
 
+/// Writes the crate of `generator` into `output_dir`, over whatever an
+/// earlier generation left there.
+fn build_in_place(generator: RustGenerator, output_dir: &std::path::Path) {
+    generator
+        .build(
+            output_dir,
+            &daemon_config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
+        .unwrap();
+}
+
+/// A node that drops its last message-format interface generates again over
+/// its earlier tree: the capnp module is the placeholder again and the
+/// earlier schemas leave the crate.
+#[test]
+fn regeneration_without_schemas_drops_the_earlier_capnp_modules() {
+    let temp_dir = TempDir::new().unwrap();
+    let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
+    generator
+        .add_emitted_topic(&parse_emitted_topic(EMITTED_TOPIC_EXAMPLE), None)
+        .unwrap();
+    build_in_place(generator, &output_dir);
+    assert!(
+        output_dir
+            .join("src/capnp/video_stream_message.capnp")
+            .exists()
+    );
+
+    build_in_place(RustGenerator::new(), &output_dir);
+
+    assert_eq!(
+        fs::read_to_string(output_dir.join("src/capnp.rs")).unwrap(),
+        "// No Cap'n Proto schemas generated.\n"
+    );
+    assert!(!output_dir.join("src/capnp").exists());
+}
+
+/// A node that drops one of its message-format interfaces keeps no file of
+/// that interface's schema under `src/capnp`.
+#[test]
+fn regeneration_drops_the_capnp_files_of_a_removed_topic() {
+    let temp_dir = TempDir::new().unwrap();
+    let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
+    let video_stream = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
+    generator.add_emitted_topic(&video_stream, None).unwrap();
+    generator
+        .add_emitted_topic(&parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2), None)
+        .unwrap();
+    build_in_place(generator, &output_dir);
+    let capnp_dir = output_dir.join("src/capnp");
+    let removed_files = [
+        capnp_dir.join("push_lidar_object_message.capnp"),
+        capnp_dir.join("push_lidar_object_message_capnp.rs"),
+    ];
+    for file in &removed_files {
+        assert!(
+            file.exists(),
+            "{} after the first generation",
+            file.display()
+        );
+    }
+
+    let mut generator = RustGenerator::new();
+    generator.add_emitted_topic(&video_stream, None).unwrap();
+    build_in_place(generator, &output_dir);
+
+    assert!(capnp_dir.join("video_stream_message.capnp").exists());
+    assert!(capnp_dir.join("video_stream_message_capnp.rs").exists());
+    for file in &removed_files {
+        assert!(
+            !file.exists(),
+            "{} after the second generation",
+            file.display()
+        );
+    }
+}
+
 #[test]
 fn emit_topic_escapes_rust_keyword_fields() {
     let emitted_topic_keyword_fields_example: &str = r#"

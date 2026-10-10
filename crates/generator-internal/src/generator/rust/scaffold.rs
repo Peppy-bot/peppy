@@ -90,20 +90,28 @@ pub fn add_parameters_to_lib(
     Ok(())
 }
 
+/// Writes the node's Cap'n Proto schemas under `src/capnp` and compiles them
+/// into the crate's `capnp` module. A generation can run over the tree of an
+/// earlier one, so the earlier `src/capnp` directory is removed first and
+/// `src/capnp.rs` is always written: the crate keeps no schema of an interface
+/// the node no longer has.
 pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Path) -> Result<()> {
     let src_dir = crate_root.join("src");
+    let capnp_dir = src_dir.join("capnp");
+    if capnp_dir.exists() {
+        fs::remove_dir_all(&capnp_dir)?;
+    }
     if schemas.is_empty() {
-        let capnp_rs = src_dir.join("capnp.rs");
-        if !capnp_rs.exists() {
-            fs::write(capnp_rs, "// No Cap'n Proto schemas generated.\n")?;
-        }
+        fs::write(
+            src_dir.join("capnp.rs"),
+            "// No Cap'n Proto schemas generated.\n",
+        )?;
         return Ok(());
     }
 
     let mut entries: Vec<&CapnpSchema> = schemas.values().collect();
     entries.sort_by(|a, b| a.file_stem().cmp(b.file_stem()));
 
-    let capnp_dir = src_dir.join("capnp");
     fs::create_dir_all(&capnp_dir)?;
 
     let mut schema_paths = Vec::with_capacity(entries.len());
