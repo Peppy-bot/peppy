@@ -434,60 +434,6 @@ pub fn parse_endpoint<'a>(
     Ok(ParsedEndpoint { host, port })
 }
 
-/// Owned form of [`ParsedEndpoint`] that keeps the canonical endpoint text
-/// together with its parsed host and port, so a syntax-checked endpoint can be
-/// stored and passed around without consumers re-parsing (and re-wording
-/// impossible parse failures for) the same string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ParsedEndpointBuf {
-    text: String,
-    /// Host without IPv6 brackets.
-    host: String,
-    port: u16,
-}
-
-impl ParsedEndpointBuf {
-    /// Parses and takes ownership of an endpoint via [`parse_endpoint`].
-    pub fn parse(
-        text: impl Into<String>,
-        expected_scheme: &str,
-    ) -> std::result::Result<Self, String> {
-        let text = text.into();
-        let parsed = parse_endpoint(&text, expected_scheme)?;
-        let host = parsed.host.to_string();
-        let port = parsed.port;
-        Ok(Self { text, host, port })
-    }
-
-    /// The canonical `<scheme>/<host>:<port>` text this was parsed from.
-    pub fn as_str(&self) -> &str {
-        &self.text
-    }
-
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-}
-
-impl std::fmt::Display for ParsedEndpointBuf {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.text)
-    }
-}
-
-impl Serialize for ParsedEndpointBuf {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.text)
-    }
-}
-
 fn split_endpoint_host_port(address: &str) -> std::result::Result<(&str, &str, bool), String> {
     if let Some(bracketed) = address.strip_prefix('[') {
         let Some(close) = bracketed.find(']') else {
@@ -1573,24 +1519,6 @@ mod tests {
                 port: 7449
             }
         );
-    }
-
-    #[test]
-    fn parsed_endpoint_buf_round_trips() {
-        let buf = ParsedEndpointBuf::parse("tls/[2001:db8::1]:7449", "tls").unwrap();
-        assert_eq!(buf.host(), "2001:db8::1");
-        assert_eq!(buf.port(), 7449);
-        assert_eq!(buf.as_str(), "tls/[2001:db8::1]:7449");
-        assert_eq!(buf.to_string(), buf.as_str());
-        assert_eq!(
-            serde_json::to_string(&buf).unwrap(),
-            "\"tls/[2001:db8::1]:7449\""
-        );
-        assert_eq!(
-            ParsedEndpointBuf::parse(buf.to_string(), "tls").unwrap(),
-            buf
-        );
-        assert!(ParsedEndpointBuf::parse("tcp/router.example:7449", "tls").is_err());
     }
 
     #[test]
