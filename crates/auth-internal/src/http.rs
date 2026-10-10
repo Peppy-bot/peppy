@@ -62,7 +62,6 @@ impl Default for HttpClient {
 
 impl HttpClient {
     pub fn new() -> Self {
-        let timeout = DEFAULT_HTTP_TIMEOUT;
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             // Use the host platform's trust policy rather than ureq's static
@@ -85,7 +84,7 @@ impl HttpClient {
             // quietly re-enable header forwarding across a redirect; this line
             // changes no behaviour today.
             .redirect_auth_headers(RedirectAuthHeaders::Never)
-            .timeout_global(Some(timeout))
+            .timeout_global(Some(DEFAULT_HTTP_TIMEOUT))
             .build()
             .into();
         Self { agent }
@@ -93,10 +92,8 @@ impl HttpClient {
 
     /// `GET url`, optionally with a bearer token.
     pub fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
-        let resp = with_bearer(self.agent.get(url), bearer)
-            .call()
-            .map_err(|e| Error::Http(format!("GET {} failed: {e}", redact(url))))?;
-        finish("GET", url, resp)
+        let sent = with_bearer(self.agent.get(url), bearer).call();
+        read_response("GET", url, sent)
     }
 
     /// `POST url` with an `application/x-www-form-urlencoded` body built from `form`.
@@ -115,10 +112,8 @@ impl HttpClient {
             .agent
             .post(url)
             .header("Content-Type", "application/x-www-form-urlencoded");
-        let resp = with_bearer(req, bearer)
-            .send(body)
-            .map_err(|e| Error::Http(format!("POST {} failed: {e}", redact(url))))?;
-        finish("POST", url, resp)
+        let sent = with_bearer(req, bearer).send(body);
+        read_response("POST", url, sent)
     }
 
     /// `POST url` with a pre-serialized JSON `body` (`application/json`),
@@ -129,26 +124,20 @@ impl HttpClient {
             .agent
             .post(url)
             .header("Content-Type", "application/json");
-        let resp = with_bearer(req, bearer)
-            .send(body)
-            .map_err(|e| Error::Http(format!("POST {} failed: {e}", redact(url))))?;
-        finish("POST", url, resp)
+        let sent = with_bearer(req, bearer).send(body);
+        read_response("POST", url, sent)
     }
 
     /// `POST url` with no body, optionally with a bearer token.
     pub fn post_empty(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
-        let resp = with_bearer(self.agent.post(url), bearer)
-            .send_empty()
-            .map_err(|e| Error::Http(format!("POST {} failed: {e}", redact(url))))?;
-        finish("POST", url, resp)
+        let sent = with_bearer(self.agent.post(url), bearer).send_empty();
+        read_response("POST", url, sent)
     }
 
     /// `DELETE url`, optionally with a bearer token.
     pub fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
-        let resp = with_bearer(self.agent.delete(url), bearer)
-            .call()
-            .map_err(|e| Error::Http(format!("DELETE {} failed: {e}", redact(url))))?;
-        finish("DELETE", url, resp)
+        let sent = with_bearer(self.agent.delete(url), bearer).call();
+        read_response("DELETE", url, sent)
     }
 }
 
@@ -167,7 +156,15 @@ fn with_bearer<B>(req: ureq::RequestBuilder<B>, bearer: Option<&str>) -> ureq::R
     }
 }
 
-fn finish(method: &str, url: &str, resp: ureq::http::Response<ureq::Body>) -> Result<HttpResponse> {
+/// Reads the answer to a `method` request to `url`, or names the method and the
+/// redacted URL when the request could not be sent or its body not read.
+fn read_response(
+    method: &str,
+    url: &str,
+    sent: std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+) -> Result<HttpResponse> {
+    let mut resp =
+        sent.map_err(|e| Error::Http(format!("{method} {} failed: {e}", redact(url))))?;
     let status = resp.status().as_u16();
     // Only the delta-seconds form is read. A date form gives no delay, and the
     // caller then prints the refusal without one.
@@ -176,7 +173,6 @@ fn finish(method: &str, url: &str, resp: ureq::http::Response<ureq::Body>) -> Re
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse().ok());
-    let mut resp = resp;
     let body = resp
         .body_mut()
         .with_config()
@@ -231,5 +227,55 @@ mod tests {
         assert_eq!(response.status, 302);
         redirect.assert_calls(1);
         target.assert_calls(0);
+    }
+
+    /// A request that cannot be sent names the method and the URL without its
+    /// query. The space makes the URL invalid, so nothing reaches a network.
+    #[test]
+    fn a_request_that_cannot_be_sent_names_the_method_and_the_redacted_url() {
+        let client = HttpClient::new();
+        let url = "http://bad host/token?code=secret";
+        type SendRequest = fn(&HttpClient, &str) -> Result<HttpResponse>;
+        let verbs: [(&str, SendRequest); 5] = [
+            ("GET", |client, url| client.get(url, Some("bearer"))),
+            ("POST", |client, url| {
+                client.post_form(url, &[("grant_type", "x")], None)
+            }),
+            ("POST", |client, url| client.post_json(url, "{}", None)),
+            ("POST", |client, url| client.post_empty(url, None)),
+            ("DELETE", |client, url| client.delete(url, None)),
+        ];
+        for (method, send) in verbs {
+            let message = send(&client, url).err().expect("not sent").to_string();
+            assert!(
+                message.starts_with(&format!("{method} http://bad host/token failed: ")),
+                "{message}"
+            );
+            assert!(!message.contains("secret"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_body_over_the_limit_is_refused_naming_the_method_and_the_url() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/large");
+            then.status(200)
+                .body("a".repeat(MAX_RESPONSE_BYTES as usize + 1));
+        });
+
+        let message = HttpClient::new()
+            .get(&format!("{}/large?code=secret", server.base_url()), None)
+            .err()
+            .expect("the body is over the limit")
+            .to_string();
+
+        assert!(
+            message.starts_with(&format!(
+                "GET {}/large failed reading body: ",
+                server.base_url()
+            )),
+            "{message}"
+        );
     }
 }
