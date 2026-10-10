@@ -17,14 +17,14 @@ use tracing::debug;
 
 pub async fn listen_for_node_init(
     messenger: &MessengerHandle,
-    core_node_node: &str,
+    core_node_name: &str,
     instance_id: &str,
     node_name: &str,
     peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
-        core_node_node,
+        core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         ServiceId::NodeInit.name(),

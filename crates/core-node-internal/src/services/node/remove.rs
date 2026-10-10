@@ -22,20 +22,20 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn listen_for_node_remove(
     messenger: &MessengerHandle,
-    core_node_node: &str,
+    core_node_name: &str,
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
     relationships: RelationshipCoordinators,
     ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let core_node_node = core_node_node.to_string();
+    let core_node_name = core_node_name.to_string();
     let core_instance_id = instance_id.to_string();
     let messenger = messenger.clone();
 
     let mut endpoint = ServiceMessenger::listen(
         &messenger,
-        &core_node_node,
+        &core_node_name,
         &core_instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         ServiceId::NodeRemove.name(),
@@ -48,7 +48,7 @@ pub async fn listen_for_node_remove(
                 handle_node_remove_request(
                     context,
                     messenger.clone(),
-                    core_node_node.clone(),
+                    core_node_name.clone(),
                     core_instance_id.clone(),
                     Arc::clone(&node_stack),
                     relationships.clone(),
@@ -65,7 +65,7 @@ pub async fn listen_for_node_remove(
 async fn handle_node_remove_request(
     context: ServiceRequestContext,
     messenger: MessengerHandle,
-    core_node_node: String,
+    core_node_name: String,
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
     relationships: RelationshipCoordinators,
@@ -90,7 +90,7 @@ async fn handle_node_remove_request(
                 &context,
                 &request,
                 &messenger,
-                &core_node_node,
+                &core_node_name,
                 &core_instance_id,
                 node_stack,
                 &relationships,
@@ -110,7 +110,7 @@ async fn handle_node_remove_request_inner(
     context: &ServiceRequestContext,
     request: &NodeRemoveRequest,
     messenger: &MessengerHandle,
-    core_node_node: &str,
+    core_node_name: &str,
     core_instance_id: &str,
     node_stack: Arc<NodeStack>,
     relationships: &RelationshipCoordinators,
@@ -211,11 +211,11 @@ async fn handle_node_remove_request_inner(
     let reachability: Vec<std::result::Result<bool, PeppyError>> =
         futures::future::join_all(targets.iter().map(|target| {
             let producer =
-                peppylib::messaging::ProducerRef::new(core_node_node, target.instance_id.as_str());
+                peppylib::messaging::ProducerRef::new(core_node_name, target.instance_id.as_str());
             async move {
                 ServiceMessenger::is_reachable(
                     messenger,
-                    core_node_node,
+                    core_node_name,
                     core_instance_id,
                     SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
                     SHUTDOWN_SERVICE,
@@ -299,11 +299,11 @@ async fn handle_node_remove_request_inner(
         // than the sum.
         let shutdown_results = futures::future::join_all(running_targets.iter().map(|target| {
             let producer =
-                peppylib::messaging::ProducerRef::new(core_node_node, target.instance_id.as_str());
+                peppylib::messaging::ProducerRef::new(core_node_name, target.instance_id.as_str());
             async move {
                 ServiceMessenger::poll(
                     messenger,
-                    core_node_node,
+                    core_node_name,
                     core_instance_id,
                     SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
                     SHUTDOWN_SERVICE,
