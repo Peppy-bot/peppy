@@ -57,11 +57,9 @@ fn no_color_from_env(value: Option<String>) -> bool {
 /// tick, and `{spinner} {msg}` rendered to stderr.
 ///
 /// Returns `None` when stderr is not a real terminal, so piped/CI output stays
-/// clean (the caller just gets no spinner). The caller is responsible for ending
-/// it with [`indicatif::ProgressBar::finish_and_clear`] once the wait is over.
-pub(crate) fn spinner(
-    message: impl Into<std::borrow::Cow<'static, str>>,
-) -> Option<indicatif::ProgressBar> {
+/// clean (the caller just gets no spinner). [`while_spinning`] ends it with
+/// [`indicatif::ProgressBar::finish_and_clear`] once the wait is over.
+fn spinner(message: &'static str) -> Option<indicatif::ProgressBar> {
     if !std::io::stderr().is_terminal() {
         return None;
     }
@@ -69,6 +67,19 @@ pub(crate) fn spinner(
     pb.set_message(message);
     pb.enable_steady_tick(std::time::Duration::from_millis(120));
     Some(pb)
+}
+
+/// Runs `work` under a [`spinner`] that shows `message`, and clears the
+/// spinner when `work` returns, whatever it returns. The one owner of the
+/// spinner's start and end, so every wait of the CLI shows and removes it the
+/// same way.
+pub(crate) fn while_spinning<T>(message: &'static str, work: impl FnOnce() -> T) -> T {
+    let spinner = spinner(message);
+    let result = work();
+    if let Some(spinner) = spinner {
+        spinner.finish_and_clear();
+    }
+    result
 }
 
 /// A fixed-height scrolling output region for the terminal.

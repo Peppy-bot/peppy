@@ -382,11 +382,10 @@ pub(crate) fn poke_federation_and_report(
 ) -> Result<()> {
     let socket = daemon_control::federation_control_socket_path(dirs);
     let read_timeout = daemon_control::POKE_READ_TIMEOUT;
-    let spinner = crate::terminal::spinner("Waiting for the daemon to apply the enrollment");
-    let outcome = daemon_control::poke_refederate(&socket, read_timeout);
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
-    }
+    let outcome =
+        crate::terminal::while_spinning("Waiting for the daemon to apply the enrollment", || {
+            daemon_control::poke_refederate(&socket, read_timeout)
+        });
     if matches!(outcome, PokeOutcome::Restarting) {
         return await_restart(dirs, &socket, read_timeout, &action);
     }
@@ -403,10 +402,11 @@ fn report(outcome: PokeOutcome, action: &FederationPokeAction) -> Result<()> {
     }
 }
 
-/// Polls until the daemon is back under the identity the enrollment now
-/// prescribes, then reports the settled federation outcome. Detects a
-/// concurrent enrollment change (a second enroll/unenroll mid-restart) and a
-/// never-recovers timeout. Bounded by [`RESTART_POLL_DEADLINE`].
+/// Polls, under a spinner, until the daemon is back under the identity the
+/// enrollment now prescribes, then reports the settled federation outcome.
+/// Detects a concurrent enrollment change (a second enroll/unenroll
+/// mid-restart) and a never-recovers timeout. Bounded by
+/// [`RESTART_POLL_DEADLINE`].
 fn await_restart(
     dirs: &PeppyDirs,
     socket: &std::path::Path,
@@ -414,11 +414,23 @@ fn await_restart(
     action: &FederationPokeAction,
 ) -> Result<()> {
     let expected = FederationIdentity::on_disk(dirs)?;
+    crate::terminal::while_spinning(
+        "Waiting for the daemon to restart under the new identity",
+        || poll_until_back_under(&expected, dirs, socket, read_timeout, action),
+    )
+}
+
+/// The polling loop of [`await_restart`], which runs under its spinner.
+fn poll_until_back_under(
+    expected: &FederationIdentity,
+    dirs: &PeppyDirs,
+    socket: &std::path::Path,
+    read_timeout: Duration,
+    action: &FederationPokeAction,
+) -> Result<()> {
     let subcommand = action.subcommand();
-    let spinner =
-        crate::terminal::spinner("Waiting for the daemon to restart under the new identity");
     let deadline = Instant::now() + RESTART_POLL_DEADLINE;
-    let result = loop {
+    loop {
         if Instant::now() >= deadline {
             break Err(Error::Auth(format!(
                 "the daemon did not come back under namespace `{}` within the timeout; \
@@ -430,7 +442,7 @@ fn await_restart(
 
         // A concurrent enroll/unenroll rewrote the enrollment mid-restart, so the
         // daemon will not come back under what we wrote.
-        if FederationIdentity::on_disk(dirs)? != expected {
+        if FederationIdentity::on_disk(dirs)? != *expected {
             break Err(Error::Auth(format!(
                 "the enrollment changed during the restart; re-run `peppy platform {subcommand}`"
             )));
@@ -442,7 +454,7 @@ fn await_restart(
         // value.
         let back = matches!(
             DaemonState::read_from(&DaemonState::state_file_in(dirs.root())),
-            Ok(state) if state.runs_under(&expected)
+            Ok(state) if state.runs_under(expected)
         );
         if !back {
             continue;
@@ -461,11 +473,7 @@ fn await_restart(
             }
             other => break report(other, action),
         }
-    };
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
     }
-    result
 }
 
 /// Strict reporting for an enroll poke: a verified link and an operator-pinned
