@@ -128,12 +128,7 @@ fn native_facade_with_l4t_manifest(apptainer_dir: &Path, manifest_dir: &Path) ->
 /// once it is stale.
 fn native_fixture_scratch() -> &'static Path {
     static SCRATCH: OnceLock<TempDir> = OnceLock::new();
-    SCRATCH
-        .get_or_init(|| {
-            TempDir::new_in(config_test_support::test_tmp_root())
-                .expect("create native fixture scratch dir")
-        })
-        .path()
+    SCRATCH.get_or_init(super::scratch_dir).path()
 }
 
 /// Builds a Lima-backend facade for command-assembly and path-translation
@@ -577,7 +572,7 @@ impl JetsonFixture {
     const STOCK_LIST: &'static str = "libcuda.so\nlibEGL_nvidia.so\n";
 
     fn new() -> Self {
-        let scratch = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
+        let scratch = super::scratch_dir();
         let fixture = Self { scratch };
         fs::create_dir_all(fixture.nvliblist().parent().unwrap()).unwrap();
         fs::write(fixture.nvliblist(), Self::STOCK_LIST).unwrap();
@@ -1695,7 +1690,7 @@ struct RegistryAuthFixture {
 }
 
 fn native_facade_reading_docker_config(contents: &str) -> RegistryAuthFixture {
-    let dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("create scratch dir");
+    let dir = super::scratch_dir();
     let docker_config = dir.path().join("config.json");
     fs::write(&docker_config, contents).expect("write docker config");
     let sanitized_file = dir.path().join("sanitized/docker-config.json");

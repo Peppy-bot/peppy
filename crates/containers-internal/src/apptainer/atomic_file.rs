@@ -55,11 +55,7 @@ pub(crate) fn replace_file(path: &Path, contents: &[u8], mode: u32) -> std::io::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-
-    fn scratch() -> TempDir {
-        TempDir::new_in(config_test_support::test_tmp_root()).expect("create scratch dir")
-    }
+    use crate::apptainer::scratch_dir;
 
     /// The names in `dir`, sorted.
     fn names_in(dir: &Path) -> Vec<String> {
@@ -79,7 +75,7 @@ mod tests {
 
     #[test]
     fn a_replaced_file_holds_the_new_contents_and_no_sibling_is_left() {
-        let scratch = scratch();
+        let scratch = scratch_dir();
         let path = scratch.path().join("list.conf");
         fs::write(&path, "old\n").unwrap();
 
@@ -93,7 +89,7 @@ mod tests {
     /// the test also holds when the tests run under one.
     #[test]
     fn the_file_ends_with_the_mode_asked_for() {
-        let scratch = scratch();
+        let scratch = scratch_dir();
         for (name, mode) in [("private.json", 0o600), ("list.conf", 0o644)] {
             let path = scratch.path().join(name);
 
@@ -106,7 +102,7 @@ mod tests {
 
     #[test]
     fn a_failed_rename_leaves_the_target_and_no_sibling() {
-        let scratch = scratch();
+        let scratch = scratch_dir();
         // A non-empty directory in the target's place: the sibling is written,
         // and the rename over the directory fails.
         let path = scratch.path().join("occupied");

@@ -278,12 +278,7 @@ fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-
-    /// A scratch directory under the shared test root.
-    fn scratch() -> TempDir {
-        TempDir::new_in(config_test_support::test_tmp_root()).expect("create scratch dir")
-    }
+    use crate::apptainer::scratch_dir;
 
     /// An env lookup that only knows `vars`.
     fn env_of(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
@@ -492,7 +487,7 @@ mod tests {
 
     #[test]
     fn current_path_prefers_apptainers_own_file_only_while_it_exists() {
-        let dir = scratch();
+        let dir = scratch_dir();
         let source = RegistryAuthSource::ApptainerThenDocker {
             apptainer_config: dir.path().join("docker-config.json"),
             docker_config: dir.path().join("config.json"),
@@ -526,7 +521,7 @@ mod tests {
 
     #[test]
     fn prepare_writes_a_private_sanitized_copy_and_leaves_the_source_alone() {
-        let dir = scratch();
+        let dir = scratch_dir();
         write_docker_config(dir.path(), WEB_LOGIN_CONFIG);
         let registry_auth = registry_auth_in(dir.path());
 
@@ -553,7 +548,7 @@ mod tests {
 
     #[test]
     fn prepare_reads_apptainers_own_file_over_dockers() {
-        let dir = scratch();
+        let dir = scratch_dir();
         write_docker_config(
             dir.path(),
             r#"{"auths": {"docker.example": {"auth": "ZDpk"}}}"#,
@@ -581,7 +576,7 @@ mod tests {
     /// peppy's copy.
     #[test]
     fn prepare_without_a_source_writes_an_empty_copy_over_an_earlier_one() {
-        let dir = scratch();
+        let dir = scratch_dir();
         write_docker_config(dir.path(), WEB_LOGIN_CONFIG);
         let registry_auth = registry_auth_in(dir.path());
         registry_auth.prepare().expect("first prepare");
@@ -594,7 +589,7 @@ mod tests {
 
     #[test]
     fn prepare_restricts_an_existing_directory_to_this_user() {
-        let dir = scratch();
+        let dir = scratch_dir();
         let registry_auth = registry_auth_in(dir.path());
         let sanitized_dir = registry_auth.sanitized_file.parent().expect("parent");
         fs::create_dir_all(sanitized_dir).expect("pre-create dir");
@@ -607,7 +602,7 @@ mod tests {
 
     #[test]
     fn prepare_refuses_a_symlink_in_place_of_its_directory() {
-        let dir = scratch();
+        let dir = scratch_dir();
         let registry_auth = registry_auth_in(dir.path());
         let elsewhere = dir.path().join("elsewhere");
         fs::create_dir_all(&elsewhere).expect("create target");
@@ -632,7 +627,7 @@ mod tests {
 
     #[test]
     fn prepare_names_an_invalid_source() {
-        let dir = scratch();
+        let dir = scratch_dir();
         write_docker_config(dir.path(), "{not json");
 
         let err = registry_auth_in(dir.path())
@@ -649,7 +644,7 @@ mod tests {
 
     #[test]
     fn prepare_names_an_unreadable_source() {
-        let dir = scratch();
+        let dir = scratch_dir();
         // A directory where the file should be: reading it fails with an error
         // other than NotFound whatever the privileges of the test runner.
         fs::create_dir_all(dir.path().join("home/.docker/config.json")).expect("create dir");

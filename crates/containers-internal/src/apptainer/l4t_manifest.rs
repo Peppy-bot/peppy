@@ -277,12 +277,9 @@ pub(crate) fn sync_nvliblist(manifest_dir: &Path, nvliblist: &Path) -> Result<Nv
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apptainer::scratch_dir;
     use std::os::unix::fs::MetadataExt;
     use tempfile::TempDir;
-
-    fn scratch() -> TempDir {
-        TempDir::new_in(config_test_support::test_tmp_root()).expect("create scratch dir")
-    }
 
     /// Part of apptainer's stock list: a comment, a program and libraries.
     const STOCK_LIST: &str = "\
@@ -502,7 +499,7 @@ sym,/usr/lib/aarch64-linux-gnu/libnvcucompat.so
 
     impl Host {
         fn new() -> Self {
-            let scratch = scratch();
+            let scratch = scratch_dir();
             let nvliblist = scratch.path().join("apptainer").join(NVLIBLIST_PATH);
             fs::create_dir_all(nvliblist.parent().unwrap()).unwrap();
             fs::write(&nvliblist, STOCK_LIST).unwrap();
