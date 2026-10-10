@@ -1820,47 +1820,48 @@ mod tests {
         );
     }
 
+    /// A `sleep` child and the context `prepare_and_spawn` hands back for
+    /// its start as `instance_id` on an entity of generation `generation`.
+    /// The instance dir and the runtime config file of the start exist under
+    /// `peppy_root`, so a test can see whether the commit removes them.
+    fn sleeping_start(
+        peppy_root: &Path,
+        instance_id: &str,
+        generation: u64,
+    ) -> (Child, StartedInstanceCtx) {
+        let instance_dir = PeppyDirs::new(peppy_root).instances_dir().join(instance_id);
+        std::fs::create_dir_all(&instance_dir).expect("instance dir");
+        let runtime_config_path = peppy_root.join(format!("runtime_config_{instance_id}.json5"));
+        std::fs::write(&runtime_config_path, "{}").expect("runtime config file");
+        let child = tokio::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .expect("spawn sleep");
+        (
+            child,
+            StartedInstanceCtx {
+                instance_dir,
+                runtime_config_path,
+                stderr_buffer: StderrTail::new(),
+                output_reader_handles: Vec::new(),
+                generation,
+            },
+        )
+    }
+
     /// The endpoints the start sequence records at commit reach the
     /// serialized instance with their kind and every URL.
     #[tokio::test]
     async fn serialized_instances_carry_the_endpoints_committed_at_start() {
-        let handle = Arc::new(RwLock::new(NodeEntity::from_snapshot(
-            sensor_config(),
-            PathBuf::from("/tmp/sensor/peppy.json5"),
-            Some(PathBuf::from("/opt/peppy/bin/peppy")),
-            Vec::new(),
-        )));
         let instance_id = Name::new("panel_inst").unwrap();
+        let handle = ready_entity_with(TrackedNodeInstance::new(
+            instance_id.clone(),
+            InstanceState::Starting,
+            BTreeMap::new(),
+        ));
         let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
-        let peppy_dirs = PeppyDirs::new(peppy_root.path());
-        let instance_dir = peppy_dirs.instances_dir().join("panel_inst");
-        std::fs::create_dir_all(&instance_dir).expect("instance dir");
-        let (child, started_ctx) = {
-            let generation = handle.read().generation;
-            let child = tokio::process::Command::new("sleep")
-                .arg("5")
-                .spawn()
-                .expect("spawn sleep");
-            let mut guard = handle.write();
-            let NodeStage::Ready { instances, .. } = &mut guard.stage else {
-                panic!("from_snapshot builds a Ready entity")
-            };
-            instances.push(TrackedNodeInstance::new(
-                instance_id.clone(),
-                InstanceState::Starting,
-                BTreeMap::new(),
-            ));
-            (
-                child,
-                StartedInstanceCtx {
-                    instance_dir: instance_dir.clone(),
-                    runtime_config_path: instance_dir.join("peppy_runtime.json5"),
-                    stderr_buffer: StderrTail::new(),
-                    output_reader_handles: Vec::new(),
-                    generation,
-                },
-            )
-        };
+        let generation = handle.read().generation;
+        let (child, started_ctx) = sleeping_start(peppy_root.path(), "panel_inst", generation);
         let endpoints = vec![InstanceEndpoint {
             label: "panel".to_owned(),
             kind: config::node::EndpointKind::Page,
@@ -1887,6 +1888,121 @@ mod tests {
             handle.read().instances()[0].endpoints(),
             endpoints.as_slice()
         );
+    }
+
+    /// Commits the start of `sensor_inst` on an entity of generation
+    /// `generation` and checks that `commit_started` refuses it as the
+    /// transition `from` to `to`, and that the refusal removes the instance
+    /// dir and the runtime config file of the start.
+    async fn assert_commit_refused(
+        handle: &Arc<RwLock<NodeEntity>>,
+        generation: u64,
+        from: &str,
+        to: &str,
+    ) {
+        let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
+        let (child, started_ctx) = sleeping_start(peppy_root.path(), "sensor_inst", generation);
+        let instance_dir = started_ctx.instance_dir.clone();
+        let runtime_config_path = started_ctx.runtime_config_path.clone();
+
+        let error = NodeEntity::commit_started(
+            handle,
+            child,
+            started_ctx,
+            Name::new("sensor_inst").unwrap(),
+            Vec::new(),
+        )
+        .await
+        .expect_err("commit_started should refuse the start");
+
+        let Error::InvalidStageTransition {
+            node_name,
+            node_tag,
+            from: refused_from,
+            to: refused_to,
+        } = error
+        else {
+            panic!("expected InvalidStageTransition, got {error:?}");
+        };
+        assert_eq!(
+            (
+                node_name.as_str(),
+                node_tag.as_str(),
+                refused_from,
+                refused_to
+            ),
+            ("sensor", "v1", from, to)
+        );
+        assert!(
+            !instance_dir.exists(),
+            "a refused commit removes the instance dir"
+        );
+        assert!(
+            !runtime_config_path.exists(),
+            "a refused commit removes the runtime config file"
+        );
+    }
+
+    /// A concurrent `push_config` gives the entity a new generation: the
+    /// commit leaves the replacement entity's instance alone.
+    #[tokio::test]
+    async fn commit_started_refuses_a_replaced_entity() {
+        let handle = ready_entity_with(TrackedNodeInstance::new(
+            Name::new("sensor_inst").unwrap(),
+            InstanceState::Starting,
+            BTreeMap::new(),
+        ));
+        let replaced_generation = handle.read().generation + 1;
+
+        assert_commit_refused(&handle, replaced_generation, "stale-generation", "Running").await;
+
+        assert_eq!(
+            handle.read().instances()[0].state(),
+            InstanceState::Starting
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_started_refuses_an_instance_the_entity_does_not_track() {
+        let handle = ready_entity_with(TrackedNodeInstance::new(
+            Name::new("other_inst").unwrap(),
+            InstanceState::Starting,
+            BTreeMap::new(),
+        ));
+        let generation = handle.read().generation;
+
+        assert_commit_refused(&handle, generation, "missing", "Running").await;
+    }
+
+    #[tokio::test]
+    async fn commit_started_refuses_an_instance_that_is_not_starting() {
+        let handle = ready_entity_with(TrackedNodeInstance::new(
+            Name::new("sensor_inst").unwrap(),
+            InstanceState::Running,
+            BTreeMap::new(),
+        ));
+        let generation = handle.read().generation;
+
+        assert_commit_refused(&handle, generation, "Running", "Running").await;
+
+        let guard = handle.read();
+        assert_eq!(guard.instances()[0].state(), InstanceState::Running);
+        assert_eq!(
+            guard.instances()[0].instance_dir(),
+            None,
+            "the refused commit records no instance dir"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_started_refuses_an_entity_that_is_not_ready() {
+        let handle = Arc::new(RwLock::new(NodeEntity::new(
+            sensor_config(),
+            "/tmp/sensor/peppy.json5",
+        )));
+        let generation = handle.read().generation;
+
+        assert_commit_refused(&handle, generation, "Added", "Ready").await;
     }
 
     /// A delivered producer set replaces the one instance's slot it names and
@@ -2028,8 +2144,9 @@ mod tests {
         );
     }
 
-    /// Builds a single-`Running`-instance `Ready` entity behind a handle, the
-    /// shape `mark_instance_exited` operates on.
+    /// Builds a `Ready` entity behind a handle that tracks the one
+    /// `instance`, the shape `mark_instance_exited` and `commit_started`
+    /// operate on.
     fn ready_entity_with(instance: TrackedNodeInstance) -> Arc<RwLock<NodeEntity>> {
         let entity = NodeEntity::from_snapshot(
             sensor_config(),
