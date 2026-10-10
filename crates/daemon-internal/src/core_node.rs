@@ -213,15 +213,19 @@ impl ServeAsyncCommand for CoreNodeRunner {
 
             if shutdown_triggered {
                 info!("Shutting down commands listener...");
+            }
+            // Offboard when the generation is stopping (a shutdown signal, an
+            // in-process restart, or a failed sibling handler) and when the
+            // core node failed while running (a listener task died with an
+            // error) and the daemon is about to exit on it.
+            if shutdown_triggered || result.is_err() {
                 // Stop the daemon's own clock + heartbeat publishers first, so
                 // they don't spin against the session once the messaging router
                 // closes it (logging a failed publish on every tick).
                 shutdown_token.cancel();
-                // The generation is stopping (a shutdown signal, an in-process
-                // restart, or a failed sibling handler), so tear down every
-                // spawned node now (cooperatively, then force-kill any
-                // straggler's process group) so none is left orphaned.
-                // `&mut core_node_future` still holds a shared borrow
+                // Tear down every spawned node now (cooperatively, then
+                // force-kill any straggler's process group) so none is left
+                // orphaned. `&mut core_node_future` still holds a shared borrow
                 // of `core_node`; `teardown_node_stack` also takes `&self`, so
                 // this second shared borrow is fine. Runs before this handler
                 // returns, so the kills complete before the daemon process exits.
@@ -238,16 +242,6 @@ impl ServeAsyncCommand for CoreNodeRunner {
                 core_node.release_presence();
                 // Release the messaging router to close the session now that the
                 // core node no longer needs it.
-                let _ = core_node_done.send(true);
-            } else if result.is_err() {
-                // The core node failed while running (a listener task died
-                // with an error) and the daemon is about to exit on it. Same
-                // offboarding as the teardown path above: stop the publishers,
-                // tear down any node spawned in the meantime, and release the
-                // messaging router.
-                shutdown_token.cancel();
-                core_node.teardown_node_stack().await;
-                core_node.release_presence();
                 let _ = core_node_done.send(true);
             }
             // The teardown has written its last lines by now.
