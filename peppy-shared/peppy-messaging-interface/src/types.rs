@@ -72,12 +72,11 @@ pub enum SubscriberQoS {
 
 /// Per-QoS subscriber channel buffer sizes (flume / mpsc capacities).
 ///
-/// `Default` equals the historical hardcoded behavior (`Standard` = 128,
-/// `HighThroughput` = 1024), so a session built without explicit sizes is
-/// unchanged. The daemon overrides these from `peppy_config.json5`, mainly to
-/// tune local sessions under either managed topology. The setting matters most
-/// in peer mode, where there is no router relay to buffer between a publisher
-/// and a subscriber.
+/// `Default` is `Standard` = 128 and `HighThroughput` = 1024. The daemon
+/// overrides these from `peppy_config.json5`, mainly to tune local sessions
+/// under either managed topology. The setting matters most in peer mode,
+/// where there is no router relay to buffer between a publisher and a
+/// subscriber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SubscriberBufferSizes {
     pub standard: usize,
@@ -156,8 +155,8 @@ impl From<QoSProfile> for SubscriberQoS {
 /// test wait, so it stands in for "wait indefinitely" without forcing
 /// each adapter to track its own value.
 ///
-/// The window must also cover the slowest legitimate user service handler
-/// — once the consumer receives `Ack`, the zenoh query must stay open long
+/// The window must also cover the slowest legitimate user service handler:
+/// once the consumer receives `Ack`, the zenoh query must stay open long
 /// enough for the producer's `Response` reply. Shortening this would
 /// silently cap how long a service handler may run.
 pub(crate) const NO_TIMEOUT_SENTINEL: std::time::Duration = std::time::Duration::from_secs(86_400);
@@ -194,15 +193,15 @@ pub(crate) fn service_query_lifetime(timeout: Option<std::time::Duration>) -> st
 ///
 /// All methods take addressing structs from [`crate::wire`] rather than raw
 /// keyexpressions. Each adapter is responsible for formatting them into its
-/// own wire form internally. Only the per-transport `*_wire.rs` modules are
-/// authorized to produce raw keyexpressions.
+/// own wire form internally. Only `wire::zenoh_format` is authorized to
+/// produce raw keyexpressions.
 pub trait MessengerBackend {
     /// Initialize the pubsub session.
     fn start_session(&mut self) -> impl Future<Output = Result<()>> + Send;
 
     /// Gracefully shuts down the pubsub session. For transports with a separate
     /// router process (e.g. Zenoh) this MUST be called while the router is
-    /// still reachable — the close handshake undeclares every face on the
+    /// still reachable: the close handshake undeclares every face on the
     /// router side, and skipping it leaves zenoh logging `Undefined face
     /// context` when the session Drop later tries to close over a dead
     /// transport.
@@ -246,8 +245,8 @@ pub trait MessengerBackend {
     /// response, possibly fanned out across multiple matching producers).
     /// `kind` rides on the query attachment so the producer can
     /// discriminate user requests from discovery probes without inspecting
-    /// payload bytes. Query/reply correlation is internal to Zenoh — no
-    /// `request_id` threaded through the wire format. `timeout` is how long
+    /// payload bytes. Query/reply correlation is internal to Zenoh, so no
+    /// `request_id` is threaded through the wire format. `timeout` is how long
     /// the caller waits for a reply; the query itself stays open on the wire
     /// for [`service_query_lifetime`] of it, which outlives the caller's
     /// deadline by [`LATE_REPLY_GRACE`] and stands in for "indefinitely"
@@ -274,8 +273,8 @@ pub trait MessengerBackend {
 
     /// Declare the liveliness token advertising that `recv`'s action
     /// producer instance is alive. The token is removed by the transport
-    /// when the producing session closes — gracefully or by hard process
-    /// death — which is what lets consumers detect a producer that died
+    /// when the producing session closes (gracefully or by hard process
+    /// death), which is what lets consumers detect a producer that died
     /// without closing its goals. Dropping the returned
     /// [`LivelinessToken`] undeclares it explicitly.
     fn declare_action_liveliness(
@@ -357,8 +356,8 @@ pub trait MessengerBackend {
 
 /// Opaque drop-guard returned by adapters. The handle's `Drop` releases the
 /// backing messenger entity (zenoh's `Subscriber<()>` / `Queryable<()>`,
-/// which undeclare on drop; or [`AbortOnDrop`] for adapters that still drive
-/// the messaging surface via a spawned forwarder task).
+/// which undeclare on drop; or [`AbortOnDrop`] for the mock adapter, which
+/// drives the messaging surface with a spawned forwarder task).
 ///
 /// Crate-private because only adapter modules construct guards; the [`Any`]
 /// bound is an implementation detail used to erase heterogeneous adapter
@@ -366,8 +365,8 @@ pub trait MessengerBackend {
 pub(crate) type Guard = Box<dyn std::any::Any + Send + Sync>;
 
 /// Wraps a tokio task handle so dropping the wrapper cancels the task.
-/// `AbortHandle` alone does not abort on drop — only the explicit `.abort()`
-/// call does — so adapters that need that semantics wrap their handle in
+/// `AbortHandle` alone does not abort on drop (only the explicit `.abort()`
+/// call does), so adapters that need that semantics wrap their handle in
 /// this type before stashing it in a [`Guard`].
 pub(crate) struct AbortOnDrop(tokio::task::AbortHandle);
 
@@ -489,10 +488,10 @@ pub enum LivelinessEvent<T = ()> {
     /// The token is (or became) present.
     Alive(T),
     /// The token disappeared. For action producers this is a raw transport
-    /// signal — peppylib
-    /// confirms with [`MessengerBackend::probe_action_producer`] before
-    /// declaring the producer dead, since a router bounce can surface a
-    /// transient `Gone` for a still-alive producer.
+    /// signal: peppylib confirms with
+    /// [`MessengerBackend::probe_action_producer`] before declaring the
+    /// producer dead, since a router bounce can surface a transient `Gone`
+    /// for a still-alive producer.
     Gone(T),
 }
 
@@ -594,7 +593,7 @@ impl ServiceQueryable {
 /// identity, parsed from the reply keyexpr) with the [`ServiceReplyKind`]
 /// the producer set on the reply attachment. The consumer's poll loop
 /// matches on `kind` to skip ACKs, return regular responses, and surface
-/// handler errors — without inspecting payload bytes for legacy sentinels.
+/// handler errors without inspecting payload bytes.
 pub struct ServiceReply {
     message: TopicMessage,
     kind: ServiceReplyKind,
@@ -619,7 +618,7 @@ impl ServiceReply {
 }
 
 /// Caller-side reply stream returned by [`MessengerBackend::call_service`]. A
-/// single in-flight service call may receive multiple replies — at minimum an
+/// single in-flight service call may receive multiple replies: at minimum an
 /// ACK followed by the real response, plus additional replies from sibling
 /// producers when a wildcard-scoped call (a discovery probe or a
 /// core-node-scoped infra call) reaches several producers. Each
@@ -637,7 +636,7 @@ impl ReplyStream {
 }
 
 /// A single service request delivered to the responder. `token` is the
-/// only legal way to send replies — peppylib calls `respond_ack` first
+/// only legal way to send replies: peppylib calls `respond_ack` first
 /// (lets the consumer distinguish ServiceUnreachable from ServiceTimeout),
 /// then exactly one terminal `respond_response` / `respond_handler_error`.
 pub struct IncomingRequest {
@@ -647,10 +646,10 @@ pub struct IncomingRequest {
     /// and an empty payload, never invoking the user handler). Decoded
     /// from the mandatory query attachment.
     pub kind: ServiceQueryKind,
-    /// The producer-side link_id that received this request — set by the
-    /// adapter to whichever bound link_id's queryable yielded the query.
-    /// Surfaced to action goal handlers so per-goal feedback addresses the
-    /// link_id the consumer targeted.
+    /// The producer-side link_id that received this request: the link_id
+    /// the adapter claimed for the query, which is always
+    /// [`crate::DEFAULT_LINK_ID`]. Surfaced to action goal handlers so
+    /// per-goal feedback addresses the link_id the consumer targeted.
     pub link_id: String,
     /// Caller's `core_node` segment, parsed from the inbound query selector.
     pub caller_core: String,
@@ -688,7 +687,7 @@ impl ResponseToken {
     /// Sends the terminal user response (`ServiceReplyKind::Response`).
     /// Consumes the token so no further replies can be sent for this
     /// request. Also used for the producer's transparent reply to a
-    /// `ServiceQueryKind::Probe` query, with an empty payload — probes
+    /// `ServiceQueryKind::Probe` query, with an empty payload. Probes
     /// must NOT use [`Self::respond_ack`] because the consumer's poll
     /// loop would otherwise skip the only reply the probe path produces.
     pub async fn respond_response(self, payload: Payload) -> Result<()> {
@@ -749,7 +748,7 @@ impl ZenohResponseToken {
 }
 
 /// In-process variant of [`ResponseToken`]. Holds the reply channel half
-/// the mock's `get_keyexpr` is reading from, so each reply pushes one
+/// the mock's `call_service` is reading from, so each reply pushes one
 /// [`ServiceReply`] back to the caller.
 pub struct MockResponseToken {
     reply_tx: tokio::sync::mpsc::Sender<ServiceReply>,
@@ -916,7 +915,7 @@ impl TopicMessage {
     }
 
     /// Build a `TopicMessage` from already-parsed sender identity. Used for
-    /// messages whose source isn't a topic keyexpr — currently the service
+    /// messages whose source isn't a topic keyexpr, such as the service
     /// request path, where the caller's `core_node` and `instance_id` come
     /// out of the Zenoh queryable selector and round-tripping them through
     /// a synthetic keyexpr only to re-parse would be wasted work. The
@@ -978,12 +977,10 @@ impl TopicMessage {
         self.payload
     }
 
-    /// Raw incoming keyexpr. Wire-format-aware code (peppylib's service flow,
-    /// adapters) uses this to address responses back to the request; no other
-    /// consumer should touch this — the wire format is owned by
-    /// `wire::zenoh_format::ZenohWireFormat`. This getter exists for service-flow
-    /// plumbing only and may be removed when that flow stops threading raw
-    /// keyexprs.
+    /// Raw keyexpr the message arrived on. Empty for a message built with
+    /// [`Self::from_parts`]. The wire format belongs to
+    /// `wire::zenoh_format::ZenohWireFormat`, so consumers read the parsed
+    /// identity getters rather than this string.
     pub fn key_expr(&self) -> &str {
         &self.key_expr
     }
@@ -1034,7 +1031,7 @@ impl Messenger {
     /// Returns a lock-free [`RouterLinksProbe`] waiting on the managed router's
     /// configured `connect` links, or `None` when there is nothing to wait for
     /// (mock backend, no/external router, or no connect endpoints configured).
-    /// The daemon runs it — bounded, fail-open — before its boot-time presence
+    /// The daemon runs it (bounded, fail-open) before its boot-time presence
     /// check so the check sees the wired mesh instead of racing zenohd's dials.
     #[cfg(feature = "router")]
     pub fn router_links_probe(&self) -> Option<RouterLinksProbe> {
@@ -1068,7 +1065,7 @@ impl Messenger {
     /// Pre-bind a per-topic publisher. The returned [`MessengerPublisher`]
     /// publishes to the same wire keyexpr as [`MessengerBackend::publish_topic`]
     /// for the same `sender`, but skips the central `Arc<Mutex<Messenger>>`
-    /// lock that all other operations contend on — useful for periodic /
+    /// lock that all other operations contend on, which suits periodic or
     /// per-frame publish loops.
     ///
     /// With [`TopicRetention::Latest`] the session keeps the topic's newest
@@ -1392,11 +1389,10 @@ mod tests {
         assert_eq!(buffer_address(cloned.payload()), wire_address);
     }
 
-    /// The default buffer sizes must match the historical hardcoded values, so
-    /// that removing `SubscriberQoS::channel_size()` changed no behavior for any
-    /// session built without explicit sizes.
+    /// A session built without explicit sizes gets 128 for `Standard` and 1024
+    /// for `HighThroughput`.
     #[test]
-    fn default_buffer_sizes_match_legacy_values() {
+    fn default_buffer_sizes_are_128_and_1024() {
         let sizes = SubscriberBufferSizes::default();
         assert_eq!(sizes.size_for(SubscriberQoS::Standard), 128);
         assert_eq!(sizes.size_for(SubscriberQoS::HighThroughput), 1024);

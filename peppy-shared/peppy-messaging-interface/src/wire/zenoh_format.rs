@@ -136,7 +136,7 @@ impl ZenohWireFormat {
     // defensively.
 
     /// Producer-side queryable keyexpr, declared once per `listen_service`.
-    /// Layout `{bound_core}/*/{as_inst}/*/{service_root}` — the `*` slots
+    /// Layout `{bound_core}/*/{as_inst}/*/{service_root}`. The `*` slots
     /// match any caller's `core_node` / `instance_id`, and the link_id slot
     /// inside `service_root` is also `*` so a single queryable absorbs the
     /// `*` and `_` literals consumers may send.
@@ -159,7 +159,7 @@ impl ZenohWireFormat {
     /// The link_id slot inside `service_root` is always `*`: producers
     /// advertise under the reserved `_` segment and Zenoh's matcher unifies
     /// the two. The `to_core` / `to_inst` slots use `*` when the caller
-    /// broadcasts, replacing the legacy `_any_` marker.
+    /// broadcasts.
     pub(crate) fn service_get_selector(s: &ServiceWireSender) -> String {
         let root = service_root(
             &s.to_target,
@@ -197,7 +197,7 @@ impl ZenohWireFormat {
     /// caller's identity slots and the link_id slot. The producer's single
     /// queryable declares `*` at the link_id position, so the selector
     /// carries either `*` (the shape every caller emits) or `_` (the default
-    /// literal) — [`ParsedInboundQuery::claim`] confirms it's one of the two
+    /// literal). [`ParsedInboundQuery::claim`] confirms it's one of the two
     /// and resolves to the default `_` segment.
     pub(crate) fn parse_inbound_query(
         receiver: &ServiceWireReceiver,
@@ -278,7 +278,7 @@ impl ZenohWireFormat {
     /// Server-side per-goal feedback publish:
     /// `*/{bound_core}/*/{as_inst}/action/{discriminator}/{name}/{tag}/{link_id}/{as_action}/feedback/{as_inst}/{goal_id}`.
     ///
-    /// `link_id` is the link_id parsed from the goal's request keyexpr — the
+    /// `link_id` is the link_id parsed from the goal's request keyexpr: the
     /// adapter's `claim()` resolves it to the producer's default `_` segment
     /// before publishing, so feedback rides on the same wire slot the goal
     /// targeted.
@@ -312,7 +312,7 @@ impl ZenohWireFormat {
     /// `action_liveliness/{bound_core}/{as_inst}/{discriminator}/{name}/{tag}/{action}`.
     ///
     /// Liveliness tokens live in Zenoh's liveliness space (a distinct
-    /// interest type — regular subscribers never observe them), but the
+    /// interest type: regular subscribers never observe them), but the
     /// keyexpr still gets its own `action_liveliness` root segment so it
     /// can never be confused with topic/service shapes, and so the mock
     /// adapter can route on it with the same string matcher.
@@ -534,9 +534,7 @@ impl TopicAttachment {
 /// Whether a service query carries a user request (handler should run) or
 /// a discovery probe (auto-replied by the producer's request loop before
 /// the handler is invoked). The producer reads this from the query
-/// attachment to discriminate the two without inspecting payload bytes,
-/// closing the silent-data-loss class that occurred when a user payload
-/// happened to start with the legacy `\0peppy_service_probe\0` sentinel.
+/// attachment to discriminate the two without inspecting payload bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceQueryKind {
     UserRequest,
@@ -565,9 +563,8 @@ impl ServiceQueryKind {
 /// smuggling sentinels through the payload.
 ///
 /// Wire layout (mandatory on every service query):
-/// - byte 0: magic + version, `0x03`. Earlier versions also carried a
-///   sibling-pinned exclusion set; any peer producing an older magic is
-///   mid-rollout and must redeploy.
+/// - byte 0: magic + version, `0x03`. A query with another first byte is
+///   refused.
 /// - byte 1: kind discriminator (see [`ServiceQueryKind::as_byte`]).
 ///
 /// Decode is strict: a missing attachment, wrong magic, or unknown kind
@@ -607,7 +604,7 @@ impl ServiceQueryAttachment {
 /// Service reply kind, encoded in the [`ServiceReplyAttachment`] that
 /// rides on every `query.reply()`. The consumer's poll loop matches on
 /// this to skip ACKs, return regular responses, and surface handler
-/// errors — without inspecting payload bytes for legacy sentinels.
+/// errors without inspecting payload bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceReplyKind {
     /// Sent immediately by the producer when a real user request arrives,
@@ -615,13 +612,13 @@ pub enum ServiceReplyKind {
     /// `ServiceUnreachable` (no ACK at all) from `ServiceTimeout`
     /// (ACK arrived, handler didn't reply in time). Payload is empty.
     Ack,
-    /// The user handler returned `Ok(payload)` — payload bytes are the
+    /// The user handler returned `Ok(payload)`: payload bytes are the
     /// handler's response, opaque to the framework. Also used for the
     /// producer's transparent reply to a `Probe` request (empty payload).
     Response,
     /// The user handler returned `Err(reason)` (or a Python handler raised
     /// an exception). Payload bytes are the UTF-8 reason; the consumer
-    /// surfaces this as [`crate::error::Error::ServiceError`] (in peppylib).
+    /// surfaces this as peppylib's `Error::ServiceError`.
     HandlerError,
 }
 
@@ -647,7 +644,7 @@ impl ServiceReplyKind {
 /// Reply attachment carrying the [`ServiceReplyKind`]. Mandatory on every
 /// service reply.
 ///
-/// Wire layout: `[0x01 magic][kind u8]` — 2 bytes total. Reasons for
+/// Wire layout: `[0x01 magic][kind u8]`, 2 bytes total. Reasons for
 /// [`ServiceReplyKind::HandlerError`] ride in the reply payload as UTF-8
 /// (variable length stays out of the attachment lane), keeping this
 /// attachment compact and fixed-size.
@@ -683,7 +680,7 @@ impl ServiceReplyAttachment {
 }
 
 /// Result of parsing an inbound queryable selector. Carries the
-/// caller-identity slots plus the link_id slot from the selector — the
+/// caller-identity slots plus the link_id slot from the selector. The
 /// producer's single queryable declares `*` at the link_id slot, so the
 /// adapter inspects this field via [`Self::claim`] to confirm the selector
 /// targeted the producer's default `_` segment (or a `*` wildcard).
@@ -722,8 +719,7 @@ impl ParsedInboundQuery {
 
 /// Reasons a request keyexpr or attachment can fail to match the expected
 /// wire shape. Mid-rollout schema skew surfaces as a structured error
-/// (one of these) rather than silently falling back to a default — the
-/// load-bearing safety property for the sentinel removal.
+/// (one of these) rather than silently falling back to a default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ZenohWireParseError {
     MissingSegment(&'static str),
@@ -749,7 +745,7 @@ pub(crate) enum ZenohWireParseError {
     TruncatedServiceQueryAttachment,
     UnknownServiceQueryKind(u8),
     /// Service reply arrived with no attachment. Treated as a malformed
-    /// reply and dropped — the consumer's poll loop ignores it and the
+    /// reply and dropped: the consumer's poll loop ignores it and the
     /// usual timeout / unreachable path applies.
     MissingServiceReplyAttachment,
     ServiceReplyAttachmentMagicMismatch {

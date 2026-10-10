@@ -8,7 +8,7 @@
 //! `flume::bounded` channel and logs
 //! `zenoh::api::handlers::fifo: error=sending on a closed channel` at ERROR
 //! whenever zenoh tries to deliver a sample/query/reply after the
-//! receiver-side has been dropped — a routine event in this codebase (e.g. a
+//! receiver-side has been dropped, a routine event in this codebase (e.g. a
 //! `QueryTarget::All` `call_service` keeps the query open until its
 //! `NO_TIMEOUT_SENTINEL`, and sibling producers' late replies hit a
 //! `ReplyStream` the consumer dropped after the first valid response).
@@ -197,7 +197,8 @@ pub struct ZenohAdapter {
     /// publisher. Emptied whenever the session starts or stops.
     declared: Mutex<DeclaredTopics<Arc<RetainingPublisher>>>,
     /// When true, [`start_session`](MessengerBackend::start_session) opens a
-    /// reconnecting session (see [`ZenohReconnectingClientConfigTemplate`]).
+    /// reconnecting session (it re-renders the client config with
+    /// `reconnect: true`).
     reconnect_session: bool,
 }
 
@@ -301,7 +302,7 @@ impl ZenohAdapter {
     /// **client** session to `host:port`, verifying the router against `tls`'s
     /// `root_ca_certificate` (with `verify_name_on_connect`). Unlike `connect_to`,
     /// this is **client** mode (`gossip = false`): all traffic routes through the
-    /// router and the session binds no loopback peer listener — which is what we
+    /// router and the session binds no loopback peer listener, which is what we
     /// want for a remote router (a peer listener would also need its own server
     /// cert, which a pure client has no reason to hold). Use
     /// [`connect_to_with_discovery`](Self::connect_to_with_discovery) for control.
@@ -579,7 +580,7 @@ impl ZenohAdapter {
     /// establish, run by the daemon before its boot-time presence check so the
     /// check sees the wired mesh instead of racing zenohd's dials. `None` when
     /// there is nothing to wait for: no router, an external/adopted router
-    /// (its config — and so its links — belong to the operator), or a managed
+    /// (its config, and so its links, belong to the operator), or a managed
     /// config with no connect endpoints (the standalone default).
     #[cfg(feature = "router")]
     pub fn router_links_probe(&self) -> Option<zenohd::RouterLinksProbe> {
@@ -736,7 +737,7 @@ impl MessengerBackend for ZenohAdapter {
     async fn start_session(&mut self) -> Result<()> {
         // The daemon's long-lived session uses a reconnecting config so it
         // re-establishes itself (and re-declares its subscriptions/queryables)
-        // if the router is restarted under it — e.g. by the router watchdog.
+        // if the router is restarted under it, e.g. by the router watchdog.
         // Short-lived / CLI sessions keep the fail-fast default.
         let config = if self.reconnect_session {
             Self::create_client_config(
@@ -781,7 +782,7 @@ impl MessengerBackend for ZenohAdapter {
             // Close while zenohd is still alive so the undeclare-face
             // messages reach the router. Drop's later close becomes a
             // no-op (primitives already taken), which is what keeps the
-            // session's other Arc clones — e.g. ZenohPublisher — from
+            // session's other Arc clones (e.g. ZenohPublisher) from
             // spamming "Undefined face context" when they finally drop.
             if let Err(err) = session.close().await {
                 tracing::warn!("Zenoh session close returned an error: {err}");
@@ -830,7 +831,7 @@ impl MessengerBackend for ZenohAdapter {
         );
 
         // One queryable per listen call. The declared keyexpr has `*` at the
-        // link_id slot so a single queryable absorbs every bound link_id —
+        // link_id slot so a single queryable absorbs every bound link_id:
         // `process_inbound_query` does the dispatch by parsing the selector.
         // Two queryables for one process would let a caller's wildcard
         // `*` selector double-deliver via `QueryTarget::All`.
@@ -863,10 +864,9 @@ impl MessengerBackend for ZenohAdapter {
         let session = self.open_session()?;
         let selector = ZenohWireFormat::service_get_selector(sender);
         // Mandatory query attachment: carries the request kind (UserRequest
-        // vs Probe) plus the consumer's sibling-exclusion set. The producer
-        // refuses queries with no attachment, which is what makes the
-        // mid-rollout failure mode loud (consumer sees ServiceUnreachable
-        // instead of misclassifying the request as a default).
+        // vs Probe). The producer refuses queries with no attachment, so a
+        // caller without one sees ServiceUnreachable instead of a request
+        // misclassified as a default.
         let attachment = ZenohWireFormat::service_get_selector_attachment(kind);
 
         // The zenoh-side `.timeout(...)` is the query's wire lifetime, not
@@ -882,11 +882,11 @@ impl MessengerBackend for ZenohAdapter {
         // `try_send` (not `send`) because the callback runs synchronously on
         // a zenoh worker thread that we must not block. Two drop conditions
         // are tolerated here:
-        //   1. receiver dropped — caller has the first valid reply and has
+        //   1. receiver dropped: caller has the first valid reply and has
         //      released the `ReplyStream`; sibling producers' late replies
         //      go nowhere, which is intentional;
-        //   2. channel full (capacity = the Standard subscriber buffer size)
-        //      — would only happen if the consumer's `poll_service` loop
+        //   2. channel full (capacity = the Standard subscriber buffer size):
+        //      would only happen if the consumer's `poll_service` loop
         //      stalls for thousands of replies; in practice the consumer
         //      drains the channel as fast as zenoh fills it, so this branch
         //      is effectively unreachable. If it ever fires, the lost reply
@@ -962,7 +962,7 @@ impl MessengerBackend for ZenohAdapter {
         buffer: FeedbackBuffer,
     ) -> Result<Subscription> {
         // Action feedback shares the wildcard-link_id keyexpr shape with
-        // topic subscribe but doesn't multi-publish per goal — feedback is
+        // topic subscribe but doesn't multi-publish per goal: feedback is
         // emitted under the single link_id chosen at goal time (see the
         // `action_feedback_publish` comment in `wire::zenoh_format`). So
         // there are no secondaries to drop; pass `false`.
@@ -1148,9 +1148,9 @@ impl MessengerBackend for ZenohAdapter {
         let host = &self.client_config.host;
         let port = self.client_config.port;
         // Zenoh locators bracket IPv6 literals (`tcp/[::1]:7448`), while
-        // `IpAddr::from_str` expects the bare address. Preserve this legacy
-        // socket accessor for IPv6 callers even though `client_locator()` is the
-        // authoritative endpoint representation.
+        // `IpAddr::from_str` expects the bare address, so the brackets come
+        // off before parsing. `client_locator()` is the complete endpoint,
+        // protocol included.
         let ip_host = host
             .strip_prefix('[')
             .and_then(|host| host.strip_suffix(']'))
@@ -1500,7 +1500,7 @@ fn declare_retaining_publisher(
 /// action goal run on a sibling instance. Queries whose link_id slot is neither
 /// `*` nor `_` are dropped silently for the same reason.
 ///
-/// This runs inside zenoh's reception callback, so the function is sync —
+/// This runs inside zenoh's reception callback, so the function is sync:
 /// `flume::Sender::send` blocks the zenoh worker thread when the buffer is
 /// full so peppylib applies backpressure rather than losing requests, and
 /// returns `Err` (silently ignored) only when the consumer has dropped the
@@ -1556,7 +1556,7 @@ fn process_inbound_query(
     // the endpoint's recv loop only runs while the producer task is parked
     // in it, so answering there would starve discovery whenever user code
     // is executing a handler or goal. The reply MUST be Response-kind
-    // (never Ack) — the consumer's discover-then-pin loop pins identity
+    // (never Ack): the consumer's discover-then-pin loop pins identity
     // off the first non-Ack reply. The reply is spawned (not awaited):
     // this callback runs on a zenoh worker thread that must not block.
     if parsed.kind == ServiceQueryKind::Probe {
@@ -1602,7 +1602,7 @@ enum PublishRoute {
 /// In-flight wait for a matching subscriber, issued by
 /// [`ZenohAdapter::topic_subscriber_wait`]. Owns its session handle, so
 /// [`resolve`](Self::resolve) runs detached from the adapter and callers can
-/// release any shared adapter lock before waiting out the timeout — the same
+/// release any shared adapter lock before waiting out the timeout, the same
 /// issue-then-resolve split as
 /// [`ActionLivelinessProbe`](crate::types::ActionLivelinessProbe).
 pub struct SubscriberMatchWait {
@@ -1921,7 +1921,7 @@ mod tests {
 
     #[cfg(feature = "router")]
     #[test]
-    fn external_ipv6_locator_preserves_the_legacy_socket_address() {
+    fn external_ipv6_locator_yields_its_socket_address() {
         let adapter = ZenohAdapter::with_external_router(
             "tcp/[::1]:17448",
             false,

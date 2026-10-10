@@ -46,7 +46,7 @@ impl MockInstance {
 
 /// One active subscription entry. `drop_secondary` is set when the
 /// subscriber wildcards the link_id slot at the keyexpr level (the topic
-/// `from_link_id: None` case) — `route_publish` drops non-primary fan-out
+/// `from_link_id: None` case): `route_publish` drops non-primary fan-out
 /// for those entries so a multi-link `emit` yields one delivery.
 pub struct MockSubscription {
     sink: SubscriptionSink,
@@ -114,11 +114,10 @@ impl RetainedMessages {
 /// messages, shared with its publishers.
 type MockDeclaredTopics = Arc<Mutex<DeclaredTopics<RetainedMessages>>>;
 
-/// One in-flight query routed from a `get_keyexpr` caller to a queryable
+/// One in-flight query routed from a `call_service` caller to a queryable
 /// whose declared keyexpr intersects the caller's selector. `attachment`
-/// mirrors the Zenoh query attachment (carrying the request kind plus the
-/// sibling-pinned exclusion set) so the in-process matcher honors the
-/// same protocol semantics as the live transport.
+/// mirrors the Zenoh query attachment, which carries the request kind, so
+/// the in-process matcher follows the same protocol as the live transport.
 pub(crate) struct MockQuery {
     selector_keyexpr: String,
     payload: Payload,
@@ -128,14 +127,14 @@ pub(crate) struct MockQuery {
 
 /// Shared map of declared queryables, keyed by the producer's declared
 /// keyexpr. Each entry holds the channels feeding the forwarder tasks
-/// behind a [`ServiceQueryable`] — `get_keyexpr` finds matching entries
+/// behind a [`ServiceQueryable`]: `call_service` finds matching entries
 /// via [`MockAdapter::key_exprs_intersect`] and pushes a [`MockQuery`]
 /// onto each.
 type QueryableMap = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<MockQuery>>>>>;
 
 /// In-process stand-in for Zenoh's liveliness space. `tokens` counts the
 /// live tokens per declared keyexpr (a count, not a set, so two declares
-/// on the same keyexpr need two drops to go Gone — mirroring Zenoh, where
+/// on the same keyexpr need two drops to go Gone, mirroring Zenoh, where
 /// each token is independent). `watchers` holds the fan-out callbacks of
 /// active [`LivelinessWatch`]es keyed by their watch pattern; a
 /// declare/drop notifies every watcher whose pattern intersects the
@@ -150,7 +149,7 @@ struct MockLivelinessState {
 /// transition to its watch channel. Each watch domain owns its event
 /// mapping (action watches forward the `()` event as-is, presence watches
 /// parse the token keyexpr), mirroring how the zenoh adapter's subscriber
-/// callbacks own theirs — the shared notifier stays domain-blind.
+/// callbacks own theirs, so the shared notifier stays domain-blind.
 type MockLivelinessWatcher = Box<dyn Fn(&str, LivelinessEvent) + Send>;
 
 type LivelinessState = Arc<Mutex<MockLivelinessState>>;
@@ -167,7 +166,7 @@ pub struct MockAdapter {
 impl MockAdapter {
     /// Clone of the shared subscription map. Exposed so matching-status
     /// waits (peppylib's `wait_for_matching_subscriber`) can poll for a
-    /// subscriber WITHOUT holding the owning messenger's lock — in-process
+    /// subscriber WITHOUT holding the owning messenger's lock: in-process
     /// mock tests share one messenger between publisher and subscriber, so
     /// polling under that lock would starve the subscribe it waits for.
     pub fn subscription_map(&self) -> SubscriptionMap {
@@ -272,7 +271,7 @@ impl MessengerBackend for MockAdapter {
         );
 
         // One queryable per listen call (see `ZenohAdapter::listen_service`
-        // for the rationale — the same shape applies here so peppylib tests
+        // for the rationale; the same shape applies here so peppylib tests
         // exercise the same dispatch logic against the mock).
         let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
         let query_rx = self.declare_queryable_keyexpr(declare_keyexpr);
@@ -331,7 +330,7 @@ impl MessengerBackend for MockAdapter {
 
         // Drop the local clone so the reply channel closes once every queryable
         // forwarder's `MockResponseToken` (each holding a `reply_tx` clone) is
-        // dropped — typically after the user handler's final `respond` call.
+        // dropped, typically after the user handler's final `respond` call.
         drop(reply_tx);
 
         let (output_tx, output_rx) = mpsc::channel::<ServiceReply>(
@@ -601,7 +600,7 @@ impl MockAdapter {
         })))
     }
 
-    /// Keyexprs of the currently live tokens intersecting `pattern` — the
+    /// Keyexprs of the currently live tokens intersecting `pattern`: the
     /// mock-side equivalent of a liveliness query.
     fn live_keys_matching<'a>(
         liveliness: &'a MockLivelinessState,
@@ -633,7 +632,7 @@ impl MockAdapter {
         })
     }
 
-    /// Returns `true` when two key expressions intersect — that is, when there
+    /// Returns `true` when two key expressions intersect, that is, when there
     /// exists at least one concrete key matched by both. Wildcards on either
     /// side are honored, mirroring Zenoh's bidirectional `keyexpr` matching:
     ///
@@ -808,7 +807,7 @@ impl MockAdapter {
 
     /// Register a queryable under `declared_keyexpr` and return the channel
     /// the per-queryable forwarder task reads inbound queries from. Senders
-    /// stored in the map outlive the forwarder task — `get_keyexpr` ignores
+    /// stored in the map outlive the forwarder task: `call_service` ignores
     /// closed senders rather than garbage-collecting them, mirroring the
     /// topic [`SubscriptionMap`] convention.
     fn declare_queryable_keyexpr(&self, declared_keyexpr: String) -> mpsc::Receiver<MockQuery> {
@@ -867,8 +866,8 @@ impl MockAdapter {
     }
 }
 
-/// Per-queryable forwarder for the mock adapter. Mirrors
-/// [`super::zenoh::handle_queryable`]: drains inbound `MockQuery`s, parses
+/// Per-queryable forwarder for the mock adapter. Mirrors the zenoh
+/// adapter's `process_inbound_query`: drains inbound `MockQuery`s, parses
 /// the caller identity and link_id slot, claims the producer's default `_`
 /// segment via [`ParsedInboundQuery::claim`], builds an [`IncomingRequest`]
 /// with a [`ResponseToken::Mock`] carrying the per-query reply channel, and
@@ -917,8 +916,8 @@ async fn handle_mock_queryable(
         let token = ResponseToken::Mock(MockResponseToken::new(mock_query.reply_tx, reply_keyexpr));
 
         // Mirrors the zenoh adapter: probes (liveness, discovery, benchmark
-        // sized-probes) are answered in the dispatch path — Response-kind,
-        // never Ack — and never reach the endpoint channel, so a producer
+        // sized-probes) are answered in the dispatch path (Response-kind,
+        // never Ack) and never reach the endpoint channel, so a producer
         // busy in user code still answers them.
         if parsed.kind == ServiceQueryKind::Probe {
             let response =
@@ -944,7 +943,9 @@ async fn handle_mock_queryable(
     }
 }
 
-/// Mock-side per-topic publisher returned by [`MockAdapter::declare_publisher`].
+/// Mock-side per-topic publisher returned by
+/// [`MockAdapter::declare_topic_publisher`] and
+/// [`MockAdapter::declare_action_feedback_publisher`].
 /// Holds `Arc`s into the adapter's in-process matcher state, so `publish` is
 /// independent of the `Arc<Mutex<Messenger>>` global lock that everyone shares.
 pub struct MockPublisher {
@@ -957,7 +958,7 @@ pub struct MockPublisher {
 impl MockPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
         // Pre-bound publishers are single-link, so each publish is its own
-        // emit's only sample — always primary, mirroring the Zenoh side.
+        // emit's only sample, always primary, mirroring the Zenoh side.
         MockAdapter::route_publish(
             &self.topic,
             payload,
@@ -969,9 +970,9 @@ impl MockPublisher {
     }
 }
 
-// End-to-end behavior of the mock vs. real messaging is covered by the typed
-// roundtrip tests in `tests/wire.rs`. These local tests pin the
-// `key_exprs_intersect` matching primitive that drives in-process routing.
+// End-to-end behavior of the mock against real messaging is covered by the
+// typed roundtrip tests in `tests/wire.rs`. These local tests pin the
+// in-process routing: key matching, queryables, liveliness and retention.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1080,7 +1081,7 @@ mod tests {
         // Direct exercise of the mock's queryable plumbing: a producer declares
         // a queryable on a concrete keyexpr; a `get` selector with a Zenoh
         // wildcard at one slot must still match and deliver the query, and the
-        // responder must be able to push a reply that the caller observes —
+        // responder must be able to push a reply that the caller observes,
         // without going through a real zenohd.
         use crate::wire::{
             SenderTarget, ServiceKind, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
@@ -1231,8 +1232,8 @@ mod tests {
         assert!(reply_stream.rx.recv().await.is_none());
     }
 
-    /// Probes are answered by the adapter's dispatch path — one
-    /// Response-kind reply — and never reach the producer's endpoint
+    /// Probes are answered by the adapter's dispatch path (one
+    /// Response-kind reply) and never reach the producer's endpoint
     /// channel, so a producer busy in user code (not parked in its recv
     /// loop) still answers liveness/discovery/benchmark probes. Sized
     /// probes get a response of the requested size; plain probes get an
@@ -1269,7 +1270,7 @@ mod tests {
             .listen_service(&receiver)
             .await
             .expect("queryable declare should succeed");
-        // Nobody drains `queryable.rx` — the producer is "busy".
+        // Nobody drains `queryable.rx`: the producer is "busy".
 
         // Plain (empty-body) probe: empty Response-kind reply.
         let mut reply_stream = adapter
@@ -1631,8 +1632,8 @@ mod tests {
     async fn mock_topic_wildcard_subscriber_drops_secondary_publish() {
         // Mirrors the peppylib integration test against zenohd, but in
         // process. Two `publish_topic` calls with the same payload on
-        // different link_ids — the first marked primary, the second
-        // secondary — must deliver to a wildcard subscriber exactly once
+        // different link_ids (the first marked primary, the second
+        // secondary) must deliver to a wildcard subscriber exactly once
         // (primary only) and to each pinned subscriber exactly once
         // (regardless of marker).
         use crate::wire::{SenderTarget, TopicWireReceiver, TopicWireSender};
@@ -1729,7 +1730,7 @@ mod tests {
             .await
             .expect("wildcard receives once");
         assert_eq!(first.payload().to_bytes().as_ref(), b"frame-0");
-        // No second delivery in-process — the secondary was dropped.
+        // No second delivery in-process: the secondary was dropped.
         assert!(
             sub_any.rx.try_recv().is_err(),
             "wildcard subscriber must not receive a duplicate"

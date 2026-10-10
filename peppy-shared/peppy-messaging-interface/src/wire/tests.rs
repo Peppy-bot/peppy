@@ -1,7 +1,7 @@
 use super::*;
 
 /// Test-local shorthand: wrap a `&str` in a validated [`Segment`]. Panics on
-/// invalid input — tests use known-good values only.
+/// invalid input, so tests use known-good values only.
 fn seg(value: &str) -> Segment {
     Segment::try_from(value).expect("test segment value should be valid")
 }
@@ -146,7 +146,7 @@ fn sender_target_pairing_normalizes_hyphenated_tag() {
 
 #[test]
 fn sender_target_pairing_and_contract_with_same_name_tag_are_distinct() {
-    // The load-bearing lock-in property: pairing traffic can never match an
+    // The load-bearing lock-in property: pairing traffic can never match a
     // contract subscription because the wire discriminators differ.
     let pairing = SenderTarget::pairing("widget", "v1").expect("valid pairing target");
     let contract = SenderTarget::contract("widget", "v1").expect("valid contract target");

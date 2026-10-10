@@ -20,8 +20,8 @@ impl Segment {
         &self.0
     }
 
-    /// Reserved single-character segment placed at the `link_id` wire slot when
-    /// a producer is run without `--link-id`. User-supplied input cannot
+    /// Reserved single-character segment placed at the `link_id` wire slot of
+    /// an emission that names no link_id. User-supplied input cannot
     /// construct this segment via `try_from` (the reserved-sentinel rule
     /// rejects `_`); the runtime uses this constructor to materialize the
     /// default sentinel at producer-side fan-out sites.
@@ -30,10 +30,8 @@ impl Segment {
     }
 
     /// Lenient parser used by runtime paths that need to accept the reserved
-    /// link_id default `_` alongside user-supplied link_ids (for example, when
-    /// parsing the `PEPPY_LINK_IDS` env var inside the runner). Continues to
-    /// reject `*` / `**` so a publisher can never advertise itself on a
-    /// wildcard.
+    /// link_id default `_` alongside user-supplied link_ids. It rejects
+    /// `*` / `**`, so a publisher can never advertise itself on a wildcard.
     pub fn try_link_id(s: &str) -> Result<Self, SegmentError> {
         validate_segment_chars(s)?;
         if matches!(s, "*" | "**") {
@@ -60,10 +58,10 @@ impl Segment {
     }
 }
 
-/// Wire literal used at the `link_id` slot when a producer is run without
-/// `--link-id`. Kept in sync with [`Segment::default_link_id`] / the CLI
-/// validator in `peppy::commands::node::run`. The single source of truth
-/// lives in `config::consts::DEFAULT_LINK_ID_SENTINEL`; this is a re-export.
+/// Wire literal at the `link_id` slot of an emission that names no link_id
+/// ([`Segment::default_link_id`]). An alias of
+/// `config::consts::DEFAULT_LINK_ID_SENTINEL`, the one definition, which the
+/// config parsers also reject as a slot link_id.
 pub const DEFAULT_LINK_ID: &str = config::consts::DEFAULT_LINK_ID_SENTINEL;
 
 impl std::ops::Deref for Segment {
@@ -277,7 +275,7 @@ impl NodeIdentifier {
 }
 
 /// Addressing target carried by a sender (or matched by a receiver). Each
-/// emission is **either** a contract, a node, **or** a pairing — never more
+/// emission is **either** a contract, a node, **or** a pairing, never more
 /// than one. The wire format embeds a `contract`|`node`|`pairing`
 /// discriminator so the three identifier spaces cannot collide.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -351,7 +349,8 @@ impl SenderTarget {
 }
 
 /// Returned by [`ContractIdentifier::new`] / [`NodeIdentifier::new`] /
-/// [`SenderTarget::contract`] / [`SenderTarget::node`] when a name or tag
+/// [`PairingIdentifier::new`] / [`SenderTarget::contract`] /
+/// [`SenderTarget::node`] / [`SenderTarget::pairing`] when a name or tag
 /// segment fails validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SenderTargetError {
@@ -374,9 +373,7 @@ impl fmt::Display for SenderTargetError {
 
 impl std::error::Error for SenderTargetError {}
 
-/// Discriminator for service-shaped traffic. Replaces the stringly-typed
-/// `message_type: &str` (`"service"` / `"action"`) parameter previously
-/// threaded through call sites.
+/// Discriminator for service-shaped traffic.
 ///
 /// On the wire, `Service` produces `service/{discriminator}/.../{name}` while
 /// action variants produce `action/{discriminator}/.../{name}/{goal|cancel|result}`.
@@ -733,11 +730,11 @@ fn producer_slots(
 /// Caller-side addressing for a service. `target` is the producer's full
 /// `(core_node, instance_id)` wire address; `None` is a genuine wildcard
 /// on both slots (the discovery probe shape). The one representable
-/// half-address is core-without-instance via [`Self::scoped_to_core_node`]
-/// — for callers that know which core node must answer but cannot know
+/// half-address is core-without-instance via [`Self::scoped_to_core_node`],
+/// for callers that know which core node must answer but cannot know
 /// the producer's per-boot instance_id. Instance-without-core stays
 /// unrepresentable at this boundary.
-/// The link_id wire slot is always emitted as `*` — producers advertise under
+/// The link_id wire slot is always emitted as `*`: producers advertise under
 /// the reserved `_` segment, and Zenoh's matcher unifies the two.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireSender {
@@ -774,7 +771,7 @@ impl ServiceWireSender {
     }
 
     /// Scopes the selector's target core_node slot to `target_core_node`
-    /// while leaving the instance slot wildcarded — the core-without-instance
+    /// while leaving the instance slot wildcarded: the core-without-instance
     /// half-address. The selector then matches only producers hosted by that
     /// core node, regardless of their per-boot instance_id.
     pub fn scoped_to_core_node(mut self, target_core_node: &str) -> crate::error::Result<Self> {
@@ -841,7 +838,7 @@ impl ServiceWireReceiver {
 /// Feedback subscription is built per `goal_id` by the transport adapter.
 /// `target` is the producer's full `(core_node, instance_id)` wire address;
 /// `None` is a genuine wildcard on both slots (the discovery probe shape).
-/// The link_id wire slot is always `*` — producers advertise under the
+/// The link_id wire slot is always `*`: producers advertise under the
 /// reserved `_` segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionWireSender {
@@ -979,7 +976,7 @@ impl ActionWireReceiver {
 pub(crate) mod zenoh_format;
 
 /// Public channel-address templates, re-exported at the crate root as
-/// `pmi::templates`. Pure string code — compiled in every feature config.
+/// `pmi::templates`. Pure string code, compiled in every feature config.
 pub mod templates;
 
 pub use zenoh_format::{ServiceQueryKind, ServiceReplyKind};

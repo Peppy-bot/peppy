@@ -1,6 +1,6 @@
 //! Snapshot tests for the zenoh wire format functions. These pin the exact
-//! keyexpr strings produced for every (role × variant) combination — if a
-//! change shifts the bytes, the test catches it. Roundtrip tests against a
+//! keyexpr strings produced for every (role × variant) combination, so a
+//! change that shifts the bytes fails a test. Roundtrip tests against a
 //! real router live in `peppy-messaging-interface/tests/wire.rs`.
 
 use super::*;
@@ -9,7 +9,7 @@ use crate::wire::{Segment, SenderTarget};
 use config::namespace::Namespace;
 
 /// Test-local shorthand: wrap a `&str` in a validated [`Segment`]. Panics on
-/// invalid input — tests use known-good values only.
+/// invalid input, so tests use known-good values only.
 fn seg(value: &str) -> Segment {
     Segment::try_from(value).expect("test segment value should be valid")
 }
@@ -36,7 +36,7 @@ fn pairing(name: &str, tag: &str) -> SenderTarget {
 }
 
 /// Test-local shorthand: encoded bytes for a default UserRequest query
-/// attachment (no exclusion set). Lets selector-shape tests focus on
+/// attachment. Lets selector-shape tests focus on
 /// keyexpr parsing without restating the attachment payload at every
 /// call site.
 fn user_request_attachment_bytes() -> bytes::Bytes {
@@ -506,7 +506,7 @@ fn topic_subscribe_fully_untargeted_wildcards_all_slots() {
     );
 }
 
-// ─── Topics — parse ────────────────────────────────────────────────────────
+// ─── Topics: parse ─────────────────────────────────────────────────────────
 
 #[test]
 fn parse_topic_keyexpr_extracts_caller_addressing() {
@@ -586,7 +586,7 @@ fn parse_topic_keyexpr_rejects_wildcard_in_caller_instance_id() {
     ));
 }
 
-// ─── Services — queryable declare ─────────────────────────────────────────
+// ─── Services: queryable declare ──────────────────────────────────────────
 
 fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
     ServiceWireReceiver::new(
@@ -603,7 +603,7 @@ fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
 fn service_queryable_declare_node_identity_plain_service() {
     // One queryable per `listen_service`. The link_id slot is `*` so the
     // queryable absorbs both `*` (callers always wildcard the link_id slot)
-    // and `_` (the default literal post-binding-map) at that wire slot.
+    // and `_` (the default literal) at that wire slot.
     let recv = sample_service_receiver(ServiceKind::Service);
     let key = ZenohWireFormat::service_queryable_declare(&recv);
     assert_eq!(
@@ -644,7 +644,7 @@ fn service_queryable_declare_contract_identity_normalizes_tag() {
     );
 }
 
-// ─── Services — get selector ──────────────────────────────────────────────
+// ─── Services: get selector ───────────────────────────────────────────────
 
 fn sample_service_sender(kind: ServiceKind) -> ServiceWireSender {
     ServiceWireSender {
@@ -669,8 +669,8 @@ fn service_get_selector_specific_target() {
 
 #[test]
 fn service_get_selector_broadcast_instance() {
-    // `target_instance_id: None` becomes the Zenoh single-chunk wildcard, not
-    // the legacy `_any_` literal — `session.get` accepts wildcards.
+    // `target_instance_id: None` becomes the Zenoh single-chunk wildcard,
+    // which `session.get` accepts.
     let mut sender = sample_service_sender(ServiceKind::Service);
     sender.target_instance_id = None;
     assert_eq!(
@@ -716,7 +716,7 @@ fn service_get_selector_scoped_to_core_node() {
 
 #[test]
 fn service_get_selector_always_wildcards_link_id_slot() {
-    // The link_id wire slot is always `*` — producers advertise under `_`
+    // The link_id wire slot is always `*`: producers advertise under `_`
     // and Zenoh's matcher unifies the two. There is no caller-side knob to
     // pin a concrete literal.
     let sender = sample_service_sender(ServiceKind::Service);
@@ -741,13 +741,13 @@ fn service_get_selector_action_goal() {
     );
 }
 
-// ─── Services — reply keyexpr ─────────────────────────────────────────────
+// ─── Services: reply keyexpr ──────────────────────────────────────────────
 
 #[test]
 fn service_reply_keyexpr_topic_shape_addresses_caller() {
     // The reply keyexpr is topic-shape (caller at segments 0/2, responder
     // at segments 1/3) so the caller's `parse_topic_keyexpr` surfaces the
-    // responder's identity via `Message::core_node()` / `instance_id()`.
+    // responder's identity via `TopicMessage::core_node()` / `instance_id()`.
     let receiver = sample_service_receiver(ServiceKind::Service);
     assert_eq!(
         ZenohWireFormat::service_reply_keyexpr(&receiver, "_", "caller_core", "caller_inst"),
@@ -771,7 +771,7 @@ fn service_reply_keyexpr_action_result_appends_suffix() {
     );
 }
 
-// ─── Services — parse_inbound_query ───────────────────────────────────────
+// ─── Services: parse_inbound_query ────────────────────────────────────────
 
 #[test]
 fn parse_inbound_query_extracts_caller_identity_and_literal_link_id() {
@@ -843,10 +843,8 @@ fn parse_inbound_query_rejects_concrete_target_instance_mismatch() {
 
 #[test]
 fn parse_inbound_query_surfaces_probe_kind_from_attachment() {
-    // The probe kind discriminator lives on the attachment. A user payload
-    // that happens to start with the legacy probe sentinel bytes no longer
-    // reaches this layer — discrimination happens entirely on the
-    // attachment, not the payload.
+    // The probe kind lives on the attachment, so discrimination never reads
+    // the payload.
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "*/caller_core/*/caller_inst/service/node/robot_arm/v1/*/ping";
     let probe_attachment = ServiceQueryAttachment {
@@ -860,10 +858,9 @@ fn parse_inbound_query_surfaces_probe_kind_from_attachment() {
 
 #[test]
 fn parse_inbound_query_rejects_missing_attachment_with_structured_error() {
-    // Mid-rollout safety: a peer running the old protocol sends queries
-    // with no attachment. The producer must surface the structured error
-    // rather than silently treating the query as a default UserRequest —
-    // dropping the query is what triggers the consumer's ServiceUnreachable.
+    // A query with no attachment must surface the structured error rather
+    // than be treated as a default UserRequest: dropping the query is what
+    // gives the consumer ServiceUnreachable.
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping";
     let err = ZenohWireFormat::parse_inbound_query(&receiver, query, &[]).unwrap_err();
@@ -875,8 +872,8 @@ fn parse_inbound_query_rejects_missing_attachment_with_structured_error() {
 
 #[test]
 fn parse_inbound_query_rejects_v1_magic_with_structured_error() {
-    // Old-protocol attachment bytes (V1 magic) must produce a structured
-    // mismatch error so mid-rollout skew is loud, not silent.
+    // Attachment bytes with magic `0x01` must produce a structured mismatch
+    // error so mid-rollout skew is loud, not silent.
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping";
     let v1_bytes: &[u8] = &[0x01, 0x00];
@@ -927,7 +924,7 @@ fn parse_inbound_query_rejects_too_short() {
     assert!(matches!(err, ZenohWireParseError::MissingSegment(_)));
 }
 
-// ─── Actions — feedback ───────────────────────────────────────────────────
+// ─── Actions: feedback ────────────────────────────────────────────────────
 
 fn sample_action_receiver() -> ActionWireReceiver {
     ActionWireReceiver {
@@ -1192,9 +1189,9 @@ fn namespace_scoped_parser_rejects_unprefixed_and_malformed_keys() {
 
 // ─── Collision safety: node vs contract with overlapping name+tag ────────
 //
-// Core property the refactor exists to guarantee: a `NodeIdentifier { name, tag }`
-// must never share a wire key with an `ContractIdentifier { name, tag }` even
-// when both carry the same `name` and `tag`. The wire format embeds an
+// Core property of the wire format: a `NodeIdentifier { name, tag }` must
+// never share a wire key with a `ContractIdentifier { name, tag }` even when
+// both carry the same `name` and `tag`. The wire format embeds a
 // `contract` | `node` discriminator immediately before the name/tag pair to
 // prevent the two identifier namespaces from colliding.
 
@@ -1434,16 +1431,15 @@ fn topic_attachment_secondary_roundtrip() {
 fn topic_attachment_missing_decodes_as_primary() {
     // Defensive: a publish that drops or omits the attachment should not
     // cause wildcard subscribers to silently drop every message. Missing
-    // attachment == primary so the failure mode is "duplicates" (the
-    // pre-fix behavior), not "silence".
+    // attachment == primary so the failure mode is "duplicates", not
+    // "silence".
     assert!(TopicAttachment::decode(&[]).is_primary);
 }
 
 #[test]
 fn topic_attachment_unknown_byte_decodes_as_primary() {
     // Any byte other than the explicit 0x00 secondary marker decodes as
-    // primary — keeps forward compat if the marker schema grows fields
-    // (additional bytes are ignored by the current decoder).
+    // primary, and bytes after the first are ignored.
     assert!(TopicAttachment::decode(&[0xff]).is_primary);
     assert!(TopicAttachment::decode(&[0x01, 0xaa]).is_primary);
 }
@@ -1480,8 +1476,8 @@ fn service_query_attachment_decode_rejects_empty_bytes() {
 
 #[test]
 fn service_query_attachment_decode_rejects_older_magic() {
-    // Earlier versions also carried a sibling-pinned exclusion set. New
-    // producers MUST refuse those so mid-rollout skew surfaces loudly.
+    // A query attachment with another magic, such as `0x02`, is refused so
+    // schema skew surfaces loudly.
     assert!(matches!(
         ServiceQueryAttachment::decode(&[0x02, 0x00, 0x00]),
         Err(ZenohWireParseError::ServiceQueryAttachmentMagicMismatch { .. })
