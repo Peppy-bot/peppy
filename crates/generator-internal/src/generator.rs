@@ -227,47 +227,32 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
         package.insert("edition", value("2024"));
         doc.insert("package", Item::Table(package));
 
-        doc.insert("dependencies", Item::Table(Table::new()));
-
         doc
     };
 
-    // Ensure dependencies section exists and add peppygen + peppylib
-    if !doc.contains_key("dependencies") {
-        doc.insert("dependencies", Item::Table(Table::new()));
-    }
-
-    if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut()) {
-        set_path_dependency(
-            dependencies,
-            "peppygen",
-            config::consts::PEPPYGEN_OUTPUT_PATH,
-        );
-        set_path_dependency(
-            dependencies,
-            "peppylib",
-            daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
-        );
-    }
+    let dependencies = dependency_table(&mut doc, "dependencies")?;
+    set_path_dependency(
+        dependencies,
+        "peppygen",
+        config::consts::PEPPYGEN_OUTPUT_PATH,
+    );
+    set_path_dependency(
+        dependencies,
+        "peppylib",
+        daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
+    );
 
     // The generated test surfaces (`peppygen::mock` / `peppygen::fixtures`)
     // compile only under peppygen's `testing` feature, enabled from the
     // node's dev-dependencies. A plain `cargo build` resolves no top-level
     // dev-dependency, so it leaves the feature off.
-    if !doc.contains_key("dev-dependencies") {
-        doc.insert("dev-dependencies", Item::Table(Table::new()));
-    }
-    if let Some(dev_dependencies) = doc
-        .get_mut("dev-dependencies")
-        .and_then(|d| d.as_table_mut())
-    {
-        set_path_dependency_with_features(
-            dev_dependencies,
-            "peppygen",
-            config::consts::PEPPYGEN_OUTPUT_PATH,
-            &["testing"],
-        );
-    }
+    let dev_dependencies = dependency_table(&mut doc, "dev-dependencies")?;
+    set_path_dependency_with_features(
+        dev_dependencies,
+        "peppygen",
+        config::consts::PEPPYGEN_OUTPUT_PATH,
+        &["testing"],
+    );
 
     let rendered = doc.to_string();
     write_if_changed(&cargo_toml_path, rendered.as_bytes())?;
@@ -275,14 +260,33 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn set_path_dependency(dependencies: &mut toml_edit::Table, name: &str, path: &str) {
+/// The `key` dependency table of a Cargo.toml, appended empty when absent.
+/// Cargo accepts a standard table or an inline one. Any other value cannot
+/// hold the peppy dependencies, and a Cargo.toml written without them only
+/// fails later with an unresolved crate, so it is refused here.
+fn dependency_table<'a>(
+    doc: &'a mut toml_edit::DocumentMut,
+    key: &str,
+) -> Result<&'a mut dyn toml_edit::TableLike> {
+    doc.entry(key)
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_like_mut()
+        .ok_or_else(|| {
+            Error::Io(std::io::Error::new(
+                ErrorKind::InvalidData,
+                format!("`{key}` in Cargo.toml is not a table"),
+            ))
+        })
+}
+
+fn set_path_dependency(dependencies: &mut dyn toml_edit::TableLike, name: &str, path: &str) {
     let mut dependency = toml_edit::InlineTable::new();
     dependency.insert("path", path.into());
     dependencies.insert(name, toml_edit::value(dependency));
 }
 
 fn set_path_dependency_with_features(
-    dependencies: &mut toml_edit::Table,
+    dependencies: &mut dyn toml_edit::TableLike,
     name: &str,
     path: &str,
     features: &[&str],
@@ -429,6 +433,85 @@ mod tests {
         assert_eq!(peppylib_path, daemon_config::consts::PEPPYLIB_OUTPUT_PATH);
 
         assert_testing_dev_dependency(&doc);
+    }
+
+    /// `dependencies` written as an inline table ahead of `[package]` is
+    /// valid TOML and valid Cargo, so the peppy dependencies go into it.
+    #[test]
+    fn ensure_node_cargo_toml_adds_deps_to_an_inline_dependencies_table() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path();
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+
+        let existing_content = r#"
+            dependencies = { serde = "1.0" }
+
+            [package]
+            name = "inline_node"
+            version = "0.1.0"
+            edition = "2021"
+        "#;
+        fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
+
+        ensure_node_cargo_toml(node_dir, "inline_node").expect("should succeed");
+
+        let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
+        let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
+        let dependencies = doc.get("dependencies").expect("should keep dependencies");
+        assert_eq!(
+            dependencies.get("serde").and_then(|s| s.as_str()),
+            Some("1.0"),
+            "the existing dependency must be kept"
+        );
+        assert_eq!(
+            dependencies
+                .get("peppygen")
+                .and_then(|p| p.get("path"))
+                .and_then(|p| p.as_str()),
+            Some(config::consts::PEPPYGEN_OUTPUT_PATH),
+        );
+        assert_eq!(
+            dependencies
+                .get("peppylib")
+                .and_then(|p| p.get("path"))
+                .and_then(|p| p.as_str()),
+            Some(daemon_config::consts::PEPPYLIB_OUTPUT_PATH),
+        );
+        assert_testing_dev_dependency(&doc);
+    }
+
+    /// A `dependencies` key that holds no table cannot take the peppy
+    /// dependencies, so generation fails instead of writing a Cargo.toml
+    /// without them.
+    #[test]
+    fn ensure_node_cargo_toml_refuses_a_dependencies_value_that_is_not_a_table() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path();
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+
+        let existing_content = r#"
+            dependencies = "serde"
+
+            [package]
+            name = "broken_node"
+            version = "0.1.0"
+            edition = "2021"
+        "#;
+        fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
+
+        let error = ensure_node_cargo_toml(node_dir, "broken_node")
+            .expect_err("a non-table dependencies value must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("`dependencies` in Cargo.toml is not a table"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml"),
+            existing_content,
+            "a refused Cargo.toml must be left untouched"
+        );
     }
 
     #[test]
