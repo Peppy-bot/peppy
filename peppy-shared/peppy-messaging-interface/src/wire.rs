@@ -981,5 +981,22 @@ pub mod templates;
 
 pub use zenoh_format::{ServiceQueryKind, ServiceReplyKind};
 
+/// Test support shared by this crate's unit tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{Segment, SenderTarget};
+
+    /// A segment from a test value. Panics on invalid input, so tests use
+    /// known-good values only.
+    pub(crate) fn seg(value: &str) -> Segment {
+        Segment::try_from(value).expect("test segment value should be valid")
+    }
+
+    /// A node-shaped target from test values. Panics on invalid input.
+    pub(crate) fn node(name: &str, tag: &str) -> SenderTarget {
+        SenderTarget::node(name, tag).expect("test node target should be valid")
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -5,24 +5,14 @@
 
 use super::*;
 use crate::wire::WirePeer;
+use crate::wire::test_support::{node, seg};
 use crate::wire::{Segment, SenderTarget};
 use config::namespace::Namespace;
-
-/// Test-local shorthand: wrap a `&str` in a validated [`Segment`]. Panics on
-/// invalid input, so tests use known-good values only.
-fn seg(value: &str) -> Segment {
-    Segment::try_from(value).expect("test segment value should be valid")
-}
 
 /// Test-local shorthand: wrap a `&str` in a validated [`Namespace`]. Panics on
 /// invalid input.
 fn namespace(value: &str) -> Namespace {
     Namespace::parse(value).expect("test namespace value should be valid")
-}
-
-/// Test-local shorthand: build a node-shaped target. Panics on invalid input.
-fn node(name: &str, tag: &str) -> SenderTarget {
-    SenderTarget::node(name, tag).expect("test node target should be valid")
 }
 
 /// Test-local shorthand: build a contract-shaped target. Panics on invalid input.

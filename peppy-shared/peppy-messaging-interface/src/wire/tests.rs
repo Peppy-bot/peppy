@@ -1,15 +1,5 @@
+use super::test_support::{node, seg};
 use super::*;
-
-/// Test-local shorthand: wrap a `&str` in a validated [`Segment`]. Panics on
-/// invalid input, so tests use known-good values only.
-fn seg(value: &str) -> Segment {
-    Segment::try_from(value).expect("test segment value should be valid")
-}
-
-/// Test-local shorthand: build a node-shaped target with the standard test tag.
-fn test_node_target(name: &str) -> SenderTarget {
-    SenderTarget::node(name, "v1").expect("test node target")
-}
 
 // ─── ContractIdentifier ──────────────────────────────────────────────────
 
@@ -111,7 +101,7 @@ fn sender_target_contract_discriminator_is_contract() {
 
 #[test]
 fn sender_target_node_discriminator_is_node() {
-    let target = test_node_target("uvc_camera");
+    let target = node("uvc_camera", "v1");
     assert_eq!(target.discriminator(), "node");
     assert_eq!(target.name(), "uvc_camera");
     assert_eq!(target.tag(), "v1");
@@ -122,9 +112,9 @@ fn sender_target_node_discriminator_is_node() {
 #[test]
 fn sender_target_contract_and_node_with_same_name_tag_are_distinct() {
     let contract = SenderTarget::contract("widget", "v1").expect("valid contract target");
-    let node = test_node_target("widget");
-    assert_ne!(contract, node);
-    assert_ne!(contract.discriminator(), node.discriminator());
+    let node_target = node("widget", "v1");
+    assert_ne!(contract, node_target);
+    assert_ne!(contract.discriminator(), node_target.discriminator());
 }
 
 #[test]
@@ -195,7 +185,7 @@ fn build_caller_senders(
                 own_core_node,
                 "caller_inst",
                 target,
-                test_node_target("robot_arm"),
+                node("robot_arm", "v1"),
                 name,
                 ServiceKind::Service,
             )
@@ -207,7 +197,7 @@ fn build_caller_senders(
                 own_core_node,
                 "caller_inst",
                 target,
-                test_node_target("robot_arm"),
+                node("robot_arm", "v1"),
                 name,
             )
             .map(drop),
@@ -265,7 +255,7 @@ fn caller_senders_pin_both_producer_slots_or_leave_both_open() {
         "caller_core",
         "caller_inst",
         Some(&target),
-        test_node_target("robot_arm"),
+        node("robot_arm", "v1"),
         "ping",
         ServiceKind::Service,
     )
@@ -277,7 +267,7 @@ fn caller_senders_pin_both_producer_slots_or_leave_both_open() {
         "caller_core",
         "caller_inst",
         None,
-        test_node_target("robot_arm"),
+        node("robot_arm", "v1"),
         "pick_place",
     )
     .expect("valid action sender");
@@ -293,7 +283,7 @@ fn sample_action_sender() -> ActionWireSender {
         as_instance_id: seg("caller_inst"),
         target_core_node: Some(seg("target_core")),
         target_instance_id: Some(seg("target_inst")),
-        to_target: test_node_target("robot_arm"),
+        to_target: node("robot_arm", "v1"),
         to_action_name: seg("pick_place"),
     }
 }

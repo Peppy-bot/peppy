@@ -98,12 +98,9 @@ pub fn action_feedback_channel_address(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::test_support::node;
     use crate::wire::zenoh_format::ZenohWireFormat;
     use crate::wire::{ActionWireReceiver, ServiceWireReceiver, TopicWireSender};
-
-    fn node(name: &str, tag: &str) -> SenderTarget {
-        SenderTarget::node(name, tag).expect("valid node target")
-    }
 
     /// The service helper must equal both a hand-written golden key expression
     /// and the real `service_reply_keyexpr` builder, for each `ServiceKind`

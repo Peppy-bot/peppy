@@ -976,6 +976,7 @@ impl MockPublisher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::test_support::seg;
 
     #[test]
     fn test_key_exprs_intersect_exact() {
@@ -1466,10 +1467,6 @@ mod tests {
             new_watch.rx.recv_async().await.expect("new gone event"),
             LivelinessEvent::Gone(())
         );
-    }
-
-    fn seg(value: &str) -> Segment {
-        Segment::try_from(value).expect("valid keyexpr segment")
     }
 
     /// The liveliness and presence operations refuse to run before
