@@ -92,17 +92,34 @@ pub fn spawn_daemon_with_env(
         Box::new(child.stderr.take().expect("piped stderr")) as Box<dyn std::io::Read + Send>,
     ] {
         let logs_writer = Arc::clone(&logs);
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            while reader.read_line(&mut line).unwrap_or(0) > 0 {
-                logs_writer.lock().unwrap().push_str(&line);
-                line.clear();
-            }
-        });
+        std::thread::spawn(move || drain_lines_into(stream, &logs_writer));
     }
 
     (DaemonGuard(child), logs)
+}
+
+/// Appends every line `stream` yields to `logs` until the stream ends. The
+/// line is read as bytes and decoded lossily, because `read_line` fails on a
+/// line that is not UTF-8.
+fn drain_lines_into(stream: impl std::io::Read, logs: &Mutex<String>) {
+    let mut reader = BufReader::new(stream);
+    let mut line = Vec::new();
+    while reader.read_until(b'\n', &mut line).unwrap_or(0) > 0 {
+        logs.lock()
+            .unwrap()
+            .push_str(&String::from_utf8_lossy(&line));
+        line.clear();
+    }
+}
+
+/// A line that is not UTF-8 (a child of the daemon may print one) does not
+/// end the drain: a drain that stopped would leave the pipe to fill and the
+/// daemon to block on its next log write.
+#[test]
+fn the_drain_reads_past_a_line_that_is_not_utf8() {
+    let logs = Mutex::new(String::new());
+    drain_lines_into(std::io::Cursor::new(b"first\n\xff\nlast\n".to_vec()), &logs);
+    assert_eq!(*logs.lock().unwrap(), "first\n\u{fffd}\nlast\n");
 }
 
 /// The line a daemon prints once its serve loop is up.
