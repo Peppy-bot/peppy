@@ -28,11 +28,8 @@ def convert_time(timestamp: float) -> CapnpTimestamp:
     if nsec >= NANOS_PER_SEC:
         sec += 1
         nsec -= NANOS_PER_SEC
-    elif nsec < 0:
-        sec -= 1
-        nsec += NANOS_PER_SEC
 
-    return CapnpTimestamp(sec=int(sec), nsec=nsec)
+    return CapnpTimestamp(sec=sec, nsec=nsec)
 
 
 def convert_time_from_capnp(sec: int, nsec: int) -> float:
