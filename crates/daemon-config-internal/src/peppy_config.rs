@@ -307,15 +307,15 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
 ///
 /// `Peer` keeps gossip on so co-located nodes form direct peer-to-peer links;
 /// `Router` turns gossip off so every node routes through the central
-/// `zenohd` and opens no listener. Peer sessions bind the wildcard address —
+/// `zenohd` and opens no listener. Peer sessions bind the wildcard address:
 /// zenoh 1.10 gossips only non-loopback locators, so a loopback listener
-/// would never be advertised and no direct link could form — which makes the
-/// peer listener reachable from the network (the zenoh transport is
-/// unauthenticated, like the router's own listener). Cross-machine traffic
-/// still relays through the routers and their federation; the workspace
-/// namespace isolates what any link may carry. The `gossip()` mapping is
-/// the single source of truth tying this user-facing choice to the
-/// `DiscoveryConfig.gossip` flag the sessions actually read.
+/// would never be advertised and no direct link could form. The wildcard
+/// bind makes the peer listener reachable from the network (the zenoh
+/// transport is unauthenticated, like the router's own listener).
+/// Cross-machine traffic still relays through the routers and their
+/// federation; the workspace namespace isolates what any link may carry. The
+/// `gossip()` mapping is the single source of truth tying this user-facing
+/// choice to the `DiscoveryConfig.gossip` flag the sessions actually read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalNodesTopology {
