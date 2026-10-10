@@ -45,7 +45,7 @@ pub struct PythonGenerator {
     sections: Vec<InterfaceArtifact>,
     parameters: config::ParameterSchema,
     schemas: HashMap<String, CapnpSchema>,
-    is_container: bool,
+    peppylib_platform: scaffold::PeppylibPlatform,
     node_tree: NodeTree,
     testgen: crate::generator::testgen::TestGenRegistry,
 }
@@ -71,7 +71,11 @@ impl PythonGenerator {
     /// When `true`, the Linux cross-compiled `.so` is deployed; otherwise the
     /// host platform's `.so` is used.
     pub fn set_container(&mut self, is_container: bool) {
-        self.is_container = is_container;
+        self.peppylib_platform = if is_container {
+            scaffold::PeppylibPlatform::LinuxContainer
+        } else {
+            scaffold::PeppylibPlatform::Host
+        };
     }
 
     /// Declares what the output tree is, so the fixtures harness knows
@@ -493,7 +497,7 @@ impl LanguageGenerator for PythonGenerator {
         mock::render(&mut self, &registry)?;
         fixtures::render(&mut self, &registry, to_path)?;
 
-        scaffold::add_peppylib_dependencies(to_path, peppy_dirs, self.is_container)?;
+        scaffold::add_peppylib_dependencies(to_path, peppy_dirs, self.peppylib_platform)?;
         scaffold::add_capnp_schemas(&self.schemas, to_path)?;
         scaffold::add_artifacts_to_lib(to_path, self.sections)?;
         scaffold::add_parameters_to_lib(&self.parameters, to_path)?;

@@ -76,30 +76,39 @@ fn host_platform_suffix() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// Returns the platform suffix to deploy.
-///
-/// - Non-container nodes run on the host, so use the host platform's `.so`.
-/// - Container nodes run inside a Linux VM, so use the Linux `.so` matching
-///   the host architecture.
-fn target_platform_suffix(is_container: bool) -> String {
-    if is_container {
-        format!("linux-{}", std::env::consts::ARCH)
-    } else {
-        host_platform_suffix()
+/// The platform whose native extension the node's peppylib deploys.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum PeppylibPlatform {
+    /// The node runs on the host, so it gets the host platform's `.so`.
+    #[default]
+    Host,
+    /// The node runs in a container, inside a Linux VM, so it gets the Linux
+    /// `.so` matching the host architecture.
+    LinuxContainer,
+}
+
+impl PeppylibPlatform {
+    /// The platform suffix of the `.so` to deploy (e.g. "macos-aarch64",
+    /// "linux-x86_64").
+    fn suffix(self) -> String {
+        match self {
+            Self::Host => host_platform_suffix(),
+            Self::LinuxContainer => format!("linux-{}", std::env::consts::ARCH),
+        }
     }
 }
 
 pub fn add_peppylib_dependencies(
     to_path: &Path,
     peppy_dirs: &daemon_config::consts::PeppyDirs,
-    is_container: bool,
+    platform: PeppylibPlatform,
 ) -> Result<()> {
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
     crate::generator::common::copy_embedded_templates("peppygen/python", to_path, "")?;
 
     // Determine which platform's .so to deploy, and include it in the cache key
     // so that native and container caches are separate.
-    let target_suffix = target_platform_suffix(is_container);
+    let target_suffix = platform.suffix();
     let expected_so_name = format!("{SO_PLATFORM_PREFIX}{target_suffix}.so");
     let cache_key = format!(
         "{}-{}-{}",
@@ -539,15 +548,30 @@ mod tests {
         }
     }
 
+    /// `set_container` is the boundary where the deployment kind of the node
+    /// becomes the platform whose `.so` its peppylib deploys.
     #[test]
-    fn target_platform_suffix_selects_host_for_non_container() {
-        let suffix = target_platform_suffix(false);
+    fn set_container_chooses_the_deployed_peppylib_platform() {
+        let mut generator = crate::generator::python::PythonGenerator::new();
+        assert_eq!(generator.peppylib_platform, PeppylibPlatform::Host);
+        generator.set_container(true);
+        assert_eq!(
+            generator.peppylib_platform,
+            PeppylibPlatform::LinuxContainer
+        );
+        generator.set_container(false);
+        assert_eq!(generator.peppylib_platform, PeppylibPlatform::Host);
+    }
+
+    #[test]
+    fn peppylib_platform_suffix_selects_host_for_non_container() {
+        let suffix = PeppylibPlatform::Host.suffix();
         assert_eq!(suffix, host_platform_suffix());
     }
 
     #[test]
-    fn target_platform_suffix_selects_linux_for_container() {
-        let suffix = target_platform_suffix(true);
+    fn peppylib_platform_suffix_selects_linux_for_container() {
+        let suffix = PeppylibPlatform::LinuxContainer.suffix();
         assert!(
             suffix.starts_with("linux-"),
             "container should select linux platform, got: {suffix}"
