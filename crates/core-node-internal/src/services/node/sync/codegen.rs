@@ -26,20 +26,6 @@ use tracing::debug;
 pub(super) fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
     let peppy_output_dir = node_root_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
 
-    // Path-string sanity check; pure CPU, no syscall.
-    if peppy_output_dir.file_name()
-        != Some(std::ffi::OsStr::new(
-            daemon_config::consts::PEPPY_OUTPUT_DIR,
-        ))
-    {
-        debug!(
-            "Unexpected directory name, expected {}: {}",
-            daemon_config::consts::PEPPY_OUTPUT_DIR,
-            peppy_output_dir.display()
-        );
-        return;
-    }
-
     // One `metadata` call decides "missing", "is a file", or "is a dir".
     // We refuse to rename a non-directory because a stray file at this
     // path would otherwise be silently moved to `.peppy-old-{pid}-{ts}`
