@@ -23,7 +23,9 @@ import functools
 import json
 import os
 import subprocess
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from fnmatch import fnmatch
+from typing import NamedTuple
 
 # Suites driven by a cargo package of the `peppy` workspace: the package name
 # its test command names, plus extra trees the suite reads at run time that
@@ -166,7 +168,7 @@ PEPPY_SHARED_INPUTS = [
 ]
 
 
-def repository_root():
+def repository_root() -> str:
     return subprocess.check_output(
         ["git", "rev-parse", "--show-toplevel"], text=True
     ).strip()
@@ -175,12 +177,12 @@ def repository_root():
 ROOT = repository_root()
 
 
-def repo_path(absolute):
+def repo_path(absolute: str) -> str:
     """`absolute` as git spells it: relative to the repository root."""
     return os.path.relpath(absolute, ROOT)
 
 
-def changed_files(base):
+def changed_files(base: str) -> list[str] | None:
     """Files changed on this branch relative to base; None when unknowable.
 
     A moved file counts at both of its paths, because the suite that read it
@@ -205,7 +207,7 @@ def changed_files(base):
 
 
 @functools.cache
-def cargo_metadata(manifest):
+def cargo_metadata(manifest: str) -> dict:
     """The metadata of the workspace `manifest` belongs to.
 
     `--no-deps` reads manifests alone: no lockfile, no registry index, no
@@ -229,7 +231,7 @@ def cargo_metadata(manifest):
     )
 
 
-def workspace_packages(manifest):
+def workspace_packages(manifest: str) -> Iterator[tuple[str, str, list[str]]]:
     """Every package of the workspace `manifest` belongs to, as (name,
     manifest path, manifests of the crates it depends on by path).
 
@@ -245,7 +247,7 @@ def workspace_packages(manifest):
         yield package["name"], package["manifest_path"], path_deps
 
 
-def workspace_default_members(manifest):
+def workspace_default_members(manifest: str) -> list[str]:
     """Names of the packages `cargo test` at `manifest` tests when it names
     none: the workspace's default members."""
     meta = cargo_metadata(manifest)
@@ -253,14 +255,24 @@ def workspace_default_members(manifest):
     return [package["name"] for package in meta["packages"] if package["id"] in default]
 
 
-def crate_graph(seeds):
+class CrateGraph(NamedTuple):
+    """What a walk over path dependencies found about every crate it reached."""
+
+    # The repository-relative directory of each crate, keyed by manifest path.
+    directories: dict[str, str]
+    # The manifests of the crates each crate depends on by path, keyed by
+    # manifest path.
+    dependencies: dict[str, list[str]]
+    # The manifest path of each crate, keyed by package name.
+    manifests: dict[str, str]
+
+
+def crate_graph(seeds: Iterable[str]) -> CrateGraph:
     """Walk out from `seeds` over path dependencies, one `cargo metadata` per
-    workspace reached, and return what the walk found: the repository-relative
-    directory and the path-dependency manifests of every crate, keyed by
-    manifest path, plus the manifest path of every crate, keyed by package
-    name.
-    """
-    directories, dependencies, manifests = {}, {}, {}
+    workspace reached, and return what the walk found."""
+    directories: dict[str, str] = {}
+    dependencies: dict[str, list[str]] = {}
+    manifests: dict[str, str] = {}
     pending = list(seeds)
     while pending:
         manifest = pending.pop()
@@ -271,29 +283,30 @@ def crate_graph(seeds):
             dependencies[package_manifest] = path_deps
             manifests[name] = package_manifest
             pending.extend(path_deps)
-    return directories, dependencies, manifests
+    return CrateGraph(directories, dependencies, manifests)
 
 
-def crate_dirs(manifest, graph):
+def crate_dirs(manifest: str, graph: CrateGraph) -> set[str]:
     """Directories of the crate at `manifest` and of every crate it reaches
     through a path dependency, at any depth."""
-    directories, dependencies, _ = graph
     seen = {manifest}
     todo = [manifest]
     while todo:
-        for dependency in dependencies.get(todo.pop(), ()):
+        for dependency in graph.dependencies.get(todo.pop(), ()):
             if dependency not in seen:
                 seen.add(dependency)
                 todo.append(dependency)
-    return {directories[reached] for reached in seen if reached in directories}
+    return {
+        graph.directories[reached] for reached in seen if reached in graph.directories
+    }
 
 
-def gate(selected):
+def gate(selected: bool) -> str:
     """A boolean as a workflow output reads it."""
     return "true" if selected else "false"
 
 
-def touches(files, globs, dirs):
+def touches(files: Sequence[str], globs: Sequence[str], dirs: Collection[str]) -> bool:
     for path in files:
         if any(path == glob or fnmatch(path, glob) for glob in globs):
             return True
@@ -302,7 +315,7 @@ def touches(files, globs, dirs):
     return False
 
 
-def select_everything():
+def select_everything() -> dict[str, str]:
     """What runs when the change set is unknowable or detection failed: all of
     it. The cargo selection is spelled `--workspace` because the package names
     are exactly what a failed graph walk could not produce."""
@@ -318,13 +331,13 @@ def select_everything():
     return selection
 
 
-def select(files):
+def select(files: Sequence[str]) -> dict[str, str]:
     """What each gated suite must run for the change set `files`."""
     root_manifest = os.path.join(ROOT, "Cargo.toml")
     graph = crate_graph([root_manifest, os.path.join(ROOT, PEPPY_SHARED, "Cargo.toml")])
-    _, _, manifests = graph
+    manifests = graph.manifests
 
-    def crate_touched(manifest, globs):
+    def crate_touched(manifest: str, globs: Sequence[str]) -> bool:
         return touches(files, globs, crate_dirs(manifest, graph))
 
     cargo_inputs = CI_INPUTS + CARGO_CI_INPUTS
@@ -355,7 +368,7 @@ def select(files):
     return selection
 
 
-def report(selection, base):
+def report(selection: Mapping[str, str], base: str) -> None:
     """Say what each conditionally-run job runs, and why a skipped one is
     skipped: a job annotation per skipped job plus a step summary section,
     because the gray "skipped" mark a workflow shows explains nothing."""
@@ -392,7 +405,7 @@ def report(selection, base):
         handle.write("\n".join(lines) + "\n")
 
 
-def main():
+def main() -> None:
     base = os.environ.get("INPUT_BASE", "")
     try:
         files = changed_files(base)
