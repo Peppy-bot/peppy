@@ -72,7 +72,7 @@ def run_claude(
     the final response through a validated structured-output tool call: a
     prose-only answer cannot reach the caller, and the parsed object arrives
     in the envelope's ``structured_output`` field. Callers still validate the
-    object's contents — the CLI is not pinned, so its enforcement is a
+    object's contents: the CLI is not pinned, so its enforcement is a
     convenience, not a contract.
 
     ``tools`` controls which built-in tools exist for the run: pass "" to

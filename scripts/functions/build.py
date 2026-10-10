@@ -62,7 +62,7 @@ def cargo_build(
 
     Streams cargo's output live while retaining a bounded tail, so that
     when the build fails (e.g. a transient sccache crash) the error
-    message includes the actual cargo output — even when the caller
+    message includes the actual cargo output, even when the caller
     captures stdio, as pytest does by default.
     """
     console.print(f"Building peppy for [bold]{target_triple}[/bold]...")

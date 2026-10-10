@@ -79,8 +79,8 @@ def _probe_publicly_trusted_tls(host: str, port: int, timeout: float = 10.0) -> 
     """Open a TLS connection to host:port using ONLY the system trust store and
     verify the presented chain is valid, unexpired, and matches `host`.
 
-    This is exactly the validation the shipped (release) CLI does at runtime — it
-    bakes in no custom CA and validates router certs against the system store — run
+    This is exactly the validation the shipped (release) CLI does at runtime (it
+    bakes in no custom CA and validates router certs against the system store), run
     once at release time. A completed handshake means the chain validated against a
     public root and the name matched. Raises ReleaseError on any failure
     (unreachable, self-signed, private CA, expired, name mismatch).
