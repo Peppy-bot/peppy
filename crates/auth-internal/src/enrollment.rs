@@ -327,13 +327,12 @@ pub fn load(dirs: &PeppyDirs) -> Result<Option<Enrollment>> {
         Ok(file)
     };
     let peer_certificate = material(PEER_CERTIFICATE_FILE)?;
-    let certificate = CertificateValidity::parse_pem(&std::fs::read_to_string(&peer_certificate)?)
-        .map_err(|e| {
-            Error::Auth(format!(
-                "enrollment material {} cannot be read: {e}; run `peppy platform enroll` again",
-                peer_certificate.display()
-            ))
-        })?;
+    let certificate = read_certificate_validity(&peer_certificate).map_err(|e| {
+        Error::Auth(format!(
+            "enrollment material {} cannot be read: {e}; run `peppy platform enroll` again",
+            peer_certificate.display()
+        ))
+    })?;
     Ok(Some(Enrollment {
         peer_key: material(PEER_KEY_FILE)?,
         peer_certificate,
@@ -341,6 +340,11 @@ pub fn load(dirs: &PeppyDirs) -> Result<Option<Enrollment>> {
         document,
         certificate,
     }))
+}
+
+/// The validity of the leaf in the PEM file at `path`.
+fn read_certificate_validity(path: &Path) -> Result<CertificateValidity> {
+    CertificateValidity::parse_pem(&std::fs::read_to_string(path)?)
 }
 
 /// Writes the bundle under `<root>/conf/peer/` (`0700`), the key and the
@@ -836,6 +840,21 @@ mod tests {
         std::fs::remove_file(dirs.peer_dir().join(PEER_KEY_FILE)).unwrap();
         let err = load(&dirs).expect_err("missing key");
         assert!(err.to_string().contains(PEER_KEY_FILE), "{err}");
+    }
+
+    /// A leaf file that cannot be read as text fails the load like a leaf
+    /// that is not a certificate: the message names the file and the remedy.
+    #[test]
+    fn a_peer_certificate_that_cannot_be_read_fails_the_load_naming_enroll() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(dir.path());
+        save(&dirs, &bundle()).unwrap();
+        std::fs::write(dirs.peer_dir().join(PEER_CERTIFICATE_FILE), b"\xff\xfe\xfd").unwrap();
+
+        let err = load(&dirs).expect_err("a leaf that is not text");
+
+        assert!(err.to_string().contains(PEER_CERTIFICATE_FILE), "{err}");
+        assert!(err.to_string().contains("peppy platform enroll"), "{err}");
     }
 
     #[test]
