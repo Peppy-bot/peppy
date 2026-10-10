@@ -770,52 +770,6 @@ pub(crate) fn join_field_path(parent: &str, field: &str) -> String {
 /// — either a primitive leaf (with optional `$default`) or a nested group.
 pub type ParameterSchema = BTreeMap<String, ParameterSpec>;
 
-/// Unvalidated node arguments deserialized from a runtime or deployment config.
-///
-/// Use [`RawNodeArguments::into_resolved`] to validate against a
-/// [`ParameterSchema`] and obtain a [`NodeArguments`] value.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(transparent)]
-pub(crate) struct RawNodeArguments(BTreeMap<String, AnyType>);
-
-impl RawNodeArguments {
-    /// Validate these raw arguments against a [`ParameterSchema`] and produce
-    /// a [`NodeArguments`] value.
-    ///
-    /// Behavior:
-    /// 1. For every schema key missing from the arguments, synthesize from
-    ///    `$default` if the entire subtree has defaults; otherwise collect a
-    ///    missing-parameter error naming the leaf path that has no default.
-    ///    Partially supplied groups have their missing children synthesized
-    ///    from `$default` recursively.
-    /// 2. Validate every supplied value against its declared type, with strict
-    ///    per-width range checks for integer types.
-    /// 3. Reject any argument key not declared in the schema.
-    fn into_resolved(
-        mut self,
-        schema: &ParameterSchema,
-    ) -> Result<NodeArguments, NodeArgumentsError> {
-        // 1. Fill defaults for any keys missing from the supplied arguments,
-        //    recursing into supplied groups to fill their missing children too.
-        let mut missing: Vec<String> = Vec::new();
-        fill_group_defaults(&mut self.0, schema, "", &mut missing);
-        if !missing.is_empty() {
-            return Err(NodeArgumentsError::MissingParameters(missing));
-        }
-
-        // 2. Validate every supplied value against its declared spec.
-        for (key, value) in &self.0 {
-            let spec = schema
-                .get(key)
-                .ok_or_else(|| NodeArgumentsError::UnknownParameter { key: key.clone() })?;
-            validate_value_against_spec(value, spec, key)
-                .map_err(NodeArgumentsError::TypeMismatch)?;
-        }
-
-        Ok(NodeArguments(self.0))
-    }
-}
-
 /// Fills the fields of one group from its schema (`path` is empty at the
 /// schema root): a supplied field gets its own missing children filled, and
 /// a missing field is synthesized from its `$default`s. Required leaves with
@@ -924,7 +878,8 @@ fn validate_value_against_spec(
                 }
             }
             // Validate each declared field — defaults have already been filled
-            // in by `into_resolved`, so any missing key here is a true error.
+            // in by `validate_node_arguments`, so any missing key here is a true
+            // error.
             for (k, sub_spec) in fields {
                 let sub_path = format!("{path}.{k}");
                 match map.get(k) {
@@ -943,24 +898,11 @@ fn validate_value_against_spec(
     }
 }
 
-impl<const N: usize> From<[(String, AnyType); N]> for RawNodeArguments {
-    fn from(arr: [(String, AnyType); N]) -> Self {
-        Self(BTreeMap::from(arr))
-    }
-}
-
-impl From<BTreeMap<String, AnyType>> for RawNodeArguments {
-    fn from(map: BTreeMap<String, AnyType>) -> Self {
-        Self(map)
-    }
-}
-
 /// Node arguments that have passed validation against the manifest spec.
 ///
-/// This type cannot be constructed directly — it is only produced by
-/// [`RawNodeArguments::into_resolved`]. The inner data is not accessible;
-/// consumers must parse into a typed struct via
-/// [`peppylib::config::deserialize_parameters`].
+/// Only [`validate_node_arguments`] constructs this type, and its inner map
+/// is private: peppylib serializes it and parses the values into the node's
+/// typed parameter struct.
 #[derive(Clone, Debug, Serialize)]
 pub struct NodeArguments(BTreeMap<String, AnyType>);
 
@@ -998,17 +940,39 @@ impl std::fmt::Display for NodeArgumentsError {
 
 impl std::error::Error for NodeArgumentsError {}
 
-/// Validates a `BTreeMap<String, AnyType>` against a [`ParameterSchema`] and
-/// produces a [`NodeArguments`] value.
+/// Validates `arguments` against a [`ParameterSchema`] and produces a
+/// [`NodeArguments`] value.
 ///
-/// Use this when arguments are constructed programmatically (e.g. from a
-/// deserialized runtime config) rather than parsed from a raw string.
+/// Behavior:
+/// 1. For every schema key missing from the arguments, synthesize from
+///    `$default` if the entire subtree has defaults; otherwise collect a
+///    missing-parameter error naming the leaf path that has no default.
+///    Partially supplied groups have their missing children synthesized
+///    from `$default` recursively.
+/// 2. Validate every supplied value against its declared type, with strict
+///    per-width range checks for integer types.
+/// 3. Reject any argument key not declared in the schema.
 pub fn validate_node_arguments(
-    arguments: BTreeMap<String, AnyType>,
+    mut arguments: BTreeMap<String, AnyType>,
     schema: &ParameterSchema,
 ) -> Result<NodeArguments, NodeArgumentsError> {
-    let raw = RawNodeArguments::from(arguments);
-    raw.into_resolved(schema)
+    // 1. Fill defaults for any keys missing from the supplied arguments,
+    //    recursing into supplied groups to fill their missing children too.
+    let mut missing: Vec<String> = Vec::new();
+    fill_group_defaults(&mut arguments, schema, "", &mut missing);
+    if !missing.is_empty() {
+        return Err(NodeArgumentsError::MissingParameters(missing));
+    }
+
+    // 2. Validate every supplied value against its declared spec.
+    for (key, value) in &arguments {
+        let spec = schema
+            .get(key)
+            .ok_or_else(|| NodeArgumentsError::UnknownParameter { key: key.clone() })?;
+        validate_value_against_spec(value, spec, key).map_err(NodeArgumentsError::TypeMismatch)?;
+    }
+
+    Ok(NodeArguments(arguments))
 }
 
 /// Fill any keys missing from `arguments` with values synthesized from the
@@ -1396,8 +1360,8 @@ mod tests {
     #[test]
     fn runtime_f32_rejects_int_above_lossless_range() {
         let s = schema(r#"{ gain: "f32" }"#);
-        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Int(16777217))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("gain".to_string(), AnyType::Int(16777217))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("f32"), "got: {msg}");
     }
@@ -1405,20 +1369,20 @@ mod tests {
     #[test]
     fn runtime_f32_rejects_float_overflow() {
         let s = schema(r#"{ gain: "f32" }"#);
-        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Float(1e100))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(1e100))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
     }
 
     #[test]
     fn runtime_f32_rejects_non_finite_float() {
         let s = schema(r#"{ gain: "f32" }"#);
-        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Float(f64::INFINITY))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(f64::INFINITY))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
 
-        let raw_nan = RawNodeArguments::from([("gain".to_string(), AnyType::Float(f64::NAN))]);
-        assert!(raw_nan.into_resolved(&s).is_err());
+        let raw_nan = BTreeMap::from([("gain".to_string(), AnyType::Float(f64::NAN))]);
+        assert!(validate_node_arguments(raw_nan, &s).is_err());
     }
 
     #[test]
@@ -1433,9 +1397,9 @@ mod tests {
             AnyType::UInt(16777216),
             AnyType::UInt(0),
         ] {
-            let raw = RawNodeArguments::from([("gain".to_string(), value.clone())]);
+            let raw = BTreeMap::from([("gain".to_string(), value.clone())]);
             assert!(
-                raw.into_resolved(&s).is_ok(),
+                validate_node_arguments(raw, &s).is_ok(),
                 "expected {value:?} to validate against f32"
             );
         }
@@ -1444,8 +1408,8 @@ mod tests {
     #[test]
     fn runtime_f64_accepts_value_above_f32_range() {
         let s = schema(r#"{ gain: "f64" }"#);
-        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Float(1e100))]);
-        assert!(raw.into_resolved(&s).is_ok());
+        let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(1e100))]);
+        assert!(validate_node_arguments(raw, &s).is_ok());
     }
 
     // ---- Array parameter parsing ----
@@ -1545,13 +1509,13 @@ mod tests {
     }
 
     #[test]
-    fn into_resolved_validates_array_items() {
+    fn validate_node_arguments_checks_array_items() {
         let s = schema(r#"{ tags: { $type: "array", $items: "string" } }"#);
-        let raw = RawNodeArguments::from([(
+        let raw = BTreeMap::from([(
             "tags".to_string(),
             AnyType::Array(vec![AnyType::String("a".into()), AnyType::Int(1)]),
         )]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("tags[1]"), "got: {msg}");
     }
@@ -1579,13 +1543,13 @@ mod tests {
         assert_eq!(spec, reparsed);
     }
 
-    // ---- Runtime defaulting via into_resolved ----
+    // ---- Runtime defaulting via validate_node_arguments ----
 
     #[test]
     fn missing_leaf_with_default_is_synthesized() {
         let s = schema(r#"{ name: { $type: "string", $default: "world" } }"#);
-        let raw = RawNodeArguments::from(BTreeMap::new());
-        let args = raw.into_resolved(&s).unwrap();
+        let raw = BTreeMap::new();
+        let args = validate_node_arguments(raw, &s).unwrap();
         assert_eq!(
             args.0.get("name"),
             Some(&AnyType::String("world".to_string()))
@@ -1595,8 +1559,8 @@ mod tests {
     #[test]
     fn missing_leaf_without_default_errors() {
         let s = schema(r#"{ name: "string" }"#);
-        let raw = RawNodeArguments::from(BTreeMap::new());
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::new();
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let NodeArgumentsError::MissingParameters(keys) = err else {
             panic!("unexpected error: {err:?}");
         };
@@ -1606,9 +1570,8 @@ mod tests {
     #[test]
     fn user_value_overrides_default() {
         let s = schema(r#"{ name: { $type: "string", $default: "world" } }"#);
-        let raw =
-            RawNodeArguments::from([("name".to_string(), AnyType::String("override".to_string()))]);
-        let args = raw.into_resolved(&s).unwrap();
+        let raw = BTreeMap::from([("name".to_string(), AnyType::String("override".to_string()))]);
+        let args = validate_node_arguments(raw, &s).unwrap();
         assert_eq!(
             args.0.get("name"),
             Some(&AnyType::String("override".to_string()))
@@ -1625,8 +1588,8 @@ mod tests {
                 }
             }"#,
         );
-        let raw = RawNodeArguments::from(BTreeMap::new());
-        let args = raw.into_resolved(&s).unwrap();
+        let raw = BTreeMap::new();
+        let args = validate_node_arguments(raw, &s).unwrap();
         let AnyType::Object(device) = args.0.get("device").unwrap() else {
             panic!("expected synthesized object");
         };
@@ -1648,9 +1611,8 @@ mod tests {
                 }
             }"#,
         );
-        let raw =
-            RawNodeArguments::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
-        let args = raw.into_resolved(&s).unwrap();
+        let raw = BTreeMap::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
+        let args = validate_node_arguments(raw, &s).unwrap();
         let AnyType::Object(device) = args.0.get("device").unwrap() else {
             panic!("expected device object");
         };
@@ -1670,14 +1632,14 @@ mod tests {
                 }
             }"#,
         );
-        let raw = RawNodeArguments::from([(
+        let raw = BTreeMap::from([(
             "device".to_string(),
             AnyType::Object(BTreeMap::from([(
                 "path".to_string(),
                 AnyType::String("/dev/video1".into()),
             )])),
         )]);
-        let args = raw.into_resolved(&s).unwrap();
+        let args = validate_node_arguments(raw, &s).unwrap();
         let AnyType::Object(device) = args.0.get("device").unwrap() else {
             panic!("expected device object");
         };
@@ -1701,9 +1663,8 @@ mod tests {
                 }
             }"#,
         );
-        let raw =
-            RawNodeArguments::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let NodeArgumentsError::MissingParameters(keys) = err else {
             panic!("unexpected error: {err:?}");
         };
@@ -1722,14 +1683,14 @@ mod tests {
                 }
             }"#,
         );
-        let raw = RawNodeArguments::from([(
+        let raw = BTreeMap::from([(
             "video".to_string(),
             AnyType::Object(BTreeMap::from([(
                 "resolution".to_string(),
                 AnyType::Object(BTreeMap::from([("width".to_string(), AnyType::UInt(640))])),
             )])),
         )]);
-        let args = raw.into_resolved(&s).unwrap();
+        let args = validate_node_arguments(raw, &s).unwrap();
         let AnyType::Object(video) = args.0.get("video").unwrap() else {
             panic!("expected video object");
         };
@@ -1790,8 +1751,8 @@ mod tests {
                 }
             }"#,
         );
-        let raw = RawNodeArguments::from(BTreeMap::new());
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::new();
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let NodeArgumentsError::MissingParameters(keys) = err else {
             panic!("unexpected error: {err:?}");
         };
@@ -1801,17 +1762,16 @@ mod tests {
     #[test]
     fn user_supplied_value_type_mismatch_errors() {
         let s = schema(r#"{ fps: "u16" }"#);
-        let raw =
-            RawNodeArguments::from([("fps".to_string(), AnyType::String("not a number".into()))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("fps".to_string(), AnyType::String("not a number".into()))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
     }
 
     #[test]
     fn user_supplied_uint_out_of_range_errors() {
         let s = schema(r#"{ count: "u8" }"#);
-        let raw = RawNodeArguments::from([("count".to_string(), AnyType::Int(300))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("count".to_string(), AnyType::Int(300))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("u8"), "got: {msg}");
     }
@@ -1819,8 +1779,8 @@ mod tests {
     #[test]
     fn user_supplied_negative_for_unsigned_errors() {
         let s = schema(r#"{ count: "u32" }"#);
-        let raw = RawNodeArguments::from([("count".to_string(), AnyType::Int(-1))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("count".to_string(), AnyType::Int(-1))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
     }
 
@@ -1850,11 +1810,11 @@ mod tests {
     #[test]
     fn unknown_argument_key_errors() {
         let s = schema(r#"{ name: "string" }"#);
-        let raw = RawNodeArguments::from([
+        let raw = BTreeMap::from([
             ("name".to_string(), AnyType::String("a".into())),
             ("extra".to_string(), AnyType::String("b".into())),
         ]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         assert!(matches!(err, NodeArgumentsError::UnknownParameter { .. }));
     }
 
