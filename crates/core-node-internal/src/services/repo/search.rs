@@ -43,8 +43,10 @@ impl SearchQuery {
     /// sha256 fingerprint, the name and tag parts are split at the one
     /// allowed `:`, and each part must be a non-empty, valid regular
     /// expression. A query that does not fit the grammar is refused with
-    /// the rule it broke; an item name never contains `:` or `@`, so the
-    /// splits never take a matchable pattern apart.
+    /// the rule it broke. An item name never contains `:` or `@`, so the
+    /// splits never cut a name a pattern must match. A pattern cannot
+    /// itself contain `:`: a non-capturing group such as `(?:a|b)` is split
+    /// at its `:` and refused.
     pub fn parse(raw: &str) -> Result<Self, String> {
         let raw = raw.trim();
         if raw.is_empty() {

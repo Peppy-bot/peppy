@@ -425,7 +425,7 @@ pub(crate) struct RepoFailure {
     pub(crate) kind: RepoFailureKind,
     pub(crate) detail: String,
     /// Previous entries kept in place for this repository, across all
-    /// four kinds. Zero on a machine that has never read it successfully.
+    /// five kinds. Zero on a machine that has never read it successfully.
     pub(crate) retained: usize,
 }
 
@@ -614,10 +614,9 @@ impl RefreshScope {
 /// while every other repository updates normally. The caller decides
 /// what a non-empty `failures` means for the run as a whole. One
 /// consequence is deliberate and worth knowing: a cache can then hold
-/// entries read at two different times. The caches never had a notion of
-/// a synchronised snapshot across repositories, so this is not a new
-/// class of skew, but anything that later needs one coherent set of
-/// bytes must establish that itself.
+/// entries read at two different times. The caches hold no synchronised
+/// snapshot across repositories, so anything that needs one coherent set
+/// of bytes must establish that itself.
 /// `now` is passed in rather than read from the clock so that tests are
 /// deterministic.
 ///
@@ -905,7 +904,7 @@ fn read_fs_repo(
 ///
 /// What survives the read is the index the repository published and the
 /// commit it was read at, which is what lets another machine read the same
-/// bytes later — and the clone itself, which goes to the checkout cache
+/// bytes later, and the clone itself, which goes to the checkout cache
 /// because it is already the tree every item read here resolves to.
 fn read_git_repo(
     repo_url: &str,
@@ -1269,8 +1268,8 @@ mod tests {
     /// `removed_rel`, leaving a repository that reads fine and states
     /// something untrue about itself.
     ///
-    /// This is what a broken repository looks like now that an index cannot
-    /// claim an identity twice: the statement and the tree disagree.
+    /// An index cannot claim an identity twice, so a broken repository in
+    /// these tests is one whose statement and tree disagree.
     fn stale_index(root: &Path, removed_rel: &str) {
         publish_repo(root);
         std::fs::remove_file(root.join(removed_rel))
@@ -1811,7 +1810,7 @@ mod tests {
     }
 
     /// An excluded subtree is one this machine does not answer for, so its
-    /// files are never opened — which is also what keeps a broken manifest
+    /// files are never opened. That is also what keeps a broken manifest
     /// inside it from failing the repository the user did ask for. The
     /// index still declares the item; only the read is skipped.
     #[test]
@@ -1987,7 +1986,7 @@ mod tests {
     }
 
     /// Git-side contract discovery: the cached `path` is relative to
-    /// the repo root, and `resolved_ref` records the branch that was
+    /// the repo root, and `repo_ref` records the branch that was
     /// cloned.
     #[test]
     fn process_refresh_discovers_contracts_from_git_repo() {
@@ -2121,8 +2120,7 @@ mod tests {
         let repo_a = tmp.path().join("repo_a");
         let repo_b = tmp.path().join("repo_b");
         // Three launchers with arbitrary names in repo_a; one collides
-        // with a launcher named the same in repo_b. Note that none of
-        // them use the legacy `peppy_launcher.json5` name.
+        // with a launcher named the same in repo_b.
         write_launcher_json5(&repo_a.join("openarm01_sim_teleop.json5"));
         write_launcher_json5(&repo_a.join("calibration.json5"));
         write_launcher_json5(&repo_a.join("nested").join("demo.json5"));

@@ -310,7 +310,7 @@ pub(crate) fn read_published_items(
     Err(contradictory(problems.join("; ")))
 }
 
-/// Turns published items into the four cache-entry vectors.
+/// Turns published items into the five cache-entry vectors.
 ///
 /// The one place an identity crosses from what a repository declares into
 /// what a machine caches, so the two cannot disagree about which field
@@ -948,9 +948,9 @@ fn peek_peppy_schema(bytes: &[u8]) -> Option<PeppySchema> {
         .map(|p| p.peppy_schema)
 }
 
-/// File context shared by every collector. The collectors only need read
-/// access; bundling these arguments keeps their signatures focused on the
-/// entry-specific state (claim map + output vector).
+/// The file [`collect_item`] reads: where it lies under the walked root,
+/// and its bytes. Bundled so the collector's signature stays on the walk's
+/// own state (claims, items, malformed documents).
 struct EntryContext<'a> {
     root: &'a Path,
     config_path: &'a Path,
@@ -1568,10 +1568,9 @@ mod tests {
         assert!(detail.contains("nodes/a/peppy.json5"), "got: {detail}");
     }
 
-    /// The rollout depends on this: a peppy that predates `repository/v1`
-    /// meets the schema tag, fails to recognize it, and skips the file. So
-    /// a repository can commit its index before the peppy that requires
-    /// one exists, and nothing in the fleet notices.
+    /// A schema tag the walk does not recognize is skipped, not refused, so
+    /// a repository can hold a document of a schema this peppy does not
+    /// know without failing its walk.
     #[test]
     fn an_unrecognized_schema_tag_is_skipped_rather_than_refused() {
         assert_eq!(
@@ -1695,7 +1694,7 @@ mod tests {
         assert!(check_repository_index(&repo).expect("checks").is_empty());
     }
 
-    /// The load-bearing test for the migration: what the index reader
+    /// The load-bearing test of the index: what the index reader
     /// resolves from a generated index is exactly what the walk found,
     /// identity for identity, path for path, byte for byte.
     #[test]

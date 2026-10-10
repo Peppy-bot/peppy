@@ -1,11 +1,11 @@
-//! Typed loaders for the four repo caches written by `repo_refresh`:
+//! Typed loaders for the five repo caches written by `repo_refresh`:
 //! `~/.peppy/cache/nodes.json5`, `launchers.json5`, `contracts.json5`,
-//! and `pairings.json5`. Each file lists every item of its kind that the
-//! configured repositories publish. This module gives the rest of the
-//! daemon a typed view over those entries so callers don't have to dig
-//! through `serde_json::Value` every time.
+//! `pairings.json5` and `mcp_exposures.json5`. Each file lists every item
+//! of its kind that the configured repositories publish. This module gives
+//! the rest of the daemon a typed view over those entries so callers don't
+//! have to dig through `serde_json::Value` every time.
 //!
-//! The four caches share one pipeline: every cache concern (atomic
+//! The five caches share one pipeline: every cache concern (atomic
 //! write, load-time `repo_id` tagging, repo-priority lookup, refresh-side
 //! collection) is implemented once, generic over [`RepoCacheEntry`]. The
 //! entry structs stay distinct types because each cache file has its own
@@ -516,7 +516,7 @@ impl std::fmt::Display for RepoAmbiguity {
 /// `(name, tag)`, `None` when nothing matches, or an error when the
 /// winning repository claims the identity more than once.
 ///
-/// The repo-priority tiebreak lives here so all four caches resolve
+/// The repo-priority tiebreak lives here so all five caches resolve
 /// cross-repo name collisions identically. Untagged kinds (launchers)
 /// match with `tag = ""`.
 ///
