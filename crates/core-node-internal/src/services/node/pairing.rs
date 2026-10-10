@@ -1694,22 +1694,10 @@ mod tests {
     /// peer (the `already_paired` wiring from [`NodeStack::live_pairs`]).
     #[test]
     fn already_paired_peer_slot_is_rejected_with_peer_named() {
-        use node_stack::PairEndpoint;
-
-        let live = vec![Pairing {
-            pairing_name: "arm_link".to_string(),
-            pairing_tag: "v1".to_string(),
-            a: PairEndpoint {
-                slot: SlotAddr::new(TEST_CORE, "arm_1", "controller"),
-                role: "arm".to_string(),
-                copy: None,
-            },
-            b: PairEndpoint {
-                slot: SlotAddr::new(TEST_CORE, "ctrl_0", "arm"),
-                role: "controller".to_string(),
-                copy: None,
-            },
-        }];
+        let live = vec![pair(
+            endpoint(TEST_CORE, "arm_1", "controller", "arm"),
+            endpoint(TEST_CORE, "ctrl_0", "arm", "controller"),
+        )];
         let deps = [dep("controller", "arm")];
         let err = plan_requested_pairs(
             &arm_snapshot(),
@@ -1735,8 +1723,6 @@ mod tests {
 
     #[test]
     fn missing_planned_pair_is_detected_in_either_endpoint_order() {
-        use node_stack::PairEndpoint;
-
         let registry_pair = |a: SlotAddr, b: SlotAddr| Pairing {
             pairing_name: "arm_link".to_string(),
             pairing_tag: "v1".to_string(),
