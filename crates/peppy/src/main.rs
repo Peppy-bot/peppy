@@ -538,6 +538,19 @@ mod tests {
         }
     }
 
+    /// `self` means "the daemon this command targets", which omitting the
+    /// flag already says, so `--core-node self` is refused as reserved.
+    #[test]
+    fn core_node_flag_rejects_the_reserved_self_name() {
+        let error = Cli::try_parse_from(["peppy", "stack", "list", "--core-node", "self"])
+            .err()
+            .expect("--core-node self should be rejected");
+        assert!(
+            error.to_string().contains("is reserved"),
+            "the refusal names the reserved word, got: {error}"
+        );
+    }
+
     /// Every spelling of the group parses, and a subcommand or a flag the
     /// group does not have is refused, with no alias to fall back on.
     #[test]
