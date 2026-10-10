@@ -1481,7 +1481,7 @@ pub struct TrackedNodeInstance {
     /// cheap clone returned by `NodeStack::find_by_instance_id`, without taking
     /// an entity write lock. `true` until a probe is observed to fail; surfaced
     /// by `stack list` so it reports health without a per-instance round-trip.
-    healthy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    healthy: Arc<AtomicBool>,
     /// Set by the stop paths before they terminate this instance's process, so
     /// the process-exit watcher can tell a daemon-initiated stop (cooperative
     /// shutdown or force-kill) apart from a self-exit. When set, the watcher
@@ -1490,7 +1490,7 @@ pub struct TrackedNodeInstance {
     /// mislabeling an intentional force-kill as a crash). Behind an
     /// `Arc<AtomicBool>` for the same reason as `healthy`: it is flipped through
     /// the clone the stop path resolves, without an entity write lock.
-    stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stopping: Arc<AtomicBool>,
     /// The endpoints the instance serves, as the daemon expanded the sockets
     /// it announced at start; empty for a node whose manifest declares none
     /// and until the instance commits to `Running`.
@@ -1523,8 +1523,8 @@ impl TrackedNodeInstance {
             clock: config::runtime::ClockBinding::Wall,
             launch: None,
             copy: None,
-            healthy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            stopping: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            healthy: Arc::new(AtomicBool::new(true)),
+            stopping: Arc::new(AtomicBool::new(false)),
             endpoints: Vec::new(),
         }
     }
@@ -1609,30 +1609,28 @@ impl TrackedNodeInstance {
     /// The last `node_health` outcome the health monitor recorded for this
     /// instance. `true` until a probe is observed to fail.
     pub fn healthy(&self) -> bool {
-        self.healthy.load(std::sync::atomic::Ordering::Relaxed)
+        self.healthy.load(Ordering::Relaxed)
     }
 
     /// Records the latest `node_health` outcome. Takes `&self` because the flag
     /// is an `Arc<AtomicBool>`; the health monitor updates it through the clone
     /// returned by `NodeStack::find_by_instance_id`.
     pub fn set_healthy(&self, healthy: bool) {
-        self.healthy
-            .store(healthy, std::sync::atomic::Ordering::Relaxed);
+        self.healthy.store(healthy, Ordering::Relaxed);
     }
 
     /// `true` once a stop path has claimed this instance for termination via
     /// [`Self::mark_stopping`]. The process-exit watcher reads this to avoid
     /// transitioning an intentionally-stopped instance to a terminal state.
     pub fn is_stopping(&self) -> bool {
-        self.stopping.load(std::sync::atomic::Ordering::Relaxed)
+        self.stopping.load(Ordering::Relaxed)
     }
 
     /// Marks this instance as being deliberately stopped, before its process is
     /// signaled. Takes `&self` because the flag is an `Arc<AtomicBool>`; the
     /// stop path flips it through the clone it resolves. Idempotent.
     pub fn mark_stopping(&self) {
-        self.stopping
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stopping.store(true, Ordering::Relaxed);
     }
 
     /// Returns the on-disk instance directory recorded during start, if any.
