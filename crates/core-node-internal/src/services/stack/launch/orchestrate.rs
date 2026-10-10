@@ -91,7 +91,6 @@ pub(in crate::services::stack) async fn build_node_directly(
     launch_id: &str,
     node_name: String,
     node_tag: String,
-    env_vars: Vec<(String, String)>,
     rebuild: bool,
 ) -> (std::result::Result<(), String>, Option<PathBuf>) {
     let log = match ActionLog::for_build(
@@ -126,7 +125,7 @@ pub(in crate::services::stack) async fn build_node_directly(
         Box::pin(run_node_build_for_entity(
             node_name.clone(),
             node_tag.clone(),
-            env_vars,
+            ctx.env_vars.clone(),
             rebuild,
             action_context,
             Announcer::new(log, feedback_tx),

@@ -144,9 +144,8 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
         }
     }
 
-    let local = ctx.bound_core_node.as_str();
     let groups = futures::future::join_all(by_core_node.iter().map(|(core_node, keys)| {
-        add_and_build_group(ctx, phase, change, core_node, keys, planned_by_key, local)
+        add_and_build_group(ctx, phase, change, core_node, keys, planned_by_key)
     }))
     .await;
 
@@ -185,7 +184,6 @@ async fn add_and_build_group(
     core_node: &CoreNodeName,
     keys: &[&NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
-    local: &str,
 ) -> GroupOutcome {
     let mut outcome = GroupOutcome::default();
     let mut added_here = Vec::new();
@@ -206,7 +204,7 @@ async fn add_and_build_group(
         )
         .await;
 
-        let added = if core_node.as_str() == local {
+        let added = if core_node.as_str() == ctx.bound_core_node.as_str() {
             add_locally(ctx, phase, key, item, &mut outcome).await
         } else {
             add_and_build_remotely(ctx, phase, core_node, key, item, &mut outcome)
@@ -301,7 +299,6 @@ async fn build_locally(
                 &phase.launch_id,
                 node.node_name.clone(),
                 node.node_tag.clone(),
-                ctx.env_vars.clone(),
                 phase.rebuild,
             )
         },
