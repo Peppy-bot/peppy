@@ -1840,6 +1840,11 @@ DEFAULT_ID = re.compile(r"^\s*id:\s*(\d+),", re.MULTILINE)
 DEFAULT_URL = re.compile(r'^\s*url:\s*"([^"]+)",', re.MULTILINE)
 
 
+def stripped_lines(path):
+    """The lines of `path` without the whitespace around them."""
+    return [text.strip() for text in path.read_text().splitlines()]
+
+
 class RepositoryFacts(unittest.TestCase):
     def test_the_public_hubs_are_the_defaults_peppy_bundles(self):
         defaults = (
@@ -1871,10 +1876,11 @@ class RepositoryFacts(unittest.TestCase):
             "git@github.com:Peppy-bot/private-nodes-hub.git",
         )
 
+    def assert_has_line(self, path, line):
+        self.assertTrue(line in stripped_lines(path), f"{path} has no line `{line}`")
+
     def assert_workflow_has_line(self, workflow, line):
-        path = REPOSITORY_ROOT / ".github/workflows" / workflow
-        lines = [text.strip() for text in path.read_text().splitlines()]
-        self.assertTrue(line in lines, f"{path} has no line `{line}`")
+        self.assert_has_line(REPOSITORY_ROOT / ".github/workflows" / workflow, line)
 
     def test_peppy_ci_uploads_the_dev_build_this_action_downloads(self):
         workflow = resolve.PEPPY_CI_WORKFLOW
@@ -1898,11 +1904,6 @@ class RepositoryFacts(unittest.TestCase):
                     name_template.replace("${{ matrix.target }}", arch.triple),
                 )
 
-    def release_script_has_line(self, script, line):
-        path = REPOSITORY_ROOT / "scripts" / script
-        lines = [text.strip() for text in path.read_text().splitlines()]
-        self.assertTrue(line in lines, f"{path} has no line `{line}`")
-
     def test_the_hub_launch_token_dispatches_in_launchers_hub_alone(self):
         launchers_hub = resolve.HUBS_BY_NAME["launchers-hub"]
         self.assert_workflow_has_line(
@@ -1913,8 +1914,9 @@ class RepositoryFacts(unittest.TestCase):
         )
 
     def test_the_hub_launch_stage_reads_its_run_with_the_job_token(self):
-        self.release_script_has_line(
-            "functions/cli.py", 'JOB_TOKEN_ENV = "PEPPY_JOB_TOKEN"'
+        self.assert_has_line(
+            REPOSITORY_ROOT / "scripts/functions/cli.py",
+            'JOB_TOKEN_ENV = "PEPPY_JOB_TOKEN"',
         )
         self.assert_workflow_has_line(
             "parallel-release.yml", "PEPPY_JOB_TOKEN: ${{ github.token }}"
@@ -1972,8 +1974,7 @@ class RepositoryFacts(unittest.TestCase):
         # The merge-set bot finds the record of a job by this name
         # (set_record_artifact_name), and a composite action reads the
         # check run id of the job it runs in from the `job` context.
-        action = (ACTION_DIR / "action.yml").read_text()
-        lines = [line.strip() for line in action.splitlines()]
+        lines = stripped_lines(ACTION_DIR / "action.yml")
         self.assertIn(
             f"name: {resolve.SET_RECORD_ARTIFACT_PREFIX}${{{{ job.check_run_id }}}}",
             lines,
@@ -1990,10 +1991,7 @@ class RepositoryFacts(unittest.TestCase):
 
     def test_a_wait_only_job_uploads_no_set_record(self):
         # The wait writes no record, and the upload fails without one.
-        lines = [
-            line.strip()
-            for line in (ACTION_DIR / "action.yml").read_text().splitlines()
-        ]
+        lines = stripped_lines(ACTION_DIR / "action.yml")
         step = lines.index("- name: Record the set this job runs")
         self.assertEqual(lines[step + 1], "if: inputs.wait-only != 'true'")
 
