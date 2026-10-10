@@ -61,26 +61,31 @@ where
     // Phase 2: deserialize with path tracking.
     serde_path_to_error::deserialize(&mut deserializer).map_err(|path_err| {
         let path = path_err.path().to_string();
-        let inner: serde_json5::Error = path_err.into_inner();
+        let serde_json5::Error::Message { msg, .. } = path_err.into_inner();
 
-        match inner {
-            serde_json5::Error::Message { ref msg, .. } => {
-                // Check if it's a StructuredError (custom validation).
-                // These already have rich messages; don't prepend path.
-                if let Ok(structured) = serde_json5::from_str::<StructuredError>(msg) {
-                    return Error::Parsing(ParsingError::from(structured));
-                }
-
-                // Standard serde error: prepend path if non-empty.
-                let message = if path.is_empty() || path == "." {
-                    msg.clone()
-                } else {
-                    format!("{path}: {msg}")
-                };
-                Error::Parsing(ParsingError::CannotParseConfig(message))
-            }
+        // A structured refusal already has a rich message; don't prepend path.
+        if let Some(refusal) = structured_refusal(&msg) {
+            return Error::Parsing(refusal);
         }
+
+        // Standard serde error: prepend path if non-empty.
+        let message = if path.is_empty() || path == "." {
+            msg
+        } else {
+            format!("{path}: {msg}")
+        };
+        Error::Parsing(ParsingError::CannotParseConfig(message))
     })
+}
+
+/// The typed refusal a custom deserializer encoded in `msg` as a
+/// [`StructuredError`], or `None` for a plain serde message. Both ways a
+/// JSON5 error becomes a [`ParsingError`] decode it here, so a typed refusal
+/// keeps its variant on either path.
+fn structured_refusal(msg: &str) -> Option<ParsingError> {
+    serde_json5::from_str::<StructuredError>(msg)
+        .ok()
+        .map(ParsingError::from)
 }
 
 /// Whether a declared slot is a node dep (matched by `(name, tag)` identity)
@@ -1072,14 +1077,10 @@ impl From<StructuredError> for ParsingError {
 
 impl From<serde_json5::Error> for ParsingError {
     fn from(err: serde_json5::Error) -> Self {
-        match err {
-            serde_json5::Error::Message { msg, .. } => {
-                if let Ok(structured) = serde_json5::from_str::<StructuredError>(&msg) {
-                    ParsingError::from(structured)
-                } else {
-                    ParsingError::CannotParseConfig(msg)
-                }
-            }
+        let serde_json5::Error::Message { msg, .. } = err;
+        match structured_refusal(&msg) {
+            Some(refusal) => refusal,
+            None => ParsingError::CannotParseConfig(msg),
         }
     }
 }
@@ -1101,13 +1102,13 @@ pub enum Error {
 mod tests {
     use super::*;
 
+    /// A serde_json5 error carrying `msg`, as a custom deserializer raises it.
+    fn make_err(msg: &str) -> serde_json5::Error {
+        serde::de::Error::custom(msg)
+    }
+
     #[test]
     fn test_structured_error_deserialization() {
-        // Helper to create a serde_json5 error from a string
-        fn make_err(msg: &str) -> serde_json5::Error {
-            serde::de::Error::custom(msg)
-        }
-
         // InvalidDeploymentSource
         let json = serde_json5::to_string(&StructuredError::InvalidDeploymentSource(
             "bad source".to_string(),
@@ -1133,10 +1134,6 @@ mod tests {
 
     #[test]
     fn test_fallback_mechanism() {
-        fn make_err(msg: &str) -> serde_json5::Error {
-            serde::de::Error::custom(msg)
-        }
-
         let raw_msg = "This is not JSON";
         let err = ParsingError::from(make_err(raw_msg));
         if let ParsingError::CannotParseConfig(msg) = err {
