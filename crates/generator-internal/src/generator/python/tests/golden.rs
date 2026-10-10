@@ -177,6 +177,15 @@ fn render_staged_harness(node_dir: &Path) -> Vec<InterfaceArtifact> {
     generator.into_artifacts()
 }
 
+/// Every scenario of this file, in the order the golden document lists them.
+fn render_all_scenarios(node_dir: &Path) -> Vec<InterfaceArtifact> {
+    let mut artifacts = render_everything(node_dir);
+    artifacts.extend(render_bodyless_surface(node_dir));
+    artifacts.extend(render_bare_harness(node_dir));
+    artifacts.extend(render_staged_harness(node_dir));
+    artifacts
+}
+
 /// The rendered surface as one reviewable document, with the sync-time node
 /// directory (a per-run temp path) normalized away.
 fn rendered_document(node_dir: &Path, artifacts: Vec<InterfaceArtifact>) -> String {
@@ -194,11 +203,7 @@ fn rendered_document(node_dir: &Path, artifacts: Vec<InterfaceArtifact>) -> Stri
 #[test]
 fn python_renderers_emit_the_golden_document() {
     let node_dir = TempDir::new().unwrap();
-    let mut artifacts = render_everything(node_dir.path());
-    artifacts.extend(render_bodyless_surface(node_dir.path()));
-    artifacts.extend(render_bare_harness(node_dir.path()));
-    artifacts.extend(render_staged_harness(node_dir.path()));
-    let rendered = rendered_document(node_dir.path(), artifacts);
+    let rendered = rendered_document(node_dir.path(), render_all_scenarios(node_dir.path()));
     assert_matches_golden(&GOLDEN, &rendered);
 }
 
@@ -209,10 +214,7 @@ fn python_renderers_emit_the_golden_document() {
 #[test]
 fn no_emitted_line_has_trailing_whitespace() {
     let node_dir = TempDir::new().unwrap();
-    let mut artifacts = render_everything(node_dir.path());
-    artifacts.extend(render_bodyless_surface(node_dir.path()));
-    artifacts.extend(render_bare_harness(node_dir.path()));
-    for artifact in artifacts {
+    for artifact in render_all_scenarios(node_dir.path()) {
         for (index, line) in artifact.code_output.lines().enumerate() {
             assert_eq!(
                 line.trim_end(),
