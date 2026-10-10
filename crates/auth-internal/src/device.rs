@@ -166,7 +166,7 @@ impl TokenResponse {
         TokenSet {
             access_token: self.access_token,
             refresh_token,
-            expires_at: now + self.expires_in,
+            expires_at: now.saturating_add(self.expires_in),
             token_type: self.token_type.unwrap_or_else(|| "Bearer".to_string()),
             scope: self.scope.unwrap_or_default(),
         }
@@ -246,7 +246,7 @@ pub fn poll(
     client_id: &str,
     da: &DeviceAuthorization,
 ) -> Result<TokenSet> {
-    let deadline = now_unix() + da.expires_in;
+    let deadline = now_unix().saturating_add(da.expires_in);
     let mut interval = da.interval.max(1);
 
     loop {
@@ -268,7 +268,7 @@ pub fn poll(
         let code = safe_oauth_error_code(&resp.body);
         match classify(&code) {
             PollOutcome::KeepWaiting => {}
-            PollOutcome::SlowDown => interval += 5,
+            PollOutcome::SlowDown => interval = interval.saturating_add(5),
             PollOutcome::Fatal(e) => break Err(e),
         }
 
@@ -556,5 +556,64 @@ mod tests {
         };
         let set = resp.into_set(0, Some("old"));
         assert_eq!(set.refresh_token, "new");
+    }
+
+    /// The token lifetime comes from the identity provider, so a lifetime
+    /// past the range of the clock gives the latest expiry there is.
+    #[test]
+    fn into_set_saturates_an_expiry_past_the_end_of_time() {
+        let resp = TokenResponse {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_in: i64::MAX,
+            token_type: None,
+            scope: None,
+        };
+        assert_eq!(resp.into_set(1_000, None).expires_at, i64::MAX);
+    }
+
+    /// A flow lifetime past the range of the clock is a deadline that never
+    /// comes, and the answer of the token endpoint still decides the poll.
+    #[test]
+    fn poll_takes_a_flow_lifetime_past_the_end_of_time() {
+        let server = MockServer::start();
+        let denied = server.mock(|when, then| {
+            when.method(POST).path("/token");
+            then.status(400)
+                .json_body(json!({ "error": "access_denied" }));
+        });
+
+        let err = poll(
+            &HttpClient::new(),
+            &format!("{}/token", server.base_url()),
+            "cli-client-id",
+            &device_auth(1, i64::MAX),
+        )
+        .expect_err("access_denied is fatal");
+
+        assert!(err.to_string().contains("denied"), "{err}");
+        assert_eq!(denied.calls(), 1);
+    }
+
+    /// A `slow_down` on the largest interval keeps the largest interval. The
+    /// flow is already past its deadline, so the poll ends without a wait.
+    #[test]
+    fn poll_takes_a_slow_down_past_the_largest_interval() {
+        let server = MockServer::start();
+        let slow = server.mock(|when, then| {
+            when.method(POST).path("/token");
+            then.status(400).json_body(json!({ "error": "slow_down" }));
+        });
+
+        let err = poll(
+            &HttpClient::new(),
+            &format!("{}/token", server.base_url()),
+            "cli-client-id",
+            &device_auth(u64::MAX, -1_000_000),
+        )
+        .expect_err("the flow is past its deadline");
+
+        assert!(err.to_string().contains("login timed out"), "{err}");
+        assert_eq!(slow.calls(), 1);
     }
 }
