@@ -15,7 +15,6 @@ use super::super::common::NodeTree;
 use super::super::testgen::{
     DepLinkSpec, EmittedSpec, ExposedActionSpec, ExposedServiceSpec, FIXTURE_CORE_NODE,
     FIXTURE_INSTANCE_ID, ObservedLinkSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
-    claim_sanitized_name,
 };
 use super::PythonGenerator;
 use super::code_builder::PythonCodeBuilder;
@@ -26,6 +25,7 @@ use super::mock::{
 use super::scaffold::sanitize_python_module_name;
 use super::type_mapping::{qos_profile_python, retention_python};
 use crate::error::Result;
+use crate::generator::naming::claim_sanitized_name;
 use crate::generator::types::{InterfaceArtifact, InterfaceKind, scoped_schema_key};
 use config::node::Cardinality;
 use std::collections::{HashMap, HashSet};

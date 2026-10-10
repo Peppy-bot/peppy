@@ -14,7 +14,6 @@
 use super::super::testgen::{
     DepLinkSpec, EmittedSpec, ExposedActionSpec, ExposedServiceSpec, FIXTURE_CORE_NODE,
     FIXTURE_INSTANCE_ID, ObservedLinkSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
-    claim_sanitized_name,
 };
 use super::mock::{
     CodecSpec, build_local_message_with_deserializer, build_local_struct_with_deserializer,
@@ -27,7 +26,7 @@ use super::{
     render_tokens,
 };
 use crate::error::Result;
-use crate::generator::naming::{sanitize_node_display_name, to_camel_case};
+use crate::generator::naming::{claim_sanitized_name, sanitize_node_display_name, to_camel_case};
 use crate::generator::types::{InterfaceArtifact, InterfaceKind, scoped_schema_key};
 use config::node::Cardinality;
 use proc_macro2::{Ident, Span, TokenStream};

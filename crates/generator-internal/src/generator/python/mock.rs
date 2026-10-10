@@ -12,12 +12,11 @@
 //! `<Camel(member)>Publisher` / `Service` / `Action` classes and
 //! member-prefixed codec/re-export names.
 
-use super::super::naming::to_camel_case;
+use super::super::naming::{claim_sanitized_name, to_camel_case};
 use super::super::testgen::{
     DepActionSpec, DepLinkSpec, DepServiceSpec, DepTopicSpec, MOCK_CORE_NODE, MOCK_PEER_LINK_ID,
     MOCK_SOURCE_LINK_ID, ObservedLinkSpec, PairTopicSpec, PairingLinkSpec, TargetSpec,
-    TestGenRegistry, claim_sanitized_name, dep_member_name, mock_instance_id,
-    reserved_member_owners,
+    TestGenRegistry, dep_member_name, mock_instance_id, reserved_member_owners,
 };
 use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass};
 use super::deserialization;

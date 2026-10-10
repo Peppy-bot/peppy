@@ -11,8 +11,7 @@
 use super::super::testgen::{
     DepActionSpec, DepLinkSpec, DepServiceSpec, DepTopicSpec, MOCK_CORE_NODE, MOCK_PEER_LINK_ID,
     MOCK_SOURCE_LINK_ID, ObservedLinkSpec, PairTopicSpec, PairingLinkSpec, TargetSpec,
-    TestGenRegistry, claim_sanitized_name, dep_member_name, mock_instance_id,
-    reserved_member_owners,
+    TestGenRegistry, dep_member_name, mock_instance_id, reserved_member_owners,
 };
 use super::scaffold::sanitize_rust_module_name;
 use super::topics::{qos_profile_tokens, retention_tokens};
@@ -22,7 +21,7 @@ use super::{
     generate_assignments_from_struct, identifiers, map_declared_message_format, render_tokens,
 };
 use crate::error::Result;
-use crate::generator::naming::to_camel_case;
+use crate::generator::naming::{claim_sanitized_name, to_camel_case};
 use crate::generator::types::{InterfaceArtifact, InterfaceKind};
 use config::node::MessageFormat;
 use proc_macro2::{Ident, Span, TokenStream};

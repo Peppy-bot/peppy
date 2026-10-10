@@ -5,8 +5,9 @@
 //! shape: directories keyed by raw segment, leaves keyed by their final
 //! segment. Only the per-file/per-`__init__` rendering differs.
 
+use super::naming::claim_sanitized_name;
 use super::types::{InterfaceArtifact, ModuleCategory};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -99,9 +100,11 @@ pub(crate) trait TreeWriter {
 /// Walks `tree`, writing one leaf file per leaf and one index file per
 /// directory via `writer`. Sibling module names must be unique after
 /// per-language sanitization at each level: two raw segments that sanitize to
-/// the same name are a hard [`Error::ModuleNameCollision`] naming both, not a
-/// silent rename, so a module can never become reachable under a name the
-/// author did not write.
+/// the same name are a hard [`ModuleNameCollision`] naming both, not a silent
+/// rename, so a module can never become reachable under a name the author did
+/// not write.
+///
+/// [`ModuleNameCollision`]: crate::error::Error::ModuleNameCollision
 pub(crate) fn write_module_tree<W: TreeWriter>(
     dir: &Path,
     tree: &ModuleTree,
@@ -154,8 +157,10 @@ fn write_tree_level<W: TreeWriter>(
 }
 
 /// Sanitizes `raw` for the target language and records the result in `seen`.
-/// Returns a hard [`Error::ModuleNameCollision`] if a different raw segment at
-/// this level already claimed the same sanitized name.
+/// Returns a hard [`ModuleNameCollision`] if a different raw segment at this
+/// level already claimed the same sanitized name.
+///
+/// [`ModuleNameCollision`]: crate::error::Error::ModuleNameCollision
 fn claim_module_name(
     raw: &str,
     category: ModuleCategory,
@@ -163,21 +168,14 @@ fn claim_module_name(
     sanitize_fn: fn(&str) -> String,
 ) -> Result<String> {
     let sanitized = sanitize_fn(raw);
-    if let Some(first) = seen.get(&sanitized) {
-        return Err(Error::ModuleNameCollision {
-            category: category.dir_name().to_string(),
-            first: first.clone(),
-            second: raw.to_string(),
-            sanitized,
-        });
-    }
-    seen.insert(sanitized.clone(), raw.to_string());
+    claim_sanitized_name(seen, &sanitized, category.dir_name(), raw)?;
     Ok(sanitized)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
     use crate::generator::naming::sanitize_component;
     use crate::generator::types::InterfaceKind;
     use tempfile::TempDir;

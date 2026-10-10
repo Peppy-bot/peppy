@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use super::types::{
     ConsumedActionMessage, ContractOrigin, DependencyContext, PeerContext, non_empty_message_format,
 };
-use crate::error::{Error, Result};
 
 /// Core-node segment every mock publishes/serves under.
 pub(crate) const MOCK_CORE_NODE: &str = "mock-core";
@@ -66,28 +65,6 @@ pub(crate) fn reserved_member_owners() -> HashMap<String, String> {
             )
         })
         .collect()
-}
-
-/// Claims `sanitized` for `owner` within one generated surface. A second
-/// owner landing on an already-claimed identifier is a hard error naming
-/// both, so the operator sees which two inputs clashed rather than the
-/// sanitized identifier twice.
-pub(crate) fn claim_sanitized_name(
-    owners: &mut HashMap<String, String>,
-    sanitized: &str,
-    category: &str,
-    owner: &str,
-) -> Result<()> {
-    if let Some(first) = owners.get(sanitized) {
-        return Err(Error::ModuleNameCollision {
-            category: category.to_string(),
-            first: first.clone(),
-            second: owner.to_string(),
-            sanitized: sanitized.to_string(),
-        });
-    }
-    owners.insert(sanitized.to_string(), owner.to_string());
-    Ok(())
 }
 
 /// The member name for a dep-link interface: plain when the interface's own

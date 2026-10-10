@@ -1,5 +1,9 @@
 //! Shared naming utilities used by both Rust and Python generators.
 
+use std::collections::HashMap;
+
+use crate::error::{Error, Result};
+
 /// Converts a raw string to a sanitized snake_case identifier component.
 ///
 /// - Non-alphanumeric characters are replaced with underscores
@@ -227,6 +231,28 @@ pub(crate) fn sanitize_or(raw: &str, fallback: &str) -> String {
     } else {
         component
     }
+}
+
+/// Claims `sanitized` for `owner` within one generated surface. A second
+/// owner landing on an already-claimed identifier is a hard error naming
+/// both, so the operator sees which two inputs clashed rather than the
+/// sanitized identifier twice.
+pub(crate) fn claim_sanitized_name(
+    owners: &mut HashMap<String, String>,
+    sanitized: &str,
+    category: &str,
+    owner: &str,
+) -> Result<()> {
+    if let Some(first) = owners.get(sanitized) {
+        return Err(Error::ModuleNameCollision {
+            category: category.to_string(),
+            first: first.clone(),
+            second: owner.to_string(),
+            sanitized: sanitized.to_string(),
+        });
+    }
+    owners.insert(sanitized.to_string(), owner.to_string());
+    Ok(())
 }
 
 /// Schema key for the cap'n proto message backing a consumed topic:
