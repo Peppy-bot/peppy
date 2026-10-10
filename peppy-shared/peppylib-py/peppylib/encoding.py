@@ -22,7 +22,7 @@ def convert_time(timestamp: float) -> CapnpTimestamp:
 
     sec = math.floor(value)
     frac = value - sec
-    nsec = int(round(frac * NANOS_PER_SEC))
+    nsec = round(frac * NANOS_PER_SEC)
 
     # Guard against rounding to the next second (e.g. 0.9999999996).
     if nsec >= NANOS_PER_SEC:

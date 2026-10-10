@@ -26,6 +26,13 @@ def test_convert_time_negative_value() -> None:
     ) == pytest.approx(-0.25)
 
 
+def test_convert_time_returns_integer_seconds_and_nanoseconds() -> None:
+    timestamp = encoding.convert_time(1.5)
+
+    assert type(timestamp.sec) is int
+    assert type(timestamp.nsec) is int
+
+
 def test_convert_time_from_capnp_rejects_invalid_nanos() -> None:
     with pytest.raises(ValueError):
         encoding.convert_time_from_capnp(1, 1_000_000_000)
