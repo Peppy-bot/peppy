@@ -9,7 +9,7 @@ use super::super::container_mounts::{
 use super::super::launch::clock::plan_clocks;
 use super::super::launch::feedback::publish_stdout;
 use super::super::launch::nodes::add_nodes_to_stack;
-use super::super::launch::orchestrate::validate_and_order_dependencies;
+use super::super::launch::orchestrate::{ValidatedPlan, validate_and_order_dependencies};
 use super::super::launch::preflight::preflight_change;
 use super::super::launch::start::start_node_instances;
 use super::super::launch::watchers::{lifecycle_watchers, watchers_replacing};
@@ -123,8 +123,12 @@ async fn join_inner(
     // clock that simulation is already supplying.
     let (clocks, incarnations) = plan_clocks(&combined, &placements, &active.clocks)?;
     let copies = CopyMembership::of(active.copy_records().chain([&copy]));
-    let (ordered, bindings, pairings, observations) =
-        validate_and_order_dependencies(ctx, &planned, &placements, &copies, &clocks).await?;
+    let ValidatedPlan {
+        ordered,
+        slot_bindings: bindings,
+        pairings,
+        observations,
+    } = validate_and_order_dependencies(ctx, &planned, &placements, &copies, &clocks).await?;
     let grown_sets = whole_sets(&grown_slots, &bindings, &observations);
     let watchers = lifecycle_watchers(&observations, &placements)?;
     // The instances supplying the clocks this join reads take part in it: a

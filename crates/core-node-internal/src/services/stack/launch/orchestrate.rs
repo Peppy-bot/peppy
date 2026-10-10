@@ -275,6 +275,17 @@ pub(in crate::services::stack) async fn fail_and_clear_stack(
 /// `zero_or_one` slot appear with an empty set.
 type ResolvedSlotBindings = std::collections::BTreeMap<String, config::runtime::SlotBindings>;
 
+/// A plan whose dependencies, slot bindings, pairings and observations the
+/// launcher's validators accepted, with the order its nodes start in.
+pub(in crate::services::stack) struct ValidatedPlan {
+    /// Every planned node in a stable dependency order: producers before
+    /// their consumers, and the nodes that are ready together in plan order.
+    pub(in crate::services::stack) ordered: Vec<NodeKey>,
+    pub(in crate::services::stack) slot_bindings: ResolvedSlotBindings,
+    pub(in crate::services::stack) pairings: Vec<daemon_config::launcher::PlannedPairing>,
+    pub(in crate::services::stack) observations: Vec<daemon_config::launcher::PlannedObservation>,
+}
+
 /// Validates dependencies and computes a stable topological order.
 pub(in crate::services::stack) async fn validate_and_order_dependencies(
     ctx: &StackChangeContext,
@@ -282,15 +293,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     placements: &daemon_config::launcher::Placements,
     copies: &daemon_config::launcher::CopyMembership,
     clocks: &daemon_config::launcher::ResolvedClocks,
-) -> std::result::Result<
-    (
-        Vec<NodeKey>,
-        ResolvedSlotBindings,
-        Vec<daemon_config::launcher::PlannedPairing>,
-        Vec<daemon_config::launcher::PlannedObservation>,
-    ),
-    String,
-> {
+) -> std::result::Result<ValidatedPlan, String> {
     let root_config = ctx.node_stack.root().read().config().clone();
     publish_stdout(
         ctx,
@@ -426,9 +429,6 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
         publish_error(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(msg);
     }
-    let resolved_slot_bindings = validated.slot_bindings;
-    let planned_pairings = validated.planned_pairings;
-    let planned_observations = validated.planned_observations;
 
     // Build the dependency graph for topological ordering.
     let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
@@ -461,12 +461,12 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     )
     .await;
 
-    Ok((
+    Ok(ValidatedPlan {
         ordered,
-        resolved_slot_bindings,
-        planned_pairings,
-        planned_observations,
-    ))
+        slot_bindings: validated.slot_bindings,
+        pairings: validated.planned_pairings,
+        observations: validated.planned_observations,
+    })
 }
 
 /// Perform a stable topological sort.

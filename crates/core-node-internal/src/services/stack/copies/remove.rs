@@ -5,7 +5,7 @@
 
 use super::super::action::StackChangeContext;
 use super::super::launch::feedback::{publish_stdout, publish_warning};
-use super::super::launch::orchestrate::validate_and_order_dependencies;
+use super::super::launch::orchestrate::{ValidatedPlan, validate_and_order_dependencies};
 use super::super::launch::preflight::preflight_change;
 use super::super::launch::watchers::{LifecycleWatchers, lifecycle_watchers, watchers_replacing};
 use super::super::launch::{PlannedDeployment, federated};
@@ -98,7 +98,11 @@ async fn remove_inner(
             return Err(consumers.refusal(name, &removed_domains));
         }
     }
-    let (_, bindings, _, observations) = validate_and_order_dependencies(
+    let ValidatedPlan {
+        slot_bindings: bindings,
+        observations,
+        ..
+    } = validate_and_order_dependencies(
         ctx,
         &remaining_planned,
         &active.placements,

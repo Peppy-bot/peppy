@@ -13,7 +13,7 @@ use self::clock::{announce_clock_domains, plan_clocks};
 use self::feedback::{publish_error, publish_stdout};
 use self::nodes::add_nodes_to_stack;
 use self::orchestrate::{
-    fail_and_clear_stack, teardown_and_reset_stack, validate_and_order_dependencies,
+    ValidatedPlan, fail_and_clear_stack, teardown_and_reset_stack, validate_and_order_dependencies,
 };
 use self::preflight::preflight_change;
 use self::resolve::{ParsedLaunch, parse_launcher_config, resolve_deployments};
@@ -275,19 +275,23 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // doc pins are minted so a graph refusal, which points at the launcher
     // and the manifests, has first say over a document missing from this
     // machine's caches.
-    let (ordered, resolved_slot_bindings, planned_pairings, planned_observations) =
-        match validate_and_order_dependencies(
-            &ctx,
-            &planned,
-            &placements,
-            &copy_membership,
-            &clocks,
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
-        };
+    let ValidatedPlan {
+        ordered,
+        slot_bindings: resolved_slot_bindings,
+        pairings: planned_pairings,
+        observations: planned_observations,
+    } = match validate_and_order_dependencies(
+        &ctx,
+        &planned,
+        &placements,
+        &copy_membership,
+        &clocks,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
+    };
 
     // Step 3b: Pin the contract and pairing documents every manifest in the
     // launch names. Still before any reservation, so a document this
