@@ -879,12 +879,8 @@ impl LanguageGenerator for RustGenerator {
     ) -> Result<()> {
         self.testgen.record_exposed_service(service, origin);
         let fn_name_str = identifiers::rust_identifier_or(service.name.as_str(), "service");
-        let fn_name = Ident::new(&fn_name_str, Span::call_site());
         let struct_prefix = to_camel_case(&fn_name_str);
         let generic_response_ident = Ident::new("Response", Span::call_site());
-        let generic_handler_ident = Ident::new("handle_next_request", Span::call_site());
-        let generic_helper_ident = Ident::new("handle_request_payload", Span::call_site());
-        let generic_deserializer_ident = Ident::new("deserialize_request", Span::call_site());
 
         let mut context = GenerationContext::default();
         let request_format = non_empty_message_format(service.request_message_format.as_ref());
@@ -923,7 +919,6 @@ impl LanguageGenerator for RustGenerator {
             request_struct_ident.clone(),
             request_data_struct_ident.as_ref(),
         );
-        let request_struct_ident = Some(request_struct_ident);
 
         let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
@@ -940,16 +935,12 @@ impl LanguageGenerator for RustGenerator {
 
         let (method_token, helper_tokens) =
             build_exposed_service_method(&ExposedServiceMethodSpec {
-                fn_name: &fn_name,
-                handler_fn_name_override: Some(&generic_handler_ident),
-                handler_helper_name_override: Some(&generic_helper_ident),
-                request_deserializer_name_override: Some(&generic_deserializer_ident),
                 wire_params: &wire_params,
                 handler_params: &wire_params,
                 encoding: encoding.as_ref(),
                 request_format,
                 struct_prefix: &struct_prefix,
-                request_struct: request_struct_ident.as_ref(),
+                request_struct: &request_struct_ident,
                 request_data_struct: request_data_struct_ident.as_ref(),
                 response_spec: response_spec.as_ref(),
                 origin,

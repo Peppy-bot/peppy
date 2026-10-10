@@ -20,10 +20,6 @@ pub struct ServiceResponseSpec<'a> {
 
 #[derive(Clone, Copy)]
 pub struct ExposedServiceMethodSpec<'a> {
-    pub fn_name: &'a Ident,
-    pub handler_fn_name_override: Option<&'a Ident>,
-    pub handler_helper_name_override: Option<&'a Ident>,
-    pub request_deserializer_name_override: Option<&'a Ident>,
     pub wire_params: &'a [FunctionParam],
     pub handler_params: &'a [FunctionParam],
     pub encoding: Option<&'a MessageEncodingSpec>,
@@ -31,7 +27,7 @@ pub struct ExposedServiceMethodSpec<'a> {
     /// The prefix the request's nested message structs are defined with, so
     /// the deserializer constructs the types the module declares.
     pub struct_prefix: &'a str,
-    pub request_struct: Option<&'a Ident>,
+    pub request_struct: &'a Ident,
     pub request_data_struct: Option<&'a Ident>,
     pub response_spec: Option<&'a ServiceResponseSpec<'a>>,
     /// `Some(o)` when the service is contract-backed via `manifest.implements`;
@@ -44,10 +40,6 @@ pub fn build_exposed_service_method(
     spec: &ExposedServiceMethodSpec,
 ) -> Result<(TokenStream, Vec<TokenStream>)> {
     let ExposedServiceMethodSpec {
-        fn_name,
-        handler_fn_name_override,
-        handler_helper_name_override,
-        request_deserializer_name_override,
         wire_params,
         handler_params,
         encoding,
@@ -60,16 +52,9 @@ pub fn build_exposed_service_method(
     } = *spec;
     let target_expr = sender_target_expression(origin);
 
-    let handler_fn_name = handler_fn_name_override.cloned().unwrap_or_else(|| {
-        Ident::new(
-            &format!("handle_{}_next_request", fn_name),
-            Span::call_site(),
-        )
-    });
-
-    let callback_param_types: Vec<TokenStream> = request_struct
-        .map(|request_struct| vec![quote!(#request_struct)])
-        .unwrap_or_default();
+    let handler_fn_name = Ident::new("handle_next_request", Span::call_site());
+    let handler_helper_name = Ident::new("handle_request_payload", Span::call_site());
+    let request_deserializer_name = Ident::new("deserialize_request", Span::call_site());
 
     let response_ty = response_spec
         .as_ref()
@@ -89,21 +74,6 @@ pub fn build_exposed_service_method(
     };
 
     let response_serialization = build_response_serialization_code(response_spec, &callback_call)?;
-    let handler_helper_name = handler_helper_name_override.cloned().unwrap_or_else(|| {
-        Ident::new(
-            &format!("{}_handle_request_payload", fn_name),
-            Span::call_site(),
-        )
-    });
-    let request_deserializer_name =
-        request_deserializer_name_override
-            .cloned()
-            .unwrap_or_else(|| {
-                Ident::new(
-                    &format!("{}_deserialize_request", fn_name),
-                    Span::call_site(),
-                )
-            });
 
     let has_payload = encoding.is_some();
     let mut helper_tokens = Vec::new();
@@ -149,7 +119,7 @@ pub fn build_exposed_service_method(
     let helper_fn = quote! {
         fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<peppylib::Payload>
         where
-            F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+            F: Fn(#request_struct) -> crate::Result<#response_ty>,
         {
             #(#body_preamble)*
 
@@ -190,7 +160,7 @@ pub fn build_exposed_service_method(
                 handler: F,
             ) -> crate::Result<()>
             where
-                F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+                F: Fn(#request_struct) -> crate::Result<#response_ty>,
             {
                 let mut service = peppylib::ServiceMessenger::listen(
                     node_runner.messenger(),
