@@ -151,6 +151,17 @@ struct DaemonHoldings {
     reservation: Option<LaunchIdentity>,
 }
 
+impl DaemonHoldings {
+    /// Whether the launch identity of the slice or of the reservation passes
+    /// `names_launch`.
+    fn holds_any(&self, names_launch: impl Fn(&LaunchIdentity) -> bool) -> bool {
+        self.slice
+            .iter()
+            .chain(self.reservation.iter())
+            .any(names_launch)
+    }
+}
+
 /// Every live core node's self-reported holdings.
 ///
 /// A daemon that cannot be reached is deliberately NOT dropped silently: it
@@ -215,20 +226,10 @@ fn federated_targets(
     holdings: &[DaemonHoldings],
 ) -> BTreeSet<String> {
     let held_by_launch = |daemon: &DaemonHoldings, launch_id: &str| {
-        let names_it = |identity: &Option<LaunchIdentity>| {
-            identity
-                .as_ref()
-                .is_some_and(|identity| identity.launch_id == launch_id)
-        };
-        names_it(&daemon.slice) || names_it(&daemon.reservation)
+        daemon.holds_any(|identity| identity.launch_id == launch_id)
     };
     let held_for_coordinator = |daemon: &DaemonHoldings| {
-        let names_it = |identity: &Option<LaunchIdentity>| {
-            identity
-                .as_ref()
-                .is_some_and(|identity| identity.coordinator_core_node == target_core_node)
-        };
-        names_it(&daemon.slice) || names_it(&daemon.reservation)
+        daemon.holds_any(|identity| identity.coordinator_core_node == target_core_node)
     };
 
     holdings
