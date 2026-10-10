@@ -36,15 +36,18 @@ use super::common::{
 };
 
 /// An observer manifest named `name`, running `run_cmd` (a json5 array): it
-/// watches the `arm` role of `arm_link/v1` through observer slot `watch`,
-/// consuming the topic that role emits, and emits nothing. The slot is
-/// `zero_or_one`, the node's own statement that it runs fine observing nothing,
-/// which is what lets a deployment write the slot vacant.
+/// watches the `arm` role of `arm_link/v1` through observer slot `watch` of the
+/// given `cardinality`, consuming the topic that role emits, and emits nothing.
 ///
 /// Parameterized because a test that inspects what the spawned process received
-/// needs its own node name and its own `run_cmd`, and nothing else about the
-/// manifest changes.
-fn observer_config_named(name: &str, run_cmd: &str) -> String {
+/// needs its own node name and its own `run_cmd`, and a fleet observer needs a
+/// set-valued slot, and nothing else about the manifest changes.
+fn observer_config_named(
+    name: &str,
+    cardinality: config::node::Cardinality,
+    run_cmd: &str,
+) -> String {
+    let cardinality = cardinality.as_str();
     format!(
         r#"{{
         peppy_schema: "node/v1",
@@ -53,7 +56,7 @@ fn observer_config_named(name: &str, run_cmd: &str) -> String {
             tag: "v1",
             depends_on: {{
                 pairing_observers: [
-                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "zero_or_one" }}
+                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "{cardinality}" }}
                 ]
             }}
         }},
@@ -68,35 +71,25 @@ fn observer_config_named(name: &str, run_cmd: &str) -> String {
 }
 
 /// The plain observer every test but the boot-config probe uses: keeps alive
-/// and does nothing else.
+/// and does nothing else. Its slot is `zero_or_one`, the node's own statement
+/// that it runs fine observing nothing, which is what lets a deployment write
+/// the slot vacant.
 fn observer_config(instances: &InstanceLifetime) -> String {
-    observer_config_named("recorder", &instances.keep_alive_run_cmd())
+    observer_config_named(
+        "recorder",
+        config::node::Cardinality::ZeroOrOne,
+        &instances.keep_alive_run_cmd(),
+    )
 }
 
 /// A fleet observer: watches the same `arm` role through ONE `one_or_more`
 /// slot, so `--link` repetition accumulates its member set instead of being a
 /// hard error.
 fn fleet_observer_config(instances: &InstanceLifetime) -> String {
-    let run_cmd = instances.keep_alive_run_cmd();
-    format!(
-        r#"{{
-        peppy_schema: "node/v1",
-        manifest: {{
-            name: "fleet_recorder",
-            tag: "v1",
-            depends_on: {{
-                pairing_observers: [
-                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "one_or_more" }}
-                ]
-            }}
-        }},
-        interfaces: {{
-            topics: {{
-                consumes: [{{ link_id: "watch", name: "joint_states" }}]
-            }}
-        }},
-        execution: {{ language: "rust", run_cmd: {run_cmd} }}
-    }}"#
+    observer_config_named(
+        "fleet_recorder",
+        config::node::Cardinality::OneOrMore,
+        &instances.keep_alive_run_cmd(),
     )
 }
 
@@ -321,6 +314,7 @@ fn config_dumping_observer_config(dump: &Path, instances: &InstanceLifetime) -> 
     let keep_alive = instances.keep_alive_script();
     observer_config_named(
         "probe_recorder",
+        config::node::Cardinality::ZeroOrOne,
         &format!(
             r#"["sh", "-c", "cp \"$PEPPY_RUNTIME_CONFIG\" '{dump}.part' && mv '{dump}.part' '{dump}'; {keep_alive}"]"#,
             dump = dump.display()
