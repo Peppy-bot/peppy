@@ -957,15 +957,18 @@ pub(crate) async fn run_node_add(
         let node_config: NodeConfig = resolved.node_config;
         let root_execution_language = node_config.execution.language;
 
+        // A local directory that `peppy node sync` prepares: it is auto-synced
+        // when `.peppy` is missing and checked against its recorded git hash.
+        // A stack launch and an archive skip both.
+        let is_synced_local_directory = goal.git_hash != STACK_LAUNCH_GIT_HASH
+            && matches!(&goal.source, NodeSource::Fs(path) if !is_supported_fs_archive(path));
+
         // Auto-generate .peppy directory if missing (e.g. fresh clone never synced).
         // Must run before git hash verification since sync also writes git.hash.
         //
         // Generation and filesystem I/O are blocking; offload to spawn_blocking
         // to avoid stalling the Tokio runtime (mirrors the daemon node-sync path).
-        if goal.git_hash != STACK_LAUNCH_GIT_HASH
-            && let NodeSource::Fs(original_path) = &goal.source
-            && !is_supported_fs_archive(original_path)
-        {
+        if is_synced_local_directory {
             let sync_node_dir = root_source_path.clone();
             let sync_execution_language = root_execution_language;
             let sync_manifest = node_config.manifest.clone();
@@ -1007,9 +1010,7 @@ pub(crate) async fn run_node_add(
         //
         // The .peppy/git.hash file is always written by `peppy node sync` at
         // the root level (alongside the peppy.json5 that contains the manifest).
-        if goal.git_hash != STACK_LAUNCH_GIT_HASH
-            && let NodeSource::Fs(original_path) = &goal.source
-            && !is_supported_fs_archive(original_path)
+        if is_synced_local_directory
             && let Err(error_msg) = verify_git_hash(&root_source_path, &goal.git_hash)
         {
             return record_add_failure(&announcer, error_msg);
