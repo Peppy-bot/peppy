@@ -161,8 +161,9 @@ fn service_environment(
     // `~/.peppy` while a caller that set PEPPY_HOME (CI per-run isolation or a
     // custom install prefix) reads daemon state from the override path; the two
     // never find each other and the install's readiness probe times out. Empty
-    // is treated as unset, matching `daemon_config::consts::peppy_root_dir`.
-    if let Some(home) = peppy_home.filter(|value| !value.is_empty()) {
+    // is treated as unset by `non_empty_env_path`, the helper through which
+    // `daemon_config::consts::peppy_root` reads the same variable.
+    if let Some(home) = daemon_config::consts::non_empty_env_path(peppy_home) {
         environment.push((
             config::consts::PEPPY_HOME_ENV.to_string(),
             home.to_string_lossy().into_owned(),
