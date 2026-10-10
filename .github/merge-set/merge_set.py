@@ -2148,6 +2148,7 @@ class GitMerges:
                 text=True,
                 env=self.environment,
                 timeout=GIT_TIMEOUT_SECONDS,
+                check=False,
             )
         except subprocess.TimeoutExpired as error:
             raise GitError(

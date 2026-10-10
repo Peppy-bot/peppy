@@ -2818,6 +2818,7 @@ class GitFixture:
             ["git", "-C", str(self.work), "merge", "--quiet", "main"],
             capture_output=True,
             env=self.environment,
+            check=False,
         )
         if merge.returncode == 0:
             raise AssertionError("the merge of main has no conflict")
