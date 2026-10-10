@@ -16,15 +16,16 @@ use auth::enrollment::{
     self, CertificateValidity, EnrollmentBundle, IssuedMaterial, RouterEndpoint,
 };
 use auth::storage::{self, Credentials, ProfileCreds};
-use auth::test_support::{EXPIRES_AT, ISSUED_AT, leaf_pem};
+use auth::test_support::{EXPIRES_AT, ISSUED_AT, PROJECT, ROUTER_HOST, WORKSPACE, ZID, leaf_pem};
 use auth::{AuthError, ProblemKind};
 use auth::{http::HttpClient, renewal, resolver};
 use daemon_config::consts::PeppyDirs;
 
-const WORKSPACE: &str = "ws-1";
-const PROJECT: &str = "550e8400-e29b-41d4-a716-446655440000";
-const PEERS_PATH: &str =
-    "/api/workspace/ws-1/projects/550e8400-e29b-41d4-a716-446655440000/router/peers";
+/// The path of the router of [`PROJECT`] in [`WORKSPACE`], or of `tail`
+/// under it.
+fn router_path(tail: &str) -> String {
+    format!("/api/workspace/{WORKSPACE}/projects/{PROJECT}/router{tail}")
+}
 
 /// `GET /me` returning a `human` principal plus an unknown future field, so the
 /// test also exercises tolerant deserialization.
@@ -267,7 +268,7 @@ fn enrolling_a_peer_posts_the_csr_and_parses_the_material() {
     let server = MockServer::start();
     let enroll = server.mock(|when, then| {
         when.method(POST)
-            .path(PEERS_PATH)
+            .path(router_path("/peers"))
             .header("content-type", "application/json")
             .json_body(json!({ "csr": "-----BEGIN CERTIFICATE REQUEST-----\nx\n-----END CERTIFICATE REQUEST-----\n" }));
         then.status(201).json_body(json!({
@@ -277,9 +278,9 @@ fn enrolling_a_peer_posts_the_csr_and_parses_the_material() {
             "certificate": "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n",
             "chain": "-----BEGIN CERTIFICATE-----\nissuer\n-----END CERTIFICATE-----\n",
             "trust_anchor": "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n",
-            "zenoh_id": "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5",
+            "zenoh_id": ZID,
             "namespace": PROJECT,
-            "address": { "host": "rtr-p.example", "port": 7447 },
+            "address": { "host": ROUTER_HOST, "port": 7447 },
             "zenoh_config": "{ connect: { endpoints: [\"tls/rtr-p.example:7447\"] } }",
         }));
     });
@@ -309,7 +310,7 @@ fn enrolling_a_peer_posts_the_csr_and_parses_the_material() {
 fn a_refused_enrollment_carries_the_platform_problem_detail() {
     let server = MockServer::start();
     server.mock(|when, then| {
-        when.method(POST).path(PEERS_PATH);
+        when.method(POST).path(router_path("/peers"));
         then.status(422)
             .header("content-type", "application/problem+json")
             .json_body(json!({
@@ -340,7 +341,7 @@ fn a_refused_enrollment_carries_the_platform_problem_detail() {
 fn a_refusal_carries_the_retry_after_delay() {
     let server = MockServer::start();
     server.mock(|when, then| {
-        when.method(POST).path(PEERS_PATH);
+        when.method(POST).path(router_path("/peers"));
         then.status(503)
             .header("content-type", "application/problem+json")
             .header("retry-after", "5")
@@ -377,17 +378,11 @@ fn router_status_body(phase: &str) -> serde_json::Value {
 fn restarting_and_starting_the_router_post_with_no_body() {
     let server = MockServer::start();
     let restart = server.mock(|when, then| {
-        when.method(POST)
-            .path(
-                "/api/workspace/ws-1/projects/550e8400-e29b-41d4-a716-446655440000/router/restart",
-            )
-            .body("");
+        when.method(POST).path(router_path("/restart")).body("");
         then.status(202).json_body(router_status_body("restarting"));
     });
     let start = server.mock(|when, then| {
-        when.method(POST)
-            .path("/api/workspace/ws-1/projects/550e8400-e29b-41d4-a716-446655440000/router/start")
-            .body("");
+        when.method(POST).path(router_path("/start")).body("");
         then.status(202)
             .json_body(router_status_body("provisioning"));
     });
@@ -413,9 +408,7 @@ fn restarting_and_starting_the_router_post_with_no_body() {
 fn a_restart_without_the_permission_is_a_403_problem() {
     let server = MockServer::start();
     server.mock(|when, then| {
-        when.method(POST).path(
-            "/api/workspace/ws-1/projects/550e8400-e29b-41d4-a716-446655440000/router/restart",
-        );
+        when.method(POST).path(router_path("/restart"));
         then.status(403)
             .header("content-type", "application/problem+json")
             .json_body(json!({ "type": "about:blank", "title": "Forbidden", "status": 403 }));
@@ -435,7 +428,7 @@ fn a_restart_without_the_permission_is_a_403_problem() {
 fn peers_and_router_status_parse_the_contract() {
     let server = MockServer::start();
     server.mock(|when, then| {
-        when.method(GET).path(PEERS_PATH);
+        when.method(GET).path(router_path("/peers"));
         then.status(200).json_body(json!([
             { "id": "peer-1", "name": "robot-7", "certificate_cn": "robot-7",
               "status": "connected", "certificate_expires_at": "2027-01-01T00:00:00Z",
@@ -447,11 +440,10 @@ fn peers_and_router_status_parse_the_contract() {
         ]));
     });
     server.mock(|when, then| {
-        when.method(GET)
-            .path("/api/workspace/ws-1/projects/550e8400-e29b-41d4-a716-446655440000/router");
+        when.method(GET).path(router_path(""));
         then.status(200).json_body(json!({
             "phase": "running", "desired_state": "running", "can_manage_infra": true,
-            "address": { "host": "rtr-p.example", "port": 7447 },
+            "address": { "host": ROUTER_HOST, "port": 7447 },
             "size": "micro", "entitled_sizes": ["micro"],
             "pending_changes": false, "pending_change_entries": [],
             "peers": [ { "id": "peer-1", "status": "connected",
@@ -482,7 +474,7 @@ fn peers_and_router_status_parse_the_contract() {
 fn removing_a_peer_is_staged_and_a_missing_peer_is_already_removed() {
     let server = MockServer::start();
     server.mock(|when, then| {
-        when.method(DELETE).path(format!("{PEERS_PATH}/peer-1"));
+        when.method(DELETE).path(router_path("/peers/peer-1"));
         then.status(202).json_body(json!({
             "phase": "running", "desired_state": "running", "can_manage_infra": true,
             "size": "micro", "entitled_sizes": ["micro"],
@@ -493,7 +485,7 @@ fn removing_a_peer_is_staged_and_a_missing_peer_is_already_removed() {
         }));
     });
     server.mock(|when, then| {
-        when.method(DELETE).path(format!("{PEERS_PATH}/peer-gone"));
+        when.method(DELETE).path(router_path("/peers/peer-gone"));
         then.status(404)
             .header("content-type", "application/problem+json")
             .json_body(json!({ "type": "about:blank", "title": "Not Found", "status": 404 }));
@@ -514,9 +506,6 @@ fn removing_a_peer_is_staged_and_a_missing_peer_is_already_removed() {
     ));
 }
 
-const RENEW_PATH: &str =
-    "/api/workspace/ws-1/projects/550e8400-e29b-41d4-a716-446655440000/router/peers/peer-1/renew";
-const ZENOH_ID: &str = "2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5";
 const DAY: i64 = 24 * 60 * 60;
 
 /// The platform's answer to the enrollment and to the renewal of `peer-1`,
@@ -526,11 +515,11 @@ fn peer_material(leaf: &str) -> serde_json::Value {
         "peer": { "id": "peer-1", "name": "robot-7", "certificate_cn": "robot-7",
                   "status": "connected", "certificate_expires_at": "2027-01-01T00:00:00Z",
                   "created_at": "2026-10-03T00:00:00Z" },
-        "address": { "host": "rtr-p.example", "port": 7447 },
+        "address": { "host": ROUTER_HOST, "port": 7447 },
         "certificate": leaf,
         "chain": "chain",
         "trust_anchor": "ca",
-        "zenoh_id": ZENOH_ID,
+        "zenoh_id": ZID,
         "namespace": PROJECT,
         "zenoh_config": "{}",
     })
@@ -582,7 +571,7 @@ fn a_renewal_posts_no_body_and_writes_the_new_leaf() {
     let second_leaf = leaf_pem(renewed_at, renewed_at + 90 * DAY);
     let renew = server.mock(|when, then| {
         when.method(POST)
-            .path(RENEW_PATH)
+            .path(router_path("/peers/peer-1/renew"))
             .header("authorization", "Bearer seeded-access")
             .body("");
         then.status(200).json_body(peer_material(&second_leaf));
@@ -602,7 +591,7 @@ fn a_renewal_posts_no_body_and_writes_the_new_leaf() {
         "the validity is the new leaf's"
     );
     assert_eq!(renewed.document.enrolled_at, ISSUED_AT);
-    assert_eq!(renewed.document.zenoh_id.as_str(), ZENOH_ID);
+    assert_eq!(renewed.document.zenoh_id.as_str(), ZID);
     assert_eq!(
         renewed.document.router,
         RouterEndpoint::parse("rtr-p.example", 7447).unwrap()
@@ -619,7 +608,7 @@ fn a_renewal_with_an_expired_token_refreshes_the_session_first() {
     let token = mock_discovery_and_refresh(&server);
     let renew = server.mock(|when, then| {
         when.method(POST)
-            .path(RENEW_PATH)
+            .path(router_path("/peers/peer-1/renew"))
             .header("authorization", "Bearer refreshed-access");
         then.status(200).json_body(peer_material(&leaf_pem(
             ISSUED_AT + 60 * DAY,
@@ -643,7 +632,7 @@ fn a_renewal_with_an_expired_token_refreshes_the_session_first() {
 fn a_renewal_with_no_session_asks_nothing_and_writes_nothing() {
     let server = MockServer::start();
     let renew = server.mock(|when, then| {
-        when.method(POST).path(RENEW_PATH);
+        when.method(POST).path(router_path("/peers/peer-1/renew"));
         then.status(200).json_body(peer_material(&leaf_pem(
             ISSUED_AT + 60 * DAY,
             EXPIRES_AT + 60 * DAY,
@@ -664,7 +653,7 @@ fn a_session_of_a_different_platform_does_not_renew() {
     let enrolled_at = MockServer::start();
     let signed_in_at = MockServer::start();
     let renew = enrolled_at.mock(|when, then| {
-        when.method(POST).path(RENEW_PATH);
+        when.method(POST).path(router_path("/peers/peer-1/renew"));
         then.status(200).json_body(peer_material(&leaf_pem(
             ISSUED_AT + 60 * DAY,
             EXPIRES_AT + 60 * DAY,
@@ -688,7 +677,7 @@ fn a_session_of_a_different_platform_does_not_renew() {
 fn a_peer_the_platform_cannot_renew_is_a_typed_refusal() {
     let server = MockServer::start();
     server.mock(|when, then| {
-        when.method(POST).path(RENEW_PATH);
+        when.method(POST).path(router_path("/peers/peer-1/renew"));
         then.status(409)
             .header("content-type", "application/problem+json")
             .json_body(json!({
@@ -715,7 +704,7 @@ fn a_peer_the_platform_cannot_renew_is_a_typed_refusal() {
 fn a_renewal_inside_the_minimum_interval_carries_the_delay() {
     let server = MockServer::start();
     server.mock(|when, then| {
-        when.method(POST).path(RENEW_PATH);
+        when.method(POST).path(router_path("/peers/peer-1/renew"));
         then.status(429)
             .header("content-type", "application/problem+json")
             .header("retry-after", "1800")
