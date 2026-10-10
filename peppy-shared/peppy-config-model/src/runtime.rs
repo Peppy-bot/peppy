@@ -749,47 +749,49 @@ mod tests {
         }
     }
 
-    fn runtime_config_from_json(instance_id: &str) -> Result<RuntimeConfig> {
-        let json = r#"{
-            messaging_host: "$MESSAGING_HOST",
-            messaging_port: $MESSAGING_PORT,
-            node_instance: {
-                instance_id: "$INSTANCE_ID"
-            },
-            node_name: "camera",
-            node_tag: "v1",
-            bound_core_node: "core_node"
-        }"#;
+    /// The `node_instance` block of the `camera_front` instance most tests
+    /// configure.
+    const CAMERA_FRONT_INSTANCE: &str = r#"{ instance_id: "camera_front" }"#;
 
-        let populated = json
-            .replace("$INSTANCE_ID", instance_id)
-            .replace("$MESSAGING_HOST", "127.0.0.1")
-            .replace("$MESSAGING_PORT", "7448");
-        serde_json5::from_str(&populated).map_err(|err| Error::Parsing(err.into()))
+    /// The JSON5 of a runtime config for a `camera:v1` node bound to
+    /// `core_node`, with `node_instance` as given and `extra_fields` written
+    /// after the required keys.
+    fn runtime_config_json5(node_instance: &str, extra_fields: &str) -> String {
+        format!(
+            r#"{{
+                messaging_host: "127.0.0.1",
+                messaging_port: 7448,
+                node_instance: {node_instance},
+                node_name: "camera",
+                node_tag: "v1",
+                bound_core_node: "core_node",
+                {extra_fields}
+            }}"#
+        )
+    }
+
+    fn runtime_config_from_json(instance_id: &str) -> Result<RuntimeConfig> {
+        let node_instance = format!(r#"{{ instance_id: "{instance_id}" }}"#);
+        serde_json5::from_str(&runtime_config_json5(&node_instance, ""))
+            .map_err(|err| Error::Parsing(err.into()))
     }
 
     /// A clock binding round-trips through serialize/deserialize, and a
     /// runtime config carrying no `framework` key reads as wall time.
     #[test]
     fn resolved_framework_round_trip_and_wall_default() {
-        let simulated: RuntimeConfig = serde_json5::from_str(
+        let simulated: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
             r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: {
-                    instance_id: "camera_front",
-                    framework: { clock: { sim: {
-                        domain: { name: "robot", core_node: "cn-sim", incarnation: 7 },
-                        role: { consumer: {
-                            publisher: { core_node: "cn-sim", instance_id: "sim_inst" }
-                        } },
-                    } } }
-                },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node"
+                instance_id: "camera_front",
+                framework: { clock: { sim: {
+                    domain: { name: "robot", core_node: "cn-sim", incarnation: 7 },
+                    role: { consumer: {
+                        publisher: { core_node: "cn-sim", instance_id: "sim_inst" }
+                    } },
+                } } }
             }"#,
-        )
+            "",
+        ))
         .unwrap();
         let clock = simulated.node_instance.framework.clock.clone();
         assert_eq!(clock.label(), "robot@cn-sim");
@@ -881,17 +883,10 @@ mod tests {
 
         // A partial lifecycle block fills the missing field from its default
         // and an explicit block round-trips.
-        let custom: RuntimeConfig = serde_json5::from_str(
-            r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: { instance_id: "camera_front" },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                lifecycle: { daemon_grace_secs: 42 }
-            }"#,
-        )
+        let custom: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
+            CAMERA_FRONT_INSTANCE,
+            "lifecycle: { daemon_grace_secs: 42 }",
+        ))
         .unwrap();
         assert_eq!(custom.lifecycle.daemon_grace_secs, 42);
         assert_eq!(
@@ -902,17 +897,10 @@ mod tests {
             serde_json5::from_str(&serde_json5::to_string(&custom).unwrap()).unwrap();
         assert_eq!(reparsed.lifecycle, custom.lifecycle);
 
-        let custom_shutdown: RuntimeConfig = serde_json5::from_str(
-            r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: { instance_id: "camera_front" },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                lifecycle: { shutdown_grace_secs: 7 }
-            }"#,
-        )
+        let custom_shutdown: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
+            CAMERA_FRONT_INSTANCE,
+            "lifecycle: { shutdown_grace_secs: 7 }",
+        ))
         .unwrap();
         assert_eq!(custom_shutdown.lifecycle.shutdown_grace_secs, 7);
         let reparsed: RuntimeConfig =
@@ -941,17 +929,10 @@ mod tests {
         );
 
         // A discovery block that omits the buffer keys still parses (defaults).
-        let no_buffers: RuntimeConfig = serde_json5::from_str(
-            r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: { instance_id: "camera_front" },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                discovery: { seed_peers: ["tcp/10.0.0.2:7448"], gossip: false }
-            }"#,
-        )
+        let no_buffers: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
+            CAMERA_FRONT_INSTANCE,
+            r#"discovery: { seed_peers: ["tcp/10.0.0.2:7448"], gossip: false }"#,
+        ))
         .unwrap();
         assert_eq!(
             no_buffers.discovery.seed_peers,
@@ -962,22 +943,15 @@ mod tests {
         assert_eq!(no_buffers.discovery.high_throughput_buffer_size, 1024);
 
         // Explicit buffer sizes round-trip.
-        let custom: RuntimeConfig = serde_json5::from_str(
-            r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: { instance_id: "camera_front" },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                discovery: {
-                    seed_peers: ["tcp/10.0.0.2:7448"],
-                    gossip: false,
-                    standard_buffer_size: 64,
-                    high_throughput_buffer_size: 4096
-                }
+        let custom: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
+            CAMERA_FRONT_INSTANCE,
+            r#"discovery: {
+                seed_peers: ["tcp/10.0.0.2:7448"],
+                gossip: false,
+                standard_buffer_size: 64,
+                high_throughput_buffer_size: 4096
             }"#,
-        )
+        ))
         .unwrap();
         assert_eq!(custom.discovery.standard_buffer_size, 64);
         assert_eq!(custom.discovery.high_throughput_buffer_size, 4096);
@@ -994,17 +968,10 @@ mod tests {
         );
 
         // An explicit namespace round-trips and is emitted on serialize.
-        let with_namespace: RuntimeConfig = serde_json5::from_str(
-            r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: { instance_id: "camera_front" },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                discovery: { namespace: "550e8400-e29b-41d4-a716-446655440000" }
-            }"#,
-        )
+        let with_namespace: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
+            CAMERA_FRONT_INSTANCE,
+            r#"discovery: { namespace: "550e8400-e29b-41d4-a716-446655440000" }"#,
+        ))
         .unwrap();
         assert_eq!(
             with_namespace
@@ -1057,17 +1024,10 @@ mod tests {
     #[test]
     fn runtime_config_rejects_an_invalid_namespace() {
         assert!(
-            serde_json5::from_str::<RuntimeConfig>(
-                r#"{
-                    messaging_host: "127.0.0.1",
-                    messaging_port: 7448,
-                    node_instance: { instance_id: "camera_front" },
-                    node_name: "camera",
-                    node_tag: "v1",
-                    bound_core_node: "core_node",
-                    discovery: { namespace: "**" }
-                }"#,
-            )
+            serde_json5::from_str::<RuntimeConfig>(&runtime_config_json5(
+                CAMERA_FRONT_INSTANCE,
+                r#"discovery: { namespace: "**" }"#,
+            ))
             .is_err(),
             "an invalid namespace must fail runtime-config parsing"
         );
@@ -1426,12 +1386,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_instance_id() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("peppy_launcher.json5");
-
-        let err = runtime_config_from_json("bad id!")
-            .and_then(|config| config.save_json5_launch_config(&path))
-            .unwrap_err();
+        let err = runtime_config_from_json("bad id!").unwrap_err();
         assert!(
             matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref msg)) if msg.contains("Invalid name"))
                 || matches!(err, Error::Parsing(ParsingError::InvalidName(_, _))),
