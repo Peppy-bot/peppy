@@ -1466,6 +1466,14 @@ def merge_commit_message(
     )
 
 
+def merged_line(merged: MergedPullRequest, unapproved: Sequence[PullRequest]) -> str:
+    """The line of a merge report for a pull request that merged."""
+    line = f"- {merged.pull_request.label} merged as `{short(merged.commit)}`"
+    if merged.pull_request in unapproved:
+        return f"{line} without an approval."
+    return f"{line}."
+
+
 def render_merge_report(
     set_name: str,
     requesters: Sequence[str],
@@ -1474,29 +1482,20 @@ def render_merge_report(
 ) -> str:
     """The report of a merge, on every pull request of the set. `unapproved`
     are the pull requests an admin merged without an approval."""
-    merged = [
-        f"- {merged.pull_request.label} merged as `{short(merged.commit)}`"
-        + (" without an approval" if merged.pull_request in unapproved else "")
-        + "."
-        for merged in outcome.merged
-    ]
+    merged_lines = [merged_line(merged, unapproved) for merged in outcome.merged]
     if outcome.failure is None:
-        return (
-            "\n".join(
-                [
-                    f"The set `{set_name}` merged, as {mention(requesters)} asked:",
-                    "",
-                    *merged,
-                ]
-            )
-            + "\n"
-        )
+        lines = [
+            f"The set `{set_name}` merged, as {mention(requesters)} asked:",
+            "",
+            *merged_lines,
+        ]
+        return "\n".join(lines) + "\n"
     failure = outcome.failure
     lines = [
         f"The merge of the set `{set_name}`, which {mention(requesters)} asked "
         "for, stopped:",
         "",
-        *merged,
+        *merged_lines,
         f"- {failure.pull_request.label} did not merge: {failure.reason}",
         *(
             f"- {pull_request.label} was not tried."
