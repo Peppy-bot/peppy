@@ -858,6 +858,19 @@ impl Daemon {
         );
     }
 
+    /// Waits until this daemon's listing holds every one of `instances`, and
+    /// returns that listing.
+    async fn wait_until_holding(&self, instances: &[&str]) -> String {
+        self.wait_for_stack(|text| instances.iter().all(|id| holds_instance(text, id)))
+            .await
+    }
+
+    /// Waits until this daemon's listing holds none of `instances`.
+    async fn wait_until_holding_none(&self, instances: &[&str]) {
+        self.wait_for_stack(|text| instances.iter().all(|id| !holds_instance(text, id)))
+            .await;
+    }
+
     /// The exit code of this container's daemon once it has exited, and
     /// `None` while it runs.
     async fn exit_code(&self) -> Option<i64> {
@@ -2358,14 +2371,8 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
     // every machine's section, so proving an instance is NOT on a daemon takes
     // that daemon's own slice. Wait for the fan-out to settle, then ask each
     // daemon about itself.
-    federation
-        .robot
-        .wait_for_stack(|text| ROBOT_INSTANCES.iter().all(|id| holds_instance(text, id)))
-        .await;
-    federation
-        .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
-        .await;
+    federation.robot.wait_until_holding(&ROBOT_INSTANCES).await;
+    federation.cloud.wait_until_holding(&CLOUD_INSTANCES).await;
 
     let robot_stack = federation
         .robot
@@ -2428,9 +2435,7 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
         (&federation.robot, ROBOT_INSTANCES.as_slice()),
         (&federation.cloud, CLOUD_INSTANCES.as_slice()),
     ] {
-        daemon
-            .wait_for_stack(|text| instances.iter().all(|id| !holds_instance(text, id)))
-            .await;
+        daemon.wait_until_holding_none(instances).await;
     }
 }
 
@@ -2463,12 +2468,8 @@ impl Federation {
             "the federated launch must succeed:\n{}",
             launch.text
         );
-        self.robot
-            .wait_for_stack(|text| ROBOT_INSTANCES.iter().all(|id| holds_instance(text, id)))
-            .await;
-        self.cloud
-            .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
-            .await;
+        self.robot.wait_until_holding(&ROBOT_INSTANCES).await;
+        self.cloud.wait_until_holding(&CLOUD_INSTANCES).await;
         self.cloud
             .wait_for_node_log("planner_inst", "first frame received across the boundary")
             .await;
@@ -2654,10 +2655,7 @@ async fn a_finished_launch_releases_its_participants_so_the_next_one_can_run() {
         second.text
     );
 
-    federation
-        .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
-        .await;
+    federation.cloud.wait_until_holding(&CLOUD_INSTANCES).await;
 }
 
 /// The case the rejected ownership model could not serve: a coordinator that
@@ -2669,23 +2667,17 @@ async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them
 
     let launch = federation.launch_split().await;
     assert!(launch.success(), "launch must succeed:\n{}", launch.text);
-    federation
-        .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
-        .await;
+    federation.cloud.wait_until_holding(&CLOUD_INSTANCES).await;
 
     // Restart the coordinator's daemon. Everything it knew in RAM is gone.
     federation.robot.restart().await;
     // Wait for the new generation to answer before asking it anything: an
     // untargeted `stack list` needs the coordinator's own daemon up to fan out
     // at all.
-    federation.robot.wait_for_stack(|_| true).await;
+    federation.robot.wait_until_serving().await;
 
     // The peer still holds its slice, and that slice still names the launch.
-    let cloud_stack = federation
-        .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
-        .await;
+    let cloud_stack = federation.cloud.wait_until_holding(&CLOUD_INSTANCES).await;
     assert!(
         !cloud_stack.is_empty(),
         "the peer's slice must survive a coordinator restart"
@@ -2705,7 +2697,7 @@ async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them
 
     federation
         .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| !holds_instance(text, id)))
+        .wait_until_holding_none(&CLOUD_INSTANCES)
         .await;
 }
 
@@ -3596,10 +3588,7 @@ async fn local_runs_the_whole_topology_on_one_daemon() {
         .chain(CLOUD_INSTANCES.iter())
         .copied()
         .collect();
-    federation
-        .robot
-        .wait_for_stack(|text| all_instances.iter().all(|id| holds_instance(text, id)))
-        .await;
+    federation.robot.wait_until_holding(&all_instances).await;
     let robot_stack = federation
         .robot
         .stack_list(Some(&federation.robot_core_node))
@@ -5713,9 +5702,7 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
         "reset the federation",
     );
     for (daemon, instance) in [(consumer, "consumer_inst"), (observer, "observer_inst")] {
-        daemon
-            .wait_for_stack(|text| !holds_instance(text, instance))
-            .await;
+        daemon.wait_until_holding_none(&[instance]).await;
     }
 }
 
