@@ -2,20 +2,30 @@ mod common;
 
 use common::test_node_target;
 use peppylib::messaging::{
-    MessengerHandle, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, SessionScope,
+    MessengerHandle, ProducerRef, SenderTarget, ServiceEndpoint, ServiceMessenger, ServiceTarget,
+    SessionScope,
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::time::Duration;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_messenger_communication() {
-    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (host, port) = (instance.host.clone(), instance.port);
+/// Spawns the task that answers the next request `endpoint` receives with
+/// `response`.
+fn answer_next_request(mut endpoint: ServiceEndpoint, response: Payload) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        endpoint
+            .handle_next_request(|_request| async move { Ok(response) })
+            .await
+            .expect("the endpoint answers its request");
+    })
+}
 
+/// One service call from `client` to a listener that `server` declares: the
+/// reply carries the response payload and the identity of the producer that
+/// answered it.
+async fn assert_one_service_round_trip(server: &MessengerHandle, client: &MessengerHandle) {
     let core_node = "test_core";
     let instance_id = "test_instance";
     let node_name = "test_node";
@@ -23,16 +33,8 @@ async fn service_messenger_communication() {
     let request_payload = Payload::from_static(b"Hello request");
     let response_payload = Payload::from_static(b"Hello response");
 
-    let server_handle = MessengerHandle::connect(&host, port)
-        .await
-        .expect("failed to create server handle");
-    let client_handle = MessengerHandle::connect(&host, port)
-        .await
-        .expect("failed to create client handle");
-
-    // Start the service listener
-    let mut service = ServiceMessenger::listen(
-        &server_handle,
+    let service = ServiceMessenger::listen(
+        server,
         core_node,
         instance_id,
         test_node_target(node_name),
@@ -45,18 +47,10 @@ async fn service_messenger_communication() {
     // cold-start retry bounded by its timeout, so it waits for the listener's
     // queryable to propagate rather than guessing a fixed delay.
 
-    // Spawn the handler so we can poll concurrently
-    let response_clone = response_payload.clone();
-    let handler = tokio::spawn(async move {
-        service
-            .handle_next_request(|_request| async move { Ok(response_clone) })
-            .await
-            .expect("handle_next_request should succeed");
-    });
+    let handler = answer_next_request(service, response_payload.clone());
 
-    // Poll the service as a client
     let response = ServiceMessenger::poll(
-        &client_handle,
+        client,
         core_node,
         instance_id,
         test_node_target(node_name),
@@ -73,6 +67,23 @@ async fn service_messenger_communication() {
     assert_eq!(response.payload(), &response_payload);
     assert_eq!(response.instance_id(), instance_id);
     assert_eq!(response.core_node(), core_node);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_messenger_communication() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let server_handle = MessengerHandle::connect(&host, port)
+        .await
+        .expect("failed to create server handle");
+    let client_handle = MessengerHandle::connect(&host, port)
+        .await
+        .expect("failed to create client handle");
+
+    assert_one_service_round_trip(&server_handle, &client_handle).await;
 }
 
 /// A single node exposes the *same* service name under two distinct contract
@@ -106,8 +117,7 @@ async fn service_contract_scoped_native_and_implemented_do_not_collide() {
         .await
         .expect("failed to create caller handle");
 
-    let (native_ready_tx, native_ready_rx) = oneshot::channel();
-    let mut native_endpoint = ServiceMessenger::listen(
+    let native_endpoint = ServiceMessenger::listen(
         &native_handle,
         core_node,
         instance_id,
@@ -117,18 +127,9 @@ async fn service_contract_scoped_native_and_implemented_do_not_collide() {
     .await
     .expect("native listen should succeed");
 
-    let native_response_clone = native_response.clone();
-    let native_handler = tokio::spawn(async move {
-        native_ready_tx.send(()).unwrap();
-        native_endpoint
-            .handle_next_request(|_req| async move { Ok(native_response_clone) })
-            .await
-            .expect("native handler should succeed");
-    });
-    native_ready_rx.await.unwrap();
+    let native_handler = answer_next_request(native_endpoint, native_response.clone());
 
-    let (contract_ready_tx, contract_ready_rx) = oneshot::channel();
-    let mut contract_endpoint = ServiceMessenger::listen(
+    let contract_endpoint = ServiceMessenger::listen(
         &contract_handle,
         core_node,
         instance_id,
@@ -138,15 +139,7 @@ async fn service_contract_scoped_native_and_implemented_do_not_collide() {
     .await
     .expect("contract listen should succeed");
 
-    let contract_response_clone = contract_response.clone();
-    let contract_handler = tokio::spawn(async move {
-        contract_ready_tx.send(()).unwrap();
-        contract_endpoint
-            .handle_next_request(|_req| async move { Ok(contract_response_clone) })
-            .await
-            .expect("contract handler should succeed");
-    });
-    contract_ready_rx.await.unwrap();
+    let contract_handler = answer_next_request(contract_endpoint, contract_response.clone());
 
     // No settle sleep: both polls below self-retry on a cold-start miss within
     // their timeout until each scope's queryable propagates.
@@ -220,7 +213,7 @@ async fn service_contract_tag_hyphen_normalized() {
         .expect("failed to create client handle");
 
     // Listener uses hyphen.
-    let mut endpoint = ServiceMessenger::listen(
+    let endpoint = ServiceMessenger::listen(
         &server_handle,
         core_node,
         instance_id,
@@ -230,13 +223,7 @@ async fn service_contract_tag_hyphen_normalized() {
     .await
     .expect("listen should succeed");
 
-    let response_clone = response_payload.clone();
-    let handler = tokio::spawn(async move {
-        endpoint
-            .handle_next_request(|_req| async move { Ok(response_clone) })
-            .await
-            .expect("handler should succeed");
-    });
+    let handler = answer_next_request(endpoint, response_payload.clone());
 
     // No settle sleep: the poll below self-retries on a cold-start miss within
     // its timeout until the listener's queryable propagates.
@@ -442,13 +429,6 @@ async fn namespace_scoped_client_sessions_round_trip_via_router() {
     let namespace =
         config::namespace::Namespace::parse("client-mode-workspace").expect("valid namespace");
 
-    let core_node = "test_core";
-    let instance_id = "test_instance";
-    let node_name = "test_node";
-    let service_name = "test_service";
-    let request_payload = Payload::from_static(b"Hello request");
-    let response_payload = Payload::from_static(b"Hello response");
-
     let server_handle = MessengerHandle::connect(&host, port)
         .scope(SessionScope::Namespace(namespace.clone()))
         .await
@@ -458,44 +438,5 @@ async fn namespace_scoped_client_sessions_round_trip_via_router() {
         .await
         .expect("failed to create client handle");
 
-    let mut service = ServiceMessenger::listen(
-        &server_handle,
-        core_node,
-        instance_id,
-        test_node_target(node_name),
-        service_name,
-    )
-    .await
-    .expect("listen should succeed");
-
-    // No settle sleep: `poll` below does discover-then-pin with a built-in
-    // cold-start retry bounded by its timeout, so it waits for the listener's
-    // queryable to propagate rather than guessing a fixed delay.
-
-    let response_clone = response_payload.clone();
-    let handler = tokio::spawn(async move {
-        service
-            .handle_next_request(|_request| async move { Ok(response_clone) })
-            .await
-            .expect("handle_next_request should succeed");
-    });
-
-    let response = ServiceMessenger::poll(
-        &client_handle,
-        core_node,
-        instance_id,
-        test_node_target(node_name),
-        service_name,
-        ServiceTarget::Producer(&ProducerRef::new(core_node, instance_id)),
-        request_payload,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("poll should succeed");
-
-    handler.await.expect("handler task should not panic");
-
-    assert_eq!(response.payload(), &response_payload);
-    assert_eq!(response.instance_id(), instance_id);
-    assert_eq!(response.core_node(), core_node);
+    assert_one_service_round_trip(&server_handle, &client_handle).await;
 }
