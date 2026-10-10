@@ -38,12 +38,12 @@ use daemon_config::fs_perms::restrict_dir;
 /// this version. A file of another version is rejected by [`load`], and the
 /// machine enrolls again.
 pub const ENROLLMENT_VERSION: u32 = 1;
-pub const ENROLLMENT_FILE: &str = "enrollment.json5";
-pub const PEER_KEY_FILE: &str = "peer.key";
+const ENROLLMENT_FILE: &str = "enrollment.json5";
+const PEER_KEY_FILE: &str = "peer.key";
 pub const PEER_CERTIFICATE_FILE: &str = "peer.crt";
-pub const TRUST_ANCHOR_FILE: &str = "ca.crt";
-pub const CHAIN_FILE: &str = "chain.crt";
-pub const PLATFORM_ZENOH_CONFIG_FILE: &str = "zenohd.platform.json5";
+const TRUST_ANCHOR_FILE: &str = "ca.crt";
+const CHAIN_FILE: &str = "chain.crt";
+const PLATFORM_ZENOH_CONFIG_FILE: &str = "zenohd.platform.json5";
 
 /// Where the enrolled machine's router dials: the project's cloud router.
 ///
@@ -370,7 +370,7 @@ pub fn save(dirs: &PeppyDirs, bundle: &EnrollmentBundle) -> Result<()> {
 /// Writes the material of a renewal over the material of the enrollment. The
 /// key stays as it is. A renewal has no key of its own, so when the key of the
 /// enrollment is absent the machine is not enrolled, and nothing is written.
-pub fn save_renewal(dirs: &PeppyDirs, renewed: &IssuedMaterial) -> Result<()> {
+pub(crate) fn save_renewal(dirs: &PeppyDirs, renewed: &IssuedMaterial) -> Result<()> {
     let peer_dir = dirs.peer_dir();
     let peer_key = peer_dir.join(PEER_KEY_FILE);
     if !peer_key.is_file() {

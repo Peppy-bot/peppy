@@ -227,7 +227,7 @@ pub fn start(
 /// The query parameter that carries the login code to a device page. It is the
 /// name RFC 8628 and the identity provider use, and the one the platform's
 /// device page reads.
-pub const USER_CODE_PARAMETER: &str = "user_code";
+const USER_CODE_PARAMETER: &str = "user_code";
 
 /// The link a person opens to approve a started device login: the platform's
 /// own device page with the code in the `user_code` query parameter, so the

@@ -97,7 +97,7 @@ impl PlatformSelection {
 }
 
 /// A workspace in words, for the person: its name and its id.
-pub fn workspace_label(workspace_name: &str, workspace_id: &str) -> String {
+fn workspace_label(workspace_name: &str, workspace_id: &str) -> String {
     format!("workspace {workspace_name} ({workspace_id})")
 }
 
@@ -118,7 +118,7 @@ impl Versioned for PlatformSelection {
 }
 
 /// Selection path under a given peppy root.
-pub fn selection_path(dirs: &PeppyDirs) -> PathBuf {
+fn selection_path(dirs: &PeppyDirs) -> PathBuf {
     dirs.conf_dir()
         .join(daemon_config::consts::PLATFORM_SELECTION_FILE)
 }

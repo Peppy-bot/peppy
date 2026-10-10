@@ -54,7 +54,7 @@ pub mod enrollment;
 mod error;
 pub mod http;
 pub mod profile;
-pub mod refresh;
+mod refresh;
 pub mod renewal;
 pub mod resolver;
 pub mod revoke;
@@ -63,13 +63,8 @@ pub mod storage;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
-pub use cli_config::CliConfig;
-pub use client::{PlatformApi, Principal};
-pub use enrollment::{
-    CertificateValidity, Enrollment, EnrollmentBundle, EnrollmentDocument, FederationIdentity,
-    IssuedMaterial, RouterEndpoint,
-};
+pub use client::PlatformApi;
+pub use enrollment::{CertificateValidity, Enrollment, FederationIdentity};
 pub use error::{Error as AuthError, Problem, ProblemKind, Result};
-pub use resolver::Credential;
 pub use selection::PlatformSelection;
-pub use storage::{Credentials, ProfileCreds};
+pub use storage::ProfileCreds;

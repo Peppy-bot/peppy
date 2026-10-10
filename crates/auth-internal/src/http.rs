@@ -1,7 +1,7 @@
 //! Thin blocking HTTP client over `ureq` shared by the auth engine.
 //!
 //! The client is configured with `http_status_as_error(false)` so non-2xx
-//! responses come back as [`HttpResponse`] (status + body) rather than an opaque
+//! responses come back as `HttpResponse` (status + body) rather than an opaque
 //! `ureq::Error`: the device flow and `/cli/auth-config` need to read 4xx/5xx bodies
 //! (`authorization_pending`, `slow_down`, the 503 "not configured" case). Bearer
 //! tokens are never included in error strings (only the URL, with its query
@@ -17,20 +17,20 @@ use crate::error::{Error, Result};
 
 /// A fully-read HTTP response: status code, body text, and the delay of a
 /// `Retry-After` header when the server sent one in seconds.
-pub struct HttpResponse {
-    pub status: u16,
-    pub body: String,
-    pub retry_after_secs: Option<u64>,
+pub(crate) struct HttpResponse {
+    pub(crate) status: u16,
+    pub(crate) body: String,
+    pub(crate) retry_after_secs: Option<u64>,
 }
 
 impl HttpResponse {
-    pub fn is_success(&self) -> bool {
+    pub(crate) fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
     }
 
     /// Parses the body as JSON into `T`, tagging a parse failure with `what` (the
     /// endpoint or payload name) so a malformed response stays attributable.
-    pub fn json<T: DeserializeOwned>(&self, what: &str) -> Result<T> {
+    pub(crate) fn json<T: DeserializeOwned>(&self, what: &str) -> Result<T> {
         serde_json::from_str(&self.body)
             .map_err(|e| Error::Auth(format!("invalid {what} response: {e}")))
     }
@@ -91,7 +91,7 @@ impl HttpClient {
     }
 
     /// `GET url`, optionally with a bearer token.
-    pub fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+    pub(crate) fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
         let sent = with_bearer(self.agent.get(url), bearer).call();
         read_response("GET", url, sent)
     }
@@ -99,7 +99,7 @@ impl HttpClient {
     /// `POST url` with an `application/x-www-form-urlencoded` body built from `form`.
     /// The body is encoded with `url::form_urlencoded` so values like the
     /// `device_code` grant type are escaped correctly.
-    pub fn post_form(
+    pub(crate) fn post_form(
         &self,
         url: &str,
         form: &[(&str, &str)],
@@ -119,7 +119,12 @@ impl HttpClient {
     /// `POST url` with a pre-serialized JSON `body` (`application/json`),
     /// optionally with a bearer token. The caller serializes the payload so this
     /// thin client stays free of `serde::Serialize` bounds.
-    pub fn post_json(&self, url: &str, body: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+    pub(crate) fn post_json(
+        &self,
+        url: &str,
+        body: &str,
+        bearer: Option<&str>,
+    ) -> Result<HttpResponse> {
         let req = self
             .agent
             .post(url)
@@ -129,13 +134,13 @@ impl HttpClient {
     }
 
     /// `POST url` with no body, optionally with a bearer token.
-    pub fn post_empty(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+    pub(crate) fn post_empty(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
         let sent = with_bearer(self.agent.post(url), bearer).send_empty();
         read_response("POST", url, sent)
     }
 
     /// `DELETE url`, optionally with a bearer token.
-    pub fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+    pub(crate) fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
         let sent = with_bearer(self.agent.delete(url), bearer).call();
         read_response("DELETE", url, sent)
     }

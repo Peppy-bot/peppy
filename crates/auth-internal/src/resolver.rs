@@ -120,7 +120,7 @@ pub(crate) fn refresh_and_persist(
 
 /// Returns a [`ProfileCreds`] with the token fields replaced by `tokens`,
 /// preserving the cached `issuer`/`client_id`/identity fields.
-pub fn apply_tokens(pc: &ProfileCreds, tokens: &super::device::TokenSet) -> ProfileCreds {
+fn apply_tokens(pc: &ProfileCreds, tokens: &super::device::TokenSet) -> ProfileCreds {
     ProfileCreds::with_tokens(
         pc.api_url.clone(),
         pc.issuer.clone(),
