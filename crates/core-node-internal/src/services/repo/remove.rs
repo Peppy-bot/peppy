@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::{read_or_create_repos, reindex_after_change};
-use crate::services::repo::write_repo_entries;
+use crate::services::repo::{repo_entry_id, write_repo_entries};
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
@@ -90,7 +90,7 @@ fn handle_repo_remove_request_inner(
     let target_id = request.id;
     let position = repos
         .iter()
-        .position(|entry| entry.get("id").and_then(|v| v.as_u64()) == Some(target_id));
+        .position(|entry| repo_entry_id(entry) == Some(target_id));
 
     let Some(pos) = position else {
         return Ok((

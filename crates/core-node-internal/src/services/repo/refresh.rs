@@ -11,7 +11,8 @@ use crate::services::repo::index::{
 use crate::services::repo::init::write_default_repos;
 use crate::services::repo::status::{self, RepoStatus, RepoStatusFailure};
 use crate::services::repo::{
-    REPOS_FILE, RepoOwners, normalize_repo_entries, parse_repo_entry, source_identity,
+    REPOS_FILE, RepoOwners, normalize_repo_entries, parse_repo_entry, repo_entry_id,
+    source_identity,
 };
 use crate::source_url::SourceUrl;
 use core_node_api::ActionId;
@@ -280,7 +281,7 @@ pub(crate) fn release_repositories_read_for_another_version(
     repos
         .iter()
         .filter_map(|entry| {
-            let id = entry.get("id")?.as_u64()?;
+            let id = repo_entry_id(entry)?;
             let source = parse_repo_entry(entry).ok()?;
             let RepoSource::Git {
                 repo_ref: GitRepoRef::PeppyRelease,
@@ -666,7 +667,7 @@ pub(crate) fn process_refresh(
     }
 
     for entry in &repos {
-        let id = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        let id = repo_entry_id(entry).unwrap_or(0);
 
         // An entry peppy cannot parse has no source kind or identity to
         // record, so it is reported but gets no status line.

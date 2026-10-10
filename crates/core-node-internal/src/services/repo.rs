@@ -152,6 +152,12 @@ pub(crate) fn source_identity(source: &RepoSource) -> String {
     }
 }
 
+/// The `id` of one `repositories.json5` or `excluded_repositories.json5`
+/// entry, `None` when it has none.
+pub(crate) fn repo_entry_id(entry: &Value) -> Option<u64> {
+    entry.get("id").and_then(Value::as_u64)
+}
+
 /// The identity of a persisted entry, `None` when the entry describes no
 /// repository peppy can read (see [`parse_repo_entry`]).
 pub(crate) fn entry_identity(entry: &Value) -> Option<String> {
@@ -216,7 +222,7 @@ impl RepoOwners {
                             repo_ref,
                         },
                     };
-                    Some((repo.get("id").and_then(|v| v.as_u64()), owner))
+                    Some((repo_entry_id(repo), owner))
                 })
                 .collect(),
         )
@@ -302,7 +308,7 @@ pub(crate) fn listed_repositories(peppy_dirs: &PeppyDirs) -> crate::Result<Vec<L
             continue;
         }
 
-        let repo_id_u64 = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        let repo_id_u64 = repo_entry_id(entry).unwrap_or(0);
         let id = match u32::try_from(repo_id_u64) {
             Ok(id) if id != UNOWNED_REPO_ID => id,
             _ => {
@@ -381,15 +387,11 @@ pub(crate) fn normalize_repo_entries(
     file_path: &Path,
     desc: &str,
 ) -> crate::Result<()> {
-    let mut max_id: u64 = repos
-        .iter()
-        .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
-        .max()
-        .unwrap_or(0);
+    let mut max_id: u64 = repos.iter().filter_map(repo_entry_id).max().unwrap_or(0);
 
     let mut needs_write = false;
     for entry in repos.iter_mut() {
-        if entry.get("id").and_then(|v| v.as_u64()).is_none() {
+        if repo_entry_id(entry).is_none() {
             max_id += 1;
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert("id".to_string(), Value::Number(max_id.into()));
@@ -401,7 +403,7 @@ pub(crate) fn normalize_repo_entries(
     // Detect duplicate ids; a user may manually edit the file and introduce collisions.
     let mut seen_ids = HashSet::new();
     for entry in repos.iter() {
-        if let Some(id) = entry.get("id").and_then(|v| v.as_u64())
+        if let Some(id) = repo_entry_id(entry)
             && !seen_ids.insert(id)
         {
             let file = file_path
@@ -414,12 +416,12 @@ pub(crate) fn normalize_repo_entries(
 
     let ids_before: Vec<u64> = repos
         .iter()
-        .map(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0))
+        .map(|e| repo_entry_id(e).unwrap_or(0))
         .collect();
-    repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
+    repos.sort_by_key(|e| repo_entry_id(e).unwrap_or(0));
     let ids_after: Vec<u64> = repos
         .iter()
-        .map(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0))
+        .map(|e| repo_entry_id(e).unwrap_or(0))
         .collect();
     if ids_before != ids_after {
         needs_write = true;

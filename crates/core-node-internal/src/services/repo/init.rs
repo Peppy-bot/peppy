@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::services::repo::{REPOS_FILE, repository_noun, write_repo_entries};
+use crate::services::repo::{REPOS_FILE, repo_entry_id, repository_noun, write_repo_entries};
 use daemon_config::consts::PeppyDirs;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -71,7 +71,7 @@ pub fn ensure_default_repos(peppy_dirs: &PeppyDirs) -> Result<InitOutcome> {
         return Ok(InitOutcome::Updated { added: 0 });
     }
 
-    existing.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
+    existing.sort_by_key(|e| repo_entry_id(e).unwrap_or(0));
     write_repo_entries(&repos_path, &existing, "repositories")?;
     info!(
         "Added {added} missing default {} to repositories.json5",
@@ -83,17 +83,11 @@ pub fn ensure_default_repos(peppy_dirs: &PeppyDirs) -> Result<InitOutcome> {
 /// Appends each default entry whose `id` no existing entry holds, and
 /// returns how many it appended.
 fn append_missing_defaults(existing: &mut Vec<Value>, defaults: Vec<Value>) -> usize {
-    let existing_ids: HashSet<u64> = existing
-        .iter()
-        .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
-        .collect();
+    let existing_ids: HashSet<u64> = existing.iter().filter_map(repo_entry_id).collect();
     let missing: Vec<Value> = defaults
         .into_iter()
         .filter(|default_entry| {
-            default_entry
-                .get("id")
-                .and_then(|v| v.as_u64())
-                .is_some_and(|id| !existing_ids.contains(&id))
+            repo_entry_id(default_entry).is_some_and(|id| !existing_ids.contains(&id))
         })
         .collect();
     let added = missing.len();

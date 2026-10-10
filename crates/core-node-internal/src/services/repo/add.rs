@@ -2,7 +2,7 @@ use crate::Result;
 use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::read_or_create_repos;
 use crate::services::repo::{
-    entry_identity, repo_source_to_json, source_identity, write_repo_entries,
+    entry_identity, repo_entry_id, repo_source_to_json, source_identity, write_repo_entries,
 };
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
@@ -116,7 +116,7 @@ fn handle_repo_add_request_inner(
         // under one owner, so it is a refusal naming the id.
         if repos
             .iter()
-            .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
+            .filter_map(repo_entry_id)
             .any(|existing| existing == id)
         {
             return RepoAddResponse::failure(format!(
@@ -128,11 +128,7 @@ fn handle_repo_add_request_inner(
         }
         id
     } else if request.top {
-        match repos
-            .iter()
-            .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
-            .min()
-        {
+        match repos.iter().filter_map(repo_entry_id).min() {
             Some(min) => match min.checked_sub(1) {
                 Some(n) => n,
                 None => {
@@ -145,11 +141,7 @@ fn handle_repo_add_request_inner(
             None => 1000,
         }
     } else {
-        match repos
-            .iter()
-            .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
-            .max()
-        {
+        match repos.iter().filter_map(repo_entry_id).max() {
             Some(max) => match max.checked_add(1) {
                 Some(n) => n,
                 None => {

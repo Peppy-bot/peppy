@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::services::repo::refresh::reindex_after_change;
 use crate::services::repo::{
-    EXCLUDED_REPOS_FILE, entry_identity, normalize_repo_entries, parse_repo_entry,
+    EXCLUDED_REPOS_FILE, entry_identity, normalize_repo_entries, parse_repo_entry, repo_entry_id,
     repo_source_to_json, source_identity, write_repo_entries,
 };
 use crate::services::response::into_service_response;
@@ -197,13 +197,13 @@ fn handle_repo_exclude_request_inner(
 
     let next_id = repos
         .iter()
-        .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
+        .filter_map(repo_entry_id)
         .max()
         .map(|max| max + 1)
         .unwrap_or(1);
 
     repos.push(repo_source_to_json(next_id, &request.source));
-    repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
+    repos.sort_by_key(|e| repo_entry_id(e).unwrap_or(0));
     write_repo_entries(&repos_path, &repos, "excluded repositories")?;
 
     drop(_guard);
