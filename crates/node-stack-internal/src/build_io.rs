@@ -3,7 +3,7 @@
 //!
 //! `spawn_output_reader_async` reads raw bytes from a
 //! `tokio::process::ChildStdout`/`ChildStderr` and splits them into lines on
-//! `\n`, `\r`, and `\r\n` (see [`LineSplitter`]), so TTY-style `\r` progress
+//! `\n`, `\r`, and `\r\n` (see `LineSplitter`), so TTY-style `\r` progress
 //! repaints surface as feedback instead of accumulating silently inside one
 //! never-terminated line. The build path uses it through
 //! `stream_child_output`. The start path uses it from

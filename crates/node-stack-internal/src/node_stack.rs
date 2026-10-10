@@ -1023,7 +1023,7 @@ impl NodeStack {
     /// the root node. The root entity's lifecycle is degenerate: it represents
     /// the running daemon itself and has no buildable artifact, so it is
     /// constructed directly in `Ready { instances: [Running] }` via
-    /// [`NodeEntity::root`]. The root instance is in `Running` state because
+    /// `NodeEntity::root`. The root instance is in `Running` state because
     /// the daemon process is already alive; there's no spawn-then-commit to
     /// model. It records no pid: the daemon is its own process, and the only
     /// pids a stack holds are those of the children it spawned.

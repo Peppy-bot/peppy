@@ -482,7 +482,7 @@ impl NodeEntity {
 
     /// Returns the in-memory working directory guard staged by `node add`
     /// for a future `node build`, if any. The build path consumes this via
-    /// [`take_pending_working_dir`].
+    /// [`Self::take_pending_working_dir`].
     pub fn pending_working_dir(&self) -> Option<Arc<WorkingDirGuard>> {
         self.pending_working_dir.clone()
     }
@@ -595,7 +595,7 @@ impl NodeEntity {
     ///
     /// A staged tree whose fingerprint already has an artifact in storage is
     /// not rebuilt unless `ctx.rebuild` is set (see
-    /// [`super::build_artifact_cache`]).
+    /// `node_stack::build_artifact_cache`).
     ///
     /// On success, returns the `PathBuf` of the artifact installed in storage.
     /// The caller MUST use this returned path rather than re-reading
@@ -1627,7 +1627,7 @@ impl TrackedNodeInstance {
     }
 
     /// `true` once a stop path has claimed this instance for termination via
-    /// [`mark_stopping`]. The process-exit watcher reads this to avoid
+    /// [`Self::mark_stopping`]. The process-exit watcher reads this to avoid
     /// transitioning an intentionally-stopped instance to a terminal state.
     pub fn is_stopping(&self) -> bool {
         self.stopping.load(std::sync::atomic::Ordering::Relaxed)

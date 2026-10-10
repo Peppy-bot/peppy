@@ -411,7 +411,7 @@ fn file_timestamp() -> String {
 /// The time of the line written at `now` after a line written at `last`:
 /// `now`, or one nanosecond after `last` when the clock has not moved past
 /// it, so the times of a log's lines strictly increase. A clock more than
-/// [`MAX_CLOCK_LEAD`] behind `last` stepped back, and the line takes `now`.
+/// `MAX_CLOCK_LEAD` behind `last` stepped back, and the line takes `now`.
 pub fn time_after(last: SystemTime, now: SystemTime) -> SystemTime {
     match last.duration_since(now) {
         Ok(lead) if lead <= MAX_CLOCK_LEAD => last + Duration::from_nanos(1),
