@@ -42,8 +42,10 @@ def declared_outputs():
     installed, so this walks the indentation rather than importing PyYAML.
     """
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "action.yml")
+    with open(path) as handle:
+        lines = handle.readlines()
     names, inside = [], False
-    for line in open(path):
+    for line in lines:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if not line[0].isspace():
