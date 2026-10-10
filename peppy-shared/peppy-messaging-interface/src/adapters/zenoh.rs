@@ -240,7 +240,7 @@ impl ZenohAdapter {
         )?;
         let facade = zenohd::ZenohdFacade::managed(zenohd_config_path)?;
         let client_config =
-            Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, tls)?;
+            Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, tls);
 
         Ok(Self {
             zenohd: Some(facade),
@@ -270,7 +270,7 @@ impl ZenohAdapter {
         endpoint.validate_external_tcp()?;
         let facade = zenohd::ZenohdFacade::external(endpoint);
         let client_config =
-            Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, None)?;
+            Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, None);
 
         Ok(Self {
             zenohd: Some(facade),
@@ -675,7 +675,7 @@ impl ZenohAdapter {
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
         tls: Option<TlsConfig>,
-    ) -> Result<ZenohClientConfig> {
+    ) -> ZenohClientConfig {
         // Build the adapter session from the router endpoint carried by the
         // facade. `with_router` supplies a Peppy-managed router, while
         // `with_external_router` may supply a remote, operator-owned router.
@@ -684,7 +684,7 @@ impl ZenohAdapter {
         // reconnecting in `start_session` when `reconnect_session` is set; the
         // readiness probe in `start_router_ephemeral` builds its own client
         // probe config.
-        Ok(Self::create_client_config(
+        Self::create_client_config(
             zenohd.zenoh_endpoint.protocol(),
             zenohd.zenoh_endpoint.host(),
             zenohd.zenoh_endpoint.port(),
@@ -696,7 +696,7 @@ impl ZenohAdapter {
             // Both router constructors derive a namespace-free session; callers
             // apply workspace routing afterward via [`Self::with_namespace`].
             None,
-        ))
+        )
     }
 
     /// Applies a project namespace to this adapter's session, re-rendering
