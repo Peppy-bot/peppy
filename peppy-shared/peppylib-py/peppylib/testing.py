@@ -1,4 +1,4 @@
-"""Node-invariant test machinery — the Python twin of Rust's ``peppylib::testing``.
+"""Node-invariant test machinery: the Python twin of Rust's ``peppylib::testing``.
 
 Everything here is untyped (``bytes`` in, ``bytes`` out) on purpose: this module
 is the single Python implementation of the semantics that generated per-node
@@ -11,7 +11,7 @@ veneer instead.
 Deliberately not imported by ``peppylib/__init__.py``: the wheel ships it
 inert, and only test code ever imports ``peppylib.testing``.
 
-Semantics mirror ``peppylib-rs/src/testing.rs`` — mirror, not re-design; a
+Semantics mirror ``peppylib-rs/src/testing.rs`` (mirror, not re-design); a
 behavior difference between the two is a bug here, and both sides carry
 equivalent test suites in peppy-shared to surface one early.
 
@@ -206,7 +206,7 @@ def prepare_test_process() -> None:
       through at least 1.10.0 can deadlock its routing layer under
       peer-session churn on the single-worker default; an operator-provided
       ``ZENOH_RUNTIME`` wins). Must run before the first session or router
-      lazily initializes the native runtime — importing this module (or
+      lazily initializes the native runtime; importing this module (or
       calling :meth:`EphemeralRouter.start`) is early enough for test code.
     - Raises the soft ``nofile`` limit toward the hard limit, best effort:
       parallel routers/sessions can exhaust the macOS default soft limit of
@@ -225,14 +225,14 @@ def prepare_test_process() -> None:
 
 
 # Run at import time so the environment is set before the native runtime can
-# lazily initialize — the Python stand-in for the Rust module's pre-main ctor.
+# lazily initialize: the Python stand-in for the Rust module's pre-main ctor.
 prepare_test_process()
 
 
 # One mesh-serialization lock per event loop (pytest-asyncio gives each test
 # its own loop, and asyncio primitives refuse cross-loop reuse). Sequential
 # tests never overlap meshes anyway; the lock exists for tests that start
-# several routers/harnesses concurrently on one loop — one mesh at a time
+# several routers/harnesses concurrently on one loop. One mesh at a time
 # keeps gossip discovery fast and deterministic.
 _MESH_SERIAL_LOCKS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
     weakref.WeakKeyDictionary()
@@ -648,7 +648,7 @@ class MockServiceCore:
                 response = self._scripted.popleft()
                 try:
                     await responder.respond(response)
-                except Exception as error:  # noqa: BLE001 — mock keeps serving
+                except Exception as error:  # noqa: BLE001, mock keeps serving
                     warnings.warn(
                         f"mock service `{self._service_name}` failed to send a scripted "
                         f"response: {error}",
@@ -661,7 +661,7 @@ class MockServiceCore:
         self, timeout: float = READINESS_TIMEOUT
     ) -> tuple[ServiceRequestContext, ServiceResponder]:
         """The next unscripted request, with the responder the test must use
-        to answer it. Errors after ``timeout`` — a node that never called is a
+        to answer it. Errors after ``timeout``: a node that never called is a
         test failure surfaced here, not a hang."""
         try:
             return await asyncio.wait_for(self._requests.get(), timeout)
@@ -791,7 +791,7 @@ class MockActionServerCore:
         """Simulate this producer disappearing mid-goal, deterministically:
         every live goal context is disarmed (its eventual release emits
         neither the abandon transition nor the feedback-end sentinel), then
-        the engine is released — CPython's refcounting drops it immediately,
+        the engine is released. CPython's refcounting drops it immediately,
         stopping its routing loops and removing the producer liveliness token
         consumers latch on."""
         for ref in self._live:
@@ -1044,7 +1044,7 @@ class MockClock:
                 await task
             except asyncio.CancelledError:
                 pass
-            except Exception as error:  # noqa: BLE001 — teardown reports, never raises
+            except Exception as error:  # noqa: BLE001, teardown reports, never raises
                 warnings.warn(f"mock clock task failed: {error}", stacklevel=1)
 
 
@@ -1061,7 +1061,7 @@ async def _send_clock_reply(reply: Awaitable[None]) -> None:
 @dataclass
 class PublisherReadiness:
     """One entry of the harness's pre-setup readiness barrier: before the
-    node's ``setup`` runs, the harness waits — on the node's own session —
+    node's ``setup`` runs, the harness waits (on the node's own session)
     until a subscriber matching the exact keyexpr the node's publisher will
     emit on is visible. Without this, the node's very first publish can be
     dropped while its fresh session is still discovering the harness's
@@ -1084,7 +1084,7 @@ class ServiceReadiness:
     services and actions: the node under test is a *fresh caller*, so its very
     first ``poll``/``send_goal`` inside ``setup`` can race gossip discovery of
     a mock queryable that was declared long before the node's session existed.
-    The harness therefore waits — on the node's own session — until each
+    The harness therefore waits (on the node's own session) until each
     mock's queryable answers reachability probes, before ``setup`` runs.
     Mirrors Rust's ``ServiceReadiness``."""
 
@@ -1226,7 +1226,7 @@ class HarnessCore:
 
     async def shutdown(self) -> None:
         """Converge the node: see the class-level teardown contract. Raises
-        the ``setup`` error if it failed — a test whose node errored during
+        the ``setup`` error if it failed: a test whose node errored during
         setup should fail even when its assertions never noticed."""
         self._node_runner.cancellation_token().cancel()
         grace = self._node_runner.shutdown_grace_secs()
@@ -1241,7 +1241,7 @@ class HarnessCore:
                 # cancellation token; production drops it at shutdown the
                 # same way (wait_for already cancelled it).
                 pass
-            except BaseException as error:  # noqa: BLE001 — re-raised after hooks
+            except BaseException as error:  # noqa: BLE001, re-raised after hooks
                 setup_error = error
         await self._node_runner.run_shutdown_hooks(grace)
         if setup_error is not None:

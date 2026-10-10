@@ -45,7 +45,7 @@ def resolve_version() -> tuple[str, str]:
 
     raw_tag is what the rest of the workspace uses (typically `vX.Y.Z`) and
     is what the Rust build reads via `option_env!("PEPPY_GIT_TAG")`.
-    pep440_version drives the wheel filename — PyPI rejects a leading 'v'.
+    pep440_version drives the wheel filename: PyPI rejects a leading 'v'.
     """
     raw = os.environ.get("PEPPY_GIT_TAG", "").strip()
     if not raw:
