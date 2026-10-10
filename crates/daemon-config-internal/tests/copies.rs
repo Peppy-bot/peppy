@@ -1969,6 +1969,9 @@ fn simulation_with_arm_slot_document(slot: &str, arm_links: &str) -> String {
 
 const PAIRS_INTO_ARM: &str = r#", links: { engine: "simulation_inst/arm" }"#;
 
+/// The simulation's `arm` slot left vacant for the launch without a robot.
+const VACANT_ARM_SLOT: &str = r#"{ vacant: "a simulated robot pairs here" }"#;
+
 fn simulation_with_arm_slot(slot: &str) -> PreparedLauncher {
     load(&simulation_with_arm_slot_document(slot, PAIRS_INTO_ARM))
 }
@@ -1978,8 +1981,7 @@ fn simulation_with_arm_slot(slot: &str) -> PreparedLauncher {
 /// reports the option.
 #[test]
 fn a_join_cannot_release_a_vacancy_it_pairs_nothing_into() {
-    let document =
-        simulation_with_arm_slot_document(r#"{ vacant: "a simulated robot pairs here" }"#, "");
+    let document = simulation_with_arm_slot_document(VACANT_ARM_SLOT, "");
     let prepared = load(&document);
     let launch = prepared.launch(&[], &[]).unwrap();
     let err = join(
@@ -2007,7 +2009,7 @@ fn a_join_cannot_release_a_vacancy_it_pairs_nothing_into() {
 
 #[test]
 fn a_join_may_pair_into_a_slot_the_stack_declares_vacant() {
-    let prepared = simulation_with_arm_slot(r#"{ vacant: "a simulated robot pairs here" }"#);
+    let prepared = simulation_with_arm_slot(VACANT_ARM_SLOT);
     let launch = prepared.launch(&[], &[]).unwrap();
     assert!(
         instance(&launch.launcher, "simulation_inst")
@@ -2064,7 +2066,7 @@ fn a_join_may_pair_into_a_slot_the_stack_declares_vacant() {
 /// carries the reason it stands empty and pairing validation covers it.
 #[test]
 fn removing_a_copy_puts_back_the_vacancy_it_released() {
-    let prepared = simulation_with_arm_slot(r#"{ vacant: "a simulated robot pairs here" }"#);
+    let prepared = simulation_with_arm_slot(VACANT_ARM_SLOT);
     let launch = prepared.launch(&[], &[]).unwrap();
     let bare = instance(&launch.launcher, "simulation_inst").links["arm"].clone();
     let joined = prepared
@@ -2099,11 +2101,7 @@ fn removing_a_copy_puts_back_the_vacancy_it_released() {
 /// that released the vacancy still hands it back.
 #[test]
 fn a_watcher_naming_the_instance_does_not_hold_the_vacancy_open() {
-    let document = simulation_with_arm_slot_document(
-        r#"{ vacant: "a simulated robot pairs here" }"#,
-        PAIRS_INTO_ARM,
-    )
-    .replace(
+    let document = simulation_with_arm_slot_document(VACANT_ARM_SLOT, PAIRS_INTO_ARM).replace(
         r#"deployments: [{ simulation: "mujoco" }]"#,
         r#"deployments: [
             { simulation: "mujoco" },
@@ -2143,10 +2141,7 @@ fn a_watcher_naming_the_instance_does_not_hold_the_vacancy_open() {
 /// back only where nothing is left to cover the slot.
 #[test]
 fn removing_a_copy_leaves_a_slot_another_copy_pairs_into() {
-    let prepared = load(&simulation_with_arm_slot_document(
-        r#"{ vacant: "a simulated robot pairs here" }"#,
-        r#", links: { engine: "simulation_inst/arm" }"#,
-    ));
+    let prepared = simulation_with_arm_slot(VACANT_ARM_SLOT);
     let launch = prepared.launch(&[], &[]).unwrap();
     let alpha = prepared
         .join(
