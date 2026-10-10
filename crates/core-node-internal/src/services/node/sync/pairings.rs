@@ -863,6 +863,9 @@ mod tests {
         );
     }
 
+    /// Whether a slot ends up paired at launch has no bearing on what the node
+    /// must declare about it: the role's topics are covered or the manifest is
+    /// wrong.
     #[test]
     fn missing_emit_entry_is_rejected_naming_the_topic() {
         let (_t, _c, dirs) = seeded_dirs();
@@ -1006,9 +1009,7 @@ mod tests {
 
     #[test]
     fn two_slots_with_one_broken_names_only_the_broken_slot() {
-        let tmp = TempDir::new().unwrap();
-        let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (_c, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_t, _c, dirs) = seeded_dirs();
         let m = manifest(
             r#"{
                 name: "commander", tag: "v1",
@@ -1030,9 +1031,7 @@ mod tests {
     /// each generates its own nested module directory.
     #[test]
     fn two_slots_of_one_document_resolve_independently() {
-        let tmp = TempDir::new().unwrap();
-        let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (_c, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_t, _c, dirs) = seeded_dirs();
         let m = manifest(
             r#"{
                 name: "commander", tag: "v1",
@@ -1065,29 +1064,6 @@ mod tests {
             "each slot nests under its own link_id, both directions together; \
              `right` legitimately has no consume module"
         );
-    }
-
-    /// Whether a slot ends up paired at launch has no bearing on what the node
-    /// must declare about it: the role's topics are covered or the manifest is
-    /// wrong.
-    #[test]
-    fn a_participant_slot_declaring_no_interfaces_is_coverage_checked() {
-        let tmp = TempDir::new().unwrap();
-        let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (_c, dirs) = make_peppy_dirs_with_cache(&[entry]);
-        let m = manifest(
-            r#"{
-                name: "robot_arm", tag: "v1",
-                depends_on: { pairings: [
-                    { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" },
-                ] }
-            }"#,
-        );
-        let mismatches = coverage(
-            collect(&m, &config::node::Interfaces::default(), &dirs)
-                .expect_err("a declared slot needs exact emit coverage"),
-        );
-        assert_eq!(mismatches[0].missing_emits, vec!["joint_states"]);
     }
 
     /// Entries naming other slot kinds belong to the implements and consumed
@@ -1124,18 +1100,8 @@ mod tests {
 
     #[test]
     fn resolves_valid_role_and_returns_doc() {
-        let tmp = TempDir::new().unwrap();
-        let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (_t, dirs) = make_peppy_dirs_with_cache(&[entry]);
-
-        let m = manifest(
-            r#"{
-                name: "robot_arm", tag: "v1",
-                depends_on: {
-                    pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }]
-                }
-            }"#,
-        );
+        let (_t, _c, dirs) = seeded_dirs();
+        let m = arm_manifest();
         let docs = validate_pairing_specs(&m, &dirs, None, &|_| {}).expect("valid role resolves");
         let doc = docs.get("controller").expect("doc keyed by link_id");
         assert_eq!(doc.manifest.name.as_str(), "arm_link");
@@ -1144,10 +1110,7 @@ mod tests {
 
     #[test]
     fn undeclared_role_is_rejected_naming_the_declared_roles() {
-        let tmp = TempDir::new().unwrap();
-        let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (_t, dirs) = make_peppy_dirs_with_cache(&[entry]);
-
+        let (_t, _c, dirs) = seeded_dirs();
         let m = manifest(
             r#"{
                 name: "robot_arm", tag: "v1",
@@ -1166,14 +1129,7 @@ mod tests {
     #[test]
     fn cache_miss_suggests_repo_refresh() {
         let (_t, dirs) = make_peppy_dirs_with_cache(&[]);
-        let m = manifest(
-            r#"{
-                name: "robot_arm", tag: "v1",
-                depends_on: {
-                    pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }]
-                }
-            }"#,
-        );
+        let m = arm_manifest();
         let err = validate_pairing_specs(&m, &dirs, None, &|_| {}).expect_err("miss must error");
         assert!(
             err.contains("arm_link:v1") && err.contains("peppy repo refresh"),
