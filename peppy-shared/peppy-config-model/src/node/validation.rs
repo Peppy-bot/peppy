@@ -244,29 +244,6 @@ pub fn validate_dependency_specs(
     errors
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct InterfaceRequirement {
-    kind: InterfaceKind,
-    name: String,
-}
-
-impl InterfaceRequirement {
-    fn new(kind: InterfaceKind, name: &str) -> Self {
-        Self {
-            kind,
-            name: name.trim().to_owned(),
-        }
-    }
-
-    fn kind(&self) -> InterfaceKind {
-        self.kind
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
-
 /// Validates a set of consumed interfaces, checking that each `link_id` is declared
 /// and that the referenced dependency exposes the required interface.
 #[allow(clippy::too_many_arguments)]
@@ -346,8 +323,7 @@ fn validate_consumed_interface(
         return;
     };
 
-    let requirement = InterfaceRequirement::new(kind, interface_name);
-    match find_exposure(dep_config, &requirement) {
+    match find_exposure(dep_config, kind, interface_name.trim()) {
         Exposure::Native => {}
         Exposure::ContractBackedOnly(entry) => {
             errors.push(ParsingError::ConsumedInterfaceOnlyContractBacked(Box::new(
@@ -386,45 +362,32 @@ enum Exposure<'a> {
     None,
 }
 
-fn find_exposure<'a>(node: &'a NodeConfig, requirement: &InterfaceRequirement) -> Exposure<'a> {
-    let (native_match, contract_link_id) = scan_entries(
-        node.interfaces.produced(requirement.kind()),
-        requirement.name(),
-    );
-
-    if native_match {
-        return Exposure::Native;
-    }
-    if let Some(link_id) = contract_link_id
-        && let Some(entry) = node
-            .manifest
-            .implements
-            .iter()
-            .find(|e| e.link_id == link_id)
-    {
-        return Exposure::ContractBackedOnly(entry);
-    }
-    Exposure::None
-}
-
-/// Scans produced entries of one kind for `name`: returns whether a native
-/// entry matches, and the link_id of a matching contract-backed entry (if
-/// any) for the dedicated-error payload.
-fn scan_entries<'a>(
-    entries: impl Iterator<Item = (Option<&'a str>, &'a str)>,
-    name: &str,
-) -> (bool, Option<&'a str>) {
+/// Scans the produced entries of `kind` for `name`. A matching native entry
+/// wins at once; otherwise the link_id of the last matching contract-backed
+/// entry names the implements slot for the dedicated-error payload.
+fn find_exposure<'a>(node: &'a NodeConfig, kind: InterfaceKind, name: &str) -> Exposure<'a> {
     let mut contract_link_id = None;
-    for (link_id, entry_name) in entries {
+    for (link_id, entry_name) in node.interfaces.produced(kind) {
         if entry_name.trim() != name {
             continue;
         }
-        match link_id {
-            None => return (true, None),
-            Some(id) => contract_link_id = Some(id),
-        }
+        let Some(link_id) = link_id else {
+            return Exposure::Native;
+        };
+        contract_link_id = Some(link_id);
     }
-    (false, contract_link_id)
+    let Some(link_id) = contract_link_id else {
+        return Exposure::None;
+    };
+    match node
+        .manifest
+        .implements
+        .iter()
+        .find(|entry| entry.link_id == link_id)
+    {
+        Some(entry) => Exposure::ContractBackedOnly(entry),
+        None => Exposure::None,
+    }
 }
 
 #[cfg(test)]
