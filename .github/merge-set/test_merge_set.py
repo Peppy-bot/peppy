@@ -69,19 +69,19 @@ def commit(repository, label="head"):
 
 
 def pull_request(repository, number=1, **changes):
-    fields = dict(
-        repository=repository,
-        number=number,
-        url=f"https://github.com/Peppy-bot/{repository.name}/pull/{number}",
-        title=f"Change {repository.name}",
-        is_open=True,
-        merged=False,
-        draft=False,
-        head_commit=commit(repository),
-        head_branch=SET_NAME,
-        base_branch=repository.integration_branch,
-        from_fork=False,
-    )
+    fields = {
+        "repository": repository,
+        "number": number,
+        "url": f"https://github.com/Peppy-bot/{repository.name}/pull/{number}",
+        "title": f"Change {repository.name}",
+        "is_open": True,
+        "merged": False,
+        "draft": False,
+        "head_commit": commit(repository),
+        "head_branch": SET_NAME,
+        "base_branch": repository.integration_branch,
+        "from_fork": False,
+    }
     fields.update(changes)
     return PullRequest(**fields)
 
@@ -125,16 +125,16 @@ def ci_run_of(repository, state=CheckState.PASSED, run_id=10):
 
 
 def report(pr, **changes):
-    fields = dict(
-        pull_request=pr,
-        mergeable=True,
-        review=ReviewDecision.APPROVED,
-        checks=((TEST_CHECK, CheckState.PASSED),),
-        ci=ci_run_of(pr.repository),
-        behind=False,
-        stale=(),
-        unbypassed_approval_rulesets=(),
-    )
+    fields = {
+        "pull_request": pr,
+        "mergeable": True,
+        "review": ReviewDecision.APPROVED,
+        "checks": ((TEST_CHECK, CheckState.PASSED),),
+        "ci": ci_run_of(pr.repository),
+        "behind": False,
+        "stale": (),
+        "unbypassed_approval_rulesets": (),
+    }
     fields.update(changes)
     return merge_set.PullRequestReport(**fields)
 
