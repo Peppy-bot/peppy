@@ -1,5 +1,5 @@
-//! Test-support fixtures shared across the Peppy workspaces, extracted from
-//! `config`'s former `test_helpers` feature.
+//! Test-support fixtures shared across the Peppy workspaces. They live in a
+//! crate of their own so that a release build of `config` never carries them.
 //!
 //! The pure-`std` helpers ([`assert_contains_all`], [`test_tmp_root`]) are
 //! always available. The git-repo and node-config-template fixtures need
