@@ -178,21 +178,31 @@ pub fn deserialize_format_fields(
     struct_prefix: &str,
 ) -> Vec<(String, String)> {
     let mut counter = 0u32;
-    let mut field_bindings = Vec::new();
+    read_struct_fields(builder, reader_var, &format.0, struct_prefix, &mut counter)
+}
 
-    for (field_name, schema) in &format.0 {
-        let python_name = sanitize_python_identifier(field_name);
+/// Reads every field of a struct from `reader_var`, the message itself or a
+/// nested struct reader. Returns the `(python_field_name, variable_name)`
+/// pairs the struct's dataclass is constructed from.
+fn read_struct_fields(
+    builder: &mut PythonCodeBuilder,
+    reader_var: &str,
+    fields: &IndexMap<String, SchemaType>,
+    struct_prefix: &str,
+    counter: &mut u32,
+) -> Vec<(String, String)> {
+    let mut field_bindings = Vec::new();
+    for (field_name, schema) in fields {
         let var_name = generate_field_reader_statements(
             builder,
             reader_var,
             field_name,
             schema,
             struct_prefix,
-            &mut counter,
+            counter,
         );
-        field_bindings.push((python_name, var_name));
+        field_bindings.push((sanitize_python_identifier(field_name), var_name));
     }
-
     field_bindings
 }
 
@@ -274,18 +284,7 @@ fn generate_object_reader(
         capnp_read_expr(reader_var, &capnp_name)
     ));
 
-    let mut nested_bindings = Vec::new();
-    for (nested_name, nested_schema) in fields {
-        let nested_var = generate_field_reader_statements(
-            builder,
-            &sub_reader,
-            nested_name,
-            nested_schema,
-            &nested_prefix,
-            counter,
-        );
-        nested_bindings.push((sanitize_python_identifier(nested_name), nested_var));
-    }
+    let nested_bindings = read_struct_fields(builder, &sub_reader, fields, &nested_prefix, counter);
 
     let result_idx = next_temp_index(counter);
     let result_var = format!("{python_name}_{result_idx}");
@@ -321,19 +320,8 @@ fn generate_object_array_reader(
     let elem_idx = next_temp_index(counter);
     let elem_var = format!("elem_{elem_idx}");
     builder.block(&format!("for {elem_var} in {list_var}:"), |builder| {
-        let mut nested_bindings = Vec::new();
-        for (nested_name, nested_schema) in fields {
-            let nested_var = generate_field_reader_statements(
-                builder,
-                &elem_var,
-                nested_name,
-                nested_schema,
-                &nested_prefix,
-                counter,
-            );
-            nested_bindings.push((sanitize_python_identifier(nested_name), nested_var));
-        }
-
+        let nested_bindings =
+            read_struct_fields(builder, &elem_var, fields, &nested_prefix, counter);
         let kwargs_str = keyword_arguments(&nested_bindings);
         builder.line(&format!(
             "{result_var}.append({nested_prefix}({kwargs_str}))"
