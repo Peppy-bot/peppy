@@ -297,10 +297,6 @@ async fn node_list_command_succeeds() {
         "the dependency edge is reported: {}",
         entry["stack"]["edges"]
     );
-
-    // Silence unused variable when LogCapture is only constructed for
-    // log-side effects in sibling tests.
-    let _ = log_capture;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -735,5 +731,4 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
         "{}",
         node["instances"][0]
     );
-    let _ = log_capture;
 }
