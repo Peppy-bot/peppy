@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
@@ -491,7 +491,6 @@ pub(super) async fn resolve_clock_choice(
 /// coordinator. Carrying observations on the goal is what makes a lone
 /// `node run` observer receive its source pin exactly like a launcher would;
 /// without it the observer would boot validated but silent.
-#[derive(Default)]
 struct PreflightPlan {
     slot_bindings: config::runtime::SlotBindings,
     requested_pairs: BTreeMap<String, Vec<PairTarget>>,
@@ -520,9 +519,11 @@ struct PreflightPlan {
 ///   target's real `depends_on` + `implements`. This is the only item
 ///   whose bindings are validated and materialized.
 ///
-/// Returns `Ok(None)` on transient transport failures so the call site
-/// can swallow them and continue; an unreachable daemon should fail
-/// the actual `node_run` invocation, not the pre-flight.
+/// A failed `stack_list` request, a failed `node_info` request for a
+/// node of the snapshot, and every rule violation are returned as
+/// errors. The direct `node_info` lookup of a target that is not in the
+/// snapshot is best effort: when it fails, the target is validated with
+/// no `depends_on` and no `implements`.
 async fn validate_links_against_stack(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -531,7 +532,7 @@ async fn validate_links_against_stack(
     target_instance_id: &str,
     links: &BTreeMap<String, LinkValue>,
     clock: &ClockBinding,
-) -> Result<Option<PreflightPlan>> {
+) -> Result<PreflightPlan> {
     let stack_response = poll(
         &StackListRequest::new(),
         messenger,
@@ -840,7 +841,7 @@ async fn validate_links_against_stack(
     }
     let requested_observations = ObservationTargets::slots_from_plan(observation_members);
 
-    Ok(Some(PreflightPlan {
+    Ok(PreflightPlan {
         slot_bindings: validated
             .slot_bindings
             .remove(target_instance_id)
@@ -848,7 +849,7 @@ async fn validate_links_against_stack(
         requested_pairs,
         vacant_pairs,
         requested_observations,
-    }))
+    })
 }
 
 /// Validate the supplied `--link` entries against the running stack, resolve
@@ -877,12 +878,7 @@ pub async fn validate_and_run_instance(
 ) -> Result<String> {
     let prelaunch_instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
 
-    // A `None` plan means the preflight could not reach the daemon. We cannot
-    // classify links without the target's manifest, so nothing is pre-resolved
-    // and the goal carries no pairs. In practice this path is inert: a daemon
-    // unreachable at preflight also fails the `node_run` goal send below, so
-    // the user sees a clear transport error rather than a bad boot.
-    let plan = match validate_links_against_stack(
+    let plan = validate_links_against_stack(
         messenger,
         core_node_name,
         node_name,
@@ -891,16 +887,7 @@ pub async fn validate_and_run_instance(
         links,
         &clock,
     )
-    .await
-    {
-        Ok(Some(plan)) => plan,
-        Ok(None) => PreflightPlan::default(),
-        Err(e @ Error::ExecutionFailed(_)) => return Err(e),
-        Err(e) => {
-            debug!("skipping link validation for {}:{}: {}", node_name, tag, e);
-            PreflightPlan::default()
-        }
-    };
+    .await?;
 
     run_instance_async(
         messenger,
