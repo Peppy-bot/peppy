@@ -24,17 +24,17 @@ pub fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Resul
         let field_ident = Ident::new(&sanitize_rust_identifier(field_name), Span::call_site());
 
         match spec {
-            ParameterSpec::Group(_) => {
+            ParameterSpec::Group(group_fields) => {
                 let module_ident =
                     Ident::new(&sanitize_rust_identifier(field_name), Span::call_site());
                 let struct_name = to_camel_case(field_name);
                 let struct_ident = Ident::new(&struct_name, Span::call_site());
-                let module_contents =
-                    generate_parameter_module_contents(spec, &struct_name, field_name)?;
+                let mut structs = Vec::new();
+                generate_parameter_struct(group_fields, &struct_name, field_name, &mut structs)?;
 
                 modules.push(quote! {
                     pub mod #module_ident {
-                        #module_contents
+                        #( #structs )*
                     }
                 });
 
@@ -116,31 +116,12 @@ pub(crate) fn join_parameter_path(parent_path: &str, field_name: &str) -> String
     }
 }
 
-fn generate_parameter_module_contents(
-    spec: &ParameterSpec,
-    struct_name: &str,
-    root_path: &str,
-) -> Result<TokenStream> {
-    let mut structs = Vec::new();
-    generate_parameter_struct(spec, struct_name, root_path, &mut structs)?;
-
-    let tokens: TokenStream = structs.into_iter().collect();
-    Ok(tokens)
-}
-
 fn generate_parameter_struct(
-    spec: &ParameterSpec,
+    fields: &BTreeMap<String, ParameterSpec>,
     struct_name: &str,
     current_path: &str,
     structs: &mut Vec<TokenStream>,
 ) -> Result<()> {
-    let ParameterSpec::Group(fields) = spec else {
-        // Only Groups produce nested structs. Primitives are inlined as field types.
-        return Err(Error::InvariantViolation {
-            context: format!("expected parameter group at `{current_path}`"),
-        });
-    };
-
     let struct_ident = Ident::new(struct_name, Span::call_site());
     let mut field_tokens = Vec::new();
 
@@ -153,11 +134,16 @@ fn generate_parameter_struct(
                 let rust_type = primitive_type_token(kind);
                 field_tokens.push(quote!(pub #field_ident: #rust_type));
             }
-            ParameterSpec::Group(_) => {
+            ParameterSpec::Group(nested_fields) => {
                 let nested_struct_name = nested_type_name(struct_name, field_name);
                 let nested_struct_ident = Ident::new(&nested_struct_name, Span::call_site());
 
-                generate_parameter_struct(field_spec, &nested_struct_name, &field_path, structs)?;
+                generate_parameter_struct(
+                    nested_fields,
+                    &nested_struct_name,
+                    &field_path,
+                    structs,
+                )?;
 
                 field_tokens.push(quote!(pub #field_ident: #nested_struct_ident));
             }
