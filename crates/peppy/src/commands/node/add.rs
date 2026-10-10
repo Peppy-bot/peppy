@@ -477,6 +477,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_ref_for_repository_reference() {
+        let err = parse_node_source("some_node:v123", Some("v0.1.0".to_string()))
+            .expect_err("should reject --ref for a repository reference");
+
+        assert!(
+            err.to_string()
+                .contains("`--ref` is only supported for git sources"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn validate_git_ref_rejects_empty() {
         let err = validate_git_ref(Some("")).expect_err("should reject empty --ref");
 
