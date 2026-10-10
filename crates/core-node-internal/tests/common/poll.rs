@@ -85,7 +85,7 @@ pub fn instance_state_in_any_state(
 }
 
 /// Polls `ServiceMessenger::is_reachable` until the named service responds or
-/// `deadline` expires. It is the broker-propagation barrier for tests that
+/// `timeout` expires. It is the broker-propagation barrier for tests that
 /// spawn a `handle_requests` task and then need to be sure callers can route
 /// to it.
 pub async fn wait_until_service_reachable(

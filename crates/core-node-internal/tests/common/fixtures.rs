@@ -157,7 +157,7 @@ pub fn read_file_from_archive(archive_path: &Path, entry_name: &str) -> String {
 /// Builder for `nodes.json5`, `launchers.json5`, `contracts.json5` and
 /// `pairings.json5` cache fixtures. Tests call [`TestPackagesCache::fs_entry`]
 /// / `git_entry` / `launcher_fs_entry` / `contract_git_entry` /
-/// `pairing_fs_entry` to declare discovered items, then
+/// `contract_fs_entry` / `pairing_fs_entry` to declare discovered items, then
 /// [`TestPackagesCache::write`] to serialize the files under
 /// `peppy_dirs.cache_dir()`.
 #[derive(Default)]

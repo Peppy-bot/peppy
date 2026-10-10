@@ -63,9 +63,8 @@ pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
 }
 
 /// Stores an arbitrary binary value, reads it back, and asserts the value and
-/// encoding survive the round trip. Shared between the mock-messenger and
-/// real-zenoh datastore tests; the latter exercises real cross-process
-/// serialization of the Cap'n Proto `Data` field.
+/// encoding survive the round trip. The real-zenoh datastore tests use it to
+/// exercise real cross-process serialization of the Cap'n Proto `Data` field.
 pub async fn assert_datastore_binary_round_trip(started: &StartedCoreNode) {
     let key = "binary_key_1";
     let value = vec![0u8, 255, 0x80, 0xFE, 0x00, 0x42];

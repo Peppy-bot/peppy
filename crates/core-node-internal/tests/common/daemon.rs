@@ -100,7 +100,7 @@ pub fn new_test_data_dir() -> TempDir {
 /// system temp dir, i.e. outside `$HOME`, mirroring a `PEPPY_HOME` outside
 /// `$HOME` (see `daemon_config::consts::resolve_root`).
 ///
-/// Regression harness for container builds/runs from an outside-`$HOME` root:
+/// The harness for container builds/runs from an outside-`$HOME` root:
 /// on macOS the Lima guest VM only auto-mounts `$HOME`, so container
 /// operations from this root only work when the daemon registers the root as
 /// an extra Lima mount (`Apptainer::ensure_host_mounts`). Every other starter
@@ -351,11 +351,10 @@ async fn start_core_node(
     let core_node_tag = core_node.node_config().manifest.tag.clone();
     let node_stack = core_node.node_stack().clone();
 
-    // Use start_with_ready to properly synchronize instead of a time-based sleep
+    // `start_with_ready` reports once every service is registered, so a test
+    // can send requests as soon as this returns.
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let task = spawn(async move { core_node.start_with_ready(Some(ready_tx)).await });
-
-    // Wait for all services to be fully registered before returning
     ready_rx.await.expect("core node ready signal failed");
 
     StartedCoreNode {
@@ -508,10 +507,8 @@ pub async fn spawn_real_running_instance(
 }
 
 /// Variant of [`spawn_real_running_instance`] that skips installing a
-/// shutdown listener. Used by tests that specifically want the production
-/// shutdown path to observe a stuck process that never terminates (e.g. the
-/// `node_add_same_node_with_running_instance_and_dependents_fails_on_stopped_node_stuck`
-/// regression test).
+/// shutdown listener. Used by tests that want the production shutdown path to
+/// observe a stuck process that never terminates.
 pub async fn spawn_real_stuck_instance(
     started: &StartedCoreNode,
     name: &str,
