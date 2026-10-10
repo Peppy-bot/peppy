@@ -1,7 +1,9 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
-use config::consts::NODE_CONFIG_FILE;
+use common::{
+    CALLER_INSTANCE_ID, StartedCoreNode, create_node_dir, start_core_node_with_mock_messenger,
+    write_packages_cache, write_repositories_json5,
+};
 use core_node::{
     contracts_repo_cache_path, launchers_repo_cache_path, nodes_repo_cache_path,
     pairings_repo_cache_path, repositories_list_path,
@@ -24,44 +26,6 @@ async fn send_repo_remove(
     )
     .await
     .expect("repo_remove poll should succeed")
-}
-
-fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
-}
-
-fn write_packages_cache(started: &StartedCoreNode, content: &str) {
-    let cache_dir = started.peppy_dirs.cache_dir();
-    std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-    std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
-}
-
-fn minimal_peppy_json5(name: &str, tag: &str) -> String {
-    format!(
-        r#"{{
-  peppy_schema: "node/v1",
-  manifest: {{
-    name: "{name}",
-    tag: "{tag}",
-  }},
-  interfaces: {{}},
-  execution: {{
-    language: "rust",
-    build_cmd: ["true"],
-    run_cmd: ["true"],
-  }},
-}}"#
-    )
-}
-
-fn create_node_dir(base: &std::path::Path, name: &str, tag: &str) -> std::path::PathBuf {
-    let dir = base.join(format!("{name}_{tag}"));
-    std::fs::create_dir_all(&dir).expect("create node dir");
-    std::fs::write(dir.join(NODE_CONFIG_FILE), minimal_peppy_json5(name, tag))
-        .expect("write peppy.json5");
-    dir
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

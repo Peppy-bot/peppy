@@ -1,46 +1,16 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
+use common::{
+    CALLER_INSTANCE_ID, StartedCoreNode, create_node_dir, start_core_node_with_mock_messenger,
+    write_excluded_repositories_json5, write_packages_cache, write_repositories_json5,
+};
 use config::consts::NODE_CONFIG_FILE;
-use core_node::{nodes_repo_cache_path, repositories_list_path};
+use core_node::repositories_list_path;
 use core_node_api::encoding::{
     RepoListRepoFailureKind, RepoListRequest, RepoListResponse, RepoSourceKind,
 };
 use peppylib::core_node::transport::poll;
 use std::time::Duration;
-
-/// Minimal valid peppy.json5 content for a node with the given name and tag.
-fn minimal_peppy_json5(name: &str, tag: &str) -> String {
-    format!(
-        r#"{{
-  peppy_schema: "node/v1",
-  manifest: {{
-    name: "{name}",
-    tag: "{tag}",
-  }},
-  interfaces: {{}},
-  execution: {{
-    language: "rust",
-    build_cmd: ["true"],
-    run_cmd: ["true"],
-  }},
-}}"#
-    )
-}
-
-/// Write a repositories.json5 file in the conf_dir of the started core node.
-fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
-}
-
-/// Write a nodes.json5 cache file in the cache_dir of the started core node.
-fn write_packages_cache(started: &StartedCoreNode, content: &str) {
-    let cache_dir = started.peppy_dirs.cache_dir();
-    std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-    std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
-}
 
 /// One `nodes.json5` entry for an fs-discovered node, shaped exactly as
 /// `repo refresh` records it: the origin's path points at the manifest file.
@@ -89,15 +59,6 @@ fn index_nodes(started: &StartedCoreNode, entries: Vec<serde_json::Value>) {
         started,
         &serde_json::to_string(&serde_json::Value::Array(entries)).unwrap(),
     );
-}
-
-/// Create a directory with a valid peppy.json5 inside it.
-fn create_node_dir(base: &std::path::Path, name: &str, tag: &str) -> std::path::PathBuf {
-    let dir = base.join(format!("{name}_{tag}"));
-    std::fs::create_dir_all(&dir).expect("create node dir");
-    std::fs::write(dir.join(NODE_CONFIG_FILE), minimal_peppy_json5(name, tag))
-        .expect("write peppy.json5");
-    dir
 }
 
 async fn send_repo_list(started: &StartedCoreNode) -> RepoListResponse {
@@ -371,14 +332,6 @@ async fn list_marks_git_duplicate_of_fs() {
     // This repository pins no ref, so the label is the bare url even
     // though the cached entry resolved to `main`.
     assert_eq!(git_entry.repo_label, git_url);
-}
-
-/// Write an excluded_repositories.json5 file in the conf_dir.
-fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("excluded_repositories.json5"), content)
-        .expect("write excluded repos file");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

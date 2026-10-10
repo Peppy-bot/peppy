@@ -4,9 +4,11 @@ use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::PeppygenLanguage;
 use core_node::nodes_repo_cache_path;
 use daemon_config::consts::PeppyDirs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
+
+use super::daemon::StartedCoreNode;
 
 /// Publishes `root`'s `peppy_repository.json5`, which is what a repository
 /// offers a daemon. Call it once the repository holds every item the test
@@ -351,6 +353,62 @@ fn write_or_clear(path: &Path, entries: &[serde_json::Value], label: &str) {
 pub fn write_plain_peppy_json5(dir: &Path, content: &str) {
     std::fs::create_dir_all(dir).expect("failed to create dir");
     std::fs::write(dir.join(NODE_CONFIG_FILE), content).expect("failed to write peppy.json5");
+}
+
+/// Minimal valid peppy.json5 content for a node with the given name and tag.
+pub fn minimal_peppy_json5(name: &str, tag: &str) -> String {
+    format!(
+        r#"{{
+  peppy_schema: "node/v1",
+  manifest: {{
+    name: "{name}",
+    tag: "{tag}",
+  }},
+  interfaces: {{}},
+  execution: {{
+    language: "rust",
+    build_cmd: ["true"],
+    run_cmd: ["true"],
+  }},
+}}"#
+    )
+}
+
+/// Creates `{name}_{tag}` under `base` with a [`minimal_peppy_json5`] inside it.
+pub fn create_node_dir(base: &Path, name: &str, tag: &str) -> PathBuf {
+    let dir = base.join(format!("{name}_{tag}"));
+    std::fs::create_dir_all(&dir).expect("create node dir");
+    std::fs::write(dir.join(NODE_CONFIG_FILE), minimal_peppy_json5(name, tag))
+        .expect("write peppy.json5");
+    dir
+}
+
+/// Writes a repositories.json5 file in the conf_dir of the started core node.
+pub fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
+    write_repositories_json5_in(&started.peppy_dirs, content);
+}
+
+/// Writes a repositories.json5 file in the conf_dir of `peppy_dirs`.
+pub fn write_repositories_json5_in(peppy_dirs: &PeppyDirs, content: &str) {
+    let conf_dir = peppy_dirs.conf_dir();
+    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
+    std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
+}
+
+/// Writes an excluded_repositories.json5 file in the conf_dir of the started
+/// core node.
+pub fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
+    let conf_dir = started.peppy_dirs.conf_dir();
+    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
+    std::fs::write(conf_dir.join("excluded_repositories.json5"), content)
+        .expect("write excluded repos file");
+}
+
+/// Writes a nodes.json5 cache file in the cache_dir of the started core node.
+pub fn write_packages_cache(started: &StartedCoreNode, content: &str) {
+    let cache_dir = started.peppy_dirs.cache_dir();
+    std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+    std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
 }
 
 /// Creates a fresh test node in a new temp directory.

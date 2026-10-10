@@ -1,6 +1,9 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
+use common::{
+    CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger,
+    write_excluded_repositories_json5,
+};
 use core_node_api::encoding::{GitRepoRef, RepoExcludeRequest, RepoExcludeResponse};
 use peppylib::core_node::transport::poll;
 use std::time::Duration;
@@ -21,21 +24,12 @@ async fn send_repo_exclude(
     .expect("repo_exclude poll should succeed")
 }
 
-fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("excluded_repositories.json5"), content)
-        .expect("write excluded repos file");
-}
-
 /// Pre-writes an empty `repositories.json5` so the exclude handler's
 /// post-response refresh step does not fall back to the default template,
 /// which points at the real user `$HOME` and would make `process_refresh`
 /// walk the entire home directory (causing 5s poll timeouts).
 fn write_empty_repositories_json5(started: &StartedCoreNode) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("repositories.json5"), "[]").expect("write repos file");
+    common::write_repositories_json5(started, "[]");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

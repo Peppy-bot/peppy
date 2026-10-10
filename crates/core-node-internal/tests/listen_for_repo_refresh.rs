@@ -1,8 +1,9 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger,
+    CALLER_INSTANCE_ID, StartedCoreNode, create_node_dir, minimal_peppy_json5,
+    start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
+    write_excluded_repositories_json5, write_repositories_json5, write_repositories_json5_in,
 };
 use config::consts::NODE_CONFIG_FILE;
 use config::node::QoSProfile;
@@ -17,54 +18,6 @@ use git2::Repository;
 use peppylib::ActionMessenger;
 use peppylib::messaging::ResultStatus;
 use std::time::Duration;
-
-/// Minimal valid peppy.json5 content for a node with the given name and tag.
-fn minimal_peppy_json5(name: &str, tag: &str) -> String {
-    format!(
-        r#"{{
-  peppy_schema: "node/v1",
-  manifest: {{
-    name: "{name}",
-    tag: "{tag}",
-  }},
-  interfaces: {{}},
-  execution: {{
-    language: "rust",
-    build_cmd: ["true"],
-    run_cmd: ["true"],
-  }},
-}}"#
-    )
-}
-
-/// Write a repositories.json5 file in the conf_dir of the started core node.
-fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
-    write_repositories_json5_in(&started.peppy_dirs, content);
-}
-
-/// Write a repositories.json5 file in the conf_dir of `peppy_dirs`.
-fn write_repositories_json5_in(peppy_dirs: &PeppyDirs, content: &str) {
-    let conf_dir = peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
-}
-
-/// Write an excluded_repositories.json5 file in the conf_dir.
-fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("excluded_repositories.json5"), content)
-        .expect("write excluded repos file");
-}
-
-/// Create a directory with a valid peppy.json5 inside it.
-fn create_node_dir(base: &std::path::Path, name: &str, tag: &str) -> std::path::PathBuf {
-    let dir = base.join(format!("{name}_{tag}"));
-    std::fs::create_dir_all(&dir).expect("create node dir");
-    std::fs::write(dir.join(NODE_CONFIG_FILE), minimal_peppy_json5(name, tag))
-        .expect("write peppy.json5");
-    dir
-}
 
 struct RefreshTestResult {
     goal_response: RepoRefreshGoalResponse,

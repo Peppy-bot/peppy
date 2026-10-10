@@ -1,6 +1,9 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
+use common::{
+    CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger,
+    write_repositories_json5,
+};
 use core_node::repositories_list_path;
 use core_node_api::encoding::{GitRepoRef, RepoAddRequest, RepoAddResponse};
 use peppylib::core_node::transport::poll;
@@ -127,12 +130,6 @@ async fn listen_for_repo_add_duplicate_fails() {
         "error should mention 'already exists', got: {}",
         resp.error_message
     );
-}
-
-fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
