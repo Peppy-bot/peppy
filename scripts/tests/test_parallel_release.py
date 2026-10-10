@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import tarfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -297,8 +297,21 @@ def _prepare(
     return plan_path
 
 
+@dataclass(frozen=True)
+class PrepareMocks:
+    """The stand-ins of the prepare stage that its tests set or check."""
+
+    validate: MagicMock
+    branch_state: MagicMock
+    unused_tag: MagicMock
+    client: MagicMock
+    docs_gate: MagicMock
+    fetch_tag: MagicMock
+    collect: MagicMock
+
+
 @pytest.fixture
-def prepare_mocks(tmp_path: Path):
+def prepare_mocks(tmp_path: Path) -> Iterator[PrepareMocks]:
     with patch(
         "functions.parallel_release.validate_release_environment", return_value="token"
     ) as validate, patch(
@@ -324,7 +337,7 @@ def prepare_mocks(tmp_path: Path):
     ) as collect, patch(
         "functions.parallel_release.generate_release_content", return_value=CONTENT
     ):
-        yield MagicMock(
+        yield PrepareMocks(
             validate=validate,
             branch_state=branch_state,
             unused_tag=unused_tag,
@@ -336,7 +349,7 @@ def prepare_mocks(tmp_path: Path):
 
 
 def test_prepare_writes_the_plan_without_asking_anything(
-    tmp_path: Path, prepare_mocks: MagicMock, capfd: pytest.CaptureFixture[str]
+    tmp_path: Path, prepare_mocks: PrepareMocks, capfd: pytest.CaptureFixture[str]
 ) -> None:
     plan_path = _prepare(tmp_path, open_minor_docs_pr=True, skip_prod_cert_check=True)
 
@@ -364,7 +377,7 @@ def test_prepare_writes_the_plan_without_asking_anything(
 
 
 def test_prepare_stops_when_dev_is_not_at_the_commit_the_run_builds(
-    tmp_path: Path, prepare_mocks: MagicMock
+    tmp_path: Path, prepare_mocks: PrepareMocks
 ) -> None:
     prepare_mocks.branch_state.return_value = OTHER_COMMIT
 
@@ -376,7 +389,7 @@ def test_prepare_stops_when_dev_is_not_at_the_commit_the_run_builds(
 
 
 def test_prepare_skips_the_docs_gate_when_asked(
-    tmp_path: Path, prepare_mocks: MagicMock
+    tmp_path: Path, prepare_mocks: PrepareMocks
 ) -> None:
     plan_path = _prepare(tmp_path, skip_docs_check=True)
 
@@ -540,8 +553,20 @@ def test_apptainer_fails_when_the_build_left_no_cache(
 # --- build ---
 
 
+@dataclass(frozen=True)
+class BuildMocks:
+    """The plan and the stand-ins of the build stage that its tests set or
+    check."""
+
+    plan_path: Path
+    get_commit: MagicMock
+    native: MagicMock
+    build: MagicMock
+    verify: MagicMock
+
+
 @pytest.fixture
-def build_mocks(tmp_path: Path):
+def build_mocks(tmp_path: Path) -> Iterator[BuildMocks]:
     plan_path = tmp_path / "release-plan.json"
     PLAN.write(plan_path)
     with patch("functions.parallel_release.need_cmd"), patch(
@@ -556,7 +581,7 @@ def build_mocks(tmp_path: Path):
     ) as build, patch(
         "functions.parallel_release.verify_all_releases"
     ) as verify:
-        yield MagicMock(
+        yield BuildMocks(
             plan_path=plan_path,
             get_commit=get_commit,
             native=native,
@@ -566,7 +591,7 @@ def build_mocks(tmp_path: Path):
 
 
 def test_build_embeds_the_provisioned_bindings_and_apptainer(
-    tmp_path: Path, build_mocks: MagicMock
+    tmp_path: Path, build_mocks: BuildMocks
 ) -> None:
     provisioned = _provisioned(tmp_path, ("aarch64",))
     embedded: dict[str, list[str]] = {}
@@ -600,7 +625,7 @@ def test_build_embeds_the_provisioned_bindings_and_apptainer(
 
 
 def test_build_refuses_provisioned_bindings_that_lack_a_file(
-    tmp_path: Path, build_mocks: MagicMock
+    tmp_path: Path, build_mocks: BuildMocks
 ) -> None:
     provisioned = _provisioned(tmp_path, ("aarch64",))
     bindings = _fake_bindings_dir(tmp_path / "incomplete" / "so")
@@ -623,7 +648,7 @@ def test_build_refuses_provisioned_bindings_that_lack_a_file(
 
 
 def test_build_refuses_a_target_this_host_does_not_build(
-    tmp_path: Path, build_mocks: MagicMock
+    tmp_path: Path, build_mocks: BuildMocks
 ) -> None:
     with pytest.raises(ReleaseError, match="built natively"):
         run_build(
@@ -636,7 +661,7 @@ def test_build_refuses_a_target_this_host_does_not_build(
 
 
 def test_build_refuses_a_checkout_off_the_planned_commit(
-    tmp_path: Path, build_mocks: MagicMock
+    tmp_path: Path, build_mocks: BuildMocks
 ) -> None:
     build_mocks.get_commit.return_value = OTHER_COMMIT
 
@@ -651,7 +676,7 @@ def test_build_refuses_a_checkout_off_the_planned_commit(
 
 
 def test_macos_build_stops_before_building_without_the_x86_64_apptainer(
-    tmp_path: Path, build_mocks: MagicMock
+    tmp_path: Path, build_mocks: BuildMocks
 ) -> None:
     # Without it the macOS build would start a Lima VM to build it.
     build_mocks.native.return_value = "aarch64-apple-darwin"
@@ -667,7 +692,7 @@ def test_macos_build_stops_before_building_without_the_x86_64_apptainer(
 
 
 def test_build_refuses_an_apptainer_archive_for_another_architecture(
-    tmp_path: Path, build_mocks: MagicMock
+    tmp_path: Path, build_mocks: BuildMocks
 ) -> None:
     provisioned = _provisioned(tmp_path, ("x86_64",))
     (provisioned / "apptainer-x86_64.tgz").rename(provisioned / "apptainer-aarch64.tgz")
