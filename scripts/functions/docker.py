@@ -116,14 +116,16 @@ def _inspect_builder_platforms(builder_name: str) -> set[str]:
 
     platforms: set[str] = set()
     for line in result.stdout.splitlines():
-        if "Platforms:" in line:
-            # Line format: "Platforms: linux/amd64, linux/arm64, ..."
-            _, _, value = line.partition("Platforms:")
-            for platform in value.split(","):
-                # Strip qualifiers like linux/arm64/v8 -> linux/arm64
-                parts = platform.strip().split("/")
-                if len(parts) >= 2:
-                    platforms.add(f"{parts[0]}/{parts[1]}")
+        # Line format: "Platforms: linux/amd64, linux/arm64, ..."
+        _, found, value = line.partition("Platforms:")
+        if not found:
+            continue
+        for platform in value.split(","):
+            # Strip qualifiers like linux/arm64/v8 -> linux/arm64
+            parts = platform.strip().split("/")
+            if len(parts) < 2:
+                continue
+            platforms.add(f"{parts[0]}/{parts[1]}")
     return platforms
 
 

@@ -307,6 +307,15 @@ def test_inspect_builder_platforms_strips_qualifiers() -> None:
     assert "linux/arm64" in platforms
 
 
+def test_inspect_builder_platforms_skips_an_entry_without_an_architecture() -> None:
+    stdout = "Name:          peppy-multiplatform\nPlatforms:     linux/amd64, unknown,\n"
+    with patch("functions.docker.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=stdout)
+        platforms = _inspect_builder_platforms(BUILDX_BUILDER_NAME)
+
+    assert platforms == {"linux/amd64"}
+
+
 def test_inspect_builder_platforms_returns_empty_on_missing_builder() -> None:
     with patch("functions.docker.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
