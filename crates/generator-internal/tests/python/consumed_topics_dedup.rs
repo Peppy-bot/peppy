@@ -112,13 +112,13 @@ fn python_handles_two_consumed_topics_sharing_topic_name() {
             topic: left_topic,
             message_format: shared_format.clone(),
             retention: TopicRetention::LiveOnly,
-            dependency: native_dep("robot_arm", "v1", "robot_arm"),
+            dependency: native_dep("robot_arm", "v1", "left_arm"),
         }),
         DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
             topic: right_topic,
             message_format: shared_format,
             retention: TopicRetention::LiveOnly,
-            dependency: native_dep("robot_arm", "v1", "robot_arm"),
+            dependency: native_dep("robot_arm", "v1", "right_arm"),
         }),
     ];
 
