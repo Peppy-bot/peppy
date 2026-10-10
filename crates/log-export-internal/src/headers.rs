@@ -51,29 +51,27 @@ impl OtlpHeaders {
         })?;
         // A name that is no header name stays out of the error: it may be a
         // secret written in the wrong place.
-        entries
-            .into_iter()
-            .zip(1..)
-            .try_fold(HeaderMap::new(), |mut map, ((name, value), position)| {
-                let header = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
-                    format!(
-                        "entry {position} has a name that is no header name; a header name \
-                         holds letters, digits and `-`, with no space or `:`"
-                    )
-                })?;
-                let mut value = HeaderValue::from_str(&value).map_err(|_| {
-                    format!(
-                        "the value of {header} holds a character no header value can carry, \
-                         such as a newline or a control character"
-                    )
-                })?;
-                value.set_sensitive(true);
-                match map.insert(header.clone(), value) {
-                    Some(_) => Err(format!("two entries name the header {header}")),
-                    None => Ok(map),
-                }
-            })
-            .map(|map| Self { map })
+        let mut map = HeaderMap::new();
+        for (position, (name, value)) in (1..).zip(entries) {
+            let header = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+                format!(
+                    "entry {position} has a name that is no header name; a header name \
+                     holds letters, digits and `-`, with no space or `:`"
+                )
+            })?;
+            let mut value = HeaderValue::from_str(&value).map_err(|_| {
+                format!(
+                    "the value of {header} holds a character no header value can carry, \
+                     such as a newline or a control character"
+                )
+            })?;
+            value.set_sensitive(true);
+            if map.contains_key(&header) {
+                return Err(format!("two entries name the header {header}"));
+            }
+            map.insert(header, value);
+        }
+        Ok(Self { map })
     }
 
     pub fn is_empty(&self) -> bool {
