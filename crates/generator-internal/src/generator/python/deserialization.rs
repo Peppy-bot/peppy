@@ -444,4 +444,45 @@ mod tests {
             "dynamic-length path must not raise ValueError, got:\n{code}"
         );
     }
+
+    /// The items of the array in the full-reader test: a scalar and a nested
+    /// struct, so both reader shapes run inside the element loop.
+    fn object_items_format() -> MessageFormat {
+        serde_json5::from_str(
+            r#"{
+                frames: {
+                    $type: "array",
+                    $items: {
+                        $type: "object",
+                        x: "i32",
+                        pose: { $type: "object", yaw: "f64" }
+                    }
+                }
+            }"#,
+        )
+        .unwrap()
+    }
+
+    /// The object-array reader in full: one loop reads each element's
+    /// fields, nested struct included, into the item dataclass, every
+    /// temporary numbered in reading order.
+    #[test]
+    fn object_array_reader_reads_each_element_into_its_item_class() {
+        let format = object_items_format();
+        let code = read_field("frames", &format.0["frames"]);
+        assert_eq!(
+            code,
+            [
+                "list_0 = reader.frames",
+                "frames_1 = []",
+                "for elem_2 in list_0:",
+                "    x_3 = elem_2.x",
+                "    reader_4 = elem_2.pose",
+                "    yaw_5 = reader_4.yaw",
+                "    pose_6 = TestFramesItemPose(yaw=yaw_5)",
+                "    frames_1.append(TestFramesItem(x=x_3, pose=pose_6))",
+            ]
+            .join("\n")
+        );
+    }
 }

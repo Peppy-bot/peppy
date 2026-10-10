@@ -326,4 +326,46 @@ mod tests {
             "dynamic-length path must use len(value_expr) in init, got:\n{code}"
         );
     }
+
+    /// The object-array writer in full: the list is sized, then one loop
+    /// writes each element's fields, nested struct included, into its
+    /// element builder.
+    #[test]
+    fn object_array_serialization_writes_each_element_through_its_builder() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"{
+                frames: {
+                    $type: "array",
+                    $items: {
+                        $type: "object",
+                        x: "i32",
+                        pose: { $type: "object", yaw: "f64" }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let mut builder = PythonCodeBuilder::new();
+        let mut counter = 0u32;
+        emit_field_assignment(
+            &mut builder,
+            "msg",
+            "frames",
+            &format.0["frames"],
+            "value.frames",
+            &mut counter,
+        );
+        assert_eq!(
+            builder.build(),
+            [
+                "list_0 = msg.init(\"frames\", len(value.frames))",
+                "for i_0, elem_0 in enumerate(value.frames):",
+                "    eb_0 = list_0[i_0]",
+                "    eb_0.x = elem_0.x",
+                "    builder_1 = eb_0.init(\"pose\")",
+                "    builder_1.yaw = elem_0.pose.yaw",
+            ]
+            .join("\n")
+        );
+    }
 }
