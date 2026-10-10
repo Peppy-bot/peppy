@@ -219,11 +219,10 @@ pub trait MessengerBackend {
         retention: TopicRetention,
     ) -> impl Future<Output = Result<Subscription>> + Send;
 
-    /// Publish a one-shot topic message. `is_primary` rides on a wire
-    /// attachment so subscribers can disambiguate the N publishes a
-    /// multi-link_id `emit` produces — see the topic-attachment section
-    /// in [`crate::wire::zenoh_format`] for the dedup contract. Refused on a
-    /// topic the session retains.
+    /// Publish a one-shot topic message. `is_primary` rides on the topic
+    /// attachment (see `TopicAttachment` in `wire::zenoh_format`): a
+    /// subscriber that wildcards the link_id slot drops a publish marked
+    /// secondary. Refused on a topic the session retains.
     fn publish_topic(
         &mut self,
         sender: &TopicWireSender,

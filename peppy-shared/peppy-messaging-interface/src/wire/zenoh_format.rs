@@ -513,11 +513,15 @@ pub(crate) struct ParsedTopicKey {
     pub(crate) link_id: String,
 }
 
-/// Topic-publish attachment marker. See the comment block in the topic
-/// section of [`ZenohWireFormat`] for the rationale. One byte on the wire:
-/// `0x01` = primary, `0x00` = secondary. A missing or empty attachment
-/// decodes as primary so producers that don't set it (no path today,
-/// defensive) behave as if every publish is the only one.
+/// Topic-publish attachment marker. One byte on the wire: `0x01` marks a
+/// primary publish, `0x00` a secondary one. A caller that publishes one
+/// message under several link_ids marks one of the publishes primary and the
+/// others secondary. A subscriber that wildcards the link_id slot matches all
+/// of them and keeps only the primary
+/// ([`TopicWireReceiver::drops_secondary_publishes`]); a subscriber pinned to
+/// one link_id matches one publish and ignores the marker. A missing or empty
+/// attachment, or a first byte other than `0x00`, decodes as primary, so a
+/// publish without the marker is delivered, not dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TopicAttachment {
     pub(crate) is_primary: bool,
