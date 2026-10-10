@@ -147,11 +147,9 @@ pub fn ceiling_ms(lang: Lang, transport: Transport) -> u64 {
 }
 
 /// Latency distribution reported by the driver for one `bench_control` run.
-/// All durations are in nanoseconds; `total` is the summed roundtrip time of
-/// the measured iterations.
+/// All durations are in nanoseconds.
 #[derive(Clone, Copy, Debug)]
 pub struct LatencyStats {
-    total_ns: u64,
     p50_ns: u64,
     p90_ns: u64,
     mean_ns: u64,
@@ -162,8 +160,9 @@ impl LatencyStats {
     fn decode(bytes: &[u8]) -> Self {
         assert_eq!(bytes.len(), 40, "bench_control response must be 40 bytes");
         let read = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
+        // Word 0 carries the summed roundtrip time of the measured iterations,
+        // which the harness does not read.
         Self {
-            total_ns: read(0),
             p50_ns: read(1),
             p90_ns: read(2),
             mean_ns: read(3),
@@ -171,9 +170,6 @@ impl LatencyStats {
         }
     }
 
-    pub fn total(&self) -> u64 {
-        self.total_ns
-    }
     pub fn p50(&self) -> Duration {
         Duration::from_nanos(self.p50_ns)
     }
@@ -366,16 +362,6 @@ fn responder_rust_dir() -> &'static Path {
 fn responder_python_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| build_python_node(RESPONDER_MAIN_PY))
-}
-
-/// Eagerly build all node binaries (driver + both responders). Useful for the
-/// bench so the build cost is not attributed to the first measured scenario.
-pub fn build_all_nodes(include_python: bool) {
-    driver_node_dir();
-    responder_rust_dir();
-    if include_python {
-        responder_python_dir();
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -601,14 +587,6 @@ impl Drop for Scenario {
         let _ = self.responder_child.kill();
         let _ = self.responder_child.wait();
     }
-}
-
-/// Convenience for the threshold test: full spawn -> measure -> shutdown.
-pub async fn run_once(lang: Lang, transport: Transport, warmup: u64, iters: u64) -> LatencyStats {
-    let scenario = start_scenario(lang).await;
-    let stats = scenario.run(transport, warmup, iters).await;
-    scenario.shutdown().await;
-    stats
 }
 
 // ---------------------------------------------------------------------------
