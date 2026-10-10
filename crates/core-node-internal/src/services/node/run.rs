@@ -466,9 +466,9 @@ pub(crate) async fn assemble_runtime_config(
 /// This is the shared implementation used by both the action-server path
 /// ([`handle_goal_request`]) and the direct-call path from `stack_launch`.
 ///
-/// `cancel_token` lets an outer orchestrator (currently `stack_launch`'s
+/// `cancel_token` lets an outer orchestrator (`stack_launch`'s
 /// idle/max-timeout watchdog) request an in-flight abort. When cancelled after
-/// the child process has been spawned but before the `Starting → Started`
+/// the child process has been spawned but before the `Starting → Running`
 /// commit, the pipeline explicitly calls `abort_started` to SIGKILL the child
 /// and tear down its `Starting` entry; if cancelled before the spawn, it
 /// returns without starting anything. Callers that don't need cancellation
@@ -557,11 +557,10 @@ async fn handle_goal_request(
     };
 
     // This daemon owns the runtime identity of every node it spawns, so it
-    // ASSEMBLES the config rather than accepting one. That is what makes the
-    // old identity-mismatch guard unnecessary: `node_name`, `tag`, and
-    // `bound_core_node` now come from the goal and from this daemon's own
-    // state, so they cannot disagree. It is also what lets a peer start a node
-    // a coordinator planned: a coordinator-assembled config would name the
+    // ASSEMBLES the config rather than accepting one: `node_name`, `tag`, and
+    // `bound_core_node` come from the goal and from this daemon's own state,
+    // so they cannot disagree. It is also what lets a peer start a node a
+    // coordinator planned: a coordinator-assembled config would name the
     // coordinator's router, which no node on this machine can reach.
     let runtime_config = match assemble_runtime_config(&goal, &action_context).await {
         Ok(config) => config,
@@ -964,7 +963,7 @@ async fn process_node_run(
     // Pairing pre-spawn check (the trust-boundary twin of the CLI preflight
     // and the launcher validator): coverage of every required slot, and
     // resolution of each requested target to one concrete peer slot. Loud
-    // failure here costs nothing — no process has been spawned yet. The
+    // failure here costs nothing: no process has been spawned yet. The
     // actual registry reservation happens after `prepare_and_spawn`, once
     // this instance exists in the stack (in `Starting`).
     let pairing_deps = node_config
@@ -1110,9 +1109,9 @@ async fn process_node_run(
     //    so `127.0.0.1` already reaches the host router and the node follows the
     //    daemon's messaging topology exactly like a process node.
     let container_gateway = if is_container {
-        // Both halves are blocking work — building the facade probes the host
+        // Both halves are blocking work (building the facade probes the host
         // runtime, and the refusal below reads the execution environment's
-        // config off disk — so they share one trip to the blocking pool rather
+        // config off disk), so they share one trip to the blocking pool rather
         // than doing file I/O on an async worker.
         //
         // The refusal is there because starting this container may have to make
@@ -1267,7 +1266,7 @@ async fn process_node_run(
     // Reserve every planned pair now that this instance is registered (in
     // `Starting`). The registry re-validates under its own lock, so a peer
     // slot claimed by a concurrent `node_run` since the pre-spawn check
-    // fails here — loudly — instead of double-pairing. Pins are NOT
+    // fails here, loudly, instead of double-pairing. Pins are NOT
     // delivered yet; that happens after the instance commits to Running.
     for pair in &planned_pairs {
         let Err(reserve_msg) = ctx.action.relationships.pairing().reserve(pair).await else {
@@ -1660,8 +1659,8 @@ impl StartupOutcome {
 ///
 /// Applied only on the machine that runs the instance (never on the launch
 /// coordinator's copies, which travel to peers): from here on, everything
-/// downstream — the restart-refusal check, the bind-source auto-create, Lima
-/// registration, and the apptainer `--bind` — sees the same absolute path,
+/// downstream (the restart-refusal check, the bind-source auto-create, Lima
+/// registration, and the apptainer `--bind`) sees the same absolute path,
 /// instead of treating the literal `~/...` as a path relative to whatever
 /// directory the daemon was started from.
 fn expand_home_in_mount_specs(specs: Vec<String>) -> std::result::Result<Vec<String>, String> {
@@ -2352,9 +2351,9 @@ mod tests {
         assert!(result.unwrap_err().contains("blocked system directory"));
     }
 
-    /// The `~user` form is rejected during plan resolution — the launch
+    /// The `~user` form is rejected during plan resolution (the launch
     /// coordinator runs this, so a launcher naming an unexpandable source
-    /// fails before any stack is replaced — and the rejection sees the
+    /// fails before any stack is replaced), and the rejection sees the
     /// post-substitution source, so a parameter cannot smuggle one in.
     #[test]
     fn test_resolve_mount_path_parameters_rejects_tilde_user() {
