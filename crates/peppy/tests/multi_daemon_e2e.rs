@@ -296,56 +296,6 @@ fn write_router_pin(path: &Path, connect_endpoints: Vec<String>) {
     std::fs::write(path, config).expect("write pinned zenohd config");
 }
 
-fn executable_on_path(name: &str) -> PathBuf {
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|directory| directory.join(name))
-        .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| panic!("{name} must be installed on the Docker test host"))
-}
-
-/// Locates the bundled zenohd built by pmi's `build_zenoh` feature. Cargo puts
-/// it under this profile's `build/pmi-*/out` directory; a neighboring binary,
-/// an explicit environment override, and PATH remain useful for packaged runs.
-fn bundled_zenohd_binary() -> PathBuf {
-    let current_exe = std::env::current_exe().expect("resolve current test executable");
-    if let Some(directory) = current_exe.parent() {
-        let candidate = directory.join("zenohd");
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-
-    if let Some(candidate) = std::env::var_os("ZENOHD_BINARY_PATH").map(PathBuf::from)
-        && candidate.is_file()
-    {
-        return candidate;
-    }
-
-    let mut built_candidates = current_exe
-        .parent()
-        .and_then(Path::parent)
-        .map(|profile| profile.join("build"))
-        .and_then(|build| std::fs::read_dir(build).ok())
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("pmi-"))
-        .map(|entry| entry.path().join("out/zenohd"))
-        .filter(|candidate| candidate.is_file())
-        .collect::<Vec<_>>();
-    built_candidates.sort_by_key(|candidate| {
-        candidate
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(UNIX_EPOCH)
-    });
-    built_candidates
-        .pop()
-        .unwrap_or_else(|| executable_on_path("zenohd"))
-}
-
 /// The Ubuntu release the e2e image is based on.
 ///
 /// Matching the runner keeps a host-built binary from targeting a newer glibc
@@ -1184,7 +1134,10 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
     let image = e2e_image().await;
 
     let peppy_binary = Path::new(env!("CARGO_BIN_EXE_peppy"));
-    let zenohd_binary = bundled_zenohd_binary();
+    let zenohd_binary = PathBuf::from(
+        pmi::ZenohdFacade::resolved_zenohd_binary()
+            .expect("the multi_daemon_e2e feature builds zenohd through pmi's build_zenoh"),
+    );
     let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
         .expect("the test-built daemon should have a host Apptainer installation");
     let fixture = FixtureRepository::create();
