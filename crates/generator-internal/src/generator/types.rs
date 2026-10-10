@@ -948,10 +948,21 @@ pub fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&Messa
     format.filter(|format| !format.0.is_empty())
 }
 
+/// Refuses a message format that the generators cannot emit: a reserved
+/// payload field name, a fixed-length array of non-scalar items, or two
+/// nested types that get the same generated name. Both generators run these
+/// rules, in this order, on every format they map; `context` names the
+/// format in a reserved-name error.
+pub fn validate_generatable_message_format(format: &MessageFormat, context: &str) -> Result<()> {
+    validate_message_format_field_names(format, context)?;
+    validate_fixed_length_array_items(format)?;
+    validate_generated_type_name_collisions(format, "Message")
+}
+
 /// Refuses a fixed-length array whose items are not scalars, the rule the
 /// generators and the MCP catalog share through `config`; the violation is
 /// mapped onto this crate's error vocabulary.
-pub fn validate_fixed_length_array_items(format: &MessageFormat) -> Result<()> {
+fn validate_fixed_length_array_items(format: &MessageFormat) -> Result<()> {
     format
         .check_fixed_length_array_items()
         .map_err(|violation| format_rule_error(violation, ""))
@@ -962,7 +973,7 @@ pub fn validate_fixed_length_array_items(format: &MessageFormat) -> Result<()> {
 /// Some names are reserved by transport metadata and cannot be used in
 /// payload schemas; the rule itself lives in `config` beside the format
 /// model, shared with the MCP catalog.
-pub fn validate_message_format_field_names(format: &MessageFormat, context: &str) -> Result<()> {
+fn validate_message_format_field_names(format: &MessageFormat, context: &str) -> Result<()> {
     let normalized_context = if context.trim().is_empty() {
         "message_format"
     } else {
@@ -994,7 +1005,7 @@ fn format_rule_error(violation: FormatRuleViolation, context: &str) -> Error {
 /// For example, a field `frames` (array of objects) generates `{prefix}FramesItem`,
 /// while a sibling field `frames_item` (object) also generates `{prefix}FramesItem`.
 /// This function detects such collisions and returns an error.
-pub fn validate_generated_type_name_collisions(
+fn validate_generated_type_name_collisions(
     format: &MessageFormat,
     struct_prefix: &str,
 ) -> Result<()> {

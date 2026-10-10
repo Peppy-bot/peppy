@@ -19,8 +19,7 @@ use super::naming::{peer_schema_key, resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
     InterfaceKind, LanguageGenerator, PairTopicConsumerKind, PeerContext, ensure_no_peer_collision,
-    non_empty_message_format, scoped_schema_key, validate_fixed_length_array_items,
-    validate_generated_type_name_collisions, validate_message_format_field_names,
+    non_empty_message_format, scoped_schema_key, validate_generatable_message_format,
 };
 use crate::error::Result;
 use config::node::{
@@ -102,9 +101,7 @@ impl PythonGenerator {
         schema_key: &str,
         format: &MessageFormat,
     ) -> Result<PythonSchemaInfo> {
-        validate_message_format_field_names(format, schema_key)?;
-        validate_fixed_length_array_items(format)?;
-        validate_generated_type_name_collisions(format, "Message")?;
+        validate_generatable_message_format(format, schema_key)?;
 
         let artifacts = MessageFormatMapper::new(schema_key, format.clone())
             .map_message_format_to_capnpn()

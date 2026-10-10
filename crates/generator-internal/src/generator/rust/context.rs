@@ -2,10 +2,7 @@ use super::identifiers::sanitize_rust_identifier;
 use super::type_mapping::schema_type_to_tokens;
 use crate::error::{Error, Result};
 use crate::generator::naming::sanitize_capnp_field_name;
-use crate::generator::types::{
-    NormalizedFieldNames, validate_fixed_length_array_items,
-    validate_generated_type_name_collisions, validate_message_format_field_names,
-};
+use crate::generator::types::{NormalizedFieldNames, validate_generatable_message_format};
 use config::node::{MessageFormat, PeppygenLanguage, SchemaType};
 use encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
 use proc_macro2::{Ident, Span, TokenStream};
@@ -125,9 +122,7 @@ pub fn map_declared_message_format(
     format: &MessageFormat,
 ) -> Result<CapnpSchemaArtifacts> {
     validate_normalized_field_names_for_rust(format)?;
-    validate_message_format_field_names(format, "message_format")?;
-    validate_fixed_length_array_items(format)?;
-    validate_generated_type_name_collisions(format, "Message")?;
+    validate_generatable_message_format(format, "message_format")?;
     MessageFormatMapper::new(schema_name, format.clone())
         .map_message_format_to_capnpn()
         .map_err(Error::MessageEncoding)
