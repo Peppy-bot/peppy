@@ -133,6 +133,15 @@ fn shape_error(violation: CardinalityShapeViolation, owner_id: &str, key: &str) 
     }
 }
 
+/// One pair a deployment declares: the declaring instance, its participant
+/// slot, the slot's `links` key, and one target written under that key.
+struct PairDeclaration<'a> {
+    owner_id: &'a str,
+    own_dep: &'a PairingParticipantDependency,
+    key: &'a str,
+    target: &'a str,
+}
+
 /// `instance_id` -> the item that deploys it, preexisting items included so
 /// a running instance resolves as a target. The pairing and the observation
 /// validators resolve their targets through this one map, so a target one of
@@ -194,12 +203,7 @@ pub fn validate_pairings(
     // walked in slice order, instances in slice order, so sort explicitly and
     // the resolution never depends on caller ordering). A multi slot's
     // targets keep the order they were written in.
-    let mut declarations: Vec<(
-        &DeploymentInstance,
-        &PairingParticipantDependency,
-        &str,
-        &str,
-    )> = Vec::new();
+    let mut declarations: Vec<PairDeclaration<'_>> = Vec::new();
     for item in items.iter().filter(|i| !i.preexisting) {
         let participants_by_link: BTreeMap<&str, &PairingParticipantDependency> = item
             .pairing_deps
@@ -227,17 +231,27 @@ pub fn validate_pairings(
                     continue;
                 }
                 for target in selection.targets() {
-                    declarations.push((instance, own_dep, key.as_str(), target.as_str()));
+                    declarations.push(PairDeclaration {
+                        owner_id: instance.instance_id.as_str(),
+                        own_dep,
+                        key: key.as_str(),
+                        target: target.as_str(),
+                    });
                 }
             }
         }
     }
-    declarations
-        .sort_by(|a, b| (a.0.instance_id.as_str(), a.2).cmp(&(b.0.instance_id.as_str(), b.2)));
+    declarations.sort_by_key(|declaration| (declaration.owner_id, declaration.key));
 
-    for (instance, own_dep, key, target) in declarations {
+    for PairDeclaration {
+        owner_id,
+        own_dep,
+        key,
+        target,
+    } in declarations
+    {
         match resolve_pair_declaration(
-            instance.instance_id.as_str(),
+            owner_id,
             own_dep,
             key,
             target,
