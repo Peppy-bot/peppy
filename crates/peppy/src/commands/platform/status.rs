@@ -214,123 +214,159 @@ fn human_document(
     platform: &Result<Option<PlatformReport>>,
     now: i64,
 ) -> String {
-    let mut out = String::new();
-    match enrollment {
-        None => {
-            out.push_str("Not enrolled. Run `peppy platform enroll` to join a project router.\n")
-        }
-        Some(enrollment) => {
-            let d = &enrollment.document;
-            out.push_str("Enrollment\n");
-            out.push_str(&format!(
-                "  project   : {} (workspace {})\n",
-                d.project_id, d.workspace_id
-            ));
-            out.push_str(&format!("  peer      : {} ({})\n", d.peer_name, d.peer_id));
-            out.push_str(&format!("  router    : {}\n", d.router.locator()));
-            out.push_str(&format!("  zenoh id  : {}\n", d.zenoh_id));
-            out.push_str(&format!(
-                "  cert      : {}\n",
-                certificate_line(&enrollment.certificate, now)
-            ));
-            let means = RenewalMeans::of(daemon, platform);
-            for (index, line) in renewal_lines(&enrollment.certificate, now, means)
-                .iter()
-                .enumerate()
-            {
-                let label = if index == 0 {
-                    "renewal   :"
-                } else {
-                    "           "
-                };
-                out.push_str(&format!("  {label} {line}\n"));
-            }
-            out.push_str(&format!("  backend   : {}\n", d.api_url));
-            out.push_str(&format!(
-                "  files     : {}\n",
-                session.dirs.peer_dir().display()
-            ));
-        }
+    let mut out = enrollment_section(session, enrollment, daemon, platform, now);
+    out.push_str(&daemon_section(daemon));
+    out.push_str(&selection_section(session, enrollment));
+    if enrollment.is_some() {
+        out.push_str(&platform_section(platform));
     }
-    out.push_str("Daemon\n");
+    out
+}
+
+/// What this machine is enrolled as, with its certificate and its renewal,
+/// or the command that enrolls it.
+fn enrollment_section(
+    session: &PlatformSession,
+    enrollment: Option<&Enrollment>,
+    daemon: &DaemonReport,
+    platform: &Result<Option<PlatformReport>>,
+    now: i64,
+) -> String {
+    let Some(enrollment) = enrollment else {
+        return "Not enrolled. Run `peppy platform enroll` to join a project router.\n".to_string();
+    };
+    let d = &enrollment.document;
+    let mut out = String::from("Enrollment\n");
+    out.push_str(&format!(
+        "  project   : {} (workspace {})\n",
+        d.project_id, d.workspace_id
+    ));
+    out.push_str(&format!("  peer      : {} ({})\n", d.peer_name, d.peer_id));
+    out.push_str(&format!("  router    : {}\n", d.router.locator()));
+    out.push_str(&format!("  zenoh id  : {}\n", d.zenoh_id));
+    out.push_str(&format!(
+        "  cert      : {}\n",
+        certificate_line(&enrollment.certificate, now)
+    ));
+    let means = RenewalMeans::of(daemon, platform);
+    for (index, line) in renewal_lines(&enrollment.certificate, now, means)
+        .iter()
+        .enumerate()
+    {
+        let label = if index == 0 {
+            "renewal   :"
+        } else {
+            "           "
+        };
+        out.push_str(&format!("  {label} {line}\n"));
+    }
+    out.push_str(&format!("  backend   : {}\n", d.api_url));
+    out.push_str(&format!(
+        "  files     : {}\n",
+        session.dirs.peer_dir().display()
+    ));
+    out
+}
+
+/// Whether the daemon runs, and whether it runs under the enrollment: by
+/// its namespace under an operator-run router, by its identity and its link
+/// under a managed one.
+fn daemon_section(daemon: &DaemonReport) -> String {
+    let mut out = String::from("Daemon\n");
     match daemon {
         DaemonReport::NotRunning => out.push_str("  running   : no\n"),
         DaemonReport::External { namespace_matches } => {
+            let namespace = if *namespace_matches {
+                "matches the enrollment"
+            } else {
+                "differs; restart the daemon"
+            };
             out.push_str("  running   : yes (operator-run router; federation is the operator's)\n");
-            out.push_str(&format!(
-                "  namespace : {}\n",
-                if *namespace_matches {
-                    "matches the enrollment"
-                } else {
-                    "differs; restart the daemon"
-                }
-            ));
+            out.push_str(&format!("  namespace : {namespace}\n"));
         }
         DaemonReport::Managed {
             identity_matches,
             link,
         } => {
+            let identity = if *identity_matches {
+                "matches the enrollment"
+            } else {
+                "differs; the daemon is restarting or needs a restart"
+            };
             out.push_str("  running   : yes\n");
-            out.push_str(&format!(
-                "  identity  : {}\n",
-                if *identity_matches {
-                    "matches the enrollment"
-                } else {
-                    "differs; the daemon is restarting or needs a restart"
-                }
-            ));
+            out.push_str(&format!("  identity  : {identity}\n"));
             out.push_str(&format!("  link      : {}\n", link_line(link)));
         }
     }
-    out.push_str("Selection\n");
-    match session.selection() {
-        Ok(None) => out.push_str("  none; run `peppy platform project use` to select a project\n"),
-        Ok(Some(selection)) => {
-            match selection.project_label() {
-                Some(project) => out.push_str(&format!("  {project}\n")),
-                None => out.push_str(&format!(
-                    "  {}; no project is selected\n",
-                    selection.workspace_label()
-                )),
-            }
-            if let Some(note) = enrollment_note(&selection, enrollment.map(|e| &e.document)) {
-                out.push_str(&format!("  {note}\n"));
-            }
+    out
+}
+
+/// The workspace and the project the commands use, with the note of an
+/// enrollment in a different project.
+fn selection_section(session: &PlatformSession, enrollment: Option<&Enrollment>) -> String {
+    let mut out = String::from("Selection\n");
+    let selection = match session.selection() {
+        Ok(Some(selection)) => selection,
+        Ok(None) => {
+            out.push_str("  none; run `peppy platform project use` to select a project\n");
+            return out;
         }
-        Err(e) => out.push_str(&format!("  unavailable: {e}\n")),
+        Err(e) => {
+            out.push_str(&format!("  unavailable: {e}\n"));
+            return out;
+        }
+    };
+    match selection.project_label() {
+        Some(project) => out.push_str(&format!("  {project}\n")),
+        None => out.push_str(&format!(
+            "  {}; no project is selected\n",
+            selection.workspace_label()
+        )),
     }
-    if enrollment.is_some() {
-        out.push_str("Platform\n");
-        match platform {
-            Ok(None) => out.push_str(
+    if let Some(note) = enrollment_note(&selection, enrollment.map(|e| &e.document)) {
+        out.push_str(&format!("  {note}\n"));
+    }
+    out
+}
+
+/// What the platform reports about the router and this peer, or why it
+/// could not be asked.
+fn platform_section(platform: &Result<Option<PlatformReport>>) -> String {
+    let mut out = String::from("Platform\n");
+    let report = match platform {
+        Ok(Some(report)) => report,
+        Ok(None) => {
+            out.push_str(
                 "  not signed in; run `peppy platform login` to see the platform's view\n",
-            ),
-            Ok(Some(report)) => {
-                let address = report
-                    .router
-                    .address
-                    .as_ref()
-                    .map(|address| format!(" at {}:{}", address.host(), address.port()))
-                    .unwrap_or_default();
-                out.push_str(&format!("  router    : {}{address}\n", report.router.phase));
-                if report.router.phase == RouterPhase::Stopped {
-                    out.push_str("              start it with `peppy platform router start`\n");
-                }
-                for line in pending_change_lines(&report.router) {
-                    out.push_str(&format!("  pending   : {line}\n"));
-                }
-                out.push_str(&format!(
-                    "  this peer : {}\n",
-                    report
-                        .peer_status
-                        .as_ref()
-                        .map(peer_status_label)
-                        .unwrap_or("not listed (removed?)")
-                ));
-            }
-            Err(e) => out.push_str(&format!("  unavailable: {e}\n")),
+            );
+            return out;
         }
+        Err(e) => {
+            out.push_str(&format!("  unavailable: {e}\n"));
+            return out;
+        }
+    };
+    let address = report
+        .router
+        .address
+        .as_ref()
+        .map(|address| format!(" at {}:{}", address.host(), address.port()))
+        .unwrap_or_default();
+    out.push_str(&format!("  router    : {}{address}\n", report.router.phase));
+    if report.router.phase == RouterPhase::Stopped {
+        out.push_str("              start it with `peppy platform router start`\n");
     }
+    for line in pending_change_lines(&report.router) {
+        out.push_str(&format!("  pending   : {line}\n"));
+    }
+    out.push_str(&format!(
+        "  this peer : {}\n",
+        report
+            .peer_status
+            .as_ref()
+            .map(peer_status_label)
+            .unwrap_or("not listed (removed?)")
+    ));
     out
 }
 
