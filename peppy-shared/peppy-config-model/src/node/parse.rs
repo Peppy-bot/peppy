@@ -155,7 +155,8 @@ fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<(
             // `depends_on.nodes` producer takes that producer's native shape
             // as is.
             if refines
-                && depends_list_containing(manifest.depends_on.as_ref(), link_id) == Some("nodes")
+                && depends_list_containing(manifest.depends_on.as_ref(), link_id)
+                    == Some(DependsOnList::Nodes)
             {
                 return Err(ParsingError::RefineOnNodeSlot {
                     section: kind.consumed_section().to_owned(),
@@ -187,22 +188,47 @@ fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<(
     Ok(())
 }
 
-/// Which `depends_on` list (if any) declares `link_id`. Only consulted on
-/// the error path, so a linear scan of the (tiny) lists beats prebuilding
-/// a lookup map that valid configs never read.
-fn depends_list_containing(depends_on: Option<&DependsOn>, link_id: &str) -> Option<&'static str> {
-    let d = depends_on?;
-    if d.nodes.iter().any(|n| n.link_id == link_id) {
-        return Some("nodes");
+/// One of the slot lists under `depends_on`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DependsOnList {
+    Nodes,
+    Contracts,
+    Pairings,
+    PairingObservers,
+}
+
+impl DependsOnList {
+    /// The key of the list under `depends_on`, as error messages name it.
+    fn key(self) -> &'static str {
+        match self {
+            DependsOnList::Nodes => "nodes",
+            DependsOnList::Contracts => "contracts",
+            DependsOnList::Pairings => "pairings",
+            DependsOnList::PairingObservers => "pairing_observers",
+        }
     }
-    if d.contracts.iter().any(|c| c.link_id == link_id) {
-        return Some("contracts");
+}
+
+/// Which `depends_on` list (if any) declares `link_id`. The lists are tiny,
+/// and the lookup runs only for error reporting and for consumed entries
+/// that carry `refine`, so a linear scan beats prebuilding a lookup map.
+fn depends_list_containing(depends_on: Option<&DependsOn>, link_id: &str) -> Option<DependsOnList> {
+    let depends_on = depends_on?;
+    if depends_on.nodes.iter().any(|n| n.link_id == link_id) {
+        return Some(DependsOnList::Nodes);
     }
-    if d.pairings.iter().any(|p| p.link_id == link_id) {
-        return Some("pairings");
+    if depends_on.contracts.iter().any(|c| c.link_id == link_id) {
+        return Some(DependsOnList::Contracts);
     }
-    if d.pairing_observers.iter().any(|o| o.link_id == link_id) {
-        return Some("pairing_observers");
+    if depends_on.pairings.iter().any(|p| p.link_id == link_id) {
+        return Some(DependsOnList::Pairings);
+    }
+    if depends_on
+        .pairing_observers
+        .iter()
+        .any(|o| o.link_id == link_id)
+    {
+        return Some(DependsOnList::PairingObservers);
     }
     None
 }
@@ -241,7 +267,7 @@ fn validate_produced_section<'a>(
                         return Err(ParsingError::EmitsLinkIdNotImplements {
                             section: section.to_owned(),
                             link_id: link_id.to_owned(),
-                            found_in: found_in.to_owned(),
+                            found_in: found_in.key().to_owned(),
                         }
                         .into());
                     }
