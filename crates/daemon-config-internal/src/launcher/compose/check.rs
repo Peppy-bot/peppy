@@ -579,8 +579,9 @@ fn dead_states(
     problems
 }
 
-/// Every state of one axis by name: each option, then unfilled where the
-/// cardinality allows it.
+/// Every state of one axis by name, in a fixed order: its options in name
+/// order (`options` is a sorted map), unfilled last where the cardinality
+/// allows it.
 fn axis_state_names(axis: &ComponentAxis) -> Vec<Option<&str>> {
     let mut states: Vec<Option<&str>> = axis
         .options
@@ -618,26 +619,24 @@ fn dead_state(label: &str, axis: &str, state: Option<&str>) -> String {
     }
 }
 
-/// Every state of one axis, in a fixed order: option by option in
-/// declaration order, unfilled last where the cardinality allows it.
+/// Every state of one axis as a selection entry, in the order of
+/// [`axis_state_names`], so the enumeration and the dead-state report
+/// agree on what the states are.
 fn axis_states(axis: &ComponentAxis) -> Vec<SelectionEntry> {
-    let mut states: Vec<SelectionEntry> = axis
-        .options
-        .keys()
-        .map(|option| SelectionEntry {
-            axis: axis.name.clone(),
-            option: Some(option.clone()),
-            source: SelectionSource::Explicit,
+    axis_state_names(axis)
+        .into_iter()
+        .map(|state| {
+            let source = match state {
+                Some(_) => SelectionSource::Explicit,
+                None => SelectionSource::Unfilled,
+            };
+            SelectionEntry {
+                axis: axis.name.clone(),
+                option: state.map(str::to_owned),
+                source,
+            }
         })
-        .collect();
-    if axis.cardinality.allows_empty() {
-        states.push(SelectionEntry {
-            axis: axis.name.clone(),
-            option: None,
-            source: SelectionSource::Unfilled,
-        });
-    }
-    states
+        .collect()
 }
 
 /// Every combination of the states of `axes`, prefixed by `head`.
