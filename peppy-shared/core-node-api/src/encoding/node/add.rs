@@ -82,7 +82,7 @@ impl NodeSource {
         })
     }
 
-    pub(crate) fn normalize_http_sha256(sha256: Option<&str>) -> Option<String> {
+    fn normalize_http_sha256(sha256: Option<&str>) -> Option<String> {
         sha256
             .map(str::trim)
             .filter(|value| !value.is_empty())

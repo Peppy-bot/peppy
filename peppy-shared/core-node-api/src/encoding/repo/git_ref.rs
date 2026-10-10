@@ -19,7 +19,7 @@ pub const PEPPY_RELEASE_TAG_PREFIX: &str = "peppy-release/";
 
 /// The branch `@{peppy-release}` reads in a build that is not a release:
 /// the hub content the next release will carry.
-pub const UNRELEASED_HUB_BRANCH: &str = "main";
+const UNRELEASED_HUB_BRANCH: &str = "main";
 
 /// The ref a git repository entry is configured to read.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
