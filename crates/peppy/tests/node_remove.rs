@@ -1,32 +1,25 @@
 use config::node::Toolchain;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
-use peppy::test_support::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::LogCapture;
 use peppylib::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::common::{emulate_startup_services, serve_app_context, stack_graph, test_node_target};
+use super::common::{emulate_startup_services, setup, stack_graph, test_node_target};
 
 #[test]
 fn node_remove_command_succeeds() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
         "core_node_name should not be empty"
     );
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_node";
     let node_tag = "v1";
-
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -120,11 +113,7 @@ fn node_remove_command_succeeds() {
 
 #[test]
 fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
@@ -132,12 +121,9 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         "core_node_name should not be empty"
     );
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_running_node";
     let node_tag = "v1";
     let instance_id = "test_remove_running_instance";
-
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -242,11 +228,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
 #[test]
 fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
@@ -254,12 +236,9 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         "core_node_name should not be empty"
     );
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_stop_instances_node";
     let node_tag = "v1";
     let instance_id = "test_remove_stop_instances_instance";
-
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();

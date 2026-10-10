@@ -1,5 +1,5 @@
-use super::common::serve_app_context;
-use peppy::test_support::{LogCapture, ServeCommandEmulation};
+use super::common::setup;
+use peppy::test_support::LogCapture;
 use std::time::Duration;
 
 use config::node::Toolchain;
@@ -8,24 +8,13 @@ use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName
 
 #[test]
 fn node_cargo_init_command_success() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to start mock serve emulation");
-
-    // Verify the daemon state
+    let (_rt, serve, node_ctx, node_dir) = setup();
     assert!(
         !serve.core_node_name().is_empty(),
         "core_node_name should not be empty"
     );
 
-    // Create a temp directory for the node
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_node";
-
-    // Create a new AppContext pointing to the temp directory, using the shared messenger
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging for the node command
     let log_capture = LogCapture::new();
@@ -116,15 +105,8 @@ fn node_cargo_init_command_success() {
 
 #[test]
 fn node_cargo_init_with_container_generates_apptainer_def() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to start mock serve emulation");
-
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let (_rt, _serve, node_ctx, node_dir) = setup();
     let node_name = "test_node";
-
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -149,15 +131,8 @@ fn node_cargo_init_with_container_generates_apptainer_def() {
 
 #[test]
 fn node_cargo_init_without_container_omits_apptainer_def() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to start mock serve emulation");
-
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let (_rt, _serve, node_ctx, node_dir) = setup();
     let node_name = "test_node";
-
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -182,16 +157,9 @@ fn node_cargo_init_without_container_omits_apptainer_def() {
 
 #[test]
 fn node_init_with_to_dir_creates_the_node_in_that_directory() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to start mock serve emulation");
-
-    let working_dir = tempfile::tempdir().expect("failed to create temp working dir");
+    let (_rt, _serve, node_ctx, working_dir) = setup();
     let target_dir = tempfile::tempdir().expect("failed to create temp target dir");
     let node_name = "test_node";
-
-    let node_ctx = serve_app_context(&serve, working_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -232,17 +200,10 @@ fn node_init_with_to_dir_creates_the_node_in_that_directory() {
 
 #[test]
 fn node_init_refuses_an_existing_node_directory() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to start mock serve emulation");
-
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let (_rt, _serve, node_ctx, node_dir) = setup();
     let node_name = "test_node";
     let existing_node_dir = node_dir.path().join(node_name);
     std::fs::create_dir(&existing_node_dir).expect("failed to create the existing node dir");
-
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -276,20 +237,13 @@ fn node_init_refuses_an_existing_node_directory() {
 
 #[test]
 fn node_uv_init_command_success() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to start mock serve emulation");
-
+    let (_rt, serve, node_ctx, node_dir) = setup();
     assert!(
         !serve.core_node_name().is_empty(),
         "core_node_name should not be empty"
     );
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_node";
-
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();

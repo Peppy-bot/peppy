@@ -1,4 +1,4 @@
-use super::common::{CALLER_INSTANCE_ID, serve_app_context};
+use super::common::{CALLER_INSTANCE_ID, setup};
 use core_node_api::NodeStage;
 use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppy::commands::Command;
@@ -46,18 +46,11 @@ fn add_node_to_stack(peppy_json5: &str) -> AddedNode {
 /// for tests where the main node declares `depends_on`; the stack rejects
 /// adds whose declared dependencies aren't already present.
 fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let core_node_name = serve.core_node_name().to_string();
-
-    // A separate working directory for AppContext so it doesn't clobber any
-    // node's `peppy.json5`; the CLI treats `.` as the working dir, not the
+    // The context gets a working directory of its own so it doesn't clobber
+    // any node's `peppy.json5`; the CLI treats `.` as the working dir, not the
     // node source.
-    let work_dir = tempfile::tempdir().expect("failed to create temp work dir");
-
-    let node_ctx = serve_app_context(&serve, work_dir.path());
+    let (rt, serve, node_ctx, work_dir) = setup();
+    let core_node_name = serve.core_node_name().to_string();
 
     // Capture tracing output so the `info!()` line from the Add command stays
     // out of the test output unless the test explicitly asserts on it.

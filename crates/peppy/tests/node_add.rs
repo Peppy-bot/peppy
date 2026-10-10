@@ -5,33 +5,26 @@ use peppy::commands::Command;
 use peppy::commands::node::{
     AddNodeParams, NodeCommand, NodeCommands, NodeName, TimeoutConfig, add_node,
 };
-use peppy::test_support::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::LogCapture;
 use peppylib::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::common::{emulate_startup_services, serve_app_context, stack_graph, test_node_target};
+use super::common::{
+    emulate_startup_services, serve_app_context, setup, stack_graph, test_node_target,
+};
 
 #[test]
 fn node_add_command_succeeds() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
         "core_node_name should not be empty"
     );
 
-    // Create a temp directory for the node
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_node";
-
-    // Create AppContext pointing to the temp directory
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -130,12 +123,7 @@ fn node_add_command_succeeds() {
 
 #[test]
 fn node_add_command_with_run_arg_succeeds() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    // Mock messaging is sufficient: we run in-process node services for health/ready.
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
@@ -143,13 +131,8 @@ fn node_add_command_with_run_arg_succeeds() {
         "core_node_name should not be empty"
     );
 
-    // Create a temp directory for the node
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_run_node";
     let instance_id = "test_add_run_instance";
-
-    // Create AppContext pointing to the temp directory
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -253,24 +236,14 @@ fn node_add_command_with_run_arg_succeeds() {
 
 #[test]
 fn node_add_after_failed_sync_succeeds() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    // Mock messaging is sufficient: we run in-process node services for health/ready.
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
         "core_node_name should not be empty"
     );
 
-    // Create a temp directory for the node
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_sync_then_add_node";
-
-    // Create AppContext pointing to the temp directory
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -408,12 +381,7 @@ fn node_add_after_failed_sync_succeeds() {
 /// This test verifies the `force: true` path where existing instances are shut down automatically.
 #[test]
 fn node_add_same_node_shutdown_existing_instances() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    // Mock messaging is sufficient: we run in-process node services for health/ready.
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
@@ -421,13 +389,8 @@ fn node_add_same_node_shutdown_existing_instances() {
         "core_node_name should not be empty"
     );
 
-    // Create a temp directory for the node
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_shutdown_node";
     let instance_id = "test_shutdown_instance";
-
-    // Create AppContext pointing to the temp directory
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -577,18 +540,12 @@ fn node_add_same_node_shutdown_existing_instances() {
 }
 #[test]
 fn node_add_same_node_different_sources_show_overwrite_prompt() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_overwrite_git_source";
     let instance_id = "test_overwrite_git_instance";
-
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -763,16 +720,10 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
 
 #[test]
 fn node_add_with_sync_flag_refreshes_stale_git_hash() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let core_node_name = serve.core_node_name().to_string();
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_sync_flag_node";
-
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -905,13 +856,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
 fn node_add_with_sync_flag_rejects_remote_source() {
     // No daemon / runtime setup needed; the error fires during local arg
     // validation before any async work. We still need a minimal AppContext.
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let node_ctx = serve_app_context(&serve, node_dir.path());
+    let (_rt, _serve, node_ctx, _node_dir) = setup();
 
     let result = NodeCommand {
         command: NodeCommands::Add {
@@ -1010,16 +955,10 @@ fn write_consumer_with_pinned_depends_on(
 /// same error fires for both.
 #[test]
 fn node_add_with_run_rejects_unknown_binding_slot() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (_rt, _serve, node_ctx, work_dir) = setup();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_add_r_unbound_producer";
     let consumer_name = "test_add_r_unbound_consumer";
-
-    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1129,20 +1068,14 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
 /// must launch cleanly.
 #[test]
 fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, work_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_add_r_bound_producer";
     let consumer_name = "test_add_r_bound_consumer";
     let producer_instance_id = "cam_a";
     let consumer_instance_id = "consumer_inst";
-
-    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1274,14 +1207,10 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
 /// binding KEY is detected" through the chained-run path.
 #[test]
 fn node_add_with_run_rejects_dead_binding_key() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, work_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_add_r_deadkey_producer";
     let consumer_name = "test_add_r_deadkey_consumer";
     let producer_instance_id = "cam_a";
@@ -1291,8 +1220,6 @@ fn node_add_with_run_rejects_dead_binding_key() {
     // would also fire on the producer start above and produce a false
     // failure.
     let consumer_instance_id = "deadkey_consumer_inst";
-
-    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1415,14 +1342,10 @@ fn node_add_with_run_rejects_dead_binding_key() {
 /// are not its concern.
 #[test]
 fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, work_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_add_r_noff_producer";
     let bystander_name = "test_add_r_noff_bystander";
     let new_consumer_name = "test_add_r_noff_new_consumer";
@@ -1430,8 +1353,6 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     let producer_right_id = "cam_right";
     let bystander_instance_id = "bystander_inst";
     let new_consumer_instance_id = "new_consumer_inst";
-
-    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1620,18 +1541,11 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
 /// `force: false` in `add_node_async`.
 #[test]
 fn node_add_build_force_supersedes_inflight_build() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_force_build_node";
-
-    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1810,18 +1724,12 @@ fn write_run_only_node(
 /// carries no closure).
 #[test]
 fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, work_dir) = setup();
     let core_node_name = serve.core_node_name().to_string();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let recorder_name = "optadd_recorder";
     let consumer_name = "optadd_consumer";
     let git_hash = super::common::read_daemon_git_hash(serve.daemon_state_path());
-
-    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let recorder_dir = write_run_only_node(
         work_dir.path(),
@@ -1880,16 +1788,10 @@ fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
 /// missing and failing later in the build.
 #[test]
 fn node_add_refuses_optional_dependency_resolvable_nowhere() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (_rt, serve, node_ctx, work_dir) = setup();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let consumer_name = "nowhere_dep_consumer";
     let git_hash = super::common::read_daemon_git_hash(serve.daemon_state_path());
-
-    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let consumer_dir = write_run_only_node(
         work_dir.path(),
