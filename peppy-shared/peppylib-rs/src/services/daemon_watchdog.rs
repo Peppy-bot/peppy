@@ -65,31 +65,29 @@ async fn run_watchdog<S: BeatSource>(
     cancellation_token: CancellationToken,
 ) -> Result<()> {
     loop {
-        tokio::select! {
+        let beat = tokio::select! {
             biased;
             // Another shutdown path already fired; stop watching.
-            _ = cancellation_token.cancelled() => break,
-            res = tokio::time::timeout(grace, source.next_beat()) => {
-                match res {
-                    // A beat arrived: the window resets on the next iteration.
-                    Ok(Some(())) => {}
-                    // Source closed (session gone); let other paths handle it.
-                    Ok(None) => break,
-                    // No beat for the whole grace period: presume the daemon is
-                    // gone for good and trigger a clean node shutdown.
-                    Err(_elapsed) => {
-                        tracing::warn!(
-                            "No daemon heartbeat for {grace:?}; shutting down node to avoid \
-                             orphaning after an uncatchable daemon death"
-                        );
-                        cancellation_token.cancel();
-                        break;
-                    }
-                }
+            _ = cancellation_token.cancelled() => return Ok(()),
+            beat = tokio::time::timeout(grace, source.next_beat()) => beat,
+        };
+        match beat {
+            // A beat arrived: the window resets on the next iteration.
+            Ok(Some(())) => {}
+            // Source closed (session gone); let other paths handle it.
+            Ok(None) => return Ok(()),
+            // No beat for the whole grace period: presume the daemon is
+            // gone for good and trigger a clean node shutdown.
+            Err(_elapsed) => {
+                tracing::warn!(
+                    "No daemon heartbeat for {grace:?}; shutting down node to avoid \
+                     orphaning after an uncatchable daemon death"
+                );
+                cancellation_token.cancel();
+                return Ok(());
             }
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -102,6 +100,14 @@ mod tests {
     impl BeatSource for NeverBeats {
         async fn next_beat(&mut self) -> Option<()> {
             std::future::pending().await
+        }
+    }
+
+    /// A source whose session is gone: `next_beat` reports it closed at once.
+    struct ClosedSource;
+    impl BeatSource for ClosedSource {
+        async fn next_beat(&mut self) -> Option<()> {
+            None
         }
     }
 
@@ -181,5 +187,24 @@ mod tests {
 
         token.cancel();
         handle.await.expect("join").expect("watchdog ok");
+    }
+
+    /// A closed source ends the watchdog without cancelling the token: losing
+    /// the session is not proof that the daemon died, and the paths that own
+    /// the session handle its loss.
+    #[tokio::test(start_paused = true)]
+    async fn exits_without_firing_when_the_source_closes() {
+        let token = CancellationToken::new();
+        let handle = spawn(run_watchdog(
+            ClosedSource,
+            Duration::from_secs(3600),
+            token.clone(),
+        ));
+
+        handle.await.expect("join").expect("watchdog ok");
+        assert!(
+            !token.is_cancelled(),
+            "a closed source must not trigger a node shutdown"
+        );
     }
 }
