@@ -998,7 +998,6 @@ impl ActionMessenger {
         goal_id: &str,
         result_timeout: Duration,
     ) -> Result<ActionResultReply> {
-        let action_name = sender.to_action_name().to_string();
         let payload = wrap_goal_payload(goal_id, &[])?;
         let message = match messenger_handle
             .poll_service(
@@ -1011,22 +1010,8 @@ impl ActionMessenger {
         {
             Ok(message) => message,
             Err(err) => {
-                let err = Self::map_result_error(err, &action_name);
-                if matches!(
-                    err,
-                    Error::ActionResultTimeout { .. } | Error::ActionResultUnreachable { .. }
-                ) {
-                    // An inconclusive probe (`Err`) must not fabricate an
-                    // Abandoned outcome — only a confirmed-absent token does.
-                    let alive = messenger_handle
-                        .probe_action_producer(sender, LIVELINESS_PROBE_TIMEOUT)
-                        .await
-                        .unwrap_or(true);
-                    if !alive {
-                        return Ok(abandoned_reply(sender));
-                    }
-                }
-                return Err(err);
+                let err = Self::map_result_error(err, sender.to_action_name());
+                return Self::resolve_failed_result_poll(messenger_handle, sender, err).await;
             }
         };
         let instance_id = message.instance_id().to_string();
@@ -1041,6 +1026,34 @@ impl ActionMessenger {
             instance_id,
             core_node,
         })
+    }
+
+    /// Resolves a result poll that failed with `err`. A transport miss is
+    /// followed by the producer-disappearance probe: a producer whose token
+    /// is confirmed gone resolves the goal to a typed Abandoned reply, and
+    /// every other failure stays `err`.
+    async fn resolve_failed_result_poll(
+        messenger_handle: &MessengerHandle,
+        sender: &ActionWireSender,
+        err: Error,
+    ) -> Result<ActionResultReply> {
+        let is_transport_miss = matches!(
+            err,
+            Error::ActionResultTimeout { .. } | Error::ActionResultUnreachable { .. }
+        );
+        if !is_transport_miss {
+            return Err(err);
+        }
+        // An inconclusive probe (`Err`) must not fabricate an Abandoned
+        // outcome: only a confirmed-absent token does.
+        let is_alive = messenger_handle
+            .probe_action_producer(sender, LIVELINESS_PROBE_TIMEOUT)
+            .await
+            .unwrap_or(true);
+        if is_alive {
+            return Err(err);
+        }
+        Ok(abandoned_reply(sender))
     }
 
     fn map_result_error(err: Error, action_name: &str) -> Error {
@@ -2287,5 +2300,88 @@ mod envelope_tests {
             "a slot whose state is locked must be skipped and retried next tick"
         );
         assert!(!tombstones.lock().unwrap().contains("busy"));
+    }
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+    use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+
+    const CORE: &str = "engine_core";
+    const PRODUCER: &str = "engine_producer";
+    const ACTION: &str = "engine_action";
+
+    fn target() -> SenderTarget {
+        SenderTarget::node("engine_node", "v1").unwrap()
+    }
+
+    /// A [`ConcurrentAction`] on a mock session, with a caller-side sender
+    /// pinned to it.
+    async fn expose_mock_action() -> (MessengerHandle, ConcurrentAction, ActionWireSender) {
+        let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
+        messenger.start_session().await.unwrap();
+        let handle = MessengerHandle::from_shared(Arc::new(TokioMutex::new(messenger)));
+        let action = ConcurrentAction::expose(&handle, CORE, PRODUCER, target(), ACTION, false)
+            .await
+            .unwrap();
+        let sender = ActionWireSender::new(
+            CORE,
+            "engine_caller",
+            Some(&ProducerRef::new(CORE, PRODUCER)),
+            target(),
+            ACTION,
+        )
+        .unwrap();
+        (handle, action, sender)
+    }
+
+    /// A result poll that misses against a producer that is still alive stays
+    /// an error: the follow-up liveliness probe finds the producer's token, so
+    /// no Abandoned outcome is synthesized for a goal that is still running.
+    /// The mock delivers the ACK of the poll, so the miss is a timeout.
+    #[tokio::test(start_paused = true)]
+    async fn a_result_poll_that_misses_against_a_live_producer_stays_a_timeout() {
+        let (handle, mut action, sender) = expose_mock_action().await;
+        let goal_service = sender.goal_service();
+        let goal_id = "running_goal";
+        let (goal_reply, context) = tokio::join!(
+            handle.poll_service(
+                &goal_service,
+                wrap_goal_payload(goal_id, &[]).unwrap(),
+                ServiceQueryKind::UserRequest,
+                None,
+            ),
+            async {
+                let pending = action.recv_next_goal().await.unwrap().unwrap();
+                pending.accept(Payload::new()).await.unwrap()
+            },
+        );
+        goal_reply.unwrap();
+
+        // The goal never completes while `context` lives, so the poll parks
+        // until its budget runs out.
+        let result = ActionMessenger::request_result_with_sender(
+            &handle,
+            &sender,
+            goal_id,
+            Duration::from_millis(300),
+        )
+        .await;
+        match result {
+            Err(Error::ActionResultTimeout {
+                instance_id,
+                action_name,
+            }) => {
+                assert_eq!(instance_id.as_deref(), Some(PRODUCER));
+                assert_eq!(action_name, ACTION);
+            }
+            Err(other) => panic!("expected a result timeout, got {other:?}"),
+            Ok(reply) => panic!(
+                "a live producer must not resolve to a reply, got {:?}",
+                reply.status
+            ),
+        }
+        drop(context);
     }
 }
