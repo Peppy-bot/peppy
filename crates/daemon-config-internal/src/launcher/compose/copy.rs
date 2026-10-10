@@ -11,7 +11,8 @@ use super::adjustments::Routed;
 use super::constraints::{self, ConstraintInPlay, ConstraintScope};
 use super::error::CompositionError;
 use super::expand::{
-    Expanded, OriginatedDeployment, Unit, append_links, expand_unit, instance_named_mut,
+    Expanded, OriginatedDeployment, Unit, add_core_node_link, append_links, expand_unit,
+    instance_named_mut, merge_deployment,
 };
 use super::load::{LoadedFragment, LoadedOption, node_ids};
 use super::prepared::PreparedLauncher;
@@ -969,19 +970,10 @@ fn add_copy(flat: &mut PeppyLauncher, copy: &ComposedCopy) -> Result<(), Composi
         }
     }
     for deployment in &copy.deployments {
-        match flat
-            .deployments
-            .iter_mut()
-            .find(|entry| entry.source == deployment.source)
-        {
-            Some(entry) => entry.instances.extend(deployment.instances.iter().cloned()),
-            None => flat.deployments.push(deployment.clone()),
-        }
+        merge_deployment(&mut flat.deployments, deployment);
     }
     for link in &copy.core_nodes {
-        if !flat.core_nodes.contains(link) {
-            flat.core_nodes.push(link.clone());
-        }
+        add_core_node_link(&mut flat.core_nodes, link);
     }
     Ok(())
 }
