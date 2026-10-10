@@ -691,15 +691,11 @@ where
             .await;
 
             // Every exit path converges here: graceful stop, signal, daemon
-            // loss, setup error, service failure. Cancel the token (idempotent)
-            // so user tasks observe shutdown, then await registered cleanup
-            // bounded by the daemon's grace window: the window the daemon waits
-            // before SIGKILL on stop paths, and the only bound at all on the
-            // daemon-death path, where nothing is left to force-kill us.
-            cancellation_token.cancel();
-            node_runner
-                .run_shutdown_hooks(node_runner.processor().shutdown_grace())
-                .await;
+            // loss, setup error, service failure. The grace window is the
+            // daemon's: the window the daemon waits before SIGKILL on stop
+            // paths, and the only bound at all on the daemon-death path, where
+            // nothing is left to force-kill us.
+            converge_on_shutdown(&node_runner, &cancellation_token).await;
             run_result
         })
     }
@@ -745,16 +741,22 @@ where
         }
         .await;
 
-        // Same convergence as daemon mode: cancel (idempotent), then await
-        // registered cleanup bounded by the grace window (built-in default in
-        // standalone mode, since there is no daemon to resolve it from).
+        // Same convergence as daemon mode, with the built-in default grace
+        // window, since there is no daemon to resolve it from.
         info!("Shutting down...");
-        cancellation_token.cancel();
-        node_runner
-            .run_shutdown_hooks(node_runner.processor().shutdown_grace())
-            .await;
+        converge_on_shutdown(&node_runner, &cancellation_token).await;
         run_result
     }
+}
+
+/// The shutdown step that ends every run, in daemon and in standalone mode.
+/// Cancels the token (idempotent) so user tasks observe shutdown, then awaits
+/// the registered cleanup bounded by the processor's shutdown grace.
+async fn converge_on_shutdown(node_runner: &NodeRunner, cancellation_token: &CancellationToken) {
+    cancellation_token.cancel();
+    node_runner
+        .run_shutdown_hooks(node_runner.processor().shutdown_grace())
+        .await;
 }
 
 /// Bridges process signals into the runtime's cancellation token so every stop
