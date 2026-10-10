@@ -14,7 +14,8 @@ The `merge-set` commit status is a required check of peppy `dev` and of the
 - A pull request of a set gets a pending status, so its merge button stays
   blocked, and a comment, the dashboard, that lists every repository of the
   set with the state of the CI run of its head, says what blocks the merge,
-  and holds two boxes: "Merge" and "Re-run the out-of-date CI".
+  and holds a "Merge" box, and a "Re-run the out-of-date CI" box while a hub
+  run of the set is out of date.
 
 Ticking "Merge" asks the bot to merge the set. The bot checks every pull
 request of the set, sets the status green on each, checks that GitHub merges
@@ -2485,9 +2486,9 @@ def handle_requests(
     run_url: str,
 ) -> None:
     """Act on each action once, for the first user who asked for it with
-    write access to every repository of the set. The re-run goes first: a
-    merge asked for at the same time then finds the re-run CI running and
-    stops."""
+    write access to every repository of the set. The re-run goes first. Both
+    actions read the reports from before the re-run, so a merge asked for at
+    the same time stops on the CI that the re-run finds out of date."""
     reports = read_reports(gateway, state)
     for action in (Action.RERUN, Action.MERGE):
         asked = [request for request in requests if request.action is action]
