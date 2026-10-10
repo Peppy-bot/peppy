@@ -4,8 +4,8 @@
 //! A managed zenohd accepts local sessions as soon as its listener binds, but
 //! dials its configured `connect` endpoints (operator-pinned federation links,
 //! a just-applied cloud upstream) asynchronously. Anything that queries the
-//! mesh right after startup — the daemon's boot-time core-node presence check
-//! above all — would race that link formation and see only the local router.
+//! mesh right after startup (the daemon's boot-time core-node presence check
+//! above all) would race that link formation and see only the local router.
 //! [`RouterLinksProbe`] closes the race: it polls the local router's admin
 //! space (`@/<zid>/router`) until every configured endpoint has an established
 //! transport link, bounded by the caller's timeout and fail-open (an
@@ -46,7 +46,7 @@ struct ConfiguredEndpoint {
     port: u16,
     /// Addresses `host` resolves to (or parses to, for a literal IP). Empty
     /// until [`RouterLinksProbe::wait_established`] resolves it, and left empty
-    /// when resolution fails — the literal comparison still applies then.
+    /// when resolution fails; the literal comparison still applies then.
     ips: Vec<IpAddr>,
 }
 
@@ -123,7 +123,7 @@ pub struct RouterLinksProbe {
 
 impl RouterLinksProbe {
     /// Builds a probe for `endpoints`, or `None` when none of them parses (an
-    /// unparseable endpoint is the operator's to dial, not ours to wait for —
+    /// unparseable endpoint is the operator's to dial, not ours to wait for:
     /// it is warned about and skipped).
     pub(crate) fn new(probe_config: zenoh::config::Config, endpoints: Vec<String>) -> Option<Self> {
         let endpoints: Vec<ConfiguredEndpoint> = endpoints
@@ -158,7 +158,7 @@ impl RouterLinksProbe {
 
     /// Waits until every configured endpoint has an established link on the
     /// local router, bounded by `timeout`. Returns `true` when they all did,
-    /// `false` when the bound elapsed first (callers proceed — fail-open — and
+    /// `false` when the bound elapsed first (callers proceed, failing open, and
     /// log). DNS-named endpoints are resolved once up front so they compare
     /// against the resolved addresses the admin space reports.
     pub async fn wait_established(mut self, timeout: Duration) -> bool {

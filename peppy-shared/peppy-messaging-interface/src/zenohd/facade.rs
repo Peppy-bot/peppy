@@ -146,7 +146,7 @@ fn zenohd_beside_peppy_on_path(path_var: Option<&std::ffi::OsStr>) -> Option<Str
 
 /// Full resolution policy, ordered by provenance strength. Pure in its inputs
 /// so the order is testable without mutating process globals:
-/// 1. an explicit [`ZENOHD_PATH_VAR`] override (used verbatim — a missing file
+/// 1. an explicit [`ZENOHD_PATH_VAR`] override (used verbatim: a missing file
 ///    surfaces as the spawn error naming the operator's path, never a silent
 ///    fallback to a different binary),
 /// 2. a `zenohd` packaged beside the current executable,
@@ -258,8 +258,8 @@ impl ZenohdFacade {
         )
     }
 
-    /// The zenohd binary the current resolution rules select, if any — for
-    /// test tooling that must forward it to a child process via
+    /// The zenohd binary the resolution rules select in this process, if any,
+    /// for test tooling that must forward it to a child process via
     /// [`ZENOHD_PATH_VAR`] (e.g. running a node's `cargo test` from an
     /// environment that has no `peppy` on PATH: the node's vendored pmi has
     /// no built artifact of its own to fall back on).
@@ -349,10 +349,10 @@ impl ZenohdFacade {
     }
 
     /// The `connect.endpoints` of the active managed router config (rendered or
-    /// operator-pinned) — the links the router dials on startup, which
+    /// operator-pinned): the links the router dials on startup, which
     /// [`super::RouterLinksProbe`] waits on before the boot presence check.
     /// Empty for an external router (its config is the operator's, unknown to
-    /// peppy) and for a standalone managed router; also empty — with a warning —
+    /// peppy) and for a standalone managed router; also empty, with a warning,
     /// when the config cannot be read, so a broken read degrades to "nothing to
     /// wait for" rather than an error on the startup path (zenohd itself already
     /// parsed the same file to boot).
@@ -667,7 +667,7 @@ impl ZenohdFacade {
     }
 
     fn terminate_router_process(mut child: Child) {
-        // Try to kill the process gracefully.
+        // Kill the process (SIGKILL on Unix).
         if let Err(e) = child.kill() {
             tracing::warn!("Failed to terminate zenohd router process: {}", e);
         } else {

@@ -14,7 +14,7 @@ pub(super) async fn close_probe_session(session: zenoh::Session) {
 ///
 /// Holds a fail-fast probe config (scouting disabled, single connect attempt to
 /// the router endpoint). [`Self::is_router_responsive`] opens a throwaway
-/// session bounded by `timeout` — the same operation a CLI client performs — so
+/// session bounded by `timeout` (the same operation a CLI client performs), so
 /// it detects a wedged router that still accepts TCP connections but never
 /// completes the Zenoh session handshake. Obtain one via
 /// [`crate::Messenger::router_health_checker`] and probe without holding the
@@ -26,7 +26,7 @@ pub struct RouterHealthChecker {
 impl RouterHealthChecker {
     /// Builds a checker from a ready-to-open probe config. Constructed by
     /// `ZenohAdapter::router_health_checker`, which renders the probe client
-    /// config template.
+    /// config with `render_probe_config`.
     pub(crate) fn new(probe_config: zenoh::config::Config) -> Self {
         Self { probe_config }
     }

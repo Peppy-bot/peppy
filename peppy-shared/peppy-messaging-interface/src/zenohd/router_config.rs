@@ -14,7 +14,7 @@ use std::path::PathBuf;
 /// returns its path. `tls` (when the protocol is `Tls`, or when a `tls/`
 /// `connect_endpoint` is present) carries the listener's certificate/key and/or
 /// the connect-side trust root and client identity; `None` renders a plaintext
-/// listener unchanged. `connect_endpoints` federates this router to those
+/// listener. `connect_endpoints` federates this router to those
 /// upstream routers (empty for a standalone router); see
 /// [`crate::zenoh_config::router_spec`].
 ///
@@ -63,7 +63,7 @@ pub(crate) fn router_config_path(
 pub(crate) fn config_override() -> Option<PathBuf> {
     // A blank or whitespace-only `ZENOH_CONFIG` is treated as unset (not an empty
     // path), so startup falls back to the rendered temp config instead of trying
-    // to read `""`. Mirrors `ZenohAdapter::resolve_session_config_override`.
+    // to read `""`.
     std::env::var("ZENOH_CONFIG")
         .ok()
         .map(|value| value.trim().to_string())

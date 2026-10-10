@@ -73,7 +73,7 @@ impl ZenohEndpoint {
     }
 
     /// Validates the endpoint used to adopt an already-running router.
-    /// External router adoption currently uses a TCP socket probe, so only a
+    /// External router adoption uses a TCP socket probe, so only a
     /// concrete, dialable `tcp/` endpoint is accepted.
     pub fn validate_external_tcp(&self) -> Result<()> {
         if self.protocol != ZenohNetProtocol::Tcp {
