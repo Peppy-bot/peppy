@@ -10,12 +10,10 @@ use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
 use peppylib::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 
 use peppylib::core_node::transport::poll;
 
-use super::common::{CALLER_INSTANCE_ID, stack_graph, test_node_target};
+use super::common::{CALLER_INSTANCE_ID, emulate_startup_services, stack_graph, test_node_target};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_command_succeeds() {
@@ -119,22 +117,7 @@ async fn node_run_command_succeeds() {
 
     // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
 
     // Now run the node using the run command
     NodeCommand {
@@ -322,22 +305,7 @@ async fn node_run_command_with_args_succeeds() {
 
     // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
 
     // Now run the node with arguments
     let args = vec![
@@ -501,22 +469,13 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
 
     // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = listen_for_node_ready(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
+        node_name,
         custom_instance_id,
-        test_node_target(node_name),
     )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        custom_instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
+    .await;
 
     // Now run the node with a custom instance_id
     NodeCommand {
@@ -713,22 +672,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
 
     // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
 
     // Run with `-b` set: should build first, then start the instance.
     NodeCommand {
@@ -876,22 +820,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     }
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
 
     // Run with `-b` set: should detect the node is already built, skip the
     // build, and run.
@@ -1095,38 +1024,6 @@ async fn add_built_consumer_with_slots(
     .expect("consumer node add should succeed");
 }
 
-/// Installs in-process node_ready and node_health services for the
-/// given producer + instance_id so the daemon's start handshake can
-/// complete. Returns the join handles so callers can hold them past
-/// the `node run` call. The two services must outlive the run.
-async fn install_node_services(
-    node_messenger: &MessengerHandle,
-    core_node_name: &str,
-    producer_name: &str,
-    instance_id: &str,
-) -> (
-    impl std::any::Any + Send + Sync,
-    impl std::any::Any + Send + Sync,
-) {
-    let ready = listen_for_node_ready(
-        node_messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let health = listen_for_node_health(
-        node_messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("node health service should start");
-    (ready, health)
-}
-
 // ─── --link binding-driven-routing integration tests ───────────────────────
 
 /// Consumer manifest declares two `link_id` slots. Running the consumer
@@ -1236,7 +1133,7 @@ async fn node_run_bind_rejects_dead_key() {
     .await;
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _producer_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         producer_name,
@@ -1327,14 +1224,14 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
     .await;
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _left_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         producer_name,
         producer_left_id,
     )
     .await;
-    let _right_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         producer_name,
@@ -1362,7 +1259,7 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
         .expect("producer run should succeed");
     }
 
-    let _consumer_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         consumer_name,
@@ -1444,7 +1341,7 @@ async fn node_run_bind_rejects_target_mismatch() {
     .await;
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _wrong_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         wrong_producer,
@@ -1549,14 +1446,14 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     .await;
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _left_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         producer_name,
         producer_left_id,
     )
     .await;
-    let _right_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         producer_name,
@@ -1584,7 +1481,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
         .expect("producer run should succeed");
     }
 
-    let _consumer_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         consumer_name,
@@ -1617,7 +1514,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     // its pinned slots satisfied, and this invocation has nothing to
     // do with `cons_a`. The pre-flight must validate only the new
     // synthesized instance; `cons_a`'s pinned slots are out of scope.
-    let _extra_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         producer_name,
@@ -1711,14 +1608,14 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     .await;
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _left_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         producer_name,
         producer_left_id,
     )
     .await;
-    let _right_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         producer_name,
@@ -1746,7 +1643,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
         .expect("producer run should succeed");
     }
 
-    let _cons_a_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         consumer_a_name,
@@ -1850,14 +1747,14 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     .await;
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _left_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         producer_name,
         producer_left_id,
     )
     .await;
-    let _right_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         producer_name,
@@ -1886,7 +1783,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     }
 
     // First consumer instance: both pins bound.
-    let _cons_1_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         consumer_name,
@@ -1919,7 +1816,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     // enters the validator snapshot as an inert entry (no depends_on)
     // and cons_inst_2 as a live entry whose bindings are checked
     // against the consumer's depends_on.
-    let _cons_2_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         consumer_name,
@@ -2029,12 +1926,9 @@ async fn node_run_covers_a_zero_or_one_slot_by_link_or_vacancy() {
     .await;
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let mut producer_guards = Vec::new();
     for instance_id in [producer_instance_id, spare_producer_instance_id] {
-        producer_guards.push(
-            install_node_services(&node_messenger, &core_node_name, producer_name, instance_id)
-                .await,
-        );
+        emulate_startup_services(&node_messenger, &core_node_name, producer_name, instance_id)
+            .await;
         NodeCommand {
             command: NodeCommands::Run {
                 clock: None,
@@ -2086,7 +1980,7 @@ async fn node_run_covers_a_zero_or_one_slot_by_link_or_vacancy() {
 
     // 1. The vacancy is legal on the `zero_or_one` slot, so the instance runs.
     let accepted_instance_id = "consumer_vacant";
-    let _consumer_svcs = install_node_services(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
         consumer_name,
@@ -2218,22 +2112,7 @@ async fn node_run_prints_the_web_pages_of_a_node_that_declares_a_page() {
 
     // The emulated node: ready, health, and the endpoints it bound.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
     let _node_endpoints_handle = peppylib::services::endpoints::listen_for_node_endpoints(
         &node_messenger,
         &core_node_name,

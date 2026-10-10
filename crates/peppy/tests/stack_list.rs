@@ -14,11 +14,9 @@ use peppy::commands::node::{
     NodeCommand, NodeCommands, NodeName, TimeoutConfig, run_instance_async,
 };
 use peppy::context::AppContext;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::{CoreNodePresenceMessenger, MessengerHandle};
 
-use super::common::test_node_target;
+use super::common::{emulate_startup_services, test_node_target};
 
 fn make_consumer_depend_on_provider(
     provider_peppy_json5: &Path,
@@ -111,34 +109,6 @@ fn add_ready_node(ctx: &Arc<AppContext>, source: &Path) {
     }
     .execute(ctx)
     .expect("node add should succeed");
-}
-
-/// Installs the ready/health listeners a running instance is expected to
-/// serve. The returned task handles detach on drop, so discarding them keeps
-/// the services listening for the rest of the test (the same pattern
-/// `node_pair.rs` uses).
-async fn install_node_services(
-    messenger: &MessengerHandle,
-    core_node: &str,
-    node_name: &str,
-    instance_id: &str,
-) {
-    listen_for_node_ready(
-        messenger,
-        core_node,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node ready service should start");
-    listen_for_node_health(
-        messenger,
-        core_node,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
 }
 
 /// A node's row parsed from the rendered stack inventory table.
@@ -444,7 +414,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     add_ready_node(&remote_ctx, &consumer_path);
 
     let messenger_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    install_node_services(
+    emulate_startup_services(
         &messenger_handle,
         "z-local",
         provider_name,
@@ -472,7 +442,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     .await
     .expect("local producer should start");
 
-    install_node_services(
+    emulate_startup_services(
         &messenger_handle,
         "a-remote",
         consumer_name,
@@ -715,7 +685,7 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
     add_ready_node(&node_ctx, &node_path);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    install_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
+    emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
     let _endpoints = peppylib::services::endpoints::listen_for_node_endpoints(
         &node_messenger,
         &core_node_name,

@@ -7,11 +7,9 @@ use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
 use peppylib::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
-use super::common::{stack_graph, test_node_target};
+use super::common::{emulate_startup_services, stack_graph, test_node_target};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_command_succeeds() {
@@ -99,22 +97,7 @@ async fn node_stop_command_succeeds() {
 
     // Start in-process node services for health/shutdown so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
 
     let (_node_shutdown_handle, node_shutdown_rx) = listen_for_shutdown(
         &node_messenger,

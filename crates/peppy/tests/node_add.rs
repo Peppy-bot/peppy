@@ -8,13 +8,11 @@ use peppy::commands::node::{
 use peppy::context::AppContext;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use peppylib::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::common::{stack_graph, test_node_target};
+use super::common::{emulate_startup_services, stack_graph, test_node_target};
 
 #[test]
 fn node_add_command_succeeds() {
@@ -193,22 +191,12 @@ fn node_add_command_with_run_arg_succeeds() {
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node ready service should start");
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        node_name,
+        instance_id,
+    ));
 
     // Add the node to the node stack with run=true to also start an instance
     NodeCommand {
@@ -492,22 +480,12 @@ fn node_add_same_node_shutdown_existing_instances() {
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node ready service should start");
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        node_name,
+        instance_id,
+    ));
     let (_node_shutdown_handle, shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
@@ -666,22 +644,12 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node ready service should start");
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        node_name,
+        instance_id,
+    ));
     let (_node_shutdown_handle, shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
@@ -1261,22 +1229,12 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
     // Spawn an instance of the producer so the binding's VALUE resolves
     // to a real running instance_id.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _producer_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            producer_instance_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer ready service should start");
-    let _producer_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            producer_instance_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_instance_id,
+    ));
     NodeCommand {
         command: NodeCommands::Run {
             clock: None,
@@ -1304,22 +1262,12 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
         &instances,
     );
 
-    let _consumer_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            consumer_instance_id,
-            test_node_target(consumer_name),
-        ))
-        .expect("consumer ready service should start");
-    let _consumer_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            consumer_instance_id,
-            test_node_target(consumer_name),
-        ))
-        .expect("consumer health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        consumer_name,
+        consumer_instance_id,
+    ));
 
     // `node add -r --link wrist_left@cam_a`, exactly the invocation the
     // reproducer at the top of this file wanted to work.
@@ -1429,22 +1377,12 @@ fn node_add_with_run_rejects_dead_binding_key() {
     .expect("producer node add should succeed");
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _producer_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            producer_instance_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer ready service should start");
-    let _producer_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            producer_instance_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_instance_id,
+    ));
     NodeCommand {
         command: NodeCommands::Run {
             clock: None,
@@ -1586,38 +1524,18 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     .expect("producer node add should succeed");
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _producer_left_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            producer_left_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer-left ready service should start");
-    let _producer_left_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            producer_left_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer-left health service should start");
-    let _producer_right_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            producer_right_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer-right ready service should start");
-    let _producer_right_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            producer_right_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer-right health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_left_id,
+    ));
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_right_id,
+    ));
     for instance_id in [producer_left_id, producer_right_id] {
         NodeCommand {
             command: NodeCommands::Run {
@@ -1647,22 +1565,12 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         &["wrist_left", "wrist_right"],
         &instances,
     );
-    let _bystander_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            bystander_instance_id,
-            test_node_target(bystander_name),
-        ))
-        .expect("bystander ready service should start");
-    let _bystander_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            bystander_instance_id,
-            test_node_target(bystander_name),
-        ))
-        .expect("bystander health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        bystander_name,
+        bystander_instance_id,
+    ));
     NodeCommand {
         command: NodeCommands::Add {
             clock: None,
@@ -1697,22 +1605,12 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         &["only_pin"],
         &instances,
     );
-    let _new_consumer_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            new_consumer_instance_id,
-            test_node_target(new_consumer_name),
-        ))
-        .expect("new-consumer ready service should start");
-    let _new_consumer_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            new_consumer_instance_id,
-            test_node_target(new_consumer_name),
-        ))
-        .expect("new-consumer health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        new_consumer_name,
+        new_consumer_instance_id,
+    ));
 
     let result = NodeCommand {
         command: NodeCommands::Add {

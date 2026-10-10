@@ -4,13 +4,11 @@ use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use peppylib::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::common::{stack_graph, test_node_target};
+use super::common::{emulate_startup_services, stack_graph, test_node_target};
 
 #[test]
 fn node_remove_command_succeeds() {
@@ -181,22 +179,12 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
     // Start in-process node services for health/shutdown so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node ready service should start");
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        node_name,
+        instance_id,
+    ));
     let (_node_shutdown_handle, node_shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
@@ -314,23 +302,12 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node ready service should start");
-
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        node_name,
+        instance_id,
+    ));
 
     let (_node_shutdown_handle, node_shutdown_rx) = rt
         .block_on(listen_for_shutdown(

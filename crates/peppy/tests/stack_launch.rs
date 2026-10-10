@@ -16,8 +16,6 @@ use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{LauncherArgs, StackCommand, StackCommands, StackTimeouts, WithWords};
 use peppy::context::AppContext;
 use peppylib::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 use super::common::{
@@ -252,22 +250,7 @@ async fn node_launch_command_succeed() {
 
     let instance_id = "node_b_instance";
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_b_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_b_name),
-    )
-    .await
-    .expect("node health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, node_b_name, instance_id).await;
     let (_node_shutdown_handle, node_shutdown_rx) = listen_for_shutdown(
         &node_messenger,
         &core_node_name,
@@ -799,22 +782,13 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     // queries via Zenoh with a wildcard `link_id`, so the queryables
     // declared here (with default link_ids) still match.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let _ready_producer = listen_for_node_ready(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
+        producer_name,
         producer_instance_id,
-        test_node_target(producer_name),
     )
-    .await
-    .expect("producer ready service should start");
-    let _health_producer = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        producer_instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("producer health service should start");
+    .await;
     let (_shutdown_producer, _) = listen_for_shutdown(
         &node_messenger,
         &core_node_name,
@@ -823,22 +797,13 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     )
     .await
     .expect("producer shutdown service should start");
-    let _ready_consumer = listen_for_node_ready(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
+        consumer_name,
         consumer_instance_id,
-        test_node_target(consumer_name),
     )
-    .await
-    .expect("consumer ready service should start");
-    let _health_consumer = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer health service should start");
+    .await;
     let (_shutdown_consumer, _) = listen_for_shutdown(
         &node_messenger,
         &core_node_name,
@@ -997,22 +962,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
         (producer_name, rear_instance_id),
         (consumer_name, consumer_instance_id),
     ] {
-        let ready = listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("ready service should start");
-        let health = listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("health service should start");
+        emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
         let (shutdown, _) = listen_for_shutdown(
             &node_messenger,
             &core_node_name,
@@ -1021,7 +971,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
         )
         .await
         .expect("shutdown service should start");
-        service_guards.push((ready, health, shutdown));
+        service_guards.push(shutdown);
     }
 
     // The binding array deliberately lists `rear` before `front` so the
@@ -1446,22 +1396,13 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     .expect("repo refresh should populate contract cache");
 
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let _ready_producer = listen_for_node_ready(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
+        producer_name,
         producer_instance_id,
-        test_node_target(producer_name),
     )
-    .await
-    .expect("producer ready service should start");
-    let _health_producer = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        producer_instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("producer health service should start");
+    .await;
     let (_shutdown_producer, _) = listen_for_shutdown(
         &node_messenger,
         &core_node_name,
@@ -1470,22 +1411,13 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     )
     .await
     .expect("producer shutdown service should start");
-    let _ready_consumer = listen_for_node_ready(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
+        consumer_name,
         consumer_instance_id,
-        test_node_target(consumer_name),
     )
-    .await
-    .expect("consumer ready service should start");
-    let _health_consumer = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer health service should start");
+    .await;
     let (_shutdown_consumer, _) = listen_for_shutdown(
         &node_messenger,
         &core_node_name,
@@ -1951,22 +1883,13 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     // impersonate them from the test process for both instances (the
     // daemon's launch waits for each instance to report ready).
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let _ready_controller = listen_for_node_ready(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
+        controller_name,
         controller_instance_id,
-        test_node_target(controller_name),
     )
-    .await
-    .expect("controller ready service should start");
-    let _health_controller = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        controller_instance_id,
-        test_node_target(controller_name),
-    )
-    .await
-    .expect("controller health service should start");
+    .await;
     let (_shutdown_controller, _) = listen_for_shutdown(
         &node_messenger,
         &core_node_name,
@@ -1975,22 +1898,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     )
     .await
     .expect("controller shutdown service should start");
-    let _ready_arm = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        arm_instance_id,
-        test_node_target(arm_name),
-    )
-    .await
-    .expect("arm ready service should start");
-    let _health_arm = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        arm_instance_id,
-        test_node_target(arm_name),
-    )
-    .await
-    .expect("arm health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, arm_name, arm_instance_id).await;
     let (_shutdown_arm, _) = listen_for_shutdown(
         &node_messenger,
         &core_node_name,
@@ -2192,22 +2100,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
         (consumer_name, bound_instance_id),
         (consumer_name, vacant_instance_id),
     ] {
-        let ready = listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("ready service should start");
-        let health = listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("health service should start");
+        emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
         let (shutdown, _) = listen_for_shutdown(
             &node_messenger,
             &core_node_name,
@@ -2216,7 +2109,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
         )
         .await
         .expect("shutdown service should start");
-        service_guards.push((ready, health, shutdown));
+        service_guards.push(shutdown);
     }
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
@@ -2806,22 +2699,7 @@ async fn stack_launch_delivers_observer_member_sets() {
     // Source instance services: ready/health/shutdown, no peer_update (its slot
     // is vacant, so it is never paired).
     for (node_name, instance_id) in [("robot_arm", "arm_1"), ("robot_arm", "arm_2")] {
-        let _ready = listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("ready service should start");
-        let _health = listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("health service should start");
+        emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
         let (_shutdown, _) = listen_for_shutdown(
             &node_messenger,
             &core_node_name,
@@ -2833,22 +2711,7 @@ async fn stack_launch_delivers_observer_member_sets() {
     }
     // Recorder services, including the `observation_update` endpoint whose watch
     // observes the delivered source pin.
-    let _rec_ready = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        "rec_1",
-        test_node_target("recorder"),
-    )
-    .await
-    .expect("ready service should start");
-    let _rec_health = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        "rec_1",
-        test_node_target("recorder"),
-    )
-    .await
-    .expect("health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, "recorder", "rec_1").await;
     let (_rec_shutdown, _) = listen_for_shutdown(
         &node_messenger,
         &core_node_name,
@@ -3211,22 +3074,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         ("openarm_gripper_follower", "grip_follower_1"),
         ("openarm_web_commander", "commander_inst"),
     ] {
-        let ready = listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("ready service should start");
-        let health = listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("health service should start");
+        emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
         let (shutdown, _) = listen_for_shutdown(
             &node_messenger,
             &core_node_name,
@@ -3235,7 +3083,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         )
         .await
         .expect("shutdown service should start");
-        service_handles.push((ready, health, shutdown));
+        service_handles.push(shutdown);
     }
     // The limbs pair with each other, so each carries a `peer_update` endpoint.
     let mut peer_handles = Vec::new();
@@ -3525,22 +3373,13 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     // The dummy `sh` consumer does not expose the framework services, so
     // impersonate them from the test process.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let _ready_consumer = listen_for_node_ready(
+    emulate_startup_services(
         &node_messenger,
         &core_node_name,
+        consumer_name,
         consumer_instance_id,
-        test_node_target(consumer_name),
     )
-    .await
-    .expect("consumer ready service should start");
-    let _health_consumer = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer health service should start");
+    .await;
     let (_shutdown_consumer, _) = listen_for_shutdown(
         &node_messenger,
         &core_node_name,
@@ -3774,22 +3613,7 @@ async fn stack_launch_flattens_a_composed_launcher() {
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let instance_id = "beta_inst";
-    let _node_ready_handle = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
 
     let launcher_path = nodes_dir.path().join("composed_launcher.json5");
     let deployment = |instance_id: &str| {
