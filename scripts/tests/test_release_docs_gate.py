@@ -13,12 +13,12 @@ from functions.github import RepoSlug
 from functions.release_docs_gate import (
     JudgedCommit,
     _docs_check_base,
-    _find_open_docs_sync_pr,
+    _find_open_docs_pr,
     _judged_commit_of,
     _last_judged_commit,
     _last_shipped_commit,
     _open_docs_pr,
-    _push_docs_sync_branch,
+    _push_docs_branch,
     verify_docs_gate,
 )
 
@@ -378,7 +378,7 @@ def test_docs_gate_passes_and_diffs_from_the_last_shipped_commit(
     mock_update.assert_not_called()
 
 
-@patch("functions.release_docs_gate._find_open_docs_sync_pr")
+@patch("functions.release_docs_gate._find_open_docs_pr")
 @patch("functions.release_docs_gate.update_docs")
 @patch(
     "functions.release_docs_gate.check_docs",
@@ -405,8 +405,8 @@ def test_docs_gate_passes_on_minor_only_suggestions_left_alone(
 
 
 @patch("functions.release_docs_gate._open_docs_pr")
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
+@patch("functions.release_docs_gate._push_docs_branch")
+@patch("functions.release_docs_gate._find_open_docs_pr", return_value=None)
 @patch("functions.release_docs_gate.update_docs")
 @patch(
     "functions.release_docs_gate.check_docs",
@@ -446,8 +446,8 @@ def test_docs_gate_opens_the_optional_polish_pr_and_continues(
 
 
 @patch("functions.release_docs_gate._open_docs_pr")
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
+@patch("functions.release_docs_gate._push_docs_branch")
+@patch("functions.release_docs_gate._find_open_docs_pr", return_value=None)
 @patch("functions.release_docs_gate.update_docs")
 @patch(
     "functions.release_docs_gate.check_docs",
@@ -480,7 +480,7 @@ def test_docs_gate_skips_the_polish_pr_when_the_update_changes_nothing(
 
 @patch("functions.release_docs_gate.update_docs")
 @patch(
-    "functions.release_docs_gate._find_open_docs_sync_pr",
+    "functions.release_docs_gate._find_open_docs_pr",
     return_value="https://github.com/test-owner/test-repo/pull/8",
 )
 @patch(
@@ -520,8 +520,8 @@ def test_docs_gate_rejects_a_dirty_docs_tree_before_asking_claude(
 
 
 @patch("functions.release_docs_gate._open_docs_pr")
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
+@patch("functions.release_docs_gate._push_docs_branch")
+@patch("functions.release_docs_gate._find_open_docs_pr", return_value=None)
 @patch("functions.release_docs_gate.update_docs")
 @patch(
     "functions.release_docs_gate.check_docs",
@@ -566,8 +566,8 @@ def test_docs_gate_opens_a_pr_and_stops_the_release(
 
 
 @patch("functions.release_docs_gate._open_docs_pr")
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
+@patch("functions.release_docs_gate._push_docs_branch")
+@patch("functions.release_docs_gate._find_open_docs_pr", return_value=None)
 @patch("functions.release_docs_gate.update_docs")
 @patch(
     "functions.release_docs_gate.check_docs",
@@ -606,10 +606,10 @@ def test_docs_gate_feeds_only_blocking_changes_to_the_update_and_pr(
     assert "reword the intro" in capfd.readouterr().err
 
 
-@patch("functions.release_docs_gate._push_docs_sync_branch")
+@patch("functions.release_docs_gate._push_docs_branch")
 @patch("functions.release_docs_gate.update_docs")
 @patch(
-    "functions.release_docs_gate._find_open_docs_sync_pr",
+    "functions.release_docs_gate._find_open_docs_pr",
     return_value="https://github.com/test-owner/test-repo/pull/7",
 )
 @patch(
@@ -640,8 +640,8 @@ def test_docs_gate_stops_on_the_pr_an_earlier_attempt_opened(
 
 
 @patch("functions.release_docs_gate._open_docs_pr")
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
+@patch("functions.release_docs_gate._push_docs_branch")
+@patch("functions.release_docs_gate._find_open_docs_pr", return_value=None)
 @patch("functions.release_docs_gate.update_docs")
 @patch(
     "functions.release_docs_gate.check_docs",
@@ -671,8 +671,8 @@ def test_docs_gate_continues_when_the_updater_finds_gaps_already_covered(
     assert "already documented" in unwrapped(capfd.readouterr().err)
 
 
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
+@patch("functions.release_docs_gate._push_docs_branch")
+@patch("functions.release_docs_gate._find_open_docs_pr", return_value=None)
 @patch("functions.release_docs_gate.update_docs")
 @patch(
     "functions.release_docs_gate.check_docs",
@@ -704,13 +704,13 @@ def test_docs_gate_raises_when_the_update_claims_edits_but_changed_nothing(
 @patch("functions.release_docs_gate.push_branch")
 @patch("functions.release_docs_gate.commit_paths")
 @patch("functions.release_docs_gate.switch_to_new_branch")
-def test_push_docs_sync_branch_pushes_without_force_and_returns_to_dev(
+def test_push_docs_branch_pushes_without_force_and_returns_to_dev(
     mock_switch_new: MagicMock,
     mock_commit: MagicMock,
     mock_push: MagicMock,
     mock_switch: MagicMock,
 ) -> None:
-    _push_docs_sync_branch(
+    _push_docs_branch(
         "auto/docs-update-abc",
         Path("/repo/docs"),
         "docs: sync with the code being released",
@@ -732,7 +732,7 @@ def test_push_docs_sync_branch_pushes_without_force_and_returns_to_dev(
 @patch("functions.release_docs_gate.push_branch", side_effect=ReleaseError("non-fast-forward"))
 @patch("functions.release_docs_gate.commit_paths")
 @patch("functions.release_docs_gate.switch_to_new_branch")
-def test_push_docs_sync_branch_explains_a_rejected_push_and_returns_to_dev(
+def test_push_docs_branch_explains_a_rejected_push_and_returns_to_dev(
     mock_switch_new: MagicMock,
     mock_commit: MagicMock,
     mock_push: MagicMock,
@@ -742,7 +742,7 @@ def test_push_docs_sync_branch_explains_a_rejected_push_and_returns_to_dev(
     # request is gone; say how to clear it instead of overwriting it. And a
     # failed push must never strand the working tree on the throwaway branch.
     with pytest.raises(ReleaseError) as excinfo:
-        _push_docs_sync_branch(
+        _push_docs_branch(
             "auto/docs-update-abc", Path("/repo/docs"), "docs: minor polish"
         )
 
@@ -777,14 +777,14 @@ def test_open_docs_pr_creates_a_pr_against_dev(mock_api: MagicMock) -> None:
 
 
 @patch("functions.release_docs_gate.github_api")
-def test_find_open_docs_sync_pr_queries_the_branch_into_dev(
+def test_find_open_docs_pr_queries_the_branch_into_dev(
     mock_api: MagicMock,
 ) -> None:
     mock_api.return_value = [
         {"html_url": "https://github.com/test-owner/test-repo/pull/4"}
     ]
 
-    url = _find_open_docs_sync_pr(
+    url = _find_open_docs_pr(
         MagicMock(),
         RepoSlug(owner="test-owner", repo="test-repo"),
         "auto/docs-update-abc",
@@ -798,11 +798,11 @@ def test_find_open_docs_sync_pr_queries_the_branch_into_dev(
 
 
 @patch("functions.release_docs_gate.github_api", return_value=[])
-def test_find_open_docs_sync_pr_returns_none_when_there_is_no_pr(
+def test_find_open_docs_pr_returns_none_when_there_is_no_pr(
     mock_api: MagicMock,
 ) -> None:
     assert (
-        _find_open_docs_sync_pr(
+        _find_open_docs_pr(
             MagicMock(),
             RepoSlug(owner="test-owner", repo="test-repo"),
             "auto/docs-update-abc",

@@ -248,7 +248,7 @@ def _docs_polish_pr_body(
     return "\n".join(lines)
 
 
-def _find_open_docs_sync_pr(
+def _find_open_docs_pr(
     client: httpx.Client,
     slug: RepoSlug,
     branch: str,
@@ -274,7 +274,7 @@ def _find_open_docs_sync_pr(
     return None
 
 
-def _push_docs_sync_branch(branch: str, docs_dir: Path, message: str) -> None:
+def _push_docs_branch(branch: str, docs_dir: Path, message: str) -> None:
     """Commit the regenerated docs onto *branch* as *message* and push it.
 
     The branch is cut from the release commit and carries the working-tree edits
@@ -375,7 +375,7 @@ def _close_blocking_docs_gaps(
         console.print(f"  [bold]{change.file}[/bold]: {change.change}")
 
     branch = f"{DOCS_SYNC_BRANCH_PREFIX}{release_commit[:12]}"
-    pr_url = _find_open_docs_sync_pr(client, slug, branch)
+    pr_url = _find_open_docs_pr(client, slug, branch)
     if pr_url:
         console.print(
             "[yellow]A docs pull request is already open for this commit.[/yellow]"
@@ -401,7 +401,7 @@ def _close_blocking_docs_gaps(
         )
         return
 
-    _push_docs_sync_branch(branch, docs_dir, "docs: sync with the code being released")
+    _push_docs_branch(branch, docs_dir, "docs: sync with the code being released")
     pr_url = _open_docs_pr(
         client,
         slug,
@@ -427,7 +427,7 @@ def _open_minor_docs_pr(
     nothing to open.
     """
     branch = f"{DOCS_POLISH_BRANCH_PREFIX}{release_commit[:12]}"
-    pr_url = _find_open_docs_sync_pr(client, slug, branch)
+    pr_url = _find_open_docs_pr(client, slug, branch)
     if pr_url:
         console.print(
             f"[yellow]A docs-polish pull request is already open for this "
@@ -446,7 +446,7 @@ def _open_minor_docs_pr(
         )
         return
 
-    _push_docs_sync_branch(branch, docs_dir, "docs: minor polish")
+    _push_docs_branch(branch, docs_dir, "docs: minor polish")
     pr_url = _open_docs_pr(
         client,
         slug,
