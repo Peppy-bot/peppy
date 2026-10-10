@@ -13,7 +13,7 @@ use super::builder::FeedbackStream;
 use crate::encoding::endpoints::{read_node_endpoints, write_node_endpoints};
 use crate::encoding::{
     capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
-    read_text_list, required_text, write_text_list,
+    read_cardinality, read_optional_copy, read_text_list, required_text, write_text_list,
 };
 use crate::graph::InstanceEndpoint;
 
@@ -599,25 +599,14 @@ fn read_pair_requests(
                     remote.get_peer_role()?.to_str()?,
                     "NodeRunGoal pair request remote_peer.peer_role",
                 )?,
-                peer_cardinality: required_text(
+                peer_cardinality: read_cardinality(
                     remote.get_peer_cardinality()?.to_str()?,
                     "NodeRunGoal pair request remote_peer.peer_cardinality",
-                )?
-                .parse()
-                .map_err(|spelling| {
-                    crate::Error::Decoding(format!(
-                        "NodeRunGoal pair request remote_peer.peer_cardinality `{spelling}` is none \
-                         of one, zero_or_one, one_or_more, zero_or_more"
-                    ))
-                })?,
-                peer_copy: match remote.get_peer_copy()?.to_str()? {
-                    "" => None,
-                    copy => Some(config::runtime::Name::new(copy).map_err(|e| {
-                        crate::Error::Decoding(format!(
-                            "NodeRunGoal pair request remote_peer.peer_copy is not a name: {e}"
-                        ))
-                    })?),
-                },
+                )?,
+                peer_copy: read_optional_copy(
+                    remote.get_peer_copy()?.to_str()?,
+                    "NodeRunGoal pair request remote_peer.peer_copy",
+                )?,
             })
         };
         pairs
@@ -993,6 +982,7 @@ impl crate::encoding::Wire for NodeRunResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::decoding_error;
 
     // --- NodeRunGoal ---
 
@@ -1284,30 +1274,91 @@ mod tests {
         );
     }
 
+    /// A goal whose one requested pair names a peer on another machine, with
+    /// the planner's verdict about that peer.
+    fn goal_with_a_remote_peer() -> NodeRunGoal {
+        NodeRunGoal::new(plan("reflex_inst"), "reactive_policy", "v1", 0).with_requested_pairs(
+            [(
+                "deliberation".to_owned(),
+                vec![
+                    PairTarget::pinned("planner_inst", "deliberation", "cn-atlas-h100")
+                        .with_remote_peer(RemotePeerPairing {
+                            pairing_name: "deliberation_link".to_owned(),
+                            pairing_tag: "v1".to_owned(),
+                            peer_role: "planner".to_owned(),
+                            peer_cardinality: config::node::Cardinality::ZeroOrMore,
+                            peer_copy: Some(config::runtime::Name::new("atlas").unwrap()),
+                        }),
+                ],
+            )]
+            .into_iter()
+            .collect(),
+        )
+    }
+
+    /// The wire form of [`goal_with_a_remote_peer`] with the verdict of its
+    /// pair edited, for refusals the typed verdict cannot express.
+    fn remote_peer_goal_payload_with(
+        edit: impl FnOnce(node_capnp::remote_peer_pairing::Builder<'_>),
+    ) -> Payload {
+        let payload = goal_with_a_remote_peer().encode().expect("encode");
+        let reader = decode_message(payload.as_ref()).expect("decode");
+        let mut message = Builder::new_default();
+        message
+            .set_root(
+                reader
+                    .get_root::<node_capnp::node_run_goal::Reader>()
+                    .expect("root"),
+            )
+            .expect("copy the goal");
+        let goal = message
+            .get_root::<node_capnp::node_run_goal::Builder>()
+            .expect("root");
+        let pair = goal.get_requested_pairs().expect("requested pairs").get(0);
+        edit(pair.get_remote_peer().expect("remote peer"));
+        encode_message(&message).expect("encode")
+    }
+
+    /// The peer's cardinality decides whether one pair takes its slot, so a
+    /// spelling the receiver does not know is refused rather than guessed.
+    #[test]
+    fn a_remote_peer_verdict_with_an_unknown_cardinality_is_refused() {
+        let payload =
+            remote_peer_goal_payload_with(|mut remote| remote.set_peer_cardinality("many"));
+        assert_eq!(
+            decoding_error(NodeRunGoal::decode(&payload)),
+            "NodeRunGoal pair request remote_peer.peer_cardinality `many` is none of one, \
+             zero_or_one, one_or_more, zero_or_more"
+        );
+    }
+
+    /// An empty copy is "outside a copy"; any other text must be a name.
+    #[test]
+    fn a_remote_peer_verdict_reads_the_peer_copy_as_an_optional_name() {
+        let outside_a_copy = remote_peer_goal_payload_with(|mut remote| remote.set_peer_copy(""));
+        let decoded = NodeRunGoal::decode(&outside_a_copy).expect("decode");
+        let remote = decoded.requested_pairs["deliberation"][0]
+            .remote_peer
+            .as_ref()
+            .expect("the verdict survives");
+        assert_eq!(remote.peer_copy, None);
+
+        let not_a_name =
+            remote_peer_goal_payload_with(|mut remote| remote.set_peer_copy("bad/name"));
+        let message = decoding_error(NodeRunGoal::decode(&not_a_name));
+        assert!(
+            message.starts_with("NodeRunGoal pair request remote_peer.peer_copy is not a name: "),
+            "got: {message}"
+        );
+    }
+
     /// The coordinator's verdict about a peer this daemon cannot inspect is
     /// what makes a cross-machine pair committable at all: the receiver holds
     /// no manifest for the far side, so the pairing identity and the peer's
     /// role have to arrive with the request.
     #[test]
     fn a_remote_peer_verdict_survives_the_wire() {
-        let goal = NodeRunGoal::new(plan("reflex_inst"), "reactive_policy", "v1", 0)
-            .with_requested_pairs(
-                [(
-                    "deliberation".to_owned(),
-                    vec![
-                        PairTarget::pinned("planner_inst", "deliberation", "cn-atlas-h100")
-                            .with_remote_peer(RemotePeerPairing {
-                                pairing_name: "deliberation_link".to_owned(),
-                                pairing_tag: "v1".to_owned(),
-                                peer_role: "planner".to_owned(),
-                                peer_cardinality: config::node::Cardinality::ZeroOrMore,
-                                peer_copy: Some(config::runtime::Name::new("atlas").unwrap()),
-                            }),
-                    ],
-                )]
-                .into_iter()
-                .collect(),
-            );
+        let goal = goal_with_a_remote_peer();
         let decoded = NodeRunGoal::decode(&goal.encode().expect("encode")).expect("decode");
         assert_eq!(decoded, goal);
         let remote = decoded.requested_pairs["deliberation"][0]

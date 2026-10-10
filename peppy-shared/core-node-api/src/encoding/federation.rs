@@ -17,8 +17,8 @@ use crate::{Payload, Result};
 
 use crate::encoding::{
     ObservationTarget, ObservationTargets, capnp_list_len, decode_message, encode_message,
-    optional_text, read_core_node_name, read_name, read_name_list, read_text_list, required_text,
-    required_text_list, write_text_list,
+    optional_text, read_cardinality, read_core_node_name, read_name, read_name_list,
+    read_optional_copy, read_text_list, required_text, required_text_list, write_text_list,
 };
 
 /// Reserves one participant for one launch, carrying the pins for every
@@ -725,22 +725,11 @@ impl PairCommitRequest {
             peer: read_instance_address(request.get_peer()?, "peer")?,
             peer_link_id: required_text(request.get_peer_link_id()?.to_str()?, "peer_link_id")?,
             peer_role: required_text(request.get_peer_role()?.to_str()?, "peer_role")?,
-            peer_cardinality: required_text(
+            peer_cardinality: read_cardinality(
                 request.get_peer_cardinality()?.to_str()?,
                 "peer_cardinality",
-            )?
-            .parse()
-            .map_err(|spelling| {
-                crate::Error::Decoding(format!(
-                    "peer_cardinality `{spelling}` is none of one, zero_or_one, one_or_more, zero_or_more"
-                ))
-            })?,
-            peer_copy: match request.get_peer_copy()?.to_str()? {
-                "" => None,
-                copy => Some(config::runtime::Name::new(copy).map_err(|e| {
-                    crate::Error::Decoding(format!("peer_copy is not a name: {e}"))
-                })?),
-            },
+            )?,
+            peer_copy: read_optional_copy(request.get_peer_copy()?.to_str()?, "peer_copy")?,
         })
     }
 }
@@ -914,6 +903,7 @@ impl crate::encoding::Wire for RelationshipNotificationAck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::decoding_error;
 
     /// The tag a launch stamps on an instance of a copy: the copy's name and
     /// the id its fragment wrote.
@@ -1375,6 +1365,55 @@ mod tests {
                 .unwrap_or_else(|| panic!("a blank `{field}` must be refused"));
             assert!(error.to_string().contains(field), "got: {error}");
         }
+    }
+
+    /// The wire form of [`pair_commit`] with its fields edited, for refusals
+    /// the typed request cannot express.
+    fn pair_commit_payload_with(
+        edit: impl FnOnce(federation_capnp::pair_commit_request::Builder<'_>),
+    ) -> Payload {
+        let payload = pair_commit().encode().expect("encode");
+        let reader = decode_message(payload.as_ref()).expect("decode");
+        let mut message = Builder::new_default();
+        message
+            .set_root(
+                reader
+                    .get_root::<federation_capnp::pair_commit_request::Reader>()
+                    .expect("root"),
+            )
+            .expect("copy the request");
+        edit(
+            message
+                .get_root::<federation_capnp::pair_commit_request::Builder>()
+                .expect("root"),
+        );
+        encode_message(&message).expect("encode")
+    }
+
+    /// The peer's cardinality decides whether one pair takes its slot, so a
+    /// spelling the receiver does not know is refused rather than guessed.
+    #[test]
+    fn pair_commit_decode_refuses_an_unknown_peer_cardinality() {
+        let payload = pair_commit_payload_with(|mut request| request.set_peer_cardinality("many"));
+        assert_eq!(
+            decoding_error(PairCommitRequest::decode(payload.as_ref())),
+            "peer_cardinality `many` is none of one, zero_or_one, one_or_more, zero_or_more"
+        );
+    }
+
+    /// An empty copy is "outside a copy"; any other text must be a name.
+    #[test]
+    fn pair_commit_decode_reads_the_peer_copy_as_an_optional_name() {
+        let outside_a_copy = pair_commit_payload_with(|mut request| request.set_peer_copy(""));
+        let decoded = PairCommitRequest::decode(outside_a_copy.as_ref()).expect("decode");
+        assert_eq!(decoded.peer_copy, None);
+
+        let not_a_name = pair_commit_payload_with(|mut request| request.set_peer_copy("bad/name"));
+        let message = decoding_error(PairCommitRequest::decode(not_a_name.as_ref()));
+        assert!(
+            message.starts_with("peer_copy is not a name: "),
+            "got: {message}"
+        );
     }
 
     #[test]

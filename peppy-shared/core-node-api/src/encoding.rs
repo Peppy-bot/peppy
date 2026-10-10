@@ -139,6 +139,31 @@ pub(crate) fn read_core_node_name(
         .map_err(|e| crate::Error::Decoding(format!("`{field}`: {e}")))
 }
 
+/// A required text field that must spell a
+/// [`Cardinality`](config::node::Cardinality); the refusal names the field and
+/// lists the spellings it accepts.
+pub(crate) fn read_cardinality(value: &str, field: &str) -> Result<config::node::Cardinality> {
+    required_text(value, field)?.parse().map_err(|spelling| {
+        crate::Error::Decoding(format!(
+            "{field} `{spelling}` is none of one, zero_or_one, one_or_more, zero_or_more"
+        ))
+    })
+}
+
+/// The copy a pair endpoint belongs to: empty text is outside a copy, and any
+/// other text must be a [`Name`](config::runtime::Name).
+pub(crate) fn read_optional_copy(
+    value: &str,
+    field: &str,
+) -> Result<Option<config::runtime::Name>> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    config::runtime::Name::new(value)
+        .map(Some)
+        .map_err(|e| crate::Error::Decoding(format!("{field} is not a name: {e}")))
+}
+
 /// Refuses an empty entry in a list whose members each name something: a
 /// defaulted string in such a list is a hole, not a value.
 pub(crate) fn required_text_list(values: Vec<String>, field: &str) -> Result<Vec<String>> {
@@ -311,6 +336,25 @@ mod tests {
         assert_eq!(
             required_text("value", "MyField").expect("non-empty"),
             "value"
+        );
+    }
+
+    #[test]
+    fn read_cardinality_reads_every_spelling_and_refuses_an_empty_one() {
+        for cardinality in [
+            config::node::Cardinality::One,
+            config::node::Cardinality::ZeroOrOne,
+            config::node::Cardinality::OneOrMore,
+            config::node::Cardinality::ZeroOrMore,
+        ] {
+            assert_eq!(
+                read_cardinality(cardinality.as_str(), "MyField").expect("a known spelling"),
+                cardinality
+            );
+        }
+        assert_eq!(
+            decoding_error(read_cardinality("", "MyField")),
+            "`MyField` is empty"
         );
     }
 
