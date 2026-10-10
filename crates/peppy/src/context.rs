@@ -88,10 +88,8 @@ impl AppContext {
     /// discarded.
     pub fn with_messenger(root_dir: impl AsRef<Path>, messenger: Arc<Mutex<Messenger>>) -> Self {
         Self {
-            root_dir: PathBuf::from(root_dir.as_ref()),
-            daemon_state_path: None,
-            core_node_override: None,
             messenger_handle: OnceCell::new_with(Some(MessengerHandle::from_shared(messenger))),
+            ..Self::new(root_dir)
         }
     }
 
