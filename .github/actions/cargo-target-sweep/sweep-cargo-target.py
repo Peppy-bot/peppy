@@ -259,9 +259,15 @@ def write_record(target_dir: Path, live: LiveUnits) -> None:
     os.replace(partial, record)
 
 
+def is_directory_not_symlink(path: Path) -> bool:
+    """Whether `path` is a directory itself: the sweep removes a symlink and
+    never follows it."""
+    return path.is_dir() and not path.is_symlink()
+
+
 def remove(path: Path) -> Removal:
     size = size_of(path)
-    if path.is_dir() and not path.is_symlink():
+    if is_directory_not_symlink(path):
         shutil.rmtree(path)
     else:
         path.unlink()
@@ -269,7 +275,7 @@ def remove(path: Path) -> Removal:
 
 
 def size_of(path: Path) -> int:
-    if not path.is_dir() or path.is_symlink():
+    if not is_directory_not_symlink(path):
         return path.lstat().st_size
     total = 0
     for directory, _, files in os.walk(path):
@@ -368,7 +374,7 @@ def prune(target_root: Path, live_dirs: Iterable[PurePosixPath]) -> Removal:
             relative = PurePosixPath(entry.relative_to(target_root).as_posix())
             if relative in live:
                 continue
-            if relative in on_the_path and entry.is_dir() and not entry.is_symlink():
+            if relative in on_the_path and is_directory_not_symlink(entry):
                 pending.append(entry)
                 continue
             removed += remove(entry)
