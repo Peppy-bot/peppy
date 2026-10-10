@@ -423,29 +423,12 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
 
     // Pre-state: the node is in the stack and is in the `Added` stage
     // (not yet built).
-    let info_response = poll(
-        &NodeInfoRequest::new(node_name, "v1"),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info request should complete");
-    match info_response {
-        NodeInfoResponse::Found(info) => {
-            assert_eq!(
-                info.stage,
-                NodeStage::Added,
-                "node should be in Added stage before `run -b`, got {:?}",
-                info.stage
-            );
-        }
-        NodeInfoResponse::NotInStack => {
-            panic!("node should be in the stack before `run -b`")
-        }
-    }
+    let stage = node_stage(messenger_handle, &core_node_name, node_name).await;
+    assert_eq!(
+        stage,
+        NodeStage::Added,
+        "node should be in Added stage before `run -b`, got {stage:?}"
+    );
 
     // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
@@ -533,29 +516,12 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         .expect("messenger handle should be available");
 
     // Sanity check: node is in `Ready` stage before we run `-b`.
-    let info_response = poll(
-        &NodeInfoRequest::new(node_name, "v1"),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info request should complete");
-    match info_response {
-        NodeInfoResponse::Found(info) => {
-            assert_eq!(
-                info.stage,
-                NodeStage::Ready,
-                "node should be in Ready stage before `run -b`, got {:?}",
-                info.stage
-            );
-        }
-        NodeInfoResponse::NotInStack => {
-            panic!("node should be in the stack before `run -b`")
-        }
-    }
+    let stage = node_stage(messenger_handle, &core_node_name, node_name).await;
+    assert_eq!(
+        stage,
+        NodeStage::Ready,
+        "node should be in Ready stage before `run -b`, got {stage:?}"
+    );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
@@ -602,6 +568,29 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         "after `run -b`",
     )
     .await;
+}
+
+/// The stage `node info` reports for `node_name:v1`. Fails the test when the
+/// node is not in the stack.
+async fn node_stage(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+) -> NodeStage {
+    let response = poll(
+        &NodeInfoRequest::new(node_name, "v1"),
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_info request should complete");
+    let NodeInfoResponse::Found(info) = response else {
+        panic!("node should be in the stack before `run -b`")
+    };
+    info.stage
 }
 
 /// Hand-crafts a peppy.json5 declaring `depends_on.nodes` against
