@@ -23,17 +23,16 @@ use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::AppContext;
-use peppy::test_support::ServeCommandEmulation;
+use peppy::test_support::{InstanceLifetime, ServeCommandEmulation};
 use peppylib::MessengerHandle;
 use peppylib::messaging::{ObservationState, ObservedMemberState};
 use peppylib::services::observation_update::listen_for_observation_update;
 use tokio::sync::watch;
 
-use peppy::test_support::InstanceLifetime;
-
 use super::common::{
-    add_built_node, emulate_cooperative_shutdown, emulate_startup_services, node_run_command,
-    pairing_node_config, seed_pairing_repo, serve_app_context, test_node_target,
+    add_built_node, emulate_cooperative_shutdown, emulate_pairing_instance,
+    emulate_startup_services, node_run_command, observer_slot_channels, pairing_node_config,
+    seed_pairing_repo, serve_app_context, test_node_target,
 };
 
 /// An observer manifest named `name`, running `run_cmd` (a json5 array): it
@@ -149,7 +148,7 @@ async fn emulate_observer_services(
     observer_link_id: &str,
 ) -> watch::Receiver<ObservationState> {
     emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
-    let (slots, mut receivers) = super::common::observer_slot_channels(&[observer_link_id]);
+    let (slots, mut receivers) = observer_slot_channels(&[observer_link_id]);
     let rx = receivers
         .remove(observer_link_id)
         .expect("one watch per observer slot");
@@ -741,9 +740,6 @@ async fn service_reset_clears_the_observation_registry() {
 /// end that holds no pair is refused with the fix.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_observer_naming_a_pairs_other_end_is_pinned_to_it() {
-    use super::common::{emulate_pairing_instance, pairing_node_config};
-    use peppy::test_support::InstanceLifetime;
-
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
