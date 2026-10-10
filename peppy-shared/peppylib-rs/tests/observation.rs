@@ -208,9 +208,8 @@ async fn expect_message_after_redeclare(
     }
     // The loop may have queued copies behind the one that arrived; drop them so
     // the next expectation reads a message it actually caused.
-    while tokio::time::timeout(Duration::from_millis(50), subscription.on_next_message())
-        .await
-        .is_ok()
+    while let Ok(Some(_)) =
+        tokio::time::timeout(Duration::from_millis(50), subscription.on_next_message()).await
     {}
 }
 
