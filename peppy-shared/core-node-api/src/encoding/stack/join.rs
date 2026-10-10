@@ -50,7 +50,7 @@ impl ArgumentOverride {
         argument: Name,
         value: AnyType,
     ) -> std::result::Result<Self, ArgumentOverrideError> {
-        if !finite(&value) {
+        if !has_only_finite_numbers(&value) {
             return Err(ArgumentOverrideError::NonFinite {
                 instance_id,
                 argument,
@@ -111,11 +111,11 @@ impl std::str::FromStr for ArgumentOverride {
 }
 
 /// Whether every number the value holds, at any depth, is finite.
-fn finite(value: &AnyType) -> bool {
+fn has_only_finite_numbers(value: &AnyType) -> bool {
     match value {
         AnyType::Float(value) => value.is_finite(),
-        AnyType::Array(values) => values.iter().all(finite),
-        AnyType::Object(values) => values.values().all(finite),
+        AnyType::Array(values) => values.iter().all(has_only_finite_numbers),
+        AnyType::Object(values) => values.values().all(has_only_finite_numbers),
         AnyType::Null
         | AnyType::Bool(_)
         | AnyType::String(_)
