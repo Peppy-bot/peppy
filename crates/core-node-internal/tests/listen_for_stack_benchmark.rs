@@ -255,3 +255,84 @@ async fn stack_benchmark_distinguishes_edges_by_link_id() {
         "the two links must be distinguishable by link_id"
     );
 }
+
+fn action_and_topic_provider_config() -> &'static str {
+    r#"{
+        peppy_schema: "node/v1",
+        manifest: { name: "bench_provider", tag: "v1" },
+        interfaces: {
+            topics: { emits: [{ name: "bench_topic" }] },
+            actions: { exposes: [{ name: "bench_act" }] }
+        },
+        execution: { language: "rust", run_cmd: ["sleep", "10"] }
+    }"#
+}
+
+fn action_and_topic_consumer_config() -> &'static str {
+    r#"{
+        peppy_schema: "node/v1",
+        manifest: {
+            name: "bench_consumer",
+            tag: "v1",
+            depends_on: { nodes: [{ name: "bench_provider", tag: "v1", link_id: "prov" }] }
+        },
+        interfaces: {
+            topics: { consumes: [{ link_id: "prov", name: "bench_topic" }] },
+            actions: { consumes: [{ link_id: "prov", name: "bench_act" }] }
+        },
+        execution: { language: "rust", run_cmd: ["sleep", "10"] }
+    }"#
+}
+
+/// Each edge kind is measured the way its kind calls for, in edge order: a
+/// topic edge yields a probe of its producer node followed by the delivery
+/// measurement, and an action edge yields one action probe. No producer
+/// instance runs, so every row is empty, but the measurement each row names
+/// does not depend on a reply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_benchmark_measures_each_edge_kind_its_own_way() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let provider = NodeConfigParser::from_content(action_and_topic_provider_config())
+        .expect("provider parses");
+    started
+        .node_stack
+        .push_config(provider, false, "/tmp/bench_provider")
+        .expect("push provider");
+    let consumer = NodeConfigParser::from_content(action_and_topic_consumer_config())
+        .expect("consumer parses");
+    started
+        .node_stack
+        .push_config(consumer, false, "/tmp/bench_consumer")
+        .expect("push consumer");
+
+    let goal = StackBenchmarkGoal::new(2, 0, 200);
+    let (result, _) = run_benchmark_goal(&started, goal).await;
+
+    assert!(result.success, "benchmark should succeed");
+    let measured: Vec<(&str, InterfaceKind, MeasurementKind)> = result
+        .rows
+        .iter()
+        .map(|row| (row.interface_name.as_str(), row.kind, row.measurement))
+        .collect();
+    assert_eq!(
+        measured,
+        [
+            (
+                "bench_topic",
+                InterfaceKind::Topic,
+                MeasurementKind::NodeProbe
+            ),
+            (
+                "bench_topic",
+                InterfaceKind::Topic,
+                MeasurementKind::TopicDelivery
+            ),
+            (
+                "bench_act",
+                InterfaceKind::Action,
+                MeasurementKind::ActionProbe
+            ),
+        ]
+    );
+}
