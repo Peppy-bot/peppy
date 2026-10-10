@@ -149,13 +149,7 @@ fn report_block(
         &PAIRING_HEADERS,
         &report.participants,
         |hit| &hit.node,
-        |hit| {
-            vec![
-                hit.role.clone(),
-                slot_cell(&hit.link_id, Some(hit.cardinality.as_str()), colorize),
-                pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
-            ]
-        },
+        |hit| participant_cells(hit, colorize),
         colorize,
         max_width,
     ));
@@ -223,16 +217,20 @@ fn peer_section(slot: &SlotPeers, colorize: bool, max_width: Option<usize>) -> S
         &PAIRING_HEADERS,
         &slot.peers,
         |hit| &hit.node,
-        |hit| {
-            vec![
-                hit.role.clone(),
-                slot_cell(&hit.link_id, Some(hit.cardinality.as_str()), colorize),
-                pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
-            ]
-        },
+        |hit| participant_cells(hit, colorize),
         colorize,
         max_width,
     )
+}
+
+/// The ROLE, SLOT and PIN cells of one participant slot, shared by the
+/// pairing's own report and a node's slot peers so the two read alike.
+fn participant_cells(hit: &Participant, colorize: bool) -> Vec<String> {
+    vec![
+        hit.role.clone(),
+        slot_cell(&hit.link_id, Some(hit.cardinality.as_str()), colorize),
+        pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
+    ]
 }
 
 /// Where one matching document is stored: the copy a plain reference
