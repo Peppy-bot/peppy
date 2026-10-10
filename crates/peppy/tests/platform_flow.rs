@@ -172,6 +172,10 @@ fn mock_workspaces_and_projects(server: &MockServer) {
 /// machine enrolls under.
 const CORE_NODE: &str = "cn-local-daemon";
 
+/// The router id of the daemon while it runs under the `local` namespace,
+/// before an enrollment and after an unenrollment.
+const LOCAL_ROUTER_ID: &str = "7f3a9c1e";
+
 /// `POST .../router/peers` of `project` in `workspace`, answering a signed
 /// enrollment with a leaf valid from `test_support::ISSUED_AT` to
 /// `test_support::EXPIRES_AT`. Only a signing request for [`CORE_NODE`] is
@@ -327,7 +331,7 @@ fn write_state(dir: &tempfile::TempDir, state: &DaemonState) {
 /// Writes the state of a daemon that died under `dir`: a pid outside the
 /// valid range names no live process.
 fn write_dead_daemon_state(dir: &tempfile::TempDir) {
-    let mut stale = daemon_state("local", Some("7f3a9c1e"));
+    let mut stale = daemon_state("local", Some(LOCAL_ROUTER_ID));
     stale.daemon_pid = Some(u32::MAX);
     write_state(dir, &stale);
 }
@@ -337,7 +341,7 @@ fn write_dead_daemon_state(dir: &tempfile::TempDir) {
 /// an enrollment finds no daemon there, which the command notes.
 fn daemon_dir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("temp dir");
-    write_daemon_state(&dir, "local", "7f3a9c1e");
+    write_daemon_state(&dir, "local", LOCAL_ROUTER_ID);
     dir
 }
 
@@ -346,9 +350,13 @@ fn daemon_dir() -> tempfile::TempDir {
 /// on the control socket, as for [`daemon_dir`].
 fn enrollable_dir(server: &MockServer) -> tempfile::TempDir {
     let dir = authenticated_dir(server);
-    write_daemon_state(&dir, "local", "7f3a9c1e");
+    write_daemon_state(&dir, "local", LOCAL_ROUTER_ID);
     dir
 }
+
+/// The reply of a daemon that came back federated with the project's router.
+const APPLIED_ROUTER_REPLY: &str =
+    "{\"status\":\"ok\",\"applied\":\"tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447\"}\n";
 
 /// A stub daemon on the control socket under `dir`. It answers the first poke
 /// with `restarting`, then rewrites the daemon state to the identity the
@@ -645,12 +653,7 @@ fn login_enrolls_in_the_only_project_with_no_question() {
     mock_workspaces_and_projects(&server);
     let enroll = mock_enroll(&server, ZID);
     let dir = daemon_dir();
-    let stub = stub_restarting_daemon(
-        &dir,
-        PROJECT,
-        ZID,
-        "{\"status\":\"ok\",\"applied\":\"tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447\"}\n",
-    );
+    let stub = stub_restarting_daemon(&dir, PROJECT, ZID, APPLIED_ROUTER_REPLY);
 
     login(&server, &dir).execute(&ctx()).expect("login");
 
@@ -1645,12 +1648,7 @@ fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
     mock_workspaces_and_projects(&server);
     let enroll = mock_enroll(&server, ZID);
     let dir = enrollable_dir(&server);
-    let stub = stub_restarting_daemon(
-        &dir,
-        PROJECT,
-        ZID,
-        "{\"status\":\"ok\",\"applied\":\"tls/rtr-p.us-east-1.robocloud.dev.peppy.bot:7447\"}\n",
-    );
+    let stub = stub_restarting_daemon(&dir, PROJECT, ZID, APPLIED_ROUTER_REPLY);
 
     enroll_in(&server, &dir, false).expect("enroll");
 
@@ -1758,11 +1756,7 @@ fn enroll_replace_enrolls_anew_then_removes_the_old_peer() {
     let enroll = mock_enroll(&server, ZID);
     let remove_old = server.mock(|when, then| {
         when.method(DELETE).path(format!("{PEERS_PATH}/peer-old"));
-        then.status(202).json_body(json!({
-            "phase": "running", "desired_state": "running", "can_manage_infra": true,
-            "size": "micro", "entitled_sizes": ["micro"], "pending_changes": true,
-            "pending_change_entries": [], "peers": []
-        }));
+        then.status(202).json_body(router_after_a_peer_removal());
     });
     let dir = enrollable_dir(&server);
     write_enrollment(&dir, "peer-old", "7f3a9c1e");
@@ -1962,11 +1956,7 @@ fn unenroll_removes_the_peer_and_the_bundle_and_restarts_the_daemon() {
     let server = MockServer::start();
     let remove = server.mock(|when, then| {
         when.method(DELETE).path(format!("{PEERS_PATH}/peer-1"));
-        then.status(202).json_body(json!({
-            "phase": "running", "desired_state": "running", "can_manage_infra": true,
-            "size": "micro", "entitled_sizes": ["micro"], "pending_changes": true,
-            "pending_change_entries": [], "peers": []
-        }));
+        then.status(202).json_body(router_after_a_peer_removal());
     });
     let dir = authenticated_dir(&server);
     write_enrollment(&dir, "peer-1", ZID);
@@ -1974,7 +1964,7 @@ fn unenroll_removes_the_peer_and_the_bundle_and_restarts_the_daemon() {
     let stub = stub_restarting_daemon(
         &dir,
         "local",
-        "7f3a9c1e",
+        LOCAL_ROUTER_ID,
         "{\"status\":\"ok\",\"applied\":null}\n",
     );
 
@@ -2128,6 +2118,16 @@ fn router_body(phase: &str, first_peer_status: &str) -> serde_json::Value {
         "pending_change_entries": [ { "kind": "peer",
             "description": "peer robot-7 removed", "staged_at": "2026-09-28T10:00:00Z" } ],
         "peers": [ { "id": "peer-1", "status": first_peer_status } ]
+    })
+}
+
+/// The router the platform answers a peer removal with: running, with changes
+/// pending and no peer left.
+fn router_after_a_peer_removal() -> serde_json::Value {
+    json!({
+        "phase": "running", "desired_state": "running", "can_manage_infra": true,
+        "size": "micro", "entitled_sizes": ["micro"], "pending_changes": true,
+        "pending_change_entries": [], "peers": []
     })
 }
 
