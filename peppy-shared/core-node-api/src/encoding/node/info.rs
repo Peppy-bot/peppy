@@ -13,7 +13,9 @@ use crate::node_capnp;
 use crate::{Payload, Result};
 
 use crate::encoding::endpoints::{read_node_endpoints, write_node_endpoints};
-use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
+use crate::encoding::{
+    capnp_list_len, decode_message, encode_message, optional_text, read_text_list, write_text_list,
+};
 
 /// Request payload for the `node_info` service.
 ///
@@ -123,98 +125,11 @@ impl NodeInfoResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let response = builder.init_root::<node_capnp::node_info_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::node_info_response::Builder>();
             match self {
-                NodeInfoResponse::NotInStack => {
-                    // Select the `notInStack :Void` arm of the union.
-                    let mut response = response;
-                    response.set_not_in_stack(());
-                }
-                NodeInfoResponse::Found(info) => {
-                    // `run_log_paths` is documented to be order-aligned with
-                    // `instances`. Reject a mismatch here rather than emit a
-                    // payload that would silently misassociate logs on decode.
-                    if info.run_log_paths.len() != info.instances.len() {
-                        return Err(crate::Error::Encoding(format!(
-                            "run_log_paths length ({}) does not match instances length ({})",
-                            info.run_log_paths.len(),
-                            info.instances.len()
-                        )));
-                    }
-                    let mut found = response.init_found();
-                    let config_json5 = serde_json5::to_string(&info.config).map_err(|e| {
-                        crate::Error::Encoding(format!("failed to serialize config: {}", e))
-                    })?;
-                    found.set_config_json5(&config_json5);
-                    found.set_config_sha256(&info.config_integrity);
-                    found.set_stage(info.stage.as_str());
-                    {
-                        let instance_count =
-                            capnp_list_len(info.instances.len(), "NodeInfo.instances")?;
-                        let mut instances_builder = found.reborrow().init_instances(instance_count);
-                        for (i, inst) in info.instances.iter().enumerate() {
-                            let mut entry = instances_builder.reborrow().get(i as u32);
-                            entry.set_instance_id(&inst.instance_id);
-                            entry.set_state(inst.state.as_str());
-                            entry.set_healthy(inst.healthy);
-                            let slot_bindings_json = if inst.slot_bindings.is_empty() {
-                                String::new()
-                            } else {
-                                serde_json5::to_string(&inst.slot_bindings).map_err(|e| {
-                                    crate::Error::Encoding(format!(
-                                        "failed to serialize slot_bindings for instance `{}`: {}",
-                                        inst.instance_id, e
-                                    ))
-                                })?
-                            };
-                            entry.set_slot_bindings_json(&slot_bindings_json);
-                            let pairing_slots_json = if inst.pairing_slots.is_empty() {
-                                String::new()
-                            } else {
-                                serde_json5::to_string(&inst.pairing_slots).map_err(|e| {
-                                    crate::Error::Encoding(format!(
-                                        "failed to serialize pairing_slots for instance `{}`: {}",
-                                        inst.instance_id, e
-                                    ))
-                                })?
-                            };
-                            entry.set_pairing_slots_json(&pairing_slots_json);
-                            let clock_json = if inst.clock.is_wall() {
-                                String::new()
-                            } else {
-                                serde_json5::to_string(&inst.clock).map_err(|e| {
-                                    crate::Error::Encoding(format!(
-                                        "failed to serialize clock for instance `{}`: {}",
-                                        inst.instance_id, e
-                                    ))
-                                })?
-                            };
-                            entry.set_clock_json(&clock_json);
-                            let endpoint_count =
-                                capnp_list_len(inst.endpoints.len(), "NodeInstanceInfo.endpoints")?;
-                            write_node_endpoints(
-                                entry.init_endpoints(endpoint_count),
-                                &inst.endpoints,
-                            )?;
-                        }
-                    }
-                    // Only set the field when present; leaving it unset writes
-                    // capnp's empty-text default, which `optional_text` decodes
-                    // back to `None`. Borrows via `to_string_lossy` (no owning
-                    // allocation) like the `run_log_paths` loop below.
-                    if let Some(path) = &info.add_log_path {
-                        found.set_add_log_path(path.to_string_lossy().as_ref());
-                    }
-                    {
-                        let run_log_path_count =
-                            capnp_list_len(info.run_log_paths.len(), "NodeInfo.run_log_paths")?;
-                        let mut paths_builder =
-                            found.reborrow().init_run_log_paths(run_log_path_count);
-                        for (i, path) in info.run_log_paths.iter().enumerate() {
-                            paths_builder.set(i as u32, path.to_string_lossy().as_ref());
-                        }
-                    }
-                }
+                // Select the `notInStack :Void` arm of the union.
+                NodeInfoResponse::NotInStack => response.set_not_in_stack(()),
+                NodeInfoResponse::Found(info) => write_node_info(response.init_found(), info)?,
             }
         }
         encode_message(&builder)
@@ -228,90 +143,167 @@ impl NodeInfoResponse {
                 Ok(NodeInfoResponse::NotInStack)
             }
             node_capnp::node_info_response::Which::Found(found) => {
-                let config_json5 = found.get_config_json5()?.to_str()?;
-                let config: NodeConfig = serde_json5::from_str(config_json5).map_err(|e| {
-                    crate::Error::Decoding(format!("failed to deserialize config: {}", e))
-                })?;
-                let config_integrity = found.get_config_sha256()?.to_str()?.to_owned();
-                let stage_str = found.get_stage()?.to_str()?;
-                let stage = NodeStage::from_str(stage_str)
-                    .map_err(|e| crate::Error::Decoding(e.to_string()))?;
-                let instances_reader = found.get_instances()?;
-                let mut instances = Vec::with_capacity(instances_reader.len() as usize);
-                for i in 0..instances_reader.len() {
-                    let entry = instances_reader.get(i);
-                    let state_str = entry.get_state()?.to_str()?;
-                    let state = InstanceState::from_str(state_str)
-                        .map_err(|e| crate::Error::Decoding(e.to_string()))?;
-                    let slot_bindings_json = entry.get_slot_bindings_json()?.to_str()?;
-                    let slot_bindings: SlotBindings = if slot_bindings_json.is_empty() {
-                        BTreeMap::new()
-                    } else {
-                        serde_json5::from_str(slot_bindings_json).map_err(|e| {
-                            crate::Error::Decoding(format!(
-                                "failed to deserialize slot_bindings: {}",
-                                e
-                            ))
-                        })?
-                    };
-                    let pairing_slots_json = entry.get_pairing_slots_json()?.to_str()?;
-                    let pairing_slots: BTreeMap<String, SerializedPairingSlot> =
-                        if pairing_slots_json.is_empty() {
-                            BTreeMap::new()
-                        } else {
-                            serde_json5::from_str(pairing_slots_json).map_err(|e| {
-                                crate::Error::Decoding(format!(
-                                    "failed to deserialize pairing_slots: {}",
-                                    e
-                                ))
-                            })?
-                        };
-                    let clock_json = entry.get_clock_json()?.to_str()?;
-                    let clock: ClockBinding = if clock_json.is_empty() {
-                        ClockBinding::Wall
-                    } else {
-                        serde_json5::from_str(clock_json).map_err(|e| {
-                            crate::Error::Decoding(format!("failed to deserialize clock: {}", e))
-                        })?
-                    };
-                    instances.push(NodeInstanceInfo {
-                        instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
-                        state,
-                        healthy: entry.get_healthy(),
-                        slot_bindings,
-                        pairing_slots,
-                        clock,
-                        endpoints: read_node_endpoints(entry.get_endpoints()?)?,
-                    });
-                }
-                let add_log_path =
-                    optional_text(found.get_add_log_path()?.to_str()?).map(PathBuf::from);
-                let run_log_paths_reader = found.get_run_log_paths()?;
-                let mut run_log_paths = Vec::with_capacity(run_log_paths_reader.len() as usize);
-                for i in 0..run_log_paths_reader.len() {
-                    run_log_paths.push(PathBuf::from(run_log_paths_reader.get(i)?.to_str()?));
-                }
-                // `run_log_paths` is documented to be order-aligned with
-                // `instances`. Reject a mismatched payload instead of handing
-                // back logs misassociated with the wrong instances.
-                if run_log_paths.len() != instances.len() {
-                    return Err(crate::Error::Decoding(format!(
-                        "run_log_paths length ({}) does not match instances length ({})",
-                        run_log_paths.len(),
-                        instances.len()
-                    )));
-                }
-                Ok(NodeInfoResponse::Found(Box::new(NodeInfo {
-                    config,
-                    config_integrity,
-                    stage,
-                    instances,
-                    add_log_path,
-                    run_log_paths,
-                })))
+                Ok(NodeInfoResponse::Found(Box::new(read_node_info(found)?)))
             }
         }
     }
+}
+
+/// Writes a found node into the `found` arm of a `NodeInfoResponse`.
+fn write_node_info(
+    mut found: node_capnp::node_info_response::found::Builder<'_>,
+    info: &NodeInfo,
+) -> Result<()> {
+    // `run_log_paths` is documented to be order-aligned with `instances`.
+    // Reject a mismatch here rather than emit a payload that would silently
+    // misassociate logs on decode.
+    if info.run_log_paths.len() != info.instances.len() {
+        return Err(crate::Error::Encoding(format!(
+            "run_log_paths length ({}) does not match instances length ({})",
+            info.run_log_paths.len(),
+            info.instances.len()
+        )));
+    }
+    let config_json5 = serde_json5::to_string(&info.config)
+        .map_err(|e| crate::Error::Encoding(format!("failed to serialize config: {}", e)))?;
+    found.set_config_json5(&config_json5);
+    found.set_config_sha256(&info.config_integrity);
+    found.set_stage(info.stage.as_str());
+    let instance_count = capnp_list_len(info.instances.len(), "NodeInfo.instances")?;
+    let mut instances = found.reborrow().init_instances(instance_count);
+    for (index, instance) in info.instances.iter().enumerate() {
+        write_node_instance(instances.reborrow().get(index as u32), instance)?;
+    }
+    // Only set the field when present; leaving it unset writes capnp's
+    // empty-text default, which `optional_text` decodes back to `None`.
+    // Borrows via `to_string_lossy` (no owning allocation) like the
+    // `run_log_paths` list below.
+    if let Some(path) = &info.add_log_path {
+        found.set_add_log_path(path.to_string_lossy().as_ref());
+    }
+    let run_log_path_count = capnp_list_len(info.run_log_paths.len(), "NodeInfo.run_log_paths")?;
+    write_text_list(
+        found.init_run_log_paths(run_log_path_count),
+        info.run_log_paths.iter().map(|path| path.to_string_lossy()),
+    );
+    Ok(())
+}
+
+/// Inverse of [`write_node_info`].
+fn read_node_info(found: node_capnp::node_info_response::found::Reader<'_>) -> Result<NodeInfo> {
+    let config: NodeConfig = serde_json5::from_str(found.get_config_json5()?.to_str()?)
+        .map_err(|e| crate::Error::Decoding(format!("failed to deserialize config: {}", e)))?;
+    let config_integrity = found.get_config_sha256()?.to_str()?.to_owned();
+    let stage = NodeStage::from_str(found.get_stage()?.to_str()?)
+        .map_err(|e| crate::Error::Decoding(e.to_string()))?;
+    let instances = found
+        .get_instances()?
+        .iter()
+        .map(read_node_instance)
+        .collect::<Result<Vec<_>>>()?;
+    let add_log_path = optional_text(found.get_add_log_path()?.to_str()?).map(PathBuf::from);
+    let run_log_paths: Vec<PathBuf> = read_text_list(found.get_run_log_paths()?)?
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+    // `run_log_paths` is documented to be order-aligned with `instances`.
+    // Reject a mismatched payload instead of handing back logs misassociated
+    // with the wrong instances.
+    if run_log_paths.len() != instances.len() {
+        return Err(crate::Error::Decoding(format!(
+            "run_log_paths length ({}) does not match instances length ({})",
+            run_log_paths.len(),
+            instances.len()
+        )));
+    }
+    Ok(NodeInfo {
+        config,
+        config_integrity,
+        stage,
+        instances,
+        add_log_path,
+        run_log_paths,
+    })
+}
+
+/// Writes one instance into an initialized `NodeInstanceInfo` builder.
+fn write_node_instance(
+    mut entry: node_capnp::node_instance_info::Builder<'_>,
+    instance: &NodeInstanceInfo,
+) -> Result<()> {
+    let instance_id = &instance.instance_id;
+    entry.set_instance_id(instance_id);
+    entry.set_state(instance.state.as_str());
+    entry.set_healthy(instance.healthy);
+    entry.set_slot_bindings_json(&serialize_instance_field(
+        &instance.slot_bindings,
+        "slot_bindings",
+        instance_id,
+    )?);
+    entry.set_pairing_slots_json(&serialize_instance_field(
+        &instance.pairing_slots,
+        "pairing_slots",
+        instance_id,
+    )?);
+    entry.set_clock_json(&serialize_instance_field(
+        &instance.clock,
+        "clock",
+        instance_id,
+    )?);
+    let endpoint_count = capnp_list_len(instance.endpoints.len(), "NodeInstanceInfo.endpoints")?;
+    write_node_endpoints(entry.init_endpoints(endpoint_count), &instance.endpoints)
+}
+
+/// Inverse of [`write_node_instance`].
+fn read_node_instance(
+    entry: node_capnp::node_instance_info::Reader<'_>,
+) -> Result<NodeInstanceInfo> {
+    let state = InstanceState::from_str(entry.get_state()?.to_str()?)
+        .map_err(|e| crate::Error::Decoding(e.to_string()))?;
+    let slot_bindings =
+        deserialize_instance_field(entry.get_slot_bindings_json()?.to_str()?, "slot_bindings")?;
+    let pairing_slots =
+        deserialize_instance_field(entry.get_pairing_slots_json()?.to_str()?, "pairing_slots")?;
+    let clock = deserialize_instance_field(entry.get_clock_json()?.to_str()?, "clock")?;
+    Ok(NodeInstanceInfo {
+        instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
+        state,
+        healthy: entry.get_healthy(),
+        slot_bindings,
+        pairing_slots,
+        clock,
+        endpoints: read_node_endpoints(entry.get_endpoints()?)?,
+    })
+}
+
+/// Serializes one JSON5 field of an instance. The default value (no slot
+/// bindings, no pairing slots, the wall clock) travels as empty text, which
+/// [`deserialize_instance_field`] reads back as that default.
+fn serialize_instance_field<T: serde::Serialize + Default + PartialEq>(
+    value: &T,
+    field: &str,
+    instance_id: &str,
+) -> Result<String> {
+    if *value == T::default() {
+        return Ok(String::new());
+    }
+    serde_json5::to_string(value).map_err(|e| {
+        crate::Error::Encoding(format!(
+            "failed to serialize {field} for instance `{instance_id}`: {e}"
+        ))
+    })
+}
+
+/// Inverse of [`serialize_instance_field`].
+fn deserialize_instance_field<T: serde::de::DeserializeOwned + Default>(
+    json5: &str,
+    field: &str,
+) -> Result<T> {
+    if json5.is_empty() {
+        return Ok(T::default());
+    }
+    serde_json5::from_str(json5)
+        .map_err(|e| crate::Error::Decoding(format!("failed to deserialize {field}: {e}")))
 }
 
 impl crate::encoding::Wire for NodeInfoRequest {
@@ -325,6 +317,7 @@ impl crate::encoding::Wire for NodeInfoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::decoding_error;
     use config::node::NodeConfigParser;
     use config::runtime::ProducerRef;
 
@@ -511,6 +504,143 @@ mod tests {
             }
             NodeInfoResponse::NotInStack => panic!("expected Found"),
         }
+    }
+
+    /// The clock, the state and the log paths of each instance survive the
+    /// trip, a wall clock included.
+    #[test]
+    fn node_info_response_roundtrips_clock_state_and_log_paths() {
+        let sim_clock = ClockBinding::publisher(config::runtime::ClockDomainId::new(
+            config::runtime::Name::new("robot").expect("valid name"),
+            config::runtime::CoreNodeName::new("cn-sim").expect("valid name"),
+            config::runtime::ClockIncarnation::try_from(7).expect("non-zero"),
+        ));
+        let instance =
+            |instance_id: &str, state: InstanceState, clock: ClockBinding| NodeInstanceInfo {
+                instance_id: instance_id.to_string(),
+                state,
+                healthy: true,
+                slot_bindings: BTreeMap::new(),
+                pairing_slots: BTreeMap::new(),
+                clock,
+                endpoints: Vec::new(),
+            };
+        let info = NodeInfo {
+            config: sample_config_for_roundtrip(),
+            config_integrity: "0".repeat(64),
+            stage: NodeStage::Ready,
+            instances: vec![
+                instance("sim_inst", InstanceState::Running, sim_clock.clone()),
+                instance("wall_inst", InstanceState::Starting, ClockBinding::Wall),
+            ],
+            add_log_path: Some(PathBuf::from("/var/log/add.log")),
+            run_log_paths: vec![
+                PathBuf::from("/var/log/sim_inst.log"),
+                PathBuf::from("/var/log/wall_inst.log"),
+            ],
+        };
+        let encoded = NodeInfoResponse::Found(Box::new(info))
+            .encode()
+            .expect("encoding should succeed");
+        let NodeInfoResponse::Found(decoded) =
+            NodeInfoResponse::decode(&encoded).expect("decoding should succeed")
+        else {
+            panic!("expected Found");
+        };
+        assert_eq!(decoded.config_integrity, "0".repeat(64));
+        assert_eq!(decoded.stage, NodeStage::Ready);
+        assert_eq!(decoded.instances[0].instance_id, "sim_inst");
+        assert_eq!(decoded.instances[0].state, InstanceState::Running);
+        assert_eq!(decoded.instances[0].clock, sim_clock);
+        assert_eq!(decoded.instances[1].instance_id, "wall_inst");
+        assert_eq!(decoded.instances[1].state, InstanceState::Starting);
+        assert_eq!(decoded.instances[1].clock, ClockBinding::Wall);
+        assert_eq!(
+            decoded.add_log_path,
+            Some(PathBuf::from("/var/log/add.log"))
+        );
+        assert_eq!(
+            decoded.run_log_paths,
+            vec![
+                PathBuf::from("/var/log/sim_inst.log"),
+                PathBuf::from("/var/log/wall_inst.log"),
+            ]
+        );
+    }
+
+    /// A found response with one instance, hand-built so a test can write
+    /// what the encoder never writes.
+    fn found_payload_with_one_instance(
+        edit_instance: impl FnOnce(node_capnp::node_instance_info::Builder<'_>),
+        run_log_path_count: u32,
+    ) -> Payload {
+        let mut builder = Builder::new_default();
+        {
+            let response = builder.init_root::<node_capnp::node_info_response::Builder>();
+            let mut found = response.init_found();
+            found.set_config_json5(
+                serde_json5::to_string(&sample_config_for_roundtrip()).expect("serialize config"),
+            );
+            found.set_stage(NodeStage::Ready.as_str());
+            let mut entry = found.reborrow().init_instances(1).get(0);
+            entry.set_instance_id("inst_1");
+            entry.set_state(InstanceState::Running.as_str());
+            edit_instance(entry);
+            let mut paths = found.init_run_log_paths(run_log_path_count);
+            for index in 0..run_log_path_count {
+                paths.set(index, "/var/log/inst_1.log");
+            }
+        }
+        encode_message(&builder).expect("encode")
+    }
+
+    #[test]
+    fn node_info_response_decode_names_the_json5_field_it_cannot_read() {
+        type Corrupt = fn(node_capnp::node_instance_info::Builder<'_>);
+        let fields: [(&str, Corrupt); 3] = [
+            ("slot_bindings", |mut entry| {
+                entry.set_slot_bindings_json("{")
+            }),
+            ("pairing_slots", |mut entry| {
+                entry.set_pairing_slots_json("{")
+            }),
+            ("clock", |mut entry| entry.set_clock_json("{")),
+        ];
+        for (field, corrupt) in fields {
+            let payload = found_payload_with_one_instance(corrupt, 1);
+            let message = decoding_error(NodeInfoResponse::decode(&payload));
+            assert!(
+                message.starts_with(&format!("failed to deserialize {field}: ")),
+                "got: {message}"
+            );
+        }
+    }
+
+    /// `run_log_paths` is order-aligned with `instances`, so a list of
+    /// another length is refused in both directions.
+    #[test]
+    fn node_info_response_refuses_run_log_paths_out_of_step_with_instances() {
+        let info = NodeInfo {
+            config: sample_config_for_roundtrip(),
+            config_integrity: "0".repeat(64),
+            stage: NodeStage::Added,
+            instances: vec![],
+            add_log_path: None,
+            run_log_paths: vec![PathBuf::from("/var/log/orphan.log")],
+        };
+        let error = NodeInfoResponse::Found(Box::new(info))
+            .encode()
+            .expect_err("a log path without an instance must be refused");
+        assert_eq!(
+            error.to_string(),
+            "encoding error: run_log_paths length (1) does not match instances length (0)"
+        );
+
+        let payload = found_payload_with_one_instance(|_| {}, 0);
+        assert_eq!(
+            decoding_error(NodeInfoResponse::decode(&payload)),
+            "run_log_paths length (0) does not match instances length (1)"
+        );
     }
 
     #[test]
