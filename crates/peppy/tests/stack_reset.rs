@@ -1,18 +1,17 @@
-use super::common::{read_daemon_git_hash, stack_graph, write_minimal_node_config};
+use super::common::{
+    read_daemon_git_hash, serve_app_context, stack_graph, write_minimal_node_config,
+};
 use peppy::test_support::ServeCommandEmulation;
-use std::sync::Arc;
 
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{StackCommand, StackCommands};
-use peppy::context::AppContext;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_reset_command_resets_node_stack() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
@@ -31,10 +30,7 @@ async fn service_reset_command_resets_node_stack() {
         &["sh", "-c", "exit 0"],
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     NodeCommand {
         command: NodeCommands::Add {

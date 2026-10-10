@@ -1,11 +1,10 @@
+use super::common::serve_app_context;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
-use std::sync::Arc;
 use std::time::Duration;
 
 use config::node::Toolchain;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName};
-use peppy::context::AppContext;
 
 #[test]
 fn node_cargo_init_command_success() {
@@ -26,10 +25,7 @@ fn node_cargo_init_command_success() {
     let node_name = "test_node";
 
     // Create a new AppContext pointing to the temp directory, using the shared messenger
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging for the node command
     let log_capture = LogCapture::new();
@@ -128,10 +124,7 @@ fn node_cargo_init_with_container_generates_apptainer_def() {
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_node";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -164,10 +157,7 @@ fn node_cargo_init_without_container_omits_apptainer_def() {
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_node";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -201,10 +191,7 @@ fn node_init_with_to_dir_creates_the_node_in_that_directory() {
     let target_dir = tempfile::tempdir().expect("failed to create temp target dir");
     let node_name = "test_node";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(working_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, working_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -255,10 +242,7 @@ fn node_init_refuses_an_existing_node_directory() {
     let existing_node_dir = node_dir.path().join(node_name);
     std::fs::create_dir(&existing_node_dir).expect("failed to create the existing node dir");
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -305,10 +289,7 @@ fn node_uv_init_command_success() {
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_node";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();

@@ -33,7 +33,7 @@ use peppy::test_support::InstanceLifetime;
 
 use super::common::{
     add_built_node, emulate_cooperative_shutdown, emulate_startup_services, node_run_command,
-    pairing_node_config, seed_pairing_repo, test_node_target,
+    pairing_node_config, seed_pairing_repo, serve_app_context, test_node_target,
 };
 
 /// An observer manifest named `name`, running `run_cmd` (a json5 array): it
@@ -206,10 +206,7 @@ async fn setup() -> Fixture {
     let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
     let work_dir = tempfile::tempdir().expect("temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
 
     // Pairing doc into the daemon's repo cache, then both nodes.
     let instances = InstanceLifetime::new();
@@ -650,10 +647,7 @@ async fn service_reset_clears_the_observation_registry() {
     let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
     let work_dir = tempfile::tempdir().expect("temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
@@ -757,10 +751,7 @@ async fn an_observer_naming_a_pairs_other_end_is_pinned_to_it() {
     let core_node_name = serve.core_node_name().to_string();
     let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let work_dir = tempfile::tempdir().expect("temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
     let instances = InstanceLifetime::new();
     let pid_dir = tempfile::tempdir().expect("temp pid dir");
     let repo_dir = tempfile::tempdir().expect("temp repo dir");

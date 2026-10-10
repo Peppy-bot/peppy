@@ -5,11 +5,10 @@ use std::time::Duration;
 
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
-use peppy::context::AppContext;
 use peppylib::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 
-use super::common::{emulate_startup_services, stack_graph, test_node_target};
+use super::common::{emulate_startup_services, serve_app_context, stack_graph, test_node_target};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_command_succeeds() {
@@ -30,10 +29,7 @@ async fn node_stop_command_succeeds() {
     let instance_id = "test_stop_instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();

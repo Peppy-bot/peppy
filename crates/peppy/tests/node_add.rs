@@ -5,14 +5,13 @@ use peppy::commands::Command;
 use peppy::commands::node::{
     AddNodeParams, NodeCommand, NodeCommands, NodeName, TimeoutConfig, add_node,
 };
-use peppy::context::AppContext;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use peppylib::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::common::{emulate_startup_services, stack_graph, test_node_target};
+use super::common::{emulate_startup_services, serve_app_context, stack_graph, test_node_target};
 
 #[test]
 fn node_add_command_succeeds() {
@@ -21,7 +20,6 @@ fn node_add_command_succeeds() {
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
@@ -33,10 +31,7 @@ fn node_add_command_succeeds() {
     let node_name = "test_add_node";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -154,10 +149,7 @@ fn node_add_command_with_run_arg_succeeds() {
     let instance_id = "test_add_run_instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -267,7 +259,6 @@ fn node_add_after_failed_sync_succeeds() {
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
@@ -279,10 +270,7 @@ fn node_add_after_failed_sync_succeeds() {
     let node_name = "test_sync_then_add_node";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -351,10 +339,7 @@ fn node_add_after_failed_sync_succeeds() {
 
     // 4. Run `node sync` on that node to update the `.peppy/git.hash` of the node
     // Create a context for the node directory (sync runs from within the node dir)
-    let sync_ctx = Arc::new(
-        AppContext::with_messenger(&node_path, Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let sync_ctx = serve_app_context(&serve, &node_path);
 
     NodeCommand {
         command: NodeCommands::Sync {
@@ -442,10 +427,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     let instance_id = "test_shutdown_instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -606,10 +588,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     let node_name = "test_overwrite_git_source";
     let instance_id = "test_overwrite_git_instance";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -788,16 +767,12 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_sync_flag_node";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -934,13 +909,9 @@ fn node_add_with_sync_flag_rejects_remote_source() {
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let result = NodeCommand {
         command: NodeCommands::Add {
@@ -1043,16 +1014,12 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
 
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_add_r_unbound_producer";
     let consumer_name = "test_add_r_unbound_consumer";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1175,10 +1142,7 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
     let producer_instance_id = "cam_a";
     let consumer_instance_id = "consumer_inst";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1328,10 +1292,7 @@ fn node_add_with_run_rejects_dead_binding_key() {
     // failure.
     let consumer_instance_id = "deadkey_consumer_inst";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1470,10 +1431,7 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     let bystander_instance_id = "bystander_inst";
     let new_consumer_instance_id = "new_consumer_inst";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1673,10 +1631,7 @@ fn node_add_build_force_supersedes_inflight_build() {
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_force_build_node";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1859,7 +1814,6 @@ fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
@@ -1867,10 +1821,7 @@ fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
     let consumer_name = "optadd_consumer";
     let git_hash = super::common::read_daemon_git_hash(serve.daemon_state_path());
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let recorder_dir = write_run_only_node(
         work_dir.path(),
@@ -1933,16 +1884,12 @@ fn node_add_refuses_optional_dependency_resolvable_nowhere() {
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
 
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let consumer_name = "nowhere_dep_consumer";
     let git_hash = super::common::read_daemon_git_hash(serve.daemon_state_path());
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let consumer_dir = write_run_only_node(
         work_dir.path(),

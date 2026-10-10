@@ -861,10 +861,7 @@ impl Stack {
             .await
             .expect("zenoh serve emulation starts");
         let nodes_dir = tempfile::tempdir().expect("temp nodes dir");
-        let ctx = Arc::new(
-            AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
-                .with_daemon_state_file(serve.daemon_state_path()),
-        );
+        let ctx = super::common::serve_app_context(&serve, nodes_dir.path());
         let peppy_dirs = PeppyDirs::new(serve.temp_dir());
 
         // The daemon runs the built-in server from the installed `peppy`;

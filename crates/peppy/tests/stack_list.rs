@@ -16,7 +16,7 @@ use peppy::commands::node::{
 use peppy::context::AppContext;
 use peppylib::{CoreNodePresenceMessenger, MessengerHandle};
 
-use super::common::{emulate_startup_services, test_node_target};
+use super::common::{emulate_startup_services, serve_app_context, test_node_target};
 
 fn make_consumer_depend_on_provider(
     provider_peppy_json5: &Path,
@@ -147,7 +147,6 @@ async fn node_list_command_succeeds() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
@@ -160,10 +159,7 @@ async fn node_list_command_succeeds() {
     let consumer_name = "test_list_consumer";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -367,14 +363,8 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     let consumer_name = "remote-consumer";
     let provider_instance = "provider-instance";
     let consumer_instance = "consumer-instance";
-    let local_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(local.daemon_state_path()),
-    );
-    let remote_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(remote.daemon_state_path()),
-    );
+    let local_ctx = serve_app_context(&local, work_dir.path());
+    let remote_ctx = serve_app_context(&remote, work_dir.path());
 
     for node_name in [provider_name, consumer_name] {
         NodeCommand {
@@ -472,10 +462,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     .await
     .expect("remote consumer should start");
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(local.temp_dir(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(local.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&local, local.temp_dir());
     let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
         .expect("multi-daemon stack list should succeed");
@@ -552,10 +539,7 @@ async fn stack_list_warns_when_multiple_live_tokens_claim_one_name() {
         CoreNodePresenceMessenger::declare(&handle, "claimed-core", "foreign-instance")
             .await
             .expect("foreign presence should be declared");
-    let ctx = Arc::new(
-        AppContext::with_messenger(daemon.temp_dir(), shared_messenger)
-            .with_daemon_state_file(daemon.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&daemon, daemon.temp_dir());
 
     let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
@@ -601,10 +585,7 @@ async fn stack_list_keeps_healthy_sections_when_an_enumerated_daemon_cannot_answ
     let _stale_claim = CoreNodePresenceMessenger::declare(&handle, "gone-core", "gone-instance")
         .await
         .expect("stale presence should be declared");
-    let ctx = Arc::new(
-        AppContext::with_messenger(daemon.temp_dir(), shared_messenger)
-            .with_daemon_state_file(daemon.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&daemon, daemon.temp_dir());
 
     let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
@@ -646,10 +627,7 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for nodes");
     let node_name = "listed_page_node";
     let instance_id = "listed_page_instance";
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 

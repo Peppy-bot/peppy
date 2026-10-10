@@ -1,14 +1,13 @@
 use config::node::Toolchain;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
-use peppy::context::AppContext;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use peppylib::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::common::{emulate_startup_services, stack_graph, test_node_target};
+use super::common::{emulate_startup_services, serve_app_context, stack_graph, test_node_target};
 
 #[test]
 fn node_remove_command_succeeds() {
@@ -17,7 +16,6 @@ fn node_remove_command_succeeds() {
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
@@ -28,10 +26,7 @@ fn node_remove_command_succeeds() {
     let node_name = "test_remove_node";
     let node_tag = "v1";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -142,10 +137,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     let node_tag = "v1";
     let instance_id = "test_remove_running_instance";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -267,10 +259,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     let node_tag = "v1";
     let instance_id = "test_remove_stop_instances_instance";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();

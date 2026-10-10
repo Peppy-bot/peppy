@@ -13,7 +13,9 @@ use peppylib::MessengerHandle;
 
 use peppylib::core_node::transport::poll;
 
-use super::common::{CALLER_INSTANCE_ID, emulate_startup_services, stack_graph, test_node_target};
+use super::common::{
+    CALLER_INSTANCE_ID, emulate_startup_services, serve_app_context, stack_graph, test_node_target,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_command_succeeds() {
@@ -34,10 +36,7 @@ async fn node_run_command_succeeds() {
     let instance_id = "test_run_instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -187,10 +186,7 @@ async fn node_run_command_with_args_succeeds() {
     let instance_id = "test_run_args_instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -386,10 +382,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     let custom_instance_id = "my-custom-instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -541,10 +534,7 @@ async fn node_run_refuses_an_instance_id_that_is_not_a_valid_name() {
         .await
         .expect("failed to create serve emulation");
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let msg = NodeCommand {
         command: NodeCommands::Run {
@@ -589,10 +579,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     let node_name = "test_run_b_unbuilt_node";
     let instance_id = "test_run_b_unbuilt_instance";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -739,10 +726,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     let node_name = "test_run_b_built_node";
     let instance_id = "test_run_b_built_instance";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1035,17 +1019,13 @@ async fn node_run_rejects_unbound_slots() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
 
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_bind_reject_producer";
     let consumer_name = "test_bind_reject_consumer";
     let instance_id = "consumer_inst";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1115,10 +1095,7 @@ async fn node_run_bind_rejects_dead_key() {
     let producer_instance_id = "cam_a";
     let consumer_instance_id = "consumer_inst";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
     add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
@@ -1206,10 +1183,7 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
     let producer_right_id = "cam_right";
     let consumer_instance_id = "consumer_inst";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
     add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
@@ -1322,10 +1296,7 @@ async fn node_run_bind_rejects_target_mismatch() {
     let wrong_instance_id = "wrong_prod_inst";
     let consumer_instance_id = "consumer_inst";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
     add_built_producer(&node_ctx, work_dir.path(), expected_producer, &instances).await;
@@ -1428,10 +1399,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     let producer_extra_id = "cam_extra";
     let consumer_instance_id = "cons_a_inst";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
     add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
@@ -1581,10 +1549,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     let consumer_a_instance_id = "cons_a_inst";
     let consumer_b_instance_id = "cons_b_inst";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
     add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
@@ -1729,10 +1694,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     let consumer_inst_2 = "cons_inst_2";
     let consumer_inst_3_bad = "cons_inst_3";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
     add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
@@ -1908,10 +1870,7 @@ async fn node_run_covers_a_zero_or_one_slot_by_link_or_vacancy() {
     let producer_instance_id = "cam_a";
     let spare_producer_instance_id = "cam_b";
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     let instances = InstanceLifetime::new();
     add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
@@ -2057,10 +2016,7 @@ async fn node_run_prints_the_web_pages_of_a_node_that_declares_a_page() {
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "page_node";
     let instance_id = "page_node_instance";
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();

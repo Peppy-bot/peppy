@@ -1,3 +1,4 @@
+use super::common::serve_app_context;
 use std::sync::Arc;
 
 use peppy::commands::Command;
@@ -11,10 +12,7 @@ async fn info_command_succeeds_when_daemon_running() {
         .await
         .expect("failed to start serve emulation");
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(serve.temp_dir(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, serve.temp_dir());
 
     let log_capture = peppy::test_support::LogCapture::new();
     let _guard = log_capture.install();

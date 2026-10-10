@@ -21,8 +21,8 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use super::common::{
     build_count, build_logs_for, built_artifacts_for, counting_build_cmd,
     emulate_cooperative_shutdown, emulate_pairing_node_services, emulate_startup_services,
-    install_node_manifest, read_daemon_git_hash, register_repo_caches, stack_graph,
-    test_node_target, write_minimal_node_config, write_node_config_for_helper,
+    install_node_manifest, read_daemon_git_hash, register_repo_caches, serve_app_context,
+    stack_graph, test_node_target, write_minimal_node_config, write_node_config_for_helper,
 };
 
 /// The budgets these tests launch and build under: idle windows generous
@@ -185,10 +185,7 @@ async fn node_launch_command_succeed() {
         &["sh", "-c", "exit 0"],
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -365,7 +362,6 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
@@ -392,10 +388,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
         &["sh", "-c", "exit 0"],
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -515,17 +508,13 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     // Keep an owned copy of the path for building the config below; the `TempDir`
     // guard itself is moved into the harness (see `_nodes_dir`) so the directory
     // is reclaimed when the test ends instead of leaking across runs.
     let nodes_dir_path = nodes_dir.path().to_path_buf();
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(&nodes_dir_path, Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, &nodes_dir_path);
 
     NodeCommand {
         command: NodeCommands::Init {
@@ -771,10 +760,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // The dummy `sh` subprocess does not expose `node_ready`/`node_health`/
     // `shutdown`, so impersonate them from the test process for each
@@ -948,10 +934,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // Impersonate the framework services the dummy `sh` subprocesses do
     // not expose, for all three spawned instances.
@@ -1093,10 +1076,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -1149,7 +1129,6 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
@@ -1173,10 +1152,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
         &["sh", "-c", "sleep 30"],
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1384,10 +1360,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     RepoCommand {
         command: RepoCommands::Refresh { strict: false },
@@ -1551,10 +1524,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -1686,10 +1656,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -1868,10 +1835,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
         Some(arm_interfaces),
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     RepoCommand {
         command: RepoCommands::Refresh { strict: false },
@@ -2011,10 +1975,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
     let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
     let contract_repo_dir = tempfile::tempdir().expect("failed to create temp contract repo");
     let bound_dump = dump_dir.path().join("bound.json5");
@@ -2200,7 +2161,6 @@ async fn stack_launch_rejects_unbound_slot() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
@@ -2234,10 +2194,7 @@ async fn stack_launch_rejects_unbound_slot() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // The consumer instance carries no `links:` map at all, so its
     // declared `main_cam` slot is unfulfilled.
@@ -2313,10 +2270,7 @@ async fn stack_launch_establishes_launcher_pairings() {
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // The arm_link pairing doc must be in the daemon's pairing cache for
     // the launch-time `node add` codegen to resolve `depends_on.pairings`.
@@ -2463,10 +2417,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
@@ -2634,10 +2585,7 @@ async fn stack_launch_delivers_observer_member_sets() {
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
     let recorder_dump = dump_dir.path().join("recorder.json5");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
@@ -2874,10 +2822,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
         .expect("failed to create serve emulation");
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let run_cmd = vec!["sleep".to_string(), "5".to_string()];
@@ -2940,13 +2885,9 @@ async fn stack_launch_rejects_a_path_shaped_deployment_source() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = r#"{
@@ -2998,10 +2939,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // The pairing and contract documents the fixtures reference.
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
@@ -3365,10 +3303,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
         Some(&consumer_interfaces),
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // The dummy `sh` consumer does not expose the framework services, so
     // impersonate them from the test process.
@@ -3507,10 +3442,7 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // Neither a link nor a `{ vacant: ... }` entry for the slot.
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
@@ -3601,10 +3533,7 @@ async fn stack_launch_flattens_a_composed_launcher() {
         drop(instances);
     });
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -3708,10 +3637,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         .expect("failed to create serve emulation");
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let flat_launcher = nodes_dir.path().join("flat.json5");
     fs::write(
@@ -4463,10 +4389,7 @@ impl CountedLaunch {
         let counter = control.path().join("builds");
         let pidfile = control.path().join("instance.pid");
 
-        let ctx = Arc::new(
-            AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-                .with_daemon_state_file(serve.daemon_state_path()),
-        );
+        let ctx = serve_app_context(&serve, nodes_dir.path());
 
         NodeCommand {
             command: NodeCommands::Init {
@@ -4946,10 +4869,7 @@ async fn stack_build_builds_the_nodes_the_selection_runs() {
         }"#,
     )
     .expect("launcher config should be writable");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
@@ -5081,10 +5001,7 @@ async fn stack_launch_prints_the_endpoint_blocks_after_the_log_files() {
         )],
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 

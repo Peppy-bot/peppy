@@ -1,4 +1,4 @@
-use super::common::CALLER_INSTANCE_ID;
+use super::common::{CALLER_INSTANCE_ID, serve_app_context};
 use core_node_api::NodeStage;
 use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppy::commands::Command;
@@ -50,7 +50,6 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
     // A separate working directory for AppContext so it doesn't clobber any
@@ -58,10 +57,7 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
     // node source.
     let work_dir = tempfile::tempdir().expect("failed to create temp work dir");
 
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, work_dir.path());
 
     // Capture tracing output so the `info!()` line from the Add command stays
     // out of the test output unless the test explicitly asserts on it.

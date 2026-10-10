@@ -855,6 +855,18 @@ pub fn seed_docs_repo(
     .expect("repo refresh should discover the seeded documents");
 }
 
+/// A CLI context rooted at `root_dir` and wired to the emulated daemon: its
+/// messenger and its state file.
+pub fn serve_app_context(
+    serve: &ServeCommandEmulation,
+    root_dir: impl AsRef<std::path::Path>,
+) -> Arc<AppContext> {
+    Arc::new(
+        AppContext::with_messenger(root_dir, serve.messenger())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    )
+}
+
 pub fn setup() -> (
     tokio::runtime::Runtime,
     ServeCommandEmulation,
@@ -866,9 +878,6 @@ pub fn setup() -> (
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let work_dir = tempfile::tempdir().expect("failed to create temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
     (rt, serve, ctx, work_dir)
 }

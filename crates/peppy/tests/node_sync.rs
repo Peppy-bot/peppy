@@ -1,6 +1,6 @@
+use super::common::serve_app_context;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use config::node::{
@@ -8,7 +8,6 @@ use config::node::{
 };
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName};
-use peppy::context::AppContext;
 
 fn add_emitted_topic(peppy_json5: &Path) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
@@ -37,7 +36,6 @@ async fn node_sync_rust_command_succeeds() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     assert!(
         !serve.core_node_name().is_empty(),
         "core_node_name should not be empty"
@@ -48,10 +46,7 @@ async fn node_sync_rust_command_succeeds() {
     let node_name = "test_sync_node";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -100,10 +95,7 @@ async fn node_sync_rust_command_succeeds() {
     );
 
     // Run sync from inside the node directory (ctx.root_dir must contain peppy.json5)
-    let sync_ctx = Arc::new(
-        AppContext::with_messenger(&node_path, Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let sync_ctx = serve_app_context(&serve, &node_path);
     NodeCommand {
         command: NodeCommands::Sync {
             path: None,
@@ -194,7 +186,6 @@ async fn node_sync_python_command_succeeds() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     assert!(
         !serve.core_node_name().is_empty(),
         "core_node_name should not be empty"
@@ -205,10 +196,7 @@ async fn node_sync_python_command_succeeds() {
     let node_name = "test_sync_python_node";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -255,10 +243,7 @@ async fn node_sync_python_command_succeeds() {
     );
 
     // Run sync from inside the node directory
-    let sync_ctx = Arc::new(
-        AppContext::with_messenger(&node_path, Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let sync_ctx = serve_app_context(&serve, &node_path);
     NodeCommand {
         command: NodeCommands::Sync {
             path: None,
@@ -337,17 +322,13 @@ async fn node_sync_with_path_succeeds() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
 
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_sync_path_node";
 
     // Create AppContext pointing to the temp directory (parent of the node)
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -392,10 +373,7 @@ async fn node_sync_with_path_succeeds() {
 
     // Run sync from the PARENT directory, passing the node subdirectory as path argument.
     // This is the key difference: sync_ctx points to the parent, not the node directory.
-    let sync_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let sync_ctx = serve_app_context(&serve, node_dir.path());
     NodeCommand {
         command: NodeCommands::Sync {
             path: Some(PathBuf::from(node_name)),
@@ -441,7 +419,6 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -504,10 +481,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     )
     .expect("write brain config");
 
-    let sync_ctx = Arc::new(
-        AppContext::with_messenger(brain_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let sync_ctx = serve_app_context(&serve, brain_dir.path());
     NodeCommand {
         command: NodeCommands::Sync {
             path: None,
@@ -537,13 +511,9 @@ async fn node_sync_generates_peer_modules_for_pairing_slots() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
 
     let work_dir = tempfile::tempdir().expect("temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
@@ -573,10 +543,7 @@ async fn node_sync_generates_peer_modules_for_pairing_slots() {
     )
     .expect("write node config");
 
-    let sync_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let sync_ctx = serve_app_context(&serve, node_dir.path());
     NodeCommand {
         command: NodeCommands::Sync {
             path: None,
@@ -608,7 +575,6 @@ async fn node_sync_pairing_cache_miss_suggests_repo_refresh() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
 
     let node_dir = tempfile::tempdir().expect("node dir");
     std::fs::write(
@@ -635,10 +601,7 @@ async fn node_sync_pairing_cache_miss_suggests_repo_refresh() {
     )
     .expect("write node config");
 
-    let sync_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let sync_ctx = serve_app_context(&serve, node_dir.path());
     let err = NodeCommand {
         command: NodeCommands::Sync {
             path: None,
