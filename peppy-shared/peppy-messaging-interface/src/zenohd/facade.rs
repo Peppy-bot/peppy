@@ -14,6 +14,15 @@ use zenoh::config::Config;
 /// startup on a single dial.
 const ROUTER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Bound on the wait for a spawned zenohd to accept TCP connections.
+const ROUTER_READINESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The pause between two readiness polls starts at the first backoff and
+/// doubles after each poll up to the largest one, so a router that binds
+/// quickly is seen quickly and a slow one is not polled in a tight loop.
+const READINESS_FIRST_BACKOFF: std::time::Duration = std::time::Duration::from_millis(10);
+const READINESS_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+
 enum RouterOwnership {
     /// A router spawned and supervised by peppy from a rendered (or
     /// operator-pinned) config file.
@@ -448,44 +457,9 @@ impl ZenohdFacade {
             };
 
         if self.tcp_based() {
-            tracing::info!(
-                "Waiting for Zenoh router to accept connections at {}://{}",
-                self.zenoh_endpoint.protocol(),
-                self.connect_addr()
-            );
-            let start = tokio::time::Instant::now();
-            let timeout = std::time::Duration::from_secs(30);
-            let mut backoff = std::time::Duration::from_millis(10);
-            let max_backoff = std::time::Duration::from_millis(500);
-
-            loop {
-                if let Err(error) = self.check_spawned_process(&zenohd_log_path) {
-                    self.discard_failed_router_process().await;
-                    return Err(error);
-                }
-
-                if self.router_endpoint_reachable(ROUTER_PROBE_TIMEOUT).await {
-                    break;
-                }
-                if start.elapsed() >= timeout {
-                    if let Err(error) = self.stop_router_async().await {
-                        tracing::warn!(
-                            "Failed to stop zenohd after its readiness timeout: {}",
-                            error
-                        );
-                    }
-                    return Err(Error::BackendError(format!(
-                        "zenohd readiness timeout after {}s (TCP {})",
-                        timeout.as_secs(),
-                        self.connect_addr()
-                    )));
-                }
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(max_backoff);
-            }
-        } else if let Err(error) = self.check_spawned_process(&zenohd_log_path) {
-            self.discard_failed_router_process().await;
-            return Err(error);
+            self.wait_until_router_accepts(&zenohd_log_path).await?;
+        } else {
+            self.ensure_spawned_process_alive(&zenohd_log_path).await?;
         }
 
         tracing::info!(
@@ -495,6 +469,54 @@ impl ZenohdFacade {
         );
 
         Ok(())
+    }
+
+    /// Polls the router endpoint until it accepts TCP connections, checking
+    /// before each poll that the spawned child still runs. Fails when the
+    /// child exits, and stops the child and fails when
+    /// [`ROUTER_READINESS_TIMEOUT`] elapses first.
+    async fn wait_until_router_accepts(&mut self, zenohd_log_path: &Path) -> Result<()> {
+        tracing::info!(
+            "Waiting for Zenoh router to accept connections at {}://{}",
+            self.zenoh_endpoint.protocol(),
+            self.connect_addr()
+        );
+        let start = tokio::time::Instant::now();
+        let mut backoff = READINESS_FIRST_BACKOFF;
+
+        loop {
+            self.ensure_spawned_process_alive(zenohd_log_path).await?;
+
+            if self.router_endpoint_reachable(ROUTER_PROBE_TIMEOUT).await {
+                return Ok(());
+            }
+            if start.elapsed() >= ROUTER_READINESS_TIMEOUT {
+                if let Err(error) = self.stop_router_async().await {
+                    tracing::warn!(
+                        "Failed to stop zenohd after its readiness timeout: {}",
+                        error
+                    );
+                }
+                return Err(Error::BackendError(format!(
+                    "zenohd readiness timeout after {}s (TCP {})",
+                    ROUTER_READINESS_TIMEOUT.as_secs(),
+                    self.connect_addr()
+                )));
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(READINESS_MAX_BACKOFF);
+        }
+    }
+
+    /// Fails with the error of [`Self::check_spawned_process`] when the
+    /// spawned child is not running, after discarding the child with
+    /// [`Self::discard_failed_router_process`].
+    async fn ensure_spawned_process_alive(&mut self, zenohd_log_path: &Path) -> Result<()> {
+        let Err(error) = self.check_spawned_process(zenohd_log_path) else {
+            return Ok(());
+        };
+        self.discard_failed_router_process().await;
+        Err(error)
     }
 
     /// Spawns the managed zenohd child and records it on the facade, returning
@@ -989,10 +1011,7 @@ mod tests {
             "unexpected refusal: {refusal}"
         );
 
-        let stand_in = Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn a stand-in router");
+        let stand_in = running_child();
         facade.router_process = Some(stand_in);
         facade.stop_router().expect("a fork's stop is a no-op");
         let still_tracked = facade
@@ -1097,18 +1116,38 @@ mod tests {
         );
     }
 
+    /// A port that nothing listens on: reserved from the kernel, then freed.
+    fn unused_local_port() -> u16 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
+        listener.local_addr().expect("reserved addr").port()
+    }
+
+    /// A child process that has already exited, as a crashed zenohd looks to
+    /// the startup liveness check.
+    fn exited_child() -> Child {
+        let mut child = Command::new("true")
+            .spawn()
+            .expect("spawn a child that exits");
+        child.wait().expect("wait for the child to exit");
+        child
+    }
+
+    /// A child process that keeps running for the whole test, as a live
+    /// zenohd looks to the startup liveness check.
+    fn running_child() -> Child {
+        Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a running stand-in child")
+    }
+
     #[tokio::test]
     async fn repeated_start_keeps_an_existing_unready_managed_child() {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
-        let port = listener.local_addr().expect("reserved addr").port();
-        drop(listener);
+        let port = unused_local_port();
         let config_file = router_config_file(port);
 
         let mut facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
-        let child = Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn placeholder child");
+        let child = running_child();
         let child_id = child.id();
         facade.router_process = Some(child);
 
@@ -1123,6 +1162,91 @@ mod tests {
             facade.router_process.as_ref().map(Child::id),
             Some(child_id),
             "a repeated start must not replace the original child handle"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_reports_and_forgets_a_managed_child_that_exited() {
+        let config_file = router_config_file(unused_local_port());
+        let mut facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
+        facade.router_process = Some(exited_child());
+
+        let error = facade
+            .start_router()
+            .await
+            .expect_err("an exited child is not a running router");
+
+        assert!(
+            error.to_string().contains("zenohd exited unexpectedly"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            facade.router_process.is_none(),
+            "a dead child must not stay recorded for the next start to wait on"
+        );
+    }
+
+    /// A router on a transport that is not TCP-based has no TCP endpoint to
+    /// poll, so its start checks only that the child is still running.
+    #[tokio::test]
+    async fn start_of_a_non_tcp_router_checks_only_that_its_child_runs() {
+        let config_file = json5_config_file(&format!(
+            r#"{{ "listen": {{ "endpoints": {{ "router": ["udp/127.0.0.1:{}"] }} }} }}"#,
+            unused_local_port()
+        ));
+
+        let mut running = ZenohdFacade::managed(config_file.path()).expect("create facade");
+        let child = running_child();
+        let child_id = child.id();
+        running.router_process = Some(child);
+        running
+            .start_router()
+            .await
+            .expect("a running child is a started router");
+        assert_eq!(
+            running.router_process.as_ref().map(Child::id),
+            Some(child_id)
+        );
+        running.stop_router().expect("stop the placeholder child");
+
+        let mut exited = ZenohdFacade::managed(config_file.path()).expect("create facade");
+        exited.router_process = Some(exited_child());
+        let error = exited
+            .start_router()
+            .await
+            .expect_err("an exited child is not a running router");
+        assert!(
+            error.to_string().contains("zenohd exited unexpectedly"),
+            "unexpected error: {error}"
+        );
+        assert!(exited.router_process.is_none());
+    }
+
+    /// The tokio clock is paused, so the readiness bound elapses on the
+    /// virtual clock while the child keeps running and the port stays closed.
+    #[tokio::test(start_paused = true)]
+    async fn start_stops_a_child_that_never_accepts_connections() {
+        let port = unused_local_port();
+        let config_file = router_config_file(port);
+        let mut facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
+        let child = running_child();
+        facade.router_process = Some(child);
+
+        let error = facade
+            .start_router()
+            .await
+            .expect_err("a child that never accepts connections is not ready");
+
+        assert_eq!(
+            error.to_string(),
+            Error::BackendError(format!(
+                "zenohd readiness timeout after 30s (TCP 127.0.0.1:{port})"
+            ))
+            .to_string()
+        );
+        assert!(
+            facade.router_process.is_none(),
+            "the unready child is stopped, not left behind"
         );
     }
 
