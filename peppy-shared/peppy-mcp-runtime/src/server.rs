@@ -1918,27 +1918,49 @@ mod tests {
         bundle
     }
 
-    async fn record_handler(
-        _call: ToolCall,
-        _context: crate::tasks::ActionContext,
-    ) -> Result<Value, ActionExit> {
+    async fn record_handler(_call: ToolCall, _context: ActionContext) -> Result<Value, ActionExit> {
         Ok(json!({ "frames": 120 }))
     }
 
-    async fn resume_handler(
-        _call: ToolCall,
-        _context: crate::tasks::ActionContext,
-    ) -> Result<Value, ActionExit> {
+    async fn resume_handler(_call: ToolCall, _context: ActionContext) -> Result<Value, ActionExit> {
         Ok(json!({ "resumed": true }))
     }
 
-    fn built_task_server() -> ExposureServer {
-        ExposureServer::builder(task_bundle())
+    /// The goal of a provider that abandons it.
+    async fn abandoned_goal(_call: ToolCall, _context: ActionContext) -> Result<Value, ActionExit> {
+        Err(ActionExit::Failed(
+            "the provider abandoned the goal".to_string(),
+        ))
+    }
+
+    /// The goal of a provider that never ends it.
+    async fn endless_goal(_call: ToolCall, _context: ActionContext) -> Result<Value, ActionExit> {
+        std::future::pending().await
+    }
+
+    /// A server of `bundle` with `record` behind `recorder.record_episode`
+    /// and `resume` behind `recorder.resume_session`.
+    fn server_with_actions(
+        bundle: ExposureBundle,
+        record: impl TaskHandler,
+        resume: impl TaskHandler,
+    ) -> ExposureServer {
+        ExposureServer::builder(bundle)
             .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_task("recorder.record_episode", record_handler)
-            .with_task("recorder.resume_session", resume_handler)
+            .with_task("recorder.record_episode", record)
+            .with_task("recorder.resume_session", resume)
             .build()
             .expect("bundle and handlers agree")
+    }
+
+    /// A server of `task_bundle` with `resume` behind
+    /// `recorder.resume_session`.
+    fn server_with_resume(resume: impl TaskHandler) -> ExposureServer {
+        server_with_actions(task_bundle(), record_handler, resume)
+    }
+
+    fn built_task_server() -> ExposureServer {
+        server_with_actions(task_bundle(), record_handler, resume_handler)
     }
 
     /// Yield-driven wait for a task state; every iteration hands the
@@ -2145,19 +2167,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_bridge_failure_inside_a_call_is_the_calls_tool_error() {
-        let server = ExposureServer::builder(task_bundle())
-            .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_task("recorder.record_episode", record_handler)
-            .with_task(
-                "recorder.resume_session",
-                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
-                    Err::<Value, _>(ActionExit::Failed(
-                        "the provider abandoned the goal".to_string(),
-                    ))
-                },
-            )
-            .build()
-            .expect("builds");
+        let server = server_with_resume(abandoned_goal);
         let result = run_in_call(
             &server,
             "recorder.resume_session",
@@ -2183,26 +2193,18 @@ mod tests {
      {
         let cancel_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = Arc::clone(&cancel_seen);
-        let server = ExposureServer::builder(task_bundle())
-            .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_task("recorder.record_episode", record_handler)
-            .with_task(
-                "recorder.resume_session",
-                move |_call: ToolCall, context: crate::tasks::ActionContext| {
-                    let cancel_seen = Arc::clone(&observed);
-                    async move {
-                        context.cancel_requested().await;
-                        assert!(context.is_cancel_requested());
-                        cancel_seen.store(true, Ordering::SeqCst);
-                        Err(ActionExit::Cancelled(CancelledGoal {
-                            result: cancelled_resume(),
-                            reason: None,
-                        }))
-                    }
-                },
-            )
-            .build()
-            .expect("builds");
+        let server = server_with_resume(move |_call: ToolCall, context: ActionContext| {
+            let cancel_seen = Arc::clone(&observed);
+            async move {
+                context.cancel_requested().await;
+                assert!(context.is_cancel_requested());
+                cancel_seen.store(true, Ordering::SeqCst);
+                Err(ActionExit::Cancelled(CancelledGoal {
+                    result: cancelled_resume(),
+                    reason: None,
+                }))
+            }
+        });
         let cancel = tokio_util::sync::CancellationToken::new();
         // Cancelled up front: the goal observes it on its first look, so
         // the outcome depends on nothing but the token.
@@ -2227,17 +2229,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_deadline_fails_a_goal_inside_a_call_with_a_descriptive_error() {
-        let server = ExposureServer::builder(task_bundle())
-            .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_task("recorder.record_episode", record_handler)
-            .with_task(
-                "recorder.resume_session",
-                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
-                    std::future::pending::<Result<Value, ActionExit>>().await
-                },
-            )
-            .build()
-            .expect("builds");
+        let server = server_with_resume(endless_goal);
         // Paused time auto-advances past the 2000 ms deadline once the
         // goal is the only thing pending.
         let result = run_in_call(
@@ -2257,19 +2249,11 @@ mod tests {
     #[tokio::test]
     async fn feedback_inside_a_call_is_relayed_in_order_before_the_result() {
         let (relayed, mut received) = mpsc::unbounded_channel();
-        let server = ExposureServer::builder(task_bundle())
-            .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_task("recorder.record_episode", record_handler)
-            .with_task(
-                "recorder.resume_session",
-                |_call: ToolCall, context: crate::tasks::ActionContext| async move {
-                    context.report_feedback("frame 1");
-                    context.report_feedback("frame 2");
-                    Ok(json!({ "resumed": true }))
-                },
-            )
-            .build()
-            .expect("builds");
+        let server = server_with_resume(|_call: ToolCall, context: ActionContext| async move {
+            context.report_feedback("frame 1");
+            context.report_feedback("frame 2");
+            Ok(json!({ "resumed": true }))
+        });
         let task = task_named(&server, "recorder.resume_session");
         let (feedback, relay) = mpsc::unbounded_channel();
         let context = ActionContext {
@@ -2329,22 +2313,14 @@ mod tests {
     #[tokio::test]
     async fn feedback_reports_as_the_status_message_and_a_cancelled_goal_cancels_the_task_saying_why()
      {
-        let server = ExposureServer::builder(task_bundle())
-            .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_task("recorder.record_episode", record_handler)
-            .with_task(
-                "recorder.resume_session",
-                |_call: ToolCall, context: crate::tasks::ActionContext| async move {
-                    context.report_feedback("resuming at frame 42");
-                    context.cancel_requested().await;
-                    Err(ActionExit::Cancelled(CancelledGoal {
-                        result: cancelled_resume(),
-                        reason: Some("no progress within 2000 ms".to_owned()),
-                    }))
-                },
-            )
-            .build()
-            .expect("builds");
+        let server = server_with_resume(|_call: ToolCall, context: ActionContext| async move {
+            context.report_feedback("resuming at frame 42");
+            context.cancel_requested().await;
+            Err(ActionExit::Cancelled(CancelledGoal {
+                result: cancelled_resume(),
+                reason: Some("no progress within 2000 ms".to_owned()),
+            }))
+        });
         let created = start_task(&server, "recorder.resume_session", JsonObject::new())
             .expect("the task starts");
         let task_id = created.task.task_id;
@@ -2368,19 +2344,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_bridge_settles_the_task_as_failed() {
-        let server = ExposureServer::builder(task_bundle())
-            .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_task("recorder.record_episode", record_handler)
-            .with_task(
-                "recorder.resume_session",
-                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
-                    Err::<Value, _>(ActionExit::Failed(
-                        "the provider abandoned the goal".to_string(),
-                    ))
-                },
-            )
-            .build()
-            .expect("builds");
+        let server = server_with_resume(abandoned_goal);
         let created = start_task(&server, "recorder.resume_session", JsonObject::new())
             .expect("the task starts");
         let task = settled(&server, &created.task.task_id).await;
@@ -2399,21 +2363,17 @@ mod tests {
     async fn confirmation_parks_the_task_and_accept_releases_the_goal() {
         let goal_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = Arc::clone(&goal_ran);
-        let server = ExposureServer::builder(task_bundle())
-            .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_task(
-                "recorder.record_episode",
-                move |_call: ToolCall, _context: crate::tasks::ActionContext| {
-                    let goal_ran = Arc::clone(&observed);
-                    async move {
-                        goal_ran.store(true, Ordering::SeqCst);
-                        Ok(json!({ "frames": 120 }))
-                    }
-                },
-            )
-            .with_task("recorder.resume_session", resume_handler)
-            .build()
-            .expect("builds");
+        let server = server_with_actions(
+            task_bundle(),
+            move |_call: ToolCall, _context: ActionContext| {
+                let goal_ran = Arc::clone(&observed);
+                async move {
+                    goal_ran.store(true, Ordering::SeqCst);
+                    Ok(json!({ "frames": 120 }))
+                }
+            },
+            resume_handler,
+        );
         let created = start_task(
             &server,
             "recorder.record_episode",
@@ -2458,21 +2418,17 @@ mod tests {
     async fn a_declined_confirmation_cancels_the_task_without_running_the_goal() {
         let goal_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = Arc::clone(&goal_ran);
-        let server = ExposureServer::builder(task_bundle())
-            .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_task(
-                "recorder.record_episode",
-                move |_call: ToolCall, _context: crate::tasks::ActionContext| {
-                    let goal_ran = Arc::clone(&observed);
-                    async move {
-                        goal_ran.store(true, Ordering::SeqCst);
-                        Ok(json!({ "frames": 120 }))
-                    }
-                },
-            )
-            .with_task("recorder.resume_session", resume_handler)
-            .build()
-            .expect("builds");
+        let server = server_with_actions(
+            task_bundle(),
+            move |_call: ToolCall, _context: ActionContext| {
+                let goal_ran = Arc::clone(&observed);
+                async move {
+                    goal_ran.store(true, Ordering::SeqCst);
+                    Ok(json!({ "frames": 120 }))
+                }
+            },
+            resume_handler,
+        );
         let created = start_task(
             &server,
             "recorder.record_episode",
@@ -2506,17 +2462,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_deadline_fails_the_task_with_a_descriptive_error() {
-        let server = ExposureServer::builder(task_bundle())
-            .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_task("recorder.record_episode", record_handler)
-            .with_task(
-                "recorder.resume_session",
-                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
-                    std::future::pending::<Result<Value, ActionExit>>().await
-                },
-            )
-            .build()
-            .expect("builds");
+        let server = server_with_resume(endless_goal);
         let created = start_task(&server, "recorder.resume_session", JsonObject::new())
             .expect("the task starts");
         // Paused time: this yields to the spawned operation (registering
@@ -2567,24 +2513,20 @@ mod tests {
         started: Arc<tokio::sync::Notify>,
         gate: Arc<tokio::sync::Notify>,
     ) -> ExposureServer {
-        ExposureServer::builder(bundle)
-            .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_task("recorder.record_episode", record_handler)
-            .with_task(
-                "recorder.resume_session",
-                move |_call: ToolCall, context: crate::tasks::ActionContext| {
-                    let started = Arc::clone(&started);
-                    let gate = Arc::clone(&gate);
-                    async move {
-                        context.report_feedback("resuming");
-                        started.notify_one();
-                        gate.notified().await;
-                        Ok(json!({ "resumed": true }))
-                    }
-                },
-            )
-            .build()
-            .expect("builds")
+        server_with_actions(
+            bundle,
+            record_handler,
+            move |_call: ToolCall, context: ActionContext| {
+                let started = Arc::clone(&started);
+                let gate = Arc::clone(&gate);
+                async move {
+                    context.report_feedback("resuming");
+                    started.notify_one();
+                    gate.notified().await;
+                    Ok(json!({ "resumed": true }))
+                }
+            },
+        )
     }
 
     /// Ten windows of the progress-bound goals: far past any whole-goal
@@ -4564,7 +4506,7 @@ mod tests {
         let server = builder
             .with_task(
                 "recorder.resume_session",
-                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
+                |_call: ToolCall, _context: ActionContext| async move {
                     Ok(json!({ "success": false, "message": "no session to resume" }))
                 },
             )
@@ -4617,7 +4559,7 @@ mod tests {
         let server = builder
             .with_task(
                 "recorder.resume_session",
-                |_call: ToolCall, context: crate::tasks::ActionContext| async move {
+                |_call: ToolCall, context: ActionContext| async move {
                     context.cancel_requested().await;
                     Err(ActionExit::Cancelled(CancelledGoal {
                         result: cancelled_resume(),
@@ -4648,14 +4590,7 @@ mod tests {
 
         let (builder, _) = record_builder();
         let server = builder
-            .with_task(
-                "recorder.resume_session",
-                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
-                    Err::<Value, _>(ActionExit::Failed(
-                        "the provider abandoned the goal".to_string(),
-                    ))
-                },
-            )
+            .with_task("recorder.resume_session", abandoned_goal)
             .build()
             .expect("builds");
         let created = server
@@ -4675,12 +4610,7 @@ mod tests {
 
         let (builder, _) = record_builder();
         let server = builder
-            .with_task(
-                "recorder.resume_session",
-                |_call: ToolCall, _context: crate::tasks::ActionContext| async move {
-                    std::future::pending::<Result<Value, ActionExit>>().await
-                },
-            )
+            .with_task("recorder.resume_session", endless_goal)
             .build()
             .expect("builds");
         server
