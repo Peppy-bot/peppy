@@ -1335,7 +1335,7 @@ async fn process_node_run(
         }
     };
 
-    if let Some(reason) = startup_abort_reason(&ready_outcome) {
+    if let Some(reason) = ready_outcome.into_abort_reason("cancelled during ready-signal wait") {
         debug!(
             "Aborting node instance '{}' during ready wait: {}",
             instance_id_str, reason
@@ -1347,7 +1347,7 @@ async fn process_node_run(
             child,
             started_ctx,
             &instance_id,
-            reason.to_string(),
+            reason,
         )
         .await;
     }
@@ -1402,204 +1402,191 @@ async fn process_node_run(
         other => other,
     };
 
-    match health_outcome {
-        StartupOutcome::Ok => {
-            debug!(
-                "Health check passed for node instance '{}'",
-                instance_id_str
-            );
-            // Last chance to bail out cleanly: once `commit_started` succeeds
-            // the child is owned by the stack and a late cancel would have to
-            // go through the normal stop path instead of abort_started.
-            if cancel_token.is_cancelled() {
-                let reason = "cancelled before commit".to_string();
-                debug!(
-                    "Aborting node instance '{}' after health check: {}",
-                    instance_id_str, reason
-                );
-                return abort_uncommitted_instance(
-                    &ctx,
-                    &feedback,
-                    &entity_handle,
-                    child,
-                    started_ctx,
-                    &instance_id,
-                    reason,
-                )
+    let health_abort_reason = health_outcome.into_abort_reason("cancelled during health check");
+    if let Some(reason) = health_abort_reason {
+        debug!(
+            "Aborting node instance '{}' during health check: {}",
+            instance_id_str, reason
+        );
+        return abort_uncommitted_instance(
+            &ctx,
+            &feedback,
+            &entity_handle,
+            child,
+            started_ctx,
+            &instance_id,
+            reason,
+        )
+        .await;
+    }
+
+    debug!(
+        "Health check passed for node instance '{}'",
+        instance_id_str
+    );
+    // Last chance to bail out cleanly: once `commit_started` succeeds the child
+    // is owned by the stack and a late cancel would have to go through the
+    // normal stop path instead of abort_started.
+    if cancel_token.is_cancelled() {
+        let reason = "cancelled before commit".to_string();
+        debug!(
+            "Aborting node instance '{}' after health check: {}",
+            instance_id_str, reason
+        );
+        return abort_uncommitted_instance(
+            &ctx,
+            &feedback,
+            &entity_handle,
+            child,
+            started_ctx,
+            &instance_id,
+            reason,
+        )
+        .await;
+    }
+    let pid = child.id().unwrap_or(0);
+    let commit_result = node_stack::NodeEntity::commit_started(
+        &entity_handle,
+        child,
+        started_ctx,
+        instance_id.clone(),
+        endpoints.clone(),
+    )
+    .await;
+    let committed_child = match commit_result {
+        Ok(committed_child) => committed_child,
+        Err(e) => {
+            let msg = format!("Failed to register instance: {}", e);
+            ctx.action
+                .relationships
+                .pairing()
+                .dissolve_for_instance(instance_id_str)
                 .await;
-            }
-            let pid = child.id().unwrap_or(0);
-            let commit_result = node_stack::NodeEntity::commit_started(
-                &entity_handle,
-                child,
-                started_ctx,
-                instance_id.clone(),
-                endpoints.clone(),
-            )
-            .await;
-            match commit_result {
-                Ok(committed_child) => {
-                    // Cancelled by the exit watcher once the node's process
-                    // exits on its own, so the health monitor stops probing a
-                    // now-terminal instance instead of logging a spurious
-                    // "became unhealthy" on the way out.
-                    let instance_done = CancellationToken::new();
-                    let stack_log = StackLog::for_instance(
-                        &ctx.action.peppy_dirs,
-                        ctx.action.node_stack.log_exporter().clone(),
-                        instance_id.as_str(),
-                        runtime_config.node_name.as_str(),
-                        &tag,
-                        launch_id.as_deref(),
-                    );
-
-                    spawn_exit_watcher(ExitWatcherParams {
-                        child: committed_child,
-                        entity_handle: Arc::clone(&entity_handle),
-                        to_node_name: runtime_config.node_name.as_str().to_owned(),
-                        node_tag: tag.clone(),
-                        target_instance_id: instance_id.clone(),
-                        stack_log: stack_log.clone(),
-                        relationships: ctx.action.relationships.clone(),
-                        instance_done: instance_done.clone(),
-                        shutdown_token: ctx.action.shutdown_token.clone(),
-                    });
-
-                    spawn_health_monitor(HealthMonitorParams {
-                        messenger: ctx.action.messenger.clone(),
-                        core_node_name: ctx.action.core_node_name.clone(),
-                        caller_instance_id: ctx.action.caller_instance_id.clone(),
-                        to_node_name: runtime_config.node_name.as_str().to_owned(),
-                        target_core_node: runtime_config.bound_core_node.as_str().to_owned(),
-                        target_instance_id: instance_id.clone(),
-                        node_tag: tag.clone(),
-                        node_stack: Arc::clone(&ctx.action.node_stack),
-                        stack_log,
-                        policy: ctx.action.health_monitor,
-                        shutdown_token: ctx.action.shutdown_token.clone(),
-                        instance_done,
-                    });
-
-                    // Register this instance's own observer slots before the
-                    // lifecycle notify below, so the `on_instance_running`
-                    // observer branch finds them and delivers each slot's whole
-                    // member set. Empty for a non-observer.
-                    // Additive: one instance is merged into the live
-                    // registry, leaving every other instance's entry standing.
-                    if !planned_observations.is_empty() {
-                        ctx.action
-                            .relationships
-                            .observation()
-                            .register_instance(instance_id_str, &planned_observations);
-                    }
-
-                    // The instance is Running: notify the observation
-                    // coordinator. If this instance is a source, every slot
-                    // observing it is re-delivered whole at a freshly bumped
-                    // generation for that member; if it is itself an observer,
-                    // it receives every slot it declares, each member stamped
-                    // with its own liveness. Best-effort and independent of
-                    // pairing, so it always runs (a source need not be paired).
-                    ctx.action
-                        .relationships
-                        .observation()
-                        .on_instance_running(instance_id_str)
-                        .await;
-
-                    // The same event, for the daemons that cannot see it. An
-                    // observer on another machine has no local lifecycle event
-                    // to react to, so without this its subscription would never
-                    // activate and a source restart would go unnoticed. Records
-                    // the watchers first: they arrived on this goal, and the
-                    // announcement is what they are for.
-                    ctx.action
-                        .relationships
-                        .notifier()
-                        .set_watchers(instance_id_str, &lifecycle_watchers);
-                    ctx.action
-                        .relationships
-                        .notifier()
-                        .announce_running(instance_id_str)
-                        .await;
-
-                    // The instance is Running: deliver every reserved pin
-                    // live over `peer_update` (boot config is always
-                    // all-Unpaired, so this is the only way slots get
-                    // paired). The watchers above are already running, so
-                    // the process is reaped even if the run fails here.
-                    if !planned_pairs.is_empty() {
-                        if let Err(reason) = ctx
-                            .action
-                            .relationships
-                            .pairing()
-                            .deliver_pairs_for_instance(instance_id_str, &planned_pairs)
-                            .await
-                        {
-                            ctx.action
-                                .relationships
-                                .pairing()
-                                .dissolve_for_instance(instance_id_str)
-                                .await;
-                            let msg = format!(
-                                "node instance '{instance_id_str}' started but pairing \
-                                 delivery failed: {reason}. The instance was left running \
-                                 with its pairing slots unpaired; stop it with \
-                                 `peppy node stop {instance_id_str}`"
-                            );
-                            return feedback
-                                .close_on_failure(&ctx.announcer, instance_id_str, msg)
-                                .await;
-                        }
-                        for pair in &planned_pairs {
-                            ctx.announcer
-                                .line(format!("paired: {} ⇌ {}", pair.own, pair.peer));
-                        }
-                    }
-
-                    // Wait until the readers have drained the child's startup
-                    // output onto the feedback stream before closing it. Keyed
-                    // off a positive "reader caught up" signal, so heavy load
-                    // delays the close instead of dropping output. Containers
-                    // wait for their first stdout line; processes do not, so a
-                    // silent process is not penalized.
-                    feedback.close(instance_id_str, is_container).await;
-                    NodeRunResult::success(pid).with_endpoints(endpoints)
-                }
-                Err(e) => {
-                    let msg = format!("Failed to register instance: {}", e);
-                    ctx.action
-                        .relationships
-                        .pairing()
-                        .dissolve_for_instance(instance_id_str)
-                        .await;
-                    feedback
-                        .close_on_failure(&ctx.announcer, instance_id_str, msg)
-                        .await
-                }
-            }
+            return feedback
+                .close_on_failure(&ctx.announcer, instance_id_str, msg)
+                .await;
         }
-        StartupOutcome::Cancelled | StartupOutcome::Failed(_) => {
-            let reason = match health_outcome {
-                StartupOutcome::Cancelled => "cancelled during health check".to_string(),
-                StartupOutcome::Failed(e) => e,
-                StartupOutcome::Ok => unreachable!(),
-            };
-            debug!(
-                "Aborting node instance '{}' during health check: {}",
-                instance_id_str, reason
-            );
-            abort_uncommitted_instance(
-                &ctx,
-                &feedback,
-                &entity_handle,
-                child,
-                started_ctx,
-                &instance_id,
-                reason,
-            )
+    };
+
+    // Cancelled by the exit watcher once the node's process exits on its own,
+    // so the health monitor stops probing a now-terminal instance instead of
+    // logging a spurious "became unhealthy" on the way out.
+    let instance_done = CancellationToken::new();
+    let stack_log = StackLog::for_instance(
+        &ctx.action.peppy_dirs,
+        ctx.action.node_stack.log_exporter().clone(),
+        instance_id.as_str(),
+        runtime_config.node_name.as_str(),
+        &tag,
+        launch_id.as_deref(),
+    );
+
+    spawn_exit_watcher(ExitWatcherParams {
+        child: committed_child,
+        entity_handle: Arc::clone(&entity_handle),
+        to_node_name: runtime_config.node_name.as_str().to_owned(),
+        node_tag: tag.clone(),
+        target_instance_id: instance_id.clone(),
+        stack_log: stack_log.clone(),
+        relationships: ctx.action.relationships.clone(),
+        instance_done: instance_done.clone(),
+        shutdown_token: ctx.action.shutdown_token.clone(),
+    });
+
+    spawn_health_monitor(HealthMonitorParams {
+        messenger: ctx.action.messenger.clone(),
+        core_node_name: ctx.action.core_node_name.clone(),
+        caller_instance_id: ctx.action.caller_instance_id.clone(),
+        to_node_name: runtime_config.node_name.as_str().to_owned(),
+        target_core_node: runtime_config.bound_core_node.as_str().to_owned(),
+        target_instance_id: instance_id.clone(),
+        node_tag: tag.clone(),
+        node_stack: Arc::clone(&ctx.action.node_stack),
+        stack_log,
+        policy: ctx.action.health_monitor,
+        shutdown_token: ctx.action.shutdown_token.clone(),
+        instance_done,
+    });
+
+    // Register this instance's own observer slots before the lifecycle notify
+    // below, so the `on_instance_running` observer branch finds them and
+    // delivers each slot's whole member set. Empty for a non-observer.
+    // Additive: one instance is merged into the live registry, leaving every
+    // other instance's entry standing.
+    if !planned_observations.is_empty() {
+        ctx.action
+            .relationships
+            .observation()
+            .register_instance(instance_id_str, &planned_observations);
+    }
+
+    // The instance is Running: notify the observation coordinator. If this
+    // instance is a source, every slot observing it is re-delivered whole at a
+    // freshly bumped generation for that member; if it is itself an observer,
+    // it receives every slot it declares, each member stamped with its own
+    // liveness. Best-effort and independent of pairing, so it always runs (a
+    // source need not be paired).
+    ctx.action
+        .relationships
+        .observation()
+        .on_instance_running(instance_id_str)
+        .await;
+
+    // The same event, for the daemons that cannot see it. An observer on
+    // another machine has no local lifecycle event to react to, so without this
+    // its subscription would never activate and a source restart would go
+    // unnoticed. Records the watchers first: they arrived on this goal, and the
+    // announcement is what they are for.
+    ctx.action
+        .relationships
+        .notifier()
+        .set_watchers(instance_id_str, &lifecycle_watchers);
+    ctx.action
+        .relationships
+        .notifier()
+        .announce_running(instance_id_str)
+        .await;
+
+    // The instance is Running: deliver every reserved pin live over
+    // `peer_update` (boot config is always all-Unpaired, so this is the only
+    // way slots get paired). The watchers above are already running, so the
+    // process is reaped even if the run fails here.
+    if !planned_pairs.is_empty() {
+        if let Err(reason) = ctx
+            .action
+            .relationships
+            .pairing()
+            .deliver_pairs_for_instance(instance_id_str, &planned_pairs)
             .await
+        {
+            ctx.action
+                .relationships
+                .pairing()
+                .dissolve_for_instance(instance_id_str)
+                .await;
+            let msg = format!(
+                "node instance '{instance_id_str}' started but pairing \
+                 delivery failed: {reason}. The instance was left running \
+                 with its pairing slots unpaired; stop it with \
+                 `peppy node stop {instance_id_str}`"
+            );
+            return feedback
+                .close_on_failure(&ctx.announcer, instance_id_str, msg)
+                .await;
+        }
+        for pair in &planned_pairs {
+            ctx.announcer
+                .line(format!("paired: {} ⇌ {}", pair.own, pair.peer));
         }
     }
+
+    // Wait until the readers have drained the child's startup output onto the
+    // feedback stream before closing it. Keyed off a positive "reader caught
+    // up" signal, so heavy load delays the close instead of dropping output.
+    // Containers wait for their first stdout line; processes do not, so a
+    // silent process is not penalized.
+    feedback.close(instance_id_str, is_container).await;
+    NodeRunResult::success(pid).with_endpoints(endpoints)
 }
 
 /// The feedback stream of one `node_run` as the node's output readers see
@@ -1671,11 +1658,15 @@ enum StartupOutcome {
     Failed(String),
 }
 
-fn startup_abort_reason(outcome: &StartupOutcome) -> Option<&str> {
-    match outcome {
-        StartupOutcome::Ok => None,
-        StartupOutcome::Cancelled => Some("cancelled during ready-signal wait"),
-        StartupOutcome::Failed(msg) => Some(msg.as_str()),
+impl StartupOutcome {
+    /// Why the start is aborted after this step, or `None` when the step
+    /// succeeded. `cancelled` names the step that a cancellation interrupted.
+    fn into_abort_reason(self, cancelled: &str) -> Option<String> {
+        match self {
+            StartupOutcome::Ok => None,
+            StartupOutcome::Cancelled => Some(cancelled.to_string()),
+            StartupOutcome::Failed(reason) => Some(reason),
+        }
     }
 }
 
