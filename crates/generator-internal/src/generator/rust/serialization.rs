@@ -1,4 +1,4 @@
-use super::identifiers::sanitize_rust_identifier;
+use super::identifiers::{sanitize_rust_identifier, suffixed_rust_identifier};
 use crate::generator::naming::sanitize_component;
 use crate::{error::Error, error::Result};
 use config::node::{MessageFormat, SchemaType, TypeToken};
@@ -24,16 +24,18 @@ impl NameGenerator {
         Self { counter: 0 }
     }
 
+    /// A local named after `hint` (`tmp` when `hint` sanitizes to nothing)
+    /// and suffixed with the next number of this generator, so that no two
+    /// locals it names are the same.
     pub fn next(&mut self, hint: &str) -> Ident {
-        let sanitized = sanitize_rust_identifier(hint);
         let suffix = self.counter;
         self.counter += 1;
-        let base = if sanitized.is_empty() {
-            "tmp".to_string()
+        let base = if sanitize_component(hint).is_empty() {
+            "tmp"
         } else {
-            sanitized
+            hint
         };
-        Ident::new(&format!("{base}_{suffix}"), Span::call_site())
+        suffixed_rust_identifier(base, &suffix.to_string())
     }
 }
 
@@ -483,6 +485,19 @@ pub fn build_serialize_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each local is named after its hint and numbered in the order it is
+    /// asked for. A keyword hint keeps one underscore before its number, and
+    /// a hint with no letter or digit becomes `tmp`.
+    #[test]
+    fn the_name_generator_numbers_each_local_after_its_hint() {
+        let mut names = NameGenerator::new();
+        let named: Vec<String> = ["frame_id", "box", "type", "?!"]
+            .into_iter()
+            .map(|hint| names.next(hint).to_string())
+            .collect();
+        assert_eq!(named, ["frame_id_0", "box_1", "type_2", "tmp_3"]);
+    }
 
     /// When `length` is `Some`, the generated code must use the fixed literal
     /// instead of a runtime `.len()` call.
