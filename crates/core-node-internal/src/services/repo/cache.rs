@@ -2010,10 +2010,10 @@ mod tests {
         assert!(err.contains("absent from commit"), "{err}");
     }
 
-    /// The write is atomic: the final file is created via a tmp + rename
-    /// dance so concurrent readers can't observe a half-written cache.
-    /// We can't reliably observe the rename, but we can at least confirm
-    /// no `.tmp` file is left behind on the happy path.
+    /// The write is atomic: the cache is staged in a uniquely named sibling
+    /// file and renamed into place, so concurrent readers can't observe a
+    /// half-written cache. The rename itself cannot be observed, but the
+    /// cache directory can be checked to hold no staging file afterwards.
     #[test]
     fn write_launcher_cache_does_not_leak_tmp_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2028,6 +2028,15 @@ mod tests {
         assert!(
             !tmp_path.exists(),
             "tmp file should be renamed away, not left behind"
+        );
+        let names: Vec<std::ffi::OsString> = std::fs::read_dir(peppy_dirs.cache_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names,
+            vec![std::ffi::OsString::from("launchers.json5")],
+            "only the published cache file remains"
         );
     }
 
