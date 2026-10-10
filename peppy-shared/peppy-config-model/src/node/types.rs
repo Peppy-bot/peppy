@@ -2469,16 +2469,6 @@ mod tests {
     }
 
     #[test]
-    fn array_schema_requires_type_field() {
-        let json5 = r#"{
-            image: { $items: "u8", $length: 3 }
-        }"#;
-
-        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
-        assert!(parsed.is_err(), "array without type should fail parsing");
-    }
-
-    #[test]
     fn object_fields_can_be_arrays() {
         let json5 = r#"{
             header: {
@@ -2517,9 +2507,11 @@ mod tests {
         assert_eq!(inner.fields["value"], SchemaType::Type(TypeToken::U32));
     }
 
+    /// Array items can be objects, with the item `$type: "object"` written out
+    /// or left implied.
     #[test]
     fn array_items_can_be_objects() {
-        let json5 = r#"{
+        let with_object_type = r#"{
             frames: {
                 $type: "array",
                 $items: {
@@ -2539,41 +2531,7 @@ mod tests {
                 },
             }
         }"#;
-
-        let parsed: MessageFormat = serde_json5::from_str(json5).expect("should parse");
-        let SchemaType::Array(frames_arr) = &parsed.0["frames"] else {
-            panic!("expected Array");
-        };
-        assert!(frames_arr.length.is_none());
-
-        let SchemaType::Object(frame_obj) = frames_arr.items.as_ref() else {
-            panic!("expected Object items");
-        };
-        assert_eq!(
-            frame_obj.fields["name"],
-            SchemaType::Type(TypeToken::String)
-        );
-        assert_eq!(
-            frame_obj.fields["parent"],
-            SchemaType::Type(TypeToken::String)
-        );
-
-        let SchemaType::Array(pos) = &frame_obj.fields["position"] else {
-            panic!("expected Array for position");
-        };
-        assert_eq!(*pos.items, SchemaType::Type(TypeToken::I32));
-        assert_eq!(pos.length, Some(3));
-
-        let SchemaType::Array(orient) = &frame_obj.fields["orientation"] else {
-            panic!("expected Array for orientation");
-        };
-        assert_eq!(*orient.items, SchemaType::Type(TypeToken::I32));
-        assert_eq!(orient.length, Some(4));
-    }
-
-    #[test]
-    fn array_items_can_be_objects_without_object_type() {
-        let json5 = r#"{
+        let without_object_type = r#"{
             frames: {
                 $type: "array",
                 $items: {
@@ -2594,35 +2552,43 @@ mod tests {
             }
         }"#;
 
-        let parsed: MessageFormat = serde_json5::from_str(json5).expect("should parse");
-        let SchemaType::Array(frames_arr) = &parsed.0["frames"] else {
-            panic!("expected Array");
-        };
-        assert!(frames_arr.length.is_none());
+        for (case, json5) in [
+            ("with object type", with_object_type),
+            ("without object type", without_object_type),
+        ] {
+            let parsed: MessageFormat = serde_json5::from_str(json5)
+                .unwrap_or_else(|error| panic!("{case}: should parse: {error}"));
+            let SchemaType::Array(frames_arr) = &parsed.0["frames"] else {
+                panic!("{case}: expected Array");
+            };
+            assert!(frames_arr.length.is_none(), "{case}");
 
-        let SchemaType::Object(frame_obj) = frames_arr.items.as_ref() else {
-            panic!("expected Object items");
-        };
-        assert_eq!(
-            frame_obj.fields["name"],
-            SchemaType::Type(TypeToken::String)
-        );
-        assert_eq!(
-            frame_obj.fields["parent"],
-            SchemaType::Type(TypeToken::String)
-        );
+            let SchemaType::Object(frame_obj) = frames_arr.items.as_ref() else {
+                panic!("{case}: expected Object items");
+            };
+            assert_eq!(
+                frame_obj.fields["name"],
+                SchemaType::Type(TypeToken::String),
+                "{case}"
+            );
+            assert_eq!(
+                frame_obj.fields["parent"],
+                SchemaType::Type(TypeToken::String),
+                "{case}"
+            );
 
-        let SchemaType::Array(pos) = &frame_obj.fields["position"] else {
-            panic!("expected Array for position");
-        };
-        assert_eq!(*pos.items, SchemaType::Type(TypeToken::I32));
-        assert_eq!(pos.length, Some(3));
+            let SchemaType::Array(pos) = &frame_obj.fields["position"] else {
+                panic!("{case}: expected Array for position");
+            };
+            assert_eq!(*pos.items, SchemaType::Type(TypeToken::I32), "{case}");
+            assert_eq!(pos.length, Some(3), "{case}");
 
-        let SchemaType::Array(orient) = &frame_obj.fields["orientation"] else {
-            panic!("expected Array for orientation");
-        };
-        assert_eq!(*orient.items, SchemaType::Type(TypeToken::I32));
-        assert_eq!(orient.length, Some(4));
+            let SchemaType::Array(orient) = &frame_obj.fields["orientation"] else {
+                panic!("{case}: expected Array for orientation");
+            };
+            assert_eq!(*orient.items, SchemaType::Type(TypeToken::I32), "{case}");
+            assert_eq!(orient.length, Some(4), "{case}");
+        }
     }
 
     #[test]
@@ -2791,81 +2757,75 @@ mod tests {
         assert!(feedback.message_format.0.contains_key("current_position"));
     }
 
+    /// Schemas that `MessageFormat` refuses: an array without `$type`,
+    /// `$optional` below the root, and arrays of arrays.
     #[test]
-    fn object_field_rejects_optional() {
-        let json5 = r#"{
-            header: {
-                $type: "object",
-                debug: { 
-                  $type: "string", 
-                  $optional: true 
-                }
-            }
-        }"#;
-
-        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
-        assert!(
-            parsed.is_err(),
-            "optional on nested object field should fail"
-        );
-    }
-
-    #[test]
-    fn array_items_rejects_optional() {
-        let json5 = r#"{
-            values: { 
-              $type: "array", 
-              $items: { 
-                $type: "u8", 
-                $optional: true 
-              }
-            }
-        }"#;
-
-        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
-        assert!(parsed.is_err(), "optional on array items should fail");
-    }
-
-    #[test]
-    fn array_items_rejects_nested_arrays() {
-        let json5 = r#"{
-            data: {
-              $type: "array", 
-              $items: {
-                $type: "array", 
-                $items: "u8" 
-              }
-            }
-        }"#;
-
-        let result: Result<MessageFormat, _> = serde_json5::from_str(json5);
-        assert!(
-            result.is_err(),
-            "nested arrays (arrays of arrays) should fail"
-        );
-    }
-
-    #[test]
-    fn deeply_nested_rejects_optional() {
-        let json5 = r#"{
-            frames: {
-                $type: "array",
-                $items: {
-                    $type: "object",
-                    name: "string",
-                    debug: {
-                      $type: "string",
-                      $optional: true 
+    fn message_format_rejects_invalid_schemas() {
+        for (json5, reason) in [
+            (
+                r#"{
+                    image: { $items: "u8", $length: 3 }
+                }"#,
+                "array without type should fail parsing",
+            ),
+            (
+                r#"{
+                    header: {
+                        $type: "object",
+                        debug: {
+                          $type: "string",
+                          $optional: true
+                        }
                     }
-                }
-            }
-        }"#;
-
-        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
-        assert!(
-            parsed.is_err(),
-            "optional on field inside array-of-objects should fail"
-        );
+                }"#,
+                "optional on nested object field should fail",
+            ),
+            (
+                r#"{
+                    values: {
+                      $type: "array",
+                      $items: {
+                        $type: "u8",
+                        $optional: true
+                      }
+                    }
+                }"#,
+                "optional on array items should fail",
+            ),
+            (
+                r#"{
+                    data: {
+                      $type: "array",
+                      $items: {
+                        $type: "array",
+                        $items: "u8"
+                      }
+                    }
+                }"#,
+                "nested arrays (arrays of arrays) should fail",
+            ),
+            (
+                r#"{
+                    frames: {
+                        $type: "array",
+                        $items: {
+                            $type: "object",
+                            name: "string",
+                            debug: {
+                              $type: "string",
+                              $optional: true
+                            }
+                        }
+                    }
+                }"#,
+                "optional on field inside array-of-objects should fail",
+            ),
+        ] {
+            assert!(
+                serde_json5::from_str::<MessageFormat>(json5).is_err(),
+                "{reason}"
+            );
+        }
     }
 
     #[test]
