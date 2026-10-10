@@ -50,8 +50,9 @@ impl VirtualNodeInfo {
 /// dependencies that the daemon will resolve via its persistent node stack.
 #[derive(Debug)]
 pub struct VirtualDeptree {
-    graph: StableDiGraph<NodeKey, ()>,
     infos: HashMap<NodeIndex, VirtualNodeInfo>,
+    /// The nodes of `infos`, every dependency before its dependants.
+    order: Vec<NodeIndex>,
 }
 
 impl VirtualDeptree {
@@ -111,17 +112,16 @@ impl VirtualDeptree {
             }
         }
 
-        // Validate DAG.
-        if let Err(cycle) = toposort(&graph, None) {
-            let offending = cycle.node_id();
-            let key = graph
-                .node_weight(offending)
-                .cloned()
-                .unwrap_or_else(|| ("?".to_owned(), "?".to_owned()));
-            return Err(Error::VirtualDeptreeCycle {
-                nodes: vec![format!("{}:{}", key.0, key.1)],
-            });
-        }
+        // The graph is a DAG exactly when it has a topological order.
+        let order = match toposort(&graph, None) {
+            Ok(order) => order,
+            Err(cycle) => {
+                let (name, tag) = &graph[cycle.node_id()];
+                return Err(Error::VirtualDeptreeCycle {
+                    nodes: vec![format!("{name}:{tag}")],
+                });
+            }
+        };
 
         // Contract deps were dropped from the node-dep graph above, so a
         // service/action cycle routed through contracts survives the toposort.
@@ -146,15 +146,13 @@ impl VirtualDeptree {
             });
         }
 
-        Ok(Self { graph, infos })
+        Ok(Self { infos, order })
     }
 
     /// Returns the dependency-ordered slice of node infos. Dependencies are
     /// guaranteed to appear before any of their dependants.
     pub fn topological_order(&self) -> Vec<&VirtualNodeInfo> {
-        // Already validated as acyclic in `build`.
-        let order = toposort(&self.graph, None).expect("graph is a DAG by construction");
-        order.into_iter().map(|idx| &self.infos[&idx]).collect()
+        self.order.iter().map(|idx| &self.infos[idx]).collect()
     }
 }
 
