@@ -703,6 +703,36 @@ mod tests {
         combined.to_string()
     }
 
+    /// The format model refuses `$optional` on a scalar at parse time, but a
+    /// format built in code can still carry one. It has no presence check
+    /// on the wire, so the reader wraps the plain value in `Some`.
+    #[test]
+    fn optional_field_without_presence_check_reads_into_some() {
+        let schema = SchemaType::Primitive(config::node::PrimitiveSchema {
+            kind: TypeToken::U32,
+            optional: true,
+        });
+        let mut names = NameGenerator::new();
+
+        let (statements, value_ident) = generate_field_reader_statements(
+            &quote!(root),
+            "count",
+            &schema,
+            "Test",
+            &quote!("TestMsg"),
+            &mut names,
+        )
+        .unwrap();
+
+        // The `Option` local takes its name before the value it wraps.
+        let code = quote! { #( #statements )* }.to_string();
+        assert_eq!(value_ident, "count_opt_0");
+        assert_eq!(
+            code,
+            "let count_1 = root . reborrow () . get_count () ; let count_opt_0 = Some (count_1) ;"
+        );
+    }
+
     #[test]
     fn object_array_reader_fixed_length_uses_array() {
         let code = call_object_array_reader(Some(4));
