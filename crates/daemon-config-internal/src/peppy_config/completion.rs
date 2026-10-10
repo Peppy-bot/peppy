@@ -277,15 +277,12 @@ pub(super) fn complete_config_content(content: &str) -> Option<Completion> {
         return None;
     }
 
-    let layout = match scan_layout(content) {
-        Some(layout) => layout,
-        None => {
-            return Some(Completion {
-                content: content.to_string(),
-                added_paths: Vec::new(),
-                unspliceable_paths: missing.into_iter().map(|entry| entry.path).collect(),
-            });
-        }
+    let Some(layout) = scan_layout(content) else {
+        return Some(Completion {
+            content: content.to_string(),
+            added_paths: Vec::new(),
+            unspliceable_paths: missing.into_iter().map(|entry| entry.path).collect(),
+        });
     };
 
     // One insertion per target block: group the missing entries by their
@@ -598,16 +595,16 @@ fn scan_layout(content: &str) -> Option<DocumentLayout> {
                         if stack.is_empty() {
                             root = Some(span);
                         } else if let Some(key) = frame.key
-                            && stack[1..]
+                            && let Some(mut path) = stack[1..]
                                 .iter()
-                                .all(|ancestor| ancestor.is_object && ancestor.key.is_some())
+                                .map(|ancestor| ancestor.key.clone())
+                                .collect::<Option<Vec<String>>>()
                         {
                             // The full key chain from the root: every ancestor
-                            // besides the root object contributes its key.
-                            let mut path: Vec<String> = stack[1..]
-                                .iter()
-                                .map(|ancestor| ancestor.key.clone().expect("checked above"))
-                                .collect();
+                            // besides the root object contributes its key. Only
+                            // a keyed object has a key, so an array or an
+                            // array element on the way leaves the block
+                            // without a chain.
                             path.push(key);
                             blocks.insert(path, span);
                         }
