@@ -43,7 +43,7 @@
 #![forbid(unsafe_code)]
 
 pub mod action_log;
-pub mod archive;
+mod archive;
 pub mod build_io;
 mod build_progress;
 mod error;

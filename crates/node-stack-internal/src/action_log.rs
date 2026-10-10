@@ -27,7 +27,7 @@ const FILE_TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S_%3f";
 const ERROR_MARKER: &str = "error";
 /// What separates an error from the last lines its command printed on stderr,
 /// which the daemon quotes after it.
-pub const STDERR_TAIL_HEADER: &str = "\n\n--- stderr (last lines) ---\n";
+pub(crate) const STDERR_TAIL_HEADER: &str = "\n\n--- stderr (last lines) ---\n";
 /// How far the time of a line may run ahead of the clock. Past it, a clock
 /// that stepped back is followed.
 const MAX_CLOCK_LEAD: Duration = Duration::from_secs(1);
@@ -293,7 +293,7 @@ impl ActionLog {
     }
 
     /// Writes an error of the daemon. The record of an error that quotes the
-    /// stderr of its command after [`STDERR_TAIL_HEADER`] holds the error
+    /// stderr of its command after `STDERR_TAIL_HEADER` holds the error
     /// alone: each quoted line is a record of the log that captured it.
     pub fn error(&self, message: &str) {
         self.write(

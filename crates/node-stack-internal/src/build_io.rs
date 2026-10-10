@@ -6,7 +6,7 @@
 //! `\n`, `\r`, and `\r\n` (see [`LineSplitter`]), so TTY-style `\r` progress
 //! repaints surface as feedback instead of accumulating silently inside one
 //! never-terminated line. The build path uses it through
-//! [`stream_child_output`]. The start path uses it from
+//! `stream_child_output`. The start path uses it from
 //! `NodeEntity::prepare_and_spawn`, where the daemon must call
 //! `child.try_wait()` concurrently with reading stdout/stderr (so it can
 //! detect early child exit while polling the ready/health signals). The
@@ -31,7 +31,7 @@ use crate::build_progress::{BuildProgressMonitor, LastOutputLine};
 
 /// Maximum number of stderr lines to retain for error diagnostics.
 /// Used by both the build (apptainer/archive) path and the start (node run) path.
-pub const STDERR_TAIL_LINES: usize = 20;
+pub(crate) const STDERR_TAIL_LINES: usize = 20;
 
 pub use core_node_api::encoding::FeedbackStream;
 
@@ -184,7 +184,7 @@ impl StderrTail {
     }
 }
 
-pub use process_wrap::tokio::ChildWrapper;
+pub(crate) use process_wrap::tokio::ChildWrapper;
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
 
 /// Spawns `cmd` as a process-group leader so [`stream_child_output`]'s
@@ -195,7 +195,7 @@ use process_wrap::tokio::{CommandWrap, ProcessGroup};
 /// would be orphaned and keep the daemon's stdio pipes open until they exit
 /// naturally, stalling cancellation. Making the child its own process-group
 /// leader (PGID == its PID) lets `start_kill()` signal the whole group.
-pub fn spawn_in_process_group(
+pub(crate) fn spawn_in_process_group(
     cmd: tokio::process::Command,
 ) -> std::io::Result<Box<dyn ChildWrapper>> {
     let mut wrap = CommandWrap::from(cmd);
@@ -221,7 +221,7 @@ pub fn spawn_in_process_group(
 /// `Err("build cancelled")`, so no zombie lingers and the working dir is free
 /// for a superseding build. If this future is instead dropped outright, the
 /// `KillGuard` still SIGKILLs the group as a fallback (without reaping).
-pub async fn stream_child_output(
+pub(crate) async fn stream_child_output(
     mut child: Box<dyn ChildWrapper>,
     activity_sampler: impl Fn() -> BuildActivity + Send + Sync + 'static,
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
