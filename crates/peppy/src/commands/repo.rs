@@ -250,31 +250,21 @@ mod tests {
         command: RepoCommands,
     }
 
-    fn add_ref(git_ref: &str) -> std::result::Result<Option<GitRepoRef>, clap::Error> {
+    /// The `--ref` that `repo <subcommand>` parses from its command line.
+    fn parsed_ref(
+        subcommand: &str,
+        git_ref: &str,
+    ) -> std::result::Result<Option<GitRepoRef>, clap::Error> {
         RepoCli::try_parse_from([
             "repo",
-            "add",
+            subcommand,
             "https://github.com/org/repo.git",
             "--ref",
             git_ref,
         ])
         .map(|cli| match cli.command {
-            RepoCommands::Add { git_ref, .. } => git_ref,
-            _ => unreachable!("`repo add` parses into `Add`"),
-        })
-    }
-
-    fn exclude_ref(git_ref: &str) -> std::result::Result<Option<GitRepoRef>, clap::Error> {
-        RepoCli::try_parse_from([
-            "repo",
-            "exclude",
-            "https://github.com/org/repo.git",
-            "--ref",
-            git_ref,
-        ])
-        .map(|cli| match cli.command {
-            RepoCommands::Exclude { git_ref, .. } => git_ref,
-            _ => unreachable!("`repo exclude` parses into `Exclude`"),
+            RepoCommands::Add { git_ref, .. } | RepoCommands::Exclude { git_ref, .. } => git_ref,
+            _ => unreachable!("`repo {subcommand}` parses into a command that takes `--ref`"),
         })
     }
 
@@ -282,7 +272,7 @@ mod tests {
     /// parses into, for `repo add` and `repo exclude` alike.
     #[test]
     fn ref_on_the_command_line_parses_as_in_the_file() {
-        for parse in [add_ref, exclude_ref] {
+        for subcommand in ["add", "exclude"] {
             for raw in [
                 "@{peppy-release}",
                 "peppy-release/v0.31.2",
@@ -290,7 +280,7 @@ mod tests {
                 "main",
             ] {
                 assert_eq!(
-                    parse(raw).expect(raw),
+                    parsed_ref(subcommand, raw).expect(raw),
                     Some(GitRepoRef::parse(raw).expect(raw)),
                     "{raw}"
                 );
@@ -300,14 +290,14 @@ mod tests {
 
     #[test]
     fn ref_on_the_command_line_is_refused_as_in_the_file() {
-        for parse in [add_ref, exclude_ref] {
+        for subcommand in ["add", "exclude"] {
             for raw in [
                 "@{Peppy-Release}",
                 "@{peppy-releases}",
                 "@{upstream}",
                 "main@{1}",
             ] {
-                let error = parse(raw).expect_err(raw).to_string();
+                let error = parsed_ref(subcommand, raw).expect_err(raw).to_string();
                 let refusal = GitRepoRef::parse(raw).expect_err(raw).to_string();
                 assert!(error.contains(&refusal), "{raw}: {error}");
             }
