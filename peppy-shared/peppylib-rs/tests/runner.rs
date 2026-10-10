@@ -713,16 +713,13 @@ async fn standalone_runner_succeed() {
             })
     });
 
-    // Wait for setup to complete and get the cancellation token
     let cancellation_token = tokio::time::timeout(Duration::from_secs(5), setup_rx)
         .await
         .expect("runner setup should complete")
         .expect("runner setup signal should be sent");
 
-    // Signal shutdown via cancellation token
     cancellation_token.cancel();
 
-    // Runner should exit after cancellation
     tokio::time::timeout(Duration::from_secs(10), runner_task)
         .await
         .expect("runner should exit")
@@ -775,7 +772,7 @@ async fn init_standalone_ignores_inherited_runtime_config_env() {
     assert_eq!(parameters.frequency_hz, TEST_FREQUENCY_HZ);
 
     // `init()` under the same environment resolves daemon mode and fails on
-    // the bogus config — the exact hijack init_standalone exists to avoid.
+    // the bogus config: the exact hijack init_standalone exists to avoid.
     let daemon_attempt = NodeBuilder::<Parameters>::new()
         .with_config_path(&peppy_config_path)
         .init();
@@ -1034,13 +1031,11 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         })
     });
 
-    // Wait for setup to complete and get the cancellation token
     let cancellation_token = tokio::time::timeout(Duration::from_secs(5), setup_rx)
         .await
         .expect("runner setup should complete")
         .expect("runner setup signal should be sent");
 
-    // Verify the token is NOT cancelled before shutdown
     assert!(
         !cancellation_token.is_cancelled(),
         "cancellation token should not be cancelled before shutdown request"
@@ -1061,7 +1056,6 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     )
     .await;
 
-    // Send shutdown request
     let shutdown_payload = Payload::from_static(b"shutdown");
     peppylib::ServiceMessenger::poll(
         &messenger,
@@ -1076,14 +1070,12 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     .await
     .expect("shutdown service should respond");
 
-    // Wait for runner to exit
     tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
         .await
         .expect("runner should exit")
         .expect("runner task should not panic")
         .expect("runner should return Ok");
 
-    // Verify the cancellation token IS cancelled after shutdown
     assert!(
         cancellation_token.is_cancelled(),
         "cancellation token should be cancelled after shutdown request"
@@ -1403,11 +1395,11 @@ async fn send_shutdown_when_reachable<T: std::fmt::Debug>(
     .expect("shutdown service should respond");
 }
 
-/// The regression test for the `ds_lock_probe` leak: cleanup registered via
-/// `on_shutdown` must run to completion, in reverse registration order, with
-/// the messenger still usable, before `run()` returns on an in-band shutdown
-/// (`peppy node stop`). Before the fix, `run()` returned as soon as the token
-/// was cancelled and dropped the runtime under the cleanup.
+/// Cleanup registered via `on_shutdown` runs to completion, in reverse
+/// registration order, with the messenger still usable, before `run()`
+/// returns on an in-band shutdown (`peppy node stop`). A `run()` that returned
+/// as soon as the token was cancelled would drop the runtime under the cleanup
+/// (the `ds_lock_probe` leak).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_shutdown_awaits_hooks_lifo_before_exit() {
     let stack = start_daemon_stack(None).await;

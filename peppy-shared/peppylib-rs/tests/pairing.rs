@@ -184,7 +184,7 @@ async fn live_pair_starts_delivery_without_resubscribe() {
     let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
     let publisher = declare_peer_publisher(&peer_handle, "arm_1").await;
 
-    // Pair live — the subscription object predates the pair (the lazy story).
+    // Pair live: the subscription object predates the pair (the lazy story).
     tx.send(paired_with(1, &["arm_1"])).expect("watch send");
     wait_for_peer_wire_sub(&peer_handle, "arm_1").await;
 

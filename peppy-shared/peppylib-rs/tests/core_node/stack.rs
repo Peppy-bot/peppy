@@ -53,8 +53,8 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
 
 /// Spawns the stub listener for `graph` on a shared router/runner, and waits
 /// for reachability. The router and temp dir are returned so callers hold
-/// them for the duration of the test — dropping them tears down the messaging
-/// fabric / config file.
+/// them for the duration of the test: dropping them tears down the messaging
+/// fabric and the config file.
 async fn setup_stub(
     graph: SerializedNodeGraph,
     host_name: &str,

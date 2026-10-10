@@ -1,4 +1,4 @@
-//! Suite for `peppylib::testing` — the node-invariant cores behind generated
+//! Suite for `peppylib::testing`, the node-invariant cores behind generated
 //! per-node mock/fixtures code. Mock semantics (scripted vs. manual service
 //! responses, deterministic action producer-loss, lazy first-publish
 //! readiness, the harness barrier and teardown convergence) are proven HERE,
@@ -150,8 +150,8 @@ async fn mock_service_core_scripted_then_manual() {
 
 /// The deterministic producer-loss contract: `stop()` on a mock action server
 /// with a live, user-held goal context must surface to the consumer as the
-/// typed `ActionFeedbackProducerGone` — never as a clean feedback close and
-/// never as a hang — because the disarmed context suppresses the drop-time
+/// typed `ActionFeedbackProducerGone`, never as a clean feedback close and
+/// never as a hang, because the disarmed context suppresses the drop-time
 /// sentinel that would otherwise race the liveliness latch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_action_stop_yields_producer_gone_deterministically() {
@@ -185,7 +185,7 @@ async fn mock_action_stop_yields_producer_gone_deterministically() {
     .expect("mock action should become reachable");
 
     // `send_goal` resolves only once the server answers admission, so it must
-    // run concurrently with the mock's `next_goal` → `accept` below — exactly
+    // run concurrently with the mock's `next_goal` → `accept` below: exactly
     // the shape a node's consumed-action call has against a live server.
     let client_for_task = client_handle.clone();
     let goal_task = tokio::spawn(async move {
@@ -232,7 +232,7 @@ async fn mock_action_stop_yields_producer_gone_deterministically() {
     assert_eq!(first.payload().as_ref(), b"working");
 
     // Stop the mock mid-goal with the context still held (as a test's MockGoal
-    // handle would be) and tear down its session — the producer-loss shape.
+    // handle would be) and tear down its session: the producer-loss shape.
     mock.stop();
     drop(mock_handle);
 
@@ -247,7 +247,7 @@ async fn mock_action_stop_yields_producer_gone_deterministically() {
     }
 
     // Dropping the disarmed context afterwards is inert: no panic, no late
-    // sentinel (nothing to receive it anyway — the session is gone).
+    // sentinel (the session is gone, so nothing could receive it anyway).
     drop(context);
 
     router.shutdown().await.expect("router shutdown");

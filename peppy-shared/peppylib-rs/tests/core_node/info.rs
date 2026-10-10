@@ -28,8 +28,8 @@ async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
 
 /// Spawns the stub listener for `response` on a shared router/runner, and
 /// waits for reachability. The router and temp dir are returned so callers
-/// hold them for the duration of the test — dropping them tears down the
-/// messaging fabric / config file.
+/// hold them for the duration of the test: dropping them tears down the
+/// messaging fabric and the config file.
 async fn setup_stub(response: InfoResponse) -> (EphemeralRouter, TempDir, NodeRunner) {
     let (router, temp_dir, node_runner, server) = start_router_and_runner().await;
     spawn_stub_listener(server, response).await;

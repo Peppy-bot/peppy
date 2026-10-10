@@ -43,9 +43,9 @@ async fn assert_one_service_round_trip(server: &MessengerHandle, client: &Messen
     .await
     .expect("listen should succeed");
 
-    // No settle sleep: `poll` below does discover-then-pin with a built-in
-    // cold-start retry bounded by its timeout, so it waits for the listener's
-    // queryable to propagate rather than guessing a fixed delay.
+    // No settle sleep: a `poll` pinned to its producer re-issues a query that
+    // finalizes with no reply, within its timeout, so it waits for the
+    // listener's queryable to propagate rather than guessing a fixed delay.
 
     let handler = answer_next_request(service, response_payload.clone());
 
@@ -255,7 +255,7 @@ async fn service_contract_tag_hyphen_normalized() {
 /// Without this property a state-changing service would execute on every
 /// matching producer; for actions this would be a real-world safety hazard
 /// (multiple robots executing the same goal). The wire layer alone cannot
-/// give this guarantee — `QueryTarget::All` broadcasts the request — so it
+/// give this guarantee (`QueryTarget::All` broadcasts the request), so it
 /// is enforced by `ServiceMessenger::poll`'s discover-then-pin sequence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn service_wildcard_poll_runs_handler_on_winner_only() {
@@ -369,7 +369,7 @@ async fn service_wildcard_poll_runs_handler_on_winner_only() {
     // poll performs a wildcard discover-then-pin internally. In peer mode
     // discover_producer re-probes within its budget until the producers'
     // queryables propagate to this freshly-connected caller, so no external
-    // readiness gate is needed — this exercises that cold-start retry directly.
+    // readiness gate is needed: this exercises that cold-start retry directly.
     let response = ServiceMessenger::poll(
         &caller_handle,
         "caller_core",

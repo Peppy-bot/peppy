@@ -59,8 +59,8 @@ async fn spawn_node_stop_stub_listener(
 
 /// Two same-named `node_stop` listeners on different core nodes: the one on
 /// `scope_core_node` must win the discovery even though the caller is bound
-/// to the core node hosting the decoy. With the scope derived from
-/// `bound_core_node` (the old behavior) the decoy would answer instead.
+/// to the core node hosting the decoy. A discovery scoped to
+/// `bound_core_node` would let the decoy answer instead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_discovery_scopes_to_scope_core_node_not_bound() {
     let router = EphemeralRouter::start().await.expect("start zenoh router");
