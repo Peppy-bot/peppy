@@ -1495,6 +1495,33 @@ fn validate_selection_map(
     Ok(())
 }
 
+/// Refuses an entry that names an axis the constraint's `when` fixes to one
+/// option: under the guard such an entry is decided before anything is
+/// selected.
+fn check_entry_names_no_fixed_axis(
+    entry: &SelectionCondition,
+    when: Option<&SelectionCondition>,
+    origin: &str,
+    verb: &str,
+) -> Result<(), String> {
+    let Some(when) = when else {
+        return Ok(());
+    };
+    for axis_name in entry.keys() {
+        let is_fixed_by_guard = when
+            .get(axis_name)
+            .is_some_and(|options| options.0.len() == 1);
+        if is_fixed_by_guard {
+            return Err(format!(
+                "{origin} {verb} axis `{axis_name}` inside a constraint whose `when` already \
+                 fixes that axis: under the guard the entry is decided before anything is \
+                 selected. Restate it without the axis"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The shape checks on a `constraints` list: entries that say something and
 /// lists that agree with themselves. Reference checks (that the axes and
 /// options named exist) are [`validate_constraint_references`]'s, run once
@@ -1532,21 +1559,7 @@ fn validate_constraint_shapes(
                         "{origin} lists an empty {kind}: an entry names at least one axis"
                     ));
                 }
-                if let Some(when) = &constraint.when {
-                    for axis_name in entry.keys() {
-                        if when
-                            .get(axis_name)
-                            .is_some_and(|options| options.0.len() == 1)
-                        {
-                            return Err(format!(
-                                "{origin} {verb} axis `{axis_name}` inside a constraint whose \
-                                 `when` already fixes that axis: under the guard the entry is \
-                                 decided before anything is selected. Restate it without the \
-                                 axis"
-                            ));
-                        }
-                    }
-                }
+                check_entry_names_no_fixed_axis(entry, constraint.when.as_ref(), &origin, verb)?;
                 if seen.contains(&entry) {
                     return Err(format!("{origin} lists the same {kind} more than once"));
                 }
