@@ -56,27 +56,9 @@ fn repo_list_finds_nodes_in_fs_repo() {
     )
     .expect("write peppy.json5");
 
-    // Publish the repository's index, which is what refresh reads.
-    super::common::publish_repo_index(&repo_dir);
-
-    // Write repositories.json5 pointing to that directory
-    let conf_dir = peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(
-        conf_dir.join("repositories.json5"),
-        format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
-    )
-    .expect("write repos file");
-
-    // Refresh so the node is discovered and persisted to the cache, then list.
-    RepoCommand {
-        command: RepoCommands::Refresh { strict: false },
-    }
-    .execute(&ctx)
-    .expect("repo refresh should succeed");
+    // Publish the repository and refresh it, so the node is discovered and
+    // persisted to the cache, then list.
+    super::common::seed_docs_repo(&serve, &ctx, &repo_dir);
 
     let result = RepoCommand {
         command: RepoCommands::List,
@@ -108,12 +90,7 @@ fn repo_list_finds_nodes_in_fs_repo() {
 fn repo_list_empty_repos_succeeds() {
     let (_rt, serve, ctx, _work_dir) = setup();
 
-    let peppy_dirs = PeppyDirs::new(serve.temp_dir());
-
-    // Write an empty repositories.json5
-    let conf_dir = peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("repositories.json5"), "[]").expect("write repos file");
+    super::common::write_fs_repositories(&serve, &[]);
 
     let result = RepoCommand {
         command: RepoCommands::List,

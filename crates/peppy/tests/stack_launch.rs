@@ -1389,13 +1389,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         contract_tag,
     );
     super::common::publish_repo_index(contract_repo_dir.path());
-    let conf_dir = serve.temp_dir().join("conf");
-    fs::create_dir_all(&conf_dir).expect("create conf dir");
-    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
-        { "id": 1, "type": "fs", "path": contract_repo_dir.path().to_string_lossy() }
-    ]))
-    .expect("serialize repos");
-    fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+    super::common::write_fs_repositories(&serve, &[contract_repo_dir.path()]);
 
     let producer_run_cmd = vec![
         "sh".to_string(),
@@ -1880,13 +1874,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
         }"#,
     );
     super::common::publish_repo_index(contract_repo_dir.path());
-    let conf_dir = serve.temp_dir().join("conf");
-    fs::create_dir_all(&conf_dir).expect("create conf dir");
-    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
-        { "id": 1, "type": "fs", "path": contract_repo_dir.path().to_string_lossy() }
-    ]))
-    .expect("serialize repos");
-    fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+    super::common::write_fs_repositories(&serve, &[contract_repo_dir.path()]);
 
     // arm_controller: emits joint_commands (implements joint_command_source),
     // consumes joint_states through its `arm` slot (bound in the launcher).

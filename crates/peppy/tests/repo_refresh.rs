@@ -1,4 +1,4 @@
-use super::common::setup;
+use super::common::{setup, write_fs_repositories};
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 use peppy::test_support::ServeCommandEmulation;
@@ -37,14 +37,7 @@ fn repo_refresh_succeeds_after_adding_fs_repo() {
     .expect("write peppy.json5");
     super::common::publish_repo_index(node_dir.path());
 
-    // Seed the repos file in the daemon's conf dir
-    let conf_dir = serve.temp_dir().join("conf");
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
-        { "id": 1, "type": "fs", "path": node_dir.path().to_string_lossy() }
-    ]))
-    .expect("serialize repos");
-    std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+    write_fs_repositories(&serve, &[node_dir.path()]);
 
     let result = RepoCommand {
         command: RepoCommands::Refresh { strict: false },
@@ -91,15 +84,7 @@ fn seed_one_readable_and_two_unreadable_repositories(
     .expect("write peppy.json5");
 
     let never_mounted = serve.temp_dir().join("never_mounted");
-    let conf_dir = serve.temp_dir().join("conf");
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
-        { "id": 1, "type": "fs", "path": healthy.path().to_string_lossy() },
-        { "id": 2, "type": "fs", "path": unpublished.path().to_string_lossy() },
-        { "id": 3, "type": "fs", "path": never_mounted.to_string_lossy() },
-    ]))
-    .expect("serialize repos");
-    std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+    write_fs_repositories(serve, &[healthy.path(), unpublished.path(), &never_mounted]);
     (healthy, unpublished, never_mounted)
 }
 

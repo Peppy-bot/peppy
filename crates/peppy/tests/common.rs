@@ -819,10 +819,26 @@ pub fn seed_pairing_repo(
     seed_docs_repo(serve, ctx, repo_dir);
 }
 
-/// The general form of [`seed_pairing_repo`]: publishes whatever pairing and
-/// contract documents the caller already wrote into `repo_dir`, points the
-/// daemon at it as its single fs repo, and refreshes so every doc lands in the
-/// daemon's caches.
+/// Points the emulated daemon at `repo_dirs` as its fs repositories, with ids
+/// from 1 in the given order: the `repositories.json5` that `repo refresh`
+/// reads.
+pub fn write_fs_repositories(serve: &ServeCommandEmulation, repo_dirs: &[&std::path::Path]) {
+    let conf_dir = daemon_config::consts::PeppyDirs::new(serve.temp_dir()).conf_dir();
+    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
+    let entries: Vec<serde_json::Value> = repo_dirs
+        .iter()
+        .zip(1..)
+        .map(|(repo_dir, id)| {
+            serde_json::json!({ "id": id, "type": "fs", "path": repo_dir.to_string_lossy() })
+        })
+        .collect();
+    let repos_content = serde_json::to_string_pretty(&entries).expect("serialize repos");
+    std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+}
+
+/// The general form of [`seed_pairing_repo`]: publishes whatever documents
+/// the caller already wrote into `repo_dir`, points the daemon at it as its
+/// single fs repo, and refreshes so every doc lands in the daemon's caches.
 pub fn seed_docs_repo(
     serve: &ServeCommandEmulation,
     ctx: &Arc<AppContext>,
@@ -830,13 +846,7 @@ pub fn seed_docs_repo(
 ) {
     use peppy::commands::Command;
     publish_repo_index(repo_dir);
-    let conf_dir = serve.temp_dir().join("conf");
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
-        { "id": 1, "type": "fs", "path": repo_dir.to_string_lossy() }
-    ]))
-    .expect("serialize repos");
-    std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+    write_fs_repositories(serve, &[repo_dir]);
 
     peppy::commands::repo::RepoCommand {
         command: peppy::commands::repo::RepoCommands::Refresh { strict: false },
