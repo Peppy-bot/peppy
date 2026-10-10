@@ -237,20 +237,11 @@ async fn setup() -> Fixture {
     }
 }
 
-/// Brings `arm_1` up as a Running source, its participant slot declared vacant
-/// so it boots standalone. Every observer test needs a live source before the
-/// observer, so the pin (or seed) it reads has a real incarnation to name.
-async fn run_source(fx: &Fixture) {
-    emulate_cooperative_source(
-        &fx.messenger,
-        &fx.core_node_name,
-        "robot_arm",
-        "arm_1",
-        fx.source_pidfile.clone(),
-    )
-    .await;
+/// The `node run` that starts `robot_arm` as `instance_id` with its participant
+/// slot `controller` declared vacant, so it boots standalone.
+fn vacant_source_run_command(instance_id: &str) -> NodeCommand {
     node_run_command(
-        "arm_1",
+        instance_id,
         "robot_arm",
         Vec::new(),
         vec![(
@@ -258,14 +249,30 @@ async fn run_source(fx: &Fixture) {
             "test rig: this slot has no peer".to_string(),
         )],
     )
-    .execute(&fx.ctx)
-    .expect("source run (participant slot vacant) should succeed");
+}
+
+/// Brings `instance_id` up as a Running source, its participant slot declared
+/// vacant so it boots standalone. Every observer test needs a live source
+/// before the observer, so the pin (or seed) it reads has a real incarnation to
+/// name.
+async fn run_source(fx: &Fixture, instance_id: &str) {
+    emulate_cooperative_source(
+        &fx.messenger,
+        &fx.core_node_name,
+        "robot_arm",
+        instance_id,
+        fx.source_pidfile.clone(),
+    )
+    .await;
+    vacant_source_run_command(instance_id)
+        .execute(&fx.ctx)
+        .expect("source run (participant slot vacant) should succeed");
 }
 
 /// Runs the source then the observer with `--link watch@arm_1`, and returns the
 /// observer's state watch already advanced past the initial live delivery.
 async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationState> {
-    run_source(fx).await;
+    run_source(fx, "arm_1").await;
 
     let mut obs_rx = emulate_observer_services(
         &fx.messenger,
@@ -334,7 +341,7 @@ async fn observer_boot_config_seeds_membership_at_spawn() {
     let fx = setup().await;
 
     // A live source first, so the seed has a real incarnation to stamp.
-    run_source(&fx).await;
+    run_source(&fx, "arm_1").await;
 
     let dump_dir = tempfile::tempdir().expect("dump dir");
     let dump = dump_dir.path().join("boot_config.json5");
@@ -474,25 +481,7 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
     // Both sources are instances of the same node, started in sequence, so each
     // spawn rewrites the shared pidfile and a stop always kills the live one.
     for instance_id in ["arm_1", "arm_2"] {
-        emulate_cooperative_source(
-            &fx.messenger,
-            &fx.core_node_name,
-            "robot_arm",
-            instance_id,
-            fx.source_pidfile.clone(),
-        )
-        .await;
-        node_run_command(
-            instance_id,
-            "robot_arm",
-            Vec::new(),
-            vec![(
-                "controller".to_string(),
-                "test rig: this slot has no peer".to_string(),
-            )],
-        )
-        .execute(&fx.ctx)
-        .expect("source run (participant slot vacant) should succeed");
+        run_source(&fx, instance_id).await;
     }
 
     let mut obs_rx = emulate_observer_services(
@@ -565,17 +554,9 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
 
     // Restarting it bumps only its own incarnation generation.
     let arm_1_generation = state.members[1].source_generation;
-    node_run_command(
-        "arm_2",
-        "robot_arm",
-        Vec::new(),
-        vec![(
-            "controller".to_string(),
-            "test rig: this slot has no peer".to_string(),
-        )],
-    )
-    .execute(&fx.ctx)
-    .expect("source re-run should succeed");
+    vacant_source_run_command("arm_2")
+        .execute(&fx.ctx)
+        .expect("source re-run should succeed");
 
     let state = obs_rx.borrow_and_update().clone();
     assert_eq!(instance_ids(&state), ["arm_2", "arm_1"]);
@@ -670,17 +651,9 @@ async fn service_reset_clears_the_observation_registry() {
         arm_pidfile.clone(),
     )
     .await;
-    node_run_command(
-        "arm_1",
-        "robot_arm",
-        Vec::new(),
-        vec![(
-            "controller".to_string(),
-            "test rig: this slot has no peer".to_string(),
-        )],
-    )
-    .execute(&ctx)
-    .expect("source run should succeed");
+    vacant_source_run_command("arm_1")
+        .execute(&ctx)
+        .expect("source run should succeed");
 
     // Reset: mass teardown (the source's shutdown service kills its process, so
     // this returns promptly) + node_stack.reset() (clears pairing) + the fix
@@ -695,17 +668,9 @@ async fn service_reset_clears_the_observation_registry() {
     // source with the SAME id. It is not stopped again, so its kill hook never
     // fires. Its ready/health services from phase 1 still answer.
     add_built_node(&ctx, arm_dir.path(), &arm_config);
-    node_run_command(
-        "arm_1",
-        "robot_arm",
-        Vec::new(),
-        vec![(
-            "controller".to_string(),
-            "test rig: this slot has no peer".to_string(),
-        )],
-    )
-    .execute(&ctx)
-    .expect("source re-run after reset should succeed");
+    vacant_source_run_command("arm_1")
+        .execute(&ctx)
+        .expect("source re-run after reset should succeed");
 
     // A fresh observer links to the re-run source and reads its generation. Had
     // reset left the registry stale, arm_1 would resume at generation 2; a
