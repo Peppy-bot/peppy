@@ -103,7 +103,7 @@ async fn run_emitter_and_receiver(
 
     // --- Receiver project
     let receiver_instance_id = RECEIVER_INSTANCE_ID;
-    let temp_dir_proj2 = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
+    let temp_dir_receiver = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let consumed_topic: ConsumedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
@@ -111,7 +111,7 @@ async fn run_emitter_and_receiver(
         serde_json5::from_str(EXPOSED_FRAME_RECEIVED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, receiver_dir, user_node_receiver, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(
-            &temp_dir_proj2,
+            &temp_dir_receiver,
             &python_consumer_stub_node_config("uvc_camera", "v1", "uvc_camera"),
         );
     generator
@@ -151,7 +151,7 @@ async fn run_emitter_and_receiver(
         EMITTER_INSTANCE_ID,
     );
     let receiver_runtime_config = crate::helpers::apply_topology(receiver_runtime_config, topology);
-    let receiver_runtime_config_path = temp_dir_proj2.path().join("peppy_runtime.json5");
+    let receiver_runtime_config_path = temp_dir_receiver.path().join("peppy_runtime.json5");
     receiver_runtime_config
         .save_json5_launch_config(&receiver_runtime_config_path)
         .unwrap();
@@ -211,13 +211,13 @@ if __name__ == "__main__":
 
     // --- Emitter project
     let emitter_instance_id = EMITTER_INSTANCE_ID;
-    let temp_dir_proj1 = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
+    let temp_dir_emitter = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let emitted_topic = NativeEmittedTopic {
         retention: scenario.retention(),
         ..serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap()
     };
     let (mut generator, emitter_dir, user_node_emitter, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_proj1, STUB_PYTHON_NODE_CONFIG);
+        init_test_env::<generator::PythonGenerator>(&temp_dir_emitter, STUB_PYTHON_NODE_CONFIG);
     let emitter_parameters: config::ParameterSchema =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
     generator.set_parameters(emitter_parameters.clone());
@@ -255,7 +255,7 @@ if __name__ == "__main__":
     )
     .unwrap();
     let emitter_runtime_config = crate::helpers::apply_topology(emitter_runtime_config, topology);
-    let emitter_runtime_config_path = temp_dir_proj1.path().join("peppy_runtime.json5");
+    let emitter_runtime_config_path = temp_dir_emitter.path().join("peppy_runtime.json5");
     emitter_runtime_config
         .save_json5_launch_config(&emitter_runtime_config_path)
         .unwrap();
@@ -354,7 +354,10 @@ if __name__ == "__main__":
     // A node's health service is reachable once its setup returned: for the
     // retaining emitter, once it published its one frame. The late-join
     // receiver starts after that.
-    let live_receiver = matches!(scenario, TopicScenario::LiveStream).then(spawn_receiver);
+    let early_receiver = match scenario {
+        TopicScenario::LiveStream => Some(spawn_receiver()),
+        TopicScenario::RetainingThenLateJoin => None,
+    };
     let mut emitter_child = spawn_emitter();
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -365,7 +368,10 @@ if __name__ == "__main__":
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    let mut receiver_child = live_receiver.unwrap_or_else(&spawn_receiver);
+    let mut receiver_child = match early_receiver {
+        Some(child) => child,
+        None => spawn_receiver(),
+    };
     wait_for_health_service_reachable_or_exit(
         &ctx,
         RECEIVER_NODE_NAME,
@@ -422,7 +428,7 @@ if __name__ == "__main__":
     let receiver_stderr = String::from_utf8_lossy(&receiver_output.stderr).into_owned();
     assert!(
         receiver_output.status.success(),
-        "receiver cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        "receiver process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
         receiver_output.status.code(),
         receiver_stdout,
         receiver_stderr
@@ -440,7 +446,7 @@ if __name__ == "__main__":
     let emitter_stderr = String::from_utf8_lossy(&emitter_output.stderr).into_owned();
     assert!(
         emitter_output.status.success(),
-        "emitter cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        "emitter process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
         emitter_output.status.code(),
         emitter_stdout,
         emitter_stderr
