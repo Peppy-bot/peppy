@@ -636,17 +636,25 @@ fn decode_sha256_hex(input: &str) -> std::result::Result<Vec<u8>, String> {
     if bytes.len() != 64 {
         return Err(format!("expected 64 hex characters, got {}", bytes.len()));
     }
-    // Input is already validated as lowercase hex by config parsing (source.rs),
-    // so we can convert directly without error handling per digit.
     // The length check above leaves no remainder to drop.
     let (digit_pairs, _) = bytes.as_chunks::<2>();
     let mut output = Vec::with_capacity(32);
     for &[high_digit, low_digit] in digit_pairs {
-        let high = (high_digit as char).to_digit(16).unwrap() as u8;
-        let low = (low_digit as char).to_digit(16).unwrap() as u8;
+        // The digest comes from the goal as the client sent it, so a digit
+        // that is not hexadecimal is refused here rather than trusted.
+        let (Some(high), Some(low)) = (hex_digit_value(high_digit), hex_digit_value(low_digit))
+        else {
+            return Err(format!("`{input}` is not a hexadecimal string"));
+        };
         output.push((high << 4) | low);
     }
     Ok(output)
+}
+
+/// The value of one hexadecimal digit of either case, or `None` for any
+/// other byte.
+fn hex_digit_value(digit: u8) -> Option<u8> {
+    (digit as char).to_digit(16).map(|value| value as u8)
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -1718,5 +1726,49 @@ mod tests {
 
         let err = download_http_bundle(&url, &dest, None, None).unwrap_err();
         assert!(err.contains("404"), "error should carry the status: {err}");
+    }
+
+    #[test]
+    fn decode_sha256_hex_refuses_non_hex_digits() {
+        let err = decode_sha256_hex(&"z".repeat(64)).unwrap_err();
+        assert!(err.contains("not a hexadecimal string"), "{err}");
+    }
+
+    #[test]
+    fn decode_sha256_hex_accepts_either_case() {
+        let lower = "0123456789abcdef".repeat(4);
+        let decoded = decode_sha256_hex(&lower).expect("lowercase hex decodes");
+        assert_eq!(decoded.len(), 32);
+        assert_eq!(
+            &decoded[..8],
+            &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]
+        );
+        assert_eq!(
+            decode_sha256_hex(&lower.to_uppercase()).expect("uppercase hex decodes"),
+            decoded
+        );
+    }
+
+    /// The digest is decoded before any request is sent, so a malformed one
+    /// is refused without downloading anything.
+    #[test]
+    fn download_http_bundle_refuses_a_non_hex_sha256() {
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .times(0)
+                .respond_with(status_code(200)),
+        );
+
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("bundle.tar.zst");
+
+        let err = download_http_bundle(&url, &dest, Some(&"g".repeat(64)), None).unwrap_err();
+        assert!(err.contains("Invalid SHA256"), "{err}");
+        assert!(
+            !dest.exists(),
+            "nothing is downloaded for a malformed digest"
+        );
     }
 }
