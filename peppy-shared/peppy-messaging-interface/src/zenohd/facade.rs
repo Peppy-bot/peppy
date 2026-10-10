@@ -32,7 +32,11 @@ enum RouterOwnership {
     },
     /// An already-running router that peppy only probes and uses. No binary or
     /// router config belongs to peppy in this mode.
-    External,
+    External {
+        /// Set by `adopt_external_router` once the endpoint has answered as a
+        /// responsive zenoh router.
+        adopted: bool,
+    },
 }
 
 /// Checks whether a child process has exited prematurely.
@@ -182,7 +186,6 @@ fn resolve_zenohd_binary(
 /// This facade allows calling the binary in the background.
 pub struct ZenohdFacade {
     ownership: RouterOwnership,
-    adopted: bool,
     router_process: Option<Child>,
     pub zenoh_endpoint: ZenohEndpoint,
 }
@@ -218,7 +221,6 @@ impl ZenohdFacade {
                 spawner,
                 owner_pid: std::process::id(),
             },
-            adopted: false,
             router_process: None,
             zenoh_endpoint,
         })
@@ -229,8 +231,7 @@ impl ZenohdFacade {
     /// TCP locator by [`ZenohAdapter::with_external_router`](crate::ZenohAdapter::with_external_router).
     pub fn external(zenoh_endpoint: ZenohEndpoint) -> Self {
         Self {
-            ownership: RouterOwnership::External,
-            adopted: false,
+            ownership: RouterOwnership::External { adopted: false },
             router_process: None,
             zenoh_endpoint,
         }
@@ -306,11 +307,11 @@ impl ZenohdFacade {
     }
 
     pub fn is_adopted(&self) -> bool {
-        self.adopted
+        matches!(self.ownership, RouterOwnership::External { adopted: true })
     }
 
     pub(crate) fn is_external(&self) -> bool {
-        matches!(&self.ownership, RouterOwnership::External)
+        matches!(self.ownership, RouterOwnership::External { .. })
     }
 
     pub(crate) fn is_pinned(&self) -> bool {
@@ -325,7 +326,7 @@ impl ZenohdFacade {
             RouterOwnership::Managed {
                 zenohd_config_path, ..
             } => Some(zenohd_config_path),
-            RouterOwnership::External => None,
+            RouterOwnership::External { .. } => None,
         }
     }
 
@@ -334,7 +335,7 @@ impl ZenohdFacade {
             RouterOwnership::Managed {
                 zenohd_log_path, ..
             } => Some(zenohd_log_path),
-            RouterOwnership::External => None,
+            RouterOwnership::External { .. } => None,
         }
     }
 
@@ -379,7 +380,10 @@ impl ZenohdFacade {
 
     pub(crate) fn adopt_external_router(&mut self) {
         debug_assert!(self.is_external());
-        self.adopted = true;
+        let RouterOwnership::External { adopted } = &mut self.ownership else {
+            return;
+        };
+        *adopted = true;
         tracing::info!(
             "Adopted external zenoh router at {}; peppy will not manage its lifecycle",
             self.zenoh_endpoint
@@ -625,7 +629,7 @@ impl ZenohdFacade {
 
     fn take_router_process_for_stop(&mut self) -> Option<Child> {
         match &self.ownership {
-            RouterOwnership::External => {
+            RouterOwnership::External { .. } => {
                 tracing::info!("leaving operator-managed external zenoh router running");
                 None
             }
