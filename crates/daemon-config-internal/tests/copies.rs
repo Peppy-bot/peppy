@@ -1,9 +1,9 @@
 use config::{AnyType, runtime::Name};
 use core_node_api::encoding::{ArgumentOverride, LaunchJoin, SetMember};
 use daemon_config::launcher::{
-    AppliedChange, ComposedLaunch, CompositionError, CopyRecord, JoinRequest, LinkValue,
-    PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, Selection, SkipReason,
-    SkippedAdjustment, UnitSelection,
+    AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CopyRecord, JoinRequest,
+    LinkValue, PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, Selection,
+    SkipReason, SkippedAdjustment, UnitSelection,
 };
 use std::path::Path;
 
@@ -119,6 +119,35 @@ fn launch_join(option: &str, copy: &str) -> LaunchJoin {
     }
 }
 
+/// `peppy stack join OPTION:NAME` onto the running stack (`selection`,
+/// `existing`), with its `--with` words and `--set-arguments` overrides.
+fn join_with(
+    prepared: &PreparedLauncher,
+    option: &str,
+    copy: &str,
+    join_words: &[&str],
+    arguments: &[&str],
+    selection: &UnitSelection,
+    existing: &PeppyLauncher,
+) -> Result<ComposedJoin, CompositionError> {
+    let arguments: Vec<ArgumentOverride> = arguments
+        .iter()
+        .map(|argument| argument.parse().unwrap())
+        .collect();
+    prepared.join(
+        JoinRequest {
+            option,
+            name: &name(copy),
+            words: &words(join_words),
+            arguments: &arguments,
+        },
+        RunningStack {
+            selection,
+            launcher: existing,
+        },
+    )
+}
+
 /// A join with no words and no overrides.
 fn join(
     prepared: &PreparedLauncher,
@@ -127,20 +156,7 @@ fn join(
     stack: &UnitSelection,
     existing: &PeppyLauncher,
 ) -> Result<PeppyLauncher, CompositionError> {
-    prepared
-        .join(
-            JoinRequest {
-                option,
-                name: &name(copy),
-                words: &[],
-                arguments: &[],
-            },
-            RunningStack {
-                selection: stack,
-                launcher: existing,
-            },
-        )
-        .map(|joined| joined.launcher)
+    join_with(prepared, option, copy, &[], &[], stack, existing).map(|joined| joined.launcher)
 }
 
 #[test]
@@ -182,20 +198,16 @@ fn one_two_and_six_robots_share_the_engine_and_keep_their_own_wiring() {
 fn a_copy_selects_its_options_own_axes_at_join() {
     let prepared = fleet("");
     let launch = prepared.launch(&words(&["engine"]), &[]).unwrap();
-    let joined = prepared
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("alpha"),
-                words: &words(&["xr"]),
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &launch.launcher,
-            },
-        )
-        .unwrap();
+    let joined = join_with(
+        &prepared,
+        "sim",
+        "alpha",
+        &["xr"],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
     assert_eq!(joined.copy.selection.echo(), "robot=sim  commander=xr");
     assert_eq!(
         instance_ids(&joined.copy),
@@ -211,35 +223,27 @@ fn a_copy_selects_its_options_own_axes_at_join() {
         commander.instances[0].instance_id.as_str(),
         "alpha_commander_inst"
     );
-    let explicit = prepared
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("bravo"),
-                words: &words(&["commander=xr"]),
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &joined.launcher,
-            },
-        )
-        .unwrap();
+    let explicit = join_with(
+        &prepared,
+        "sim",
+        "bravo",
+        &["commander=xr"],
+        &[],
+        &launch.selection,
+        &joined.launcher,
+    )
+    .unwrap();
     assert_eq!(explicit.copy.selection.echo(), "robot=sim  commander=xr");
-    let error = prepared
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("charlie"),
-                words: &words(&["engine"]),
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &joined.launcher,
-            },
-        )
-        .unwrap_err();
+    let error = join_with(
+        &prepared,
+        "sim",
+        "charlie",
+        &["engine"],
+        &[],
+        &launch.selection,
+        &joined.launcher,
+    )
+    .unwrap_err();
     assert!(
         matches!(&error, CompositionError::UnknownCopySelection { word, option, menu }
             if word == "engine" && option == "sim" && menu.contains("commander: `web`, `xr`")),
@@ -251,21 +255,16 @@ fn a_copy_selects_its_options_own_axes_at_join() {
 fn join_overrides_apply_after_guarded_launcher_adjustments() {
     let prepared = fleet("");
     let launch = prepared.launch(&words(&["engine"]), &[]).unwrap();
-    let overrides: Vec<ArgumentOverride> = vec!["arm_inst.speed=0.2".parse().unwrap()];
-    let joined = prepared
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("alpha"),
-                words: &[],
-                arguments: &overrides,
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &launch.launcher,
-            },
-        )
-        .unwrap();
+    let joined = join_with(
+        &prepared,
+        "sim",
+        "alpha",
+        &[],
+        &["arm_inst.speed=0.2"],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
     assert_eq!(
         instance(&joined.launcher, "alpha_arm_inst").arguments["speed"],
         AnyType::Float(0.2)
@@ -286,44 +285,31 @@ fn join_overrides_apply_after_guarded_launcher_adjustments() {
             && entry.change.field() == "arguments.speed"
             && entry.origin == "arguments of copy `alpha`"
     }));
-    let twice: Vec<ArgumentOverride> = vec![
-        "arm_inst.speed=0.2".parse().unwrap(),
-        "arm_inst.speed=0.3".parse().unwrap(),
-    ];
-    let error = prepared
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("bravo"),
-                words: &[],
-                arguments: &twice,
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &joined.launcher,
-            },
-        )
-        .unwrap_err();
+    let error = join_with(
+        &prepared,
+        "sim",
+        "bravo",
+        &[],
+        &["arm_inst.speed=0.2", "arm_inst.speed=0.3"],
+        &launch.selection,
+        &joined.launcher,
+    )
+    .unwrap_err();
     assert!(
         matches!(&error, CompositionError::DuplicateArgumentOverride { target, argument }
             if target == "arm_inst" && argument == "speed"),
         "{error}"
     );
-    let foreign: Vec<ArgumentOverride> = vec!["engine_inst.speed=1".parse().unwrap()];
-    let error = prepared
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("bravo"),
-                words: &[],
-                arguments: &foreign,
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &joined.launcher,
-            },
-        )
-        .unwrap_err();
+    let error = join_with(
+        &prepared,
+        "sim",
+        "bravo",
+        &[],
+        &["engine_inst.speed=1"],
+        &launch.selection,
+        &joined.launcher,
+    )
+    .unwrap_err();
     assert!(
         matches!(&error, CompositionError::ArgumentTargetAbsent { copy, target, .. }
             if copy == "bravo" && target == "engine_inst"),
@@ -422,35 +408,26 @@ fn the_copies_a_file_deploys_match_a_launch_followed_by_joins() {
 
     let bare = fleet("");
     let stack = bare.launch(&words(&["engine"]), &[]).unwrap();
-    let overrides: Vec<ArgumentOverride> = vec!["arm_inst.speed=0.2".parse().unwrap()];
-    let one = bare
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("alpha"),
-                words: &[],
-                arguments: &overrides,
-            },
-            RunningStack {
-                selection: &stack.selection,
-                launcher: &stack.launcher,
-            },
-        )
-        .unwrap();
-    let two = bare
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("bravo"),
-                words: &words(&["xr"]),
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &stack.selection,
-                launcher: &one.launcher,
-            },
-        )
-        .unwrap();
+    let one = join_with(
+        &bare,
+        "sim",
+        "alpha",
+        &[],
+        &["arm_inst.speed=0.2"],
+        &stack.selection,
+        &stack.launcher,
+    )
+    .unwrap();
+    let two = join_with(
+        &bare,
+        "sim",
+        "bravo",
+        &["xr"],
+        &[],
+        &stack.selection,
+        &one.launcher,
+    )
+    .unwrap();
     assert_eq!(
         serde_json::to_value(&launch.launcher).unwrap(),
         serde_json::to_value(&two.launcher).unwrap()
@@ -1771,20 +1748,16 @@ fn copies_configure_stack_nodes_together_and_joined_copies_cannot_change_them() 
     assert_eq!(refusal.to_string(), error.to_string());
     // The report of a join reads the value it replaced off the running
     // stack, where alpha already set the engine to v1.
-    let joined = prepared
-        .join(
-            JoinRequest {
-                option: "v1",
-                name: &name("bravo"),
-                words: &[],
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &launch.launcher,
-            },
-        )
-        .unwrap();
+    let joined = join_with(
+        &prepared,
+        "v1",
+        "bravo",
+        &[],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
     let hardware = joined
         .report
         .applied
@@ -2026,20 +1999,16 @@ fn a_join_may_pair_into_a_slot_the_stack_declares_vacant() {
     );
     // With the vacancy gone, the next copy over the same stack writes
     // nothing to the simulation, and its report says nothing of it.
-    let next = prepared
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("bravo"),
-                words: &[],
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &joined,
-            },
-        )
-        .unwrap();
+    let next = join_with(
+        &prepared,
+        "sim",
+        "bravo",
+        &[],
+        &[],
+        &launch.selection,
+        &joined,
+    )
+    .unwrap();
     assert!(
         next.report
             .applied
@@ -2058,20 +2027,16 @@ fn removing_a_copy_puts_back_the_vacancy_it_released() {
     let prepared = simulation_with_arm_slot(VACANT_ARM_SLOT);
     let launch = prepared.launch(&[], &[]).unwrap();
     let bare = instance(&launch.launcher, "simulation_inst").links["arm"].clone();
-    let joined = prepared
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("alpha"),
-                words: &[],
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &launch.launcher,
-            },
-        )
-        .unwrap();
+    let joined = join_with(
+        &prepared,
+        "sim",
+        "alpha",
+        &[],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
     assert!(
         !instance(&joined.launcher, "simulation_inst")
             .links
@@ -2102,20 +2067,16 @@ fn a_watcher_naming_the_instance_does_not_hold_the_vacancy_open() {
     let prepared = load(&document);
     let launch = prepared.launch(&[], &[]).unwrap();
     let bare = instance(&launch.launcher, "simulation_inst").links["arm"].clone();
-    let joined = prepared
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("alpha"),
-                words: &[],
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &launch.launcher,
-            },
-        )
-        .unwrap();
+    let joined = join_with(
+        &prepared,
+        "sim",
+        "alpha",
+        &[],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
     let remaining = prepared
         .remove(&joined.launcher, &joined.copy, &launch.selection, &[])
         .unwrap();
@@ -2132,34 +2093,26 @@ fn a_watcher_naming_the_instance_does_not_hold_the_vacancy_open() {
 fn removing_a_copy_leaves_a_slot_another_copy_pairs_into() {
     let prepared = simulation_with_arm_slot(VACANT_ARM_SLOT);
     let launch = prepared.launch(&[], &[]).unwrap();
-    let alpha = prepared
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("alpha"),
-                words: &[],
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &launch.launcher,
-            },
-        )
-        .unwrap();
-    let bravo = prepared
-        .join(
-            JoinRequest {
-                option: "sim",
-                name: &name("bravo"),
-                words: &[],
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &alpha.launcher,
-            },
-        )
-        .unwrap();
+    let alpha = join_with(
+        &prepared,
+        "sim",
+        "alpha",
+        &[],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
+    let bravo = join_with(
+        &prepared,
+        "sim",
+        "bravo",
+        &[],
+        &[],
+        &launch.selection,
+        &alpha.launcher,
+    )
+    .unwrap();
     let remaining = prepared
         .remove(
             &bravo.launcher,
@@ -2774,21 +2727,7 @@ fn copy_selection_refusals_name_the_copied_option() {
         error.to_string().contains("peppy stack join OPTION:NAME"),
         "{error}"
     );
-    let launched = prepared.launch(&[], &[]).unwrap();
-    let error = prepared
-        .join(
-            JoinRequest {
-                option: "real",
-                name: &name("alpha"),
-                words: &words(&["nope"]),
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launched.selection,
-                launcher: &launched.launcher,
-            },
-        )
-        .unwrap_err();
+    let error = join_onto_launch(&prepared, "real", "alpha", &["nope"], &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::UnknownCopySelection { word, option, menu }
             if word == "nope" && option == "real" && menu.contains("commander")),
@@ -3018,30 +2957,23 @@ const MCP_ROBOTS: &str = r#"{ robot: "arm",
     adjustments: [{ target: "arm_inst", set_arguments: { torque: 3 } }],
     instances: [{ instance_id: "alpha" }] }"#;
 
-/// A join under `words` and `arguments` onto the launch of `prepared`.
+/// A join under `join_words` and `arguments` onto the launch of `prepared`.
 fn join_onto_launch(
     prepared: &PreparedLauncher,
     option: &str,
     copy: &str,
     join_words: &[&str],
     arguments: &[&str],
-) -> Result<daemon_config::launcher::ComposedJoin, CompositionError> {
+) -> Result<ComposedJoin, CompositionError> {
     let launch = prepared.launch(&[], &[]).unwrap();
-    let arguments: Vec<ArgumentOverride> = arguments
-        .iter()
-        .map(|argument| argument.parse().unwrap())
-        .collect();
-    prepared.join(
-        JoinRequest {
-            option,
-            name: &name(copy),
-            words: &words(join_words),
-            arguments: &arguments,
-        },
-        RunningStack {
-            selection: &launch.selection,
-            launcher: &launch.launcher,
-        },
+    join_with(
+        prepared,
+        option,
+        copy,
+        join_words,
+        arguments,
+        &launch.selection,
+        &launch.launcher,
     )
 }
 
@@ -3212,20 +3144,16 @@ fn removing_a_file_copy_and_joining_it_again_reproduces_it() {
         .remove(&launch.launcher, alpha, &launch.selection, &[])
         .unwrap();
     assert!(ids(&without).is_empty(), "{:?}", ids(&without));
-    let rejoined = prepared
-        .join(
-            JoinRequest {
-                option: "arm",
-                name: &name("alpha"),
-                words: &[],
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launch.selection,
-                launcher: &without,
-            },
-        )
-        .unwrap();
+    let rejoined = join_with(
+        &prepared,
+        "arm",
+        "alpha",
+        &[],
+        &[],
+        &launch.selection,
+        &without,
+    )
+    .unwrap();
     assert_eq!(rejoined.copy.selection, alpha.selection);
     assert_eq!(instance_ids(&rejoined.copy), instance_ids(alpha));
     assert_eq!(
@@ -3474,20 +3402,16 @@ fn a_file_copy_may_leave_an_axis_for_a_launch_word() {
         launched.copies()[0].selection.echo(),
         "robot=real  commander=web"
     );
-    let error = prepared
-        .join(
-            JoinRequest {
-                option: "real",
-                name: &name("bravo"),
-                words: &[],
-                arguments: &[],
-            },
-            RunningStack {
-                selection: &launched.selection,
-                launcher: &launched.launcher,
-            },
-        )
-        .unwrap_err();
+    let error = join_with(
+        &prepared,
+        "real",
+        "bravo",
+        &[],
+        &[],
+        &launched.selection,
+        &launched.launcher,
+    )
+    .unwrap_err();
     let text = error.to_string();
     assert!(
         text.contains("`--with <option>` on `peppy stack join`") && !text.contains("stack launch"),
@@ -3707,20 +3631,16 @@ fn a_running_set_follows_joins_and_removals_and_a_rejoin_appears_once() {
     );
     let launch = prepared.launch(&[], &[]).unwrap();
     let join_copy = |copy_name: &str, existing: &PeppyLauncher| {
-        prepared
-            .join(
-                JoinRequest {
-                    option: "wrist",
-                    name: &name(copy_name),
-                    words: &[],
-                    arguments: &[],
-                },
-                RunningStack {
-                    selection: &launch.selection,
-                    launcher: existing,
-                },
-            )
-            .unwrap()
+        join_with(
+            &prepared,
+            "wrist",
+            copy_name,
+            &[],
+            &[],
+            &launch.selection,
+            existing,
+        )
+        .unwrap()
     };
     let robots = |flat: &PeppyLauncher| {
         instance(flat, "observer_inst").links["robots"]
