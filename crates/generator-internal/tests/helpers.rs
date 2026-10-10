@@ -431,22 +431,22 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread", "time"] }}
     }
 }
 
+/// Spawns the binary that [`compile_project`] copied to `target/debug` of
+/// `dir`, with piped stdout and stderr. The binary runs directly rather than
+/// through `cargo run`, which would contend for cargo's global package-cache
+/// lock.
 pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
-    // Run the compiled binary directly to avoid cargo's global package-cache lock contention.
-    // `compile_project` must be called beforehand to ensure the binary exists.
     let binary_path = dir
         .join("target")
         .join("debug")
         .join(executable_filename(USER_NODE_LAUNCH_BIN));
-    let use_binary = binary_path.exists();
-    let mut command = if use_binary {
-        Command::new(&binary_path)
-    } else {
-        Command::new("cargo")
-    };
+    assert!(
+        binary_path.exists(),
+        "spawn_cargo_run needs compile_project first: no binary at {}",
+        binary_path.display()
+    );
+    let mut command = Command::new(&binary_path);
     command
-        .env("CARGO_NET_OFFLINE", "true")
-        .args((!use_binary).then_some("run"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(dir);
@@ -455,7 +455,9 @@ pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std:
         command.env(key, value);
     }
 
-    command.spawn().expect("failed to spawn cargo run")
+    command
+        .spawn()
+        .expect("failed to spawn the compiled user node")
 }
 
 /// Wraps a spawned child whose stdout/stderr are piped, draining them
