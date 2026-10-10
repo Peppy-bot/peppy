@@ -8,19 +8,17 @@ use super::*;
 
 /// Read a descriptor's Cap'n Proto display name, e.g. `"clock.capnp:ClockRequest"`.
 fn display_name(pd: &PayloadDescriptor) -> String {
-    match (pd.introspect)().which() {
-        capnp::introspect::TypeVariant::Struct(raw) => {
-            let schema: capnp::schema::StructSchema = raw.into();
-            schema
-                .get_proto()
-                .get_display_name()
-                .expect("display name is present")
-                .to_str()
-                .expect("display name is UTF-8")
-                .to_string()
-        }
-        _ => panic!("{} does not introspect to a struct", pd.rust_type),
-    }
+    let capnp::introspect::TypeVariant::Struct(raw) = (pd.introspect)().which() else {
+        panic!("{} does not introspect to a struct", pd.rust_type);
+    };
+    let schema: capnp::schema::StructSchema = raw.into();
+    schema
+        .get_proto()
+        .get_display_name()
+        .expect("display name is present")
+        .to_str()
+        .expect("display name is UTF-8")
+        .to_string()
 }
 
 /// Pinned copy of every service wire string. Exhaustive on purpose:
@@ -256,10 +254,8 @@ fn spot_check_codec_roundtrip_and_registry_root() {
 /// that the `pd!` macro wired distinct types, not the same one twice).
 #[test]
 fn type_ids_are_distinct_per_payload() {
-    let clock = ServiceId::Clock.descriptor();
-    if let Payloads::Service { request, response } = &clock.payloads {
-        assert_ne!((request.rust_type_id)(), (response.rust_type_id)());
-    } else {
+    let Payloads::Service { request, response } = &ServiceId::Clock.descriptor().payloads else {
         panic!("clock service payloads");
-    }
+    };
+    assert_ne!((request.rust_type_id)(), (response.rust_type_id)());
 }
