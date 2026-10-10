@@ -15,11 +15,12 @@
 //! This is the Python counterpart of `tests/rust/consumed_topics_distinct_formats.rs`.
 
 use crate::helpers::{
-    contract_dep, init_python_project_venv, init_python_user_node, run_uv, test_peppy_dirs,
+    contract_dep, generate_test_peppygen_lib, init_python_project_venv, init_python_user_node,
+    run_uv,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage, TopicRetention};
-use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -175,17 +176,8 @@ fn generate_and_probe(order: [Slot; 2]) {
 
     let interfaces = order.into_iter().map(consumed_topic).collect();
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &user_node_dir,
-        interfaces,
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &user_node_dir, interfaces)
+        .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let capnp_dir = peppygen_dir.join("peppygen/capnp");

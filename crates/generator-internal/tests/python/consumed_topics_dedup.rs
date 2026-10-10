@@ -17,11 +17,11 @@
 
 use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
 use crate::helpers::{
-    init_python_project_venv, init_python_user_node, native_dep, run_uv, test_peppy_dirs,
+    generate_test_peppygen_lib, init_python_project_venv, init_python_user_node, native_dep, run_uv,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage, TopicRetention};
-use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant};
 use std::fs;
 use tempfile::TempDir;
 
@@ -122,17 +122,8 @@ fn python_handles_two_consumed_topics_sharing_topic_name() {
         }),
     ];
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &user_node_dir,
-        interfaces,
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &user_node_dir, interfaces)
+        .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let left_module = peppygen_dir.join("peppygen/consumed_topics/left_arm/joint_states.py");

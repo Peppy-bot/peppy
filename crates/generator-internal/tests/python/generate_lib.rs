@@ -6,7 +6,6 @@ use config::{
 };
 use daemon_config::consts::PEPPYLIB_OUTPUT_PATH;
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
-use generator::{NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
 
@@ -194,17 +193,8 @@ fn generate_peppygen_lib_python_repeat_generation_is_idempotent() {
         .expect("failed to write peppy.json5");
 
     for run in 1..=2 {
-        generate_peppygen_lib(
-            PeppygenLanguage::Python,
-            node_dir,
-            Vec::new(),
-            "test-hash",
-            &helpers::test_peppy_dirs(),
-            Default::default(),
-            None,
-            NodeTree::Source,
-        )
-        .unwrap_or_else(|e| panic!("generation run {run} failed: {e}"));
+        helpers::generate_test_peppygen_lib(PeppygenLanguage::Python, node_dir, Vec::new())
+            .unwrap_or_else(|e| panic!("generation run {run} failed: {e}"));
     }
 
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
@@ -230,17 +220,8 @@ fn python_node_venv_installs_local_peppylib() {
     )
     .expect("failed to write peppy.json5");
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Python, &node_dir, Vec::new())
+        .expect("failed to generate peppygen lib");
 
     helpers::init_python_project_venv(&node_dir);
 
@@ -298,17 +279,8 @@ fn generate_peppygen_lib_minimal_config() {
     fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
 
     // Generate should succeed even with no interfaces
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate library for minimal config");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Python, node_dir, Vec::new())
+        .expect("failed to generate library for minimal config");
 
     // Verify the generated library exists
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
@@ -322,16 +294,8 @@ fn generate_peppygen_lib_missing_config() {
     let node_dir = temp_dir.path();
 
     // Try to generate without a peppy.json5 - should fail
-    let result = generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    );
+    let result =
+        helpers::generate_test_peppygen_lib(PeppygenLanguage::Python, node_dir, Vec::new());
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }
 
@@ -374,17 +338,8 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        exposed_node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for exposed node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Python, exposed_node_dir, Vec::new())
+        .expect("failed to generate peppygen lib for exposed node");
 
     let exposed_peppygen_dir = exposed_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
@@ -433,15 +388,10 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
         dependency: helpers::native_dep(EXPOSED_NODE_NAME, "v1", EXPOSED_NODE_NAME),
     })];
 
-    generate_peppygen_lib(
+    helpers::generate_test_peppygen_lib(
         PeppygenLanguage::Python,
         consumer_node_dir,
         expected_interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -497,17 +447,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        exposed_node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for exposed node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Python, exposed_node_dir, Vec::new())
+        .expect("failed to generate peppygen lib for exposed node");
 
     let exposed_peppygen_dir = exposed_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
@@ -561,15 +502,10 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
         },
     )];
 
-    generate_peppygen_lib(
+    helpers::generate_test_peppygen_lib(
         PeppygenLanguage::Python,
         consumer_node_dir,
         consumed_interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -644,17 +580,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        exposed_node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for exposed node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Python, exposed_node_dir, Vec::new())
+        .expect("failed to generate peppygen lib for exposed node");
 
     let exposed_peppygen_dir = exposed_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
@@ -734,15 +661,10 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
         dependency: helpers::native_dep(EXPOSED_NODE_NAME, "v1", EXPOSED_NODE_NAME),
     })];
 
-    generate_peppygen_lib(
+    helpers::generate_test_peppygen_lib(
         PeppygenLanguage::Python,
         consumer_node_dir,
         consumed_interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -801,17 +723,8 @@ fn generate_peppygen_python_lib_renders_optional_accessor_for_a_zero_or_one_cont
         ),
     })];
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        consumer_node_dir,
-        interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for consumer node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Python, consumer_node_dir, interfaces)
+        .expect("failed to generate peppygen lib for consumer node");
 
     let leaf = consumer_node_dir
         .join(PEPPYGEN_OUTPUT_PATH)

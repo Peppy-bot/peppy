@@ -29,6 +29,26 @@ pub fn test_peppy_dirs() -> PeppyDirs {
     PeppyDirs::default()
 }
 
+/// Runs [`generate_peppygen_lib`] the way the tests run it: git hash
+/// `test-hash`, the shared [`test_peppy_dirs`], the default (symlink) deploy
+/// mode, the node's own `peppy.json5` and the source node tree.
+pub fn generate_test_peppygen_lib(
+    language: PeppygenLanguage,
+    node_dir: &Path,
+    interfaces: Vec<generator::DeploymentInterface>,
+) -> Result<(), generator::GeneratorError> {
+    generate_peppygen_lib(
+        language,
+        node_dir,
+        interfaces,
+        "test-hash",
+        &test_peppy_dirs(),
+        generator::CrateDeployMode::default(),
+        None,
+        NodeTree::Source,
+    )
+}
+
 /// A consumed service whose producer declares no request (or response) format
 /// reaches the generator as an empty `MessageFormat`: the daemon defaults the
 /// absent side rather than passing an `Option`. A parsed format is never
@@ -801,18 +821,7 @@ pub fn run_generate_peppygen_lib_test(
     fs::write(&config_path, json_config_content).expect("failed to write peppy.json5");
 
     // Generate the library
-    let peppy_dirs = PeppyDirs::default();
-    generate_peppygen_lib(
-        language,
-        node_dir,
-        Vec::new(),
-        "test-hash",
-        &peppy_dirs,
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate library");
+    generate_test_peppygen_lib(language, node_dir, Vec::new()).expect("failed to generate library");
 
     // Verify the generated library structure exists
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);

@@ -4,10 +4,9 @@
 //! with the right `__init__.py` chains and the matching `contract_name` /
 //! `contract_tag` strings inside each declare_publisher call.
 
-use crate::helpers::{prepare_directories, test_peppy_dirs};
+use crate::helpers::{generate_test_peppygen_lib, prepare_directories};
 use crate::implements_fixtures::{contract_backed_topic, make_video_stream_topic};
 use config::node::PeppygenLanguage;
-use generator::{CrateDeployMode, NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
 
@@ -75,18 +74,8 @@ fn nests_contract_backed_topics_under_link_id() {
         ),
     ];
 
-    let peppy_dirs = test_peppy_dirs();
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &user_node,
-        extras,
-        "test-hash",
-        &peppy_dirs,
-        CrateDeployMode::default(),
-        Some(&peppy_node_config),
-        NodeTree::Source,
-    )
-    .expect("generation should succeed");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &user_node, extras)
+        .expect("generation should succeed");
 
     let pkg = user_node
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)
@@ -213,18 +202,8 @@ fn hyphenated_link_id_lands_in_underscore_directory() {
         make_video_stream_topic("hyphen_marker"),
     )];
 
-    let peppy_dirs = test_peppy_dirs();
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &user_node,
-        extras,
-        "test-hash",
-        &peppy_dirs,
-        CrateDeployMode::default(),
-        Some(&peppy_node_config),
-        NodeTree::Source,
-    )
-    .expect("generation should succeed");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &user_node, extras)
+        .expect("generation should succeed");
 
     let emit_dir = user_node
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)
