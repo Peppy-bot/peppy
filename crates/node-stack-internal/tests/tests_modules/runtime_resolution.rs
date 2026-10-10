@@ -912,6 +912,107 @@ fn node_stack_wires_dependencies_for_dependants() {
     );
 }
 
+/// A node removed while a dependant still names it leaves the dependant
+/// waiting, so the next add of the node wires the dependency edge again and
+/// the dependant keeps guarding the interfaces it consumes.
+#[test]
+fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
+    let lidar_config = |exposed_services: &str| -> config::node::NodeConfig {
+        serde_json5::from_str(&format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{
+                  name: "lidar",
+                  tag: "v1",
+                }},
+                interfaces: {{
+                    services: {{
+                        exposes: [{exposed_services}]
+                    }}
+                }},
+                execution: {{
+                  language: "rust",
+                  run_cmd: ["lidar"]
+                }},
+            }}"#
+        ))
+        .expect("valid dependency node config")
+    };
+
+    let dependent: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+              name: "brain",
+              tag: "v1",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "v1", link_id: "lidar" }
+                ]
+              },
+            },
+            interfaces: {
+                services: {
+                    consumes: [
+                        {
+                          link_id: "lidar",
+                          name: "reset_sensor"
+                        }
+                    ]
+                }
+            },
+            execution: {
+              language: "rust",
+              run_cmd: ["brain"]
+            },
+        }"#,
+    )
+    .expect("valid dependent node config");
+
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    stack
+        .push_config(
+            lidar_config(r#"{ name: "reset_sensor" }"#),
+            false,
+            PathBuf::from("/tmp"),
+        )
+        .expect("dependency has no dependencies");
+    stack
+        .push_config(dependent, false, PathBuf::from("/tmp"))
+        .expect("dependent dependency is present");
+
+    assert!(
+        matches!(stack.remove_config("lidar", "v1"), Ok(true)),
+        "lidar has no instances, so it can be removed"
+    );
+    stack
+        .push_config(
+            lidar_config(r#"{ name: "reset_sensor" }"#),
+            false,
+            PathBuf::from("/tmp"),
+        )
+        .expect("dependency has no dependencies");
+
+    assert_eq!(
+        graph_query::dependency_names(&stack, "brain", "v1"),
+        vec!["lidar".to_string()],
+        "adding lidar again should wire brain to it"
+    );
+
+    let result = stack.push_config(
+        lidar_config(r#"{ name: "reset_sensor" }, { name: "calibrate" }"#),
+        false,
+        PathBuf::from("/tmp"),
+    );
+    assert!(
+        matches!(
+            result,
+            Err(NodeStackError::CannotOverwriteNodeWithDependents { .. })
+        ),
+        "brain still depends on lidar, so its interfaces cannot change, got {result:?}"
+    );
+}
+
 #[test]
 fn dependency_fails_when_node_name_mismatches() {
     // Dependent expects "uvc_camera" but we add "lidar" instead

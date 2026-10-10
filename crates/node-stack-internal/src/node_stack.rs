@@ -582,9 +582,20 @@ impl NodeStackInner {
 
     /// Removes an entity entirely from the graph.
     fn remove_entity(&mut self, key: &NodeKey) {
-        if let Some(index) = self.key_to_index.remove(key) {
-            self.graph.remove_node(index);
-            self.clear_pending_requirements_for(index);
+        let Some(index) = self.key_to_index.remove(key) else {
+            return;
+        };
+        let dependants: Vec<NodeIndex> = self
+            .graph
+            .neighbors_directed(index, Direction::Incoming)
+            .filter(|&dependant| dependant != index)
+            .collect();
+        self.graph.remove_node(index);
+        self.clear_pending_requirements_for(index);
+        // The dependants still name the removed node, so they wait for it as
+        // for a node not added yet, and its next add wires their edges again.
+        for dependant in dependants {
+            self.register_pending_requirement(key.clone(), dependant);
         }
     }
 
