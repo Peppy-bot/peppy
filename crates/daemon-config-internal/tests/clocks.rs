@@ -235,6 +235,32 @@ fn wall_is_reserved_but_may_be_aliased() {
     assert!(clocks.of("arm_inst").is_wall());
 }
 
+/// The refusals that name the declared domains list every one of them in
+/// order, the unknown-domain one with `wall` first, and the reserved-name
+/// refusal is reported once.
+#[test]
+fn clock_refusals_list_the_declared_domains() {
+    let reserved = resolve(&document(
+        r#"framework: { clocks: { wall: "wall", physical_robot: "wall" } },"#,
+        r#"{ instance_id: "arm_inst" }"#,
+    ))
+    .expect_err("declaring `wall` is refused");
+    assert_eq!(reserved.len(), 1, "{reserved:?}");
+    assert!(
+        reserved[0].ends_with("This launcher declares `physical_robot`, `wall`"),
+        "{reserved:?}"
+    );
+
+    let unknown = refusal(&document(
+        r#"framework: { clocks: { physical_robot: "wall", bench: "wall" } },"#,
+        r#"{ instance_id: "arm_inst", framework: { clock: "simulated_robot" } }"#,
+    ));
+    assert!(
+        unknown.ends_with("name one of `wall`, `bench`, `physical_robot`"),
+        "{unknown}"
+    );
+}
+
 /// Two names for wall time are one timeline; two simulations are never one,
 /// however their instants happen to line up.
 #[test]

@@ -131,14 +131,10 @@ pub fn resolve_clocks(
 
     // `wall` is the name of the time every machine already keeps, so a
     // declaration could only ever redefine it.
-    for domain in declared.keys() {
-        if domain.as_str() == WALL_CLOCK {
-            errors.push(ParsingError::ClockDomainReserved {
-                domains: crate::format_quoted_list(
-                    declared.keys().map(Name::as_str).collect::<Vec<_>>(),
-                ),
-            });
-        }
+    if declared.keys().any(|domain| domain.as_str() == WALL_CLOCK) {
+        errors.push(ParsingError::ClockDomainReserved {
+            domains: crate::format_quoted_list(declared.keys().map(Name::as_str)),
+        });
     }
 
     // One instance supplies at most one domain: it reads one clock, and
@@ -226,15 +222,11 @@ pub fn resolve_clocks(
             None => errors.push(ParsingError::ClockDomainUnknown {
                 instance: id.to_owned(),
                 clock: bound.to_string(),
-                declared: {
-                    // `wall` leads the list: it is always nameable, so the
-                    // message reads the same whether or not a domain exists.
-                    crate::format_quoted_list(
-                        std::iter::once(WALL_CLOCK)
-                            .chain(declared.keys().map(Name::as_str))
-                            .collect::<Vec<_>>(),
-                    )
-                },
+                // `wall` leads the list: it is always nameable, so the
+                // message reads the same whether or not a domain exists.
+                declared: crate::format_quoted_list(
+                    std::iter::once(WALL_CLOCK).chain(declared.keys().map(Name::as_str)),
+                ),
             }),
             // A descriptive name for wall time is an alias, not a timeline of
             // its own, so every instance naming one reads the same clock.
