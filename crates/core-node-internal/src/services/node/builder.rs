@@ -55,6 +55,31 @@ pub async fn listen_for_node_build(
     Ok(handle)
 }
 
+/// Why an entity has nothing to build.
+enum Unbuildable {
+    /// Its stage admits no build; carries the stage's name.
+    Stage(&'static str),
+    /// It holds no working directory staged by an add.
+    NoWorkingDir,
+}
+
+/// The staged working dir of `entity` and the generation it was read at,
+/// when its stage admits a build. Both come from one read guard, so the
+/// generation is the one the working dir belongs to.
+fn buildable_working_dir(
+    entity: &node_stack::EntityHandle,
+) -> std::result::Result<(Arc<node_stack::WorkingDirGuard>, u64), Unbuildable> {
+    let guard = entity.read();
+    guard
+        .stage()
+        .ensure_buildable()
+        .map_err(Unbuildable::Stage)?;
+    let working_dir = guard
+        .pending_working_dir()
+        .ok_or(Unbuildable::NoWorkingDir)?;
+    Ok((working_dir, guard.generation()))
+}
+
 /// Inputs required to drive a single `node_build` run to completion.
 struct NodeBuildRun {
     node_name: String,
@@ -96,26 +121,21 @@ pub(crate) async fn run_node_build_for_entity(
         }
     };
 
-    let (working_dir_guard, captured_generation) = {
-        let guard = entity_handle.read();
-        if let Err(stage) = guard.stage().ensure_buildable() {
-            let msg = format!(
-                "node `{}:{}` is in stage `{}`; cannot build",
-                node_name, node_tag, stage
-            );
-            log.error(&msg);
-            return NodeBuildResult::failure(&log_path, msg);
-        }
-        match guard.pending_working_dir() {
-            Some(g) => (g, guard.generation()),
-            None => {
-                let msg = format!(
+    let (working_dir_guard, captured_generation) = match buildable_working_dir(&entity_handle) {
+        Ok(buildable) => buildable,
+        Err(unbuildable) => {
+            let msg = match unbuildable {
+                Unbuildable::Stage(stage) => format!(
+                    "node `{}:{}` is in stage `{}`; cannot build",
+                    node_name, node_tag, stage
+                ),
+                Unbuildable::NoWorkingDir => format!(
                     "node `{}:{}` has no staged working directory",
                     node_name, node_tag
-                );
-                log.error(&msg);
-                return NodeBuildResult::failure(&log_path, msg);
-            }
+                ),
+            };
+            log.error(&msg);
+            return NodeBuildResult::failure(&log_path, msg);
         }
     };
 
@@ -246,40 +266,24 @@ impl NodeBuildGoalHandler {
             }
         };
 
-        let buildable = {
-            let guard = entity_handle.read();
-            match guard.stage().ensure_buildable() {
-                Ok(()) => Ok((guard.pending_working_dir(), guard.generation())),
-                Err(stage) => Err(stage.to_string()),
-            }
-        };
-        let (working_dir_guard, captured_generation) = match buildable {
-            Err(stage) => {
-                self.gate.clear_running();
-                reject_goal(
-                    pending,
-                    encode_rejected_goal(format!(
+        let (working_dir_guard, captured_generation) = match buildable_working_dir(&entity_handle) {
+            Ok(buildable) => buildable,
+            Err(unbuildable) => {
+                let reason = match unbuildable {
+                    Unbuildable::Stage(stage) => format!(
                         "node `{}:{}` is in stage `{}`; cannot build",
                         goal.node_name, goal.node_tag, stage
-                    )),
-                )
-                .await;
-                return;
-            }
-            Ok((None, _)) => {
-                self.gate.clear_running();
-                reject_goal(
-                    pending,
-                    encode_rejected_goal(format!(
+                    ),
+                    Unbuildable::NoWorkingDir => format!(
                         "node `{}:{}` has no staged working directory; \
                          re-run `peppy node add` to stage one",
                         goal.node_name, goal.node_tag
-                    )),
-                )
-                .await;
+                    ),
+                };
+                self.gate.clear_running();
+                reject_goal(pending, encode_rejected_goal(reason)).await;
                 return;
             }
-            Ok((Some(g), generation)) => (g, generation),
         };
 
         let log = match ActionLog::for_build(
