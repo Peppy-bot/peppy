@@ -110,14 +110,14 @@ impl GoalHandler for NodeAddGoalHandler {
     }
 }
 
-pub(super) struct CleanupDir(Option<PathBuf>);
+struct CleanupDir(Option<PathBuf>);
 
 impl CleanupDir {
-    pub(super) fn new(dir: Option<PathBuf>) -> Self {
+    fn new(dir: Option<PathBuf>) -> Self {
         Self(dir)
     }
 
-    pub(super) fn take(&mut self) -> Option<PathBuf> {
+    fn take(&mut self) -> Option<PathBuf> {
         self.0.take()
     }
 }
@@ -130,16 +130,16 @@ impl Drop for CleanupDir {
     }
 }
 
-pub(crate) struct ResolvedNodeAddSource {
-    pub(crate) source_path: PathBuf,
-    pub(crate) node_config: NodeConfig,
-    pub(crate) cleanup_dir: Option<PathBuf>,
+struct ResolvedNodeAddSource {
+    source_path: PathBuf,
+    node_config: NodeConfig,
+    cleanup_dir: Option<PathBuf>,
 }
 
 /// Result of downloading and extracting an HTTP bundle without parsing the node config.
-pub(crate) struct ExtractedHttpSource {
-    pub(crate) source_path: PathBuf,
-    pub(crate) cleanup_dir: Option<PathBuf>,
+struct ExtractedHttpSource {
+    source_path: PathBuf,
+    cleanup_dir: Option<PathBuf>,
 }
 
 /// Distinguishes between a definitively invalid config (no point doing a full
