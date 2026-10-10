@@ -1,28 +1,8 @@
-use super::common::setup;
-use config::consts::NODE_CONFIG_FILE;
+use super::common::{setup, write_indexable_node};
 use core_node::nodes_repo_cache_path;
 use daemon_config::consts::PeppyDirs;
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
-
-/// Minimal valid peppy.json5 content for a node with the given name and tag.
-fn minimal_peppy_json5(name: &str, tag: &str) -> String {
-    format!(
-        r#"{{
-  peppy_schema: "node/v1",
-  manifest: {{
-    name: "{name}",
-    tag: "{tag}",
-  }},
-  interfaces: {{}},
-  execution: {{
-    language: "rust",
-    build_cmd: ["true"],
-    run_cmd: ["true"],
-  }},
-}}"#
-    )
-}
 
 #[test]
 fn repo_list_succeeds_with_defaults() {
@@ -48,13 +28,7 @@ fn repo_list_finds_nodes_in_fs_repo() {
 
     // Create a repo directory with a node
     let repo_dir = serve.temp_dir().join("test_repo");
-    let node_dir = repo_dir.join("my_sensor_v1");
-    std::fs::create_dir_all(&node_dir).expect("create node dir");
-    std::fs::write(
-        node_dir.join(NODE_CONFIG_FILE),
-        minimal_peppy_json5("my_sensor", "v1"),
-    )
-    .expect("write peppy.json5");
+    write_indexable_node(&repo_dir.join("my_sensor_v1"), "my_sensor", "v1");
 
     // Publish the repository and refresh it, so the node is discovered and
     // persisted to the cache, then list.

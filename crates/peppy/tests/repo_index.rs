@@ -1,24 +1,8 @@
+use super::common::write_indexable_node;
 use daemon_config::consts::REPOSITORY_INDEX_FILE;
 use peppy::commands::repo::{CheckScope, repo_index};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-
-/// Helper: write a minimal valid node manifest under `dir`.
-fn write_node(dir: &Path, name: &str, tag: &str) {
-    std::fs::create_dir_all(dir).unwrap();
-    std::fs::write(
-        dir.join("peppy.json5"),
-        format!(
-            r#"{{
-  peppy_schema: "node/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
-  interfaces: {{}},
-  execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
-}}"#
-        ),
-    )
-    .unwrap();
-}
 
 /// Helper: write a minimal valid contract manifest at `path`.
 fn write_contract(path: &Path, name: &str, tag: &str) {
@@ -40,7 +24,7 @@ fn write_contract(path: &Path, name: &str, tag: &str) {
 fn repo_index_writes_the_file() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("hub");
-    write_node(&repo.join("nodes/uvc_camera"), "uvc_camera", "v1");
+    write_indexable_node(&repo.join("nodes/uvc_camera"), "uvc_camera", "v1");
     write_contract(&repo.join("interfaces/rgb.json5"), "rgb_camera", "v1");
 
     repo_index(Some(repo.clone()), None).expect("indexing should succeed");
@@ -61,7 +45,7 @@ fn repo_index_writes_the_file() {
 fn repo_index_check_passes_on_a_generated_index() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("hub");
-    write_node(&repo.join("nodes/a"), "a", "v1");
+    write_indexable_node(&repo.join("nodes/a"), "a", "v1");
 
     repo_index(Some(repo.clone()), None).expect("indexing should succeed");
     repo_index(Some(repo), Some(CheckScope::Index))
@@ -122,7 +106,7 @@ fn repo_index_check_skips_selections_the_constraints_refuse() {
     let tmp = TempDir::new().unwrap();
 
     let unconstrained = tmp.path().join("unconstrained");
-    write_node(&unconstrained.join("nodes/a"), "a", "v1");
+    write_indexable_node(&unconstrained.join("nodes/a"), "a", "v1");
     write_constrained_family(&unconstrained, "");
     repo_index(Some(unconstrained.clone()), None).expect("indexing should succeed");
     let err = repo_index(Some(unconstrained), Some(CheckScope::Index))
@@ -135,7 +119,7 @@ fn repo_index_check_skips_selections_the_constraints_refuse() {
     );
 
     let constrained = tmp.path().join("constrained");
-    write_node(&constrained.join("nodes/a"), "a", "v1");
+    write_indexable_node(&constrained.join("nodes/a"), "a", "v1");
     write_constrained_family(
         &constrained,
         r#"constraints: [
@@ -154,7 +138,7 @@ fn repo_index_check_skips_selections_the_constraints_refuse() {
 fn repo_index_check_flags_an_option_the_constraints_strangle() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("hub");
-    write_node(&repo.join("nodes/a"), "a", "v1");
+    write_indexable_node(&repo.join("nodes/a"), "a", "v1");
     write_constrained_family(
         &repo,
         r#"constraints: [
@@ -180,8 +164,8 @@ fn repo_index_check_flags_an_option_the_constraints_strangle() {
 fn repo_index_is_idempotent() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("hub");
-    write_node(&repo.join("nodes/a"), "a", "v1");
-    write_node(&repo.join("nodes/b"), "b", "v1");
+    write_indexable_node(&repo.join("nodes/a"), "a", "v1");
+    write_indexable_node(&repo.join("nodes/b"), "b", "v1");
 
     repo_index(Some(repo.clone()), None).expect("first run");
     let first = std::fs::read_to_string(repo.join(REPOSITORY_INDEX_FILE)).unwrap();
@@ -197,7 +181,7 @@ fn repo_index_is_idempotent() {
 fn repo_index_check_names_the_unlisted_item() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("hub");
-    write_node(&repo.join("nodes/a"), "a", "v1");
+    write_indexable_node(&repo.join("nodes/a"), "a", "v1");
     repo_index(Some(repo.clone()), None).expect("indexing should succeed");
     write_contract(&repo.join("robot/wrist.json5"), "wrist_link", "v1");
 
@@ -216,7 +200,7 @@ fn repo_index_check_names_the_unlisted_item() {
 fn repo_index_check_fails_when_the_index_is_missing() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("hub");
-    write_node(&repo.join("nodes/a"), "a", "v1");
+    write_indexable_node(&repo.join("nodes/a"), "a", "v1");
 
     let err = repo_index(Some(repo), Some(CheckScope::Index))
         .expect_err("a missing index must fail the check");
@@ -229,8 +213,8 @@ fn repo_index_check_fails_when_the_index_is_missing() {
 fn repo_index_refuses_an_identity_claimed_twice() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("hub");
-    write_node(&repo.join("uvc/rust"), "uvc_camera", "v1");
-    write_node(&repo.join("uvc/python"), "uvc_camera", "v1");
+    write_indexable_node(&repo.join("uvc/rust"), "uvc_camera", "v1");
+    write_indexable_node(&repo.join("uvc/python"), "uvc_camera", "v1");
 
     let err =
         repo_index(Some(repo.clone()), None).expect_err("a contested identity must be refused");

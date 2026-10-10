@@ -390,6 +390,24 @@ pub fn write_node_config_for_helper(
     install_node_manifest(nodes_directory, node_name, git_hash, &body)
 }
 
+/// Writes `dir/peppy.json5`, the smallest node manifest a repository indexes:
+/// no interfaces, and `true` as its build and run commands.
+pub fn write_indexable_node(dir: &std::path::Path, name: &str, tag: &str) {
+    std::fs::create_dir_all(dir).expect("create node dir");
+    std::fs::write(
+        dir.join(config::consts::NODE_CONFIG_FILE),
+        format!(
+            r#"{{
+  peppy_schema: "node/v1",
+  manifest: {{ name: "{name}", tag: "{tag}" }},
+  interfaces: {{}},
+  execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
+}}"#
+        ),
+    )
+    .expect("write peppy.json5");
+}
+
 /// Registers node directories in the daemon's node cache (`cache/nodes.json5`)
 /// so a `name:tag` reference (a launcher deployment source, or a dependency
 /// absent from the stack) resolves without a full `repo refresh`.
