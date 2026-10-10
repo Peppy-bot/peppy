@@ -573,15 +573,22 @@ mod tests {
         serde_json::from_value(raw).expect("valid policies")
     }
 
-    fn jpeg_policies(max_result_bytes: Option<u64>, on_oversize: Option<&str>) -> ResourcePolicies {
+    /// The representation fields of the test frames.
+    fn frame_fields() -> Value {
+        json!({ "data": "frame", "encoding": "encoding", "width": "width", "height": "height" })
+    }
+
+    /// Policies under `representation`, with `max_result_bytes` and
+    /// `on_oversize` when given.
+    fn representation_policies(
+        representation: Value,
+        max_result_bytes: Option<u64>,
+        on_oversize: Option<&str>,
+    ) -> ResourcePolicies {
         let mut raw = json!({
             "freshness": { "max_age_ms": 2000 },
             "update": { "max_hz": 2.0 },
-            "representation": {
-                "image": "jpeg",
-                "quality": 80,
-                "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
-            }
+            "representation": representation,
         });
         if let Some(limit) = max_result_bytes {
             raw["max_result_bytes"] = json!(limit);
@@ -590,6 +597,14 @@ mod tests {
             raw["on_oversize"] = json!(policy);
         }
         policies(raw)
+    }
+
+    fn jpeg_policies(max_result_bytes: Option<u64>, on_oversize: Option<&str>) -> ResourcePolicies {
+        representation_policies(
+            json!({ "image": "jpeg", "quality": 80, "fields": frame_fields() }),
+            max_result_bytes,
+            on_oversize,
+        )
     }
 
     /// A frame whose pixel bytes repeat one color triple.
@@ -622,23 +637,16 @@ mod tests {
         max_result_bytes: Option<u64>,
         on_oversize: Option<&str>,
     ) -> ResourcePolicies {
-        let mut raw = json!({
-            "freshness": { "max_age_ms": 2000 },
-            "update": { "max_hz": 2.0 },
-            "representation": {
+        representation_policies(
+            json!({
                 "image": "jpeg",
                 "quality": 80,
-                "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" },
+                "fields": frame_fields(),
                 "depth_range": { "near": 100, "far": 10000 }
-            }
-        });
-        if let Some(limit) = max_result_bytes {
-            raw["max_result_bytes"] = json!(limit);
-        }
-        if let Some(policy) = on_oversize {
-            raw["on_oversize"] = json!(policy);
-        }
-        policies(raw)
+            }),
+            max_result_bytes,
+            on_oversize,
+        )
     }
 
     fn z16_frame(readings: impl Iterator<Item = u16>, width: u32, height: u32) -> Value {
@@ -698,21 +706,11 @@ mod tests {
         max_result_bytes: Option<u64>,
         on_oversize: Option<&str>,
     ) -> ResourcePolicies {
-        let mut raw = json!({
-            "freshness": { "max_age_ms": 2000 },
-            "update": { "max_hz": 2.0 },
-            "representation": {
-                "image": "png16",
-                "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
-            }
-        });
-        if let Some(limit) = max_result_bytes {
-            raw["max_result_bytes"] = json!(limit);
-        }
-        if let Some(policy) = on_oversize {
-            raw["on_oversize"] = json!(policy);
-        }
-        policies(raw)
+        representation_policies(
+            json!({ "image": "png16", "fields": frame_fields() }),
+            max_result_bytes,
+            on_oversize,
+        )
     }
 
     /// A frame of little-endian u16 samples under `encoding`, each pixel a
@@ -838,14 +836,11 @@ mod tests {
 
     #[test]
     fn raw_codec_passes_frames_through_untouched() {
-        let raw_policies = policies(json!({
-            "freshness": { "max_age_ms": 2000 },
-            "update": { "max_hz": 2.0 },
-            "representation": {
-                "image": "raw",
-                "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
-            }
-        }));
+        let raw_policies = representation_policies(
+            json!({ "image": "raw", "fields": frame_fields() }),
+            None,
+            None,
+        );
         let value = solid_frame("rgb8", [1, 2, 3], 4, 4);
         let frame = value["frame"].as_str().expect("base64 text").to_string();
         let content =
@@ -1127,19 +1122,12 @@ mod tests {
     #[test]
     fn the_size_limit_measures_the_document_and_the_blob_together() {
         let raw_policies = |limit: Option<u64>| {
-            let mut raw = json!({
-                "freshness": { "max_age_ms": 2000 },
-                "update": { "max_hz": 2.0 },
-                "representation": {
-                    "image": "raw",
-                    "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
-                },
-            });
-            if let Some(limit) = limit {
-                raw["max_result_bytes"] = json!(limit);
-                raw["on_oversize"] = json!("reject");
-            }
-            policies(raw)
+            let on_oversize = limit.map(|_| "reject");
+            representation_policies(
+                json!({ "image": "raw", "fields": frame_fields() }),
+                limit,
+                on_oversize,
+            )
         };
         let value = solid_frame("rgb8", [1, 2, 3], 4, 4);
         let unlimited =
