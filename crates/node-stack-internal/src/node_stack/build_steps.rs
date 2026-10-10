@@ -399,7 +399,8 @@ fn bind_build_cache<'a>(
 }
 
 /// Spawns `std_cmd` with its output piped and no input, as the leader of a
-/// process group (see [`spawn_in_process_group`]).
+/// process group (see [`spawn_in_process_group`]). With no input, a
+/// misbehaving child cannot read from (or block on) the daemon's stdin.
 fn spawn_piped(std_cmd: std::process::Command) -> std::io::Result<Box<dyn ChildWrapper>> {
     let mut cmd = tokio::process::Command::from(std_cmd);
     cmd.stdout(Stdio::piped());
@@ -670,14 +671,9 @@ pub(super) async fn run_build_cmd(
         .log()
         .command("build_cmd", &full_cmd_display, working_dir, &[]);
 
-    let mut command = tokio::process::Command::new(&program);
+    let mut command = std::process::Command::new(&program);
     command.args(&args);
     command.current_dir(working_dir);
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-    // Detach stdin so a misbehaving `build_cmd` cannot read from (or block
-    // on) the daemon's stdin. Mirrors `build_container_image`.
-    command.stdin(Stdio::null());
     // The cargo settings go first, so the goal's own values for them, set
     // next, take precedence.
     for (key, value) in CARGO_PROGRESS_ENV {
@@ -686,7 +682,7 @@ pub(super) async fn run_build_cmd(
     for (key, value) in env_vars {
         command.env(key, value);
     }
-    let child = spawn_in_process_group(command)
+    let child = spawn_piped(command)
         .map_err(|e| spawn_failure_message(&full_cmd_display, &program, working_dir, &e))?;
 
     // A `build_cmd` compiling one large crate is as silent as a container
