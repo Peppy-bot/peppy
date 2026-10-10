@@ -389,6 +389,15 @@ mod tests {
     };
     use tempfile::NamedTempFile;
 
+    /// Parses `json5`, which must fail with a parsing error, and returns that
+    /// error.
+    fn parse_error(json5: &str) -> ParsingError {
+        match NodeConfigParser::from_content(json5) {
+            Err(Error::Parsing(error)) => error,
+            other => panic!("expected a parsing error, got: {other:?}"),
+        }
+    }
+
     /// Test helper: borrows the `ContainerConfig` from a parsed config.
     fn container(config: &NodeConfig) -> &ContainerConfig {
         config
@@ -481,11 +490,9 @@ mod tests {
     #[test]
     fn test_cannot_parse_json5() {
         let json5 = r#"{ manifest: [unclosed"#; // invalid JSON5
-        let result = NodeConfigParser::from_content(json5);
-        assert!(result.is_err());
         assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::CannotParseConfig(_))
+            parse_error(json5),
+            ParsingError::CannotParseConfig(_)
         ));
     }
 
@@ -525,10 +532,9 @@ mod tests {
                 },
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
         assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::ProcessAndContainerConflict)
+            parse_error(json5),
+            ParsingError::ProcessAndContainerConflict
         ));
     }
 
@@ -544,10 +550,9 @@ mod tests {
                 language: "rust",
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
         assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::NoProcessOrContainer)
+            parse_error(json5),
+            ParsingError::NoProcessOrContainer
         ));
     }
 
@@ -570,14 +575,13 @@ mod tests {
                 run_cmd: ["./bin"],
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
+        let error = parse_error(json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+                &error,
+                ParsingError::DuplicateLinkId(id) if id == "shared"
             ),
-            "expected DuplicateLinkId(\"shared\"), got: {:?}",
-            result.unwrap_err()
+            "expected DuplicateLinkId(\"shared\"), got: {error:?}"
         );
     }
 
@@ -602,14 +606,13 @@ mod tests {
                 run_cmd: ["./bin"],
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
+        let error = parse_error(json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+                &error,
+                ParsingError::DuplicateLinkId(id) if id == "shared"
             ),
-            "expected DuplicateLinkId(\"shared\") across nodes+contracts, got: {:?}",
-            result.unwrap_err()
+            "expected DuplicateLinkId(\"shared\") across nodes+contracts, got: {error:?}"
         );
     }
 
@@ -785,12 +788,11 @@ mod tests {
             },
             execution: { language: "rust", run_cmd: ["./bin"] },
         }"#;
-        let err = NodeConfigParser::from_content(json5)
-            .expect_err("an observer with no consumes entry must be rejected");
+        let err = parse_error(json5);
         assert!(
             matches!(
                 &err,
-                Error::Parsing(ParsingError::ObserverLinkNeverConsumed { link_id }) if link_id == "observed_arm"
+                ParsingError::ObserverLinkNeverConsumed { link_id } if link_id == "observed_arm"
             ),
             "expected ObserverLinkNeverConsumed(\"observed_arm\"), got: {err:?}"
         );
@@ -824,12 +826,11 @@ mod tests {
             },
             execution: { language: "rust", run_cmd: ["./bin"] },
         }"#;
-        let err = NodeConfigParser::from_content(json5)
-            .expect_err("topics.emits naming an observer slot must be rejected");
+        let err = parse_error(json5);
         assert!(
             matches!(
                 &err,
-                Error::Parsing(ParsingError::EmitsOnObserverSlot { link_id }) if link_id == "observed_arm"
+                ParsingError::EmitsOnObserverSlot { link_id } if link_id == "observed_arm"
             ),
             "expected EmitsOnObserverSlot(\"observed_arm\"), got: {err:?}"
         );
@@ -856,14 +857,13 @@ mod tests {
                 run_cmd: ["./bin"],
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
+        let error = parse_error(json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+                &error,
+                ParsingError::DuplicateLinkId(id) if id == "shared"
             ),
-            "expected DuplicateLinkId(\"shared\") across contracts+pairings, got: {:?}",
-            result.unwrap_err()
+            "expected DuplicateLinkId(\"shared\") across contracts+pairings, got: {error:?}"
         );
     }
 
@@ -888,14 +888,13 @@ mod tests {
                 run_cmd: ["./bin"],
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
+        let error = parse_error(json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::PairingSentinelLinkId(id)) if id == "ctrl@home"
+                &error,
+                ParsingError::PairingSentinelLinkId(id) if id == "ctrl@home"
             ),
-            "expected PairingSentinelLinkId(\"ctrl@home\"), got: {:?}",
-            result.unwrap_err()
+            "expected PairingSentinelLinkId(\"ctrl@home\"), got: {error:?}"
         );
     }
 
@@ -1003,11 +1002,7 @@ mod tests {
                 run_cmd: [],
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::EmptyRunCmd)
-        ));
+        assert!(matches!(parse_error(json5), ParsingError::EmptyRunCmd));
     }
 
     /// Top-level system directories (e.g. `/tmp`) are blocked as mount sources
@@ -1030,14 +1025,10 @@ mod tests {
                 },
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
+        let error = parse_error(json5);
         assert!(
-            matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::InvalidMountPath(_, _))
-            ),
-            "expected InvalidMountPath error, got: {:?}",
-            result.unwrap_err()
+            matches!(&error, ParsingError::InvalidMountPath(_, _)),
+            "expected InvalidMountPath error, got: {error:?}"
         );
     }
 
@@ -1060,14 +1051,10 @@ mod tests {
                 },
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
+        let error = parse_error(json5);
         assert!(
-            matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::InvalidMountPath(_, _))
-            ),
-            "expected InvalidMountPath error for /private/tmp, got: {:?}",
-            result.unwrap_err()
+            matches!(&error, ParsingError::InvalidMountPath(_, _)),
+            "expected InvalidMountPath error for /private/tmp, got: {error:?}"
         );
     }
 
@@ -1194,15 +1181,14 @@ mod tests {
                 },
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
+        let error = parse_error(json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::InvalidMountPathParameterRef(ref_path, _))
+                &error,
+                ParsingError::InvalidMountPathParameterRef(ref_path, _)
                     if ref_path == "nonexistent"
             ),
-            "expected InvalidMountPathParameterRef error, got: {:?}",
-            result.unwrap_err()
+            "expected InvalidMountPathParameterRef error, got: {error:?}"
         );
     }
 
@@ -1225,15 +1211,14 @@ mod tests {
                 },
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
+        let error = parse_error(json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::InvalidMountPathParameterRef(ref_path, reason))
+                &error,
+                ParsingError::InvalidMountPathParameterRef(ref_path, reason)
                     if ref_path == "frame_rate" && reason.contains("string")
             ),
-            "expected InvalidMountPathParameterRef error about string type, got: {:?}",
-            result.unwrap_err()
+            "expected InvalidMountPathParameterRef error about string type, got: {error:?}"
         );
     }
 
@@ -1424,10 +1409,9 @@ mod tests {
             let json5 = config_with_endpoints(&format!(
                 r#"{{ "{label}": {{ kind: "page", description: "A page." }} }}"#
             ));
-            let error =
-                NodeConfigParser::from_content(&json5).expect_err("the label must be refused");
+            let error = parse_error(&json5);
             match &error {
-                Error::Parsing(ParsingError::InvalidEndpointLabel { label: named }) => {
+                ParsingError::InvalidEndpointLabel { label: named } => {
                     assert_eq!(named, label);
                 }
                 other => panic!("label `{label}`: expected InvalidEndpointLabel, got {other:?}"),
@@ -1473,10 +1457,9 @@ mod tests {
             (r#"{ panel: { kind: "", description: "A page." } }"#, ""),
         ];
         for (endpoints, expected_kind) in cases {
-            let error = NodeConfigParser::from_content(&config_with_endpoints(endpoints))
-                .expect_err("the kind must be refused");
+            let error = parse_error(&config_with_endpoints(endpoints));
             match &error {
-                Error::Parsing(ParsingError::InvalidEndpointKind { label, kind }) => {
+                ParsingError::InvalidEndpointKind { label, kind } => {
                     assert_eq!(label, "panel");
                     assert_eq!(kind, expected_kind);
                 }
@@ -1498,10 +1481,9 @@ mod tests {
             r#"{ viewer: { kind: "page", description: "" } }"#,
             r#"{ viewer: { kind: "page", description: "   " } }"#,
         ] {
-            let error = NodeConfigParser::from_content(&config_with_endpoints(endpoints))
-                .expect_err("the description must be refused");
+            let error = parse_error(&config_with_endpoints(endpoints));
             match &error {
-                Error::Parsing(ParsingError::EmptyEndpointDescription { label }) => {
+                ParsingError::EmptyEndpointDescription { label } => {
                     assert_eq!(label, "viewer");
                 }
                 other => panic!("{endpoints}: expected EmptyEndpointDescription, got {other:?}"),
@@ -1565,10 +1547,9 @@ mod tests {
                 run_cmd: ["./bin"],
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
         assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::MissingExecutionLanguage)
+            parse_error(json5),
+            ParsingError::MissingExecutionLanguage
         ));
     }
 
@@ -1586,8 +1567,7 @@ mod tests {
                 run_cmd: { wrong: "type" },
             },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
-        let Error::Parsing(ParsingError::CannotParseConfig(msg)) = result.unwrap_err() else {
+        let ParsingError::CannotParseConfig(msg) = parse_error(json5) else {
             panic!("expected CannotParseConfig error");
         };
         assert!(
@@ -1692,8 +1672,7 @@ mod tests {
             },
             execution: { language: "rust", run_cmd: ["./bin"] },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
-        let Error::Parsing(ParsingError::CannotParseConfig(msg)) = result.unwrap_err() else {
+        let ParsingError::CannotParseConfig(msg) = parse_error(json5) else {
             panic!("expected plain serde unknown-field rejection");
         };
         assert!(
@@ -1709,15 +1688,14 @@ mod tests {
                { name: "uvc_camera", tag: "v1", link_id: "cam_b" }"#,
             r#"{}"#,
         );
-        let result = NodeConfigParser::from_content(&json5);
+        let error = parse_error(&json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::DuplicateImplementsContract { name, tag })
+                &error,
+                ParsingError::DuplicateImplementsContract { name, tag }
                     if name == "uvc_camera" && tag == "v1"
             ),
-            "expected DuplicateImplementsContract, got: {:?}",
-            result.unwrap_err()
+            "expected DuplicateImplementsContract, got: {error:?}"
         );
     }
 
@@ -1728,15 +1706,14 @@ mod tests {
                { name: "uvc_camera", tag: "v_1", link_id: "cam_b" }"#,
             r#"{}"#,
         );
-        let result = NodeConfigParser::from_content(&json5);
+        let error = parse_error(&json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::ImplementsTagSanitizationCollision { name, .. })
+                &error,
+                ParsingError::ImplementsTagSanitizationCollision { name, .. }
                     if name == "uvc_camera"
             ),
-            "expected ImplementsTagSanitizationCollision, got: {:?}",
-            result.unwrap_err()
+            "expected ImplementsTagSanitizationCollision, got: {error:?}"
         );
     }
 
@@ -1754,14 +1731,13 @@ mod tests {
             },
             execution: { language: "rust", run_cmd: ["./bin"] },
         }"#;
-        let result = NodeConfigParser::from_content(json5);
+        let error = parse_error(json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+                &error,
+                ParsingError::DuplicateLinkId(id) if id == "shared"
             ),
-            "expected DuplicateLinkId across implements+depends_on, got: {:?}",
-            result.unwrap_err()
+            "expected DuplicateLinkId across implements+depends_on, got: {error:?}"
         );
     }
 
@@ -1791,15 +1767,14 @@ mod tests {
                 execution: {{ language: "rust", run_cmd: ["./bin"] }},
             }}"#
             );
-            let result = NodeConfigParser::from_content(&json5);
+            let error = parse_error(&json5);
             assert!(
                 matches!(
-                    result.as_ref().unwrap_err(),
-                    Error::Parsing(ParsingError::EmitsLinkIdNotImplements { link_id, found_in: f, .. })
+                    &error,
+                    ParsingError::EmitsLinkIdNotImplements { link_id, found_in: f, .. }
                         if link_id == "dep" && f == found_in
                 ),
-                "expected EmitsLinkIdNotImplements({found_in}), got: {:?}",
-                result.unwrap_err()
+                "expected EmitsLinkIdNotImplements({found_in}), got: {error:?}"
             );
         }
     }
@@ -1863,15 +1838,14 @@ mod tests {
                 r#"{ actions: { exposes: [{ link_id: "arm", name: "home" }] } }"#,
             ),
         ] {
-            let result = NodeConfigParser::from_content(&node_with_pairing(interfaces));
+            let error = parse_error(&node_with_pairing(interfaces));
             assert!(
                 matches!(
-                    result.as_ref().unwrap_err(),
-                    Error::Parsing(ParsingError::EmitsLinkIdNotImplements { section: s, link_id, found_in })
+                    &error,
+                    ParsingError::EmitsLinkIdNotImplements { section: s, link_id, found_in }
                         if s == section && link_id == "arm" && found_in == "pairings"
                 ),
-                "expected EmitsLinkIdNotImplements({section}) naming depends_on.pairings, got: {:?}",
-                result.unwrap_err()
+                "expected EmitsLinkIdNotImplements({section}) naming depends_on.pairings, got: {error:?}"
             );
         }
     }
@@ -1890,15 +1864,14 @@ mod tests {
                 r#"{ topics: { emits: [{ link_id: "arm", name: "joint_commands", message_format: { fields: { x: "f64" } } }] } }"#,
             ),
         ] {
-            let result = NodeConfigParser::from_content(&node_with_pairing(interfaces));
+            let error = parse_error(&node_with_pairing(interfaces));
             assert!(
                 matches!(
-                    result.as_ref().unwrap_err(),
-                    Error::Parsing(ParsingError::LinkedEntryWithInlineShape { section: s, field: f, link_id, .. })
+                    &error,
+                    ParsingError::LinkedEntryWithInlineShape { section: s, field: f, link_id, .. }
                         if s == section && f == field && link_id == "arm"
                 ),
-                "expected LinkedEntryWithInlineShape({field}), got: {:?}",
-                result.unwrap_err()
+                "expected LinkedEntryWithInlineShape({field}), got: {error:?}"
             );
         }
     }
@@ -1911,15 +1884,14 @@ mod tests {
                 { link_id: "arm", name: "joint_commands" },
             ] } }"#,
         );
-        let result = NodeConfigParser::from_content(&json5);
+        let error = parse_error(&json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::DuplicateInterfaceEntry { key, .. })
+                &error,
+                ParsingError::DuplicateInterfaceEntry { key, .. }
                     if key == "arm:joint_commands"
             ),
-            "expected DuplicateInterfaceEntry, got: {:?}",
-            result.unwrap_err()
+            "expected DuplicateInterfaceEntry, got: {error:?}"
         );
     }
 
@@ -1929,15 +1901,14 @@ mod tests {
             r#"{ name: "uvc_camera", tag: "v1", link_id: "cam" }"#,
             r#"{ topics: { emits: [{ link_id: "typo", name: "video_stream" }] } }"#,
         );
-        let result = NodeConfigParser::from_content(&json5);
+        let error = parse_error(&json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::UndeclaredEmitsLinkId { link_id, .. })
+                &error,
+                ParsingError::UndeclaredEmitsLinkId { link_id, .. }
                     if link_id == "typo"
             ),
-            "expected UndeclaredEmitsLinkId, got: {:?}",
-            result.unwrap_err()
+            "expected UndeclaredEmitsLinkId, got: {error:?}"
         );
     }
 
@@ -1952,15 +1923,14 @@ mod tests {
                 },
             }"#,
         );
-        let result = NodeConfigParser::from_content(&json5);
+        let error = parse_error(&json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::ConsumedItemReferencesImplementsLinkId { link_id })
+                &error,
+                ParsingError::ConsumedItemReferencesImplementsLinkId { link_id }
                     if link_id == "cam"
             ),
-            "expected ConsumedItemReferencesImplementsLinkId, got: {:?}",
-            result.unwrap_err()
+            "expected ConsumedItemReferencesImplementsLinkId, got: {error:?}"
         );
     }
 
@@ -1975,15 +1945,14 @@ mod tests {
                 ] },
             }"#,
         );
-        let result = NodeConfigParser::from_content(&json5);
+        let error = parse_error(&json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::DuplicateInterfaceEntry { key, .. })
+                &error,
+                ParsingError::DuplicateInterfaceEntry { key, .. }
                     if key == "stream"
             ),
-            "expected DuplicateInterfaceEntry, got: {:?}",
-            result.unwrap_err()
+            "expected DuplicateInterfaceEntry, got: {error:?}"
         );
     }
 
@@ -1998,15 +1967,14 @@ mod tests {
                 ] },
             }"#,
         );
-        let result = NodeConfigParser::from_content(&json5);
+        let error = parse_error(&json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::DuplicateInterfaceEntry { key, .. })
+                &error,
+                ParsingError::DuplicateInterfaceEntry { key, .. }
                     if key == "cam:video_stream"
             ),
-            "expected DuplicateInterfaceEntry, got: {:?}",
-            result.unwrap_err()
+            "expected DuplicateInterfaceEntry, got: {error:?}"
         );
     }
 
@@ -2039,15 +2007,14 @@ mod tests {
                 ] },
             }"#,
         );
-        let result = NodeConfigParser::from_content(&json5);
+        let error = parse_error(&json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::LinkedEntryWithInlineShape { field, .. })
+                &error,
+                ParsingError::LinkedEntryWithInlineShape { field, .. }
                     if field == "qos_profile"
             ),
-            "expected LinkedEntryWithInlineShape, got: {:?}",
-            result.unwrap_err()
+            "expected LinkedEntryWithInlineShape, got: {error:?}"
         );
     }
 
@@ -2057,15 +2024,14 @@ mod tests {
             "",
             r#"{ topics: { emits: [{ message_format: { x: "f64" } }] } }"#,
         );
-        let result = NodeConfigParser::from_content(&json5);
+        let error = parse_error(&json5);
         assert!(
             matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::EmptyInterfaceName { section })
+                &error,
+                ParsingError::EmptyInterfaceName { section }
                     if section == "topics.emits"
             ),
-            "expected EmptyInterfaceName, got: {:?}",
-            result.unwrap_err()
+            "expected EmptyInterfaceName, got: {error:?}"
         );
     }
 
@@ -2251,14 +2217,13 @@ mod tests {
                 r#"{ actions: { exposes: [{ name: "move", refine: { goal_service: { request_message_format: { targets: { $length: 7 } } } } }] } }"#,
             ),
         ] {
-            let result = NodeConfigParser::from_content(&node_with("", interfaces));
+            let error = parse_error(&node_with("", interfaces));
             assert!(
                 matches!(
-                    result.as_ref().unwrap_err(),
-                    Error::Parsing(ParsingError::RefineWithoutLinkId { section: s, .. }) if s == section
+                    &error,
+                    ParsingError::RefineWithoutLinkId { section: s, .. } if s == section
                 ),
-                "{section}: expected RefineWithoutLinkId, got: {:?}",
-                result.unwrap_err()
+                "{section}: expected RefineWithoutLinkId, got: {error:?}"
             );
         }
     }
@@ -2294,15 +2259,14 @@ mod tests {
                     execution: {{ language: "rust", run_cmd: ["./bin"] }},
                 }}"#
             );
-            let result = NodeConfigParser::from_content(&json5);
+            let error = parse_error(&json5);
             assert!(
                 matches!(
-                    result.as_ref().unwrap_err(),
-                    Error::Parsing(ParsingError::RefineOnNodeSlot { section: s, link_id, .. })
+                    &error,
+                    ParsingError::RefineOnNodeSlot { section: s, link_id, .. }
                         if s == section && link_id == "cam"
                 ),
-                "{section}: expected RefineOnNodeSlot, got: {:?}",
-                result.unwrap_err()
+                "{section}: expected RefineOnNodeSlot, got: {error:?}"
             );
         }
     }
