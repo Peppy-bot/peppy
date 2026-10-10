@@ -98,7 +98,7 @@ from pathlib import Path
 sys.path.insert(
     0, str(Path(__file__).resolve().parents[1] / "actions" / "hub-ci-peppy")
 )
-import resolve  # noqa: E402
+import resolve
 
 
 class MergeSetError(Exception):

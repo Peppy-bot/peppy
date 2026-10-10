@@ -1048,9 +1048,8 @@ class SetRecords(unittest.TestCase):
             set_record_text({"nodes-hub": {"ref": "main", "commit": "short"}}),
             set_record_text({"nodes-hub": "main"}),
         ):
-            with self.subTest(text=text):
-                with self.assertRaises(MergeSetError):
-                    merge_set.parse_tested_set(text)
+            with self.subTest(text=text), self.assertRaises(MergeSetError):
+                merge_set.parse_tested_set(text)
 
     def test_the_record_is_read_from_the_artifact_zip(self):
         self.assertEqual(merge_set.set_record_of_bundle(record_bundle("{}")), "{}")
