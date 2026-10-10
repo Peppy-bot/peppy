@@ -543,32 +543,20 @@ fn write_leaf_module(
         );
         attrs.push(parse_quote!(#![doc = #doc_comment]));
     }
-    let module_file = File {
-        shebang: None,
-        frontmatter: None,
-        attrs,
-        items,
-    };
-
-    let rendered = render_module_file(module_file);
+    let rendered = render_module_file(attrs, items);
 
     fs::write(base_dir.join(format!("{module_name}.rs")), rendered)?;
     Ok(())
 }
 
-fn render_module_file(module_file: File) -> String {
+fn render_module_file(attrs: Vec<Attribute>, items: Vec<Item>) -> String {
     let mut output = String::new();
 
-    if let Some(shebang) = module_file.shebang {
-        output.push_str(&shebang);
-        output.push('\n');
-    }
-
-    if !module_file.attrs.is_empty() {
+    if !attrs.is_empty() {
         let attr_file = File {
             shebang: None,
             frontmatter: None,
-            attrs: module_file.attrs,
+            attrs,
             items: Vec::new(),
         };
         let rendered_attrs = prettyplease::unparse(&attr_file);
@@ -576,7 +564,7 @@ fn render_module_file(module_file: File) -> String {
         output.push('\n');
     }
 
-    let mut items_iter = module_file.items.into_iter().peekable();
+    let mut items_iter = items.into_iter().peekable();
     while let Some(item) = items_iter.next() {
         let item_file = File {
             shebang: None,
