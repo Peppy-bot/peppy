@@ -96,7 +96,7 @@ pub const NODE_READY_SERVICE: &str = "node_ready";
 pub const NODE_ENDPOINTS_SERVICE: &str = "node_endpoints";
 pub const SHUTDOWN_SERVICE: &str = "shutdown";
 /// Framework service every node exposes: the daemon delivers absolute
-/// pairing-slot state (pair, re-pin, clear) over it. Registered pre-setup —
+/// pairing-slot state (pair, re-pin, clear) over it. Registered pre-setup:
 /// a node may block in its `setup_fn` forever, and pairing delivery must not
 /// depend on user code. Triggers no user code.
 pub const PEER_UPDATE_SERVICE: &str = "peer_update";
@@ -119,10 +119,10 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Budget for the wildcard discover-then-pin step of core-node infra calls
 /// (capped by the caller's own timeout). Larger than [`PROBE_TIMEOUT`]
 /// because a freshly-connected peer learns producers' queryables via gossip,
-/// which is not instantaneous like the old client/router star —
-/// `discover_producer` re-probes within this budget so a discovery-scoped
-/// `poll` waits for discovery to settle instead of failing the moment it
-/// runs ahead of it.
+/// which is not instantaneous: `poll_service` re-issues the discovery probe
+/// of `discover_producer` within this budget, so a discovery-scoped `poll`
+/// waits for discovery to settle instead of failing the moment it runs
+/// ahead of it.
 pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
@@ -218,8 +218,8 @@ pub enum SessionScope<'a> {
 }
 
 /// Fluent builder for opening a [`MessengerHandle`] session, returned by
-/// [`MessengerHandle::connect`]. Await it directly — it implements
-/// [`IntoFuture`](std::future::IntoFuture) — to perform the connect. Every
+/// [`MessengerHandle::connect`]. Await it directly (it implements
+/// [`IntoFuture`](std::future::IntoFuture)) to perform the connect. Every
 /// builder method is infallible; the only failure point is the awaited connect,
 /// which yields `Result<MessengerHandle>`.
 pub struct MessengerConnect {
@@ -446,7 +446,7 @@ impl MessengerHandle {
     }
 
     /// Pre-bind a per-topic publisher. Locks the messenger once at
-    /// declaration to extract the per-adapter handle, then never again — the
+    /// declaration to extract the per-adapter handle, then never again: the
     /// returned [`pmi::MessengerPublisher`] holds its own state (an
     /// `Arc<zenoh::Session>` clone or `Arc<Mutex<HashMap>>` clones for the
     /// mock) and `publish` skips the central messenger mutex.
@@ -549,8 +549,8 @@ impl MessengerHandle {
     /// Both backends wait outside the central messenger lock (mirroring
     /// [`probe_action_producer`](Self::probe_action_producer)): a wait bounded
     /// only by `timeout` held under it would starve every other messenger
-    /// call — including, in mock tests that share the handle between
-    /// publisher and subscriber, the very subscribe being awaited.
+    /// call. In mock tests that share the handle between publisher and
+    /// subscriber, that includes the very subscribe being awaited.
     pub(crate) async fn wait_for_matching_subscriber(
         &self,
         sender: &TopicWireSender,
@@ -695,14 +695,14 @@ impl MessengerHandle {
 
         // Advertise this producer instance's liveliness for the lifetime of
         // the action endpoint. The transport removes the token when the
-        // producing session dies — gracefully or by hard process death — so
+        // producing session dies (gracefully or by hard process death), so
         // consumers can detect a producer that vanished without closing its
         // goals (see `ActionGoalHandle::on_next_feedback`).
         let liveliness_token = self.declare_action_liveliness(recv).await?;
 
         // Per-goal feedback uses `Important` (Block on congestion, DataHigh
         // priority) rather than `Standard`. The publisher is declared inside
-        // the goal handler — the moment a fast server's first feedback
+        // the goal handler: the moment a fast server's first feedback
         // publish fires, the local routing tables may not yet have the client's
         // subscription propagated through the router. Empirically, `Standard`
         // (Drop, Data) loses the first publish in tight in-process tests;

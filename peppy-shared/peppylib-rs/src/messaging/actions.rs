@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex as TokioMutex, Notify};
 // tokio's clock so the retention/eviction timeouts run on virtual time under
 // `#[tokio::test(start_paused = true)]`; in a normal runtime it reads the real
-// monotonic clock, so production behavior is unchanged.
+// monotonic clock.
 use tokio::time::{Duration, Instant};
 use tracing::warn;
 
@@ -194,11 +194,11 @@ fn goal_ack_error(reason: impl Into<String>) -> Error {
 /// exactly the fields the contract declares. Symmetric counterpart of
 /// [`unwrap_goal_ack`].
 ///
-/// Breaking wire change: producers and consumers must run the same peppylib
-/// generation. A pre-envelope producer's raw reply can decode as a
-/// plausible-but-wrong ack (a capnp segment table starts with 0x00, reading
-/// as a rejection), so mixed versions are unsupported; upgrade all nodes of
-/// a deployment together, as peppy releases already require.
+/// Producers and consumers must run the same peppylib generation: a goal
+/// reply without this envelope (a raw capnp message) can decode as a
+/// plausible-but-wrong ack, because a capnp segment table starts with 0x00,
+/// which reads as a rejection. Mixed versions are unsupported; upgrade all
+/// nodes of a deployment together, as peppy releases require.
 pub fn wrap_goal_ack(accepted: bool, reason: Option<&str>, body: &[u8]) -> Result<Payload> {
     let reason = reason.unwrap_or("");
     if reason.len() > u16::MAX as usize {
@@ -277,8 +277,9 @@ fn is_safe_goal_id(goal_id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// Re-exported from `core-node-api` so callers can use the existing
-/// `peppylib::messaging::NonEmptyPayload` import path.
+/// Re-exported from `core-node-api` so the payload type that
+/// [`ActionFeedbackPublisher::publish`] takes sits beside it in
+/// `peppylib::messaging`.
 pub use core_node_api::{EmptyPayloadError, NonEmptyPayload};
 
 /// Per-goal feedback publisher used by action servers. The end-of-stream
@@ -397,8 +398,8 @@ impl ActionFeedbackPublisherFactory {
 // The end-of-stream sentinel only reaches the consumer while the producer's
 // session is alive to publish it. A producer that dies hard (SIGKILL, OOM,
 // runtime teardown winning the race against `GoalContext::Drop`'s spawned
-// cleanup) never sends it, and the consumer's feedback subscription — pinned
-// to the dead `instance_id` — would otherwise wait forever. Every exposed
+// cleanup) never sends it, and the consumer's feedback subscription (pinned
+// to the dead `instance_id`) would otherwise wait forever. Every exposed
 // action therefore advertises a transport liveliness token
 // (see `MessengerHandle::expose_action`), and every goal handle watches the
 // pinned producer's token so `on_next_feedback` can fail over to
@@ -426,8 +427,8 @@ const LIVELINESS_RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
 const PRODUCER_GONE_CONFIRM_PROBES: usize = 2;
 
 /// `true` once the producer is confirmed absent: every confirmation probe
-/// found no token. Any probe that sees the token — or errors, e.g. while the
-/// consumer's own session is closing — aborts the confirmation, so a flap
+/// found no token. Any probe that sees the token (or errors, e.g. while the
+/// consumer's own session is closing) aborts the confirmation, so a flap
 /// or an inconclusive probe never fabricates a producer death.
 async fn confirm_producer_gone(messenger: &MessengerHandle, sender: &ActionWireSender) -> bool {
     for _ in 0..PRODUCER_GONE_CONFIRM_PROBES {
@@ -460,7 +461,7 @@ async fn run_producer_liveliness_watch(
     // Initial resolve: the producer answered the goal request moments ago,
     // so its token is expected to replay as an immediate `Alive` (the watch
     // subscribes with history). Seeing nothing inside the window means the
-    // producer died in the gap — confirm by probing rather than trusting
+    // producer died in the gap: confirm by probing rather than trusting
     // propagation timing.
     match tokio::time::timeout(LIVELINESS_RESOLVE_TIMEOUT, watch.rx.recv_async()).await {
         Ok(Ok(LivelinessEvent::Alive(()))) => {}
@@ -601,8 +602,8 @@ impl ActionGoalHandle {
     /// Returns `Err(Error::ActionFeedbackProducerGone)` when the producer
     /// instance this goal is pinned to disappears without publishing the
     /// sentinel (process killed, OOM, runtime teardown losing the cleanup
-    /// race). Buffered feedback — including a sentinel that did make it
-    /// out — is always drained before the producer-gone error surfaces, so
+    /// race). Buffered feedback (including a sentinel that did make it
+    /// out) is always drained before the producer-gone error surfaces, so
     /// a graceful close keeps reporting `ActionFeedbackChannelClosed`.
     pub async fn on_next_feedback(&mut self) -> Result<Message> {
         let msg = tokio::select! {
@@ -713,13 +714,13 @@ impl ActionMessenger {
     /// action's **goal service** (actions are built on the goal/cancel/result
     /// services). As with [`Self::is_reachable`], the probe is auto-handled by
     /// the shared service request loop, so **no `PendingGoal` is created and the
-    /// action engine never runs** — this measures only the messaging/routing
+    /// action engine never runs**: this measures only the messaging/routing
     /// path. Clock-independent (single-clock round-trip).
     ///
     /// `request_size`/`response_size` make the probe carry a real-payload-sized
     /// goal body and ask the producer to reply with `response_size` bytes (the
     /// goal request/response sizes), so the round-trip reflects real-sized
-    /// messages — still without creating a goal or running the action.
+    /// messages, still without creating a goal or running the action.
     ///
     /// Returns `(elapsed, response_bytes_received)` on a clean reply; propagates
     /// the error otherwise.
@@ -767,8 +768,8 @@ impl ActionMessenger {
     /// in [`Self::expose`].
     ///
     /// `target` is the producer's full `(core_node, instance_id)` wire
-    /// address. `Some(target)` — a dep slot bound to exactly one
-    /// producer, or an infra caller that already knows the full address —
+    /// address. `Some(target)` (a dep slot bound to exactly one
+    /// producer, or an infra caller that already knows the full address)
     /// addresses that producer directly: **no discovery probe is issued
     /// and no discovery timeout applies**; the goal request has the
     /// caller's whole `goal_timeout` to itself.
@@ -932,7 +933,7 @@ impl ActionMessenger {
         .await
     }
 
-    /// [`request_result`](Self::request_result), reduced to the body — the
+    /// [`request_result`](Self::request_result), reduced to the body: the
     /// terminal outcomes that carry no body become typed errors rather than an
     /// empty [`Payload`] the caller has to notice.
     ///
@@ -1061,9 +1062,8 @@ impl ActionMessenger {
 // ---------------------------------------------------------------------------
 
 /// The outcome of a cancel request, carried in the cancel reply
-/// (`ActionCancelResponse.state`). Replaces the old `accepted` / `error_message`
-/// pair: the typed state subsumes both. There is no "no active goal" variant —
-/// an unknown `goal_id` is [`Unknown`](CancelState::Unknown), and a goal that
+/// (`ActionCancelResponse.state`). There is no "no active goal" variant: an
+/// unknown `goal_id` is [`Unknown`](CancelState::Unknown), and a goal that
 /// already finished is [`AlreadyTerminal`](CancelState::AlreadyTerminal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -1094,7 +1094,7 @@ impl CancelState {
 /// Rust and Python servers.
 ///
 /// The single `state` field is positionally wire-compatible with the codegen's
-/// per-action `CancelResponse` reader — see `schemas/action_cancel.capnp` and
+/// per-action `CancelResponse` reader. See `schemas/action_cancel.capnp` and
 /// `cancel_action_response_format()` in generator-internal.
 pub fn encode_cancel_ack(state: CancelState) -> Result<Payload> {
     let mut builder = ::capnp::message::Builder::new_default();
@@ -1158,7 +1158,7 @@ fn encode_result_outcome(outcome: &GoalOutcome) -> Payload {
 /// from accept until it reaches a terminal outcome; result polls park their
 /// responders in `Pending` and are drained on the transition to `Terminal`.
 enum GoalState {
-    /// The worker is running. `waiters` is a `Vec` — not a single slot — because
+    /// The worker is running. `waiters` is a `Vec`, not a single slot, because
     /// a relay may poll twice and several clients may race one `goal_id`.
     Pending { waiters: Vec<ServiceResponder> },
     /// Terminal: the result stays fetchable until `evict_at`, after which the
@@ -1482,7 +1482,7 @@ fn route_result_poll(
 /// `Terminal` goal replies inline with its typed outcome; a poll that arrived
 /// before `accept` parks in `PendingWaiters` to be adopted at registration; a
 /// poll for an evicted goal replies `Expired`. There is no "no active goal"
-/// reply — a poll always parks for a definitive answer or resolves to a typed
+/// reply: a poll always parks for a definitive answer or resolves to a typed
 /// terminal outcome.
 async fn run_result_loop(
     mut result_service: ServiceEndpoint,
@@ -1796,7 +1796,7 @@ impl PendingGoal {
         // Adopt any result polls that parked before this slot existed. The
         // registry insert above is visible to a concurrent `run_result_loop`
         // before this drain, and that loop re-reads the registry under the
-        // `pending_waiters` lock — so an early poll either parked here (and we
+        // `pending_waiters` lock, so an early poll either parked here (and we
         // adopt it now) or sees the slot and parks in it directly. Never orphaned.
         let adopted = self.pending_waiters.lock().unwrap().remove(&self.goal_id);
         if let Some(adopted) = adopted
@@ -1931,7 +1931,7 @@ impl GoalContext {
     /// ([`crate::PeppyError::ActionFeedbackProducerGone`]); an armed drop
     /// would race a clean feedback-end sentinel against that latch (the
     /// consumer's feedback drain polls `biased`), making producer-loss
-    /// nondeterministic. Gated behind the `testing` feature on purpose — a
+    /// nondeterministic. Gated behind the `testing` feature on purpose: a
     /// production node calling this would silently break the `Abandoned`
     /// transition its consumers rely on.
     #[cfg(feature = "testing")]
@@ -1984,8 +1984,8 @@ impl Drop for GoalContext {
         // client draining feedback breaks out instead of hanging forever.
         // `transition_terminal` / `publish_end` are async, so run them on the
         // captured runtime handle (works even when `Drop` runs off-runtime, e.g.
-        // via Python's GC). The slot is NOT removed here — the sweeper owns
-        // eviction — so a poll that arrives between this spawn and its execution
+        // via Python's GC). The slot is NOT removed here (the sweeper owns
+        // eviction), so a poll that arrives between this spawn and its execution
         // still sees `Pending`, parks, and is woken by the transition.
         let slot = self.slot.clone();
         let grace = self.result_retention_grace;

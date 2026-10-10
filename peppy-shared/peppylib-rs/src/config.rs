@@ -43,13 +43,11 @@ where
         ))
     })?;
 
-    // Generate JSON schema from the target type
     let schema = schemars::schema_for!(T);
     let schema_value = serde_json::to_value(&schema).map_err(|e| {
         crate::ParameterDeserializationError::single(format!("failed to generate schema: {}", e))
     })?;
 
-    // Validate input against the schema
     let validator = jsonschema::validator_for(&schema_value).map_err(|e| {
         crate::ParameterDeserializationError::single(format!("failed to create validator: {}", e))
     })?;
@@ -61,7 +59,6 @@ where
         return Err(crate::ParameterDeserializationError::multiple(error_messages).into());
     }
 
-    // Schema validation passed, now deserialize
     Ok(serde_json::from_value(json_value).map_err(|e| {
         crate::ParameterDeserializationError::single(format!(
             "failed to deserialize parameters: {}",

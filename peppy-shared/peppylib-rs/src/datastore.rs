@@ -22,7 +22,7 @@ use crate::runtime::NodeRunner;
 /// should be interpreted (e.g. `text/plain`, `application/json`).
 ///
 /// Like Zenoh's own `Encoding`, this is an **open** set: the associated
-/// constants below cover the common cases, but any string is a valid tag —
+/// constants below cover the common cases, but any string is a valid tag:
 /// build one with `Encoding::from("application/cbor")`. The datastore treats
 /// the tag as an opaque label and never interprets it; it exists so a value's
 /// content type round-trips faithfully alongside its bytes.
@@ -150,7 +150,7 @@ pub async fn get(
 
 /// List the metadata of every key currently in the datastore on the node's
 /// bound core node. Each [`DatastoreEntry`] carries the key, its encoding tag,
-/// and the `instance_id` of the node that last wrote it — but **not** the value
+/// and the `instance_id` of the node that last wrote it, but **not** the value
 /// bytes; fetch those with [`get`]. Order is unspecified.
 pub async fn list(
     node_runner: &NodeRunner,

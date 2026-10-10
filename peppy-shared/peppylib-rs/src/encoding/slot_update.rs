@@ -8,7 +8,7 @@ use crate::types::Payload;
 
 /// Node-side reply to a slot-update request (pairing or observation).
 /// `accepted = false` with `stale_sequence = true` means the request's sequence
-/// was strictly older than the slot's current one (a delayed retry) — the daemon
+/// was strictly older than the slot's current one (a delayed retry): the daemon
 /// treats that as already-superseded, not as a failure to revert.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotUpdateResponse {

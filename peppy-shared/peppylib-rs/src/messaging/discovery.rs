@@ -8,17 +8,17 @@ use tokio::time::{Duration, Instant};
 /// Resolves a wildcard service or action target to a single concrete
 /// producer [`ProducerRef`] before the real request is dispatched. Only
 /// genuine wildcards (core-node infra calls scoped wider than one
-/// producer) reach this path — pinned targets carry their full
+/// producer) reach this path: pinned targets carry their full
 /// `(core_node, instance_id)` and never discover; generated dep-slot call
 /// sites always pin.
 ///
 /// Sends a probe (empty payload, `ServiceQueryKind::Probe` on the
 /// attachment) to `probe_sender`; the producer-side transport adapter
-/// auto-responds to probes in its query dispatch — even while user code
-/// holds the producer's request loop — so the discovery is side-effect-free
+/// auto-responds to probes in its query dispatch, even while user code
+/// holds the producer's request loop, so the discovery is side-effect-free
 /// and starvation-free even when multiple producers match the wildcard.
 ///
-/// The first responder wins. Subsequent producer replies are ignored — they
+/// The first responder wins. Subsequent producer replies are ignored: they
 /// drop on the floor when `poll_service` returns. The Zenoh keyexpr embedded
 /// in the reply yields the responder's identity via the existing
 /// `TopicMessage` parser.

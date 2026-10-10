@@ -2,7 +2,7 @@
 //!
 //! Performs an NTP-style 4-timestamp exchange with the core node and returns
 //! the offset of the local clock relative to the core node's clock plus the
-//! round-trip delay. `synchronize` does not adjust the local clock — it only
+//! round-trip delay. `synchronize` does not adjust the local clock: it only
 //! measures. Callers that want a "core-node-aligned" timestamp use
 //! `local_now() + sync.offset_ns`.
 //!
@@ -116,7 +116,7 @@ fn invalid_clock_request(context: &ServiceRequestContext, error: impl std::fmt::
     }
 }
 
-/// Wall-clock "now" in nanoseconds since the UNIX epoch — the canonical reader
+/// Wall-clock "now" in nanoseconds since the UNIX epoch, the canonical reader
 /// on the publish/poll paths and in tests. Returns an error if the system clock
 /// is set before the epoch; saturates to `u64::MAX` if the timestamp would
 /// overflow `u64` (post-year-2554, unreachable in practice).
@@ -439,9 +439,9 @@ impl ClockPublisher {
 
 fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
     // i128 widening: subtracting two u64s can underflow, and the standard NTP
-    // formula sums two such differences before halving — we need headroom.
+    // formula sums two such differences before halving, so it needs headroom.
     // t1/t2 come from an unauthenticated peer, so saturate (don't wrap) on the
-    // narrow back to i64/u64 — a misbehaving server could otherwise flip signs.
+    // narrow back to i64/u64: a misbehaving server could otherwise flip signs.
     let (t0, t1, t2, t3) = (
         i128::from(t0),
         i128::from(t1),
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn wall_now_ns_is_past_2020_and_non_decreasing() {
         // Deterministic without sleeping: assert only invariants true of any
-        // real clock — a timestamp past 2020-01-01 (1_577_836_800 s) and a
+        // real clock: a timestamp past 2020-01-01 (1_577_836_800 s) and a
         // monotonic-ish non-regression between two back-to-back reads.
         const Y2020_NS: u64 = 1_577_836_800_000_000_000;
         let first = wall_now_ns().expect("clock read");
@@ -700,7 +700,7 @@ mod compute_sync_tests {
     #[test]
     fn compute_sync_clamps_offset_overflow() {
         // Adversarial peer returns t1 = t2 = u64::MAX with a normal local clock.
-        // Raw offset is ~u64::MAX (≈1.8e19), well above i64::MAX (≈9.2e18) —
+        // Raw offset is ~u64::MAX (≈1.8e19), well above i64::MAX (≈9.2e18):
         // narrowing without clamping would wrap to a negative value.
         let (offset, _) = compute_sync(0, u64::MAX, u64::MAX, 0);
         assert_eq!(offset, i64::MAX);
@@ -709,7 +709,7 @@ mod compute_sync_tests {
     #[test]
     fn compute_sync_clamps_delay_overflow() {
         // delay = (t3 - t0) - (t2 - t1) = u64::MAX - (-u64::MAX) = 2*u64::MAX
-        // in i128 — exceeds u64::MAX, so saturate rather than wrap.
+        // in i128, which exceeds u64::MAX, so saturate rather than wrap.
         let (_, delay) = compute_sync(0, u64::MAX, 0, u64::MAX);
         assert_eq!(delay, u64::MAX);
     }

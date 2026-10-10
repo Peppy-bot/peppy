@@ -15,7 +15,7 @@ use tokio::{
 };
 use tracing::{error, warn};
 
-/// Outcome of running a user service handler — either a payload to surface
+/// Outcome of running a user service handler: either a payload to surface
 /// to the caller as a normal response, or a UTF-8 reason that the
 /// framework wraps as `Error::ServiceError`. Splitting the outcome at this
 /// layer lets the producer reply with the right `ServiceReplyKind` on the
@@ -85,7 +85,7 @@ pub enum ServiceTarget<'a> {
     Any,
     /// Scope to producers hosted by this core node, leaving the instance
     /// slot wildcarded. For callers that know which core node must answer
-    /// but cannot know the producer's per-boot instance_id — e.g.
+    /// but cannot know the producer's per-boot instance_id, e.g.
     /// `node_stop`, whose service root (node name + tag) is not unique
     /// across daemons. `poll` still discovers, but only among that core
     /// node's producers.
@@ -128,11 +128,11 @@ impl ServiceTarget<'_> {
 
 /// Server-side endpoint for a single service. Wraps the per-link-id queryable
 /// fan-in produced by [`pmi::MessengerBackend::listen_service`]: each inbound
-/// request carries its own [`ResponseToken`], so responding no longer needs
+/// request carries its own [`ResponseToken`], so responding does not take
 /// the central messenger mutex.
 ///
 /// `_messenger` is kept solely to anchor the underlying Zenoh session's
-/// lifetime — the queryable's inbound callback (and the flume sender feeding
+/// lifetime: the queryable's inbound callback (and the flume sender feeding
 /// `queryable.rx`) lives in the session's queryable registry, so once every
 /// strong reference to the messenger drops the session disappears and the
 /// channel closes mid-flight.
@@ -152,7 +152,7 @@ impl ServiceEndpoint {
 
 /// Handle returned by [`ServiceEndpoint::recv_next_request`] that must be used
 /// to send the response back to the caller. Wraps the inbound query's
-/// [`ResponseToken`] — `respond` issues a single reply on it.
+/// [`ResponseToken`]: `respond` issues a single reply on it.
 pub struct ServiceResponder {
     token: ResponseToken,
 }
@@ -161,8 +161,7 @@ impl ServiceResponder {
     /// Send the regular response payload for this request. The reply
     /// carries `ServiceReplyKind::Response` on the attachment; the
     /// payload bytes are opaque to the framework and round-trip
-    /// unchanged — including the legacy byte-prefix patterns that the
-    /// previous protocol used as sentinels.
+    /// unchanged.
     pub async fn respond(self, payload: Payload) -> Result<()> {
         self.token
             .respond_response(payload.into_inner().into())
@@ -219,7 +218,7 @@ impl ServiceEndpoint {
     /// Handles a single incoming request using the provided callback.
     ///
     /// Returns `Ok(true)` after attempting to process a request (even if
-    /// sending the response failed — that failure is logged and swallowed so
+    /// sending the response failed: that failure is logged and swallowed so
     /// a single bad client cannot bubble out as a hard error), or `Ok(false)`
     /// when the subscription stream has closed.
     pub async fn handle_next_request<F, Fut>(&mut self, handler: F) -> Result<bool>
@@ -311,7 +310,7 @@ impl ServiceEndpoint {
 pub struct ServiceRequestContext {
     message: Message,
     request_id: String,
-    /// Producer-side link_id that received this request — whichever bound
+    /// Producer-side link_id that received this request: whichever bound
     /// link_id's queryable yielded the inbound query. Surfaced so action
     /// goal handlers can scope per-goal feedback under the link_id the
     /// consumer actually targeted.
@@ -381,8 +380,8 @@ impl ServiceMessenger {
     /// matcher unifies the two.
     ///
     /// `target` scopes which producer answers.
-    /// [`ServiceTarget::Producer`] — a dep slot bound to exactly one
-    /// producer, or an infra caller that already knows the full address —
+    /// [`ServiceTarget::Producer`] (a dep slot bound to exactly one
+    /// producer, or an infra caller that already knows the full address)
     /// addresses that producer directly:
     /// **no discovery probe is issued and no discovery timeout applies**;
     /// the call has the caller's whole `response_timeout` to itself.
@@ -481,8 +480,8 @@ impl ServiceMessenger {
     /// `request_size`/`response_size` make the probe carry a real-payload-sized
     /// body and ask the producer to reply with `response_size` bytes, so the
     /// round-trip reflects serializing+moving real-sized messages rather than an
-    /// empty sentinel — still without running the handler. Pass `0`/`0` to fall
-    /// back to the old empty probe.
+    /// empty sentinel, still without running the handler. Pass `0`/`0` for an
+    /// empty probe.
     ///
     /// Returns `(elapsed, response_bytes_received)` on a clean reply, where
     /// `response_bytes_received` is the actual reply payload length (lets the
