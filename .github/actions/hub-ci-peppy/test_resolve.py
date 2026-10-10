@@ -24,6 +24,7 @@ import urllib.request
 import urllib.response
 from contextlib import redirect_stdout
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import resolve
@@ -415,7 +416,10 @@ class RunnerArch(unittest.TestCase):
 
 
 class PeppyBranch(unittest.TestCase):
-    PEPPY_HEADS = {"dev": PEPPY_DEV_COMMIT, SET_NAME: PEPPY_BRANCH_COMMIT}
+    PEPPY_HEADS: ClassVar[dict[str, str]] = {
+        "dev": PEPPY_DEV_COMMIT,
+        SET_NAME: PEPPY_BRANCH_COMMIT,
+    }
 
     def test_peppy_with_a_branch_of_the_set_runs_its_head(self):
         self.assertEqual(

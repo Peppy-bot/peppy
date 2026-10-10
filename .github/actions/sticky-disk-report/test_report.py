@@ -13,6 +13,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 import report
@@ -202,7 +203,7 @@ class FormatTest(unittest.TestCase):
 
 
 class RenderTest(unittest.TestCase):
-    points = {NODES_CACHE: "/home/runner/.cache/nodes-hub-ci"}
+    points: ClassVar[dict[str, str]] = {NODES_CACHE: "/home/runner/.cache/nodes-hub-ci"}
 
     def test_the_report_compares_each_directory_with_the_restore(self):
         now = measurement(
