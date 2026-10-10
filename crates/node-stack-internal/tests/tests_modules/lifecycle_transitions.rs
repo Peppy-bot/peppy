@@ -248,9 +248,9 @@ async fn push_config_resets_existing_entity_to_added() {
 
 #[test]
 fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
-    // This test checks a specific bug fix: when you re-push a node config that keeps the same interfaces
-    // but changes which producer it depends on, the system must actually rewire the dependencies
-    // (not skip the work thinking "nothing changed").
+    // Re-pushing a config that keeps the same interfaces but depends on
+    // another producer rewires the dependencies: an unchanged interface set
+    // does not mean an unchanged graph.
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     let producer_a: config::node::NodeConfig = serde_json5::from_str(
@@ -321,7 +321,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     assert_eq!(deps_a, vec!["producer_a".to_string()]);
 
     // Re-push the consumer with the same interfaces, but pointed at
-    // producer_b. With the fix, dependency_keys drift triggers rewire.
+    // producer_b. The drift of its dependency keys triggers the rewire.
     stack
         .push_config(
             consumer_pointing_at("producer_b"),
@@ -492,7 +492,7 @@ async fn concurrent_builds_are_rejected_immediately() {
 }
 
 // ===========================================================================
-// Build with build_cmd: Added → Building → Built (or Building → Added on failure)
+// Build with build_cmd: Added → Building → Ready (a failure leaves the entity in Building)
 // ===========================================================================
 
 /// Returns a Rust sensor config whose `execution.build_cmd` runs the given
@@ -540,7 +540,9 @@ fn sensor_config_in_language(language: &str, build_cmd_shell: &str) -> config::n
 /// Helper that constructs the BuildContext fields shared across tests.
 struct BuildHarness {
     working_dir: tempfile::TempDir,
-    peppy_root: tempfile::TempDir,
+    /// Owns the directory that `peppy_dirs` points into, so the directory
+    /// lives as long as the harness.
+    _peppy_root: tempfile::TempDir,
     peppy_dirs: daemon_config::consts::PeppyDirs,
     log: ActionLog,
     feedback_tx: tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
@@ -584,7 +586,7 @@ fn build_harness() -> BuildHarness {
         tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
     BuildHarness {
         working_dir,
-        peppy_root,
+        _peppy_root: peppy_root,
         peppy_dirs,
         log,
         feedback_tx,
@@ -706,7 +708,7 @@ fn assert_keyed_artifact_path(
 }
 
 #[tokio::test]
-async fn build_runs_add_cmd_for_process_node() {
+async fn build_runs_build_cmd_for_process_node() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
     stack
@@ -735,7 +737,7 @@ async fn build_runs_add_cmd_for_process_node() {
     .await
     .expect("build should succeed when build_cmd exits 0");
 
-    // Entity is in Built.
+    // The entity is Ready.
     let guard = handle.read();
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
     assert_eq!(guard.artifact_path(), Some(archive.as_path()));
@@ -750,10 +752,6 @@ async fn build_runs_add_cmd_for_process_node() {
         archived_text(&archive, "marker.txt").is_some(),
         "marker.txt produced by build_cmd should be in archive"
     );
-
-    // Keep harness alive (so tempdirs survive until the assertions above).
-    drop(h.peppy_root);
-    drop(h.working_dir);
 }
 
 #[tokio::test]
@@ -1569,13 +1567,6 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
         other => panic!("expected Ready, got {:?}", other),
     }
 }
-
-// Producer-side link_id collision tests were removed: in the harmonized
-// wire model the producer always advertises under the `_` link_id sentinel
-// and consumers pin by `from_instance_id` derived from the binding map, so
-// there is no producer-side link_id to collide on. Duplicate-instance_id
-// detection is still covered by
-// `prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_present`.
 
 // ===========================================================================
 // Backwards / sideways transition rejection (exhaustive)
