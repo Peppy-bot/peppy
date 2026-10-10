@@ -48,12 +48,7 @@ pub(super) fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
         }
     }
 
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let old_peppy_dir =
-        node_root_dir.join(format!(".peppy-old-{}-{}", std::process::id(), timestamp));
+    let old_peppy_dir = unique_sibling_dir(node_root_dir, ".peppy-old");
 
     match std::fs::rename(&peppy_output_dir, &old_peppy_dir) {
         Ok(()) => {
@@ -80,6 +75,18 @@ pub(super) fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
             );
         }
     }
+}
+
+/// The path `{prefix}-{pid}-{nanos}` in `node_root_dir`. The process id and
+/// the current time keep the names of concurrent generations for the same
+/// node apart, so their `.peppy` directories do not move onto the same path.
+/// A clock before the Unix epoch gives 0 nanoseconds.
+fn unique_sibling_dir(node_root_dir: &std::path::Path, prefix: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    node_root_dir.join(format!("{prefix}-{}-{nanos}", std::process::id()))
 }
 
 /// Returns `true` when the `.peppy` directory under `node_root_dir` is absent
@@ -142,14 +149,7 @@ pub fn auto_sync_if_missing(
     let peppy_dir = params
         .node_dir
         .join(daemon_config::consts::PEPPY_OUTPUT_DIR);
-    let backup_dir = params.node_dir.join(format!(
-        ".peppy-backup-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    ));
+    let backup_dir = unique_sibling_dir(params.node_dir, ".peppy-backup");
     let had_backup = match std::fs::rename(&peppy_dir, &backup_dir) {
         Ok(()) => true,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
@@ -264,6 +264,23 @@ mod tests {
         std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
         std::fs::write(peppygen.join("peppy.json5.sha256"), b"deadbeef").unwrap();
         assert!(!needs_sync(tmp.path()));
+    }
+
+    #[test]
+    fn unique_sibling_dir_names_the_process_and_a_timestamp() {
+        let node_root_dir = std::path::Path::new("/nodes/camera");
+        let dir = unique_sibling_dir(node_root_dir, ".peppy-old");
+
+        assert_eq!(dir.parent(), Some(node_root_dir));
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        let pid_prefix = format!(".peppy-old-{}-", std::process::id());
+        let nanos = name
+            .strip_prefix(&pid_prefix)
+            .unwrap_or_else(|| panic!("{name} must start with {pid_prefix}"));
+        assert!(
+            nanos.parse::<u128>().is_ok(),
+            "{name} must end with a decimal timestamp"
+        );
     }
 
     const ROOT_CONFIG: &str = r#"{
