@@ -2,8 +2,8 @@ import asyncio
 import sys
 
 from peppygen import NodeBuilder, NodeRunner
-from peppygen.parameters import Parameters
 from peppygen.paired_topics.arm import joint_commands, joint_states
+from peppygen.parameters import Parameters
 
 # `arm_controller` plays the `controller` role of the `arm_link` pairing.
 # Both directions of its `arm` slot live under `peppygen.paired_topics.arm`: it

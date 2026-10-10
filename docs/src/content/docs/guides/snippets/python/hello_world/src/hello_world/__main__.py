@@ -2,8 +2,8 @@ import asyncio
 import sys
 
 from peppygen import NodeBuilder, NodeRunner
-from peppygen.parameters import Parameters
 from peppygen.emitted_topics import message_stream
+from peppygen.parameters import Parameters
 
 
 async def emit_hello_world_loop(node_runner: NodeRunner):
