@@ -10,7 +10,7 @@ import pytest
 from peppylib import stack
 from peppylib.stack import StackListResponse
 
-from .common import spawn_stub_listener, start_router_and_runner, wait_until_reachable
+from .common import call_against_stub_service
 
 
 def _sample_graph_json() -> str:
@@ -55,18 +55,9 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
     assert response.shutdown_grace_secs == 11
     response_bytes = response.encode()
 
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        handler = await spawn_stub_listener(
-            server_handle, "stack_list", response_bytes
-        )
-        await wait_until_reachable(node_runner.messenger(), "stack_list")
-
-        result = await stack.list(node_runner, 3.0)
-
-        await handler
-    finally:
-        await router.stop()
+    result = await call_against_stub_service(
+        tmp_path, "stack_list", response_bytes, lambda runner: stack.list(runner, 3.0)
+    )
 
     graph = result.graph
     assert result.copies == copies
@@ -118,17 +109,9 @@ async def _stack_list_with_mixed_state(tmp_path):
     response_bytes = StackListResponse(
         _mixed_state_graph_json(), "core", "gen-1", "robo-a", copies=[], shutdown_grace_secs=5
     ).encode()
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        handler = await spawn_stub_listener(
-            server_handle, "stack_list", response_bytes
-        )
-        await wait_until_reachable(node_runner.messenger(), "stack_list")
-        result = await stack.list(node_runner, 3.0)
-        await handler
-    finally:
-        await router.stop()
-    return result
+    return await call_against_stub_service(
+        tmp_path, "stack_list", response_bytes, lambda runner: stack.list(runner, 3.0)
+    )
 
 
 @pytest.mark.asyncio

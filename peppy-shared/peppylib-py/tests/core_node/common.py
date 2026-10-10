@@ -1,13 +1,15 @@
 """Shared test fixtures for `core_node` integration tests: router/runner
-setup, reachability polling, and a minimal `peppy.json5` writer. Per-test
-modules provide their own stub-listener body because request/response types
-differ per service.
+setup, reachability polling, a single-shot stub service, and a minimal
+`peppy.json5` writer. Per-test modules provide the canned response bytes
+because the response types differ per service.
 
 Python equivalent of `peppy-shared/peppylib-rs/tests/core_node/common.rs`.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import TypeVar
 
 import pytest
 
@@ -27,6 +29,8 @@ CORE_NODE = "standalone-core"
 CORE_NODE_TAG = "core"
 CLIENT_INSTANCE = "test_caller"
 SERVER_INSTANCE = "test_server"
+
+_CallResult = TypeVar("_CallResult")
 
 _PEPPY_CONFIG = """{
     peppy_schema: "node/v1",
@@ -110,3 +114,28 @@ async def spawn_stub_listener(server_handle, service_name: str, response_bytes: 
     return asyncio.ensure_future(
         endpoint.handle_next_request(lambda _request: response_bytes)
     )
+
+
+async def call_against_stub_service(
+    tmp_path: Path,
+    service_name: str,
+    response_bytes: bytes,
+    call: Callable[[NodeRunner], Awaitable[_CallResult]],
+) -> _CallResult:
+    """Make one helper call against a single-shot stub of `service_name`.
+
+    Starts a router and a runner, serves `response_bytes` once from a stub
+    listener, waits until the runner reaches it, awaits `call` with the
+    runner, and waits for the stub's handler to finish before the router
+    stops. The stub replies with the canned bytes whatever the request holds,
+    so the caller's assertions check how the helper handles the response.
+    """
+    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
+    try:
+        handler = await spawn_stub_listener(server_handle, service_name, response_bytes)
+        await wait_until_reachable(node_runner.messenger(), service_name)
+        result = await call(node_runner)
+        await handler
+    finally:
+        await router.stop()
+    return result

@@ -11,7 +11,7 @@ import pytest
 
 from peppylib import datastore
 
-from .common import spawn_stub_listener, start_router_and_runner, wait_until_reachable
+from .common import call_against_stub_service
 
 
 @pytest.mark.asyncio
@@ -19,20 +19,14 @@ async def test_datastore_store_returns_none_on_ack(tmp_path):
     """`datastore.store()` encodes the request, and resolves to `None` once the
     service acks (a timeout or decode failure would raise instead). Passing an
     `Encoding` member proves the StrEnum flows through the binding as a str."""
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        handler = await spawn_stub_listener(
-            server_handle, "datastore_store", datastore.DatastoreStoreResponse().encode()
-        )
-        await wait_until_reachable(node_runner.messenger(), "datastore_store")
-
-        result = await datastore.store(
-            node_runner, "greeting", b"hello", datastore.Encoding.TEXT_PLAIN, 3.0
-        )
-
-        await handler
-    finally:
-        await router.stop()
+    result = await call_against_stub_service(
+        tmp_path,
+        "datastore_store",
+        datastore.DatastoreStoreResponse().encode(),
+        lambda runner: datastore.store(
+            runner, "greeting", b"hello", datastore.Encoding.TEXT_PLAIN, 3.0
+        ),
+    )
 
     assert result is None
 
@@ -46,18 +40,12 @@ async def test_datastore_get_returns_stored_value(tmp_path):
         True, b"\x00\xff\x80\xfe", "application/octet-stream", "writer_node"
     )
 
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        handler = await spawn_stub_listener(
-            server_handle, "datastore_get", response.encode()
-        )
-        await wait_until_reachable(node_runner.messenger(), "datastore_get")
-
-        result = await datastore.get(node_runner, "blob", 3.0)
-
-        await handler
-    finally:
-        await router.stop()
+    result = await call_against_stub_service(
+        tmp_path,
+        "datastore_get",
+        response.encode(),
+        lambda runner: datastore.get(runner, "blob", 3.0),
+    )
 
     assert result is not None
     assert result.value == b"\x00\xff\x80\xfe"
@@ -72,18 +60,12 @@ async def test_datastore_get_missing_returns_none(tmp_path):
     """A not-found response folds into `None`."""
     response = datastore.DatastoreGetResponse(False, b"", "", "")
 
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        handler = await spawn_stub_listener(
-            server_handle, "datastore_get", response.encode()
-        )
-        await wait_until_reachable(node_runner.messenger(), "datastore_get")
-
-        result = await datastore.get(node_runner, "never-stored", 3.0)
-
-        await handler
-    finally:
-        await router.stop()
+    result = await call_against_stub_service(
+        tmp_path,
+        "datastore_get",
+        response.encode(),
+        lambda runner: datastore.get(runner, "never-stored", 3.0),
+    )
 
     assert result is None
 
@@ -99,18 +81,12 @@ async def test_datastore_list_returns_entries(tmp_path):
         ]
     )
 
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        handler = await spawn_stub_listener(
-            server_handle, "datastore_list", response.encode()
-        )
-        await wait_until_reachable(node_runner.messenger(), "datastore_list")
-
-        entries = await datastore.list(node_runner, 3.0)
-
-        await handler
-    finally:
-        await router.stop()
+    entries = await call_against_stub_service(
+        tmp_path,
+        "datastore_list",
+        response.encode(),
+        lambda runner: datastore.list(runner, 3.0),
+    )
 
     entries.sort(key=lambda e: e.key)
     assert len(entries) == 2
@@ -128,17 +104,11 @@ async def test_datastore_remove_returns_bool(tmp_path):
     """`datastore.remove()` decodes the remove response into a plain bool."""
     response = datastore.DatastoreRemoveResponse(True)
 
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        handler = await spawn_stub_listener(
-            server_handle, "datastore_remove", response.encode()
-        )
-        await wait_until_reachable(node_runner.messenger(), "datastore_remove")
-
-        removed = await datastore.remove(node_runner, "mode", 3.0)
-
-        await handler
-    finally:
-        await router.stop()
+    removed = await call_against_stub_service(
+        tmp_path,
+        "datastore_remove",
+        response.encode(),
+        lambda runner: datastore.remove(runner, "mode", 3.0),
+    )
 
     assert removed is True

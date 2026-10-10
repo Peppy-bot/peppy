@@ -26,9 +26,8 @@ from .common import (
     CORE_NODE,
     CORE_NODE_TAG,
     SERVER_INSTANCE,
-    spawn_stub_listener,
+    call_against_stub_service,
     start_router_and_runner,
-    wait_until_reachable,
     write_standalone_peppy_config,
 )
 
@@ -51,18 +50,12 @@ async def test_synchronize_computes_offset_and_delay(tmp_path):
         server_send_time=2_000_000_000_005,
     )
 
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        # Echo back the canned bytes regardless of the request payload: the
-        # test cares about the helper's response handling, not the server.
-        handler = await spawn_stub_listener(server_handle, "clock", canned_response.encode())
-        await wait_until_reachable(node_runner.messenger(), "clock")
-
-        sync = await clock.synchronize(node_runner, 3.0)
-
-        await handler
-    finally:
-        await router.stop()
+    sync = await call_against_stub_service(
+        tmp_path,
+        "clock",
+        canned_response.encode(),
+        lambda runner: clock.synchronize(runner, 3.0),
+    )
 
     # The raw response is exposed; t1/t2 must be exactly the canned values.
     assert sync.raw.server_recv_time == 2_000_000_000_000
