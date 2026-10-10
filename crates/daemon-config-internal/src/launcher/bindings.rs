@@ -83,9 +83,10 @@ struct SlotMeta<'a> {
 }
 
 /// Outcome of [`validate_bindings`]. `errors` aggregates every validator
-/// rule violation; `slot_bindings` carries the resolved per-slot view
-/// for every consumer instance whose bindings parsed cleanly. The caller
-/// must check `errors.is_empty()` before consuming the resolution.
+/// rule violation; `slot_bindings` carries, per consumer instance, every
+/// slot that resolved; an instance none of whose slots resolved is
+/// absent. The caller must check `errors.is_empty()` before consuming the
+/// resolution.
 #[derive(Debug, Default)]
 pub struct ValidatedBindings {
     pub errors: Vec<ParsingError>,
@@ -475,9 +476,9 @@ fn copy_fills_slot_twice(
 
 /// Build `instance_id → BindingValidationItem` lookup. Duplicate IDs
 /// across `items` are surfaced separately by
-/// [`check_stack_wide_instance_id_uniqueness`]; this builder uses
-/// insertion-wins (alphabetical first occurrence) so subsequent checks
-/// still have a usable lookup even when a duplicate exists.
+/// [`check_stack_wide_instance_id_uniqueness`]; in this builder the
+/// first occurrence in `items` order wins, so subsequent checks still
+/// have a usable lookup even when a duplicate exists.
 fn build_instance_lookup<'a>(
     items: &'a [BindingValidationItem<'a>],
 ) -> BTreeMap<&'a str, &'a BindingValidationItem<'a>> {
@@ -769,7 +770,7 @@ mod tests {
         );
     }
 
-    /// Rule 5: a declared slot with no binding entry is rejected — there
+    /// Rule 5: a declared slot with no binding entry is rejected: there
     /// is no unbound state.
     #[test]
     fn unbound_slot_is_rejected() {
@@ -1446,7 +1447,7 @@ mod tests {
         assert_eq!(info.contract_name, "uvc_camera");
     }
 
-    /// Rule 5: pinned binding whose target deploys the wrong node.
+    /// Rule 3: pinned binding whose target deploys the wrong node.
     #[test]
     fn rejects_target_node_mismatch() {
         let cons_instances = parse_instances(
@@ -1581,7 +1582,7 @@ mod tests {
         let prod_instances = parse_instances(r#"[{ instance_id: "depth_cam_inst1" }]"#);
         // Producer's node name coincidentally matches the contract
         // name+tag, but the validator only honors explicit `manifest.implements`
-        // claims; node-identity matching never satisfies an contract
+        // claims; node-identity matching never satisfies a contract
         // slot.
         let producer_implements =
             parse_implements(r#"[{ name: "depth_camera", tag: "v1", link_id: "cam" }]"#);
@@ -1675,12 +1676,12 @@ mod tests {
     /// them.
     ///
     /// This locks in the contract that
-    /// `peppy::commands::node::run::validate_binds_against_stack`
+    /// `peppy::commands::node::run::validate_links_against_stack`
     /// relies on when it folds already-running stack nodes into the
     /// validator snapshot without re-checking their bindings.
     #[test]
     fn inert_item_with_no_depends_on_remains_a_producer() {
-        // Live consumer with a node dep + an contract dep.
+        // Live consumer with a node dep + a contract dep.
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -1817,9 +1818,7 @@ mod tests {
 
     /// Errors aggregate (no short-circuit) within `validate_bindings`: a bad
     /// target on one binding slot does not stop a sibling slot from being
-    /// checked. An unknown-slot KEY is not this validator's concern (a link
-    /// key naming no producer slot is skipped here and reported once by
-    /// `validate_link_slots`), so only the target error surfaces.
+    /// checked, so both unknown targets surface.
     #[test]
     fn aggregates_multiple_errors() {
         let cons_instances = parse_instances(
@@ -2262,7 +2261,8 @@ mod tests {
     }
 
     /// An instance that declared no placement runs on the coordinator, so a
-    /// launcher with no `core_nodes` stamps exactly as it always did.
+    /// launcher with no `core_nodes` stamps every producer with the
+    /// coordinator.
     #[test]
     fn unplaced_producers_are_stamped_with_the_coordinator() {
         let cons_instances =

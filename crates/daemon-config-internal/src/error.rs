@@ -401,13 +401,13 @@ pub struct PairingSha256Mismatch {
 }
 
 /// Payload for [`ParsingError::PairingSlotUncovered`]. A declared pairing slot
-/// was neither paired nor declared vacant. Forgetting a slot is an error
-/// whatever cardinality the manifest declares: a `zero_or_one` slot may run
-/// empty, but only where the deployment says so.
+/// was neither paired nor declared vacant. Forgetting a `one`, `zero_or_one`
+/// or `one_or_more` slot is an error; a `zero_or_more` slot may hold nothing.
+/// A `zero_or_one` slot may run empty, but only where the deployment says so.
 ///
 /// `Display` is hand-written rather than derived because the remedies it offers
-/// follow the slot's cardinality: only a `zero_or_one` slot may be vacated,
-/// so only its message names the vacancy spelling.
+/// follow the slot's cardinality: each cardinality gets its own remedy (see
+/// `uncovered_slot_fix`).
 #[derive(Debug, Clone)]
 pub struct PairingSlotUncovered {
     pub instance_id: String,
@@ -575,7 +575,7 @@ impl std::error::Error for ObservationSlotUncovered {}
 
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
-    // -- General yaml syntax
+    // -- General document syntax
     #[error("Cannot read {0}: {1}")]
     CannotRead(String, std::io::ErrorKind),
     #[error("Cannot parse configuration: {0}")]
@@ -609,8 +609,7 @@ pub enum ParsingError {
     },
     /// A `--link KEY@VALUE` / `links:` key that names no declared slot across
     /// any family (`depends_on.{nodes,contracts,pairings}`, participant or
-    /// observer). The unified replacement for the old per-mechanism
-    /// "unknown binding slot" / "dead pairing key" errors.
+    /// observer).
     #[error(transparent)]
     LinkUnknownSlot(Box<LinkUnknownSlot>),
     /// A `links:` value on a scalar participant pairing slot (`one` or
@@ -717,9 +716,8 @@ pub enum ParsingError {
     },
     /// Boxed payload so this variant does not grow `ParsingError` past the
     /// `clippy::result_large_err` threshold; without the indirection, the
-    /// seven `String` fields would inflate every `Result<_, _>` that
-    /// transitively wraps a `ParsingError` (notably code generated against
-    /// `peppylib::PeppyError`).
+    /// seven `String` fields would inflate every `Result` that carries a
+    /// `ParsingError`.
     #[error(transparent)]
     BindingTargetMismatch(Box<BindingTargetMismatch>),
     /// A `--link` targets a contract slot but the producer doesn't
@@ -949,10 +947,6 @@ impl std::fmt::Display for VacancyRefusal {
     }
 }
 
-/// How a coverage failure tells the reader to write the vacancy down, shared
-/// by [`PairingSlotUncovered`] and [`ObservationSlotUncovered`] so the two
-/// surfaces cannot drift on the spelling of a feature whose whole point is
-/// that there is one spelling.
 /// The manifest key that declares a participant pairing slot emptiable, spelled
 /// once so the uncovered-slot remedy and [`VacancyRefusal::ManifestRequires`]
 /// cannot drift on it.
@@ -973,9 +967,10 @@ pub(crate) const BINDING_EMPTIABLE_KEY: &str =
     "`cardinality: \"zero_or_one\"` on its `depends_on.nodes` / `depends_on.contracts` entry";
 
 /// The launcher `links:` shape that would fill a slot: a scalar slot takes a
-/// single id, a multi slot an array. Shared by [`BindingSlotUnfulfilled`] and
-/// [`ObservationSlotUncovered`] so the two surfaces cannot drift on the shape
-/// rule; `placeholder` names the id in each family's own vocabulary.
+/// single id, a multi slot an array. Shared by [`BindingSlotUnfulfilled`],
+/// [`PairingSlotUncovered`] and [`ObservationSlotUncovered`] so the three
+/// surfaces cannot drift on the shape rule; `placeholder` names the id in each
+/// family's own vocabulary.
 fn link_shape_hint(link_id: &str, placeholder: &str, cardinality: Cardinality) -> String {
     if cardinality.is_scalar() {
         format!("links: {{ {link_id}: \"{placeholder}\" }}")
@@ -988,11 +983,11 @@ fn link_shape_hint(link_id: &str, placeholder: &str, cardinality: Cardinality) -
 /// `zero_or_one` slot is offered the vacancy spelling, a `one` slot the
 /// manifest key that would earn it an empty state (`declare_emptiable`), and a
 /// `one_or_more` slot the cardinality whose empty state is an omitted key.
-/// Shared by [`BindingSlotUnfulfilled`] and [`ObservationSlotUncovered`] so
-/// the two surfaces cannot drift on which remedy fits which slot. A
-/// `zero_or_more` slot never raises either error (omission is its empty set);
-/// its arm only keeps the match exhaustive so a new cardinality variant must
-/// choose a remedy here.
+/// Shared by [`BindingSlotUnfulfilled`], [`PairingSlotUncovered`] and
+/// [`ObservationSlotUncovered`] so the three surfaces cannot drift on which
+/// remedy fits which slot. A `zero_or_more` slot never raises any of them
+/// (omission is its empty set); its arm only keeps the match exhaustive so a
+/// new cardinality variant must choose a remedy here.
 fn uncovered_slot_fix(link_id: &str, cardinality: Cardinality, declare_emptiable: &str) -> String {
     match cardinality {
         Cardinality::ZeroOrOne => format!("or {}", vacancy_hint(link_id)),
@@ -1005,6 +1000,10 @@ fn uncovered_slot_fix(link_id: &str, cardinality: Cardinality, declare_emptiable
     }
 }
 
+/// The vacancy spelling an uncovered-slot remedy offers, shared through
+/// [`uncovered_slot_fix`] by [`BindingSlotUnfulfilled`],
+/// [`PairingSlotUncovered`] and [`ObservationSlotUncovered`] so the three
+/// cannot drift on the one spelling of a vacancy.
 fn vacancy_hint(link_id: &str) -> String {
     format!(
         "leave it empty on purpose (`links: {{ {link_id}: {{ vacant: \"<why>\" }} }}` / \

@@ -1,9 +1,10 @@
 //! Atomic file publication helper used across the workspace.
 //!
-//! All four current call sites (`repo` cache writes, build-artifact
-//! publication, embedded-binary extraction) follow the same pattern:
-//! create the parent dir, stage to a unique sibling tmp file, then
-//! rename. Centralizing avoids drift across hand-rolled copies.
+//! Every caller (for example repository caches, build artifacts,
+//! extracted embedded binaries, and config, credential and lock
+//! documents) follows the same pattern: create the parent dir, stage to a
+//! unique sibling tmp file, then rename. One helper keeps the pattern the
+//! same everywhere.
 
 use std::path::{Path, PathBuf};
 
