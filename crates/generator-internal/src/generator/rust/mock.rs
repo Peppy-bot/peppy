@@ -158,7 +158,7 @@ pub(super) fn build_struct_deserializer(
     let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
     let reader_type = info.reader_type_tokens();
     let context_expr = quote!(String::from(#context_label));
-    let (field_statements, field_inits, _) =
+    let (field_statements, field_inits) =
         deserialize_format_fields(format, nested_prefix, &context_expr)?;
     let result_expr = quote!(#return_ty { #(#field_inits),* });
     Ok(build_deserialize_fn(
@@ -204,7 +204,7 @@ pub(super) fn build_local_struct_with_deserializer(
     let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
     let reader_type = info.reader_type_tokens();
     let context_expr = quote!(String::from(#context_label));
-    let (field_statements, field_inits, _) =
+    let (field_statements, field_inits) =
         deserialize_format_fields(format, struct_name, &context_expr)?;
     let return_ty = quote!(#struct_ident);
     let result_expr = quote!(#struct_ident { #(#field_inits),* });

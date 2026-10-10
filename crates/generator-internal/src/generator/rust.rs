@@ -279,7 +279,7 @@ impl RustGenerator {
                     "{} {} GoalResponse",
                     TARGET_NODE_NAME, TARGET_ACTION_NAME
                 ));
-                let (response_statements, response_inits, _) =
+                let (response_statements, response_inits) =
                     deserialize_format_fields(response_format, "GoalResponseData", &context_expr)?;
 
                 let deserialize_helper = build_deserialize_fn(
@@ -416,7 +416,7 @@ impl RustGenerator {
                     "{} {} {}",
                     TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse"
                 ));
-                let (statements, inits, _) = deserialize_format_fields(
+                let (statements, inits) = deserialize_format_fields(
                     response_format,
                     "ResultResponseData",
                     &context_expr,
@@ -1419,7 +1419,7 @@ impl LanguageGenerator for RustGenerator {
 
                 let response_format = response_artifacts.message_format();
                 let field_context_expr = quote!(context.clone());
-                let (response_statements, response_inits, _) = deserialize_format_fields(
+                let (response_statements, response_inits) = deserialize_format_fields(
                     response_format,
                     &response_struct_name,
                     &field_context_expr,

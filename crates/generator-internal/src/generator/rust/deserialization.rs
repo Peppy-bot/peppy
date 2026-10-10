@@ -114,39 +114,52 @@ pub fn build_deserialize_fn(
 
 /// Deserializes all fields from a `MessageFormat`, iterating directly over format fields.
 ///
-/// Returns `(field_statements, field_inits, value_idents)` where:
+/// Returns `(field_statements, field_inits)` where:
 /// - `field_statements`: variable binding statements for each deserialized field
 /// - `field_inits`: struct field initializers (`field_name: value_ident`)
-/// - `value_idents`: the value identifiers for each field
 pub fn deserialize_format_fields(
     format: &MessageFormat,
     struct_prefix: &str,
     context_expr: &TokenStream,
-) -> Result<(Vec<TokenStream>, Vec<TokenStream>, Vec<Ident>)> {
-    let mut names = NameGenerator::new();
-    let mut field_statements = Vec::new();
-    let mut field_inits = Vec::new();
-    let mut value_idents = Vec::new();
+) -> Result<(Vec<TokenStream>, Vec<TokenStream>)> {
+    generate_struct_field_readers(
+        &quote!(root),
+        &format.0,
+        struct_prefix,
+        context_expr,
+        &mut NameGenerator::new(),
+    )
+}
 
-    for (field_name, schema) in &format.0 {
+/// Generates the readers of every field of a struct read from
+/// `reader_expr`, in field order, and returns their statements with the
+/// `field: value` initializers of the struct. The structs nested in the
+/// fields take `struct_prefix`.
+fn generate_struct_field_readers(
+    reader_expr: &TokenStream,
+    fields: &IndexMap<String, SchemaType>,
+    struct_prefix: &str,
+    context_expr: &TokenStream,
+    names: &mut NameGenerator,
+) -> Result<(Vec<TokenStream>, Vec<TokenStream>)> {
+    let mut field_statements = Vec::new();
+    let mut field_inits = Vec::with_capacity(fields.len());
+
+    for (field_name, schema) in fields {
         let (mut statements, value_ident) = generate_field_reader_statements(
-            &quote!(root),
+            reader_expr,
             field_name,
             schema,
             struct_prefix,
             context_expr,
-            &mut names,
+            names,
         )?;
         field_statements.append(&mut statements);
-        let field_ident = Ident::new(
-            &sanitize_rust_identifier(field_name.as_str()),
-            Span::call_site(),
-        );
+        let field_ident = Ident::new(&sanitize_rust_identifier(field_name), Span::call_site());
         field_inits.push(quote!(#field_ident: #value_ident));
-        value_idents.push(value_ident);
     }
 
-    Ok((field_statements, field_inits, value_idents))
+    Ok((field_statements, field_inits))
 }
 
 /// Generates the statements that read one field as if it were required:
@@ -545,27 +558,17 @@ fn generate_object_reader(
         context_expr,
     )];
 
-    let mut field_statements = Vec::new();
-    let mut field_inits = Vec::new();
     // The struct this reader builds and the prefix its own nested structs
     // continue from are the same name, so it is computed once: the declared
     // type and the constructed type cannot drift apart.
     let nested_prefix = nested_type_name(struct_prefix, field_name);
-
-    for (nested_name, nested_schema) in object {
-        let (mut nested_statements, nested_value_ident) = generate_field_reader_statements(
-            &quote!(#reader_ident),
-            nested_name.as_str(),
-            nested_schema,
-            &nested_prefix,
-            context_expr,
-            names,
-        )?;
-        field_statements.append(&mut nested_statements);
-        let field_ident = Ident::new(&sanitize_rust_identifier(nested_name), Span::call_site());
-        field_inits.push(quote!(#field_ident: #nested_value_ident));
-    }
-
+    let (field_statements, field_inits) = generate_struct_field_readers(
+        &quote!(#reader_ident),
+        object,
+        &nested_prefix,
+        context_expr,
+        names,
+    )?;
     statements.extend(field_statements);
 
     let struct_ident = Ident::new(&nested_prefix, Span::call_site());
@@ -598,22 +601,13 @@ fn generate_object_array_reader(
     let struct_ident = Ident::new(&nested_prefix, Span::call_site());
 
     let element_ident = names.next("element");
-    let mut field_statements = Vec::new();
-    let mut field_inits = Vec::new();
-
-    for (nested_name, nested_schema) in fields {
-        let (mut nested_statements, nested_value_ident) = generate_field_reader_statements(
-            &quote!(#element_ident),
-            nested_name.as_str(),
-            nested_schema,
-            &nested_prefix,
-            context_expr,
-            names,
-        )?;
-        field_statements.append(&mut nested_statements);
-        let field_ident = Ident::new(&sanitize_rust_identifier(nested_name), Span::call_site());
-        field_inits.push(quote!(#field_ident: #nested_value_ident));
-    }
+    let (field_statements, field_inits) = generate_struct_field_readers(
+        &quote!(#element_ident),
+        fields,
+        &nested_prefix,
+        context_expr,
+        names,
+    )?;
 
     let mut statements = vec![build_pointer_field_read(
         &list_ident,
