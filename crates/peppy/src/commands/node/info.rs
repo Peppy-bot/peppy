@@ -450,10 +450,7 @@ mod tests {
                 execution: {execution_json5}
             }}"#
         );
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("peppy.json5");
-        std::fs::write(&path, config_json5).expect("write config");
-        let config = NodeConfigParser::from_path(&path).expect("parse config");
+        let config = NodeConfigParser::from_content(&config_json5).expect("parse config");
         NodeInfo {
             config,
             config_integrity: "0".repeat(64),
