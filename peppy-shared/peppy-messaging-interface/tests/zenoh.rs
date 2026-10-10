@@ -249,78 +249,6 @@ mod zenoh_tests {
         );
     }
 
-    /// Router mode (gossip off → plain client sessions) still delivers, with the
-    /// traffic relayed through the running zenohd router. Positive companion to
-    /// `peers_keep_delivering_after_router_stops`, which proves the peer path;
-    /// here the router is required and kept alive for the whole test.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn router_mode_delivers_through_router() {
-        const TOPIC: &str = "router_mode_topic";
-        let _lock = ZENOH_SERIAL.lock().await;
-
-        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-            .await
-            .expect("Failed to start zenohd process");
-        let host = instance.host.clone();
-        let port = instance.port;
-
-        // gossip=false → plain client sessions with no peer listener, so all
-        // traffic routes through the central router.
-        let mut subscriber = ZenohAdapter::connect_to_with_discovery(
-            ZenohNetProtocol::Tcp,
-            &host,
-            port,
-            Vec::new(),
-            false,
-            SubscriberBufferSizes::default(),
-            None,
-        )
-        .expect("subscriber adapter");
-        subscriber
-            .start_session()
-            .await
-            .expect("subscriber start_session");
-        let subscription = subscriber
-            .subscribe_topic(
-                &receiver(TOPIC),
-                SubscriberQoS::Standard,
-                TopicRetention::LiveOnly,
-            )
-            .await
-            .expect("subscribe");
-
-        let mut publisher = ZenohAdapter::connect_to_with_discovery(
-            ZenohNetProtocol::Tcp,
-            &host,
-            port,
-            Vec::new(),
-            false,
-            SubscriberBufferSizes::default(),
-            None,
-        )
-        .expect("publisher adapter");
-        publisher
-            .start_session()
-            .await
-            .expect("publisher start_session");
-
-        wait_for_subscriber_discovery().await;
-        publisher
-            .publish_topic(
-                &sender(TOPIC),
-                Payload::from_bytes(Bytes::from_static(b"router-mode")),
-                PublisherQoS::Standard,
-                true,
-            )
-            .await
-            .expect("publish");
-        let msg = next_message(&subscription, "router-mode").await;
-        assert_eq!(msg.payload(), &Bytes::from_static(b"router-mode"));
-
-        // Keep the router alive until the end: client-mode delivery depends on it.
-        drop(instance);
-    }
-
     /// Source timestamps must be present on delivered samples in BOTH peer and
     /// router mode. The benchmark's `delivery` measurement reads
     /// `source_timestamp_nanos()` off each sample, so a session that fails to
@@ -408,6 +336,9 @@ mod zenoh_tests {
 
     /// Router mode (gossip off → client sessions relayed through zenohd) stamps
     /// outgoing samples too. Companion to the peer-mode guard, pinning parity.
+    /// It is also the positive companion of
+    /// `peers_keep_delivering_after_router_stops`: with gossip off, delivery
+    /// relays through the router, which stays alive for the whole test.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn router_mode_samples_carry_source_timestamp() {
         assert_topic_carries_source_timestamp(false).await;
