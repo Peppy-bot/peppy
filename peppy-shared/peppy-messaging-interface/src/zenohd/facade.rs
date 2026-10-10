@@ -124,16 +124,11 @@ fn packaged_or_built_zenohd(
 /// is not peppy itself (a node's test binary, an installed peppylib wheel).
 /// Release-authorized for that reason.
 fn zenohd_beside_peppy_on_path(path_var: Option<&std::ffi::OsStr>) -> Option<String> {
-    let path_var = path_var?;
-    for dir in env::split_paths(path_var) {
-        if dir.join("peppy").is_file() {
-            let candidate = dir.join("zenohd");
-            if candidate.is_file() {
-                return Some(candidate.to_string_lossy().into_owned());
-            }
-        }
-    }
-    None
+    env::split_paths(path_var?)
+        .filter(|dir| dir.join("peppy").is_file())
+        .map(|dir| dir.join("zenohd"))
+        .find(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
 /// Full resolution policy, ordered by provenance strength. Pure in its inputs
@@ -172,13 +167,12 @@ fn resolve_zenohd_binary(
     // `debug-assertions` setting rather than the profile name, so a release
     // profile that turns debug assertions back on opts back into it.
     #[cfg(debug_assertions)]
-    if let Some(path_var) = path_var {
-        for dir in env::split_paths(path_var) {
-            let candidate = dir.join("zenohd");
-            if candidate.is_file() {
-                return Some(candidate.to_string_lossy().into_owned());
-            }
-        }
+    if let Some(path_var) = path_var
+        && let Some(candidate) = env::split_paths(path_var)
+            .map(|dir| dir.join("zenohd"))
+            .find(|candidate| candidate.is_file())
+    {
+        return Some(candidate.to_string_lossy().into_owned());
     }
 
     None
@@ -810,6 +804,29 @@ mod tests {
                 Some(path_var.as_os_str()),
             ),
             Some(package_dir.join("zenohd").to_string_lossy().into_owned()),
+        );
+    }
+
+    /// A bare `zenohd` on PATH, with no `peppy` beside it, has no provenance:
+    /// only a debug build falls back to it, and then to the first one on PATH.
+    #[test]
+    fn a_bare_zenohd_on_path_is_honored_only_in_debug_builds() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let empty_dir = dir.path().join("empty");
+        let first_dir = dir.path().join("first");
+        let second_dir = dir.path().join("second");
+        for path_dir in [&empty_dir, &first_dir, &second_dir] {
+            std::fs::create_dir(path_dir).expect("create dir");
+        }
+        std::fs::write(first_dir.join("zenohd"), b"first").expect("write");
+        std::fs::write(second_dir.join("zenohd"), b"second").expect("write");
+        let path_var = env::join_paths([&empty_dir, &first_dir, &second_dir]).expect("join paths");
+
+        let expected =
+            cfg!(debug_assertions).then(|| first_dir.join("zenohd").to_string_lossy().into_owned());
+        assert_eq!(
+            resolve_zenohd_binary(None, None, None, Some(path_var.as_os_str())),
+            expected,
         );
     }
 
