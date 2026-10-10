@@ -214,23 +214,13 @@ fn cost(record: &LogRecord) -> usize {
 /// keeps an allocation the size of the body, so a record takes a bounded
 /// number of bytes whatever the length of its line.
 fn body_of(line: &str) -> (String, bool) {
-    let read = prefix(line, MAX_LINE_BYTES);
+    let read = &line[..line.floor_char_boundary(MAX_LINE_BYTES)];
     let mut body = without_escapes(read);
-    let kept = prefix(&body, MAX_BODY_BYTES).len();
+    let kept = body.floor_char_boundary(MAX_BODY_BYTES);
     let truncated = read.len() < line.len() || kept < body.len();
     body.truncate(kept);
     body.shrink_to_fit();
     (body, truncated)
-}
-
-/// The longest start of `text` that holds at most `max_bytes` and ends on a
-/// character boundary.
-fn prefix(text: &str, max_bytes: usize) -> &str {
-    let end = (0..=max_bytes.min(text.len()))
-        .rev()
-        .find(|index| text.is_char_boundary(*index))
-        .expect("the start of a string is a character boundary");
-    &text[..end]
 }
 
 /// A number of bytes that reservations share.
