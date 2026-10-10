@@ -172,27 +172,25 @@ impl ServiceEndpoint {
         &mut self,
     ) -> Result<Option<(ServiceRequestContext, ServiceResponder)>> {
         loop {
-            match self.next_request().await {
-                Ok((context, token)) => {
-                    // ACK reply before invoking the user handler. The caller's
-                    // poll loop uses this to distinguish ServiceUnreachable
-                    // (no ACK at all) from ServiceTimeout (ACK but no handler
-                    // response within the timeout). The ACK kind lives on
-                    // the reply attachment — the user payload is never
-                    // touched.
-                    if let Err(err) = token.respond_ack().await {
-                        warn!(
-                            %err,
-                            request_id = %context.request_id(),
-                            "failed to send service ACK; dropping request and continuing"
-                        );
-                        continue;
-                    }
-                    return Ok(Some((context, ServiceResponder { token })));
-                }
+            let (context, token) = match self.next_request().await {
+                Ok(request) => request,
                 Err(Error::ServiceRequestStreamClosed) => return Ok(None),
                 Err(err) => return Err(err),
+            };
+            // ACK reply before invoking the user handler. The caller's poll
+            // loop uses this to distinguish ServiceUnreachable (no ACK at
+            // all) from ServiceTimeout (ACK but no handler response within
+            // the timeout). The ACK kind lives on the reply attachment, so
+            // the user payload is never touched.
+            if let Err(err) = token.respond_ack().await {
+                warn!(
+                    %err,
+                    request_id = %context.request_id(),
+                    "failed to send service ACK; dropping request and continuing"
+                );
+                continue;
             }
+            return Ok(Some((context, ServiceResponder { token })));
         }
     }
 
@@ -266,45 +264,39 @@ impl ServiceEndpoint {
 
     async fn next_request(&mut self) -> Result<(ServiceRequestContext, ResponseToken)> {
         loop {
-            match self.queryable.rx.recv_async().await {
-                Ok(incoming) => {
-                    match incoming.kind {
-                        ServiceQueryKind::Probe => {
-                            // Probes are answered by the transport adapter's
-                            // query dispatch (see pmi's zenoh/mock adapters)
-                            // and must never reach this channel: answering
-                            // them here would starve discovery and liveness
-                            // whenever user code holds this recv loop.
-                            // Defensive drop so a misbehaving adapter can't
-                            // wedge the request loop in release builds.
-                            debug_assert!(
-                                false,
-                                "ServiceQueryKind::Probe leaked past the adapter dispatch"
-                            );
-                            warn!(
-                                link_id = %incoming.link_id,
-                                "dropping probe that leaked past the adapter dispatch"
-                            );
-                            continue;
-                        }
-                        ServiceQueryKind::UserRequest => {
-                            let topic_message = TopicMessage::from_parts(
-                                incoming.caller_core,
-                                incoming.caller_inst,
-                                incoming.payload,
-                            );
-
-                            let request_id = generate_short_id("request");
-                            let context = ServiceRequestContext::new(
-                                topic_message,
-                                request_id,
-                                incoming.link_id,
-                            );
-                            return Ok((context, incoming.token));
-                        }
-                    }
+            let Ok(incoming) = self.queryable.rx.recv_async().await else {
+                return Err(Error::ServiceRequestStreamClosed);
+            };
+            match incoming.kind {
+                ServiceQueryKind::Probe => {
+                    // Probes are answered by the transport adapter's query
+                    // dispatch (see pmi's zenoh/mock adapters) and must never
+                    // reach this channel: answering them here would starve
+                    // discovery and liveness whenever user code holds this
+                    // recv loop. Defensive drop so a misbehaving adapter
+                    // can't wedge the request loop in release builds.
+                    debug_assert!(
+                        false,
+                        "ServiceQueryKind::Probe leaked past the adapter dispatch"
+                    );
+                    warn!(
+                        link_id = %incoming.link_id,
+                        "dropping probe that leaked past the adapter dispatch"
+                    );
+                    continue;
                 }
-                Err(_) => return Err(Error::ServiceRequestStreamClosed),
+                ServiceQueryKind::UserRequest => {
+                    let topic_message = TopicMessage::from_parts(
+                        incoming.caller_core,
+                        incoming.caller_inst,
+                        incoming.payload,
+                    );
+
+                    let request_id = generate_short_id("request");
+                    let context =
+                        ServiceRequestContext::new(topic_message, request_id, incoming.link_id);
+                    return Ok((context, incoming.token));
+                }
             }
         }
     }
