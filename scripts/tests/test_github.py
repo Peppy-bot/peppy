@@ -344,6 +344,44 @@ def test_upload_asset_non_retryable_error_no_retry(
     assert route.call_count == 1
 
 
+# --- Upload: the failure names the status and the body, or the transport error ---
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        (
+            httpx.Response(404, text="Not Found"),
+            "failed to upload asset 'peppy-test.tgz': HTTP 404\nNot Found",
+        ),
+        (
+            httpx.Response(422, text=""),
+            "failed to upload asset 'peppy-test.tgz': HTTP 422\n(empty)",
+        ),
+        (
+            httpx.LocalProtocolError("illegal header value"),
+            "failed to upload asset 'peppy-test.tgz': illegal header value",
+        ),
+    ],
+    ids=["status-with-body", "status-without-body", "transport"],
+)
+def test_upload_asset_failure_message(
+    answer: httpx.Response | httpx.RequestError,
+    expected: str,
+    mock_api: respx.MockRouter,
+    github_client: httpx.Client,
+    asset_file: Path,
+) -> None:
+    mock_api.post(f"{UPLOAD_URL}?name=peppy-test.tgz").mock(side_effect=[answer])
+
+    with pytest.raises(ReleaseError) as err:
+        github_upload_asset(
+            github_client, 1, "peppy-test.tgz", asset_file, SLUG, max_attempts=1
+        )
+
+    assert str(err.value) == expected
+
+
 # --- Upload: a server-side status retries then succeeds ---
 
 
@@ -595,6 +633,28 @@ def test_github_api_still_raises_on_404_by_default(
     )
     with pytest.raises(ReleaseError, match="Status: 404"):
         github_api(github_client, "GET", f"{API_BASE}/missing")
+
+
+@pytest.mark.parametrize(
+    ("answer", "body_line"),
+    [
+        (httpx.Response(500, text=""), "Body: (empty)"),
+        (httpx.Response(200, text="<html>not json</html>"), "Body: <html>not json</html>"),
+    ],
+    ids=["status-without-body", "not-json"],
+)
+def test_github_api_failure_ends_with_a_body_preview(
+    answer: httpx.Response,
+    body_line: str,
+    mock_api: respx.MockRouter,
+    github_client: httpx.Client,
+) -> None:
+    mock_api.get(f"{API_BASE}/releases").mock(side_effect=[answer])
+
+    with pytest.raises(ReleaseError) as err:
+        github_api(github_client, "GET", f"{API_BASE}/releases")
+
+    assert str(err.value).endswith(f"\n{body_line}")
 
 
 # --- get_latest_release ---

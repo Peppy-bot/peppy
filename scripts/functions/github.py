@@ -85,6 +85,11 @@ def _format_response_headers(headers: httpx.Headers) -> str:
     return "\n".join(lines)
 
 
+def _body_preview(response: httpx.Response) -> str:
+    """The start of a response body, for an error message."""
+    return response.text[:2000] if response.text else "(empty)"
+
+
 def build_github_client(token: str) -> httpx.Client:
     """Create a reusable httpx.Client with GitHub auth and API version headers."""
     return httpx.Client(
@@ -125,13 +130,12 @@ def github_api(
     except httpx.HTTPStatusError as e:
         if none_on_404 and e.response.status_code == 404:
             return None
-        body_preview = e.response.text[:2000] if e.response.text else "(empty)"
         resp_headers = _format_response_headers(e.response.headers)
         raise ReleaseError(
             f"GitHub API request failed: {method} {url}\n"
             f"Status: {e.response.status_code}\n"
             f"Headers:\n{resp_headers}\n"
-            f"Body: {body_preview}"
+            f"Body: {_body_preview(e.response)}"
         ) from e
     except httpx.RequestError as e:
         raise ReleaseError(f"GitHub API request failed: {method} {url}: {e}") from e
@@ -149,12 +153,11 @@ def github_api(
         return response.json()
     except ValueError as e:
         resp_headers = _format_response_headers(response.headers)
-        body_preview = response.text[:2000]
         raise ReleaseError(
             f"GitHub API returned a non-JSON response ({response.status_code}) "
             f"for {method} {url}\n"
             f"Headers:\n{resp_headers}\n"
-            f"Body: {body_preview}"
+            f"Body: {_body_preview(response)}"
         ) from e
 
 
@@ -247,6 +250,18 @@ def _printing_progress(progress: UploadProgress) -> Iterator[None]:
         reporter.join()
 
 
+def _upload_error(
+    asset_name: str, error: httpx.HTTPStatusError | httpx.RequestError
+) -> ReleaseError:
+    """The error that ends the upload of *asset_name* after *error*."""
+    if isinstance(error, httpx.HTTPStatusError):
+        return ReleaseError(
+            f"failed to upload asset '{asset_name}': "
+            f"HTTP {error.response.status_code}\n{_body_preview(error.response)}"
+        )
+    return ReleaseError(f"failed to upload asset '{asset_name}': {error}")
+
+
 def github_upload_asset(
     client: httpx.Client,
     release_id: int,
@@ -304,15 +319,7 @@ def github_upload_asset(
             return response.json()
         except (httpx.HTTPStatusError, httpx.RequestError) as e:
             if not _is_retryable(e) or attempt == max_attempts - 1:
-                if isinstance(e, httpx.HTTPStatusError):
-                    body_preview = e.response.text[:2000] if e.response.text else "(empty)"
-                    raise ReleaseError(
-                        f"failed to upload asset '{asset_name}': "
-                        f"HTTP {e.response.status_code}\n{body_preview}"
-                    ) from e
-                raise ReleaseError(
-                    f"failed to upload asset '{asset_name}': {e}"
-                ) from e
+                raise _upload_error(asset_name, e) from e
             last_exc = e
 
     # Reached only when max_attempts is below 1, which runs no attempt.
