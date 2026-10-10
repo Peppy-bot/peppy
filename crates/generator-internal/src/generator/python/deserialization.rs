@@ -14,7 +14,8 @@ fn capnp_read_expr(reader_var: &str, capnp_name: &str) -> String {
     }
 }
 
-/// Generates a single field reader statement, dispatching on the schema type.
+/// Generates the reader statements of one field, wrapping the read in a
+/// presence check when the field is optional.
 ///
 /// `reader_var` is the pycapnp reader variable (e.g., `"capnp_msg"` or `"reader_0"`).
 /// Returns the variable name holding the deserialized value.
@@ -26,17 +27,50 @@ pub fn generate_field_reader_statements(
     struct_prefix: &str,
     counter: &mut u32,
 ) -> String {
+    if !schema.is_optional() {
+        return read_field_value(
+            builder,
+            reader_var,
+            field_name,
+            schema,
+            struct_prefix,
+            counter,
+        );
+    }
+
     // An absent optional field is not read at all. Reading it first and
     // overriding afterwards decodes what Cap'n Proto returns for a field that
     // was never set, and a fixed-length array inside such a field is an empty
     // list, which fails its length check before the presence check is reached.
-    let optional = schema.is_optional();
-    if optional {
-        let capnp_name = sanitize_capnp_field_name(field_name);
-        builder.line(&format!("if {reader_var}._has(\"{capnp_name}\"):"));
-        builder.indent();
-    }
-    let var = match schema {
+    let capnp_name = sanitize_capnp_field_name(field_name);
+    let var = builder.block(
+        &format!("if {reader_var}._has(\"{capnp_name}\"):"),
+        |builder| {
+            read_field_value(
+                builder,
+                reader_var,
+                field_name,
+                schema,
+                struct_prefix,
+                counter,
+            )
+        },
+    );
+    builder.block("else:", |builder| builder.line(&format!("{var} = None")));
+    var
+}
+
+/// Reads one present field, dispatching on the schema type. Returns the
+/// variable name holding the deserialized value.
+fn read_field_value(
+    builder: &mut PythonCodeBuilder,
+    reader_var: &str,
+    field_name: &str,
+    schema: &SchemaType,
+    struct_prefix: &str,
+    counter: &mut u32,
+) -> String {
+    match schema {
         SchemaType::Type(TypeToken::Time) => {
             generate_time_reader(builder, reader_var, field_name, counter)
         }
@@ -82,17 +116,7 @@ pub fn generate_field_reader_statements(
             struct_prefix,
             counter,
         ),
-    };
-
-    if optional {
-        builder.dedent();
-        builder.line("else:");
-        builder.indent();
-        builder.line(&format!("{var} = None"));
-        builder.dedent();
     }
-
-    var
 }
 
 /// Generates a complete `deserialize_payload` helper function that reads a Cap'n Proto
@@ -113,28 +137,27 @@ pub fn build_deserialize_fn(
     fn_name: &str,
 ) {
     let loader_fn_name = capnp_loader_fn_name(schema_info);
-    builder.blank_line();
-    builder.line(&format!(
-        "def {fn_name}(payload: bytes) -> {struct_prefix}:"
-    ));
-    builder.indent();
-    builder.line(&format!(
+    let with_header = format!(
         "with {loader_fn_name}().{}.from_bytes(payload) as capnp_msg:",
         schema_info.struct_name
-    ));
-    builder.indent();
+    );
+    builder.blank_line();
+    builder.block(
+        &format!("def {fn_name}(payload: bytes) -> {struct_prefix}:"),
+        |builder| {
+            builder.block(&with_header, |builder| {
+                let field_bindings =
+                    deserialize_format_fields(builder, "capnp_msg", format, struct_prefix);
 
-    let field_bindings = deserialize_format_fields(builder, "capnp_msg", format, struct_prefix);
-
-    let kwargs: Vec<String> = field_bindings
-        .iter()
-        .map(|(name, var)| format!("{name}={var}"))
-        .collect();
-    let kwargs_str = kwargs.join(", ");
-    builder.line(&format!("return {struct_prefix}({kwargs_str})"));
-
-    builder.dedent();
-    builder.dedent();
+                let kwargs: Vec<String> = field_bindings
+                    .iter()
+                    .map(|(name, var)| format!("{name}={var}"))
+                    .collect();
+                let kwargs_str = kwargs.join(", ");
+                builder.line(&format!("return {struct_prefix}({kwargs_str})"));
+            });
+        },
+    );
 }
 
 /// Deserializes all fields from a `MessageFormat`, iterating directly over format fields.
@@ -302,32 +325,29 @@ fn generate_object_array_reader(
     let elem_idx = *counter;
     *counter += 1;
     let elem_var = format!("elem_{elem_idx}");
-    builder.line(&format!("for {elem_var} in {list_var}:"));
-    builder.indent();
+    builder.block(&format!("for {elem_var} in {list_var}:"), |builder| {
+        let mut nested_bindings = Vec::new();
+        for (nested_name, nested_schema) in fields {
+            let nested_var = generate_field_reader_statements(
+                builder,
+                &elem_var,
+                nested_name,
+                nested_schema,
+                &nested_prefix,
+                counter,
+            );
+            nested_bindings.push((sanitize_python_identifier(nested_name), nested_var));
+        }
 
-    let mut nested_bindings = Vec::new();
-    for (nested_name, nested_schema) in fields {
-        let nested_var = generate_field_reader_statements(
-            builder,
-            &elem_var,
-            nested_name,
-            nested_schema,
-            &nested_prefix,
-            counter,
-        );
-        nested_bindings.push((sanitize_python_identifier(nested_name), nested_var));
-    }
-
-    let kwargs: Vec<String> = nested_bindings
-        .iter()
-        .map(|(name, var)| format!("{name}={var}"))
-        .collect();
-    let kwargs_str = kwargs.join(", ");
-    builder.line(&format!(
-        "{result_var}.append({nested_prefix}({kwargs_str}))"
-    ));
-
-    builder.dedent();
+        let kwargs: Vec<String> = nested_bindings
+            .iter()
+            .map(|(name, var)| format!("{name}={var}"))
+            .collect();
+        let kwargs_str = kwargs.join(", ");
+        builder.line(&format!(
+            "{result_var}.append({nested_prefix}({kwargs_str}))"
+        ));
+    });
 
     result_var
 }

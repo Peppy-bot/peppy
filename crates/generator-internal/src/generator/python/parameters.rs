@@ -128,50 +128,40 @@ fn emit_parameter_dataclass(
 ) {
     builder.add_import("from dataclasses import dataclass");
     builder.line("@dataclass");
-    builder.line(&format!("class {class_name}:"));
-    builder.indent();
+    builder.block(&format!("class {class_name}:"), |builder| {
+        let from_dict_header = format!("def from_dict(cls, data: dict) -> \"{class_name}\":");
+        if fields.is_empty() {
+            // from_dict for an empty dataclass just returns cls()
+            builder.line("@classmethod");
+            builder.block(&from_dict_header, |builder| builder.line("return cls()"));
+            return;
+        }
 
-    if fields.is_empty() {
-        // from_dict for an empty dataclass just returns cls()
-        builder.line("@classmethod");
-        builder.line(&format!(
-            "def from_dict(cls, data: dict) -> \"{class_name}\":"
-        ));
-        builder.indent();
-        builder.line("return cls()");
-        builder.dedent();
-    } else {
         for field in fields {
             builder.line(&format!("{}: {}", field.field_name, field.type_name));
         }
 
         builder.blank_line();
         builder.line("@classmethod");
-        builder.line(&format!(
-            "def from_dict(cls, data: dict) -> \"{class_name}\":"
-        ));
-        builder.indent();
-        builder.line("return cls(");
-        builder.indent();
-        for field in fields {
-            if field.is_nested {
-                builder.line(&format!(
-                    "{}={}.from_dict(data[\"{}\"]),",
-                    field.field_name, field.type_name, field.original_key
-                ));
-            } else {
-                builder.line(&format!(
-                    "{}=data[\"{}\"],",
-                    field.field_name, field.original_key
-                ));
-            }
-        }
-        builder.dedent();
-        builder.line(")");
-        builder.dedent();
-    }
-
-    builder.dedent();
+        builder.block(&from_dict_header, |builder| {
+            builder.block("return cls(", |builder| {
+                for field in fields {
+                    if field.is_nested {
+                        builder.line(&format!(
+                            "{}={}.from_dict(data[\"{}\"]),",
+                            field.field_name, field.type_name, field.original_key
+                        ));
+                    } else {
+                        builder.line(&format!(
+                            "{}=data[\"{}\"],",
+                            field.field_name, field.original_key
+                        ));
+                    }
+                }
+            });
+            builder.line(")");
+        });
+    });
     builder.blank_line();
 }
 

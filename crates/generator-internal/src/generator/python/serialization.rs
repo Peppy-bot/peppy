@@ -52,7 +52,8 @@ fn capnp_assignment_stmt(builder_var: &str, capnp_name: &str, value_expr: &str) 
     }
 }
 
-/// Emits a single pycapnp field assignment, dispatching on the schema type.
+/// Emits a single pycapnp field assignment. An optional field is only
+/// written when its value is not `None`.
 fn emit_field_assignment(
     builder: &mut PythonCodeBuilder,
     builder_var: &str,
@@ -61,14 +62,39 @@ fn emit_field_assignment(
     value_expr: &str,
     counter: &mut u32,
 ) {
-    let capnp_name = sanitize_capnp_field_name(field_name);
-    let optional = schema.is_optional();
-
-    if optional {
-        builder.line(&format!("if {value_expr} is not None:"));
-        builder.indent();
+    if !schema.is_optional() {
+        emit_field_value_assignment(
+            builder,
+            builder_var,
+            field_name,
+            schema,
+            value_expr,
+            counter,
+        );
+        return;
     }
+    builder.block(&format!("if {value_expr} is not None:"), |builder| {
+        emit_field_value_assignment(
+            builder,
+            builder_var,
+            field_name,
+            schema,
+            value_expr,
+            counter,
+        );
+    });
+}
 
+/// Emits the assignment of one present value, dispatching on the schema type.
+fn emit_field_value_assignment(
+    builder: &mut PythonCodeBuilder,
+    builder_var: &str,
+    field_name: &str,
+    schema: &SchemaType,
+    value_expr: &str,
+    counter: &mut u32,
+) {
+    let capnp_name = sanitize_capnp_field_name(field_name);
     match schema {
         SchemaType::Type(TypeToken::Time) => {
             emit_time_assignment(builder, builder_var, &capnp_name, value_expr, counter);
@@ -128,10 +154,6 @@ fn emit_field_assignment(
                 );
             }
         }
-    }
-
-    if optional {
-        builder.dedent();
     }
 }
 

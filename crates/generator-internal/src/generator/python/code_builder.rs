@@ -73,12 +73,12 @@ impl PythonCodeBuilder {
     }
 
     /// Increases indentation by one level.
-    pub fn indent(&mut self) {
+    fn indent(&mut self) {
         self.indent_level += 1;
     }
 
     /// Decreases indentation by one level.
-    pub fn dedent(&mut self) {
+    fn dedent(&mut self) {
         assert!(self.indent_level > 0, "cannot dedent below level 0");
         self.indent_level -= 1;
     }
@@ -210,17 +210,16 @@ impl PythonCodeBuilder {
     }
 
     /// Writes a plain class (no `@dataclass` decorator).
-    pub fn class_def(&mut self, class_name: &str, fields: &[(&str, &str)]) {
-        self.line(&format!("class {class_name}:"));
-        self.indent();
-        if fields.is_empty() {
-            self.line("pass");
-        } else {
-            for (name, ty) in fields {
-                self.line(&format!("{name}: {ty}"));
+    fn class_def(&mut self, class_name: &str, fields: &[(&str, &str)]) {
+        self.block(&format!("class {class_name}:"), |builder| {
+            if fields.is_empty() {
+                builder.line("pass");
+            } else {
+                for (name, ty) in fields {
+                    builder.line(&format!("{name}: {ty}"));
+                }
             }
-        }
-        self.dedent();
+        });
         self.blank_line();
     }
 
