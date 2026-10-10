@@ -889,6 +889,13 @@ fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
     )
 }
 
+/// Writes `message` to the add log and returns the failure result that
+/// names that log, so the reason is in the file the client is pointed at.
+pub(crate) fn record_add_failure(announcer: &Announcer, message: String) -> NodeAddResult {
+    announcer.log().error(&message);
+    NodeAddResult::failure(announcer.log().path(), message)
+}
+
 /// The one place a node-add goal picks its pipeline: an exposures source
 /// registers the built-in MCP server, a pinned source (or a `name:tag`
 /// reference this daemon resolves into one) is a closure of nodes and takes
@@ -929,18 +936,16 @@ pub(crate) async fn run_node_add(
     action_context: NodeAddActionContext,
     announcer: Announcer,
 ) -> NodeAddResult {
+    // The async block takes `announcer`, so the panic arm keeps its own
+    // handle on the same log.
     let log = announcer.log().clone();
-    let log_for_panic = log.clone();
 
     match AssertUnwindSafe(async {
         // Resolve source (git clone, HTTP download, or local config check).
         let mut resolved =
             match resolve_node_add_source(&goal, &action_context.peppy_dirs, &announcer).await {
                 Ok(r) => r,
-                Err(error_msg) => {
-                    log.error(&error_msg);
-                    return NodeAddResult::failure(log.path(), error_msg);
-                }
+                Err(error_msg) => return record_add_failure(&announcer, error_msg),
             };
 
         // RAII guard: ensures resolved.cleanup_dir is removed on any early return
@@ -989,14 +994,10 @@ pub(crate) async fn run_node_add(
             match sync_result {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    let msg = format!("Auto-sync failed: {}", e);
-                    log.error(&msg);
-                    return NodeAddResult::failure(log.path(), msg);
+                    return record_add_failure(&announcer, format!("Auto-sync failed: {}", e));
                 }
                 Err(e) => {
-                    let msg = format!("Auto-sync task failed: {}", e);
-                    log.error(&msg);
-                    return NodeAddResult::failure(log.path(), msg);
+                    return record_add_failure(&announcer, format!("Auto-sync task failed: {}", e));
                 }
             }
         }
@@ -1010,8 +1011,7 @@ pub(crate) async fn run_node_add(
             && !is_supported_fs_archive(original_path)
             && let Err(error_msg) = verify_git_hash(&root_source_path, &goal.git_hash)
         {
-            log.error(&error_msg);
-            return NodeAddResult::failure(log.path(), error_msg);
+            return record_add_failure(&announcer, error_msg);
         }
 
         let cleanup_dir = resolved_cleanup_guard.take();
@@ -1024,7 +1024,7 @@ pub(crate) async fn run_node_add(
 
         // The resolved config names the node: the log takes its canonical
         // {name}_{tag}_{timestamp}.log name.
-        log.rename_for_node(
+        announcer.log().rename_for_node(
             node_config.manifest.name.as_str(),
             &node_config.manifest.tag,
         );
@@ -1053,8 +1053,8 @@ pub(crate) async fn run_node_add(
                 super::panic_message(&*panic_payload)
             );
             tracing::error!("{}", msg);
-            log_for_panic.error(&msg);
-            NodeAddResult::failure(log_for_panic.path(), msg)
+            log.error(&msg);
+            NodeAddResult::failure(log.path(), msg)
         }
     }
 }
@@ -1346,10 +1346,7 @@ async fn process_node_add(
     .await
     {
         Ok(result) => result,
-        Err(msg) => {
-            ctx.announcer.log().error(&msg);
-            NodeAddResult::failure(ctx.announcer.log().path(), msg)
-        }
+        Err(msg) => record_add_failure(&ctx.announcer, msg),
     }
 }
 

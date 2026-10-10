@@ -50,7 +50,7 @@ pub use stop::{
 pub(crate) use stop::{stop_named_instances, teardown_timeout};
 pub use sync::listen_for_node_sync;
 
-pub(crate) use add::{NodeAddActionContext, create_add_log, dispatch_node_add};
+pub(crate) use add::{NodeAddActionContext, create_add_log, dispatch_node_add, record_add_failure};
 pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
 pub use feedback::Report;
 pub(crate) use feedback::{

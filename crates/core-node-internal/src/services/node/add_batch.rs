@@ -22,7 +22,7 @@
 
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::FeedbackLine;
-use super::add::{NodeAddActionContext, run_node_add};
+use super::add::{NodeAddActionContext, record_add_failure, run_node_add};
 use super::pins::{self, MaterializedPin};
 use crate::services::repo::cache as repo_cache;
 use config::node::NodeConfig;
@@ -56,7 +56,7 @@ pub(crate) async fn run_pinned_add(
     let entries = match repo_cache::load_node_cache(&peppy_dirs) {
         Ok(loaded) => Arc::new(loaded),
         Err(e) => {
-            return fail(&announcer, format!("Failed to read nodes cache: {}", e));
+            return record_add_failure(&announcer, format!("Failed to read nodes cache: {}", e));
         }
     };
 
@@ -66,21 +66,21 @@ pub(crate) async fn run_pinned_add(
             {
                 Ok(pin) => pin,
                 Err(e) => {
-                    return fail(
+                    return record_add_failure(
                         &announcer,
                         format!("the goal's root pin is not decodable: {e}"),
                     );
                 }
             };
             if root.kind != PinKind::Node {
-                return fail(
+                return record_add_failure(
                     &announcer,
                     format!("the goal's root pin is {}, not a node", root.label()),
                 );
             }
             let closure = match pins::decode_pins(&goal.pins_json5) {
                 Ok(closure) => closure,
-                Err(e) => return fail(&announcer, e),
+                Err(e) => return record_add_failure(&announcer, e),
             };
             // Re-encoded from the decoded pins rather than sliced out of the
             // raw input by position: the split is stated over the values that
@@ -92,7 +92,7 @@ pub(crate) async fn run_pinned_add(
                 .partition(|pin| pin.kind == PinKind::Node);
             let doc_pins_json5 = match pins::encode_pins(&doc_pins) {
                 Ok(encoded) => encoded,
-                Err(e) => return fail(&announcer, e),
+                Err(e) => return record_add_failure(&announcer, e),
             };
 
             announcer.line(format!(
@@ -111,14 +111,14 @@ pub(crate) async fn run_pinned_add(
             .await
             {
                 Ok(nodes) => nodes,
-                Err(e) => return fail(&announcer, e),
+                Err(e) => return record_add_failure(&announcer, e),
             };
             (nodes, doc_pins_json5)
         }
         NodeSource::ResolveRef { name, tag } => {
             announcer.line(format!("Resolving {}:{} from repo cache", name, tag));
             if entries.is_empty() {
-                return fail(
+                return record_add_failure(
                     &announcer,
                     format!(
                         "nodes.json5 not found or empty at {}; run `peppy repo refresh` to \
@@ -137,7 +137,7 @@ pub(crate) async fn run_pinned_add(
             .await
             {
                 Ok(closure) => closure,
-                Err(e) => return fail(&announcer, e),
+                Err(e) => return record_add_failure(&announcer, e),
             };
             let minted = pins::doc_pins_for_manifest_sets_async(
                 &peppy_dirs,
@@ -148,16 +148,16 @@ pub(crate) async fn run_pinned_add(
             .and_then(|mut sets| sets.remove(0));
             let doc_pins = match minted {
                 Ok(doc_pins) => doc_pins,
-                Err(e) => return fail(&announcer, e),
+                Err(e) => return record_add_failure(&announcer, e),
             };
             let doc_pins_json5 = match pins::encode_pins(&doc_pins) {
                 Ok(encoded) => encoded,
-                Err(e) => return fail(&announcer, e),
+                Err(e) => return record_add_failure(&announcer, e),
             };
             (closure.nodes, doc_pins_json5)
         }
         _ => {
-            return fail(
+            return record_add_failure(
                 &announcer,
                 "internal error: run_pinned_add called with a non-pinned source".to_owned(),
             );
@@ -189,7 +189,7 @@ async fn execute_pinned_batch(
                 root.pin.tag.as_str().to_owned(),
             ),
             None => {
-                return fail(
+                return record_add_failure(
                     &announcer,
                     "internal error: a pinned batch arrived without its root".to_owned(),
                 );
@@ -201,7 +201,7 @@ async fn execute_pinned_batch(
         action_context.node_stack.find(name, tag).is_some()
     });
     if !gaps.is_empty() {
-        return fail(&announcer, daemon_config::format_bulleted(&gaps));
+        return record_add_failure(&announcer, daemon_config::format_bulleted(&gaps));
     }
 
     let tree_input: Vec<(PathBuf, NodeConfig)> = nodes
@@ -211,7 +211,7 @@ async fn execute_pinned_batch(
     let tree = match VirtualDeptree::build(tree_input) {
         Ok(t) => t,
         Err(e) => {
-            return fail(&announcer, format!("Dependency resolution failed: {}", e));
+            return record_add_failure(&announcer, format!("Dependency resolution failed: {}", e));
         }
     };
 
@@ -244,7 +244,7 @@ async fn execute_pinned_batch(
     for info in tree.topological_order() {
         let key = info.key();
         let Some(node) = node_lookup.get(&key) else {
-            return fail(
+            return record_add_failure(
                 &announcer,
                 format!(
                     "internal error: topological order produced a node not in the batch ({}:{})",
@@ -310,7 +310,7 @@ async fn execute_pinned_batch(
         {
             Ok(r) => r,
             Err(msg) => {
-                return fail(
+                return record_add_failure(
                     &announcer,
                     format!("Failed to add {}:{}: {}", node.pin.name, node.pin.tag, msg),
                 );
@@ -321,7 +321,7 @@ async fn execute_pinned_batch(
             let msg = sub_result
                 .error_message
                 .unwrap_or_else(|| "unknown node-add failure".to_owned());
-            return fail(
+            return record_add_failure(
                 &announcer,
                 format!("Failed to add {}:{}: {}", node.pin.name, node.pin.tag, msg),
             );
@@ -563,11 +563,6 @@ impl Drop for RollbackGuard {
             }
         }
     }
-}
-
-fn fail(announcer: &Announcer, msg: String) -> NodeAddResult {
-    announcer.log().error(&msg);
-    NodeAddResult::failure(announcer.log().path(), msg)
 }
 
 #[cfg(test)]
