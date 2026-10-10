@@ -75,10 +75,7 @@ impl From<&config::runtime::PairedPeer> for PeerMember {
     fn from(seed: &config::runtime::PairedPeer) -> Self {
         Self {
             info: PeerInfo {
-                producer: ProducerRef::new(
-                    seed.peer.core_node.clone(),
-                    seed.peer.instance_id.clone(),
-                ),
+                producer: seed.peer.clone(),
                 peer_link_id: seed.peer_link_id.clone(),
             },
             copy: seed.copy.as_ref().map(|copy| copy.as_str().to_string()),
