@@ -4,7 +4,7 @@
 //! number of terminal lines, similar to how `docker buildx` displays build progress.
 
 use crossterm::{
-    ExecutableCommand,
+    ExecutableCommand, QueueableCommand,
     cursor::{MoveToColumn, MoveUp},
     style::{Attribute, SetAttribute},
     terminal::{Clear, ClearType},
@@ -30,11 +30,14 @@ pub(crate) fn stderr_colors_enabled() -> bool {
 /// when stdout is one, `None` when stdout is piped, so redirected output
 /// keeps every row on one line.
 pub(crate) fn stdout_width() -> Option<usize> {
-    std::io::stdout().is_terminal().then(|| {
-        crossterm::terminal::size()
-            .map(|(width, _)| width as usize)
-            .unwrap_or(80)
-    })
+    std::io::stdout().is_terminal().then(terminal_width)
+}
+
+/// The width of the terminal, or 80 columns when the size cannot be read.
+fn terminal_width() -> usize {
+    crossterm::terminal::size()
+        .map(|(width, _)| width as usize)
+        .unwrap_or(80)
 }
 
 /// Whether the `NO_COLOR` convention asks for plain output: the variable set to
@@ -147,33 +150,15 @@ impl ScrollingOutput {
 
     /// Renders using terminal escape codes for the scrolling effect.
     fn render_terminal(&mut self) {
-        // Move cursor up to overwrite previous output
-        if self.rendered_lines > 0 {
-            let _ = self.stdout.execute(MoveUp(self.rendered_lines as u16));
-        }
-
-        // Render each line with dim styling
-        for line in &self.lines {
-            let _ = self.stdout.execute(MoveToColumn(0));
-            let _ = self.stdout.execute(Clear(ClearType::CurrentLine));
-            let _ = self.stdout.execute(SetAttribute(Attribute::Dim));
-
-            // Truncate line if it's too long for the terminal
-            let truncated = Self::truncate_line(line);
-            let _ = write!(self.stdout, "{}", truncated);
-
-            let _ = self.stdout.execute(SetAttribute(Attribute::Reset));
-            let _ = writeln!(self.stdout);
-        }
-
-        // Fill remaining lines with blanks if we have fewer lines than max
-        for _ in self.lines.len()..self.max_lines {
-            let _ = self.stdout.execute(MoveToColumn(0));
-            let _ = self.stdout.execute(Clear(ClearType::CurrentLine));
-            let _ = writeln!(self.stdout);
-        }
-
-        let _ = self.stdout.flush();
+        // Leave some margin
+        let max_width = terminal_width().saturating_sub(2);
+        draw_frame(
+            &mut self.stdout.lock(),
+            &self.lines,
+            self.max_lines,
+            self.rendered_lines,
+            max_width,
+        );
         self.rendered_lines = self.max_lines;
     }
 
@@ -183,15 +168,6 @@ impl ScrollingOutput {
         if let Some(line) = self.lines.back() {
             println!("{}", line);
         }
-    }
-
-    /// Truncates a line to fit the terminal width, leaving a small margin.
-    fn truncate_line(line: &str) -> &str {
-        let term_width = crossterm::terminal::size()
-            .map(|(w, _)| w as usize)
-            .unwrap_or(80);
-        // Leave some margin
-        Self::truncate_to_width(line, term_width.saturating_sub(2))
     }
 
     /// Truncates `line` to at most `max_width` bytes, never splitting a UTF-8
@@ -234,6 +210,50 @@ impl ScrollingOutput {
         self.rendered_lines = 0;
         self.lines.clear();
     }
+}
+
+/// Draws one frame of a [`ScrollingOutput`] region into `out`: moves up over
+/// the `rendered_lines` rows the previous frame drew, writes each line dimmed
+/// and cut to `max_width` bytes, pads the region to `max_lines` rows, and
+/// flushes.
+///
+/// The escapes are queued rather than executed, which would flush after each
+/// one: on line-buffered stdout a redraw then costs about one write per row,
+/// and the clear of a row reaches the terminal together with its text.
+fn draw_frame(
+    out: &mut impl Write,
+    lines: &VecDeque<String>,
+    max_lines: usize,
+    rendered_lines: usize,
+    max_width: usize,
+) {
+    // Move cursor up to overwrite previous output
+    if rendered_lines > 0 {
+        let _ = out.queue(MoveUp(rendered_lines as u16));
+    }
+
+    // Render each line with dim styling
+    for line in lines {
+        let _ = out.queue(MoveToColumn(0));
+        let _ = out.queue(Clear(ClearType::CurrentLine));
+        let _ = out.queue(SetAttribute(Attribute::Dim));
+
+        // Truncate line if it's too long for the terminal
+        let truncated = ScrollingOutput::truncate_to_width(line, max_width);
+        let _ = write!(out, "{}", truncated);
+
+        let _ = out.queue(SetAttribute(Attribute::Reset));
+        let _ = writeln!(out);
+    }
+
+    // Fill remaining lines with blanks if we have fewer lines than max
+    for _ in lines.len()..max_lines {
+        let _ = out.queue(MoveToColumn(0));
+        let _ = out.queue(Clear(ClearType::CurrentLine));
+        let _ = writeln!(out);
+    }
+
+    let _ = out.flush();
 }
 
 impl Drop for ScrollingOutput {
@@ -284,6 +304,32 @@ mod tests {
     #[test]
     fn truncate_to_zero_width_is_empty() {
         assert_eq!(ScrollingOutput::truncate_to_width("abc", 0), "");
+    }
+
+    /// The bytes of two frames of a three-row region: the first draws two
+    /// lines and pads the third row, the second moves back up over all three
+    /// rows and cuts the line wider than the region.
+    #[test]
+    fn draw_frame_writes_the_exact_escape_sequence_of_each_frame() {
+        const DIM_ROW: &str = "\x1b[1G\x1b[2K\x1b[2m";
+        const RESET: &str = "\x1b[0m\n";
+        const BLANK_ROW: &str = "\x1b[1G\x1b[2K\n";
+
+        let mut lines = VecDeque::from(["one".to_string(), "two".to_string()]);
+        let mut first = Vec::new();
+        draw_frame(&mut first, &lines, 3, 0, 4);
+        assert_eq!(
+            String::from_utf8(first).expect("utf-8 frame"),
+            format!("{DIM_ROW}one{RESET}{DIM_ROW}two{RESET}{BLANK_ROW}")
+        );
+
+        lines.push_back("three".to_string());
+        let mut second = Vec::new();
+        draw_frame(&mut second, &lines, 3, 3, 4);
+        assert_eq!(
+            String::from_utf8(second).expect("utf-8 frame"),
+            format!("\x1b[3A{DIM_ROW}one{RESET}{DIM_ROW}two{RESET}{DIM_ROW}thre{RESET}")
+        );
     }
 
     #[test]
