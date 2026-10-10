@@ -15,12 +15,12 @@ mod services;
 mod topics;
 mod type_mapping;
 
-use super::naming::{resolve_schema_file_stem, to_camel_case};
+use super::naming::{peer_schema_key, resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
-    InterfaceKind, LanguageGenerator, PairTopicConsumerKind, non_empty_message_format,
-    scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
-    validate_message_format_field_names,
+    InterfaceKind, LanguageGenerator, PairTopicConsumerKind, PeerContext, ensure_no_peer_collision,
+    non_empty_message_format, scoped_schema_key, validate_fixed_length_array_items,
+    validate_generated_type_name_collisions, validate_message_format_field_names,
 };
 use crate::error::Result;
 use config::node::{
@@ -167,10 +167,10 @@ impl PythonGenerator {
     fn add_pair_topic_consumer(
         &mut self,
         topic: &NativeEmittedTopic,
-        peer: &crate::generator::types::PeerContext,
+        peer: &PeerContext,
         kind: PairTopicConsumerKind,
     ) -> Result<()> {
-        let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
+        let schema_key = peer_schema_key(&peer.link_id, &topic.name);
         let arguments = topic.message_format.clone().ok_or_else(|| {
             crate::error::Error::PeerTopicMissingMessageFormat {
                 link_id: peer.link_id.clone(),
@@ -183,17 +183,23 @@ impl PythonGenerator {
             PairTopicConsumerKind::Observed(_) => InterfaceKind::ObservedTopic,
         };
         let code = topics::build_pair_topic_consumer(topic, &arguments, &schema_info, peer, kind)?;
+        self.push_pair_topic_section(topic, peer, artifact_kind, code)
+    }
 
+    /// Pushes the module of a pairing topic at `[link_id, topic]`, after
+    /// checking that no other pairing artifact of the node already sits there.
+    fn push_pair_topic_section(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &PeerContext,
+        kind: InterfaceKind,
+        code: String,
+    ) -> Result<()> {
         let module_path = peer.module_path_for(&topic.name);
-        crate::generator::types::ensure_no_peer_collision(
-            &self.sections,
-            &module_path,
-            peer,
-            topic,
-        )?;
+        ensure_no_peer_collision(&self.sections, &module_path, peer, topic)?;
         self.push_section(InterfaceArtifact {
             module_path,
-            kind: artifact_kind,
+            kind,
             code_output: code,
         });
         Ok(())
@@ -383,10 +389,10 @@ impl LanguageGenerator for PythonGenerator {
     fn add_peer_emitted_topic(
         &mut self,
         topic: &NativeEmittedTopic,
-        peer: &crate::generator::types::PeerContext,
+        peer: &PeerContext,
     ) -> Result<()> {
         self.testgen.record_peer_emitted_topic(topic, peer);
-        let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
+        let schema_key = peer_schema_key(&peer.link_id, &topic.name);
         let schema_info = topic
             .message_format
             .as_ref()
@@ -394,25 +400,13 @@ impl LanguageGenerator for PythonGenerator {
             .transpose()?;
 
         let code = topics::build_peer_emitted_topic(topic, schema_info.as_ref(), peer)?;
-        let module_path = peer.module_path_for(&topic.name);
-        crate::generator::types::ensure_no_peer_collision(
-            &self.sections,
-            &module_path,
-            peer,
-            topic,
-        )?;
-        self.push_section(InterfaceArtifact {
-            module_path,
-            kind: InterfaceKind::PeerEmittedTopic,
-            code_output: code,
-        });
-        Ok(())
+        self.push_pair_topic_section(topic, peer, InterfaceKind::PeerEmittedTopic, code)
     }
 
     fn add_peer_consumed_topic(
         &mut self,
         topic: &NativeEmittedTopic,
-        peer: &crate::generator::types::PeerContext,
+        peer: &PeerContext,
     ) -> Result<()> {
         self.testgen.record_peer_consumed_topic(topic, peer);
         self.add_pair_topic_consumer(topic, peer, PairTopicConsumerKind::Peer)
@@ -421,7 +415,7 @@ impl LanguageGenerator for PythonGenerator {
     fn add_observed_topic(
         &mut self,
         topic: &NativeEmittedTopic,
-        observer: &crate::generator::types::PeerContext,
+        observer: &PeerContext,
         cardinality: Cardinality,
     ) -> Result<()> {
         self.testgen
