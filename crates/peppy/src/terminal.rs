@@ -1,7 +1,7 @@
-//! Terminal output utilities for displaying scrolling, fixed-height output regions.
-//!
-//! This module provides a `ScrollingOutput` struct that displays output in a fixed
-//! number of terminal lines, similar to how `docker buildx` displays build progress.
+//! Terminal output of the CLI: the stdout and stderr color gates, the stdout
+//! width that width-fitted output fits to, the spinner every wait shows, and
+//! [`ScrollingOutput`], a fixed-height region that scrolls the newest lines of
+//! a long operation, the way `docker buildx` shows build progress.
 
 use crossterm::{
     ExecutableCommand, QueueableCommand,
@@ -97,17 +97,14 @@ pub struct ScrollingOutput {
     max_lines: usize,
     /// Number of lines currently rendered on screen.
     rendered_lines: usize,
-    /// Whether we're outputting to a real terminal (enables ANSI codes).
+    /// Whether the region redraws in place: [`colors_enabled`], so stdout is a
+    /// terminal and `NO_COLOR` is unset or empty.
     is_terminal: bool,
-    /// Stdout handle.
     stdout: Stdout,
 }
 
 impl ScrollingOutput {
-    /// Creates a new `ScrollingOutput` with the specified maximum number of lines.
-    ///
-    /// # Arguments
-    /// * `max_lines` - The maximum number of lines to display at once.
+    /// Creates a new `ScrollingOutput` that displays at most `max_lines` lines.
     pub fn new(max_lines: usize) -> Self {
         let stdout = std::io::stdout();
         let is_terminal = colors_enabled();
@@ -123,12 +120,8 @@ impl ScrollingOutput {
 
     /// Adds a line to the output and refreshes the display.
     ///
-    /// If the buffer is full, the oldest line will be removed.
-    ///
-    /// # Arguments
-    /// * `line` - The line to add.
+    /// If the buffer is full, the oldest line is removed.
     pub fn add_line(&mut self, line: &str) {
-        // Trim the line and add it to the buffer
         let line = line.trim_end().to_string();
 
         if self.lines.len() >= self.max_lines {
@@ -139,7 +132,8 @@ impl ScrollingOutput {
         self.render();
     }
 
-    /// Renders the current lines to the terminal.
+    /// Redraws the region, or prints the newest line when stdout cannot be
+    /// redrawn in place.
     fn render(&mut self) {
         if self.is_terminal {
             self.render_terminal();
@@ -164,7 +158,8 @@ impl ScrollingOutput {
 
     /// Renders without escape codes (for non-terminal output).
     fn render_plain(&mut self) {
-        // In non-terminal mode, just print the latest line
+        // Without escapes the region cannot be redrawn, so each line is
+        // printed once, when it arrives.
         if let Some(line) = self.lines.back() {
             println!("{}", line);
         }
@@ -193,10 +188,7 @@ impl ScrollingOutput {
             return;
         }
 
-        // Move cursor up to the start of our region
         let _ = self.stdout.execute(MoveUp(self.rendered_lines as u16));
-
-        // Clear all the lines we rendered
         for _ in 0..self.rendered_lines {
             let _ = self.stdout.execute(MoveToColumn(0));
             let _ = self.stdout.execute(Clear(ClearType::CurrentLine));
@@ -227,18 +219,19 @@ fn draw_frame(
     rendered_lines: usize,
     max_width: usize,
 ) {
-    // Move cursor up to overwrite previous output
+    // Move up to overwrite the previous frame.
     if rendered_lines > 0 {
         let _ = out.queue(MoveUp(rendered_lines as u16));
     }
 
-    // Render each line with dim styling
     for line in lines {
         let _ = out.queue(MoveToColumn(0));
         let _ = out.queue(Clear(ClearType::CurrentLine));
         let _ = out.queue(SetAttribute(Attribute::Dim));
 
-        // Truncate line if it's too long for the terminal
+        // A line wider than the terminal wraps onto a second row, which the
+        // move up of the next frame does not count, and the region drifts
+        // down one row.
         let truncated = ScrollingOutput::truncate_to_width(line, max_width);
         let _ = write!(out, "{}", truncated);
 
@@ -246,7 +239,8 @@ fn draw_frame(
         let _ = writeln!(out);
     }
 
-    // Fill remaining lines with blanks if we have fewer lines than max
+    // Padding to the full height keeps the region `max_lines` rows tall, so
+    // the next frame moves up by a constant count.
     for _ in lines.len()..max_lines {
         let _ = out.queue(MoveToColumn(0));
         let _ = out.queue(Clear(ClearType::CurrentLine));
