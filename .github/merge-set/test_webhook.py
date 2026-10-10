@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for the webhook of the merge-set App.
 
 The clock is a FakeClock that a test moves, KMS and Secrets Manager are

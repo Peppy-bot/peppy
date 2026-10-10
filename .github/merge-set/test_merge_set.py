@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for the merge-set bot.
 
 The decisions run on fixed input data. The sync runs against FakeGitHub, an
