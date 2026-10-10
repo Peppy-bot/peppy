@@ -273,6 +273,39 @@ fn two_exposures_pinning_one_contract_at_different_bytes_are_refused_by_name() {
     assert!(error.contains(&first) && error.contains(&second), "{error}");
 }
 
+/// An exposure that leaves a contract unpinned defers to the first one that
+/// pins it, so a later pin at other bytes is refused against that pinning
+/// exposure, not against the one that stated no pin.
+#[test]
+fn an_unpinned_contract_takes_the_pin_of_a_later_exposure() {
+    let first = ManifestFingerprint::of_bytes(CAMERA_CONTRACT.as_bytes()).to_string();
+    let second = ManifestFingerprint::of_bytes(CAMERA_CONTRACT_REVISED.as_bytes()).to_string();
+    let home = SeededHome::new(
+        &[CAMERA_CONTRACT, CAMERA_CONTRACT_REVISED],
+        &[
+            (
+                "loose",
+                &exposure("loose", "cam", "rgb_camera", None, "video_stream_info"),
+            ),
+            (
+                "a",
+                &exposure("a", "cam", "rgb_camera", Some(&first), "video_stream_info"),
+            ),
+            (
+                "b",
+                &exposure("b", "cam", "rgb_camera", Some(&second), "video_stream_info"),
+            ),
+        ],
+    );
+    let error = resolve_exposure_deployment(&home.dirs, &references(&["loose", "a", "b"]), &quiet)
+        .expect_err("the pins of `a` and `b` disagree");
+    assert!(
+        error.contains("`a:v1`") && error.contains("`b:v1`"),
+        "{error}"
+    );
+    assert!(!error.contains("`loose:v1`"), "{error}");
+}
+
 #[test]
 fn an_exposure_missing_from_the_cache_is_a_refusal_naming_it() {
     let home = SeededHome::new(&[CAMERA_CONTRACT], &[]);
