@@ -859,8 +859,8 @@ fn test_translate_path_rejects_var_folders() {
     );
 }
 
-/// A host runtime path stays rejected under Lima — passing it through to the
-/// guest would only defer the failure to Apptainer — but it must be rejected
+/// A host runtime path stays rejected under Lima (passing it through to the
+/// guest would only defer the failure to Apptainer), but it must be rejected
 /// with the error that names the real constraint. The generic
 /// `PathNotAccessibleInVm` advice (declare it in `container.mount_paths`, move
 /// it under `$HOME`) is unfollowable for a device node, and telling an
@@ -895,8 +895,8 @@ fn test_translate_path_rejects_host_runtime_paths_with_a_targeted_error() {
 /// A host runtime path must never reach the Lima mount list. The per-node run
 /// path hands `ensure_host_mounts` the node's raw bind sources, so a node
 /// declaring `mount_paths: ["/run/user"]` would otherwise have it written into
-/// the Lima YAML — restarting the VM to mount the Mac's `/run/user` over the
-/// guest's own — and then whitelisted in `extra_mounts`.
+/// the Lima YAML (restarting the VM to mount the Mac's `/run/user` over the
+/// guest's own) and then whitelisted in `extra_mounts`.
 ///
 /// The facade's lima paths are fake, so reaching the YAML at all would error:
 /// this passes only because the filter empties `external_paths` and takes the
@@ -929,7 +929,7 @@ fn test_translate_path_rejects_host_runtime_paths_despite_registration() {
 }
 
 /// The complement: an ordinary unreachable path keeps the generic error, whose
-/// advice does apply to it — put it under `$HOME`, or declare it as a mount.
+/// advice does apply to it: put it under `$HOME`, or declare it as a mount.
 #[test]
 fn test_translate_path_keeps_generic_error_for_ordinary_paths() {
     let path = Path::new("/opt/robot_assets/openarm");
@@ -1856,11 +1856,11 @@ fn prepare_scratch_dir_creates_missing_directory() {
     );
 }
 
-/// Regression: concurrent preparation of the same scratch directory must
-/// succeed on every thread. `Apptainer::new()` is called from several test
-/// threads at once (and from more than one daemon thread in production), so a
-/// write probe named only after the process id had them all racing on a single
-/// path: the first `remove_file` to land won and the losers reported
+/// Concurrent preparation of the same scratch directory succeeds on every
+/// thread. `Apptainer::new()` runs on several test threads at once (and on more
+/// than one daemon thread in production), and a write probe named only after
+/// the process id would have them all racing on a single path, where the first
+/// `remove_file` to land wins and the others report
 /// `ScratchDirUnavailable { NotFound }` against a perfectly writable directory.
 #[test]
 fn prepare_scratch_dir_tolerates_concurrent_preparation() {
@@ -1890,7 +1890,7 @@ fn prepare_scratch_dir_tolerates_concurrent_preparation() {
     );
 }
 
-/// Regression: an existing but non-writable scratch directory must fail at
+/// An existing but non-writable scratch directory must fail at
 /// construction, not survive `create_dir_all` (which succeeds on any existing
 /// directory, whatever its mode) only to fail later inside apptainer as an
 /// opaque `MkdirTemp` error on the extract fallback.
@@ -1988,11 +1988,11 @@ fn lima_guest_pgid_argv_with_workdir_cds_first_and_aborts_on_failure() {
 
     // Same wrapper as above with the working dir prepended as `$1`: the script
     // `cd`s there FIRST and exits non-zero if it cannot. Relying on `limactl
-    // shell`'s host-cwd propagation instead is what once copied the user's
-    // entire $HOME into an image: the kernel canonicalizes the host cwd to
-    // `/private/var/…`, the guest mount only exists at `/var/folders/…`, and
-    // Lima's own failed `cd` is non-fatal, so `%files .` ran from the guest
-    // home directory.
+    // shell`'s host-cwd propagation instead would copy the user's entire $HOME
+    // into an image: the kernel canonicalizes the host cwd to `/private/var/…`,
+    // the guest mount only exists at `/var/folders/…`, and Lima's own failed
+    // `cd` is non-fatal, so `%files .` would run from the guest home
+    // directory.
     assert_eq!(argv[0], "setsid");
     assert_eq!(argv[1], "-w");
     assert_eq!(argv[2], "sh");
@@ -2147,7 +2147,7 @@ fn lima_build_wraps_in_setsid_with_guest_native_pgid() {
         args.iter().any(|a| a == "setsid"),
         "Lima build must be wrapped in setsid, got: {args:?}"
     );
-    // The pgid path is now its own argv element (a positional param to the
+    // The pgid path is its own argv element (a positional param to the
     // wrapper), not interpolated into the script string.
     assert!(
         args.iter().any(|a| a == "/tmp/peppy/pgids/buildkey.pgid"),

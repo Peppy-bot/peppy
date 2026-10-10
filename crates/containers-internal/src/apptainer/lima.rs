@@ -41,7 +41,7 @@ pub(crate) fn guest_pgid_path(key: &str) -> PathBuf {
 /// The `cd` MUST abort on failure. `limactl shell` propagates the host cwd
 /// into the guest with a NON-fatal `cd`, and on macOS the kernel reports the
 /// host cwd in canonical form (`/private/var/…`) while the Lima mount only
-/// exists in the guest at its literal lima.yaml location (`/var/folders/…`) —
+/// exists in the guest at its literal lima.yaml location (`/var/folders/…`),
 /// so that propagation silently lands in the guest's home directory. A build
 /// def whose `%files` uses relative sources (the generated `%files .
 /// /opt/{name}`) then copies the user's entire `$HOME` into the image. The
@@ -618,13 +618,11 @@ pub(crate) fn ensure_guest_apptainer(
 
     tracing::info!("Syncing apptainer installation to Lima VM guest...");
 
-    // Remove stale installation in guest.
     let _ = lima_shell_cmd(limactl, lima_home, instance)
         .args(["rm", "-rf"])
         .arg(&guest_dir)
         .status();
 
-    // Create the target directory in the guest.
     let mkdir = lima_shell_cmd(limactl, lima_home, instance)
         .args(["mkdir", "-p"])
         .arg(&guest_dir)
@@ -985,7 +983,6 @@ fn plan_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<MountPlan> {
         ))
     })?;
 
-    // Get or create the mounts array
     let mounts = config
         .as_mapping_mut()
         .ok_or_else(|| Error::LimaInstanceError("Lima config is not a YAML mapping".into()))?
@@ -1296,14 +1293,12 @@ mod tests {
         ));
     }
 
-    // These tests previously spawned fake `limactl` shell scripts via tempdirs
-    // and hit Linux ETXTBSY races: when Thread A held a writable FD to a newly
-    // written script, a parallel test on Thread B calling `Command::spawn`
-    // would fork, inheriting Thread A's writable FD, and the kernel refused
-    // Thread A's subsequent `execve` until Thread B's child finished its own
-    // `execve`. The fix is to exercise the pure branch logic directly via the
-    // `validate_lima_version_output` and `stop_instance_inner` helpers: no
-    // subprocess, no race.
+    // These tests drive the pure branch logic through the
+    // `validate_lima_version_output` and `stop_instance_inner` helpers instead
+    // of spawning a fake `limactl` script that a test writes. A parallel test
+    // thread that forks while another thread still holds such a script open
+    // for writing leaks that writable FD into its child, and the kernel then
+    // refuses to `execve` the script with ETXTBSY until the child execs.
 
     #[cfg(unix)]
     #[test]

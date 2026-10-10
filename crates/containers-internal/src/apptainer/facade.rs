@@ -78,8 +78,8 @@ fn apptainer_scratch_dir() -> PathBuf {
 ///
 /// The write probe is not redundant with the creation: `create_dir_all`
 /// succeeds on a directory that already exists whatever its mode, so a scratch
-/// dir left behind non-writable — the classic case being one created while the
-/// daemon ran under `sudo` and now owned by root — passes creation and only
+/// dir left behind non-writable (typically one created while the daemon ran
+/// under `sudo`, so owned by root) passes creation and only
 /// fails later, inside apptainer, as an opaque `MkdirTemp` error on the extract
 /// fallback. Probing here surfaces it at construction, named and pointed at the
 /// offending path. The probe is a file rather than a directory (which would
@@ -91,7 +91,7 @@ fn apptainer_scratch_dir() -> PathBuf {
 /// on the pid has them all probing one shared path, where the first
 /// `remove_file` to land leaves the others failing `ENOENT` on a scratch
 /// directory that is perfectly writable. For the same reason a probe that has
-/// already vanished is not an error — the `create` is what proves writability,
+/// already vanished is not an error: the `create` is what proves writability,
 /// and the `remove` only keeps apptainer's `--tmpdir` free of litter.
 pub(crate) fn prepare_scratch_dir(tmp_dir: &Path) -> Result<()> {
     static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -257,10 +257,9 @@ impl SetupStatus {
 /// `~/.peppy/tmp/`, installed release layouts, `PEPPY_APPTAINER_DIR`
 /// overrides) gets its own profile file under `/etc/apparmor.d/`. A single
 /// shared profile can only reference one starter path, so regenerating it for
-/// one installation used to silently invalidate every other one: after an
-/// apptainer version bump renamed the build cache, CI runs on commits from
-/// either side of the bump needed different profiles and kept breaking each
-/// other depending on which one ran `peppy container setup` last.
+/// one installation would invalidate every other one: two build caches of
+/// different apptainer versions on one machine each need the profile, and
+/// whichever ran `peppy container setup` last would break the other.
 #[cfg(target_os = "linux")]
 pub(crate) struct ApparmorProfileRef {
     /// Canonical starter path, exactly as embedded in the profile body.
@@ -976,7 +975,7 @@ impl Apptainer {
     /// shell` propagates the host cwd into the guest with a NON-fatal `cd`, and
     /// the kernel reports the cwd in canonical form (`/private/var/…`) while the
     /// Lima mount exists in the guest only at its literal lima.yaml location
-    /// (`/var/folders/…`) — so the propagation silently falls back to the guest
+    /// (`/var/folders/…`), so the propagation silently falls back to the guest
     /// home directory and relative paths (a def file's `%files .`) resolve
     /// against `$HOME` instead of the working dir.
     ///
@@ -1505,8 +1504,8 @@ impl<'a> ApptainerCommand<'a> {
     }
 
     /// Run the apptainer process from `dir` (a host-side path), so relative
-    /// paths — chiefly a build def's `%files` sources like the generated
-    /// `%files . /opt/{name}` — resolve against it.
+    /// paths (chiefly a build def's `%files` sources like the generated
+    /// `%files . /opt/{name}`) resolve against it.
     ///
     /// On the native backend (Linux) this is applied as the child's
     /// `current_dir`. Under Lima (macOS) the path is translated to its
@@ -1516,8 +1515,8 @@ impl<'a> ApptainerCommand<'a> {
     /// [`Command`]: `limactl shell`'s own host-cwd propagation canonicalizes
     /// the path (`/var/folders/…` → `/private/var/…`), misses the literal
     /// Lima mount location in the guest, and falls back to the guest home
-    /// directory WITHOUT failing — which once made a build's `%files .` copy
-    /// the user's entire `$HOME` into the image.
+    /// directory WITHOUT failing, so a build's `%files .` would copy the
+    /// user's entire `$HOME` into the image.
     pub fn working_dir(mut self, dir: &Path) -> Self {
         self.working_dir = Some(dir.to_path_buf());
         self
