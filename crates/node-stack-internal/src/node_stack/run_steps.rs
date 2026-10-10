@@ -305,6 +305,14 @@ struct ContainerBind {
     opts: Option<String>,
 }
 
+impl ContainerBind {
+    /// Whether the bind passes a host device through at its own path: a
+    /// source under `/dev/` with no destination or the same one.
+    fn is_device_passthrough(&self) -> bool {
+        self.src.starts_with("/dev/") && self.dest.as_deref().is_none_or(|dest| dest == self.src)
+    }
+}
+
 /// Collect all bind mounts needed for a container node.
 ///
 /// Always includes the runtime config file as the first entry so it is
@@ -496,21 +504,14 @@ pub(super) async fn build_container_command(
     apptainer_cmd = apptainer_cmd.apptainer_env(RUNTIME_CONFIG_VAR_NAME, runtime_config_str);
 
     // Add all bind mounts (runtime config + user-specified).
-    // Device passthrough mounts (src under /dev/ with no dest or same dest)
-    // are skipped: Apptainer applies `nodev` to --bind mounts
-    // which blocks device-node access. Host devices are already available
-    // inside the container via `mount dev = yes` in apptainer.conf.
-    // Remapped device mounts (e.g. /dev/video0:/dev/my_video0) still need
-    // an explicit --bind.
+    // Device passthrough mounts are skipped: Apptainer applies `nodev` to
+    // --bind mounts which blocks device-node access. Host devices are
+    // already available inside the container via `mount dev = yes` in
+    // apptainer.conf. Remapped device mounts (e.g.
+    // /dev/video0:/dev/my_video0) still need an explicit --bind.
     for bind in &binds {
-        if bind.src.starts_with("/dev/") {
-            let is_passthrough = match bind.dest.as_deref() {
-                None => true,
-                Some(dest) => dest == bind.src,
-            };
-            if is_passthrough {
-                continue;
-            }
+        if bind.is_device_passthrough() {
+            continue;
         }
         apptainer_cmd = apptainer_cmd.bind(&bind.src, bind.dest.as_deref(), bind.opts.as_deref());
     }
@@ -755,6 +756,31 @@ mod tests {
             rx.try_recv().is_err(),
             "a source that was never created must not be announced as one"
         );
+    }
+
+    #[test]
+    fn device_passthrough_is_a_dev_source_bound_at_its_own_path() {
+        let cases = [
+            ("/dev/ttyUSB0", None, None, true),
+            ("/dev/video0", Some("/dev/video0"), None, true),
+            ("/dev/video0", Some("/dev/video0"), Some("ro"), true),
+            ("/dev/video0", Some("/dev/my_video0"), None, false),
+            ("/data/input", None, None, false),
+            ("/data/input", Some("/data/input"), None, false),
+            ("/devices", None, None, false),
+        ];
+        for (src, dest, opts, expected) in cases {
+            let bind = ContainerBind {
+                src: src.to_owned(),
+                dest: dest.map(str::to_owned),
+                opts: opts.map(str::to_owned),
+            };
+            assert_eq!(
+                bind.is_device_passthrough(),
+                expected,
+                "src {src}, dest {dest:?}, opts {opts:?}"
+            );
+        }
     }
 
     #[test]
