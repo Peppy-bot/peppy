@@ -37,11 +37,7 @@ pub const DEFAULT_LINK_ID_SENTINEL: &str = "_";
 /// both call this one definition, so the parse-time prediction of wire
 /// behavior cannot drift from the wire itself.
 pub fn normalize_tag(tag: &str) -> String {
-    if tag.contains('-') {
-        tag.replace('-', "_")
-    } else {
-        tag.to_string()
-    }
+    tag.replace('-', "_")
 }
 
 /// Minimum Python version required by peppylib and peppygen projects (e.g. "3.11").
