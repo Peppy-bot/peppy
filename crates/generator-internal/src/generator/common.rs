@@ -64,12 +64,11 @@ pub(crate) fn render_peppylib_python_pyproject() -> Result<String> {
     Ok(tpl.render()?)
 }
 
+/// Writes every embedded file under `prefix` (given without a trailing
+/// slash) into `to`, except `.gitkeep` placeholders. A `.j2` file is rendered
+/// and written without its extension; any other file is copied as it is.
 pub(crate) fn copy_embedded_templates(prefix: &str, to: &Path, peppylib_path: &str) -> Result<()> {
-    let prefix_with_slash = if prefix.ends_with('/') {
-        prefix.to_string()
-    } else {
-        format!("{}/", prefix)
-    };
+    let prefix_with_slash = format!("{prefix}/");
 
     for file_path in EmbeddedTemplates::iter() {
         let file_path_str = file_path.as_ref();
@@ -84,35 +83,31 @@ pub(crate) fn copy_embedded_templates(prefix: &str, to: &Path, peppylib_path: &s
             continue;
         }
 
-        let destination = if relative_path.ends_with(".j2") {
-            // Remove the .j2 extension for template files
-            let without_ext = relative_path.strip_suffix(".j2").unwrap_or(relative_path);
-            to.join(without_ext)
-        } else {
-            to.join(relative_path)
-        };
-
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        if relative_path.ends_with(".j2") {
-            // Render template files
-            let rendered = render_template(file_path_str, peppylib_path)?;
-            fs::write(&destination, rendered)?;
-        } else {
-            // Copy regular files
-            let content = EmbeddedTemplates::get(file_path_str).ok_or_else(|| {
-                io::Error::new(
-                    ErrorKind::NotFound,
-                    format!("embedded template not found: {file_path_str}"),
-                )
-            })?;
-            fs::write(&destination, content.data.as_ref())?;
+        match relative_path.strip_suffix(".j2") {
+            Some(rendered_path) => {
+                let rendered = render_template(file_path_str, peppylib_path)?;
+                write_creating_parent(&to.join(rendered_path), rendered.as_bytes())?;
+            }
+            None => {
+                let content = EmbeddedTemplates::get(file_path_str).ok_or_else(|| {
+                    io::Error::new(
+                        ErrorKind::NotFound,
+                        format!("embedded template not found: {file_path_str}"),
+                    )
+                })?;
+                write_creating_parent(&to.join(relative_path), content.data.as_ref())?;
+            }
         }
     }
 
     Ok(())
+}
+
+fn write_creating_parent(destination: &Path, contents: &[u8]) -> io::Result<()> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(destination, contents)
 }
 
 fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
