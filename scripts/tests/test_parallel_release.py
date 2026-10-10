@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import tarfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -730,6 +730,17 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _commit_files(checkout: Path, files: Mapping[str, str], message: str) -> str:
+    """Write *files* in *checkout* and commit them; return the commit."""
+    for relative, text in files.items():
+        path = checkout / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    _git(checkout, "add", "--", *files)
+    _git(checkout, "commit", "-q", "-m", message)
+    return _git(checkout, "rev-parse", "HEAD")
+
+
 @dataclass(frozen=True)
 class ReleaseRepo:
     """A checkout of `dev` and the `origin` it pushes to, as the publish job
@@ -746,14 +757,9 @@ class ReleaseRepo:
 
     def commit_on_dev(self, files: dict[str, str], message: str) -> str:
         """Commit *files* on `dev` and push it; return the commit."""
-        for relative, text in files.items():
-            path = self.path / relative
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
-        _git(self.path, "add", "--", *files)
-        _git(self.path, "commit", "-q", "-m", message)
+        commit = _commit_files(self.path, files, message)
         _git(self.path, "push", "-q", "origin", "dev")
-        return _git(self.path, "rev-parse", "HEAD")
+        return commit
 
     def commit_release_notes(self, tag: str = "v0.3.0") -> str:
         """The notes commit a publish pushes to `dev`."""
@@ -771,14 +777,9 @@ class ReleaseRepo:
             _git(self.path.parent, "clone", "-q", str(self.origin), str(other))
         _git(other, "fetch", "-q", "origin")
         _git(other, "switch", "-q", "-C", "dev", "origin/dev")
-        for relative, text in files.items():
-            path = other / relative
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
-        _git(other, "add", "--", *files)
-        _git(other, "commit", "-q", "-m", message)
+        commit = _commit_files(other, files, message)
         _git(other, "push", "-q", "origin", "dev")
-        return _git(other, "rev-parse", "HEAD")
+        return commit
 
     def rewrite_dev(self) -> str:
         """Force-push a `dev` that drops the release commit; return its tip."""
@@ -1718,13 +1719,9 @@ def _notes_commit_lookup(repo: ReleaseRepo) -> str | None:
 def _notes_on_a_side_branch(repo: ReleaseRepo, branch: str, message: str) -> str:
     """Commit the notes on a branch of the release commit; return the commit."""
     _git(repo.path, "switch", "-q", "-c", branch, repo.release_commit)
-    path = repo.path / NOTES_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("<entry>v0.3.0</entry>\n")
-    _git(repo.path, "add", NOTES_FILE)
-    _git(repo.path, "commit", "-q", "-m", message)
+    commit = _commit_files(repo.path, {NOTES_FILE: "<entry>v0.3.0</entry>\n"}, message)
     _git(repo.path, "switch", "-q", "dev")
-    return _git(repo.path, "rev-parse", branch)
+    return commit
 
 
 def _merge_into_dev(repo: ReleaseRepo, branch: str) -> None:
