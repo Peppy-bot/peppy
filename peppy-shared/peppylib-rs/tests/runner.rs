@@ -88,6 +88,44 @@ impl Drop for EnvAndDirGuard {
     }
 }
 
+/// Calls the test node's `service` as the shutdown sender, pinned to the
+/// test instance.
+async fn poll_test_node(
+    messenger: &peppylib::MessengerHandle,
+    service: &str,
+    request: Payload,
+    timeout: Duration,
+) -> peppylib::PeppyResult<peppylib::Message> {
+    peppylib::ServiceMessenger::poll(
+        messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        test_node_target(TEST_NODE_NAME),
+        service,
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        request,
+        timeout,
+    )
+    .await
+}
+
+/// Probes once whether the test instance answers on `service`.
+async fn is_test_node_service_reachable(
+    messenger: &peppylib::MessengerHandle,
+    service: &str,
+) -> bool {
+    peppylib::ServiceMessenger::is_reachable(
+        messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        test_node_target(TEST_NODE_NAME),
+        service,
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+    )
+    .await
+    .expect("reachability check should succeed")
+}
+
 /// Polls until the test node's `service` is reachable. Panics with the
 /// runner's result if the runner exits first, and with `timeout_message`
 /// when the service is still unreachable after 10 s.
@@ -104,17 +142,7 @@ async fn wait_until_reachable<T: std::fmt::Debug>(
             panic!("runner exited early: {result:?}");
         }
 
-        if peppylib::ServiceMessenger::is_reachable(
-            messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            test_node_target(TEST_NODE_NAME),
-            service,
-            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
-        )
-        .await
-        .expect("reachability check should succeed")
-        {
+        if is_test_node_service_reachable(messenger, service).await {
             return;
         }
 
@@ -209,13 +237,9 @@ async fn daemon_runner_succeed() {
     let health_request = NodeHealthRequest::new()
         .encode()
         .expect("failed to encode health request");
-    let health_response = peppylib::ServiceMessenger::poll(
+    let health_response = poll_test_node(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         health_request,
         Duration::from_secs(2),
     )
@@ -224,13 +248,9 @@ async fn daemon_runner_succeed() {
     NodeHealthResponse::decode(&health_response.payload()).expect("health response should decode");
 
     let shutdown_payload = Payload::from_static(b"shutdown");
-    let shutdown_response = peppylib::ServiceMessenger::poll(
+    let shutdown_response = poll_test_node(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         shutdown_payload.clone(),
         Duration::from_secs(2),
     )
@@ -455,7 +475,7 @@ fn write_daemon_runtime_config(
 
 /// Polls `service` on the daemon-mode test node until it answers or the
 /// runner exits, returning the reply payload.
-async fn poll_test_node_service(
+async fn poll_test_node_until_answered(
     messenger: &peppylib::MessengerHandle,
     runner_task: &mut tokio::task::JoinHandle<Result<(), PeppyError>>,
     service: &str,
@@ -467,13 +487,9 @@ async fn poll_test_node_service(
             let result = runner_task.await.expect("runner task should not panic");
             panic!("runner exited early: {result:?}");
         }
-        match peppylib::ServiceMessenger::poll(
+        match poll_test_node(
             messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            test_node_target(TEST_NODE_NAME),
             service,
-            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
             request.clone(),
             Duration::from_millis(500),
         )
@@ -525,7 +541,7 @@ async fn daemon_runner_offers_node_endpoints_for_a_manifest_that_declares_them()
     let request = NodeEndpointsRequest::new()
         .encode()
         .expect("failed to encode endpoints request");
-    let reply = poll_test_node_service(
+    let reply = poll_test_node_until_answered(
         &messenger,
         &mut runner_task,
         NODE_ENDPOINTS_SERVICE,
@@ -563,13 +579,9 @@ async fn daemon_runner_offers_node_endpoints_for_a_manifest_that_declares_them()
         ]
     );
 
-    let shutdown_response = peppylib::ServiceMessenger::poll(
+    let shutdown_response = poll_test_node(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         Payload::from_static(b"shutdown"),
         Duration::from_secs(2),
     )
@@ -617,7 +629,7 @@ async fn daemon_runner_offers_no_node_endpoints_for_a_manifest_without_them() {
     let health_request = NodeHealthRequest::new()
         .encode()
         .expect("failed to encode health request");
-    let reply = poll_test_node_service(
+    let reply = poll_test_node_until_answered(
         &messenger,
         &mut runner_task,
         NODE_HEALTH_SERVICE,
@@ -626,28 +638,16 @@ async fn daemon_runner_offers_no_node_endpoints_for_a_manifest_without_them() {
     .await;
     NodeHealthResponse::decode(&reply).expect("health response should decode");
 
-    let endpoints_reachable = peppylib::ServiceMessenger::is_reachable(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
-        NODE_ENDPOINTS_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
-    )
-    .await
-    .expect("reachability check should succeed");
+    let endpoints_reachable =
+        is_test_node_service_reachable(&messenger, NODE_ENDPOINTS_SERVICE).await;
     assert!(
         !endpoints_reachable,
         "a node that declares no endpoint must not offer `node_endpoints`"
     );
 
-    let shutdown_response = peppylib::ServiceMessenger::poll(
+    let shutdown_response = poll_test_node(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         Payload::from_static(b"shutdown"),
         Duration::from_secs(2),
     )
@@ -858,13 +858,9 @@ async fn node_ready_but_not_healthy() {
     .await;
 
     let ready_payload = Payload::from_static(b"ready");
-    let ready_response = peppylib::ServiceMessenger::poll(
+    let ready_response = poll_test_node(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
         NODE_READY_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         ready_payload.clone(),
         Duration::from_secs(2),
     )
@@ -881,29 +877,16 @@ async fn node_ready_but_not_healthy() {
     .await;
 
     assert!(
-        !peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            test_node_target(TEST_NODE_NAME),
-            NODE_HEALTH_SERVICE,
-            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
-        )
-        .await
-        .expect("reachability check should succeed"),
+        !is_test_node_service_reachable(&messenger, NODE_HEALTH_SERVICE).await,
         "health service should not be reachable while setup is blocked"
     );
 
     let health_request = NodeHealthRequest::new()
         .encode()
         .expect("failed to encode health request");
-    let health_err = peppylib::ServiceMessenger::poll(
+    let health_err = poll_test_node(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         health_request.clone(),
         Duration::from_millis(200),
     )
@@ -928,13 +911,9 @@ async fn node_ready_but_not_healthy() {
     )
     .await;
 
-    let health_response = peppylib::ServiceMessenger::poll(
+    let health_response = poll_test_node(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         health_request,
         Duration::from_secs(2),
     )
@@ -943,13 +922,9 @@ async fn node_ready_but_not_healthy() {
     NodeHealthResponse::decode(&health_response.payload()).expect("health response should decode");
 
     let shutdown_payload = Payload::from_static(b"shutdown");
-    let shutdown_response = peppylib::ServiceMessenger::poll(
+    let shutdown_response = poll_test_node(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         shutdown_payload.clone(),
         Duration::from_secs(2),
     )
@@ -1051,13 +1026,9 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     .await;
 
     let shutdown_payload = Payload::from_static(b"shutdown");
-    peppylib::ServiceMessenger::poll(
+    poll_test_node(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         shutdown_payload,
         Duration::from_secs(2),
     )
@@ -1172,13 +1143,9 @@ async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
 
     // Send the shutdown request while setup_fn is still blocked
     let shutdown_payload = Payload::from_static(b"shutdown");
-    peppylib::ServiceMessenger::poll(
+    poll_test_node(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         shutdown_payload,
         Duration::from_secs(2),
     )
@@ -1375,13 +1342,9 @@ async fn send_shutdown_when_reachable<T: std::fmt::Debug>(
     )
     .await;
 
-    peppylib::ServiceMessenger::poll(
+    poll_test_node(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         Payload::from_static(b"shutdown"),
         Duration::from_secs(2),
     )
