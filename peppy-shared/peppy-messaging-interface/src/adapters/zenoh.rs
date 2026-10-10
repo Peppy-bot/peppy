@@ -1761,6 +1761,57 @@ mod tests {
         assert_eq!(cfg.buffer_sizes.high_throughput, 4096);
     }
 
+    #[test]
+    fn create_client_config_renders_a_listening_gossip_peer_or_a_plain_client() {
+        let render = |gossip| {
+            ZenohAdapter::create_client_config(
+                ZenohNetProtocol::Tcp,
+                "127.0.0.1",
+                7448,
+                false,
+                Vec::new(),
+                gossip,
+                SubscriberBufferSizes::default(),
+                None,
+                None,
+            )
+            .zenoh_config
+        };
+        let rendered = |config: &zenoh::config::Config, key: &str| {
+            config.get_json(key).expect("a key of the rendered config")
+        };
+
+        // A gossip peer dials the seed and listens on a wildcard port of its
+        // own, so other peers can link to it directly.
+        let peer = render(true);
+        assert_eq!(rendered(&peer, "mode"), r#""peer""#);
+        assert_eq!(
+            rendered(&peer, "connect/endpoints"),
+            r#"["tcp/127.0.0.1:7448"]"#
+        );
+        assert_eq!(
+            rendered(&peer, "listen/endpoints"),
+            r#"{"peer":["tcp/0.0.0.0:0"]}"#
+        );
+        assert_eq!(rendered(&peer, "scouting/gossip/enabled"), "true");
+        assert_eq!(rendered(&peer, "id"), "null");
+
+        // A plain client dials the seed and keeps Zenoh's default listen
+        // endpoints, which a client does not bind.
+        let client = render(false);
+        assert_eq!(rendered(&client, "mode"), r#""client""#);
+        assert_eq!(
+            rendered(&client, "connect/endpoints"),
+            r#"["tcp/127.0.0.1:7448"]"#
+        );
+        assert_eq!(
+            rendered(&client, "listen/endpoints"),
+            rendered(&zenoh::config::Config::default(), "listen/endpoints")
+        );
+        assert_eq!(rendered(&client, "scouting/gossip/enabled"), "false");
+        assert_eq!(rendered(&client, "id"), "null");
+    }
+
     /// Every operation that needs the session refuses to run before
     /// `start_session` opened it. Building the adapter opens nothing, so no
     /// router is needed.
