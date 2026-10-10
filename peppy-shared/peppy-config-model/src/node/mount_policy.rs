@@ -77,9 +77,13 @@ mod tests {
         for path in [
             "/tmp/my_app",
             "/var/log/my_app",
+            "/etc/myconf",
+            "/home/user/project",
+            "/data",
             "/data/shared",
             "/mnt/external",
             "/private/tmp/foo",
+            "/private/tmp/sub",
         ] {
             assert!(!is_blocked_mount_source(path), "{path} should be allowed");
         }

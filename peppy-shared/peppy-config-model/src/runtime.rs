@@ -729,14 +729,14 @@ mod tests {
 
     #[test]
     fn name_validation() {
-        assert!(Name::new("robot").is_ok());
-        assert!(Name::new("camera_v1").is_ok());
-
-        assert!(Name::new("").is_err()); // empty not permitted
-        assert!(Name::new("/").is_err()); // slash not permitted
-        assert!(Name::new("/robot").is_err()); // slash not permitted
-        assert!(Name::new("Robot").is_ok()); // capital now allowed
-        assert!(Name::new("robot$cam").is_err()); // special
+        // Capital letters, digits, `_` and `-` are allowed.
+        for valid in ["robot", "camera_v1", "Robot", "node", "my_node-1", "Node"] {
+            assert!(Name::new(valid).is_ok(), "{valid:?} should be accepted");
+        }
+        // Empty, a slash anywhere, and other special characters are refused.
+        for invalid in ["", "/", "/robot", "node/", "robot$cam", "node@!"] {
+            assert!(Name::new(invalid).is_err(), "{invalid:?} should be refused");
+        }
     }
 
     #[test]

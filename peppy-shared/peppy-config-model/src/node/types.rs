@@ -2144,35 +2144,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn name_validation() {
-        assert!(Name::new("node").is_ok());
-        assert!(Name::new("my_node-1").is_ok());
-
-        assert!(Name::new("").is_err()); // empty not permitted
-        assert!(Name::new("Node").is_ok()); // capital letters allowed
-        assert!(Name::new("node/").is_err()); // slash not allowed
-        assert!(Name::new("node@!").is_err()); // specials not allowed
-    }
-
-    #[test]
-    fn blocked_mount_source_matches_top_level_and_private_aliases() {
-        // Exact top-level system mounts are blocked.
-        assert!(is_blocked_mount_source("/"));
-        assert!(is_blocked_mount_source("/etc"));
-        assert!(is_blocked_mount_source("/usr"));
-        // macOS `/private/X` aliases map back onto the blocked root.
-        assert!(is_blocked_mount_source("/private/tmp"));
-        assert!(is_blocked_mount_source("/private/var"));
-        // Subdirectories of a blocked root are allowed.
-        assert!(!is_blocked_mount_source("/tmp/my_app"));
-        assert!(!is_blocked_mount_source("/etc/myconf"));
-        assert!(!is_blocked_mount_source("/home/user/project"));
-        // Unrelated roots and non-root `/private` subpaths are fine.
-        assert!(!is_blocked_mount_source("/data"));
-        assert!(!is_blocked_mount_source("/private/tmp/sub"));
-    }
-
-    #[test]
     fn extract_parameter_refs_pulls_each_dot_path() {
         // No references -> empty.
         assert!(extract_parameter_refs("/data/output").is_empty());
