@@ -155,4 +155,18 @@ mod tests {
         );
         assert_eq!(consumed_service_struct_prefix(""), "Service");
     }
+
+    /// A blank or all-punctuation name keeps no identifier character, so it
+    /// falls back like the empty name.
+    #[test]
+    fn the_consumed_service_struct_prefix_of_a_name_without_identifier_characters_is_service() {
+        assert_eq!(consumed_service_struct_prefix("  -- "), "Service");
+        assert_eq!(consumed_service_struct_prefix("   "), "Service");
+    }
+
+    /// A keyword is escaped before the camel case drops the escape again.
+    #[test]
+    fn the_consumed_service_struct_prefix_drops_the_keyword_escape() {
+        assert_eq!(consumed_service_struct_prefix("type"), "Type");
+    }
 }

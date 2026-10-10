@@ -707,4 +707,16 @@ mod tests {
         assert_eq!(sanitize_rust_module_name("mod"), "mod_");
         assert_eq!(sanitize_rust_module_name("type"), "type_");
     }
+
+    #[test]
+    fn sanitize_module_name_falls_back_to_node_when_nothing_survives() {
+        assert_eq!(sanitize_rust_module_name(""), "node");
+        assert_eq!(sanitize_rust_module_name("  -- "), "node");
+    }
+
+    #[test]
+    fn sanitize_module_name_snake_cases_and_guards_a_leading_digit() {
+        assert_eq!(sanitize_rust_module_name("Video-Stream"), "video_stream");
+        assert_eq!(sanitize_rust_module_name("9lives"), "_9lives");
+    }
 }
