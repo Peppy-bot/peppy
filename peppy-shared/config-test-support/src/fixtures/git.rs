@@ -17,7 +17,7 @@ pub fn create_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
 
     let repo = Repository::init(&repo_path).expect("failed to init repository");
 
-    let uvc_content = UvcCameraNodeTemplate::new("uvc_camera")
+    let uvc_content = UvcCameraNodeTemplate::new(UVC_CAMERA_NODE_NAME)
         .render()
         .expect("failed to render uvc template");
     // Keep the node manifest tags aligned with the git ref used for resolution.
