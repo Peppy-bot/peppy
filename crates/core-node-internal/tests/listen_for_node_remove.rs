@@ -2,7 +2,8 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, build_staged_node, send_node_add_and_wait,
-    spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
+    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    wait_until_service_reachable, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::NodeRemoveRequest;
@@ -11,6 +12,7 @@ use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::oneshot::error::TryRecvError;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_remove_success() {
@@ -215,7 +217,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _running = spawn_real_running_instance(
+    let _running = spawn_real_stuck_instance(
         &started_core_node,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
@@ -223,10 +225,14 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     )
     .await;
 
-    // Simulate the node exposing the shutdown service, so node_remove detects it as running.
+    // Simulate the node exposing the shutdown service: node_remove probes it to
+    // tell a running instance from an unreachable one. The stuck variant above
+    // installs no shutdown listener, so this one is the only SHUTDOWN_SERVICE
+    // responder of the instance and sees every shutdown request node_remove
+    // sends.
     let shutdown_handle =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let (shutdown_task, shutdown_rx) = listen_for_shutdown(
+    let (shutdown_task, mut shutdown_rx) = listen_for_shutdown(
         &shutdown_handle,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
@@ -235,9 +241,16 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     .await
     .expect("failed to start shutdown service");
     let _shutdown_task = AbortOnDrop(shutdown_task);
-
-    // Allow the shutdown service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until_service_reachable(
+        &shutdown_handle,
+        &started_core_node.core_node_name,
+        TARGET_NODE_NAME,
+        peppylib::messaging::SHUTDOWN_SERVICE,
+        &started_core_node.core_node_name,
+        TARGET_INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
 
     let response = poll(
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
@@ -256,10 +269,11 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         response.error_message
     );
 
-    tokio::time::timeout(Duration::from_millis(100), shutdown_rx)
-        .await
-        .expect("shutdown signal should be received within timeout")
-        .expect("shutdown channel should not be dropped");
+    // The listener's handler fires the signal before it answers, and
+    // node_remove answers only after the shutdown request got its answer.
+    shutdown_rx
+        .try_recv()
+        .expect("shutdown signal should be received before node_remove answers");
 
     assert!(
         !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
@@ -429,7 +443,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _running = spawn_real_running_instance(
+    let _running = spawn_real_stuck_instance(
         &started_core_node,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
@@ -437,10 +451,14 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     )
     .await;
 
-    // Simulate the node exposing the shutdown service, so node_remove detects it as running.
+    // Simulate the node exposing the shutdown service: node_remove probes it to
+    // tell a running instance from an unreachable one. The stuck variant above
+    // installs no shutdown listener, so this one is the only SHUTDOWN_SERVICE
+    // responder of the instance and sees every shutdown request node_remove
+    // sends.
     let shutdown_handle =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let (shutdown_task, shutdown_rx) = listen_for_shutdown(
+    let (shutdown_task, mut shutdown_rx) = listen_for_shutdown(
         &shutdown_handle,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
@@ -449,9 +467,16 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     .await
     .expect("failed to start shutdown service");
     let _shutdown_task = AbortOnDrop(shutdown_task);
-
-    // Allow the shutdown service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until_service_reachable(
+        &shutdown_handle,
+        &started_core_node.core_node_name,
+        TARGET_NODE_NAME,
+        peppylib::messaging::SHUTDOWN_SERVICE,
+        &started_core_node.core_node_name,
+        TARGET_INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
 
     let before_len = node_stack.len();
 
@@ -511,10 +536,9 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         );
     }
 
+    // node_remove rejects the request before it sends any shutdown request.
     assert!(
-        tokio::time::timeout(Duration::from_millis(100), shutdown_rx)
-            .await
-            .is_err(),
+        matches!(shutdown_rx.try_recv(), Err(TryRecvError::Empty)),
         "shutdown service should not be invoked when stop_instances=false"
     );
 }
