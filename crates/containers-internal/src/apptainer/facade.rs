@@ -24,6 +24,17 @@ const APPTAINER_TMPDIR_ENV: &str = "APPTAINER_TMPDIR";
 /// The flag that binds the host's NVIDIA driver into a container.
 const NV_FLAG: &str = "--nv";
 
+/// The `apptainer build` flag whose value apptainer passes on to `mksquashfs`.
+const MKSQUASHFS_ARGS_FLAG: &str = "--mksquashfs-args";
+
+/// The compression of the squashfs of every image [`Apptainer::build`] packs.
+/// zstd at level 3 packs a node image about ten times faster than gzip,
+/// apptainer's default, at the same size: an 850 MB Rust node image takes 5 s
+/// instead of 35 s on 14 cores. The bundled `squashfuse_ll` that mounts the
+/// image at run time reads zstd, and so does every `mksquashfs` of
+/// squashfs-tools 4.4 or later.
+const SQUASHFS_COMPRESSION: &str = "-comp zstd -Xcompression-level 3";
+
 /// Whether `flags` turn on apptainer's `--nv`. As in apptainer's flag parser,
 /// the flag is `--nv` or `--nv=<bool>`, and the last one wins.
 fn passes_nv(flags: &[String]) -> bool {
@@ -924,6 +935,9 @@ impl Apptainer {
     /// Start building an `apptainer build` command.
     ///
     /// Both paths are translated to guest-visible paths when running under Lima.
+    /// The command packs the image's squashfs with [`SQUASHFS_COMPRESSION`]. A
+    /// `--mksquashfs-args` flag added later with [`ApptainerCommand::raw_flag`]
+    /// replaces it, as apptainer reads the last one.
     pub fn build(&self, output: &Path, def_file: &Path) -> ApptainerCommand<'_> {
         ApptainerCommand {
             facade: self,
@@ -931,7 +945,10 @@ impl Apptainer {
                 output: output.to_string_lossy().into_owned(),
                 def_file: def_file.to_string_lossy().into_owned(),
             },
-            flags: Vec::new(),
+            flags: vec![
+                MKSQUASHFS_ARGS_FLAG.to_string(),
+                SQUASHFS_COMPRESSION.to_string(),
+            ],
             bind_mounts: Vec::new(),
             apptainer_env: Vec::new(),
             lima_shell_extra_args: Vec::new(),

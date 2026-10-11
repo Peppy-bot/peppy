@@ -354,14 +354,20 @@ impl NodeBuildGoalHandler {
                 rebuild: goal.rebuild,
             });
             let work = under_goal_cancel(&goal_ctx, &cancel_token_for_task, work);
-            let result =
-                crate::services::node::gate::finish_on_reset(work, &reset_cancellation, || {
+            // A build stops no instance: its cleanup kills its own build
+            // command at once.
+            let result = crate::services::node::gate::finish_on_reset(
+                work,
+                &reset_cancellation,
+                COOPERATIVE_TEARDOWN_BUDGET,
+                || {
                     NodeBuildResult::failure(
                         &log_path_clone,
                         "node build cancelled by stack reset".to_owned(),
                     )
-                })
-                .await;
+                },
+            )
+            .await;
 
             let _ = consumer_handle.await;
             drop(admission);

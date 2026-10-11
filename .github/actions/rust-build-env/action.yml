@@ -1,9 +1,8 @@
 name: Rust build environment
 description: >-
   Puts the toolchain the host is provisioned with on PATH and checks it is
-  there, then prepares the two pieces of host state apptainer needs: permission
-  to create unprivileged user namespaces, and enough loop devices to mount
-  several images at once.
+  there, then prepares the host state apptainer needs: permission to create
+  unprivileged user namespaces.
 
 runs:
   using: composite
@@ -82,17 +81,3 @@ runs:
           exit 0
         fi
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-    # Apptainer mounts every SIF image through a /dev/loopN node, and a host
-    # materializes only loop0 through loop7 by default. The container tests and
-    # the multi-daemon e2e run several containers at once, and the ninth
-    # concurrent mount dies with "could not open /dev/loop8: no such file or
-    # directory". Create the remaining nodes up front; the loop major is 7 and
-    # the kernel accepts device nodes whether or not udev would have made them.
-    # Like the knob above these are lost on reboot, so every job makes them.
-    - name: Create loop devices for parallel container mounts
-      shell: bash
-      run: |
-        for i in $(seq 8 63); do
-          [ -e "/dev/loop$i" ] || sudo mknod -m 660 "/dev/loop$i" b 7 "$i"
-        done

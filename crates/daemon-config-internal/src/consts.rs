@@ -261,7 +261,8 @@ impl PeppyDirs {
     /// Shared build cache bind mounted into Rust and Python container builds:
     /// the cargo registry and sccache artifacts of Rust builds, the uv
     /// packages and Python interpreters of Python builds, and the pinned
-    /// downloads of both.
+    /// downloads of both. The boot clear of the per-boot dev root keeps it
+    /// (see [`crate::per_boot_root`]).
     pub fn container_build_cache_dir(&self) -> PathBuf {
         self.cache_dir().join("container_build")
     }
@@ -280,9 +281,10 @@ pub enum RootLifetime {
     /// Peppy never clears the root: a `PEPPY_HOME` root and the production
     /// root `~/.peppy`.
     Persistent,
-    /// Peppy clears the root, except its configuration, at the first peppy
-    /// process of each boot of the machine: the default root of a dev build,
-    /// `~/.cache/peppy-dev`. See [`crate::per_boot_root`].
+    /// Peppy clears the root, except its configuration and its container
+    /// build caches, at the first peppy process of each boot of the machine:
+    /// the default root of a dev build, `~/.cache/peppy-dev`. See
+    /// [`crate::per_boot_root`].
     PerBoot,
 }
 

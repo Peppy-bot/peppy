@@ -2,7 +2,7 @@ mod common;
 #[path = "listen_for_launch/copies.rs"]
 mod copies;
 
-use common::{AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_health_timeout};
+use common::{AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_default_setup_timeout};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::NodeConfigParser;
 use config::runtime::Name;
@@ -1492,8 +1492,9 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
  {
     const NODE_TAG: &str = "v1";
 
-    // Use a short health timeout so the test doesn't take too long.
-    let started_core_node = start_core_node_with_health_timeout(Duration::from_secs(2)).await;
+    // A short default setup budget, so the test doesn't take too long.
+    let started_core_node =
+        start_core_node_with_default_setup_timeout(common::setup_budget(2)).await;
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
@@ -1532,6 +1533,15 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         .await
         .expect("ready should start"),
     );
+    // An instance that answered ready is stopped through its shutdown
+    // request; this one ends at once instead of at its force-kill deadline.
+    let (_shutdown_b, _) = common::install_shutdown_listener_for_instance(
+        &started_core_node,
+        "node_b",
+        NODE_TAG,
+        "b1",
+    )
+    .await;
 
     let launch_b = r#"
     { peppy_schema: "launcher/v1", deployments: [ { source: { name: "node_b:v1" }, instances: [ { instance_id: "b1" } ] } ] }
@@ -1581,6 +1591,12 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     assert!(
         !result.success,
         "launch should fail because the node never becomes healthy"
+    );
+    let reason = result.error_message.clone().unwrap_or_default();
+    assert!(
+        reason.contains("the setup did not end within 2 s, the default setup budget")
+            && reason.contains("`execution.setup_timeout_secs`"),
+        "the failure names the default setup budget and the key: {reason}"
     );
 
     // New contract: a failed launch leaves a clean empty stack.
@@ -2672,22 +2688,35 @@ async fn each_log_of_a_launch_exports_its_own_entries_once() {
     }
 
     // The launch log: each entry is its own, exported by it, or one a node
-    // log holds and exports.
+    // log holds and exports. It labels each line of a build with its node.
+    let entry_in_launch_log = |record: &log_export::LogRecord| match record.identity.kind {
+        LogKind::Build => format!("[scripted_node:v1] {}", record.body),
+        _ => record.body.clone(),
+    };
+    let relayed: Vec<String> = records
+        .iter()
+        .filter(|record| !matches!(record.identity.kind, LogKind::Launch { .. }))
+        .map(entry_in_launch_log)
+        .collect();
     let launch_bodies = &bodies_by_file[result.log_path.as_path()];
     let launch_entries = log_entries(&result.log_path);
     let own: Vec<&str> = launch_entries
         .iter()
+        .filter(|entry| !relayed.contains(entry))
         .map(String::as_str)
-        .filter(|entry| !node_bodies.contains(entry))
         .collect();
     assert_eq!(
         &own, launch_bodies,
         "the launch log exports its own entries"
     );
-    for output in outputs {
+    for record in records
+        .iter()
+        .filter(|record| outputs.contains(&record.body.as_str()))
+    {
+        let entry = entry_in_launch_log(record);
         assert!(
-            launch_entries.iter().any(|entry| entry == output),
-            "the launch log holds `{output}`, which it relays: {launch_entries:#?}"
+            launch_entries.contains(&entry),
+            "the launch log holds `{entry}`, which it relays: {launch_entries:#?}"
         );
     }
     for body in launch_bodies {

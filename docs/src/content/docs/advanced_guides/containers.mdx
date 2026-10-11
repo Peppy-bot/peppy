@@ -484,6 +484,16 @@ fetch_pinned() {
 }
 ```
 
+Both also get `PEPPY_NODE_BUILD_CACHE`, which names
+`/peppy-cache/nodes/<name>_<tag>`: a directory of the node being built, which
+no build of another node uses. Peppy never reads it. A def keeps there what
+its next build can use, such as a part of the image that it builds again only
+when the inputs of that part change, stored under a hash of those inputs. A
+build of the node can start while an earlier one still ends (after a
+`--force` build, say), so a def stores a file there under a temporary name
+and then renames it, as with the downloads. Nothing prunes the directory: a
+def that stores a new entry removes the entries it no longer needs.
+
 :::caution
 Caching requires a `/peppy-cache` directory in the base image: build-time
 binds cannot create their destination. The peppy base images
@@ -546,8 +556,8 @@ The cache lives at `~/.peppy/cache/container_build` and is safe to delete
 at any time; the next build recreates it. `sccache-cache/` prunes itself to
 sccache's size limit (10 GiB by default). `cargo-home/` grows with every
 dependency version ever built, `uv-python/` with every Python version ever
-installed, and `downloads/` with every pin ever fetched; they are only
-reclaimed by deleting them. `uv-cache/` grows with every package version
+installed, `downloads/` with every pin ever fetched, and `nodes/` with what
+the defs keep there; they are only reclaimed by deleting them. `uv-cache/` grows with every package version
 ever installed. Because the directory is shared and writable, what a
 `%post` writes there can persist into later builds on the same machine, the
 same trust the build itself already runs with. On macOS, builds run inside
@@ -675,6 +685,8 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
 | `lima_shell_extra_args`      | Extra flags passed to `limactl shell` on macOS (ignored on Linux)      |
 
 All fields are optional and default to an empty list when omitted.
+
+Peppy packs every image it builds with zstd at level 3 (`--mksquashfs-args "-comp zstd -Xcompression-level 3"`), which packs a node image about ten times faster than Apptainer's default gzip, at the same size. The extra build arguments come after that flag, and Apptainer reads the last `--mksquashfs-args`, so `apptainer_build_extra_args: ["--mksquashfs-args", "-comp xz"]` packs the image with xz.
 
 A node that renders or computes on the host's NVIDIA GPU passes `apptainer_run_extra_args: ["--nv"]`: Apptainer then binds the host's driver libraries (CUDA, EGL, GLX, NVML) into the container at start. Apptainer's own list of these libraries covers NVIDIA's desktop driver. The L4T driver of a Jetson board loads more libraries, and the set changes from one L4T release to the next. Each L4T release lists them in its container manifest, the `*.csv` files in `/etc/nvidia-container-runtime/host-files-for-container.d`. Before it starts a `--nv` node, peppy adds every shared library of that manifest to the list of the bundled Apptainer. So the same node configuration renders and computes through the GPU on a desktop and on a Jetson.
 

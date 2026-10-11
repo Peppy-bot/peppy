@@ -1,0 +1,40 @@
+// Deploying an exposure with a daemon target: the robots run as copies, and
+// the framework's endpoint lets a client add and remove them.
+//
+//   peppy stack launch mcp_framework_controls
+{
+  peppy_schema: "launcher/v1",
+  components: [
+    {
+      name: "robot",
+      cardinality: "zero_or_more",
+      options: {
+        openarm_sim: "robots/fragments/openarm_sim.json5",
+        so101_sim: "robots/fragments/so101_sim.json5",
+      },
+    },
+  ],
+  deployments: [
+    {
+      source: { exposures: ["framework_controls:v1"] },
+      instances: [
+        {
+          instance_id: "framework_controls_inst",
+          arguments: { port: 8903 },
+          // The daemon target `stack` takes no link. It takes a scope,
+          // keyed by the target's name. The instance has no `core_node`: an
+          // instance that serves a daemon target runs on the coordinator.
+          daemon_scopes: {
+            stack: {
+              max_copies: 4,
+              options: [
+                { option: "openarm_sim", description: "A simulated OpenArm v2 standing on the floor: two arms with grippers" },
+                { option: "so101_sim", description: "A simulated SO-101 clamped on the edge of a table: one arm with a gripper" },
+              ],
+            },
+          },
+        },
+      ],
+    },
+  ],
+}

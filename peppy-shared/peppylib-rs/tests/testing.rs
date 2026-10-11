@@ -487,6 +487,47 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
     router.shutdown().await.expect("router shutdown");
 }
 
+/// The node under the harness reads the setup budget its manifest declares,
+/// as it does when it runs standalone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn harness_core_node_reads_the_setup_budget_of_its_manifest() {
+    let router = EphemeralRouter::start().await.expect("start router");
+    let temp_dir = TempDir::new().expect("temp dir");
+    let peppy_config_path = temp_dir.path().join("peppy.json5");
+    std::fs::write(
+        &peppy_config_path,
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "test_node", tag: "v1" },
+            execution: {
+                language: "rust",
+                run_cmd: ["./target/debug/test_node"],
+                setup_timeout_secs: 180,
+            },
+        }"#,
+    )
+    .expect("peppy config should be written");
+
+    let harness = HarnessCore::start::<EmptyParameters, _, _>(
+        peppy_config_path,
+        StandaloneConfig::new()
+            .with_messaging(router.host(), router.port())
+            .with_instance_id("setup_budget_instance"),
+        &[],
+        &[],
+        |_params, _node_runner| async move { Ok(()) },
+    )
+    .await
+    .expect("harness should start");
+    assert_eq!(
+        harness.node_runner().setup_timeout(),
+        Duration::from_secs(180)
+    );
+
+    harness.shutdown().await.expect("harness shutdown");
+    router.shutdown().await.expect("router shutdown");
+}
+
 /// A setup error is not swallowed by teardown: `shutdown()` propagates it so
 /// the test fails even when its assertions never noticed the node was broken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

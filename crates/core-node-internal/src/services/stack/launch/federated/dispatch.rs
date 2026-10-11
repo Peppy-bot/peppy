@@ -37,9 +37,10 @@ use peppylib::ActionMessenger;
 use peppylib::core_node::transport::{poll, send_goal};
 use peppylib::messaging::ActionGoalHandle;
 
-use super::super::feedback::{publish_relayed, publish_warning};
+use super::super::feedback::{publish_relayed, publish_stdout, publish_warning};
 use super::super::watchers::{LifecycleWatchers, set_local_watchers};
 use crate::services::stack::action::StackChangeContext;
+use crate::services::stack::stack_list_on;
 
 /// Bound on a peer accepting a dispatched goal. Accepting is a cheap
 /// admission check on the peer, so a healthy one answers well inside this; the
@@ -51,10 +52,37 @@ const GOAL_ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 /// it is allowed to take as long as a cooperative shutdown of that stack takes.
 const SLICE_BEGIN_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Bound on telling a peer to cancel a goal, and again on its answer for the
-/// cancelled work: both fit inside the CLI's grace past the change deadline,
+/// Bound on telling a peer to cancel a goal, and on its answer for work it
+/// drops at once: both fit inside the CLI's grace past the change deadline,
 /// leaving the rest of it to the rollback.
 const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How a peer answers for a goal it was told to cancel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::services::stack) enum CancelledAnswer {
+    /// It drops the work at once, and answers within
+    /// [`CANCEL_SETTLE_TIMEOUT`].
+    Prompt,
+    /// It gives up the start of an instance first: an instance that answered
+    /// ready stops through its cooperative stop, within the start give-up
+    /// budget of the peer's shutdown grace. Until it answers, the goal holds
+    /// the peer's gate, so a rollback that asks earlier is refused as busy.
+    AfterStartGiveUp,
+}
+
+/// How long the coordinator waits for a peer's answer for a goal it told it
+/// to cancel. `peer_grace` is the shutdown grace the peer's stack listing
+/// gives, `None` when the listing did not answer: a peer that does not answer
+/// its listing is not likely to answer for its goal either, so it gets
+/// [`CANCEL_SETTLE_TIMEOUT`].
+fn cancelled_answer_budget(answer: CancelledAnswer, peer_grace: Option<Duration>) -> Duration {
+    match (answer, peer_grace) {
+        (CancelledAnswer::AfterStartGiveUp, Some(grace)) => {
+            crate::services::node::start_give_up_budget(grace)
+        }
+        _ => CANCEL_SETTLE_TIMEOUT,
+    }
+}
 
 /// One of the three node actions, viewed as something a coordinator dispatches.
 ///
@@ -64,6 +92,8 @@ pub(in crate::services::stack) trait RemoteGoal: ActionGoal {
     /// The launch step a peer's output for this action is attributed to, so
     /// remote lines land in the same place in the UI as local ones.
     const STEP: LaunchFeedbackStep;
+    /// How the peer answers for this action once it is told to cancel it.
+    const CANCELLED_ANSWER: CancelledAnswer;
     /// What the action's own result carries beyond success or failure.
     type Outcome;
 
@@ -77,9 +107,10 @@ pub(in crate::services::stack) trait RemoteGoal: ActionGoal {
 }
 
 macro_rules! impl_remote_goal {
-    ($goal:ty, $step:expr, $label:literal, $response:ty, $feedback:ty, $result:ty, $outcome:ty, $take:expr) => {
+    ($goal:ty, $step:expr, $cancelled:expr, $label:literal, $response:ty, $feedback:ty, $result:ty, $outcome:ty, $take:expr) => {
         impl RemoteGoal for $goal {
             const STEP: LaunchFeedbackStep = $step;
+            const CANCELLED_ANSWER: CancelledAnswer = $cancelled;
             type Outcome = $outcome;
 
             fn label() -> &'static str {
@@ -118,6 +149,7 @@ macro_rules! impl_remote_goal {
 impl_remote_goal!(
     NodeAddGoal,
     LaunchFeedbackStep::AddingNode,
+    CancelledAnswer::Prompt,
     "node_add",
     NodeAddGoalResponse,
     NodeAddFeedback,
@@ -128,6 +160,7 @@ impl_remote_goal!(
 impl_remote_goal!(
     NodeBuildGoal,
     LaunchFeedbackStep::BuildingNode,
+    CancelledAnswer::Prompt,
     "node_build",
     NodeBuildGoalResponse,
     NodeBuildFeedback,
@@ -138,6 +171,7 @@ impl_remote_goal!(
 impl_remote_goal!(
     NodeRunGoal,
     LaunchFeedbackStep::RunningNode,
+    CancelledAnswer::AfterStartGiveUp,
     "node_run",
     NodeRunGoalResponse,
     NodeRunFeedback,
@@ -274,39 +308,52 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
     Ok(RemoteGoalRun { log_path, outcome })
 }
 
-/// Tells `core_node` to cancel the goal `handle` drives, then gives it
-/// [`CANCEL_SETTLE_TIMEOUT`] to answer for the work, so the peer's own
-/// cancel path has run before a rollback asks what it holds. The answer,
-/// when one comes, says whether the work was cancelled or finished on its
-/// own past the budget.
+/// Tells `core_node` to cancel the goal `handle` drives, then waits for its
+/// answer for the work as long as [`cancelled_answer_budget`] says, so the
+/// peer's own cancel path has run, and its gate is free, before a rollback
+/// asks what it holds. The answer, when one comes, says whether the work was
+/// cancelled or finished on its own past the budget.
 async fn cancel_remote_goal<G: RemoteGoal>(
     ctx: &StackChangeContext,
     core_node: &str,
     handle: &ActionGoalHandle,
 ) {
     let label = G::label();
-    let line =
-        match ActionMessenger::cancel_goal(&ctx.messenger, handle, CANCEL_SETTLE_TIMEOUT).await {
-            Ok(_) => {
-                match ActionMessenger::request_result_body(
-                    &ctx.messenger,
-                    handle,
-                    CANCEL_SETTLE_TIMEOUT,
-                )
-                .await
-                {
-                    Ok(payload) => match G::decode_outcome(payload.as_ref()) {
-                        Ok(_) => format!("`{core_node}` finished the {label} after the budget"),
-                        Err(reason) => format!("`{core_node}` ended the {label}: {reason}"),
-                    },
-                    Err(error) => format!(
-                        "`{core_node}` was told to cancel the {label} and has not answered for it: \
-                     {error}"
-                    ),
-                }
-            }
-            Err(error) => format!("`{core_node}` could not be told to cancel the {label}: {error}"),
-        };
+    if let Err(error) =
+        ActionMessenger::cancel_goal(&ctx.messenger, handle, CANCEL_SETTLE_TIMEOUT).await
+    {
+        let line = format!("`{core_node}` could not be told to cancel the {label}: {error}");
+        publish_warning(ctx, line, LaunchFeedbackStep::LauncherStep).await;
+        return;
+    }
+    let peer_grace = match G::CANCELLED_ANSWER {
+        CancelledAnswer::Prompt => None,
+        CancelledAnswer::AfterStartGiveUp => stack_list_on(ctx, core_node)
+            .await
+            .ok()
+            .map(|stack| Duration::from_secs(stack.shutdown_grace_secs)),
+    };
+    let budget = cancelled_answer_budget(G::CANCELLED_ANSWER, peer_grace);
+    // A progress line: the wait can outlast the silence the caller allows
+    // past the budget that ran out.
+    publish_stdout(
+        ctx,
+        format!(
+            "`{core_node}` was told to cancel the {label}; waiting up to {} s for its answer",
+            budget.as_secs()
+        ),
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+    let line = match ActionMessenger::request_result_body(&ctx.messenger, handle, budget).await {
+        Ok(payload) => match G::decode_outcome(payload.as_ref()) {
+            Ok(_) => format!("`{core_node}` finished the {label} after the budget"),
+            Err(reason) => format!("`{core_node}` ended the {label}: {reason}"),
+        },
+        Err(error) => format!(
+            "`{core_node}` was told to cancel the {label} and has not answered for it: {error}"
+        ),
+    };
     publish_warning(ctx, line, LaunchFeedbackStep::LauncherStep).await;
 }
 
@@ -547,5 +594,63 @@ pub(in crate::services::stack) async fn clear_participant_slices(
             LaunchFeedbackStep::LauncherStep,
         )
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::node::start_give_up_budget;
+
+    /// A peer answers for a cancelled start once it gave the start up, which
+    /// takes the start give-up budget of its own shutdown grace, well past
+    /// the settle timeout of an add or a build.
+    #[test]
+    fn a_cancelled_remote_start_waits_the_start_give_up_budget_of_the_peers_grace() {
+        for grace_secs in [1, 5, 120] {
+            let grace = Duration::from_secs(grace_secs);
+            assert_eq!(
+                cancelled_answer_budget(CancelledAnswer::AfterStartGiveUp, Some(grace)),
+                start_give_up_budget(grace),
+                "grace {grace_secs} s"
+            );
+        }
+        assert!(
+            start_give_up_budget(Duration::from_secs(1)) > CANCEL_SETTLE_TIMEOUT,
+            "the cooperative stop of a start outlasts the settle timeout"
+        );
+    }
+
+    #[test]
+    fn a_prompt_answer_or_a_peer_whose_listing_did_not_answer_waits_the_settle_timeout() {
+        let long_grace = Some(Duration::from_secs(600));
+        assert_eq!(
+            cancelled_answer_budget(CancelledAnswer::Prompt, long_grace),
+            CANCEL_SETTLE_TIMEOUT
+        );
+        assert_eq!(
+            cancelled_answer_budget(CancelledAnswer::Prompt, None),
+            CANCEL_SETTLE_TIMEOUT
+        );
+        assert_eq!(
+            cancelled_answer_budget(CancelledAnswer::AfterStartGiveUp, None),
+            CANCEL_SETTLE_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn only_a_remote_start_waits_for_the_give_up_of_its_instance() {
+        assert_eq!(
+            <NodeAddGoal as RemoteGoal>::CANCELLED_ANSWER,
+            CancelledAnswer::Prompt
+        );
+        assert_eq!(
+            <NodeBuildGoal as RemoteGoal>::CANCELLED_ANSWER,
+            CancelledAnswer::Prompt
+        );
+        assert_eq!(
+            <NodeRunGoal as RemoteGoal>::CANCELLED_ANSWER,
+            CancelledAnswer::AfterStartGiveUp
+        );
     }
 }

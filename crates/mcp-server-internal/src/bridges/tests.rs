@@ -7,9 +7,10 @@
 //! bridge behind a real endpoint over HTTP in [`loopback`].
 
 use super::{
-    AfterCancel, Binding, CancelReason, FeedbackStep, GoalFollow, PreparedTask, Silence,
-    TaskSurface, Turn, after_cancel, drive_goal, next_turn,
+    AfterCancel, Binding, CancelReason, FeedbackStep, GoalFollow, PreparedTask, Silence, Turn,
+    after_cancel, drive_goal, next_turn,
 };
+use crate::test_support::{PausedRuntime, ScriptedSurface};
 use config::node::{MessageFormat, QoSProfile};
 use message_codec::MessageCodec;
 use message_codec::consumer::{ActionClient, ConsumerError, ConsumerIdentity, MemberBinding};
@@ -24,12 +25,9 @@ use peppylib::testing::{
 };
 use peppylib::types::Payload;
 use serde_json::{Value, json};
-use std::future::Future;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, watch};
-use tokio_util::sync::CancellationToken;
 
 mod loopback;
 
@@ -46,63 +44,6 @@ const DEADLINE: Duration = Duration::from_secs(10);
 const WINDOW: Duration = Duration::from_secs(60);
 /// A step of the paused clock that stays inside [`WINDOW`].
 const WITHIN_THE_WINDOW: Duration = WINDOW.saturating_sub(Duration::from_millis(1));
-
-/// The runtime surface, scripted: cancellation fires when the test says so
-/// and every feedback message is kept for the assertions.
-struct ScriptedSurface {
-    cancel: CancellationToken,
-    feedback: watch::Sender<Vec<String>>,
-    /// How many times the bridge has asked for the client's cancel: once
-    /// per turn of the loop that follows the goal.
-    cancel_watches: watch::Sender<usize>,
-}
-
-impl ScriptedSurface {
-    fn new() -> Self {
-        Self {
-            cancel: CancellationToken::new(),
-            feedback: watch::Sender::new(Vec::new()),
-            cancel_watches: watch::Sender::new(0),
-        }
-    }
-
-    /// Returns once the bridge follows the admitted goal: its bound is
-    /// armed, and it watches for the client's cancel.
-    async fn followed(&self) {
-        let mut watches = self.cancel_watches.subscribe();
-        tokio::time::timeout(READINESS_TIMEOUT, watches.wait_for(|watches| *watches > 0))
-            .await
-            .expect("the bridge follows the goal")
-            .expect("the surface outlives the wait");
-    }
-
-    fn feedback(&self) -> Vec<String> {
-        self.feedback.borrow().clone()
-    }
-
-    /// Returns once the bridge has reported `count` feedback messages.
-    async fn reported(&self, count: usize) {
-        let mut reported = self.feedback.subscribe();
-        tokio::time::timeout(
-            READINESS_TIMEOUT,
-            reported.wait_for(|messages| messages.len() >= count),
-        )
-        .await
-        .unwrap_or_else(|_| panic!("the bridge never reported feedback message {count}"))
-        .expect("the surface outlives the wait");
-    }
-}
-
-impl TaskSurface for ScriptedSurface {
-    fn report_feedback(&self, message: String) {
-        self.feedback.send_modify(|messages| messages.push(message));
-    }
-
-    fn cancel_requested(&self) -> impl Future<Output = ()> + Send {
-        self.cancel_watches.send_modify(|watches| *watches += 1);
-        self.cancel.cancelled()
-    }
-}
 
 /// One mesh per test: the router, a session per side, and the provider's
 /// identity as the launcher would have bound it to the task's target.
@@ -222,172 +163,36 @@ async fn drive(
     .await
 }
 
-/// A bridge driving one goal on a runtime of its own, whose clock moves
-/// only when the test advances it. The mesh and the provider keep real
-/// time, so between two advances every step is one of the peers acting,
-/// and the bridge's bound sees exactly the time the test gives it. The
-/// runtime runs on one thread, so what the bridge does in one step, such
-/// as showing a message and starting a new window, is never split by an
-/// advance.
-struct PausedBridge {
-    advances: mpsc::UnboundedSender<(Duration, oneshot::Sender<()>)>,
-    /// How many warnings the bridge has logged (see [`BridgeWarnings`]).
-    warnings: watch::Receiver<usize>,
-    /// `None` when the test gave up on the goal before it settled.
-    outcome: tokio::task::JoinHandle<Option<Result<Value, ActionExit>>>,
-}
+/// A bridge driving one goal on a runtime whose clock moves only when the
+/// test advances it (see [`PausedRuntime`]).
+type PausedBridge = PausedRuntime<Result<Value, ActionExit>>;
 
-/// Counts the warnings the bridge logs on the thread it runs on. A feedback
-/// message that does not convert leaves no other trace, so the count is how
-/// a test knows the bridge has taken one.
-struct BridgeWarnings(watch::Sender<usize>);
-
-impl BridgeWarnings {
-    /// The warnings of the bridge's own module, the one these tests sit in.
-    fn counts(metadata: &tracing::Metadata<'_>) -> bool {
-        let bridge_module = module_path!()
-            .strip_suffix("::tests")
-            .expect("the tests sit in the bridge's module");
-        *metadata.level() == tracing::Level::WARN && metadata.target() == bridge_module
-    }
-}
-
-impl tracing::Subscriber for BridgeWarnings {
-    fn register_callsite(
-        &self,
-        _metadata: &'static tracing::Metadata<'static>,
-    ) -> tracing::subscriber::Interest {
-        // Every test thread has a subscriber of its own: each event asks the
-        // one of the thread it happens on.
-        tracing::subscriber::Interest::sometimes()
-    }
-
-    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        Self::counts(metadata)
-    }
-
-    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-
-    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-
-    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-
-    fn event(&self, event: &tracing::Event<'_>) {
-        if Self::counts(event.metadata()) {
-            self.0.send_modify(|logged| *logged += 1);
-        }
-    }
-
-    fn enter(&self, _span: &tracing::span::Id) {}
-
-    fn exit(&self, _span: &tracing::span::Id) {}
-}
-
-impl PausedBridge {
-    /// Starts driving the goal of `task`, reporting through `surface`.
-    fn drive(mesh: &Mesh, task: PreparedTask, surface: Arc<ScriptedSurface>) -> Self {
-        let (advances, mut advance_requests) =
-            mpsc::unbounded_channel::<(Duration, oneshot::Sender<()>)>();
-        let (logged_warnings, warnings) = watch::channel(0);
-        let messenger = mesh.bridge_messenger.clone();
-        // Zenoh refuses to close a session from a current-thread runtime, so
-        // the session outlives the bridge's runtime even when the test ends
-        // first: the tasks the runtime drops never hold its last handle.
-        let session = mesh.bridge_messenger.clone();
-        let binding = member_binding(mesh);
-        let producer = mesh.producer.clone();
-        let outcome = tokio::task::spawn_blocking(move || {
-            let _warnings = tracing::subscriber::set_default(BridgeWarnings(logged_warnings));
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .start_paused(true)
-                .build()
-                .expect("the bridge's runtime builds");
-            let outcome = runtime.block_on(async move {
-                // A blocking task that is still running keeps Tokio from
-                // moving the paused clock on its own while the bridge waits
-                // on the mesh: only an advance the test asks for moves it.
-                let (hold_clock, clock_released) = std::sync::mpsc::channel::<()>();
-                let clock_guard = tokio::task::spawn_blocking(move || {
-                    let _ = clock_released.recv();
-                });
-                let mut goal = tokio::spawn(async move {
-                    drive_goal(
-                        &task,
-                        &messenger,
-                        &bridge_identity(),
-                        &binding,
-                        &producer,
-                        json!({}),
-                        surface.as_ref(),
-                    )
-                    .await
-                });
-                let outcome = loop {
-                    tokio::select! {
-                        outcome = &mut goal => break Some(outcome.expect("the bridge does not panic")),
-                        request = advance_requests.recv() => {
-                            // The test dropped its end: it failed, and no one
-                            // reads the outcome.
-                            let Some((by, advanced)) = request else { break None };
-                            tokio::time::advance(by).await;
-                            let _ = advanced.send(());
-                        }
-                    }
-                };
-                drop(hold_clock);
-                clock_guard.await.expect("the clock guard ends");
-                outcome
-            });
-            drop(runtime);
-            drop(session);
-            outcome
-        });
-        Self {
-            advances,
-            warnings,
-            outcome,
-        }
-    }
-
-    /// Moves the bridge's clock forward by `by`, firing every timer due by
-    /// then.
-    async fn advance(&self, by: Duration) {
-        let (advanced, done) = oneshot::channel();
-        self.advances
-            .send((by, advanced))
-            .expect("the bridge still drives its goal");
-        done.await.expect("the bridge's clock advanced");
-    }
-
-    /// Returns once the bridge has logged `count` warnings.
-    async fn logged_warnings(&self, count: usize) {
-        let mut warnings = self.warnings.clone();
-        tokio::time::timeout(
-            READINESS_TIMEOUT,
-            warnings.wait_for(|logged| *logged >= count),
-        )
-        .await
-        .unwrap_or_else(|_| panic!("the bridge never logged warning {count}"))
-        .expect("the bridge's log outlives the wait");
-    }
-
-    /// How the goal ended, as the bridge reports it.
-    async fn outcome(self) -> Result<Value, ActionExit> {
-        // The test's end of the clock stays open while it waits: closing it
-        // tells the bridge the test gave up on the goal.
-        let Self {
-            advances, outcome, ..
-        } = self;
-        let outcome = tokio::time::timeout(READINESS_TIMEOUT, outcome)
+/// Starts driving the goal of `task` on a [`PausedBridge`], reporting
+/// through `surface`. The bridge's warnings are those of the module these
+/// tests sit in.
+fn drive_paused(mesh: &Mesh, task: PreparedTask, surface: Arc<ScriptedSurface>) -> PausedBridge {
+    let bridge_module = module_path!()
+        .strip_suffix("::tests")
+        .expect("the tests sit in the bridge's module");
+    let messenger = mesh.bridge_messenger.clone();
+    let binding = member_binding(mesh);
+    let producer = mesh.producer.clone();
+    PausedRuntime::spawn(
+        mesh.bridge_messenger.clone(),
+        bridge_module,
+        move || async move {
+            drive_goal(
+                &task,
+                &messenger,
+                &bridge_identity(),
+                &binding,
+                &producer,
+                json!({}),
+                surface.as_ref(),
+            )
             .await
-            .expect("the bridge settles the goal")
-            .expect("the bridge's runtime does not panic");
-        drop(advances);
-        outcome.expect("the bridge settles while the test waits for it")
-    }
+        },
+    )
 }
 
 fn percent_codec() -> MessageCodec {
@@ -571,7 +376,7 @@ impl ProgressGoal {
     /// the bridge follows it: its first window runs from here.
     async fn accepted(mesh: &Mesh, provider: &mut MockActionServerCore) -> Self {
         let surface = Arc::new(ScriptedSurface::new());
-        let bridge = PausedBridge::drive(mesh, progress_task(mesh), Arc::clone(&surface));
+        let bridge = drive_paused(mesh, progress_task(mesh), Arc::clone(&surface));
         let context = accepted_goal(provider).await;
         surface.followed().await;
         Self {
@@ -605,7 +410,7 @@ async fn a_whole_goal_deadline_is_not_pushed_back_by_feedback() {
         deadline: WINDOW,
         reports_feedback: true,
     };
-    let bridge = PausedBridge::drive(
+    let bridge = drive_paused(
         &mesh,
         task_with_feedback(&mesh, whole_goal),
         Arc::clone(&surface),

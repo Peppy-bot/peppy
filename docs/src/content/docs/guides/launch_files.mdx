@@ -80,7 +80,7 @@ If a node or tag is missing from the cache, the launch fails with a "not found" 
 
 #### Serving MCP exposures
 
-A deployment whose `source` lists `exposures` runs the MCP server built into `peppy` for them instead of a node. Each entry is an [MCP exposure](/advanced_guides/mcp/) as `"<name>:<tag>"`, resolved against `~/.peppy/cache/mcp_exposures.json5`, and the contracts the exposures reference resolve through the contracts cache. The daemon derives the server's node from those documents, so the deployment behaves like any other: its instances take `arguments` (the server's single `port`), `links` for the contract slots the exposures' targets become, and `core_node` for placement. The list must not be empty or repeat an exposure, and two deployments cannot list the same set.
+A deployment whose `source` lists `exposures` runs the MCP server built into `peppy` for them instead of a node. Each entry is an [MCP exposure](/advanced_guides/mcp/) as `"<name>:<tag>"`, resolved against `~/.peppy/cache/mcp_exposures.json5`, and the contracts the exposures reference resolve through the contracts cache. The daemon derives the server's node from those documents, so the deployment behaves like any other: its instances take `arguments` (the server's single `port`), `links` for the contract slots the exposures' contract targets become, and `core_node` for placement. A [daemon target](/advanced_guides/mcp/#daemon-targets) takes no link: the instance gives it a scope in [`daemon_scopes`](#daemon_scopes-optional). The list must not be empty or repeat an exposure, and two deployments cannot list the same set.
 
 ```json5
 // Exposure source: the built-in MCP server serving two exposures on one port
@@ -334,6 +334,47 @@ instances: [
 ]
 ```
 
+### `daemon_scopes` (optional)
+
+The scope of each [daemon target](/advanced_guides/mcp/#daemon-targets) that the instance serves, keyed by the target's name: what a client of the target may do through the daemon interface it names. Only an instance of an [exposure deployment](#serving-mcp-exposures) whose exposures have a daemon target takes it. A daemon target takes a scope and no link.
+
+```json5
+{
+  source: { exposures: ["framework_controls:v1"] },
+  instances: [
+    {
+      instance_id: "framework_controls_inst",
+      arguments: { port: 8903 },
+      daemon_scopes: {
+        stack: {
+          max_copies: 4,
+          options: [
+            { option: "openarm_sim", description: "A simulated OpenArm v2 standing on the floor: two arms with grippers" },
+            { option: "so101_sim", description: "A simulated SO-101 clamped on the edge of a table: one arm with a gripper" },
+          ],
+        },
+      },
+    },
+  ],
+}
+```
+
+When the launcher is read, a scope is a free value, because only the resolution of the exposure deployments knows which targets are daemon targets. A launcher that writes its options in its own file and its endpoint in a fragment gives the scope with a top-level [`set_daemon_scopes`](#adjustments) adjustment instead. A scope belongs to the stack: a [copy](#copies) writes none.
+
+The launch, each join and [`peppy stack resolve`](#auditing-a-composed-launch) parse every scope into the type of its interface before anything starts. These checks read the launcher and the exposure documents only, so `peppy stack resolve` runs them also when the nodes cache is empty. They refuse:
+
+- `daemon_scopes` on an instance that serves no daemon target;
+- a scope key that is not a daemon target of the instance's exposures; the refusal says so when the key is a contract target, which takes `links`;
+- a daemon target with no scope;
+- a scope that does not parse into the type of its interface, for example a [`stack_copies` scope](/advanced_guides/mcp/#scopes) with no option or with `max_copies` 0;
+- a `stack_copies` scope that names an option that is not an option of an axis that runs as copies, with the menu of the options a join can add; in a launcher that declares no such axis, a flat launcher included, every `stack_copies` scope;
+- an instance that serves a daemon target and does not run on the coordinator: one that declares `core_node`, or one of a copy;
+- a `links` key that names a daemon target: the refusal says that the target takes a scope.
+
+Every refusal is reported at once.
+
+The server reads its scopes from the runtime configuration of its instance when it starts. A server that starts without these checks, for example with `peppy node run` of its node, and finds a daemon target with no scope or a scope that does not parse, serves nothing and stops, and its run log says which target lacks a scope and how to give one (see [Deploy it](/advanced_guides/mcp/#deploy-it)).
+
 ## Clock domains
 
 A launcher declares the timelines its instances read in a root-level `framework` block, beside `deployments`:
@@ -397,13 +438,17 @@ After a build, `peppy stack list` shows each node at stage `Ready` with `0` inst
 
 ## Launch timeouts
 
-A launch adds, builds and starts its nodes one phase at a time, and each phase runs under an idle budget: the clock resets whenever the phase produces output (a git or http download's progress, a `build_cmd`'s lines, a starting node's lines), and the phase fails when it goes quiet for longer than its budget. The budgets are per phase and per node:
+A launch adds, builds and starts its nodes one phase at a time, and each phase runs under an idle budget: the clock resets whenever the phase produces output (a git or http download's progress, a `build_cmd`'s lines, a starting node's lines, the ready signal of a starting instance), and the phase fails when it goes quiet for longer than its budget. The budgets are per phase and per node:
 
 | Flag | Phase | Default |
 | --- | --- | --- |
 | `--node-add-idle-timeout-secs` | fetching a node's source and generating its bindings | 600 |
 | `--node-build-idle-timeout-secs` | running its `build_cmd`, or downloading and assembling its image; bytes landing on disk and CPU time the build burns count as output too | 180 |
-| `--node-run-idle-timeout-secs` | starting an instance, until it signals ready | 600 |
+| `--node-run-idle-timeout-secs` | starting an instance, until its setup ends and the daemon records it as running | 600 |
+
+These defaults are the only ones: the daemon has no budgets of its own, and every launch, build and join carries the budgets of its caller. When no output arrives, the command waits for the largest of the three budgets plus 60 s before it stops, so the daemon's error for the silent phase comes first.
+
+A join over MCP, through the `join` tool of a [`stack_copies` daemon target](/advanced_guides/mcp/#what-the-tools-of-stack_copies-do), sends these same defaults, with no overall budget. Give such a tool a progress window of the largest of the three budgets plus the same 60 s, 660 s for the defaults, so that the daemon's error for a silent phase comes first.
 
 Every build runs with `CARGO_TERM_PROGRESS_WHEN=always` and `CARGO_TERM_PROGRESS_WIDTH=80`, in a `build_cmd` and in a container def's `%post` alike. Without them, cargo prints a line only when a crate download completes when its output is not a terminal, and until then the download writes nothing to disk and burns no CPU, so a large crate on a slow connection reads as an idle build. With these settings cargo reprints its progress line each time the bytes left to download change, and each reprint counts as output. A download that receives nothing changes nothing, so it still runs out the budget. If you set either variable yourself, a `build_cmd` gets your value; a def sets its own by exporting it in `%post`.
 
@@ -413,11 +458,11 @@ When a budget runs out the launch fails, names the phase and, for an idle budget
 
 - An interrupted **add** never publishes its node. The daemon generates a node's bindings into the node's staged copy on a worker thread of its own, so a generation that is already running when the add's budget runs out finishes on that thread, and the staged copy is removed once it does; a queued generation whose add is gone is skipped. Either way the node never enters the stack and nothing of it is built.
 - An interrupted **build** has its `build_cmd` or image build killed.
-- An interrupted **run** has its half-started instance torn down before the failure is reported.
+- An interrupted **run** has its half-started instance torn down before the failure is reported. An instance that has not answered ready has its process group killed at once; an instance that answered ready gets the shutdown request and the grace first, so its shutdown hooks run (see [How an instance starts](/guides/node_stack/#how-an-instance-starts)).
 
 `peppy stack build` takes the same flags and ends after the build phase, so `--node-run-idle-timeout-secs` bounds nothing in a build. `peppy stack join` takes the same flags and runs its copy's nodes through the same phases, `--max-timeout-secs` bounding the whole join. A join whose budget runs out fails as any [failed join](#copies) does: it stops what it started and removes the nodes it added, leaving the stack it joined running.
 
-Only the node's own output resets a phase's clock; the launcher's progress lines do not.
+Only the node's own output and, in the run phase, the ready signal of the instance reset a phase's clock; the launcher's progress lines do not. Inside the run phase, the daemon also waits for each setup for the [setup budget](/guides/node_stack/#how-an-instance-starts) of its node, at most 540 seconds, which is less than the default run idle budget.
 
 ## Running one launcher across several machines
 
@@ -522,6 +567,7 @@ The launcher's own top-level `adjustments` list takes the same entries, guarded 
 | `set_links` | Replaces the target's whole entry for each named slot, creating it when absent. The value uses the ordinary [links](#links-optional) grammar, including vacancies. |
 | `add_links` | Appends targets to each named slot's array binding, creating the binding when the slot has no entry. Refused when the slot holds a scalar or a vacancy: replacing is `set_links`'s job. Appending is what lets independent options each contribute bindings to one multi-cardinality slot, and what lets a [copy](#copies) that joins add its own instances to a running instance's set. |
 | `unset_links` | Drops each named slot's entry entirely, returning the slot to absent. |
+| `set_daemon_scopes` | Replaces the [scope](#daemon_scopes-optional) of each named daemon target, creating it when absent. No operation removes a scope. Refused in the composition of a copy, because a scope belongs to the stack: write it at the top level, under an option of an axis that does not run as copies, or in the instance's own `daemon_scopes`. |
 
 A fragment's own entries run first, in the order its files are read, then the launcher's: the options' entries in the order `components` declares their axes, then the top-level list. The order is what decides a field two entries both write, the later one winning, so a launcher's entry overrides the fragment's and its top-level list overrides its options'.
 
@@ -762,6 +808,8 @@ peppy stack join openarm:charlie --with xr_commander \
 
 A launch snapshots its launcher and fragment files, and every join composes against that snapshot; launch again to load edits. Constraints see the stack's selection and the copy's together, so `mcp_commander` on an `openarm_simulation` stack launched without `robot_control` is refused at join with the commander's reason. The launcher's adjustments under a copy's option may write to a stack instance, and each field they write is what the copy needs of it: the copies the file lists must agree on every field they both write, and a joined copy, whether `--join` names it at launch or `stack join` adds it later, may write to a stack instance only what already runs there, with two exceptions: its own instances may pair into the slots the instance declares vacant (the pairing instance's `links` name the slot, and the launcher's adjustments under the copied option release the vacancy with `unset_links` on the instance), and they may join the `one_or_more` or `zero_or_more` sets it declares, below. A join that would change a running instance any other way is refused, naming the instance and each field that differs. That is why the rendered camera rig, which turns the simulation's rendering on, is selected in the file at launch.
 
+A copy's composition writes no [daemon scope](#daemon_scopes-optional), on its own instances or on a stack instance: a scope written through a copy would exist only while that copy runs. A `set_daemon_scopes` that the composition of a copy applies (an adjustment under the copied option, a top-level adjustment guarded on the copy's axis, or the copy's own `adjustments`) is refused at launch, at join and by `peppy repo index --check`, naming the copy, its option, the instance and the target. A copy entry that declares `daemon_scopes` is refused when the launcher is read.
+
 A stack instance that watches or consumes every robot declares the slot as a set, and the launcher adds each robot under its option. The stack runs the monitor:
 
 ```json5
@@ -805,9 +853,9 @@ The members follow the order the copies joined, and a copy that rejoins under th
 
 One simulation per stack, and each simulated robot joins it as a copy that brings its own model: the `openarm_simulation` launcher ships one copy, an OpenArm v2, `--join OPTION:NAME` names another at launch and `stack join` adds more, of any model the simulation's catalog carries, as many as the machine can run. A physical robot reads wall time and a simulated one the simulation's clock, so the physical robots have a launcher of their own, `physical`.
 
-`stack remove NAME` stops the copy's instances in reverse dependency order, takes the members it added out of the running sets, and takes the copy out of the stack; every instance whose set shrank returns the smaller set at its accessor's next call. A set on a machine that is not live keeps the members it holds, and the removal says so; when the machine returns with the instance still running, the next join or removal changing that slot delivers it whole, and when it returns without it, launch again. Two floors refuse a removal: one that would leave a `one_or_more` slot with no member is refused, naming the slot, and one that would take the last copy of a `one_or_more` axis is refused, naming the copy and the axis. A copy another copy links to is refused until that copy goes first, and a copy a stack instance links to any other way stays until the next launch. Removal leaves the stack's own instances running: removing a simulated robot takes it out of the simulation, which stays up for the next join, and `stack reset` stops everything. A copy that released a stack instance's vacancy to pair into that slot restores the vacancy when it goes, so the slot stands vacant again as the launch declared it, the mirror of pairing into a vacancy above. A failed join stops what it started, removes the nodes it added, and reports the failure; when that cleanup itself fails the copy stays in `stack list` and the message says to retry `stack remove`.
+`stack remove NAME` stops the copy's instances in reverse dependency order, takes the members it added out of the running sets, and takes the copy out of the stack; every instance whose set shrank returns the smaller set at its accessor's next call. Before it stops an instance on the coordinator, it prints a line that names the instance, such as ``Stopping instance `alpha_backbone_inst` of copy `alpha` ``, so a removal of many instances shows each step. The machine of a copy placed elsewhere stops all the copy's instances in one request, and the removal prints nothing for them until that machine answers. A set on a machine that is not live keeps the members it holds, and the removal says so; when the machine returns with the instance still running, the next join or removal changing that slot delivers it whole, and when it returns without it, launch again. Two floors refuse a removal: one that would leave a `one_or_more` slot with no member is refused, naming the slot, and one that would take the last copy of a `one_or_more` axis is refused, naming the copy and the axis. A copy another copy links to is refused until that copy goes first, and a copy a stack instance links to any other way stays until the next launch. Removal leaves the stack's own instances running: removing a simulated robot takes it out of the simulation, which stays up for the next join, and `stack reset` stops everything. A copy that released a stack instance's vacancy to pair into that slot restores the vacancy when it goes, so the slot stands vacant again as the launch declared it, the mirror of pairing into a vacancy above. A failed join stops what it started, with the same line for each instance it stops on the coordinator, removes the nodes it added, and reports the failure; when that cleanup itself fails the copy stays in `stack list` and the message says to retry `stack remove`.
 
-`stack list` names each copy, the option it copies, its host, its selection, its instances and the set members it added, one row per slot under `Set members:` (`monitor_inst.links.robots → alpha_backbone_inst`, the target by the id the stack runs it under; the bindings table adds its machine), and its bindings table names the copy beside each member a copy brought (`robots → alpha_backbone_inst@cn-robot [copy alpha]`); `stack list --json` carries the same under `copies`, the members under `set_members`, and each member of a slot's `slot_bindings` under `producer`, with a `copy` key on a member a copy brought, naming the copy and the id its fragment wrote for the instance. The node holding the set reads the same fact through its [`bound_members()`](/advanced_guides/topics/#receiving-messages) accessor. Preview a launch and the copies it starts without starting anything, which composes it and runs the link rules a launch runs, leaving what only a running stack can answer (whether the instance whose set grows is running, and whether its machine is live) to the join itself:
+`stack list` names each copy, the option it copies, its host, its selection, its instances and the set members it added, one row per slot under `Set members:` (`monitor_inst.links.robots → alpha_backbone_inst`, the target by the id the stack runs it under; the bindings table adds its machine), and its bindings table names the copy beside each member a copy brought (`robots → alpha_backbone_inst@cn-robot [copy alpha]`). A join writes its copy into the stack only when it ends, so while a join or a removal runs, the coordinator's panel names it on a line of its own: `Copy bravo of so101_sim joins the stack now`, or `leaves the stack now` for a removal. `stack list --json` carries the same under `copies` and `copy_change` (`{ "action": "join", "name": "bravo", "option": "so101_sim" }`, or `null`), the members under `set_members`, and each member of a slot's `slot_bindings` under `producer`, with a `copy` key on a member a copy brought, naming the copy and the id its fragment wrote for the instance. The node holding the set reads the same fact through its [`bound_members()`](/advanced_guides/topics/#receiving-messages) accessor. Preview a launch and the copies it starts without starting anything, which composes it and runs the link rules a launch runs, leaving what only a running stack can answer (whether the instance whose set grows is running, and whether its machine is live) to the join itself:
 
 ```sh
 peppy stack resolve openarm_simulation --with mujoco
@@ -844,6 +892,8 @@ alpha_recorder_inst: clock `wall`
 link rules hold: slot keys, vacancies, pairing coverage, observation sources and clock agreement checked over 5 node manifest(s)
 ```
 
-Every applied adjustment is listed with the value it replaced and where it was written, the fragment's own entries under the fragment's path and the launcher's under the option that carries them, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. A launcher that deploys copies resolves with them, one `copy NAME:` line each, and `--join OPTION:NAME` resolves one more, repeatable and comma-separated, each joined onto the plan the ones before it left, exactly as `stack launch` composes them. A copy `--join` names takes its own axes from `--with NAME.option`. The resulting flat launcher declares each copy's name in `core_nodes`; launch that file with `--place NAME@CORE_NODE` or `--local`.
+Every applied adjustment is listed with the value it replaced and where it was written, the fragment's own entries under the fragment's path and the launcher's under the option that carries them, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. The one exception is a launcher with a [`stack_copies` scope](/advanced_guides/mcp/#scopes): the flat file keeps the scope and declares no axis, so no option of the scope runs as copies in it, and its launch refuses the scope and says why. Launch such a launcher itself, or take the instance that serves the target out of the flat file before you launch it. A launcher that deploys copies resolves with them, one `copy NAME:` line each, and `--join OPTION:NAME` resolves one more, repeatable and comma-separated, each joined onto the plan the ones before it left, exactly as `stack launch` composes them. A copy `--join` names takes its own axes from `--with NAME.option`. The resulting flat launcher declares each copy's name in `core_nodes`; launch that file with `--place NAME@CORE_NODE` or `--local`.
+
+The report then holds the flat plan to the [checks of `daemon_scopes`](#daemon_scopes-optional). They read the exposure documents alone, so they run whatever the nodes and contracts caches hold, and a plan that breaks one fails with the launch's own refusal. The `daemon scopes hold` line says how many daemon targets were scoped. When this machine's caches do not hold an exposure document, the report says `daemon scopes not checked` and names the deployment, whose checks it skips; the checks of every other deployment still run. A document in the caches that a launch refuses, for example one that does not parse or that names an interface this peppy does not serve, fails `stack resolve` with that refusal.
 
 The report ends by holding the flat plan to the launch-time link rules that need no daemon. `stack resolve` reads this machine's nodes cache at `~/.peppy/cache/nodes.json5`, loads each deployed node's manifest, and checks slot-key legality, vacancies, and pairing coverage across them; the `link rules hold` line names how many manifests it checked. A node published by a git repository is read out of the checkout the caches already hold, `peppy repo refresh` handing every clone it makes to the checkout cache, so the nodes and launchers a hub publishes are checked against each other without the command ever reaching the network. The contract-binding rules stay launch-only, because satisfying them can involve the root node that only a running daemon knows. When the plan breaks a rule a launch would reject, say a `zero_or_one` pairing slot left neither paired nor vacant, `stack resolve` fails with that launch's own error instead of surfacing it minutes later at launch. When a manifest cannot be read locally the check is skipped rather than run on a partial picture: the report says `link rules not checked`, names the missing manifest, and advises `peppy repo refresh`, which is what fills both the nodes cache and the checkouts the git-backed manifests are read from.

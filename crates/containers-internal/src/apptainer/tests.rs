@@ -200,9 +200,69 @@ fn test_build_command_builds_correct_args() {
     let cmd = facade.build(&output, &def);
     let args = cmd.build_args().expect("build_args should succeed");
 
-    assert_eq!(args[0], "build");
-    assert!(args[1].ends_with("test/output.sif"));
-    assert!(args[2].ends_with("test/def.def"));
+    assert_eq!(
+        args,
+        [
+            "build",
+            "--mksquashfs-args",
+            "-comp zstd -Xcompression-level 3",
+            output.to_str().unwrap(),
+            def.to_str().unwrap(),
+        ]
+    );
+}
+
+/// A node's own `--mksquashfs-args`, passed as a raw flag, comes after the
+/// default compression, so apptainer, which reads the last one, packs with it.
+#[test]
+fn a_build_flag_for_mksquashfs_comes_after_the_default_compression() {
+    let facade = native_facade();
+
+    let home = std::env::var("HOME").unwrap();
+    let output = PathBuf::from(&home).join("test/output.sif");
+    let def = PathBuf::from(&home).join("test/def.def");
+    let args = facade
+        .build(&output, &def)
+        .raw_flag("--mksquashfs-args")
+        .raw_flag("-comp gzip")
+        .build_args()
+        .expect("build_args should succeed");
+
+    let compressions: Vec<&str> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, arg)| *arg == "--mksquashfs-args")
+        .map(|(position, _)| args[position + 1].as_str())
+        .collect();
+    assert_eq!(
+        compressions,
+        ["-comp zstd -Xcompression-level 3", "-comp gzip"]
+    );
+}
+
+/// The compression value is one argv element on Lima too: it reaches the
+/// guest apptainer as a positional parameter, never re-tokenized by a shell.
+#[test]
+fn a_lima_build_passes_the_compression_as_one_argument() {
+    let facade = lima_facade();
+
+    let home = std::env::var("HOME").unwrap();
+    let output = PathBuf::from(&home).join("test/output.sif");
+    let def = PathBuf::from(&home).join("test/def.def");
+    let std_cmd = facade
+        .build(&output, &def)
+        .into_std_command()
+        .expect("command should assemble");
+
+    let args: Vec<String> = std_cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let flag = args
+        .iter()
+        .position(|a| a == "--mksquashfs-args")
+        .expect("the guest argv must carry the compression flag");
+    assert_eq!(args[flag + 1], "-comp zstd -Xcompression-level 3");
 }
 
 #[test]

@@ -295,6 +295,7 @@ async fn resolve_launcher_origin(
                 LaunchFeedbackStep::LauncherStep,
                 &ctx.log,
                 None,
+                None,
             );
 
             // The sender moves into the blocking closure, so the channel
@@ -381,6 +382,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
             LaunchFeedbackStep::LauncherStep,
             &ctx.log,
             None,
+            None,
         );
         let resolved = resolve_one(ctx, &deployment, placements, &node_entries, &feedback_tx).await;
         drop(feedback_tx);
@@ -391,6 +393,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
             closure_pins,
             pin_manifests,
             addressing,
+            targets,
         } = match resolved {
             Ok(resolved) => resolved,
             Err(err) => {
@@ -448,6 +451,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
             closure_pins,
             pin_manifests,
             addressing,
+            targets,
         });
     }
 
@@ -479,6 +483,9 @@ struct ResolvedDeployment {
     /// How the deployment's node reads the sets its slots hold: the
     /// built-in server's comes from its plan, and a node reads them whole.
     addressing: daemon_config::launcher::MemberAddressing,
+    /// The targets the built-in server's exposures serve, from its plan;
+    /// empty for a node.
+    targets: daemon_config::mcp_deployment::DeploymentTargets,
 }
 
 /// Whether any instance of `deployment` is placed off this daemon, which is
@@ -551,6 +558,7 @@ async fn resolve_one(
                 closure_pins,
                 pin_manifests: Vec::new(),
                 addressing: resolved.plan.addressing,
+                targets: resolved.plan.targets,
             });
         }
     };
@@ -579,6 +587,7 @@ async fn resolve_one(
         closure_pins: dep_pins,
         pin_manifests: manifests,
         addressing: daemon_config::launcher::MemberAddressing::WholeSet,
+        targets: daemon_config::mcp_deployment::DeploymentTargets::default(),
     })
 }
 
