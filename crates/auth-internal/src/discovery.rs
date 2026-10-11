@@ -10,11 +10,10 @@ use super::profile::{self, TransportPolicy};
 use crate::error::{Error, Result};
 
 /// The endpoints the device flow needs, plus the (optional) revocation endpoint.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct OidcEndpoints {
     pub device_authorization_endpoint: String,
     pub token_endpoint: String,
-    #[serde(default)]
     pub revocation_endpoint: Option<String>,
 }
 

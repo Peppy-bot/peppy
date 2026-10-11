@@ -23,7 +23,7 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use super::http::{HttpClient, HttpResponse};
-use super::resolver::{Credential, SessionContext, refresh_and_persist};
+use super::resolver::{Credential, refresh_and_persist, session_credential};
 use super::storage::{self, ProfileCreds};
 use crate::enrollment::RouterEndpoint;
 use crate::error::{Error, Problem, ProblemKind, Result};
@@ -505,7 +505,9 @@ fn interpret_refusal(resp: &HttpResponse, method: &str, url: &str) -> Error {
 }
 
 /// Refreshes a session credential in place via the shared refresh-and-persist
-/// pipeline, then rebuilds the [`Credential`] from the rotated tokens.
+/// pipeline, then rebuilds the [`Credential`] from the rotated tokens. When
+/// the credentials file holds no session, or the session of another login,
+/// the credential stays as it is, so the retry gets the refusal again.
 fn refresh_in_place(http: &HttpClient, cred: &mut Credential) -> Result<()> {
     // Load the stored session to refresh from (it may have changed since the
     // credential was built, e.g. another command refreshed in parallel).
@@ -513,16 +515,12 @@ fn refresh_in_place(http: &HttpClient, cred: &mut Credential) -> Result<()> {
     let Some(pc) = creds.session.as_ref() else {
         return Ok(());
     };
+    if !cred.session.is_same_session_as(pc) {
+        return Ok(());
+    }
 
     let updated = refresh_and_persist(http, &cred.session.creds_path, pc)?;
-
-    cred.token = storage::secret(updated.access_token.expose_secret().to_string());
-    cred.session = SessionContext {
-        issuer: updated.issuer.clone(),
-        client_id: updated.client_id.clone(),
-        refresh_token: storage::secret(updated.refresh_token.expose_secret().to_string()),
-        creds_path: cred.session.creds_path.clone(),
-    };
+    *cred = session_credential(&cred.session.creds_path, &updated);
     Ok(())
 }
 

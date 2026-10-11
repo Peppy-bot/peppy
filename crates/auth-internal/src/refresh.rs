@@ -1,9 +1,10 @@
 //! `refresh_token` grant. Zitadel may rotate the refresh token, so the caller
-//! must persist whatever comes back; [`device::TokenResponse::into_set`] carries
-//! the previous refresh token forward when the response omits a new one.
+//! must persist whatever comes back; [`TokenResponse::into_set`] carries the
+//! previous refresh token forward when the response omits a new one.
 //!
-//! [`device::TokenResponse`] and its `into_set` are shared with [`device`] so
-//! the token-response parsing and `TokenSet` materialization live in one place.
+//! [`TokenResponse`] and its `into_set` are shared with [`device`](super::device)
+//! so the token-response parsing and `TokenSet` materialization live in one
+//! place.
 
 use super::device::{TokenResponse, TokenSet, safe_oauth_error_code};
 use super::http::HttpClient;

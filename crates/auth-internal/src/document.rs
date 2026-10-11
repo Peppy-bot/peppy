@@ -54,25 +54,20 @@ pub(crate) fn load<T: DeserializeOwned + Versioned>(path: &Path) -> Result<Optio
     Ok(Some(document))
 }
 
-/// Writes `document` to `path` atomically, and owner-only when `owner_only`.
-pub(crate) fn save<T: Serialize + Versioned>(
-    path: &Path,
-    document: &T,
-    owner_only: bool,
-) -> Result<()> {
+/// Writes `document` to `path` atomically and owner-only, as [`publish`] does.
+pub(crate) fn save<T: Serialize + Versioned>(path: &Path, document: &T) -> Result<()> {
     let content = json5_pretty::to_string_pretty(document)
         .map_err(|e| Error::Auth(format!("failed to serialize the {}: {e}", T::WHAT)))?;
-    publish(path, &content, owner_only)
+    publish(path, &content)
 }
 
-/// Writes `content` to `path` atomically, and owner-only when `owner_only`.
-pub(crate) fn publish(path: &Path, content: &str, owner_only: bool) -> Result<()> {
+/// Writes `content` to `path` atomically and owner-only. Every file this crate
+/// writes is a secret or sits next to one under `conf/`, and the explicit
+/// chmod keeps the mode whatever mode the staging file is created with.
+pub(crate) fn publish(path: &Path, content: &str) -> Result<()> {
     daemon_config::atomic_write::publish_atomic(path, |tmp| {
         std::fs::write(tmp, content)?;
-        if owner_only {
-            restrict_file(tmp)?;
-        }
-        Ok(())
+        restrict_file(tmp)
     })?;
     Ok(())
 }

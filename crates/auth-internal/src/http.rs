@@ -1,7 +1,7 @@
 //! Thin blocking HTTP client over `ureq` shared by the auth engine.
 //!
 //! The client is configured with `http_status_as_error(false)` so non-2xx
-//! responses come back as [`HttpResponse`] (status + body) rather than an opaque
+//! responses come back as `HttpResponse` (status + body) rather than an opaque
 //! `ureq::Error`: the device flow and `/cli/auth-config` need to read 4xx/5xx bodies
 //! (`authorization_pending`, `slow_down`, the 503 "not configured" case). Bearer
 //! tokens are never included in error strings (only the URL, with its query
@@ -17,20 +17,20 @@ use crate::error::{Error, Result};
 
 /// A fully-read HTTP response: status code, body text, and the delay of a
 /// `Retry-After` header when the server sent one in seconds.
-pub struct HttpResponse {
-    pub status: u16,
-    pub body: String,
-    pub retry_after_secs: Option<u64>,
+pub(crate) struct HttpResponse {
+    pub(crate) status: u16,
+    pub(crate) body: String,
+    pub(crate) retry_after_secs: Option<u64>,
 }
 
 impl HttpResponse {
-    pub fn is_success(&self) -> bool {
+    pub(crate) fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
     }
 
     /// Parses the body as JSON into `T`, tagging a parse failure with `what` (the
     /// endpoint or payload name) so a malformed response stays attributable.
-    pub fn json<T: DeserializeOwned>(&self, what: &str) -> Result<T> {
+    pub(crate) fn json<T: DeserializeOwned>(&self, what: &str) -> Result<T> {
         serde_json::from_str(&self.body)
             .map_err(|e| Error::Auth(format!("invalid {what} response: {e}")))
     }
@@ -62,7 +62,6 @@ impl Default for HttpClient {
 
 impl HttpClient {
     pub fn new() -> Self {
-        let timeout = DEFAULT_HTTP_TIMEOUT;
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             // Use the host platform's trust policy rather than ureq's static
@@ -81,28 +80,26 @@ impl HttpClient {
             // Location header, and a bearer can never cross an origin. A caller
             // receives the 3xx and rejects it as an unexpected status.
             .max_redirects(0)
-            // Already ureq's default. Pinned so a future default change cannot
-            // quietly re-enable header forwarding across a redirect; this line
-            // changes no behaviour today.
+            // Already ureq's default. Set explicitly so that this client never
+            // forwards the Authorization header across a redirect, whatever the
+            // ureq default is.
             .redirect_auth_headers(RedirectAuthHeaders::Never)
-            .timeout_global(Some(timeout))
+            .timeout_global(Some(DEFAULT_HTTP_TIMEOUT))
             .build()
             .into();
         Self { agent }
     }
 
     /// `GET url`, optionally with a bearer token.
-    pub fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
-        let resp = with_bearer(self.agent.get(url), bearer)
-            .call()
-            .map_err(|e| Error::Http(format!("GET {} failed: {e}", redact(url))))?;
-        finish("GET", url, resp)
+    pub(crate) fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+        let sent = with_bearer(self.agent.get(url), bearer).call();
+        read_response("GET", url, sent)
     }
 
     /// `POST url` with an `application/x-www-form-urlencoded` body built from `form`.
     /// The body is encoded with `url::form_urlencoded` so values like the
     /// `device_code` grant type are escaped correctly.
-    pub fn post_form(
+    pub(crate) fn post_form(
         &self,
         url: &str,
         form: &[(&str, &str)],
@@ -115,40 +112,37 @@ impl HttpClient {
             .agent
             .post(url)
             .header("Content-Type", "application/x-www-form-urlencoded");
-        let resp = with_bearer(req, bearer)
-            .send(body)
-            .map_err(|e| Error::Http(format!("POST {} failed: {e}", redact(url))))?;
-        finish("POST", url, resp)
+        let sent = with_bearer(req, bearer).send(body);
+        read_response("POST", url, sent)
     }
 
     /// `POST url` with a pre-serialized JSON `body` (`application/json`),
     /// optionally with a bearer token. The caller serializes the payload so this
     /// thin client stays free of `serde::Serialize` bounds.
-    pub fn post_json(&self, url: &str, body: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+    pub(crate) fn post_json(
+        &self,
+        url: &str,
+        body: &str,
+        bearer: Option<&str>,
+    ) -> Result<HttpResponse> {
         let req = self
             .agent
             .post(url)
             .header("Content-Type", "application/json");
-        let resp = with_bearer(req, bearer)
-            .send(body)
-            .map_err(|e| Error::Http(format!("POST {} failed: {e}", redact(url))))?;
-        finish("POST", url, resp)
+        let sent = with_bearer(req, bearer).send(body);
+        read_response("POST", url, sent)
     }
 
     /// `POST url` with no body, optionally with a bearer token.
-    pub fn post_empty(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
-        let resp = with_bearer(self.agent.post(url), bearer)
-            .send_empty()
-            .map_err(|e| Error::Http(format!("POST {} failed: {e}", redact(url))))?;
-        finish("POST", url, resp)
+    pub(crate) fn post_empty(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+        let sent = with_bearer(self.agent.post(url), bearer).send_empty();
+        read_response("POST", url, sent)
     }
 
     /// `DELETE url`, optionally with a bearer token.
-    pub fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
-        let resp = with_bearer(self.agent.delete(url), bearer)
-            .call()
-            .map_err(|e| Error::Http(format!("DELETE {} failed: {e}", redact(url))))?;
-        finish("DELETE", url, resp)
+    pub(crate) fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+        let sent = with_bearer(self.agent.delete(url), bearer).call();
+        read_response("DELETE", url, sent)
     }
 }
 
@@ -167,7 +161,15 @@ fn with_bearer<B>(req: ureq::RequestBuilder<B>, bearer: Option<&str>) -> ureq::R
     }
 }
 
-fn finish(method: &str, url: &str, resp: ureq::http::Response<ureq::Body>) -> Result<HttpResponse> {
+/// Reads the answer to a `method` request to `url`, or names the method and the
+/// redacted URL when the request could not be sent or its body not read.
+fn read_response(
+    method: &str,
+    url: &str,
+    sent: std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+) -> Result<HttpResponse> {
+    let mut resp =
+        sent.map_err(|e| Error::Http(format!("{method} {} failed: {e}", redact(url))))?;
     let status = resp.status().as_u16();
     // Only the delta-seconds form is read. A date form gives no delay, and the
     // caller then prints the refusal without one.
@@ -176,7 +178,6 @@ fn finish(method: &str, url: &str, resp: ureq::http::Response<ureq::Body>) -> Re
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse().ok());
-    let mut resp = resp;
     let body = resp
         .body_mut()
         .with_config()
@@ -231,5 +232,55 @@ mod tests {
         assert_eq!(response.status, 302);
         redirect.assert_calls(1);
         target.assert_calls(0);
+    }
+
+    /// A request that cannot be sent names the method and the URL without its
+    /// query. The space makes the URL invalid, so nothing reaches a network.
+    #[test]
+    fn a_request_that_cannot_be_sent_names_the_method_and_the_redacted_url() {
+        let client = HttpClient::new();
+        let url = "http://bad host/token?code=secret";
+        type SendRequest = fn(&HttpClient, &str) -> Result<HttpResponse>;
+        let verbs: [(&str, SendRequest); 5] = [
+            ("GET", |client, url| client.get(url, Some("bearer"))),
+            ("POST", |client, url| {
+                client.post_form(url, &[("grant_type", "x")], None)
+            }),
+            ("POST", |client, url| client.post_json(url, "{}", None)),
+            ("POST", |client, url| client.post_empty(url, None)),
+            ("DELETE", |client, url| client.delete(url, None)),
+        ];
+        for (method, send) in verbs {
+            let message = send(&client, url).err().expect("not sent").to_string();
+            assert!(
+                message.starts_with(&format!("{method} http://bad host/token failed: ")),
+                "{message}"
+            );
+            assert!(!message.contains("secret"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_body_over_the_limit_is_refused_naming_the_method_and_the_url() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/large");
+            then.status(200)
+                .body("a".repeat(MAX_RESPONSE_BYTES as usize + 1));
+        });
+
+        let message = HttpClient::new()
+            .get(&format!("{}/large?code=secret", server.base_url()), None)
+            .err()
+            .expect("the body is over the limit")
+            .to_string();
+
+        assert!(
+            message.starts_with(&format!(
+                "GET {}/large failed reading body: ",
+                server.base_url()
+            )),
+            "{message}"
+        );
     }
 }

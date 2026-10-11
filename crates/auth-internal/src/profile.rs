@@ -51,7 +51,7 @@ pub fn resolve_api_url(api_url_flag: Option<&str>, servers: &ResourceServers) ->
 /// Pure core of [`resolve_api_url`] with the env inputs made explicit, so
 /// precedence and the transport guard can be unit-tested without mutating
 /// process env.
-pub fn resolve_api_url_from(
+fn resolve_api_url_from(
     api_url_flag: Option<&str>,
     env_api_url: Option<String>,
     policy: TransportPolicy,
@@ -87,29 +87,28 @@ fn env_nonempty(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
-/// Validates one server-supplied control-plane URL under this build's policy.
-/// Plain `http` is allowed only for an actual loopback address, `localhost`,
-/// or `*.localhost`; anything else must be `https` so tokens never travel in
-/// cleartext. Debug builds relax the non-local restriction (with a one-time
-/// warning) because they target the dev backend; see [`build_transport_policy`].
+/// Validates one server-supplied control-plane URL under `policy`. Plain
+/// `http` is allowed only for an actual loopback address, `localhost`, or
+/// `*.localhost`; anything else must be `https` so tokens never travel in
+/// cleartext. [`TransportPolicy::AllowInsecureHttp`] also admits plain `http`
+/// to a non-local host, with a one-time warning, and changes no other check;
+/// [`build_transport_policy`] picks it in debug builds, which target the dev
+/// backend.
 ///
 /// `what` names the subject ("platform API", "OIDC issuer", "OIDC token
 /// endpoint") so a rejection is attributable to the URL the caller was about to
 /// use. Returning the parsed [`Url`] lets a caller compare schemes and origins
 /// without parsing a security-sensitive value a second, weaker way.
-pub fn validate_https_or_local(raw: &str, what: &str) -> Result<Url> {
-    validate_https_or_local_with(raw, what, build_transport_policy())
-}
-
-/// Pure core of [`validate_https_or_local`] with the transport policy made
-/// explicit. The policy only widens the plain-http arm for non-local hosts;
-/// every other check stays strict regardless of policy.
 ///
 /// Most of the values checked here are server supplied, so a refusal never
 /// repeats the value: at most it names the scheme and host, never the
 /// userinfo, path, query or fragment, where a credential or a one-time code
 /// can sit.
-pub fn validate_https_or_local_with(raw: &str, what: &str, policy: TransportPolicy) -> Result<Url> {
+pub(crate) fn validate_https_or_local_with(
+    raw: &str,
+    what: &str,
+    policy: TransportPolicy,
+) -> Result<Url> {
     if raw.is_empty() || raw.trim() != raw {
         return Err(Error::Auth(format!(
             "invalid {what}: it must be non-empty and carry no surrounding whitespace"
@@ -161,14 +160,13 @@ fn warn_insecure_transport_once(what: &str, url: &Url) {
 /// query, fragment, case difference, or explicit default port cannot spell one
 /// platform origin two ways.
 ///
-/// The input is validated here rather than trusted from the caller. Because
-/// [`validate_https_or_local`] has already rejected a `cannot_be_a_base` URL and
-/// a missing host, the origin is always a tuple origin and the serialization can
-/// never be `"null"`.
+/// The input is validated here rather than trusted from the caller, under this
+/// build's transport policy. Because the transport check has already rejected
+/// a `cannot_be_a_base` URL and a missing host, the origin is always a tuple
+/// origin and the serialization can never be `"null"`.
 pub fn normalize_api_origin(api_url: &str) -> Result<String> {
-    Ok(validate_https_or_local(api_url, "platform API")?
-        .origin()
-        .ascii_serialization())
+    let parsed = validate_https_or_local_with(api_url, "platform API", build_transport_policy())?;
+    Ok(parsed.origin().ascii_serialization())
 }
 
 #[cfg(test)]
@@ -259,60 +257,25 @@ mod tests {
     #[test]
     fn allows_https_and_local_http() {
         let servers = servers();
-        assert!(
-            resolve_api_url_from(
-                Some("https://api.peppy.bot"),
-                None,
-                TransportPolicy::Strict,
-                &servers
-            )
-            .is_ok()
-        );
-        assert!(
-            resolve_api_url_from(
-                Some("http://auth.peppy.localhost:8080"),
-                None,
-                TransportPolicy::Strict,
-                &servers
-            )
-            .is_ok()
-        );
-        assert!(
-            resolve_api_url_from(
-                Some("http://127.0.0.1:3000"),
-                None,
-                TransportPolicy::Strict,
-                &servers
-            )
-            .is_ok()
-        );
-        // The old prefix test accepted these two for the wrong reason: it
-        // matched the literal `127.` and the literal `::1` rather than asking
-        // whether the parsed address is a loopback address.
-        assert!(
-            resolve_api_url_from(
-                Some("http://127.42.7.9:3000"),
-                None,
-                TransportPolicy::Strict,
-                &servers
-            )
-            .is_ok()
-        );
-        assert!(
-            resolve_api_url_from(
-                Some("http://[::1]:3000"),
-                None,
-                TransportPolicy::Strict,
-                &servers
-            )
-            .is_ok()
-        );
+        for url in [
+            "https://api.peppy.bot",
+            "http://auth.peppy.localhost:8080",
+            "http://127.0.0.1:3000",
+            // Every address of 127.0.0.0/8 and the IPv6 loopback is a
+            // loopback address, whatever its spelling.
+            "http://127.42.7.9:3000",
+            "http://[::1]:3000",
+        ] {
+            assert!(
+                resolve_api_url_from(Some(url), None, TransportPolicy::Strict, &servers).is_ok(),
+                "{url} must be admitted"
+            );
+        }
     }
 
-    /// The whole point of matching on [`Host`]: `127.example` is a domain name
-    /// that merely starts like a loopback literal, and the old
-    /// `h.starts_with("127.")` check classified it as local and permitted an
-    /// entire device flow in the clear against a remote host.
+    /// `127.example` is a domain name that only starts like a loopback
+    /// literal. [`is_local`] classifies the parsed host, so the name is not
+    /// local and plain http to it is refused.
     #[test]
     fn domain_names_that_merely_start_like_loopback_are_not_local() {
         let servers = servers();
@@ -329,41 +292,18 @@ mod tests {
     #[test]
     fn rejects_embedded_credentials_queries_and_fragments_for_the_api_base() {
         let servers = servers();
-        let err = resolve_api_url_from(
-            Some("https://alice:hunter2@api.peppy.bot"),
-            None,
-            TransportPolicy::Strict,
-            &servers,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("embedded credentials"),
-            "got: {err}"
-        );
-
-        let err = resolve_api_url_from(
-            Some("https://api.peppy.bot?tenant=x"),
-            None,
-            TransportPolicy::Strict,
-            &servers,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("query string or fragment"),
-            "got: {err}"
-        );
-
-        let err = resolve_api_url_from(
-            Some("https://api.peppy.bot#frag"),
-            None,
-            TransportPolicy::Strict,
-            &servers,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("query string or fragment"),
-            "got: {err}"
-        );
+        for (url, refusal) in [
+            (
+                "https://alice:hunter2@api.peppy.bot",
+                "embedded credentials",
+            ),
+            ("https://api.peppy.bot?tenant=x", "query string or fragment"),
+            ("https://api.peppy.bot#frag", "query string or fragment"),
+        ] {
+            let err = resolve_api_url_from(Some(url), None, TransportPolicy::Strict, &servers)
+                .unwrap_err();
+            assert!(err.to_string().contains(refusal), "{url}: {err}");
+        }
     }
 
     #[test]

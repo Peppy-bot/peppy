@@ -17,6 +17,11 @@ use crate::error::{Error, Result};
 
 const DEVICE_CODE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
+/// The refusal when the flow expires. The identity provider's `expired_token`
+/// and the local deadline are the same event for the person, so they read the
+/// same.
+const LOGIN_TIMED_OUT: &str = "login timed out, run `peppy platform login` again";
+
 /// Tokens obtained from a successful device or refresh grant.
 #[derive(Debug, Clone)]
 pub struct TokenSet {
@@ -166,7 +171,7 @@ impl TokenResponse {
         TokenSet {
             access_token: self.access_token,
             refresh_token,
-            expires_at: now + self.expires_in,
+            expires_at: now.saturating_add(self.expires_in),
             token_type: self.token_type.unwrap_or_else(|| "Bearer".to_string()),
             scope: self.scope.unwrap_or_default(),
         }
@@ -188,9 +193,7 @@ fn classify(error: &str) -> PollOutcome {
         "access_denied" => PollOutcome::Fatal(Error::Auth(
             "authorization denied in the browser".to_string(),
         )),
-        "expired_token" => PollOutcome::Fatal(Error::Auth(
-            "login timed out, run `peppy platform login` again".to_string(),
-        )),
+        "expired_token" => PollOutcome::Fatal(Error::Auth(LOGIN_TIMED_OUT.to_string())),
         other => PollOutcome::Fatal(Error::Auth(format!("device login failed: {other}"))),
     }
 }
@@ -224,7 +227,7 @@ pub fn start(
 /// The query parameter that carries the login code to a device page. It is the
 /// name RFC 8628 and the identity provider use, and the one the platform's
 /// device page reads.
-pub const USER_CODE_PARAMETER: &str = "user_code";
+const USER_CODE_PARAMETER: &str = "user_code";
 
 /// The link a person opens to approve a started device login: the platform's
 /// own device page with the code in the `user_code` query parameter, so the
@@ -246,7 +249,7 @@ pub fn poll(
     client_id: &str,
     da: &DeviceAuthorization,
 ) -> Result<TokenSet> {
-    let deadline = now_unix() + da.expires_in;
+    let deadline = now_unix().saturating_add(da.expires_in);
     let mut interval = da.interval.max(1);
 
     loop {
@@ -268,14 +271,12 @@ pub fn poll(
         let code = safe_oauth_error_code(&resp.body);
         match classify(&code) {
             PollOutcome::KeepWaiting => {}
-            PollOutcome::SlowDown => interval += 5,
+            PollOutcome::SlowDown => interval = interval.saturating_add(5),
             PollOutcome::Fatal(e) => break Err(e),
         }
 
         if now_unix() >= deadline {
-            break Err(Error::Auth(
-                "login timed out, run `peppy platform login` again".to_string(),
-            ));
+            break Err(Error::Auth(LOGIN_TIMED_OUT.to_string()));
         }
         std::thread::sleep(Duration::from_secs(interval));
     }
@@ -340,9 +341,9 @@ mod tests {
         }
     }
 
-    /// T2: a device authorization whose code carries terminal control
-    /// sequences is refused before anything can print it, and the refusal
-    /// does not repeat the code.
+    /// A device authorization whose code carries terminal control sequences
+    /// is refused before anything can print it, and the refusal does not
+    /// repeat the code.
     #[test]
     fn device_start_refuses_a_user_code_with_control_characters() {
         let hostile = "\u{1b}[1A\u{1b}[2KAB\u{7}D-EFGH";
@@ -556,5 +557,64 @@ mod tests {
         };
         let set = resp.into_set(0, Some("old"));
         assert_eq!(set.refresh_token, "new");
+    }
+
+    /// The token lifetime comes from the identity provider, so a lifetime
+    /// past the range of the clock gives the latest expiry there is.
+    #[test]
+    fn into_set_saturates_an_expiry_past_the_end_of_time() {
+        let resp = TokenResponse {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_in: i64::MAX,
+            token_type: None,
+            scope: None,
+        };
+        assert_eq!(resp.into_set(1_000, None).expires_at, i64::MAX);
+    }
+
+    /// A flow lifetime past the range of the clock is a deadline that never
+    /// comes, and the answer of the token endpoint still decides the poll.
+    #[test]
+    fn poll_takes_a_flow_lifetime_past_the_end_of_time() {
+        let server = MockServer::start();
+        let denied = server.mock(|when, then| {
+            when.method(POST).path("/token");
+            then.status(400)
+                .json_body(json!({ "error": "access_denied" }));
+        });
+
+        let err = poll(
+            &HttpClient::new(),
+            &format!("{}/token", server.base_url()),
+            "cli-client-id",
+            &device_auth(1, i64::MAX),
+        )
+        .expect_err("access_denied is fatal");
+
+        assert!(err.to_string().contains("denied"), "{err}");
+        assert_eq!(denied.calls(), 1);
+    }
+
+    /// A `slow_down` on the largest interval keeps the largest interval. The
+    /// flow is already past its deadline, so the poll ends without a wait.
+    #[test]
+    fn poll_takes_a_slow_down_past_the_largest_interval() {
+        let server = MockServer::start();
+        let slow = server.mock(|when, then| {
+            when.method(POST).path("/token");
+            then.status(400).json_body(json!({ "error": "slow_down" }));
+        });
+
+        let err = poll(
+            &HttpClient::new(),
+            &format!("{}/token", server.base_url()),
+            "cli-client-id",
+            &device_auth(u64::MAX, -1_000_000),
+        )
+        .expect_err("the flow is past its deadline");
+
+        assert!(err.to_string().contains("login timed out"), "{err}");
+        assert_eq!(slow.calls(), 1);
     }
 }

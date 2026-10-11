@@ -197,7 +197,7 @@ mod tests {
         for address in [
             "https://app.example.test/device?code=ABCD-EFGH",
             "https://app.example.test/device#fragment",
-            // T5: an empty query and an empty fragment are still present.
+            // An empty query and an empty fragment are still present.
             "https://app.example.test/device?",
             "https://app.example.test/device#",
         ] {
@@ -210,7 +210,7 @@ mod tests {
         }
     }
 
-    /// T4: credentials in the device page are refused, and not repeated.
+    /// Credentials in the device page are refused, and not repeated.
     #[test]
     fn refuses_a_device_verification_address_with_embedded_credentials() {
         let error = fetch_strict(answer_with_address(

@@ -95,7 +95,7 @@ impl ProfileCreds {
     /// Builds a [`ProfileCreds`] from the non-token identity fields plus a
     /// [`TokenSet`](super::device::TokenSet), centralizing the token-field
     /// mapping so `creds_from_login` and `apply_tokens` cannot drift.
-    pub fn with_tokens(
+    pub(crate) fn with_tokens(
         api_url: String,
         issuer: String,
         client_id: String,
@@ -172,7 +172,7 @@ pub fn save(path: &Path, creds: &Credentials) -> Result<()> {
         std::fs::create_dir_all(parent)?;
         restrict_dir(parent)?;
     }
-    document::save(path, creds, true)
+    document::save(path, creds)
 }
 
 /// Current time as unix seconds (0 if the clock predates the epoch).

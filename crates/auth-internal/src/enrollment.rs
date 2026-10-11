@@ -38,12 +38,12 @@ use daemon_config::fs_perms::restrict_dir;
 /// this version. A file of another version is rejected by [`load`], and the
 /// machine enrolls again.
 pub const ENROLLMENT_VERSION: u32 = 1;
-pub const ENROLLMENT_FILE: &str = "enrollment.json5";
-pub const PEER_KEY_FILE: &str = "peer.key";
+const ENROLLMENT_FILE: &str = "enrollment.json5";
+const PEER_KEY_FILE: &str = "peer.key";
 pub const PEER_CERTIFICATE_FILE: &str = "peer.crt";
-pub const TRUST_ANCHOR_FILE: &str = "ca.crt";
-pub const CHAIN_FILE: &str = "chain.crt";
-pub const PLATFORM_ZENOH_CONFIG_FILE: &str = "zenohd.platform.json5";
+const TRUST_ANCHOR_FILE: &str = "ca.crt";
+const CHAIN_FILE: &str = "chain.crt";
+const PLATFORM_ZENOH_CONFIG_FILE: &str = "zenohd.platform.json5";
 
 /// Where the enrolled machine's router dials: the project's cloud router.
 ///
@@ -327,13 +327,12 @@ pub fn load(dirs: &PeppyDirs) -> Result<Option<Enrollment>> {
         Ok(file)
     };
     let peer_certificate = material(PEER_CERTIFICATE_FILE)?;
-    let certificate = CertificateValidity::parse_pem(&std::fs::read_to_string(&peer_certificate)?)
-        .map_err(|e| {
-            Error::Auth(format!(
-                "enrollment material {} cannot be read: {e}; run `peppy platform enroll` again",
-                peer_certificate.display()
-            ))
-        })?;
+    let certificate = read_certificate_validity(&peer_certificate).map_err(|e| {
+        Error::Auth(format!(
+            "enrollment material {} cannot be read: {e}; run `peppy platform enroll` again",
+            peer_certificate.display()
+        ))
+    })?;
     Ok(Some(Enrollment {
         peer_key: material(PEER_KEY_FILE)?,
         peer_certificate,
@@ -343,8 +342,13 @@ pub fn load(dirs: &PeppyDirs) -> Result<Option<Enrollment>> {
     }))
 }
 
-/// Writes the bundle under `<root>/conf/peer/` (`0700`), the key and the
-/// document owner-only. Each file is published atomically, and the document
+/// The validity of the leaf in the PEM file at `path`.
+fn read_certificate_validity(path: &Path) -> Result<CertificateValidity> {
+    CertificateValidity::parse_pem(&std::fs::read_to_string(path)?)
+}
+
+/// Writes the bundle under `<root>/conf/peer/` (`0700`), every file
+/// owner-only. Each file is published atomically, and the document
 /// last: a crash before it lands leaves no record, so the machine reads as
 /// not enrolled and the next `enroll` overwrites the partial material.
 pub fn save(dirs: &PeppyDirs, bundle: &EnrollmentBundle) -> Result<()> {
@@ -359,7 +363,6 @@ pub fn save(dirs: &PeppyDirs, bundle: &EnrollmentBundle) -> Result<()> {
     document::publish(
         &peer_dir.join(PEER_KEY_FILE),
         bundle.peer_key_pem.expose_secret(),
-        true,
     )?;
     publish_issued(&peer_dir, &bundle.issued)
 }
@@ -367,7 +370,7 @@ pub fn save(dirs: &PeppyDirs, bundle: &EnrollmentBundle) -> Result<()> {
 /// Writes the material of a renewal over the material of the enrollment. The
 /// key stays as it is. A renewal has no key of its own, so when the key of the
 /// enrollment is absent the machine is not enrolled, and nothing is written.
-pub fn save_renewal(dirs: &PeppyDirs, renewed: &IssuedMaterial) -> Result<()> {
+pub(crate) fn save_renewal(dirs: &PeppyDirs, renewed: &IssuedMaterial) -> Result<()> {
     let peer_dir = dirs.peer_dir();
     let peer_key = peer_dir.join(PEER_KEY_FILE);
     if !peer_key.is_file() {
@@ -389,9 +392,9 @@ fn publish_issued(peer_dir: &Path, issued: &IssuedMaterial) -> Result<()> {
         (CHAIN_FILE, &issued.chain_pem),
         (PLATFORM_ZENOH_CONFIG_FILE, &issued.platform_zenoh_config),
     ] {
-        document::publish(&peer_dir.join(file), content, false)?;
+        document::publish(&peer_dir.join(file), content)?;
     }
-    document::save(&peer_dir.join(ENROLLMENT_FILE), &issued.document, true)
+    document::save(&peer_dir.join(ENROLLMENT_FILE), &issued.document)
 }
 
 /// Removes the whole peer directory. Absent is not an error: the machine is
@@ -730,6 +733,33 @@ mod tests {
         }
     }
 
+    /// The certificates and the platform's config sit next to the key, and
+    /// they are owner-only like it.
+    #[cfg(unix)]
+    #[test]
+    fn every_saved_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(dir.path());
+
+        save(&dirs, &bundle()).expect("save");
+
+        for name in [
+            ENROLLMENT_FILE,
+            PEER_KEY_FILE,
+            PEER_CERTIFICATE_FILE,
+            TRUST_ANCHOR_FILE,
+            CHAIN_FILE,
+            PLATFORM_ZENOH_CONFIG_FILE,
+        ] {
+            let mode = std::fs::metadata(dirs.peer_dir().join(name))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{name}");
+        }
+    }
+
     /// A machine that is not enrolled has no key, so a renewal writes nothing
     /// and does not make the peer directory.
     #[test]
@@ -836,6 +866,21 @@ mod tests {
         std::fs::remove_file(dirs.peer_dir().join(PEER_KEY_FILE)).unwrap();
         let err = load(&dirs).expect_err("missing key");
         assert!(err.to_string().contains(PEER_KEY_FILE), "{err}");
+    }
+
+    /// A leaf file that cannot be read as text fails the load like a leaf
+    /// that is not a certificate: the message names the file and the remedy.
+    #[test]
+    fn a_peer_certificate_that_cannot_be_read_fails_the_load_naming_enroll() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(dir.path());
+        save(&dirs, &bundle()).unwrap();
+        std::fs::write(dirs.peer_dir().join(PEER_CERTIFICATE_FILE), b"\xff\xfe\xfd").unwrap();
+
+        let err = load(&dirs).expect_err("a leaf that is not text");
+
+        assert!(err.to_string().contains(PEER_CERTIFICATE_FILE), "{err}");
+        assert!(err.to_string().contains("peppy platform enroll"), "{err}");
     }
 
     #[test]

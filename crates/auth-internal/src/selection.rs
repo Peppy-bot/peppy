@@ -97,7 +97,7 @@ impl PlatformSelection {
 }
 
 /// A workspace in words, for the person: its name and its id.
-pub fn workspace_label(workspace_name: &str, workspace_id: &str) -> String {
+fn workspace_label(workspace_name: &str, workspace_id: &str) -> String {
     format!("workspace {workspace_name} ({workspace_id})")
 }
 
@@ -118,7 +118,7 @@ impl Versioned for PlatformSelection {
 }
 
 /// Selection path under a given peppy root.
-pub fn selection_path(dirs: &PeppyDirs) -> PathBuf {
+fn selection_path(dirs: &PeppyDirs) -> PathBuf {
     dirs.conf_dir()
         .join(daemon_config::consts::PLATFORM_SELECTION_FILE)
 }
@@ -136,7 +136,7 @@ pub fn save(dirs: &PeppyDirs, selection: &PlatformSelection) -> Result<()> {
     std::fs::create_dir_all(&conf)?;
     // `conf/` holds the credentials too; keep it owner-only as `storage` does.
     restrict_dir(&conf)?;
-    document::save(&selection_path(dirs), selection, false)
+    document::save(&selection_path(dirs), selection)
 }
 
 /// Removes the selection. Absent is not an error: nothing is then selected.
@@ -161,6 +161,22 @@ mod tests {
         remove(&dirs).expect("remove");
         assert_eq!(load(&dirs).unwrap(), None);
         remove(&dirs).expect("removing two times is fine");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_saved_selection_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(dir.path());
+
+        save(&dirs, &selection()).expect("save");
+
+        let mode = std::fs::metadata(selection_path(&dirs))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     /// A workspace with no project is a selection too, and the file of one
