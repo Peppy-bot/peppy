@@ -8,16 +8,13 @@ use common::{
     wait_until_process_exits, wait_until_service_reachable, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use config::node::QoSProfile;
 use config_test_support as test_helpers;
-use core_node_api::ActionId;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeRemoveRequest,
 };
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
 use gix_url::Url as GitUrl;
-use peppylib::ActionMessenger;
 use peppylib::core_node::transport::poll;
 use std::io::Write;
 use std::path::{Path, PathBuf};

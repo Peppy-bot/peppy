@@ -28,18 +28,10 @@ async fn send_add_goal_without_waiting(
     std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
 
     let goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
-    let goal_payload = goal.encode().expect("failed to encode goal");
-
-    let action_handle = ActionMessenger::send_goal(
+    let action_handle = common::send_daemon_goal(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        common::core_node_target(&started_core_node.core_node_name),
-        ActionId::NodeAdd.name(),
-        None,
-        goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
+        &goal,
         GOAL_TIMEOUT,
     )
     .await

@@ -507,18 +507,10 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         TEST_GIT_HASH,
         RESULT_TIMEOUT.as_secs(),
     );
-    let first_goal_payload = first_goal.encode().expect("failed to encode goal");
-
-    let mut first_action_handle = ActionMessenger::send_goal(
+    let mut first_action_handle = common::send_daemon_goal(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        common::core_node_target(&started_core_node.core_node_name),
-        ActionId::NodeAdd.name(),
-        None,
-        first_goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
+        &first_goal,
         GOAL_TIMEOUT,
     )
     .await
