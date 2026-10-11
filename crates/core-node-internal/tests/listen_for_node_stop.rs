@@ -193,8 +193,8 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
     let grace = node_stack.shutdown_grace();
     let deadline = force_kill_deadline(grace);
     // Exit after the bare grace but well inside the full deadline, so the test
-    // genuinely distinguishes "daemon waits grace" (old, force-kill) from
-    // "daemon waits grace + teardown margin" (new, graceful).
+    // tells a daemon that waits only the grace (and force-kills) from one that
+    // waits grace + teardown margin (and reports a graceful stop).
     let exit_delay = grace + Duration::from_secs(2);
     assert!(
         exit_delay > grace && exit_delay < deadline,
@@ -596,8 +596,8 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
 /// `scope_core_node` it is given (here the caller's own core node), so the
 /// foreign listener must never answer.
 ///
-/// Before the scoping fix, each iteration was a discovery race the foreign
-/// listener (registered first, to bias the race against us) could win.
+/// The foreign listener registers first, to bias every unscoped discovery
+/// toward it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
     const NODE_NAME: &str = "camera";

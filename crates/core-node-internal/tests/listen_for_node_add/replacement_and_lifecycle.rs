@@ -176,7 +176,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     let source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
     let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
 
-    // First add: no interfaces
+    // First add: emits `wrong_topic_name`.
     let peppy_json5_v1 = node_config_with_interfaces(
         NODE_NAME,
         NODE_TAG,
@@ -350,10 +350,9 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
         "dependent node should still exist after failed overwrite"
     );
 
-    // Path equality alone isn't enough; assert the live entity config still
-    // exposes the v1-only interface (`reset_sensor`) and does NOT expose the
-    // v2-only interface (`new_service`). This proves the failed overwrite
-    // truly preserved the original revision rather than just the path.
+    // The live entity config still exposes the v1-only interface
+    // (`reset_sensor`) and does NOT expose the v2-only interface
+    // (`new_service`): the failed overwrite preserved the original revision.
     let exposed = exposed_service_names(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
     assert!(
         exposed.iter().any(|name| name == "reset_sensor"),
@@ -1232,9 +1231,9 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
     );
 
     // Lower bound: the stuck instances really did sit out a full force-kill
-    // window (neither answers SHUTDOWN_SERVICE). Pins the test's premise: if a
-    // future change short-circuits the wait on an unreachable/failed cooperative
-    // send, this fires instead of the upper bound passing vacuously.
+    // window (neither answers SHUTDOWN_SERVICE). Pins the test's premise: a
+    // wait that short-circuits on an unreachable or failed cooperative send
+    // fails this bound instead of letting the upper bound pass vacuously.
     assert!(
         elapsed >= window,
         "stuck instances should burn the full force-kill window ({window:?}), took only {elapsed:?}"

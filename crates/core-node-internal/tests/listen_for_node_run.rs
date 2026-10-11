@@ -1294,11 +1294,11 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
 /// Verifies that `start_container_node` auto-creates a missing bind-mount
 /// source directory AND emits a loud warning about it to the per-instance
-/// start log. The auto-create restores the dev-branch ergonomics for nodes
-/// that declare scratch / output directories (e.g. `/tmp/<node>`); the
-/// warning is the contract that prevents a typo'd file bind from silently
-/// becoming an empty directory. Both halves of the contract are asserted;
-/// if a future refactor drops the warning, this test must fail.
+/// start log. The auto-create lets nodes declare scratch / output directories
+/// (e.g. `/tmp/<node>`) that do not exist yet; the warning is the contract
+/// that prevents a typo'd file bind from silently becoming an empty
+/// directory. Both halves of the contract are asserted, so a change that
+/// drops the warning fails this test.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns() {
     let _container_test_guard = acquire_container_test_guard().await;
