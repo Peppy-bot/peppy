@@ -734,6 +734,29 @@ pub struct ConsumerExposerOutput {
     pub exposer_stderr: String,
 }
 
+/// A generated node project ready to compile and spawn: its directory and
+/// its saved runtime config.
+pub struct NodeProject {
+    /// Keeps the project directory on disk while the node runs.
+    _temp_dir: TempDir,
+    pub dir: std::path::PathBuf,
+    /// Path of the saved runtime config, the value the node reads from
+    /// `RUNTIME_CONFIG_VAR_NAME`.
+    pub runtime_config: String,
+}
+
+impl NodeProject {
+    /// `dir` is the project directory inside `temp_dir`, and `runtime_config`
+    /// the path [`save_runtime_config`] returned.
+    pub fn new(temp_dir: TempDir, dir: std::path::PathBuf, runtime_config: String) -> Self {
+        Self {
+            _temp_dir: temp_dir,
+            dir,
+            runtime_config,
+        }
+    }
+}
+
 /// Asserts that the process behind `output` exited with success and returns
 /// its stdout and stderr as text for the caller's content checks. `label`
 /// names the process in the failure message.
