@@ -12,6 +12,7 @@
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
 use daemon_config::contract::PeppyContractParser;
+use daemon_config::daemon_interface::StackCopiesScope;
 use daemon_config::launcher::{LauncherFragmentParser, PeppyLauncherParser};
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::pairing::PeppyPairingParser;
@@ -21,6 +22,10 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 const SNIPPETS_ROOT: &str = "docs/src/content/docs/guides/snippets";
+
+/// The launcher snippet whose `stack_copies` scope the launch files guide and
+/// the MCP guide show.
+const FRAMEWORK_CONTROLS_LAUNCHER: &str = "launchers/mcp_framework_controls.json5";
 
 /// Walk `root` recursively and collect every peppy document.
 ///
@@ -123,4 +128,60 @@ fn docs_snippet_configs_parse() {
     for path in &configs {
         assert_parses_with_matching_schema(path);
     }
+}
+
+/// A launcher keeps a scope as a free value, so the launcher parse above does
+/// not read it. The scope the docs show parses into the type of its
+/// interface, as a launch parses it, with the options and the features the
+/// guides describe.
+#[test]
+fn docs_stack_copies_scope_parses() {
+    let path = workspace_root()
+        .join(SNIPPETS_ROOT)
+        .join(FRAMEWORK_CONTROLS_LAUNCHER);
+    let launcher = PeppyLauncherParser::from_path(&path)
+        .unwrap_or_else(|error| panic!("failed to parse launcher {}: {error:?}", path.display()));
+    let scope = launcher
+        .deployments
+        .iter()
+        .flat_map(|deployment| &deployment.instances)
+        .find_map(|instance| instance.daemon_scopes.get("stack"))
+        .unwrap_or_else(|| panic!("{} gives no scope to target `stack`", path.display()));
+
+    let scope = StackCopiesScope::deserialize(scope).unwrap_or_else(|error| {
+        panic!(
+            "the `stack_copies` scope of {} does not parse: {error}",
+            path.display()
+        )
+    });
+
+    let features: Vec<(&str, Vec<(&str, &str, &str)>)> = scope
+        .options()
+        .iter()
+        .map(|entry| {
+            (
+                entry.option().as_str(),
+                entry
+                    .features()
+                    .iter()
+                    .map(|feature| {
+                        (
+                            feature.feature().as_str(),
+                            feature.axis().as_str(),
+                            feature.option().as_str(),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        features,
+        [
+            ("openarm_sim", vec![("ai_brain", "brain", "ai_brain_vla")]),
+            ("so101_sim", Vec::new()),
+        ],
+        "the scope offers the options and the features the guides describe"
+    );
+    assert_eq!(scope.max_copies().get(), 4);
 }
