@@ -13,11 +13,10 @@ test_install_in_docker.py.
 
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
 from .install_helpers import (
+    assert_installed,
     diagnostic,
     install_cmd,
     linux_only,
@@ -40,20 +39,11 @@ def _no_peppy_installed() -> None:
     remove_peppy()
 
 
-def _assert_installed(result: subprocess.CompletedProcess[str]) -> None:
-    assert result.returncode == 0, (
-        f"install.sh exited with {result.returncode}{diagnostic(result)}"
-    )
-    assert "peppy installed to" in result.stdout, (
-        f"Missing 'peppy installed to' in the output{diagnostic(result)}"
-    )
-
-
 def test_install() -> None:
     """install.sh installs a peppy binary that runs."""
     home = peppy_home("install")
 
-    _assert_installed(login_shell(install_cmd(home)))
+    assert_installed(login_shell(install_cmd(home)))
 
     check = login_shell(f"test -x {home}/bin/peppy && {home}/bin/peppy --help")
     assert check.returncode == 0, (
@@ -70,7 +60,7 @@ def test_install_applies_missing_system_changes() -> None:
 
     result = login_shell(install_cmd(home), timeout=600)
 
-    _assert_installed(result)
+    assert_installed(result)
     assert "Enable systemd linger for user" in result.stdout, (
         f"install.sh should ask to enable linger{diagnostic(result)}"
     )
@@ -97,7 +87,7 @@ def test_no_root_install_happy_path() -> None:
 
     result = login_shell(install_cmd(home, extra_env="PEPPY_NO_ROOT_INSTALL=1"))
 
-    _assert_installed(result)
+    assert_installed(result)
     assert "Skipped Apptainer setup" in result.stdout, (
         f"Missing setup skip message{diagnostic(result)}"
     )
@@ -138,7 +128,7 @@ def test_standard_install_container_setup() -> None:
     """Default install: the Apptainer setup runs and leaves its prerequisites met."""
     home = peppy_home("ctsetup")
 
-    _assert_installed(login_shell(install_cmd(home), timeout=600))
+    assert_installed(login_shell(install_cmd(home), timeout=600))
 
     # No starter-suid in --without-suid builds.
     starter = login_shell(f"test -f {home}/bin/apptainer/libexec/apptainer/bin/starter")
@@ -158,10 +148,10 @@ def test_install_skips_container_setup_with_env_var() -> None:
 
     result = login_shell(install_cmd(home, extra_env="PEPPY_NO_CONTAINER_SETUP=1"))
 
-    _assert_installed(result)
-    assert "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)" in result.stdout, (
-        f"Missing env var skip message{diagnostic(result)}"
-    )
+    assert_installed(result)
+    assert (
+        "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)" in result.stdout
+    ), f"Missing env var skip message{diagnostic(result)}"
     check = login_shell(f"test -x {home}/bin/peppy")
     assert check.returncode == 0, f"peppy binary not found at {home}/bin/peppy"
 
@@ -172,7 +162,7 @@ def test_install_runs_repo_update() -> None:
 
     result = login_shell(install_cmd(home, skip_service_install=False), timeout=600)
 
-    _assert_installed(result)
+    assert_installed(result)
     output = result.stdout + result.stderr
     assert (
         "Refreshing repositories" in output or "Repository refresh complete" in output
@@ -183,12 +173,12 @@ def test_reinstall_over_existing() -> None:
     """Reinstall succeeds over an existing installation and keeps PEPPY_HOME."""
     home = peppy_home("reinstall")
 
-    _assert_installed(login_shell(install_cmd(home)))
+    assert_installed(login_shell(install_cmd(home)))
     marker = login_shell(f"echo marker > {home}/test_marker.txt")
     assert marker.returncode == 0, f"could not write the marker{diagnostic(marker)}"
 
     # Second install: overwrites the binaries in place.
-    _assert_installed(login_shell(install_cmd(home)))
+    assert_installed(login_shell(install_cmd(home)))
 
     check = login_shell(f"cat {home}/test_marker.txt")
     assert check.returncode == 0 and "marker" in check.stdout, (
@@ -206,11 +196,13 @@ def test_container_node_build() -> None:
     home = peppy_home("ctnode")
     env_preamble = f'export PATH="{home}/bin:$PATH" && export PEPPY_HOME={home}'
 
-    _assert_installed(
+    assert_installed(
         login_shell(install_cmd(home, skip_service_install=False), timeout=600)
     )
 
-    init = login_shell(f"{env_preamble} && cd {home} && peppy node init --container test-node")
+    init = login_shell(
+        f"{env_preamble} && cd {home} && peppy node init --container test-node"
+    )
     assert init.returncode == 0, f"node init failed{diagnostic(init)}"
 
     # Builds the node's Apptainer container.

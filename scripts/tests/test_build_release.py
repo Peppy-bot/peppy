@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -10,6 +12,15 @@ import pytest
 from functions.build import BuildArtifact
 from functions.build_release import _build_all_targets, _run_local, main
 from functions.cli import ReleaseError
+
+from .helpers import unwrapped
+
+
+@pytest.fixture(autouse=True)
+def _restore_the_working_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A local build changes into its checkout; go back after each test, so
+    no later test runs in the temporary directory of this one."""
+    monkeypatch.chdir(Path.cwd())
 
 
 @patch("functions.build_release._build_all_targets")
@@ -40,7 +51,11 @@ def test_run_local_on_linux_builds_native_only(
     ]
     _run_local()
     # A local build publishes nothing, so it needs the build tools and no token.
-    assert [c.args[0] for c in mock_need_cmd.call_args_list] == ["git", "cargo", "rustc"]
+    assert [c.args[0] for c in mock_need_cmd.call_args_list] == [
+        "git",
+        "cargo",
+        "rustc",
+    ]
     mock_build_all.assert_called_once_with(
         "v0.1.0",
         ["x86_64-unknown-linux-gnu"],
@@ -102,12 +117,57 @@ def test_run_local_with_an_empty_tag_raises_without_prompting(
     tmp_path: Path,
 ) -> None:
     mock_repo_root.return_value = tmp_path
-    with patch(
-        "functions.build_release.has_uncommitted_changes", return_value=False
-    ), pytest.raises(ReleaseError, match="release tag cannot be empty"):
+    with (
+        patch("functions.build_release.has_uncommitted_changes", return_value=False),
+        pytest.raises(ReleaseError, match="release tag cannot be empty"),
+    ):
         _run_local("")
     mock_prompt.assert_not_called()
 
+
+@contextmanager
+def _patched_dirty_local_build(
+    tmp_path: Path, answer: bool
+) -> Iterator[tuple[MagicMock, MagicMock]]:
+    """Stand in for the collaborators of a local build in a checkout that has
+    uncommitted changes, where the user gives *answer* to the question.
+
+    Yields the prompt_yn and _build_all_targets mocks.
+    """
+    with (
+        patch("functions.build_release.need_cmd"),
+        patch("functions.build_release.get_repo_root", return_value=tmp_path),
+        patch("functions.build_release.has_uncommitted_changes", return_value=True),
+        patch("functions.build_release.prompt_yn", return_value=answer) as ask,
+        patch(
+            "functions.build_release.get_targets_for_platform",
+            return_value=["x86_64-unknown-linux-gnu"],
+        ),
+        patch("functions.build_release._build_all_targets", return_value=[]) as build,
+    ):
+        yield ask, build
+
+
+def test_run_local_builds_uncommitted_changes_the_user_accepts(tmp_path: Path) -> None:
+    with _patched_dirty_local_build(tmp_path, answer=True) as (ask, build):
+        _run_local("v0.1.0")
+
+    ask.assert_called_once_with("Working tree has uncommitted changes. Continue?")
+    build.assert_called()
+
+
+def test_run_local_exits_before_building_uncommitted_changes_the_user_refuses(
+    tmp_path: Path,
+) -> None:
+    with (
+        _patched_dirty_local_build(tmp_path, answer=False) as (ask, build),
+        pytest.raises(SystemExit) as exited,
+    ):
+        _run_local("v0.1.0")
+
+    assert exited.value.code == 1
+    ask.assert_called_once_with("Working tree has uncommitted changes. Continue?")
+    build.assert_not_called()
 
 
 # --- the command line ---
@@ -130,13 +190,13 @@ def test_main_prompts_for_the_local_tag_without_the_option(
 
 
 def test_tag_without_local_is_rejected(capsys: pytest.CaptureFixture[str]) -> None:
-    with patch(
-        "sys.argv", ["build-release", "--base-images", "--tag", "test"]
-    ), pytest.raises(SystemExit) as exited:
+    with (
+        patch("sys.argv", ["build-release", "--base-images", "--tag", "test"]),
+        pytest.raises(SystemExit) as exited,
+    ):
         main()
     assert exited.value.code == 2
     assert "--tag applies to --local only" in capsys.readouterr().err
-
 
 
 @pytest.mark.parametrize(
@@ -152,15 +212,16 @@ def test_main_refuses_to_run_without_a_mode(
 ) -> None:
     # Releases publish from the workflow alone; without --local or
     # --base-images there is nothing this script may do.
-    with patch("sys.argv", argv), patch(
-        "functions.build_release._run_local"
-    ) as mock_run_local, patch(
-        "functions.build_release.build_base_images_main"
-    ) as mock_base_images, pytest.raises(SystemExit) as exited:
+    with (
+        patch("sys.argv", argv),
+        patch("functions.build_release._run_local") as mock_run_local,
+        patch("functions.build_release.build_base_images_main") as mock_base_images,
+        pytest.raises(SystemExit) as exited,
+    ):
         main()
 
     assert exited.value.code == 2
-    err = " ".join(capsys.readouterr().err.split())
+    err = unwrapped(capsys.readouterr().err)
     assert 'releases publish only from the "Parallel release" workflow' in err
     assert (
         "Pass --local to build the release archives on this host without "
@@ -171,9 +232,11 @@ def test_main_refuses_to_run_without_a_mode(
 
 
 def test_main_refuses_both_modes_at_once(capsys: pytest.CaptureFixture[str]) -> None:
-    with patch("sys.argv", ["build-release", "--local", "--base-images"]), patch(
-        "functions.build_release._run_local"
-    ) as mock_run_local, pytest.raises(SystemExit) as exited:
+    with (
+        patch("sys.argv", ["build-release", "--local", "--base-images"]),
+        patch("functions.build_release._run_local") as mock_run_local,
+        pytest.raises(SystemExit) as exited,
+    ):
         main()
 
     assert exited.value.code == 2
@@ -301,4 +364,3 @@ def test_build_all_targets_stops_vm_when_linux_build_fails(
     # The VM was started for the linux target, so it must be stopped even though
     # the build raised: cleanup runs in `finally`.
     mock_stop.assert_called_once_with(limactl)
-

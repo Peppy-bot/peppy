@@ -6,6 +6,7 @@ import struct
 import tarfile
 from pathlib import Path
 
+from .build import release_archive_name
 from .cli import RELEASE_TRIPLES, ReleaseError
 
 REQUIRED_ALL = [
@@ -16,9 +17,9 @@ REQUIRED_ALL = [
 
 # ELF e_machine values for the architectures peppy releases for. Linux
 # binaries are verified against these; a binary whose header names another
-# machine fails the release. The v0.25.3 x86_64 archive shipped an aarch64
-# apptainer through the presence-only check, and every consumer of the
-# tarball (installs, CI runners) broke at exec with no build-time signal.
+# machine fails the release. Presence alone does not catch such a binary: it
+# sits at the right path and breaks every consumer of the tarball (installs,
+# CI runners) at exec, with no build-time signal.
 ELF_MACHINE_BY_ARCH = {
     "x86_64": 62,
     "aarch64": 183,
@@ -61,7 +62,7 @@ def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
     )
 
     with tarfile.open(archive_path, "r:gz") as tar:
-        members = {m.name.lstrip("./"): m for m in tar.getmembers()}
+        members = {m.name.removeprefix("./"): m for m in tar.getmembers()}
         for item in required:
             member = members.get(item)
             if member is None:
@@ -106,8 +107,8 @@ def verify_all_releases(
     """
     errors: list[str] = []
 
-    for triple in (triples if triples is not None else RELEASE_TRIPLES):
-        archive = dist_dir / f"peppy-{triple}.tgz"
+    for triple in triples if triples is not None else RELEASE_TRIPLES:
+        archive = dist_dir / release_archive_name(triple)
 
         if not archive.exists():
             errors.append(f"{triple}: archive not found at {archive}")
@@ -118,6 +119,4 @@ def verify_all_releases(
 
     if errors:
         summary = "\n  ".join(errors)
-        raise ReleaseError(
-            f"Release verification failed:\n  {summary}"
-        )
+        raise ReleaseError(f"Release verification failed:\n  {summary}")

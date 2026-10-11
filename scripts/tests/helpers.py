@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from collections.abc import Callable, Mapping, Sequence
+from unittest.mock import MagicMock
 
 from functions.hub_ci import resolve
 
@@ -22,6 +24,36 @@ def hub_set_document(refs: Mapping[str, str] | None = None) -> dict:
             for name, commit in HUB_COMMITS.items()
         }
     }
+
+
+def ancestry_resolver(
+    ancestry: Mapping[tuple[str, str], bool],
+) -> Callable[[str, str], bool]:
+    """An is_ancestor stub answering the given (ancestor, descendant) pairs;
+    any other pair raises KeyError."""
+    return lambda ancestor, descendant: ancestry[(ancestor, descendant)]
+
+
+def claude_answer(structured: object, returncode: int = 0) -> MagicMock:
+    """A claude run that exits with *returncode* and whose JSON envelope
+    carries *structured* as its structured output."""
+    mock = MagicMock()
+    mock.returncode = returncode
+    mock.stdout = json.dumps(
+        {
+            "type": "result",
+            "result": json.dumps(structured),
+            "structured_output": structured,
+        }
+    )
+    mock.stderr = ""
+    return mock
+
+
+def flag_value(cmd: Sequence[str], flag: str) -> str:
+    """Return the argv element following *flag* in *cmd*."""
+    assert flag in cmd, f"{flag} not in {cmd}"
+    return cmd[cmd.index(flag) + 1]
 
 
 def unwrapped(text: str) -> str:

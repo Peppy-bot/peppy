@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,32 +15,21 @@ from functions.github import RepoSlug
 from functions.release_docs_gate import (
     JudgedCommit,
     _docs_check_base,
-    _find_open_docs_sync_pr,
+    _find_open_docs_pr,
     _judged_commit_of,
     _last_judged_commit,
     _last_shipped_commit,
     _open_docs_pr,
-    _push_docs_sync_branch,
+    _push_docs_branch,
     verify_docs_gate,
 )
 
-from .helpers import unwrapped
+from .helpers import ancestry_resolver, unwrapped
 
 DEV_COMMIT = "1111111111111111111111111111111111111111"
 
-
-@pytest.fixture(autouse=True)
-def _no_prompts() -> object:
-    """The gate never asks anything: every prompt fails the test."""
-    with patch(
-        "functions.cli.Prompt.ask", side_effect=AssertionError("prompted")
-    ), patch("functions.cli.Confirm.ask", side_effect=AssertionError("prompted")):
-        yield
-
-
-def _ancestry_resolver(ancestry: dict[tuple[str, str], bool]):
-    """Return an is_ancestor stub answering the given (ancestor, descendant) pairs."""
-    return lambda ancestor, descendant: ancestry[(ancestor, descendant)]
+# The gate never asks anything: every prompt fails the test.
+pytestmark = pytest.mark.usefixtures("no_prompts")
 
 
 # --- the last shipped commit ---
@@ -51,7 +42,10 @@ LATEST_TAG = "v0.29.0"
 def test_last_shipped_commit_is_origin_main_without_a_published_release(
     mock_tag: MagicMock, mock_is_ancestor: MagicMock
 ) -> None:
-    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    assert (
+        _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT)
+        == "origin/main"
+    )
 
     mock_is_ancestor.assert_not_called()
 
@@ -62,11 +56,14 @@ def test_last_shipped_commit_is_origin_main_once_aligned_to_the_latest_release(
     mock_tag: MagicMock, mock_is_ancestor: MagicMock
 ) -> None:
     # main sits one notes commit past the tag, as a finished release leaves it.
-    mock_is_ancestor.side_effect = _ancestry_resolver(
+    mock_is_ancestor.side_effect = ancestry_resolver(
         {(LATEST_TAG, "origin/main"): True}
     )
 
-    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    assert (
+        _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT)
+        == "origin/main"
+    )
 
 
 @patch("functions.release_docs_gate.is_ancestor")
@@ -78,7 +75,7 @@ def test_last_shipped_commit_is_the_latest_release_tag_when_main_lags_it(
 ) -> None:
     # A release published but never aligned: the tag is past main, on the way
     # to the commit being released.
-    mock_is_ancestor.side_effect = _ancestry_resolver(
+    mock_is_ancestor.side_effect = ancestry_resolver(
         {
             (LATEST_TAG, "origin/main"): False,
             ("origin/main", LATEST_TAG): True,
@@ -86,7 +83,9 @@ def test_last_shipped_commit_is_the_latest_release_tag_when_main_lags_it(
         }
     )
 
-    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == LATEST_TAG
+    assert (
+        _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == LATEST_TAG
+    )
 
     err = unwrapped(capfd.readouterr().err)
     assert f"origin/main is behind the latest release {LATEST_TAG}" in err
@@ -115,9 +114,12 @@ def test_last_shipped_commit_stays_origin_main_when_the_tag_is_off_the_release_l
     mock_is_ancestor: MagicMock,
     ancestry: dict[tuple[str, str], bool],
 ) -> None:
-    mock_is_ancestor.side_effect = _ancestry_resolver(ancestry)
+    mock_is_ancestor.side_effect = ancestry_resolver(ancestry)
 
-    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    assert (
+        _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT)
+        == "origin/main"
+    )
 
 
 # --- the commit a merged docs pull request settled ---
@@ -163,11 +165,14 @@ _ON_THE_RELEASE_LINE = {
 
 
 @patch("functions.release_docs_gate.is_ancestor")
-@patch("functions.release_docs_gate.find_commit", _known_commits(JUDGED_COMMIT, JUDGED_MERGE))
+@patch(
+    "functions.release_docs_gate.find_commit",
+    _known_commits(JUDGED_COMMIT, JUDGED_MERGE),
+)
 def test_judged_commit_of_a_merged_docs_sync_pull_request(
     mock_is_ancestor: MagicMock,
 ) -> None:
-    mock_is_ancestor.side_effect = _ancestry_resolver(_ON_THE_RELEASE_LINE)
+    mock_is_ancestor.side_effect = ancestry_resolver(_ON_THE_RELEASE_LINE)
 
     judged = _judged_commit_of(_docs_sync_pull(), "origin/main", DEV_COMMIT)
 
@@ -190,7 +195,10 @@ def test_judged_commit_of_a_merged_docs_sync_pull_request(
     ],
 )
 @patch("functions.release_docs_gate.is_ancestor")
-@patch("functions.release_docs_gate.find_commit", _known_commits(JUDGED_COMMIT, JUDGED_MERGE))
+@patch(
+    "functions.release_docs_gate.find_commit",
+    _known_commits(JUDGED_COMMIT, JUDGED_MERGE),
+)
 def test_judged_commit_of_is_none_for_a_pull_request_that_settles_nothing(
     mock_is_ancestor: MagicMock, pull: object
 ) -> None:
@@ -215,11 +223,14 @@ def test_judged_commit_of_is_none_for_a_pull_request_that_settles_nothing(
     ],
 )
 @patch("functions.release_docs_gate.is_ancestor")
-@patch("functions.release_docs_gate.find_commit", _known_commits(JUDGED_COMMIT, JUDGED_MERGE))
+@patch(
+    "functions.release_docs_gate.find_commit",
+    _known_commits(JUDGED_COMMIT, JUDGED_MERGE),
+)
 def test_judged_commit_of_is_none_off_the_way_to_the_release(
     mock_is_ancestor: MagicMock, ancestry: dict[tuple[str, str], bool]
 ) -> None:
-    mock_is_ancestor.side_effect = _ancestry_resolver(ancestry)
+    mock_is_ancestor.side_effect = ancestry_resolver(ancestry)
 
     assert _judged_commit_of(_docs_sync_pull(), "origin/main", DEV_COMMIT) is None
 
@@ -261,7 +272,7 @@ def test_last_judged_commit_is_the_latest_one_on_the_way_to_the_release(
         _docs_sync_pull(),
         _docs_sync_pull(branch_prefix="fix-the-router-"),
     ]
-    mock_is_ancestor.side_effect = _ancestry_resolver(
+    mock_is_ancestor.side_effect = ancestry_resolver(
         {
             **_ON_THE_RELEASE_LINE,
             ("origin/main", EARLIER_JUDGED_COMMIT): True,
@@ -299,7 +310,9 @@ def test_last_judged_commit_is_none_without_a_merged_docs_pull_request(
 def test_docs_check_base_is_the_last_shipped_commit_when_nothing_was_judged_since(
     mock_shipped: MagicMock, mock_judged: MagicMock
 ) -> None:
-    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    assert (
+        _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    )
 
     assert mock_judged.call_args.args[2:] == ("origin/main", DEV_COMMIT)
 
@@ -316,7 +329,9 @@ def test_docs_check_base_is_the_commit_a_merged_docs_pull_request_settled(
 ) -> None:
     # The rerun after the merge: the code up to the judged commit is settled,
     # so the check starts there instead of drawing new gaps from the same code.
-    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == JUDGED_COMMIT
+    assert (
+        _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == JUDGED_COMMIT
+    )
 
     err = unwrapped(capfd.readouterr().err)
     assert f"was already judged up to {JUDGED_COMMIT[:12]}" in err
@@ -359,205 +374,176 @@ def _update_result(
     )
 
 
-@patch("functions.release_docs_gate.update_docs")
-@patch(
-    "functions.release_docs_gate.check_docs",
-    return_value=CheckResult(changes=()),
-)
-@patch("functions.release_docs_gate.has_changes_in_paths", return_value=False)
+@dataclass(frozen=True)
+class GateCollaborators:
+    """The stand-ins of what the gate calls, for a test to set or check."""
+
+    has_changes: MagicMock
+    check: MagicMock
+    update: MagicMock
+    find_pr: MagicMock
+    push_branch: MagicMock
+    open_pr: MagicMock
+
+
+@pytest.fixture
+def gate() -> Iterator[GateCollaborators]:
+    """Stand in for every collaborator of the gate: a clean docs tree, a check
+    that finds no gap and no open docs pull request, unless a test sets
+    otherwise."""
+    with (
+        patch(
+            "functions.release_docs_gate.has_changes_in_paths", return_value=False
+        ) as has_changes,
+        patch(
+            "functions.release_docs_gate.check_docs",
+            return_value=CheckResult(changes=()),
+        ) as check,
+        patch("functions.release_docs_gate.update_docs") as update,
+        patch(
+            "functions.release_docs_gate._find_open_docs_pr", return_value=None
+        ) as find_pr,
+        patch("functions.release_docs_gate._push_docs_branch") as push_branch,
+        patch("functions.release_docs_gate._open_docs_pr") as open_pr,
+    ):
+        yield GateCollaborators(
+            has_changes=has_changes,
+            check=check,
+            update=update,
+            find_pr=find_pr,
+            push_branch=push_branch,
+            open_pr=open_pr,
+        )
+
+
 def test_docs_gate_passes_and_diffs_from_the_last_shipped_commit(
-    mock_has_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
+    gate: GateCollaborators,
 ) -> None:
     _docs_gate(base="v0.29.0")
 
     # The base names the last shipped commit; the head is the dev commit
     # being released.
-    mock_check.assert_called_once_with("v0.29.0", DEV_COMMIT)
-    mock_update.assert_not_called()
+    gate.check.assert_called_once_with("v0.29.0", DEV_COMMIT)
+    gate.update.assert_not_called()
 
 
-@patch("functions.release_docs_gate._find_open_docs_sync_pr")
-@patch("functions.release_docs_gate.update_docs")
-@patch(
-    "functions.release_docs_gate.check_docs",
-    return_value=CheckResult(changes=(_MINOR_CHANGE,)),
-)
-@patch("functions.release_docs_gate.has_changes_in_paths", return_value=False)
 def test_docs_gate_passes_on_minor_only_suggestions_left_alone(
-    mock_has_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find_pr: MagicMock,
-    capfd: pytest.CaptureFixture[str],
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
 ) -> None:
+    gate.check.return_value = CheckResult(changes=(_MINOR_CHANGE,))
+
     # Wording-level suggestions never stop a release. Without the optional
     # pull request they leave no trace: no lookup, no update run, no branch.
     _docs_gate(open_minor_docs_pr=False)
 
-    mock_find_pr.assert_not_called()
-    mock_update.assert_not_called()
+    gate.find_pr.assert_not_called()
+    gate.update.assert_not_called()
     # Still printed for whoever reads the log.
     err = capfd.readouterr().err
     assert "reword the intro" in err
     assert "up to date" in err
 
 
-@patch("functions.release_docs_gate._open_docs_pr")
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
-@patch("functions.release_docs_gate.update_docs")
-@patch(
-    "functions.release_docs_gate.check_docs",
-    return_value=CheckResult(changes=(_MINOR_CHANGE,)),
-)
-@patch("functions.release_docs_gate.has_changes_in_paths")
 def test_docs_gate_opens_the_optional_polish_pr_and_continues(
-    mock_has_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find_pr: MagicMock,
-    mock_push_branch: MagicMock,
-    mock_open_pr: MagicMock,
-    capfd: pytest.CaptureFixture[str],
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
 ) -> None:
+    gate.check.return_value = CheckResult(changes=(_MINOR_CHANGE,))
     # The pull request opens on the side; the gate still returns normally so
     # the release goes on.
-    mock_update.return_value = _update_result("implemented", _MINOR_CHANGE)
+    gate.update.return_value = _update_result("implemented", _MINOR_CHANGE)
     # Clean at the gate's dirty check, dirty after the polish update.
-    mock_has_changes.side_effect = [False, True]
-    mock_open_pr.return_value = "https://github.com/test-owner/test-repo/pull/8"
+    gate.has_changes.side_effect = [False, True]
+    gate.open_pr.return_value = "https://github.com/test-owner/test-repo/pull/8"
 
     _docs_gate(open_minor_docs_pr=True, base="v0.29.0")
 
-    mock_update.assert_called_once_with("v0.29.0", DEV_COMMIT, (_MINOR_CHANGE,))
+    gate.update.assert_called_once_with("v0.29.0", DEV_COMMIT, (_MINOR_CHANGE,))
     branch = f"auto/docs-polish-{DEV_COMMIT[:12]}"
-    assert mock_find_pr.call_args.args[2] == branch
-    mock_push_branch.assert_called_once_with(
+    assert gate.find_pr.call_args.args[2] == branch
+    gate.push_branch.assert_called_once_with(
         branch, Path("/repo/docs"), "docs: minor polish"
     )
-    assert mock_open_pr.call_args.args[2] == branch
-    assert "minor polish" in mock_open_pr.call_args.args[3]
-    assert "reword the intro" in mock_open_pr.call_args.args[4]
+    assert gate.open_pr.call_args.args[2] == branch
+    assert "minor polish" in gate.open_pr.call_args.args[3]
+    assert "reword the intro" in gate.open_pr.call_args.args[4]
     err = unwrapped(capfd.readouterr().err)
     assert "pull/8" in err
     assert "does not block" in err
 
 
-@patch("functions.release_docs_gate._open_docs_pr")
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
-@patch("functions.release_docs_gate.update_docs")
-@patch(
-    "functions.release_docs_gate.check_docs",
-    return_value=CheckResult(changes=(_MINOR_CHANGE,)),
-)
-@patch("functions.release_docs_gate.has_changes_in_paths", return_value=False)
 def test_docs_gate_skips_the_polish_pr_when_the_update_changes_nothing(
-    mock_has_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find_pr: MagicMock,
-    mock_push_branch: MagicMock,
-    mock_open_pr: MagicMock,
-    capfd: pytest.CaptureFixture[str],
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
 ) -> None:
+    gate.check.return_value = CheckResult(changes=(_MINOR_CHANGE,))
     # A polish update that produces no docs edits leaves nothing to open; the
     # release goes on, since this path never fails a release.
-    mock_update.return_value = _update_result(
+    gate.update.return_value = _update_result(
         "already_covered", _MINOR_CHANGE, "nothing to polish"
     )
 
     _docs_gate(open_minor_docs_pr=True)
 
-    mock_push_branch.assert_not_called()
-    mock_open_pr.assert_not_called()
+    gate.push_branch.assert_not_called()
+    gate.open_pr.assert_not_called()
     err = capfd.readouterr().err
     assert "no pull request to open" in err
     assert "up to date" in err
 
 
-@patch("functions.release_docs_gate.update_docs")
-@patch(
-    "functions.release_docs_gate._find_open_docs_sync_pr",
-    return_value="https://github.com/test-owner/test-repo/pull/8",
-)
-@patch(
-    "functions.release_docs_gate.check_docs",
-    return_value=CheckResult(changes=(_MINOR_CHANGE,)),
-)
-@patch("functions.release_docs_gate.has_changes_in_paths", return_value=False)
 def test_docs_gate_reports_the_polish_pr_already_open(
-    mock_has_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_find_pr: MagicMock,
-    mock_update: MagicMock,
-    capfd: pytest.CaptureFixture[str],
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
 ) -> None:
+    gate.check.return_value = CheckResult(changes=(_MINOR_CHANGE,))
+    gate.find_pr.return_value = "https://github.com/test-owner/test-repo/pull/8"
+
     # A polish pull request from an earlier attempt on this commit is
     # reported, not derived again.
     _docs_gate(open_minor_docs_pr=True)
 
-    mock_update.assert_not_called()
+    gate.update.assert_not_called()
     err = capfd.readouterr().err
     assert "pull/8" in err
     assert "up to date" in err
 
 
-@patch("functions.release_docs_gate.check_docs")
-@patch("functions.release_docs_gate.has_changes_in_paths", return_value=True)
 def test_docs_gate_rejects_a_dirty_docs_tree_before_asking_claude(
-    mock_has_changes: MagicMock,
-    mock_check: MagicMock,
+    gate: GateCollaborators,
 ) -> None:
+    gate.has_changes.return_value = True
+
     # Those edits would be swept into the sync commit, so refuse up front rather
     # than after a multi-minute check.
     with pytest.raises(ReleaseError, match="'docs/' has uncommitted changes"):
         _docs_gate()
 
-    mock_check.assert_not_called()
+    gate.check.assert_not_called()
 
 
-@patch("functions.release_docs_gate._open_docs_pr")
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
-@patch("functions.release_docs_gate.update_docs")
-@patch(
-    "functions.release_docs_gate.check_docs",
-    return_value=CheckResult(changes=(_BLOCKING_CHANGE,)),
-)
-@patch("functions.release_docs_gate.has_changes_in_paths")
 def test_docs_gate_opens_a_pr_and_stops_the_release(
-    mock_has_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find_pr: MagicMock,
-    mock_push_branch: MagicMock,
-    mock_open_pr: MagicMock,
-    capfd: pytest.CaptureFixture[str],
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    mock_update.return_value = _update_result(
+    gate.check.return_value = CheckResult(changes=(_BLOCKING_CHANGE,))
+    gate.update.return_value = _update_result(
         "implemented", _BLOCKING_CHANGE, "edited 2 files"
     )
     # Clean before the update, dirty after it: claude rewrote the docs.
-    mock_has_changes.side_effect = [False, True]
-    mock_open_pr.return_value = "https://github.com/test-owner/test-repo/pull/7"
+    gate.has_changes.side_effect = [False, True]
+    gate.open_pr.return_value = "https://github.com/test-owner/test-repo/pull/7"
 
     with pytest.raises(SystemExit) as excinfo:
         _docs_gate(base="v0.29.0")
 
     assert excinfo.value.code == 1
     # The check and the update diff from the same base, the last shipped commit.
-    mock_check.assert_called_once_with("v0.29.0", DEV_COMMIT)
-    mock_update.assert_called_once_with("v0.29.0", DEV_COMMIT, (_BLOCKING_CHANGE,))
+    gate.check.assert_called_once_with("v0.29.0", DEV_COMMIT)
+    gate.update.assert_called_once_with("v0.29.0", DEV_COMMIT, (_BLOCKING_CHANGE,))
     # The branch is named after the release commit, so a retry on that commit
     # finds the pull request instead of producing a second one.
     branch = f"auto/docs-update-{DEV_COMMIT[:12]}"
-    mock_push_branch.assert_called_once_with(
+    gate.push_branch.assert_called_once_with(
         branch, Path("/repo/docs"), "docs: sync with the code being released"
     )
-    assert mock_open_pr.call_args.args[2] == branch
+    assert gate.open_pr.call_args.args[2] == branch
     # The log points at the pull request that has to merge first, and at the
     # new run that follows it.
     err = unwrapped(capfd.readouterr().err)
@@ -565,66 +551,37 @@ def test_docs_gate_opens_a_pr_and_stops_the_release(
     assert "start a new run of the release from 'dev'" in err
 
 
-@patch("functions.release_docs_gate._open_docs_pr")
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
-@patch("functions.release_docs_gate.update_docs")
-@patch(
-    "functions.release_docs_gate.check_docs",
-    return_value=CheckResult(changes=(_MINOR_CHANGE, _BLOCKING_CHANGE)),
-)
-@patch("functions.release_docs_gate.has_changes_in_paths")
 def test_docs_gate_feeds_only_blocking_changes_to_the_update_and_pr(
-    mock_has_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find_pr: MagicMock,
-    mock_push_branch: MagicMock,
-    mock_open_pr: MagicMock,
-    capfd: pytest.CaptureFixture[str],
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
 ) -> None:
+    gate.check.return_value = CheckResult(changes=(_MINOR_CHANGE, _BLOCKING_CHANGE))
     # A mixed verdict: the blocking gap drives the update and the pull
     # request, and the minor one is only printed. The optional polish pull
     # request belongs to minor-only verdicts, so it is not opened even when
     # asked for.
-    mock_update.return_value = _update_result("implemented", _BLOCKING_CHANGE)
-    mock_has_changes.side_effect = [False, True]
-    mock_open_pr.return_value = "https://github.com/test-owner/test-repo/pull/7"
+    gate.update.return_value = _update_result("implemented", _BLOCKING_CHANGE)
+    gate.has_changes.side_effect = [False, True]
+    gate.open_pr.return_value = "https://github.com/test-owner/test-repo/pull/7"
 
     with pytest.raises(SystemExit):
         _docs_gate(open_minor_docs_pr=True)
 
-    mock_update.assert_called_once_with(
-        "origin/main", DEV_COMMIT, (_BLOCKING_CHANGE,)
-    )
-    body = mock_open_pr.call_args.args[4]
+    gate.update.assert_called_once_with("origin/main", DEV_COMMIT, (_BLOCKING_CHANGE,))
+    body = gate.open_pr.call_args.args[4]
     assert "docs/x.mdx" in body
     assert "reword the intro" not in body
-    assert [c.args[2] for c in mock_find_pr.call_args_list] == [
+    assert [c.args[2] for c in gate.find_pr.call_args_list] == [
         f"auto/docs-update-{DEV_COMMIT[:12]}"
     ]
     assert "reword the intro" in capfd.readouterr().err
 
 
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate.update_docs")
-@patch(
-    "functions.release_docs_gate._find_open_docs_sync_pr",
-    return_value="https://github.com/test-owner/test-repo/pull/7",
-)
-@patch(
-    "functions.release_docs_gate.check_docs",
-    return_value=CheckResult(changes=(_BLOCKING_CHANGE,)),
-)
-@patch("functions.release_docs_gate.has_changes_in_paths", return_value=False)
 def test_docs_gate_stops_on_the_pr_an_earlier_attempt_opened(
-    mock_has_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_find_pr: MagicMock,
-    mock_update: MagicMock,
-    mock_push_branch: MagicMock,
-    capfd: pytest.CaptureFixture[str],
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
 ) -> None:
+    gate.check.return_value = CheckResult(changes=(_BLOCKING_CHANGE,))
+    gate.find_pr.return_value = "https://github.com/test-owner/test-repo/pull/7"
+
     # Re-running the release on a commit whose docs pull request is still open
     # must point at that pull request, not spend another Claude run deriving a
     # branch that would then have to replace the one under review.
@@ -632,69 +589,44 @@ def test_docs_gate_stops_on_the_pr_an_earlier_attempt_opened(
         _docs_gate()
 
     assert excinfo.value.code == 1
-    mock_find_pr.assert_called_once()
-    assert mock_find_pr.call_args.args[2] == f"auto/docs-update-{DEV_COMMIT[:12]}"
-    mock_update.assert_not_called()
-    mock_push_branch.assert_not_called()
+    gate.find_pr.assert_called_once()
+    assert gate.find_pr.call_args.args[2] == f"auto/docs-update-{DEV_COMMIT[:12]}"
+    gate.update.assert_not_called()
+    gate.push_branch.assert_not_called()
     assert "pull/7" in capfd.readouterr().err
 
 
-@patch("functions.release_docs_gate._open_docs_pr")
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
-@patch("functions.release_docs_gate.update_docs")
-@patch(
-    "functions.release_docs_gate.check_docs",
-    return_value=CheckResult(changes=(_BLOCKING_CHANGE,)),
-)
-@patch("functions.release_docs_gate.has_changes_in_paths", return_value=False)
 def test_docs_gate_continues_when_the_updater_finds_gaps_already_covered(
-    mock_has_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find_pr: MagicMock,
-    mock_push_branch: MagicMock,
-    mock_open_pr: MagicMock,
-    capfd: pytest.CaptureFixture[str],
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
 ) -> None:
+    gate.check.return_value = CheckResult(changes=(_BLOCKING_CHANGE,))
     # The check claimed a gap; the updater read the docs and verified each
     # reported gap is already documented. That is the check being noisy, not
     # the docs being stale, and it must not block the release.
-    mock_update.return_value = _update_result(
+    gate.update.return_value = _update_result(
         "already_covered", _BLOCKING_CHANGE, "everything already documented"
     )
 
     _docs_gate()
 
-    mock_push_branch.assert_not_called()
-    mock_open_pr.assert_not_called()
+    gate.push_branch.assert_not_called()
+    gate.open_pr.assert_not_called()
     assert "already documented" in unwrapped(capfd.readouterr().err)
 
 
-@patch("functions.release_docs_gate._push_docs_sync_branch")
-@patch("functions.release_docs_gate._find_open_docs_sync_pr", return_value=None)
-@patch("functions.release_docs_gate.update_docs")
-@patch(
-    "functions.release_docs_gate.check_docs",
-    return_value=CheckResult(changes=(_BLOCKING_CHANGE,)),
-)
-@patch("functions.release_docs_gate.has_changes_in_paths", return_value=False)
 def test_docs_gate_raises_when_the_update_claims_edits_but_changed_nothing(
-    mock_has_changes: MagicMock,
-    mock_check: MagicMock,
-    mock_update: MagicMock,
-    mock_find_pr: MagicMock,
-    mock_push_branch: MagicMock,
+    gate: GateCollaborators,
 ) -> None:
+    gate.check.return_value = CheckResult(changes=(_BLOCKING_CHANGE,))
     # An "implemented" claim with a clean docs tree is a malfunctioning
     # updater, not a noisy check; passing silently would make the gate
     # unfalsifiable, so the release stops with the manual route spelled out.
-    mock_update.return_value = _update_result("implemented", _BLOCKING_CHANGE)
+    gate.update.return_value = _update_result("implemented", _BLOCKING_CHANGE)
 
     with pytest.raises(ReleaseError, match="nothing changed there"):
         _docs_gate()
 
-    mock_push_branch.assert_not_called()
+    gate.push_branch.assert_not_called()
 
 
 # --- the docs pull requests ---
@@ -704,13 +636,13 @@ def test_docs_gate_raises_when_the_update_claims_edits_but_changed_nothing(
 @patch("functions.release_docs_gate.push_branch")
 @patch("functions.release_docs_gate.commit_paths")
 @patch("functions.release_docs_gate.switch_to_new_branch")
-def test_push_docs_sync_branch_pushes_without_force_and_returns_to_dev(
+def test_push_docs_branch_pushes_without_force_and_returns_to_dev(
     mock_switch_new: MagicMock,
     mock_commit: MagicMock,
     mock_push: MagicMock,
     mock_switch: MagicMock,
 ) -> None:
-    _push_docs_sync_branch(
+    _push_docs_branch(
         "auto/docs-update-abc",
         Path("/repo/docs"),
         "docs: sync with the code being released",
@@ -729,10 +661,13 @@ def test_push_docs_sync_branch_pushes_without_force_and_returns_to_dev(
 
 
 @patch("functions.release_docs_gate.switch_branch")
-@patch("functions.release_docs_gate.push_branch", side_effect=ReleaseError("non-fast-forward"))
+@patch(
+    "functions.release_docs_gate.push_branch",
+    side_effect=ReleaseError("non-fast-forward"),
+)
 @patch("functions.release_docs_gate.commit_paths")
 @patch("functions.release_docs_gate.switch_to_new_branch")
-def test_push_docs_sync_branch_explains_a_rejected_push_and_returns_to_dev(
+def test_push_docs_branch_explains_a_rejected_push_and_returns_to_dev(
     mock_switch_new: MagicMock,
     mock_commit: MagicMock,
     mock_push: MagicMock,
@@ -742,7 +677,7 @@ def test_push_docs_sync_branch_explains_a_rejected_push_and_returns_to_dev(
     # request is gone; say how to clear it instead of overwriting it. And a
     # failed push must never strand the working tree on the throwaway branch.
     with pytest.raises(ReleaseError) as excinfo:
-        _push_docs_sync_branch(
+        _push_docs_branch(
             "auto/docs-update-abc", Path("/repo/docs"), "docs: minor polish"
         )
 
@@ -777,14 +712,14 @@ def test_open_docs_pr_creates_a_pr_against_dev(mock_api: MagicMock) -> None:
 
 
 @patch("functions.release_docs_gate.github_api")
-def test_find_open_docs_sync_pr_queries_the_branch_into_dev(
+def test_find_open_docs_pr_queries_the_branch_into_dev(
     mock_api: MagicMock,
 ) -> None:
     mock_api.return_value = [
         {"html_url": "https://github.com/test-owner/test-repo/pull/4"}
     ]
 
-    url = _find_open_docs_sync_pr(
+    url = _find_open_docs_pr(
         MagicMock(),
         RepoSlug(owner="test-owner", repo="test-repo"),
         "auto/docs-update-abc",
@@ -798,15 +733,14 @@ def test_find_open_docs_sync_pr_queries_the_branch_into_dev(
 
 
 @patch("functions.release_docs_gate.github_api", return_value=[])
-def test_find_open_docs_sync_pr_returns_none_when_there_is_no_pr(
+def test_find_open_docs_pr_returns_none_when_there_is_no_pr(
     mock_api: MagicMock,
 ) -> None:
     assert (
-        _find_open_docs_sync_pr(
+        _find_open_docs_pr(
             MagicMock(),
             RepoSlug(owner="test-owner", repo="test-repo"),
             "auto/docs-update-abc",
         )
         is None
     )
-

@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from functions.build import release_dist_dir
+from functions.build import release_archive_name, release_dist_dir
 from functions.cli import get_native_triple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -64,7 +64,7 @@ def release_archive() -> Path:
     CI builds it in a job of its own and hands it over as an artifact; locally
     `./scripts/build_release.sh --local --tag test` writes it.
     """
-    archive = release_dist_dir(REPO_ROOT) / f"peppy-{get_native_triple()}.tgz"
+    archive = release_dist_dir(REPO_ROOT) / release_archive_name(get_native_triple())
     if not archive.is_file():
         pytest.fail(
             f"release archive {archive} not found; build it with "
@@ -103,6 +103,16 @@ def diagnostic(
     )
 
 
+def assert_installed(result: subprocess.CompletedProcess[str]) -> None:
+    """Assert install.sh exited 0 and reported where it installed peppy."""
+    assert result.returncode == 0, (
+        f"install.sh exited with {result.returncode}{diagnostic(result)}"
+    )
+    assert "peppy installed to" in result.stdout, (
+        f"Missing 'peppy installed to' in the output{diagnostic(result)}"
+    )
+
+
 def run_as_root(script: str, *, timeout: int = 600) -> None:
     """Run a shell script as root to set up what a test starts from.
 
@@ -115,6 +125,7 @@ def run_as_root(script: str, *, timeout: int = 600) -> None:
         text=True,
         timeout=timeout,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
     if result.returncode != 0:
         pytest.fail(f"setup as root failed:\n{script}{diagnostic(result)}")
@@ -172,6 +183,7 @@ def _ssh_to_localhost() -> tuple[str, ...]:
         text=True,
         timeout=60,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
     if keys.returncode != 0:
         pytest.fail(f"could not authorise the harness's ssh key{diagnostic(keys)}")
@@ -217,6 +229,7 @@ def login_shell(script: str, *, timeout: int = 120) -> subprocess.CompletedProce
         text=True,
         timeout=timeout,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
 
 
@@ -285,6 +298,4 @@ def set_fuse2fs_installed(installed: bool) -> None:
             f"|| {{ {APT_GET} update -qq && {APT_GET} install -y -qq fuse2fs; }}"
         )
         return
-    run_as_root(
-        f"! dpkg -s fuse2fs >/dev/null 2>&1 || {APT_GET} remove -y -qq fuse2fs"
-    )
+    run_as_root(f"! dpkg -s fuse2fs >/dev/null 2>&1 || {APT_GET} remove -y -qq fuse2fs")

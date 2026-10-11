@@ -38,12 +38,13 @@ _MIB = 1024 * 1024
 # it as the client's fault costs a release its archives.
 _RETRYABLE_STATUS_CODES = frozenset({500, 502, 503, 504})
 
-_GIT_REMOTE_PATTERNS: list[tuple[str, str]] = [
-    ("git@github.com:", "git@github.com:"),
-    ("https://github.com/", "https://github.com/"),
-    ("http://github.com/", "http://github.com/"),
-    ("ssh://git@github.com/", "ssh://git@github.com/"),
-]
+# The URL forms of a GitHub remote, each followed by "owner/repo".
+_GITHUB_REMOTE_PREFIXES = (
+    "git@github.com:",
+    "https://github.com/",
+    "http://github.com/",
+    "ssh://git@github.com/",
+)
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,11 @@ def _format_response_headers(headers: httpx.Headers) -> str:
         if useful.match(name):
             lines.append(f"  {name}: {value}")
     return "\n".join(lines)
+
+
+def _body_preview(response: httpx.Response) -> str:
+    """The start of a response body, for an error message."""
+    return response.text[:2000] if response.text else "(empty)"
 
 
 def build_github_client(token: str) -> httpx.Client:
@@ -124,13 +130,12 @@ def github_api(
     except httpx.HTTPStatusError as e:
         if none_on_404 and e.response.status_code == 404:
             return None
-        body_preview = e.response.text[:2000] if e.response.text else "(empty)"
         resp_headers = _format_response_headers(e.response.headers)
         raise ReleaseError(
             f"GitHub API request failed: {method} {url}\n"
             f"Status: {e.response.status_code}\n"
             f"Headers:\n{resp_headers}\n"
-            f"Body: {body_preview}"
+            f"Body: {_body_preview(e.response)}"
         ) from e
     except httpx.RequestError as e:
         raise ReleaseError(f"GitHub API request failed: {method} {url}: {e}") from e
@@ -148,12 +153,11 @@ def github_api(
         return response.json()
     except ValueError as e:
         resp_headers = _format_response_headers(response.headers)
-        body_preview = response.text[:2000]
         raise ReleaseError(
             f"GitHub API returned a non-JSON response ({response.status_code}) "
             f"for {method} {url}\n"
             f"Headers:\n{resp_headers}\n"
-            f"Body: {body_preview}"
+            f"Body: {_body_preview(response)}"
         ) from e
 
 
@@ -246,6 +250,18 @@ def _printing_progress(progress: UploadProgress) -> Iterator[None]:
         reporter.join()
 
 
+def _upload_error(
+    asset_name: str, error: httpx.HTTPStatusError | httpx.RequestError
+) -> ReleaseError:
+    """The error that ends the upload of *asset_name* after *error*."""
+    if isinstance(error, httpx.HTTPStatusError):
+        return ReleaseError(
+            f"failed to upload asset '{asset_name}': "
+            f"HTTP {error.response.status_code}\n{_body_preview(error.response)}"
+        )
+    return ReleaseError(f"failed to upload asset '{asset_name}': {error}")
+
+
 def github_upload_asset(
     client: httpx.Client,
     release_id: int,
@@ -261,7 +277,8 @@ def github_upload_asset(
     Uses the uploads.github.com endpoint with application/octet-stream.
     The file is streamed from disk, with a progress line every
     _UPLOAD_PROGRESS_INTERVAL seconds and a summary once GitHub accepted it.
-    Retries on timeouts, connection errors, and HTTP 502/503/504.
+    Retries on the transient failures of _is_retryable: timeouts, refused or
+    dropped connections, and HTTP 500/502/503/504.
     Cleans up partial uploads before each retry to avoid 422 conflicts.
     Returns the parsed JSON response from the upload.
     """
@@ -302,18 +319,10 @@ def github_upload_asset(
             return response.json()
         except (httpx.HTTPStatusError, httpx.RequestError) as e:
             if not _is_retryable(e) or attempt == max_attempts - 1:
-                if isinstance(e, httpx.HTTPStatusError):
-                    body_preview = e.response.text[:2000] if e.response.text else "(empty)"
-                    raise ReleaseError(
-                        f"failed to upload asset '{asset_name}': "
-                        f"HTTP {e.response.status_code}\n{body_preview}"
-                    ) from e
-                raise ReleaseError(
-                    f"failed to upload asset '{asset_name}': {e}"
-                ) from e
+                raise _upload_error(asset_name, e) from e
             last_exc = e
 
-    # Unreachable, but satisfies type checker
+    # Reached only when max_attempts is below 1, which runs no attempt.
     raise ReleaseError(f"failed to upload asset '{asset_name}': max retries exceeded")
 
 
@@ -342,10 +351,9 @@ def github_repo_slug() -> RepoSlug:
             "(set GITHUB_REPOSITORY=owner/repo or configure git remote 'origin')"
         )
 
-    for prefix, match_prefix in _GIT_REMOTE_PATTERNS:
-        if remote_url.startswith(match_prefix):
-            slug_str = remote_url[len(prefix) :]
-            slug_str = slug_str.removesuffix(".git")
+    for prefix in _GITHUB_REMOTE_PREFIXES:
+        if remote_url.startswith(prefix):
+            slug_str = remote_url.removeprefix(prefix).removesuffix(".git")
             return _parse_slug(slug_str)
 
     raise ReleaseError(f"unsupported remote url (expected github.com): {remote_url}")
@@ -436,8 +444,7 @@ def find_draft_releases(
         releases = github_api(
             client,
             "GET",
-            f"{slug.api_url}/releases"
-            f"?per_page={_RELEASES_PAGE_SIZE}&page={page}",
+            f"{slug.api_url}/releases?per_page={_RELEASES_PAGE_SIZE}&page={page}",
         )
         if not isinstance(releases, list):
             raise ReleaseError(
@@ -455,6 +462,20 @@ def find_draft_releases(
         page += 1
 
 
+def get_release(
+    client: httpx.Client,
+    release_id: int,
+    slug: RepoSlug,
+) -> dict[str, Any]:
+    """Return the JSON of the release with ID *release_id*, draft or not."""
+    release = github_api(client, "GET", f"{slug.api_url}/releases/{release_id}")
+    if not isinstance(release, dict):
+        raise ReleaseError(
+            "unexpected GitHub API response for the release (expected JSON object)"
+        )
+    return release
+
+
 def delete_draft_release(
     client: httpx.Client,
     release_id: int,
@@ -466,15 +487,10 @@ def delete_draft_release(
     GitHub, so the release a failure cleans up may already be live; that one
     is left alone. Returns True when the draft was deleted.
     """
-    url = f"{slug.api_url}/releases/{release_id}"
-    release = github_api(client, "GET", url)
-    if not isinstance(release, dict):
-        raise ReleaseError(
-            "unexpected GitHub API response for the release (expected JSON object)"
-        )
+    release = get_release(client, release_id, slug)
     if release.get("draft") is not True:
         return False
-    github_api(client, "DELETE", url)
+    github_api(client, "DELETE", f"{slug.api_url}/releases/{release_id}")
     return True
 
 

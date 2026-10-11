@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -19,19 +19,66 @@ from functions.github import (
     find_published_release,
     get_latest_release,
     github_api,
+    github_repo_slug,
     github_upload_asset,
     publish_release,
 )
 
 SLUG = RepoSlug(owner="test-owner", repo="test-repo")
-UPLOAD_URL = (
-    "https://uploads.github.com/repos/test-owner/test-repo/releases/1/assets"
-)
+UPLOAD_URL = "https://uploads.github.com/repos/test-owner/test-repo/releases/1/assets"
 API_BASE = "https://api.github.com/repos/test-owner/test-repo"
 
 
 def test_the_api_url_of_a_repository_is_its_rest_api_root() -> None:
     assert SLUG.api_url == API_BASE
+
+
+# --- Repository slug ---
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "git@github.com:",
+        "https://github.com/",
+        "http://github.com/",
+        "ssh://git@github.com/",
+    ],
+)
+@pytest.mark.parametrize("suffix", ["", ".git"])
+def test_github_repo_slug_reads_the_origin_remote(
+    monkeypatch: pytest.MonkeyPatch, prefix: str, suffix: str
+) -> None:
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    with patch("functions.github.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(stdout=f"{prefix}Peppy-bot/peppy{suffix}\n")
+        assert github_repo_slug() == RepoSlug(owner="Peppy-bot", repo="peppy")
+
+    mock_run.assert_called_once_with(
+        ["git", "config", "--get", "remote.origin.url"],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_github_repo_slug_prefers_github_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_REPOSITORY", "Peppy-bot/peppy")
+    with patch("functions.github.subprocess.run") as mock_run:
+        assert github_repo_slug() == RepoSlug(owner="Peppy-bot", repo="peppy")
+
+    mock_run.assert_not_called()
+
+
+def test_github_repo_slug_refuses_a_remote_off_github(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    with patch("functions.github.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(stdout="https://gitlab.com/a/b.git\n")
+        with pytest.raises(ReleaseError, match="unsupported remote url"):
+            github_repo_slug()
 
 
 @pytest.fixture()
@@ -62,19 +109,17 @@ def test_upload_asset_success(
 # --- Upload: streamed with progress ---
 
 
-class _TicksThenStops:
-    """Stands in for the reporter's Event: *ticks* intervals elapse,
-    then the upload is over, whatever the host's speed."""
-
-    ticks = 0
+class _TwoIntervalsThenStops:
+    """Stands in for the reporter's Event: two intervals elapse, then the
+    upload is over, whatever the host's speed."""
 
     def __init__(self) -> None:
-        self._remaining = self.ticks
+        self._intervals_left = 2
 
     def wait(self, timeout: float) -> bool:
-        if self._remaining == 0:
+        if self._intervals_left == 0:
             return True
-        self._remaining -= 1
+        self._intervals_left -= 1
         return False
 
     def set(self) -> None:
@@ -107,7 +152,7 @@ def test_upload_asset_streams_the_whole_file_with_its_length(
     assert "Transfer-Encoding" not in request.headers
 
 
-@patch("functions.github.Event", type("Ticks", (_TicksThenStops,), {"ticks": 2}))
+@patch("functions.github.Event", _TwoIntervalsThenStops)
 @patch("functions.github.time.monotonic", side_effect=[100.0, 105.0, 110.0, 125.0])
 def test_upload_asset_prints_progress_lines_then_a_summary(
     mock_monotonic: object,
@@ -155,17 +200,29 @@ def test_upload_progress_line_reports_the_rate_since_the_previous_line() -> None
     progress = UploadProgress("peppy.tgz", 100 * 1024 * 1024, started_at=0.0)
 
     progress.sent_bytes = 40 * 1024 * 1024
-    assert progress.progress_line(10.0) == "  peppy.tgz: 40.0 MiB of 100.0 MiB (40%), 4.0 MiB/s"
+    assert (
+        progress.progress_line(10.0)
+        == "  peppy.tgz: 40.0 MiB of 100.0 MiB (40%), 4.0 MiB/s"
+    )
     progress.sent_bytes = 50 * 1024 * 1024
-    assert progress.progress_line(20.0) == "  peppy.tgz: 50.0 MiB of 100.0 MiB (50%), 1.0 MiB/s"
+    assert (
+        progress.progress_line(20.0)
+        == "  peppy.tgz: 50.0 MiB of 100.0 MiB (50%), 1.0 MiB/s"
+    )
     # A stalled connection shows as lines that stop moving.
-    assert progress.progress_line(30.0) == "  peppy.tgz: 50.0 MiB of 100.0 MiB (50%), 0.0 MiB/s"
+    assert (
+        progress.progress_line(30.0)
+        == "  peppy.tgz: 50.0 MiB of 100.0 MiB (50%), 0.0 MiB/s"
+    )
 
 
 def test_upload_progress_handles_an_empty_file_and_no_elapsed_time() -> None:
     progress = UploadProgress("empty.tgz", 0, started_at=5.0)
 
-    assert progress.progress_line(5.0) == "  empty.tgz: 0.0 MiB of 0.0 MiB (100%), 0.0 MiB/s"
+    assert (
+        progress.progress_line(5.0)
+        == "  empty.tgz: 0.0 MiB of 0.0 MiB (100%), 0.0 MiB/s"
+    )
     assert progress.summary_line(5.0) == "Uploaded empty.tgz in 0s (0.0 MiB/s)."
 
 
@@ -175,56 +232,44 @@ def test_upload_progress_summary_reports_the_average_rate() -> None:
     assert progress.summary_line(120.0) == "Uploaded peppy.tgz in 20s (12.0 MiB/s)."
 
 
-# --- Upload: retry on timeout ---
-
-
-@patch("functions.github.time.sleep")
-@patch("functions.github.delete_asset_if_exists")
-def test_upload_asset_timeout_retries_and_succeeds(
-    mock_delete: object,
-    mock_sleep: object,
-    mock_api: respx.MockRouter,
-    github_client: httpx.Client,
-    asset_file: Path,
-) -> None:
-    mock_api.post(f"{UPLOAD_URL}?name=peppy-test.tgz").mock(
-        side_effect=[
-            httpx.ReadTimeout("read timed out"),
-            httpx.Response(201, json={"id": 99}),
-        ]
-    )
-
-    result = github_upload_asset(
-        github_client, 1, "peppy-test.tgz", asset_file, SLUG, max_attempts=2
-    )
-    assert result["id"] == 99
-
-
-# --- Upload: retry a connection that died mid-upload ---
+# --- Upload: a transient failure is retried ---
 
 
 @pytest.mark.parametrize(
-    "transport_error",
+    "first_attempt",
     [
-        httpx.ReadError("[Errno 54] Connection reset by peer"),
-        httpx.WriteError("[Errno 32] Broken pipe"),
-        httpx.ConnectError("connection refused"),
-        httpx.RemoteProtocolError("server disconnected without sending a response"),
+        pytest.param(httpx.ReadTimeout("read timed out"), id="read-timeout"),
+        # A connection that died mid-upload.
+        pytest.param(
+            httpx.ReadError("[Errno 54] Connection reset by peer"), id="read-reset"
+        ),
+        pytest.param(
+            httpx.WriteError("[Errno 32] Broken pipe"), id="write-broken-pipe"
+        ),
+        pytest.param(httpx.ConnectError("connection refused"), id="connect-refused"),
+        pytest.param(
+            httpx.RemoteProtocolError("server disconnected without sending a response"),
+            id="server-hung-up",
+        ),
+        # A server-side status.
+        pytest.param(httpx.Response(500, text="server error"), id="http-500"),
+        pytest.param(httpx.Response(502, text="server error"), id="http-502"),
+        pytest.param(httpx.Response(503, text="server error"), id="http-503"),
+        pytest.param(httpx.Response(504, text="server error"), id="http-504"),
     ],
-    ids=["read-reset", "write-broken-pipe", "connect-refused", "server-hung-up"],
 )
 @patch("functions.github.time.sleep")
 @patch("functions.github.delete_asset_if_exists")
-def test_upload_asset_retries_a_dead_connection(
+def test_upload_asset_retries_a_transient_failure(
     mock_delete: object,
     mock_sleep: object,
-    transport_error: httpx.RequestError,
+    first_attempt: httpx.Response | httpx.RequestError,
     mock_api: respx.MockRouter,
     github_client: httpx.Client,
     asset_file: Path,
 ) -> None:
     mock_api.post(f"{UPLOAD_URL}?name=peppy-test.tgz").mock(
-        side_effect=[transport_error, httpx.Response(201, json={"id": 99})]
+        side_effect=[first_attempt, httpx.Response(201, json={"id": 99})]
     )
 
     result = github_upload_asset(
@@ -295,31 +340,42 @@ def test_upload_asset_non_retryable_error_no_retry(
     assert route.call_count == 1
 
 
-# --- Upload: a server-side status retries then succeeds ---
+# --- Upload: the failure names the status and the body, or the transport error ---
 
 
-@pytest.mark.parametrize("status", [500, 502, 503, 504])
-@patch("functions.github.time.sleep")
-@patch("functions.github.delete_asset_if_exists")
-def test_upload_asset_server_error_retries(
-    mock_delete: object,
-    mock_sleep: object,
-    status: int,
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        (
+            httpx.Response(404, text="Not Found"),
+            "failed to upload asset 'peppy-test.tgz': HTTP 404\nNot Found",
+        ),
+        (
+            httpx.Response(422, text=""),
+            "failed to upload asset 'peppy-test.tgz': HTTP 422\n(empty)",
+        ),
+        (
+            httpx.LocalProtocolError("illegal header value"),
+            "failed to upload asset 'peppy-test.tgz': illegal header value",
+        ),
+    ],
+    ids=["status-with-body", "status-without-body", "transport"],
+)
+def test_upload_asset_failure_message(
+    answer: httpx.Response | httpx.RequestError,
+    expected: str,
     mock_api: respx.MockRouter,
     github_client: httpx.Client,
     asset_file: Path,
 ) -> None:
-    mock_api.post(f"{UPLOAD_URL}?name=peppy-test.tgz").mock(
-        side_effect=[
-            httpx.Response(status, text="server error"),
-            httpx.Response(201, json={"id": 99}),
-        ]
-    )
+    mock_api.post(f"{UPLOAD_URL}?name=peppy-test.tgz").mock(side_effect=[answer])
 
-    result = github_upload_asset(
-        github_client, 1, "peppy-test.tgz", asset_file, SLUG, max_attempts=2
-    )
-    assert result["id"] == 99
+    with pytest.raises(ReleaseError) as err:
+        github_upload_asset(
+            github_client, 1, "peppy-test.tgz", asset_file, SLUG, max_attempts=1
+        )
+
+    assert str(err.value) == expected
 
 
 # --- Upload: cleans up partial upload before retry ---
@@ -345,9 +401,7 @@ def test_upload_asset_cleans_partial_before_retry(
         github_client, 1, "peppy-test.tgz", asset_file, SLUG, max_attempts=2
     )
 
-    mock_delete_asset.assert_called_once_with(
-        github_client, 1, "peppy-test.tgz", SLUG
-    )
+    mock_delete_asset.assert_called_once_with(github_client, 1, "peppy-test.tgz", SLUG)
 
 
 # --- delete_draft_release ---
@@ -380,6 +434,22 @@ def test_delete_draft_release_leaves_a_published_release(
     )
 
     assert delete_draft_release(github_client, 42, SLUG) is False
+    assert delete.call_count == 0
+
+
+def test_delete_draft_release_raises_on_an_answer_that_is_not_an_object(
+    mock_api: respx.MockRouter,
+    github_client: httpx.Client,
+) -> None:
+    mock_api.get(f"{API_BASE}/releases/42").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    delete = mock_api.delete(f"{API_BASE}/releases/42").mock(
+        return_value=httpx.Response(204)
+    )
+
+    with pytest.raises(ReleaseError, match=r"for the release \(expected JSON object\)"):
+        delete_draft_release(github_client, 42, SLUG)
     assert delete.call_count == 0
 
 
@@ -546,6 +616,31 @@ def test_github_api_still_raises_on_404_by_default(
     )
     with pytest.raises(ReleaseError, match="Status: 404"):
         github_api(github_client, "GET", f"{API_BASE}/missing")
+
+
+@pytest.mark.parametrize(
+    ("answer", "body_line"),
+    [
+        (httpx.Response(500, text=""), "Body: (empty)"),
+        (
+            httpx.Response(200, text="<html>not json</html>"),
+            "Body: <html>not json</html>",
+        ),
+    ],
+    ids=["status-without-body", "not-json"],
+)
+def test_github_api_failure_ends_with_a_body_preview(
+    answer: httpx.Response,
+    body_line: str,
+    mock_api: respx.MockRouter,
+    github_client: httpx.Client,
+) -> None:
+    mock_api.get(f"{API_BASE}/releases").mock(side_effect=[answer])
+
+    with pytest.raises(ReleaseError) as err:
+        github_api(github_client, "GET", f"{API_BASE}/releases")
+
+    assert str(err.value).endswith(f"\n{body_line}")
 
 
 # --- get_latest_release ---

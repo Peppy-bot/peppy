@@ -30,6 +30,26 @@ def _binary_for(triple: str) -> bytes:
     return _elf_bytes(ELF_MACHINE_BY_ARCH[triple.split("-")[0]])
 
 
+def _add_member(
+    tar: tarfile.TarFile,
+    name: str,
+    data: bytes,
+    *,
+    uid: int = 0,
+    gid: int = 0,
+    uname: str = "",
+    gname: str = "",
+) -> None:
+    """Add a regular file member, by default with the zeroed ownership."""
+    info = tarfile.TarInfo(name=name)
+    info.size = len(data)
+    info.uid = uid
+    info.gid = gid
+    info.uname = uname
+    info.gname = gname
+    tar.addfile(info, io.BytesIO(data))
+
+
 def _create_archive(
     path: Path,
     members: list[str],
@@ -47,13 +67,9 @@ def _create_archive(
     with tarfile.open(path, "w:gz") as tar:
         for name in members:
             data = overrides.get(name, _binary_for(triple))
-            info = tarfile.TarInfo(name=f"./{name}")
-            info.size = len(data)
-            info.uid = uid
-            info.gid = gid
-            info.uname = uname
-            info.gname = gname
-            tar.addfile(info, io.BytesIO(data))
+            _add_member(
+                tar, f"./{name}", data, uid=uid, gid=gid, uname=uname, gname=gname
+            )
 
 
 def _all_required_members(triple: str) -> list[str]:
@@ -73,47 +89,34 @@ def test_verify_archive_all_present(tmp_path: Path) -> None:
     assert missing == []
 
 
-def test_verify_archive_missing_zenohd(tmp_path: Path) -> None:
-    triple = "x86_64-unknown-linux-gnu"
-    members = [m for m in _all_required_members(triple) if m != "bin/zenohd"]
+@pytest.mark.parametrize(
+    ("triple", "left_out"),
+    [
+        ("x86_64-unknown-linux-gnu", "bin/zenohd"),
+        ("aarch64-unknown-linux-gnu", "bin/apptainer/bin/apptainer"),
+        ("aarch64-apple-darwin", "bin/lima/bin/limactl"),
+    ],
+)
+def test_verify_archive_reports_a_missing_binary(
+    tmp_path: Path, triple: str, left_out: str
+) -> None:
+    members = [m for m in _all_required_members(triple) if m != left_out]
     archive = tmp_path / f"peppy-{triple}.tgz"
     _create_archive(archive, members, triple)
 
     problems = verify_release_archive(archive, triple)
-    assert "missing bin/zenohd" in problems
-
-
-def test_verify_archive_missing_apptainer(tmp_path: Path) -> None:
-    triple = "aarch64-unknown-linux-gnu"
-    members = [
-        m for m in _all_required_members(triple) if "apptainer" not in m
-    ]
-    archive = tmp_path / f"peppy-{triple}.tgz"
-    _create_archive(archive, members, triple)
-
-    problems = verify_release_archive(archive, triple)
-    assert "missing bin/apptainer/bin/apptainer" in problems
+    assert f"missing {left_out}" in problems
 
 
 def test_verify_lima_only_required_for_macos(tmp_path: Path) -> None:
     triple = "x86_64-unknown-linux-gnu"
     members = _all_required_members(triple)
-    # Lima is NOT in the members for Linux — should pass
+    # A Linux archive holds no Lima, and passes without it.
     archive = tmp_path / f"peppy-{triple}.tgz"
     _create_archive(archive, members, triple)
 
     missing = verify_release_archive(archive, triple)
     assert missing == []
-
-
-def test_verify_lima_required_for_macos(tmp_path: Path) -> None:
-    triple = "aarch64-apple-darwin"
-    members = [m for m in _all_required_members(triple) if "lima" not in m]
-    archive = tmp_path / f"peppy-{triple}.tgz"
-    _create_archive(archive, members, triple)
-
-    problems = verify_release_archive(archive, triple)
-    assert "missing bin/lima/bin/limactl" in problems
 
 
 def test_verify_all_releases_passes(tmp_path: Path) -> None:
@@ -148,8 +151,8 @@ def test_verify_all_releases_missing_binary(tmp_path: Path) -> None:
 
 
 def test_verify_archive_rejects_a_wrong_arch_binary(tmp_path: Path) -> None:
-    # The v0.25.3 x86_64 archive shipped an aarch64 apptainer at the right
-    # path: presence passed, every consumer failed at exec.
+    # An apptainer for another architecture at the right path passes a
+    # presence check and fails at exec on every consumer of the archive.
     triple = "x86_64-unknown-linux-gnu"
     archive = tmp_path / f"peppy-{triple}.tgz"
     _create_archive(
@@ -174,9 +177,7 @@ def test_verify_archive_rejects_a_link_member(tmp_path: Path) -> None:
     with tarfile.open(archive, "w:gz") as tar:
         data = _binary_for(triple)
         for name in ("bin/peppy", "bin/zenohd"):
-            info = tarfile.TarInfo(name=f"./{name}")
-            info.size = len(data)
-            tar.addfile(info, io.BytesIO(data))
+            _add_member(tar, f"./{name}", data)
         link = tarfile.TarInfo(name="./bin/apptainer/bin/apptainer")
         link.type = tarfile.SYMTYPE
         link.linkname = "../../peppy"
@@ -225,3 +226,34 @@ def test_verify_archive_rejects_build_host_ownership(tmp_path: Path) -> None:
         "(uid=501, gid=20, uname='builder', gname='staff')"
     )
     assert expected in problems
+
+
+def test_verify_archive_names_a_dot_file_in_full(tmp_path: Path) -> None:
+    triple = "x86_64-unknown-linux-gnu"
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for name in _all_required_members(triple):
+            _add_member(tar, f"./{name}", _binary_for(triple))
+        _add_member(tar, "./.marker", b"x", uid=1000)
+
+    problems = verify_release_archive(archive, triple)
+    expected = (
+        ".marker carries build host ownership (uid=1000, gid=0, uname='', gname='')"
+    )
+    assert problems == [expected]
+
+
+def test_verify_archive_ignores_a_binary_outside_the_archive_root(
+    tmp_path: Path,
+) -> None:
+    # A member under ../ points outside the archive root (GNU tar skips it),
+    # so it does not stand in for the required binary of the same path.
+    triple = "x86_64-unknown-linux-gnu"
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    with tarfile.open(archive, "w:gz") as tar:
+        _add_member(tar, "../bin/peppy", _binary_for(triple))
+        for name in ("bin/zenohd", "bin/apptainer/bin/apptainer"):
+            _add_member(tar, f"./{name}", _binary_for(triple))
+
+    problems = verify_release_archive(archive, triple)
+    assert problems == ["missing bin/peppy"]

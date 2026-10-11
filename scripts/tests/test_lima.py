@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -37,6 +38,28 @@ def _populate_so_dir(base: Path) -> Path:
     return so_dir
 
 
+def _run_lima_build(
+    tmp_path: Path, triple: str, *, target_dir: Path, returncode: int = 0
+) -> MagicMock:
+    """Run cargo_build_in_lima of tag v0.1.0 for *triple*, from the checkout
+    `repo` and the bindings `so` under *tmp_path*, with the VM shell stubbed
+    to exit with *returncode*; return the stub."""
+    so_dir = _populate_so_dir(tmp_path)
+    with (
+        patch("functions.lima._lima_shell") as mock_shell,
+        patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir),
+    ):
+        mock_shell.return_value = MagicMock(returncode=returncode)
+        cargo_build_in_lima(
+            tmp_path / "limactl",
+            "v0.1.0",
+            triple,
+            tmp_path / "repo",
+            target_dir=target_dir,
+        )
+    return mock_shell
+
+
 def test_find_limactl_from_build_output(tmp_path: Path) -> None:
     triple = "aarch64-apple-darwin"
     limactl = (
@@ -54,23 +77,25 @@ def test_find_limactl_from_build_output(tmp_path: Path) -> None:
     limactl.parent.mkdir(parents=True)
     limactl.write_bytes(b"fake limactl")
 
-    # An empty home, so the cache pin (now checked first) cannot shadow the
-    # build-output case this test is about.
+    # An empty home, so the pinned cache entry, which find_limactl checks
+    # first, cannot shadow the build-output case this test is about.
     home = tmp_path / "home"
     home.mkdir()
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}), \
-         patch("functions.lima.Path.home", return_value=home):
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}),
+        patch("functions.lima.Path.home", return_value=home),
+    ):
         result = find_limactl(tmp_path)
     assert result == limactl
 
 
 def test_find_limactl_fallback_to_cache(tmp_path: Path) -> None:
-    """The exact pinned cache entry wins over a lexicographic sort.
+    """The exact pinned cache entry wins over every other limactl.
 
-    Two distractors are planted: a higher-sorting cache directory that the old
-    `sorted(...)[-1]` glob would have selected, and a stale build output that
-    the old build-output-first ordering would have selected.
+    Two distractors are planted: the cache entry of a later Lima version, which
+    sorts after the pinned one, and a stale build output that holds a limactl
+    too.
     """
     home = tmp_path / "home"
     cache_dir = home / ".peppy" / "tmp" / f"lima-{LIMA_VERSION}-Darwin-arm64" / "bin"
@@ -96,15 +121,19 @@ def test_find_limactl_fallback_to_cache(tmp_path: Path) -> None:
     stale.mkdir(parents=True)
     (stale / "limactl").write_bytes(b"stale build output limactl")
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target_dir)}), \
-         patch("functions.lima.Path.home", return_value=home):
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target_dir)}),
+        patch("functions.lima.Path.home", return_value=home),
+    ):
         result = find_limactl(tmp_path)
     assert result == limactl
 
 
 def test_find_limactl_not_found(tmp_path: Path) -> None:
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}), \
-         patch("functions.lima.Path.home", return_value=tmp_path):
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}),
+        patch("functions.lima.Path.home", return_value=tmp_path),
+    ):
         (tmp_path / "target").mkdir()
         with pytest.raises(ReleaseError, match="limactl not found"):
             find_limactl(tmp_path)
@@ -137,8 +166,10 @@ def test_ensure_lima_vm_starts_stopped_instance(tmp_path: Path) -> None:
 def test_ensure_lima_vm_creates_when_not_found(tmp_path: Path) -> None:
     limactl = tmp_path / "limactl"
 
-    with patch("functions.lima._run_limactl") as mock_run, \
-         patch("functions.lima._vm_resources", return_value=(8, 12)):
+    with (
+        patch("functions.lima._run_limactl") as mock_run,
+        patch("functions.lima._vm_resources", return_value=(8, 12)),
+    ):
         # First call: list (empty = not found), second call: start/create (success)
         mock_run.side_effect = [
             MagicMock(stdout=""),
@@ -164,24 +195,30 @@ def test_ensure_lima_vm_creates_when_not_found(tmp_path: Path) -> None:
     assert create_call[1] == {"capture": False}
 
 
-def test_vm_resources_leaves_host_headroom(tmp_path: Path) -> None:
+def test_vm_resources_leaves_host_headroom() -> None:
     """A 10-core, 32 GiB host gets 8 vCPUs and 12 GiB (1.5 GiB per vCPU)."""
-    with patch("functions.lima.os.cpu_count", return_value=10), \
-         patch("functions.lima._host_memory_gib", return_value=32):
+    with (
+        patch("functions.lima.os.cpu_count", return_value=10),
+        patch("functions.lima._host_memory_gib", return_value=32),
+    ):
         assert lima._vm_resources() == (8, 12)
 
 
-def test_vm_resources_floors_memory_for_lto_link(tmp_path: Path) -> None:
+def test_vm_resources_floors_memory_for_lto_link() -> None:
     """A small host still gets 8 GiB so the serial LTO link is not starved."""
-    with patch("functions.lima.os.cpu_count", return_value=4), \
-         patch("functions.lima._host_memory_gib", return_value=32):
+    with (
+        patch("functions.lima.os.cpu_count", return_value=4),
+        patch("functions.lima._host_memory_gib", return_value=32),
+    ):
         assert lima._vm_resources() == (2, 8)
 
 
-def test_vm_resources_caps_memory_at_half_host_ram(tmp_path: Path) -> None:
+def test_vm_resources_caps_memory_at_half_host_ram() -> None:
     """The guest never claims more than half the host's RAM, even below the floor."""
-    with patch("functions.lima.os.cpu_count", return_value=10), \
-         patch("functions.lima._host_memory_gib", return_value=8):
+    with (
+        patch("functions.lima.os.cpu_count", return_value=10),
+        patch("functions.lima._host_memory_gib", return_value=8),
+    ):
         assert lima._vm_resources() == (8, 4)
 
 
@@ -192,8 +229,10 @@ def test_ensure_lima_vm_create_failure_raises(tmp_path: Path) -> None:
     # stubs it: it reads the host's RAM through `sysctl`, which exists only on
     # macOS, so the real one raises its own ReleaseError on the Linux CI runner
     # before the create call under test is ever reached.
-    with patch("functions.lima._run_limactl") as mock_run, \
-         patch("functions.lima._vm_resources", return_value=(8, 12)):
+    with (
+        patch("functions.lima._run_limactl") as mock_run,
+        patch("functions.lima._vm_resources", return_value=(8, 12)),
+    ):
         # First call: list (empty = not found), second call: create fails
         mock_run.side_effect = [
             MagicMock(stdout=""),
@@ -204,21 +243,11 @@ def test_ensure_lima_vm_create_failure_raises(tmp_path: Path) -> None:
 
 
 def test_cargo_build_in_lima_constructs_correct_command(tmp_path: Path) -> None:
-    limactl = tmp_path / "limactl"
-    repo_root = tmp_path / "repo"
     target_dir = tmp_path / "target" / ".peppy-release-aarch64-unknown-linux-gnu-abc123"
-    so_dir = _populate_so_dir(tmp_path)
 
-    with patch("functions.lima._lima_shell") as mock_shell, \
-         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
-        mock_shell.return_value = MagicMock(returncode=0)
-        cargo_build_in_lima(
-            limactl,
-            "v0.1.0",
-            "aarch64-unknown-linux-gnu",
-            repo_root,
-            target_dir=target_dir,
-        )
+    mock_shell = _run_lima_build(
+        tmp_path, "aarch64-unknown-linux-gnu", target_dir=target_dir
+    )
 
     mock_shell.assert_called_once()
     script = mock_shell.call_args[0][1]
@@ -227,12 +256,12 @@ def test_cargo_build_in_lima_constructs_correct_command(tmp_path: Path) -> None:
     assert "PEPPY_GIT_TAG=v0.1.0" in script
     assert 'RUSTC_WRAPPER=""' in script
     # The in-VM build embeds the host-built bindings straight from this dir.
-    assert f"PEPPYLIB_PREBUILT_SO_DIR={so_dir}" in script
+    assert f"PEPPYLIB_PREBUILT_SO_DIR={tmp_path / 'so'}" in script
     assert "--target aarch64-unknown-linux-gnu" in script
     # No explicit -j: cargo defaults to the guest's actual vCPU count, which
     # tracks whatever the VM was created with.
     assert "-j" not in script
-    assert str(repo_root) in script
+    assert str(tmp_path / "repo") in script
 
 
 def test_cargo_build_in_lima_builds_on_guest_disk_and_copies_back(
@@ -244,21 +273,11 @@ def test_cargo_build_in_lima_builds_on_guest_disk_and_copies_back(
     files, so cargo targets the guest's own disk and only the packaging
     artifacts are copied back to the host-visible target dir.
     """
-    limactl = tmp_path / "limactl"
-    repo_root = tmp_path / "repo"
     target_dir = tmp_path / "target" / ".peppy-release-aarch64-unknown-linux-gnu-abc123"
-    so_dir = _populate_so_dir(tmp_path)
 
-    with patch("functions.lima._lima_shell") as mock_shell, \
-         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
-        mock_shell.return_value = MagicMock(returncode=0)
-        cargo_build_in_lima(
-            limactl,
-            "v0.1.0",
-            "aarch64-unknown-linux-gnu",
-            repo_root,
-            target_dir=target_dir,
-        )
+    mock_shell = _run_lima_build(
+        tmp_path, "aarch64-unknown-linux-gnu", target_dir=target_dir
+    )
 
     script = mock_shell.call_args[0][1]
     guest_target_dir = f"{GUEST_RUST_DIR}/target/{target_dir.name}"
@@ -270,46 +289,52 @@ def test_cargo_build_in_lima_builds_on_guest_disk_and_copies_back(
     # Everything the host packaging step globs for is copied back.
     for pattern in GUEST_COPY_BACK_ARTIFACTS:
         assert pattern in script
-    assert (
-        f"host_release={target_dir}/aarch64-unknown-linux-gnu/release" in script
-    )
+    assert f"host_release={target_dir}/aarch64-unknown-linux-gnu/release" in script
 
 
-def test_cargo_build_in_lima_sets_cross_linker_for_x86_64(tmp_path: Path) -> None:
+def test_cargo_build_in_lima_quotes_the_tag_and_host_paths(tmp_path: Path) -> None:
+    """A typed tag, a checkout or a home directory with a space stays one word."""
     limactl = tmp_path / "limactl"
-    repo_root = tmp_path / "repo"
-    so_dir = _populate_so_dir(tmp_path)
+    repo_root = tmp_path / "my repo"
+    target_dir = (
+        repo_root / "target" / ".peppy-release-aarch64-unknown-linux-gnu-abc123"
+    )
+    so_dir = _populate_so_dir(tmp_path / "home dir")
 
-    with patch("functions.lima._lima_shell") as mock_shell, \
-         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
+    with (
+        patch("functions.lima._lima_shell") as mock_shell,
+        patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir),
+    ):
         mock_shell.return_value = MagicMock(returncode=0)
         cargo_build_in_lima(
             limactl,
-            "v0.1.0",
-            "x86_64-unknown-linux-gnu",
+            "v0.1.0 local",
+            "aarch64-unknown-linux-gnu",
             repo_root,
-            target_dir=tmp_path / "target-x86",
+            target_dir=target_dir,
         )
+
+    script = mock_shell.call_args[0][1]
+    assert "export PEPPY_GIT_TAG='v0.1.0 local'\n" in script
+    assert f"cd {shlex.quote(str(repo_root))}\n" in script
+    assert f"export PEPPYLIB_PREBUILT_SO_DIR={shlex.quote(str(so_dir))}\n" in script
+    host_release = target_dir / "aarch64-unknown-linux-gnu" / "release"
+    assert f"host_release={shlex.quote(str(host_release))}\n" in script
+
+
+def test_cargo_build_in_lima_sets_cross_linker_for_x86_64(tmp_path: Path) -> None:
+    mock_shell = _run_lima_build(
+        tmp_path, "x86_64-unknown-linux-gnu", target_dir=tmp_path / "target-x86"
+    )
 
     script = mock_shell.call_args[0][1]
     assert "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc" in script
 
 
 def test_cargo_build_in_lima_no_cross_linker_for_aarch64(tmp_path: Path) -> None:
-    limactl = tmp_path / "limactl"
-    repo_root = tmp_path / "repo"
-    so_dir = _populate_so_dir(tmp_path)
-
-    with patch("functions.lima._lima_shell") as mock_shell, \
-         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
-        mock_shell.return_value = MagicMock(returncode=0)
-        cargo_build_in_lima(
-            limactl,
-            "v0.1.0",
-            "aarch64-unknown-linux-gnu",
-            repo_root,
-            target_dir=tmp_path / "target-a64",
-        )
+    mock_shell = _run_lima_build(
+        tmp_path, "aarch64-unknown-linux-gnu", target_dir=tmp_path / "target-a64"
+    )
 
     script = mock_shell.call_args[0][1]
     assert "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" not in script
@@ -317,21 +342,13 @@ def test_cargo_build_in_lima_no_cross_linker_for_aarch64(tmp_path: Path) -> None
 
 
 def test_cargo_build_in_lima_raises_on_failure(tmp_path: Path) -> None:
-    limactl = tmp_path / "limactl"
-    repo_root = tmp_path / "repo"
-    so_dir = _populate_so_dir(tmp_path)
-
-    with patch("functions.lima._lima_shell") as mock_shell, \
-         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
-        mock_shell.return_value = MagicMock(returncode=1)
-        with pytest.raises(ReleaseError, match="cargo build for .* failed in Lima VM"):
-            cargo_build_in_lima(
-                limactl,
-                "v0.1.0",
-                "x86_64-unknown-linux-gnu",
-                repo_root,
-                target_dir=tmp_path / "target-x86",
-            )
+    with pytest.raises(ReleaseError, match="cargo build for .* failed in Lima VM"):
+        _run_lima_build(
+            tmp_path,
+            "x86_64-unknown-linux-gnu",
+            target_dir=tmp_path / "target-x86",
+            returncode=1,
+        )
 
 
 def test_require_prebuilt_peppylib_so_returns_dir_when_complete(tmp_path: Path) -> None:
@@ -346,9 +363,11 @@ def test_require_prebuilt_peppylib_so_raises_when_incomplete(tmp_path: Path) -> 
     # Only one platform's binding is present; the rest and the marker are missing.
     (so_dir / RELEASE_PLATFORM_SO[0]).write_bytes(b"x")
 
-    with patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
-        with pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"):
-            require_prebuilt_peppylib_so()
+    with (
+        patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir),
+        pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"),
+    ):
+        require_prebuilt_peppylib_so()
 
 
 def test_stop_lima_vm_issues_stop(tmp_path: Path) -> None:
@@ -373,16 +392,18 @@ def test_cargo_build_in_lima_requires_prebuilt_so(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     so_dir = tmp_path / "so"  # never created: every binding is missing
 
-    with patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir), \
-         patch("functions.lima._lima_shell") as mock_shell:
-        with pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"):
-            cargo_build_in_lima(
-                limactl,
-                "v0.1.0",
-                "x86_64-unknown-linux-gnu",
-                repo_root,
-                target_dir=tmp_path / "target-x86",
-            )
+    with (
+        patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir),
+        patch("functions.lima._lima_shell") as mock_shell,
+        pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"),
+    ):
+        cargo_build_in_lima(
+            limactl,
+            "v0.1.0",
+            "x86_64-unknown-linux-gnu",
+            repo_root,
+            target_dir=tmp_path / "target-x86",
+        )
 
     # The VM build must not start when the host bindings are absent.
     mock_shell.assert_not_called()

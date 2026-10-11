@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
-import shutil
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,7 +62,7 @@ def cargo_build(
 
     Streams cargo's output live while retaining a bounded tail, so that
     when the build fails (e.g. a transient sccache crash) the error
-    message includes the actual cargo output — even when the caller
+    message includes the actual cargo output, even when the caller
     captures stdio, as pytest does by default.
     """
     console.print(f"Building peppy for [bold]{target_triple}[/bold]...")
@@ -86,7 +86,10 @@ def cargo_build(
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
+            # Build scripts forward output of any encoding: a strict decode
+            # would raise in the middle of the stream and lose the tail.
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
     except OSError as exc:
@@ -94,9 +97,7 @@ def cargo_build(
             f"Failed to start cargo build for {target_triple}: {exc}"
         ) from exc
     if proc.stdout is None:
-        raise ReleaseError(
-            "cargo process started but stdout is not available"
-        )
+        raise ReleaseError("cargo process started but stdout is not available")
     tail: deque[str] = deque(maxlen=200)
     for line in proc.stdout:
         sys.stdout.write(line)
@@ -106,8 +107,7 @@ def cargo_build(
     if returncode != 0:
         raise ReleaseError(
             f"cargo build failed (exit {returncode})\n"
-            f"--- last {len(tail)} lines of cargo output ---\n"
-            + "".join(tail)
+            f"--- last {len(tail)} lines of cargo output ---\n" + "".join(tail)
         )
 
 
@@ -209,6 +209,24 @@ def release_dist_dir(repo_root: Path) -> Path:
     return Path(os.environ.get("PEPPY_DIST_DIR", str(repo_root / "dist")))
 
 
+def build_cache_root() -> Path:
+    """The persistent cache the Rust build scripts share.
+
+    build-helpers' `cache_dir` roots it at `$HOME/.peppy/tmp` whatever
+    PEPPY_HOME says.
+    """
+    return Path.home() / ".peppy" / "tmp"
+
+
+def release_archive_name(target_triple: str) -> str:
+    """The file name of the release archive of *target_triple*.
+
+    install.sh downloads the release asset of this name, and the release
+    workflow hands the archive between its jobs under it.
+    """
+    return f"peppy-{target_triple}.tgz"
+
+
 def _sanitize_tar_member(member: tarfile.TarInfo) -> tarfile.TarInfo:
     """Zero member ownership so the archive never carries the packer's uid,
     gid, or user and group names. A root install restoring them would either
@@ -242,7 +260,7 @@ def package_release(
     dist_dir = release_dist_dir(repo_root)
     dist_dir.mkdir(parents=True, exist_ok=True)
 
-    asset_name = f"peppy-{target_triple}.tgz"
+    asset_name = release_archive_name(target_triple)
     asset_path = dist_dir / asset_name
 
     with tempfile.TemporaryDirectory(prefix="peppy_release_pkg_") as pkg_dir_str:
@@ -329,12 +347,8 @@ def build_and_package(
                 target_dir=target_dir,
             )
 
-        peppy_bin = find_peppy_binary(
-            target_triple, repo_root, target_dir=target_dir
-        )
-        zenohd_bin = find_zenohd_binary(
-            target_triple, repo_root, target_dir=target_dir
-        )
+        peppy_bin = find_peppy_binary(target_triple, repo_root, target_dir=target_dir)
+        zenohd_bin = find_zenohd_binary(target_triple, repo_root, target_dir=target_dir)
 
         apptainer_dir = find_build_dir(
             target_triple,

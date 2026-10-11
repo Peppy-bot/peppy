@@ -48,7 +48,8 @@ class ReleaseNotesInput:
 def extract_release_date(details: dict[str, Any]) -> datetime.date:
     """Extract the release date from the GitHub release details JSON.
 
-    Uses published_at or created_at, falling back to today's date.
+    Uses published_at or created_at, falling back to today's date in the
+    local time zone of the host.
     """
     for field in ("published_at", "created_at"):
         dt = details.get(field)
@@ -57,7 +58,7 @@ def extract_release_date(details: dict[str, Any]) -> datetime.date:
                 return datetime.date.fromisoformat(dt[:10])
             except ValueError:
                 continue
-    return datetime.date.today()
+    return datetime.datetime.now().astimezone().date()
 
 
 def build_article_html(
@@ -120,7 +121,9 @@ def release_notes_file(tag: str) -> Path:
     return RELEASE_NOTES_DIR / f"{tag}.html"
 
 
-def generate_release_notes_file(notes_input: ReleaseNotesInput, repo_root: Path) -> Path:
+def generate_release_notes_file(
+    notes_input: ReleaseNotesInput, repo_root: Path
+) -> Path:
     """Write the release notes HTML/Atom entry file of the release.
 
     The file is `release_notes_file` of the tag under *repo_root*, written
@@ -136,7 +139,7 @@ def generate_release_notes_file(notes_input: ReleaseNotesInput, repo_root: Path)
         release_date.year,
         release_date.month,
         release_date.day,
-        tzinfo=datetime.timezone.utc,
+        tzinfo=datetime.UTC,
     )
     updated_iso = updated_dt.isoformat().replace("+00:00", "Z")
 
@@ -160,28 +163,18 @@ def fetch_release_body_html(
     client: httpx.Client,
     release_id: int,
     slug: RepoSlug,
+    markdown_body: str,
 ) -> str:
     """Fetch the release body as HTML from the GitHub API.
 
-    Makes two API calls:
-    1. GET release details (JSON format) to get the markdown body as fallback
-    2. GET release details (HTML format via Accept header)
-
-    If the HTML body is empty but markdown exists, wraps markdown in <pre><code>.
+    Makes one API call, a GET of the release in its HTML representation. If
+    the HTML body is empty but *markdown_body*, the release body the caller
+    already holds, is not, wraps the escaped markdown in <pre><code>.
     """
-    release_url = f"{slug.api_url}/releases/{release_id}"
-
-    # Get markdown body as fallback
-    details_json = github_api(client, "GET", release_url)
-    markdown_body = ""
-    if isinstance(details_json, dict):
-        markdown_body = details_json.get("body", "") or ""
-
-    # Get HTML body
     details_html = github_api(
         client,
         "GET",
-        release_url,
+        f"{slug.api_url}/releases/{release_id}",
         accept="application/vnd.github.v3.html+json",
     )
     body_html = ""

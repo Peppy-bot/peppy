@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 
 import httpx
 import pytest
@@ -263,10 +264,20 @@ def test_any_other_conclusion_fails_naming_the_run(conclusion: str | None) -> No
     assert "nothing is published" in message
 
 
+@dataclass
+class LaunchersHub:
+    """What reaches launchers-hub's dispatch and run endpoints, and what a
+    dispatch that asks for the run details answers."""
+
+    dispatches: list[httpx.Request] = field(default_factory=list)
+    reads: list[httpx.Request] = field(default_factory=list)
+    dispatch_response: dict = field(default_factory=_dispatch_response)
+
+
 @pytest.fixture
-def launchers_hub(mock_api: respx.MockRouter) -> dict:
+def launchers_hub(mock_api: respx.MockRouter) -> LaunchersHub:
     """launchers-hub's dispatch and run endpoints, recording what reaches them."""
-    seen: dict = {"dispatches": [], "reads": []}
+    hub = LaunchersHub()
     states = iter(
         [
             _run_response("queued"),
@@ -276,34 +287,31 @@ def launchers_hub(mock_api: respx.MockRouter) -> dict:
     )
 
     def dispatch(request: httpx.Request) -> httpx.Response:
-        seen["dispatches"].append(request)
+        hub.dispatches.append(request)
         # As GitHub does: the response names the run only when the request
         # asks for it, and is 204 with no body otherwise.
         if json.loads(request.content).get("return_run_details") is not True:
             return httpx.Response(204)
-        return httpx.Response(
-            200, json=seen.get("dispatch_response", _dispatch_response())
-        )
+        return httpx.Response(200, json=hub.dispatch_response)
 
     def read(request: httpx.Request) -> httpx.Response:
-        seen["reads"].append(request)
+        hub.reads.append(request)
         return httpx.Response(200, json=next(states))
 
     mock_api.post(DISPATCH_URL).mock(side_effect=dispatch)
     mock_api.get(RUN.api_url).mock(side_effect=read)
-    return seen
+    return hub
 
 
 def _client(token: str) -> httpx.Client:
     return httpx.Client(headers={"Authorization": f"Bearer {token}"})
 
 
-def test_launchers_hub_tests_run_on_the_set_and_the_release_run(
-    launchers_hub: dict,
-) -> None:
+def _check_launchers() -> DispatchedRun:
+    """Run check_launchers on HUB_SET for the release run 18000000001, the
+    release token dispatching and the job token reading, on a fake clock."""
     time = FakeTime()
-
-    run = check_launchers(
+    return check_launchers(
         _client("release-token"),
         _client("job-token"),
         OWNER,
@@ -313,8 +321,14 @@ def test_launchers_hub_tests_run_on_the_set_and_the_release_run(
         clock=time.clock,
     )
 
+
+def test_launchers_hub_tests_run_on_the_set_and_the_release_run(
+    launchers_hub: LaunchersHub,
+) -> None:
+    run = _check_launchers()
+
     assert run == RUN
-    [dispatch] = launchers_hub["dispatches"]
+    [dispatch] = launchers_hub.dispatches
     payload = json.loads(dispatch.content)
     dispatched_set = payload["inputs"]["set"]
     assert payload == {
@@ -327,30 +341,21 @@ def test_launchers_hub_tests_run_on_the_set_and_the_release_run(
     assert json.loads(dispatched_set) == HUB_SET_DOCUMENT
     # The release token dispatches; the job token, which outlives it, reads.
     assert dispatch.headers["Authorization"] == "Bearer release-token"
-    assert {read.headers["Authorization"] for read in launchers_hub["reads"]} == {
+    assert {read.headers["Authorization"] for read in launchers_hub.reads} == {
         "Bearer job-token"
     }
-    assert len(launchers_hub["reads"]) == 3
+    assert len(launchers_hub.reads) == 3
 
 
 def test_a_dispatch_that_names_no_run_is_never_waited_for(
-    launchers_hub: dict,
+    launchers_hub: LaunchersHub,
 ) -> None:
-    launchers_hub["dispatch_response"] = {}
-    time = FakeTime()
+    launchers_hub.dispatch_response = {}
 
     with pytest.raises(ReleaseError, match="answered without a workflow_run_id"):
-        check_launchers(
-            _client("release-token"),
-            _client("job-token"),
-            OWNER,
-            HUB_SET,
-            18000000001,
-            sleep=time.sleep,
-            clock=time.clock,
-        )
+        _check_launchers()
 
-    assert launchers_hub["reads"] == []
+    assert launchers_hub.reads == []
 
 
 def test_launchers_hub_tests_that_fail_fail_the_stage(
@@ -362,17 +367,8 @@ def test_launchers_hub_tests_that_fail_fail_the_stage(
     mock_api.get(RUN.api_url).mock(
         return_value=httpx.Response(200, json=_run_response("completed", "failure"))
     )
-    time = FakeTime()
 
     with pytest.raises(
         ReleaseError, match=re.escape(f"{RUN.html_url} concluded `failure`")
     ):
-        check_launchers(
-            _client("release-token"),
-            _client("job-token"),
-            OWNER,
-            HUB_SET,
-            18000000001,
-            sleep=time.sleep,
-            clock=time.clock,
-        )
+        _check_launchers()

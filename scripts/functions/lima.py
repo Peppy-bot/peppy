@@ -8,7 +8,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from .build import _get_target_dir
+from .build import _get_target_dir, build_cache_root
 from .cli import ReleaseError, console
 
 LIMA_HOME = Path.home() / ".peppy" / "lima-build"
@@ -56,6 +56,8 @@ RELEASE_PLATFORM_SO = (
     "_peppylib.abi3.macos-aarch64.so",
 )
 SO_BUILD_STATE_MARKER = ".so-build-state"
+# The files a complete peppylib bindings directory holds.
+PREBUILT_SO_FILES = (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)
 
 # Build artifacts the host packaging step reads, as glob patterns relative to
 # {target_dir}/{target_triple}/release/. The in-VM build compiles on the
@@ -77,17 +79,12 @@ def find_limactl(repo_root: Path) -> Path:
 
     Checks the exact SHA-verified cache entry for LIMA_VERSION first, then falls
     back to the cargo build output created by the containers crate build.rs.
-    There is deliberately no `lima-*` glob: sorting one picked the
+    There is deliberately no `lima-*` glob: a sorted glob picks the
     lexicographically last directory, so an unrelated cache entry such as
     `lima-99.0.0-Darwin-arm64` would win over the verified download.
     """
     cached = (
-        Path.home()
-        / ".peppy"
-        / "tmp"
-        / f"lima-{LIMA_VERSION}-Darwin-arm64"
-        / "bin"
-        / "limactl"
+        build_cache_root() / f"lima-{LIMA_VERSION}-Darwin-arm64" / "bin" / "limactl"
     )
     if cached.is_file():
         return cached
@@ -123,6 +120,7 @@ def _run_limactl(
         env=_lima_env(),
         capture_output=capture,
         text=True,
+        check=False,
     )
 
 
@@ -134,6 +132,7 @@ def _lima_shell(
     return subprocess.run(
         [str(limactl), "shell", LIMA_INSTANCE, "--", "bash", "-c", script],
         env=_lima_env(),
+        check=False,
     )
 
 
@@ -143,11 +142,10 @@ def _host_memory_gib() -> int:
         ["sysctl", "-n", "hw.memsize"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0 or not result.stdout.strip().isdigit():
-        raise ReleaseError(
-            "failed to read host memory size via 'sysctl -n hw.memsize'"
-        )
+        raise ReleaseError("failed to read host memory size via 'sysctl -n hw.memsize'")
     return int(result.stdout.strip()) // (1024**3)
 
 
@@ -156,10 +154,10 @@ def _vm_resources() -> tuple[int, int]:
 
     CPUs: host cores minus two, so macOS and Lima's host-side daemons (ssh,
     virtiofs, port forwarding) keep dedicated cores while the build runs at
-    full parallelism. Memory: 1.5 GiB per vCPU, the ratio the earlier fixed
-    8-job/12 GiB tuning established for release builds with LTO, floored at
-    8 GiB so the serial LTO link step is never starved, and capped at half
-    the host's RAM so starting the VM cannot push the host into swap.
+    full parallelism. Memory: 1.5 GiB per vCPU, the ratio release builds with
+    LTO need (8 jobs in 12 GiB), floored at 8 GiB so the serial LTO link step
+    is never starved, and capped at half the host's RAM so starting the VM
+    cannot push the host into swap.
 
     Only applied at VM creation: an existing instance keeps the resources it
     was created with, so the in-VM build derives its parallelism from the
@@ -204,8 +202,7 @@ def ensure_lima_vm(limactl: Path) -> None:
         )
         if create.returncode != 0:
             raise ReleaseError(
-                f"failed to create Lima VM '{LIMA_INSTANCE}' "
-                f"(exit {create.returncode})"
+                f"failed to create Lima VM '{LIMA_INSTANCE}' (exit {create.returncode})"
             )
         return
 
@@ -221,9 +218,7 @@ def ensure_lima_vm(limactl: Path) -> None:
             )
         return
 
-    raise ReleaseError(
-        f"Lima VM '{LIMA_INSTANCE}' is in unexpected state: {status}"
-    )
+    raise ReleaseError(f"Lima VM '{LIMA_INSTANCE}' is in unexpected state: {status}")
 
 
 def stop_lima_vm(limactl: Path) -> None:
@@ -247,8 +242,8 @@ def _ensure_pinned_go_in_vm(limactl: Path) -> None:
     """Install the pinned Go toolchain in the Lima VM if missing or wrong version.
 
     Idempotent: skips the download when the correct version is already present.
-    Kept separate from the Rust setup so it also runs on VMs that already have
-    Rust but predate Go pinning.
+    Kept separate from the Rust setup, which skips a VM that already has Rust,
+    so it runs on every VM, one with Rust and no pinned Go included.
     """
     install_script = f"""\
 set -eu
@@ -329,13 +324,18 @@ def _prebuilt_peppylib_so_dir() -> Path:
     """Host directory holding the peppylib native bindings the release embeds.
 
     Mirrors the release profile's slot of the generator build script's cache,
-    build-helpers' `cache_dir("peppylib-py")/so/release`, rooted at $HOME exactly
-    as the Rust side resolves it (not the PEPPY_HOME override). The native
-    aarch64-apple-darwin release build populates it. Lima mounts the host home
-    into the guest at the same path, so the in-VM build reads the bindings
-    straight from here via PEPPYLIB_PREBUILT_SO_DIR, with no cargo-cache staging.
+    build-helpers' `cache_dir("peppylib-py")/so/release` under build_cache_root.
+    The native aarch64-apple-darwin release build populates it. Lima mounts the
+    host home into the guest at the same path, so the in-VM build reads the
+    bindings straight from here via PEPPYLIB_PREBUILT_SO_DIR, with no
+    cargo-cache staging.
     """
-    return Path.home() / ".peppy" / "tmp" / "peppylib-py" / "so" / "release"
+    return build_cache_root() / "peppylib-py" / "so" / "release"
+
+
+def missing_prebuilt_so_files(so_dir: Path) -> list[str]:
+    """The files of PREBUILT_SO_FILES that *so_dir* lacks, in their order."""
+    return [name for name in PREBUILT_SO_FILES if not (so_dir / name).is_file()]
 
 
 def require_prebuilt_peppylib_so() -> Path:
@@ -347,11 +347,7 @@ def require_prebuilt_peppylib_so() -> Path:
     an opaque failure deep inside cargo.
     """
     so_dir = _prebuilt_peppylib_so_dir()
-    missing = [
-        name
-        for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)
-        if not (so_dir / name).is_file()
-    ]
+    missing = missing_prebuilt_so_files(so_dir)
     if missing:
         raise ReleaseError(
             f"prebuilt peppylib bindings missing from {so_dir}: "
@@ -394,30 +390,29 @@ def cargo_build_in_lima(
     # target_dir.name is unique per release invocation (mkdtemp suffix), so
     # concurrent or interrupted builds never share a guest tree.
     guest_target_dir = f"{GUEST_RUST_DIR}/target/{target_dir.name}"
+    host_release_dir = target_dir / target_triple / "release"
     copy_back_patterns = " ".join(GUEST_COPY_BACK_ARTIFACTS)
 
-    console.print(
-        f"Building peppy for [bold]{target_triple}[/bold] in Lima VM..."
-    )
+    console.print(f"Building peppy for [bold]{target_triple}[/bold] in Lima VM...")
     build_script = f"""\
 set -eu
 export RUSTUP_HOME={GUEST_RUSTUP_HOME}
 export CARGO_HOME={GUEST_CARGO_HOME}
 export PATH="{GUEST_GO_DIR}/bin:{GUEST_CARGO_HOME}/bin:$PATH"
 export GOTOOLCHAIN=local
-export PEPPY_GIT_TAG={tag}
+export PEPPY_GIT_TAG={shlex.quote(tag)}
 export PEPPY_CROSS_ARCH=1
 export PEPPY_HOST_HOME={shlex.quote(str(Path.home()))}
 export RUSTC_WRAPPER=""
-export PEPPYLIB_PREBUILT_SO_DIR={so_dir}
+export PEPPYLIB_PREBUILT_SO_DIR={shlex.quote(str(so_dir))}
 export CARGO_TARGET_DIR={guest_target_dir}
 {cross_linker}
 rm -rf {guest_target_dir}
 trap 'rm -rf {guest_target_dir}' EXIT
-cd {repo_root}
+cd {shlex.quote(str(repo_root))}
 cargo build -p peppy --release --locked --target {target_triple}
 guest_release={guest_target_dir}/{target_triple}/release
-host_release={target_dir}/{target_triple}/release
+host_release={shlex.quote(str(host_release_dir))}
 mkdir -p "$host_release"
 cd "$guest_release"
 for artifact in {copy_back_patterns}; do

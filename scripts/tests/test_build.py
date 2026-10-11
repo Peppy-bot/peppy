@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tarfile
+from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
@@ -13,6 +16,7 @@ from functions.build import (
     _get_target_dir,
     _release_rustflags,
     build_and_package,
+    cargo_build,
     find_build_dir,
     find_peppy_binary,
     find_zenohd_binary,
@@ -57,9 +61,11 @@ def test_find_peppy_binary_not_found(tmp_path: Path) -> None:
     triple = "aarch64-apple-darwin"
     (tmp_path / "target").mkdir()
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
-        with pytest.raises(ReleaseError, match="peppy binary not found"):
-            find_peppy_binary(triple, tmp_path)
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}),
+        pytest.raises(ReleaseError, match="peppy binary not found"),
+    ):
+        find_peppy_binary(triple, tmp_path)
 
 
 def test_find_zenohd_binary_found(tmp_path: Path) -> None:
@@ -87,9 +93,11 @@ def test_find_zenohd_binary_not_found_raises(tmp_path: Path) -> None:
     build_dir = tmp_path / "target" / triple / "release" / "build"
     build_dir.mkdir(parents=True)
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
-        with pytest.raises(ReleaseError, match="zenohd binary not found"):
-            find_zenohd_binary(triple, tmp_path)
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}),
+        pytest.raises(ReleaseError, match="zenohd binary not found"),
+    ):
+        find_zenohd_binary(triple, tmp_path)
 
 
 def test_find_build_dir_found(tmp_path: Path) -> None:
@@ -118,40 +126,64 @@ def test_find_build_dir_not_found(tmp_path: Path) -> None:
     build_dir = tmp_path / "target" / triple / "release" / "build"
     build_dir.mkdir(parents=True)
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
-        with pytest.raises(ReleaseError, match="apptainer install directory not found"):
-            find_build_dir(
-                triple,
-                tmp_path,
-                "containers-*/out/apptainer-install",
-                "apptainer install",
-            )
+    with (
+        patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}),
+        pytest.raises(ReleaseError, match="apptainer install directory not found"),
+    ):
+        find_build_dir(
+            triple,
+            tmp_path,
+            "containers-*/out/apptainer-install",
+            "apptainer install",
+        )
 
 
-def test_package_release_creates_valid_tarball(tmp_path: Path) -> None:
-    triple = "aarch64-apple-darwin"
-    repo_root = tmp_path / "repo"
-    repo_root.mkdir()
+@dataclass(frozen=True)
+class PackageInputs:
+    """The binaries and install trees that package_release packs."""
 
+    peppy_bin: Path
+    zenohd_bin: Path
+    apptainer_dir: Path
+    lima_dir: Path
+
+
+@pytest.fixture
+def package_inputs(tmp_path: Path) -> PackageInputs:
+    """Placeholder release inputs under *tmp_path*, laid out as the build
+    leaves them."""
     peppy_bin = tmp_path / "peppy"
     peppy_bin.write_bytes(b"peppy binary")
     zenohd_bin = tmp_path / "zenohd"
     zenohd_bin.write_bytes(b"zenohd binary")
 
     apptainer_dir = tmp_path / "apptainer-install"
-    apptainer_dir.mkdir()
-    (apptainer_dir / "bin" / "apptainer").parent.mkdir(parents=True)
+    (apptainer_dir / "bin").mkdir(parents=True)
     (apptainer_dir / "bin" / "apptainer").write_bytes(b"apptainer")
 
     lima_dir = tmp_path / "lima-install"
-    lima_dir.mkdir()
-    (lima_dir / "bin" / "limactl").parent.mkdir(parents=True)
+    (lima_dir / "bin").mkdir(parents=True)
     (lima_dir / "bin" / "limactl").write_bytes(b"limactl")
+
+    return PackageInputs(peppy_bin, zenohd_bin, apptainer_dir, lima_dir)
+
+
+def test_package_release_creates_valid_tarball(
+    tmp_path: Path, package_inputs: PackageInputs
+) -> None:
+    triple = "aarch64-apple-darwin"
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
 
     dist_dir = tmp_path / "dist"
     with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(dist_dir)}):
         artifact = package_release(
-            triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir, lima_dir
+            triple,
+            repo_root,
+            package_inputs.peppy_bin,
+            package_inputs.zenohd_bin,
+            package_inputs.apptainer_dir,
+            package_inputs.lima_dir,
         )
 
     assert artifact.asset_name == f"peppy-{triple}.tgz"
@@ -166,25 +198,21 @@ def test_package_release_creates_valid_tarball(tmp_path: Path) -> None:
         assert any("bin/lima" in n for n in member_names)
 
 
-def test_package_release_creates_tarball_without_lima(tmp_path: Path) -> None:
+def test_package_release_creates_tarball_without_lima(
+    tmp_path: Path, package_inputs: PackageInputs
+) -> None:
     triple = "x86_64-unknown-linux-gnu"
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
 
-    peppy_bin = tmp_path / "peppy"
-    peppy_bin.write_bytes(b"peppy binary")
-    zenohd_bin = tmp_path / "zenohd"
-    zenohd_bin.write_bytes(b"zenohd binary")
-
-    apptainer_dir = tmp_path / "apptainer-install"
-    apptainer_dir.mkdir()
-    (apptainer_dir / "bin" / "apptainer").parent.mkdir(parents=True)
-    (apptainer_dir / "bin" / "apptainer").write_bytes(b"apptainer")
-
     dist_dir = tmp_path / "dist"
     with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(dist_dir)}):
         artifact = package_release(
-            triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir
+            triple,
+            repo_root,
+            package_inputs.peppy_bin,
+            package_inputs.zenohd_bin,
+            package_inputs.apptainer_dir,
         )
 
     with tarfile.open(artifact.asset_path, "r:gz") as tar:
@@ -194,31 +222,23 @@ def test_package_release_creates_tarball_without_lima(tmp_path: Path) -> None:
         assert not any("lima" in n for n in member_names)
 
 
-def test_package_release_tarball_matches_install_sh(tmp_path: Path) -> None:
+def test_package_release_tarball_matches_install_sh(
+    tmp_path: Path, package_inputs: PackageInputs
+) -> None:
     """Verify the tarball layout matches what install.sh expects."""
     triple = "aarch64-apple-darwin"
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
 
-    peppy_bin = tmp_path / "peppy"
-    peppy_bin.write_bytes(b"peppy binary")
-    zenohd_bin = tmp_path / "zenohd"
-    zenohd_bin.write_bytes(b"zenohd binary")
-
-    apptainer_dir = tmp_path / "apptainer-install"
-    apptainer_dir.mkdir()
-    (apptainer_dir / "bin").mkdir(parents=True)
-    (apptainer_dir / "bin" / "apptainer").write_bytes(b"apptainer")
-
-    lima_dir = tmp_path / "lima-install"
-    lima_dir.mkdir()
-    (lima_dir / "bin").mkdir(parents=True)
-    (lima_dir / "bin" / "limactl").write_bytes(b"limactl")
-
     dist_dir = tmp_path / "dist"
     with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(dist_dir)}):
         artifact = package_release(
-            triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir, lima_dir
+            triple,
+            repo_root,
+            package_inputs.peppy_bin,
+            package_inputs.zenohd_bin,
+            package_inputs.apptainer_dir,
+            package_inputs.lima_dir,
         )
 
     extract_dir = tmp_path / "extracted"
@@ -232,34 +252,28 @@ def test_package_release_tarball_matches_install_sh(tmp_path: Path) -> None:
     assert (extract_dir / "bin" / "lima" / "bin" / "limactl").is_file()
 
 
-def test_package_release_respects_peppy_dist_dir(tmp_path: Path) -> None:
+def test_package_release_respects_peppy_dist_dir(
+    tmp_path: Path, package_inputs: PackageInputs
+) -> None:
     triple = "aarch64-apple-darwin"
     custom_dist = tmp_path / "custom_dist"
 
-    peppy_bin = tmp_path / "peppy"
-    peppy_bin.write_bytes(b"binary")
-    zenohd_bin = tmp_path / "zenohd"
-    zenohd_bin.write_bytes(b"binary")
-
-    apptainer_dir = tmp_path / "apptainer-install"
-    apptainer_dir.mkdir()
-    (apptainer_dir / "bin").mkdir()
-    (apptainer_dir / "bin" / "apptainer").write_bytes(b"apptainer")
-
-    lima_dir = tmp_path / "lima-install"
-    lima_dir.mkdir()
-    (lima_dir / "bin").mkdir()
-    (lima_dir / "bin" / "limactl").write_bytes(b"limactl")
-
     with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(custom_dist)}):
         artifact = package_release(
-            triple, tmp_path, peppy_bin, zenohd_bin, apptainer_dir, lima_dir
+            triple,
+            tmp_path,
+            package_inputs.peppy_bin,
+            package_inputs.zenohd_bin,
+            package_inputs.apptainer_dir,
+            package_inputs.lima_dir,
         )
 
     assert artifact.asset_path.parent == custom_dist
 
 
-def test_package_release_tarball_has_zeroed_ownership(tmp_path: Path) -> None:
+def test_package_release_tarball_has_zeroed_ownership(
+    tmp_path: Path, package_inputs: PackageInputs
+) -> None:
     """Every member must be owned by uid 0 with no user or group names.
 
     GNU tar restores ownership on root installs: a foreign uid aborts the
@@ -270,20 +284,14 @@ def test_package_release_tarball_has_zeroed_ownership(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
 
-    peppy_bin = tmp_path / "peppy"
-    peppy_bin.write_bytes(b"peppy binary")
-    zenohd_bin = tmp_path / "zenohd"
-    zenohd_bin.write_bytes(b"zenohd binary")
-
-    apptainer_dir = tmp_path / "apptainer-install"
-    apptainer_dir.mkdir()
-    (apptainer_dir / "bin").mkdir(parents=True)
-    (apptainer_dir / "bin" / "apptainer").write_bytes(b"apptainer")
-
     dist_dir = tmp_path / "dist"
     with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(dist_dir)}):
         artifact = package_release(
-            triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir
+            triple,
+            repo_root,
+            package_inputs.peppy_bin,
+            package_inputs.zenohd_bin,
+            package_inputs.apptainer_dir,
         )
 
     with tarfile.open(artifact.asset_path, "r:gz") as tar:
@@ -322,6 +330,32 @@ def test_release_rustflags_without_inherited_flags(tmp_path: Path) -> None:
 
     assert not flags.startswith(" ")
     assert flags.count("--remap-path-prefix") == 2
+
+
+def test_cargo_build_survives_output_that_is_not_utf8(tmp_path: Path) -> None:
+    """A byte that is not UTF-8 in cargo's output still ends in the cargo tail.
+
+    Build scripts forward output of any encoding, so a strict decode would
+    stop the release with a traceback and leave cargo running.
+    """
+    real_popen = subprocess.Popen
+    child = "import sys; sys.stdout.buffer.write(b'bad \\xff byte\\n'); sys.exit(3)"
+
+    def popen_a_cargo_that_prints_invalid_utf8(
+        _args: list[str], **kwargs: object
+    ) -> subprocess.Popen[str]:
+        return real_popen([sys.executable, "-c", child], **kwargs)
+
+    with (
+        patch(
+            "functions.build.subprocess.Popen",
+            side_effect=popen_a_cargo_that_prints_invalid_utf8,
+        ),
+        pytest.raises(ReleaseError, match=r"cargo build failed \(exit 3\)") as err,
+    ):
+        cargo_build("v0.1.0", "x86_64-unknown-linux-gnu", tmp_path)
+
+    assert "bad \ufffd byte" in str(err.value)
 
 
 def test_build_and_package_rejects_unsupported_triple(tmp_path: Path) -> None:
@@ -374,9 +408,7 @@ def test_build_and_package_with_lima_calls_lima_build(
     mock_build_dir.return_value = tmp_path / "apptainer"
     mock_package.return_value = MagicMock()
 
-    build_and_package(
-        "v0.1.0", "x86_64-unknown-linux-gnu", tmp_path, limactl=limactl
-    )
+    build_and_package("v0.1.0", "x86_64-unknown-linux-gnu", tmp_path, limactl=limactl)
 
     mock_lima_build.assert_called_once_with(
         limactl, "v0.1.0", "x86_64-unknown-linux-gnu", tmp_path, target_dir=ANY

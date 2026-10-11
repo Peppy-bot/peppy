@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,17 +19,13 @@ from functions.claude import (
 )
 from functions.cli import ReleaseError
 
+from .helpers import claude_answer, flag_value, unwrapped
+
 _SCHEMA: dict = {
     "type": "object",
     "properties": {"ok": {"type": "boolean"}},
     "required": ["ok"],
 }
-
-
-def _flag_value(cmd: list[str], flag: str) -> str:
-    """Return the argv element following ``flag`` in ``cmd``."""
-    assert flag in cmd, f"{flag} not in {cmd}"
-    return cmd[cmd.index(flag) + 1]
 
 
 def _mock_run(
@@ -43,28 +40,40 @@ def _mock_run(
         if capture is not None:
             capture["cmd"] = cmd
             capture["input"] = kwargs.get("input")
-        mock = MagicMock()
-        mock.returncode = returncode
-        mock.stdout = json.dumps(
-            {
-                "type": "result",
-                "result": json.dumps(structured),
-                "structured_output": structured,
-            }
-        )
-        mock.stderr = ""
-        return mock
+        return claude_answer(structured, returncode)
 
     return _run
+
+
+def _captured_cmd(tmp_path: Path, **overrides: Any) -> list[str]:
+    """The argv that run_claude gives a CLI answering {"ok": True}.
+
+    run_claude gets the prompt "p", the Read tool, the default permission
+    mode, _SCHEMA and the activity "judging", unless *overrides* names
+    another value for one of them.
+    """
+    capture: dict[str, Any] = {}
+    arguments: dict[str, Any] = {
+        "allowed_tools": "Read",
+        "permission_mode": "default",
+        "cwd": tmp_path,
+        "json_schema": _SCHEMA,
+        "activity": "judging",
+        **overrides,
+    }
+    with patch(
+        "functions.claude.subprocess.run",
+        side_effect=_mock_run({"ok": True}, capture=capture),
+    ):
+        run_claude("p", **arguments)
+    return capture["cmd"]
 
 
 # --- run_claude ---
 
 
 def test_run_claude_returns_structured_output(tmp_path: Path) -> None:
-    with patch(
-        "functions.claude.subprocess.run", side_effect=_mock_run({"ok": True})
-    ):
+    with patch("functions.claude.subprocess.run", side_effect=_mock_run({"ok": True})):
         out = run_claude(
             "prompt",
             allowed_tools="Read",
@@ -95,158 +104,83 @@ def test_run_claude_pins_model_effort_and_pipes_prompt_via_stdin(
     cmd = capture["cmd"]
     assert cmd[0] == "claude"
     assert "-p" in cmd
-    assert _flag_value(cmd, "--model") == CLAUDE_MODEL
-    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
-    assert _flag_value(cmd, "--output-format") == "json"
-    assert _flag_value(cmd, "--permission-mode") == "bypassPermissions"
-    assert _flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
+    assert flag_value(cmd, "--model") == CLAUDE_MODEL
+    assert flag_value(cmd, "--effort") == CLAUDE_EFFORT
+    assert flag_value(cmd, "--output-format") == "json"
+    assert flag_value(cmd, "--permission-mode") == "bypassPermissions"
+    assert flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
     # The prompt is piped via stdin, never placed on the command line.
     assert capture["input"] == "the-prompt"
     assert "the-prompt" not in cmd
 
 
 def test_run_claude_passes_schema_as_json(tmp_path: Path) -> None:
-    capture: dict[str, Any] = {}
-    with patch(
-        "functions.claude.subprocess.run",
-        side_effect=_mock_run({"ok": True}, capture=capture),
-    ):
-        run_claude(
-            "p",
-            allowed_tools="Read",
-            permission_mode="default",
-            cwd=tmp_path,
-            json_schema=_SCHEMA,
-            activity="judging",
-        )
+    cmd = _captured_cmd(tmp_path)
     # The schema rides argv as serialized JSON the CLI can validate against.
-    assert json.loads(_flag_value(capture["cmd"], "--json-schema")) == _SCHEMA
+    assert json.loads(flag_value(cmd, "--json-schema")) == _SCHEMA
 
 
 def test_run_claude_disables_tools_when_tools_empty(tmp_path: Path) -> None:
-    capture: dict[str, Any] = {}
-    with patch(
-        "functions.claude.subprocess.run",
-        side_effect=_mock_run({"ok": True}, capture=capture),
-    ):
-        run_claude(
-            "p",
-            allowed_tools="",
-            permission_mode="bypassPermissions",
-            cwd=tmp_path,
-            json_schema=_SCHEMA,
-            activity="judging",
-            tools="",
-        )
-    cmd = capture["cmd"]
+    cmd = _captured_cmd(
+        tmp_path, allowed_tools="", permission_mode="bypassPermissions", tools=""
+    )
     # `--tools ""` disables all tools; an empty allowlist is omitted entirely.
-    assert _flag_value(cmd, "--tools") == ""
+    assert flag_value(cmd, "--tools") == ""
     assert "--allowed-tools" not in cmd
 
 
 def test_run_claude_effort_override(tmp_path: Path) -> None:
-    capture: dict[str, Any] = {}
-    with patch(
-        "functions.claude.subprocess.run",
-        side_effect=_mock_run({"ok": True}, capture=capture),
-    ):
-        run_claude(
-            "p",
-            allowed_tools="Read",
-            permission_mode="default",
-            cwd=tmp_path,
-            json_schema=_SCHEMA,
-            activity="judging",
-            effort="low",
-        )
-    assert _flag_value(capture["cmd"], "--effort") == "low"
+    cmd = _captured_cmd(tmp_path, effort="low")
+    assert flag_value(cmd, "--effort") == "low"
 
 
 def test_run_claude_defaults_to_pinned_effort(tmp_path: Path) -> None:
-    capture: dict[str, Any] = {}
-    with patch(
-        "functions.claude.subprocess.run",
-        side_effect=_mock_run({"ok": True}, capture=capture),
-    ):
-        run_claude(
-            "p",
-            allowed_tools="Read",
-            permission_mode="default",
-            cwd=tmp_path,
-            json_schema=_SCHEMA,
-            activity="judging",
-        )
-    assert _flag_value(capture["cmd"], "--effort") == CLAUDE_EFFORT
+    cmd = _captured_cmd(tmp_path)
+    assert flag_value(cmd, "--effort") == CLAUDE_EFFORT
 
 
 def test_run_claude_omits_tools_flag_by_default(tmp_path: Path) -> None:
-    capture: dict[str, Any] = {}
-    with patch(
-        "functions.claude.subprocess.run",
-        side_effect=_mock_run({"ok": True}, capture=capture),
+    cmd = _captured_cmd(tmp_path)
+    assert "--tools" not in cmd
+    assert flag_value(cmd, "--allowed-tools") == "Read"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "match"),
+    [
+        pytest.param(2, "", "boom", "claude CLI failed", id="nonzero-exit"),
+        pytest.param(
+            0, "not json", "", "did not return valid JSON", id="invalid-outer-json"
+        ),
+        pytest.param(0, "[]", "", "not an object", id="non-object-envelope"),
+        pytest.param(
+            0,
+            json.dumps({"type": "result", "result": "[]", "structured_output": []}),
+            "",
+            "missing 'structured_output'",
+            id="non-object-structured-output",
+        ),
+    ],
+)
+def test_run_claude_raises_on_a_bad_answer(
+    tmp_path: Path, returncode: int, stdout: str, stderr: str, match: str
+) -> None:
+    mock = MagicMock()
+    mock.returncode = returncode
+    mock.stdout = stdout
+    mock.stderr = stderr
+    with (
+        patch("functions.claude.subprocess.run", return_value=mock),
+        pytest.raises(ReleaseError, match=match),
     ):
         run_claude(
             "p",
             allowed_tools="Read",
-            permission_mode="default",
+            permission_mode="bypassPermissions",
             cwd=tmp_path,
             json_schema=_SCHEMA,
             activity="judging",
         )
-    cmd = capture["cmd"]
-    assert "--tools" not in cmd
-    assert _flag_value(cmd, "--allowed-tools") == "Read"
-
-
-def test_run_claude_raises_on_nonzero_exit(tmp_path: Path) -> None:
-    mock = MagicMock()
-    mock.returncode = 2
-    mock.stdout = ""
-    mock.stderr = "boom"
-    with patch("functions.claude.subprocess.run", return_value=mock):
-        with pytest.raises(ReleaseError, match="claude CLI failed"):
-            run_claude(
-                "p",
-                allowed_tools="Read",
-                permission_mode="bypassPermissions",
-                cwd=tmp_path,
-                json_schema=_SCHEMA,
-                activity="judging",
-            )
-
-
-def test_run_claude_raises_on_invalid_outer_json(tmp_path: Path) -> None:
-    mock = MagicMock()
-    mock.returncode = 0
-    mock.stdout = "not json"
-    mock.stderr = ""
-    with patch("functions.claude.subprocess.run", return_value=mock):
-        with pytest.raises(ReleaseError, match="did not return valid JSON"):
-            run_claude(
-                "p",
-                allowed_tools="Read",
-                permission_mode="bypassPermissions",
-                cwd=tmp_path,
-                json_schema=_SCHEMA,
-                activity="judging",
-            )
-
-
-def test_run_claude_raises_on_non_object_envelope(tmp_path: Path) -> None:
-    mock = MagicMock()
-    mock.returncode = 0
-    mock.stdout = "[]"
-    mock.stderr = ""
-    with patch("functions.claude.subprocess.run", return_value=mock):
-        with pytest.raises(ReleaseError, match="not an object"):
-            run_claude(
-                "p",
-                allowed_tools="Read",
-                permission_mode="bypassPermissions",
-                cwd=tmp_path,
-                json_schema=_SCHEMA,
-                activity="judging",
-            )
 
 
 def test_run_claude_raises_on_missing_structured_output(tmp_path: Path) -> None:
@@ -257,40 +191,19 @@ def test_run_claude_raises_on_missing_structured_output(tmp_path: Path) -> None:
     mock.returncode = 0
     mock.stdout = json.dumps({"type": "result", "result": "The docs are fine."})
     mock.stderr = ""
-    with patch("functions.claude.subprocess.run", return_value=mock):
-        with pytest.raises(
-            ReleaseError, match="missing 'structured_output'"
-        ) as excinfo:
-            run_claude(
-                "p",
-                allowed_tools="Read",
-                permission_mode="bypassPermissions",
-                cwd=tmp_path,
-                json_schema=_SCHEMA,
-                activity="judging",
-            )
+    with (
+        patch("functions.claude.subprocess.run", return_value=mock),
+        pytest.raises(ReleaseError, match="missing 'structured_output'") as excinfo,
+    ):
+        run_claude(
+            "p",
+            allowed_tools="Read",
+            permission_mode="bypassPermissions",
+            cwd=tmp_path,
+            json_schema=_SCHEMA,
+            activity="judging",
+        )
     assert "The docs are fine." in str(excinfo.value)
-
-
-def test_run_claude_raises_on_non_object_structured_output(
-    tmp_path: Path,
-) -> None:
-    mock = MagicMock()
-    mock.returncode = 0
-    mock.stdout = json.dumps(
-        {"type": "result", "result": "[]", "structured_output": []}
-    )
-    mock.stderr = ""
-    with patch("functions.claude.subprocess.run", return_value=mock):
-        with pytest.raises(ReleaseError, match="missing 'structured_output'"):
-            run_claude(
-                "p",
-                allowed_tools="Read",
-                permission_mode="bypassPermissions",
-                cwd=tmp_path,
-                json_schema=_SCHEMA,
-                activity="judging",
-            )
 
 
 # --- the heartbeat ---
@@ -304,7 +217,7 @@ def test_heartbeat_says_the_minutes_so_far_until_stopped(
     with patch("functions.claude.time.monotonic", side_effect=[70.0, 130.0]):
         _heartbeat("judging the diff", stop, 10.0)
 
-    err = " ".join(capfd.readouterr().err.split())
+    err = unwrapped(capfd.readouterr().err)
     assert "Still judging the diff (1 min so far)..." in err
     assert "Still judging the diff (2 min so far)..." in err
     stop.wait.assert_called_with(HEARTBEAT_SECONDS)
@@ -313,7 +226,7 @@ def test_heartbeat_says_the_minutes_so_far_until_stopped(
 class _RecordedThread:
     """A stand-in for threading.Thread that records how it was driven."""
 
-    started: list[_RecordedThread] = []
+    started: ClassVar[list[_RecordedThread]] = []
 
     def __init__(self, *, target: Any, args: tuple, daemon: bool) -> None:
         self.target = target
@@ -340,9 +253,7 @@ def recorded_threads() -> list[_RecordedThread]:
 def test_run_claude_keeps_a_heartbeat_only_while_the_cli_runs(
     tmp_path: Path, recorded_threads: list[_RecordedThread]
 ) -> None:
-    with patch(
-        "functions.claude.subprocess.run", side_effect=_mock_run({"ok": True})
-    ):
+    with patch("functions.claude.subprocess.run", side_effect=_mock_run({"ok": True})):
         run_claude(
             "p",
             allowed_tools="Read",
@@ -365,19 +276,21 @@ def test_run_claude_keeps_a_heartbeat_only_while_the_cli_runs(
 def test_run_claude_stops_the_heartbeat_when_the_cli_fails(
     tmp_path: Path, recorded_threads: list[_RecordedThread]
 ) -> None:
-    with patch(
-        "functions.claude.subprocess.run",
-        side_effect=_mock_run({"ok": True}, returncode=2),
+    with (
+        patch(
+            "functions.claude.subprocess.run",
+            side_effect=_mock_run({"ok": True}, returncode=2),
+        ),
+        pytest.raises(ReleaseError, match="claude CLI failed"),
     ):
-        with pytest.raises(ReleaseError, match="claude CLI failed"):
-            run_claude(
-                "p",
-                allowed_tools="Read",
-                permission_mode="default",
-                cwd=tmp_path,
-                json_schema=_SCHEMA,
-                activity="judging the diff",
-            )
+        run_claude(
+            "p",
+            allowed_tools="Read",
+            permission_mode="default",
+            cwd=tmp_path,
+            json_schema=_SCHEMA,
+            activity="judging the diff",
+        )
 
     (thread,) = recorded_threads
     assert thread.args[1].is_set()

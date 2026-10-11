@@ -45,11 +45,7 @@ from functions.docs import (
     update_docs,
 )
 
-
-def _flag_value(cmd: list[str], flag: str) -> str:
-    """Return the argv element following ``flag`` in ``cmd``."""
-    assert flag in cmd, f"{flag} not in {cmd}"
-    return cmd[cmd.index(flag) + 1]
+from .helpers import claude_answer, flag_value, unwrapped
 
 
 def _blocking(file: str = "docs/x.mdx", change: str = "add flag") -> RequiredChange:
@@ -72,7 +68,7 @@ _REFUTED: dict = {"verdict": "refuted", "evidence": "foo.rs:12 accepts any key"}
 
 def _is_gap_review(cmd: list[str]) -> bool:
     """True when *cmd* is the claude run confirming a gap, not one judging a diff."""
-    return json.loads(_flag_value(cmd, "--json-schema")) == _CONFIRM_SCHEMA
+    return json.loads(flag_value(cmd, "--json-schema")) == _CONFIRM_SCHEMA
 
 
 # --- _is_code_path ---
@@ -135,6 +131,13 @@ def test_truncate_diff_long_truncated() -> None:
     out = truncate_diff(diff)
     assert len(out) < len(diff)
     assert "diff truncated" in out
+
+
+def test_truncate_diff_counts_the_original_size_in_characters() -> None:
+    # Each "é" is two bytes in UTF-8, so a size in bytes would read 1000000.
+    diff = "é" * 500_000
+    out = truncate_diff(diff)
+    assert out.endswith("[diff truncated: original size 500000 characters]")
 
 
 # --- get_code_diff / get_docs_diff ---
@@ -227,9 +230,11 @@ def test_diff_getters_skip_the_diff_when_nothing_matches(
 
 
 def test_get_code_diff_raises_when_git_fails(tmp_path: Path) -> None:
-    with patch("functions.docs.subprocess.run", _mock_git_diff("", returncode=128)):
-        with pytest.raises(ReleaseError, match="git diff --name-only v9.9.9..HEAD failed"):
-            get_code_diff("v9.9.9", "HEAD", tmp_path)
+    with (
+        patch("functions.docs.subprocess.run", _mock_git_diff("", returncode=128)),
+        pytest.raises(ReleaseError, match="git diff --name-only v9.9.9..HEAD failed"),
+    ):
+        get_code_diff("v9.9.9", "HEAD", tmp_path)
 
 
 # --- the schemas the CLI enforces ---
@@ -462,8 +467,7 @@ def test_parse_update_response_unknown_status() -> None:
 def _diff_of(*paths: str, body: str = "-old\n+new\n") -> str:
     """A unified diff changing each of *paths*, *body* being the hunk lines."""
     return "".join(
-        f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
-        f"@@ -1 +1 @@\n{body}"
+        f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n{body}"
         for path in paths
     )
 
@@ -548,18 +552,12 @@ def test_split_diff_refuses_text_outside_a_file_section() -> None:
 # --- check_docs / update_docs (mocked claude) ---
 
 
-def _claude_answer(structured: object) -> MagicMock:
-    """A successful claude run whose envelope carries *structured*."""
+def _git_grep_without_a_match() -> MagicMock:
+    """A git grep run that matches nothing: exit status 1, empty bytes."""
     mock = MagicMock()
-    mock.returncode = 0
-    mock.stdout = json.dumps(
-        {
-            "type": "result",
-            "result": json.dumps(structured),
-            "structured_output": structured,
-        }
-    )
-    mock.stderr = ""
+    mock.returncode = 1
+    mock.stdout = b""
+    mock.stderr = b""
     return mock
 
 
@@ -578,16 +576,12 @@ class _ClaudeCalls:
 
     def __call__(self, cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
         if cmd[:2] == ["git", "grep"]:
-            mock = MagicMock()
-            mock.returncode = 1
-            mock.stdout = ""
-            mock.stderr = ""
-            return mock
+            return _git_grep_without_a_match()
         if cmd and cmd[0] == "claude":
             self.prompts.append(str(kwargs.get("input")))
             structured = next(self._answers, None)
             assert structured is not None, "claude called more often than answered"
-            return _claude_answer(structured)
+            return claude_answer(structured)
         raise AssertionError(f"unexpected command: {cmd}")
 
 
@@ -636,7 +630,7 @@ class _ClaudeByPath:
         self.review_prompts.append(prompt)
         named = [file for file in self._reviews if f"`{file}`" in prompt]
         assert len(named) <= 1, f"a review must name one doc file: {named}"
-        return _claude_answer(self._reviews[named[0]] if named else _CONFIRMED)
+        return claude_answer(self._reviews[named[0]] if named else _CONFIRMED)
 
     def __call__(self, cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
         assert cmd and cmd[0] == "claude", f"unexpected command: {cmd}"
@@ -656,7 +650,7 @@ class _ClaudeByPath:
             mock.stdout = ""
             mock.stderr = f"{file} broke"
             return mock
-        return _claude_answer(self._answers[file])
+        return claude_answer(self._answers[file])
 
 
 def _mock_subprocess_run_for_claude(
@@ -674,27 +668,25 @@ def _mock_subprocess_run_for_claude(
 
     def _run(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
         if cmd[:2] == ["git", "grep"]:
-            mock = MagicMock()
-            mock.returncode = 1
-            mock.stdout = ""
-            mock.stderr = ""
-            return mock
+            return _git_grep_without_a_match()
         if cmd and cmd[0] == "claude":
             if _is_gap_review(cmd):
-                return _claude_answer(_CONFIRMED)
+                return claude_answer(_CONFIRMED)
             if capture is not None:
                 capture["cmd"] = cmd
                 capture["input"] = kwargs.get("input")
-            return _claude_answer(structured)
+            return claude_answer(structured)
         raise AssertionError(f"unexpected command: {cmd}")
 
     return MagicMock(side_effect=_run)
 
 
 def test_check_docs_short_circuits_on_no_code_changes(tmp_path: Path) -> None:
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch("functions.docs.get_code_diff", return_value=("", [])), \
-         patch("functions.claude.subprocess.run") as mock_run:
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch("functions.docs.get_code_diff", return_value=("", [])),
+        patch("functions.claude.subprocess.run") as mock_run,
+    ):
         result = check_docs("BASE", "HEAD")
     assert result == CheckResult(changes=())
     mock_run.assert_not_called()
@@ -706,30 +698,32 @@ def test_check_docs_parses_claude_verdict(tmp_path: Path) -> None:
             {"file": "docs/x.mdx", "change": "add flag", "severity": "blocking"}
         ]
     }
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude(verdict),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude(verdict),
+        ),
+    ):
         result = check_docs("BASE", "HEAD")
     assert result.blocking == (_blocking(),)
     assert result.minor == ()
 
 
-def _check_docs_with_diff(
-    tmp_path: Path, diff: str, paths: list[str]
-) -> CheckResult:
+def _check_docs_with_diff(tmp_path: Path, diff: str, paths: list[str]) -> CheckResult:
     """Run the check on a canned diff with Claude answering that all is covered."""
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch("functions.docs.get_code_diff", return_value=(diff, paths)), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude({"required_changes": []}),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch("functions.docs.get_code_diff", return_value=(diff, paths)),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude({"required_changes": []}),
+        ),
+    ):
         return check_docs("BASE", "HEAD")
 
 
@@ -740,7 +734,7 @@ def test_check_docs_says_how_much_claude_reads(
 
     _check_docs_with_diff(tmp_path, diff, ["crates/a.rs", "crates/b.rs"])
 
-    err = " ".join(capfd.readouterr().err.split())
+    err = unwrapped(capfd.readouterr().err)
     assert (
         f"2 changed code path(s), {len(diff) // 1024} KB of diff, judged in 1 part(s)."
         in err
@@ -753,12 +747,14 @@ def test_check_docs_keeps_the_whole_diff_in_one_run_when_it_fits(
 ) -> None:
     calls = _ClaudeCalls({"required_changes": []})
     diff = _diff_of("crates/a.rs", "crates/b.rs")
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(diff, ["crates/a.rs", "crates/b.rs"]),
-         ), \
-         patch("functions.claude.subprocess.run", calls):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(diff, ["crates/a.rs", "crates/b.rs"]),
+        ),
+        patch("functions.claude.subprocess.run", calls),
+    ):
         check_docs("BASE", "HEAD")
 
     (prompt,) = calls.prompts
@@ -795,7 +791,9 @@ def test_check_docs_judges_a_large_diff_in_parts(
 ) -> None:
     calls = _ClaudeByPath(
         {
-            "crates/a.rs": {"required_changes": [_gap("docs/a.mdx", "say a", "blocking")]},
+            "crates/a.rs": {
+                "required_changes": [_gap("docs/a.mdx", "say a", "blocking")]
+            },
             "crates/b.rs": {"required_changes": [_gap("docs/b.mdx", "say b", "minor")]},
         }
     )
@@ -818,7 +816,7 @@ def test_check_docs_judges_a_large_diff_in_parts(
     assert "part 2 of 2 of the whole change set" in second
     assert _diff_of("crates/b.rs") in second
     assert "crates/a.rs" not in second
-    err = " ".join(capfd.readouterr().err.split())
+    err = unwrapped(capfd.readouterr().err)
     assert "judged in 2 part(s)." in err
     assert "Asking Claude to judge part 1 of 2 of the diff (1 path(s)," in err
     assert "Asking Claude to judge part 2 of 2 of the diff (1 path(s)," in err
@@ -849,9 +847,15 @@ def test_check_docs_starts_no_part_once_one_fails(tmp_path: Path) -> None:
     repo, diff, cap, claude = _patched_parts(tmp_path, calls, paths)
     # One run at a time: the run judging part 1 fails before any other starts.
     one_at_a_time = patch("functions.docs._CHECK_CONCURRENCY", 1)
-    with repo, diff, cap, claude, one_at_a_time:
-        with pytest.raises(ReleaseError, match="crates/a.rs broke"):
-            check_docs("BASE", "HEAD")
+    with (
+        repo,
+        diff,
+        cap,
+        claude,
+        one_at_a_time,
+        pytest.raises(ReleaseError, match="crates/a.rs broke"),
+    ):
+        check_docs("BASE", "HEAD")
 
     assert calls.judged == ["crates/a.rs"]
 
@@ -867,9 +871,14 @@ def test_check_docs_raises_the_failure_of_the_first_failing_part(
         rendezvous=threading.Barrier(2),
     )
     repo, diff, cap, claude = _patched_parts(tmp_path, calls)
-    with repo, diff, cap, claude:
-        with pytest.raises(ReleaseError, match="crates/a.rs broke"):
-            check_docs("BASE", "HEAD")
+    with (
+        repo,
+        diff,
+        cap,
+        claude,
+        pytest.raises(ReleaseError, match="crates/a.rs broke"),
+    ):
+        check_docs("BASE", "HEAD")
 
     assert sorted(calls.judged) == ["crates/a.rs", "crates/b.rs"]
 
@@ -906,7 +915,7 @@ def test_check_docs_drops_a_blocking_gap_the_code_refutes(
     assert result.minor == (
         RequiredChange("docs/a.mdx", "reword the intro", "minor", diff_part=1),
     )
-    err = " ".join(capfd.readouterr().err.split())
+    err = unwrapped(capfd.readouterr().err)
     assert "Dropped a gap the code does not confirm:" in err
     assert "docs/a.mdx: keys are restricted" in err
     assert "foo.rs:12 accepts any key" in err
@@ -941,7 +950,9 @@ def test_check_docs_confirms_a_gap_from_the_repository_not_the_diff(
 def test_check_docs_asks_no_second_opinion_on_minor_gaps(tmp_path: Path) -> None:
     calls = _ClaudeByPath(
         {
-            "crates/a.rs": {"required_changes": [_gap("docs/a.mdx", "reword", "minor")]},
+            "crates/a.rs": {
+                "required_changes": [_gap("docs/a.mdx", "reword", "minor")]
+            },
             "crates/b.rs": _NO_GAP,
         }
     )
@@ -949,7 +960,9 @@ def test_check_docs_asks_no_second_opinion_on_minor_gaps(tmp_path: Path) -> None
     with repo, diff, cap, claude:
         result = check_docs("BASE", "HEAD")
 
-    assert result.minor == (RequiredChange("docs/a.mdx", "reword", "minor", diff_part=1),)
+    assert result.minor == (
+        RequiredChange("docs/a.mdx", "reword", "minor", diff_part=1),
+    )
     assert calls.review_prompts == []
 
 
@@ -975,26 +988,28 @@ def test_check_docs_confirms_gaps_with_the_schema_and_readonly_tools(
 
     def _run(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
         if not _is_gap_review(cmd):
-            return _claude_answer(
+            return claude_answer(
                 {"required_changes": [_gap("docs/x.mdx", "add flag", "blocking")]}
             )
         reviews.append(cmd)
-        return _claude_answer(_CONFIRMED)
+        return claude_answer(_CONFIRMED)
 
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch("functions.claude.subprocess.run", MagicMock(side_effect=_run)):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch("functions.claude.subprocess.run", MagicMock(side_effect=_run)),
+    ):
         check_docs("BASE", "HEAD")
 
     (cmd,) = reviews
     # Read-only for the same reason the judging runs are.
-    assert _flag_value(cmd, "--tools") == "Read Grep Glob"
-    assert _flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
-    assert _flag_value(cmd, "--model") == CLAUDE_MODEL
-    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
+    assert flag_value(cmd, "--tools") == "Read Grep Glob"
+    assert flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
+    assert flag_value(cmd, "--model") == CLAUDE_MODEL
+    assert flag_value(cmd, "--effort") == CLAUDE_EFFORT
 
 
 def test_update_docs_hands_each_part_its_own_gaps(tmp_path: Path) -> None:
@@ -1063,9 +1078,14 @@ def test_update_docs_refuses_a_gap_naming_a_part_the_diff_lacks(
     calls = _ClaudeCalls()
     changes = (RequiredChange("docs/b.mdx", "say b", "blocking", diff_part=3),)
     repo, diff, cap, claude = _patched_parts(tmp_path, calls)
-    with repo, diff, cap, claude:
-        with pytest.raises(ReleaseError, match="has 2 part\\(s\\), but these changes"):
-            update_docs("BASE", "HEAD", changes)
+    with (
+        repo,
+        diff,
+        cap,
+        claude,
+        pytest.raises(ReleaseError, match="has 2 part\\(s\\), but these changes"),
+    ):
+        update_docs("BASE", "HEAD", changes)
 
     assert calls.prompts == []
 
@@ -1073,25 +1093,27 @@ def test_update_docs_refuses_a_gap_naming_a_part_the_diff_lacks(
 def test_check_docs_enforces_schema_and_readonly_tools(tmp_path: Path) -> None:
     capture: dict[str, Any] = {}
     verdict: dict = {"required_changes": []}
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude(verdict, capture=capture),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude(verdict, capture=capture),
+        ),
+    ):
         check_docs("BASE", "HEAD")
     cmd = capture["cmd"]
     # The verdict shape is enforced CLI-side, so prose answers cannot crash
     # the release.
-    assert json.loads(_flag_value(cmd, "--json-schema")) == _CHECK_SCHEMA
+    assert json.loads(flag_value(cmd, "--json-schema")) == _CHECK_SCHEMA
     # tools (not just the allowlist) is restricted: under bypassPermissions
     # the allowlist approves rather than limits, and the check must stay
     # read-only.
-    assert _flag_value(cmd, "--tools") == "Read Grep Glob"
-    assert _flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
+    assert flag_value(cmd, "--tools") == "Read Grep Glob"
+    assert flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
 
 
 def test_check_docs_raises_on_claude_nonzero(tmp_path: Path) -> None:
@@ -1099,38 +1121,43 @@ def test_check_docs_raises_on_claude_nonzero(tmp_path: Path) -> None:
     mock.returncode = 2
     mock.stdout = ""
     mock.stderr = "boom"
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch("functions.claude.subprocess.run", return_value=mock):
-        with pytest.raises(ReleaseError, match="claude CLI failed"):
-            check_docs("BASE", "HEAD")
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch("functions.claude.subprocess.run", return_value=mock),
+        pytest.raises(ReleaseError, match="claude CLI failed"),
+    ):
+        check_docs("BASE", "HEAD")
 
 
 def test_check_docs_raises_on_missing_structured_output(tmp_path: Path) -> None:
-    # The regression that motivated --json-schema: a prose answer must fail
-    # with a diagnosable error, never a JSON traceback.
+    # A prose answer fails with a diagnosable error, never a JSON traceback.
     mock = MagicMock()
     mock.returncode = 0
     mock.stdout = json.dumps({"type": "result", "result": "The docs are fine."})
     mock.stderr = ""
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch("functions.claude.subprocess.run", return_value=mock):
-        with pytest.raises(ReleaseError, match="missing 'structured_output'"):
-            check_docs("BASE", "HEAD")
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch("functions.claude.subprocess.run", return_value=mock),
+        pytest.raises(ReleaseError, match="missing 'structured_output'"),
+    ):
+        check_docs("BASE", "HEAD")
 
 
 def test_update_docs_rejects_an_empty_change_list(tmp_path: Path) -> None:
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch("functions.claude.subprocess.run") as mock_run:
-        with pytest.raises(ReleaseError, match="no changes to implement"):
-            update_docs("BASE", "HEAD", ())
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch("functions.claude.subprocess.run") as mock_run,
+        pytest.raises(ReleaseError, match="no changes to implement"),
+    ):
+        update_docs("BASE", "HEAD", ())
     mock_run.assert_not_called()
 
 
@@ -1145,18 +1172,20 @@ def test_update_docs_scopes_the_prompt_to_the_requested_changes(
         "summary": "edited 1 file",
     }
     changes = (_blocking(), _blocking("docs/z.mdx", "document subcommand"))
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(
-                 _diff_of("crates/foo.rs", body="+THE-CODE-DIFF\n"),
-                 ["crates/foo.rs"],
-             ),
-         ), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude(report, capture=capture),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(
+                _diff_of("crates/foo.rs", body="+THE-CODE-DIFF\n"),
+                ["crates/foo.rs"],
+            ),
+        ),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude(report, capture=capture),
+        ),
+    ):
         result = update_docs("BASE", "HEAD", changes)
 
     assert result.summary == "edited 1 file"
@@ -1167,29 +1196,31 @@ def test_update_docs_scopes_the_prompt_to_the_requested_changes(
     assert "- `docs/x.mdx`: add flag" in prompt
     assert "- `docs/z.mdx`: document subcommand" in prompt
     assert "THE-CODE-DIFF" in prompt
-    assert json.loads(_flag_value(capture["cmd"], "--json-schema")) == _UPDATE_SCHEMA
+    assert json.loads(flag_value(capture["cmd"], "--json-schema")) == _UPDATE_SCHEMA
 
 
 def test_update_docs_invokes_claude_with_edit_permissions(tmp_path: Path) -> None:
     capture: dict[str, Any] = {}
     report: dict = {"results": [], "summary": "edited 3 files"}
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude(report, capture=capture),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude(report, capture=capture),
+        ),
+    ):
         result = update_docs("BASE", "HEAD", (_blocking(),))
 
     assert result.summary == "edited 3 files"
     cmd = capture["cmd"]
     assert cmd[0] == "claude"
-    assert _flag_value(cmd, "--permission-mode") == "acceptEdits"
-    assert _flag_value(cmd, "--tools") == "Read Edit Write Grep Glob"
-    allowed = _flag_value(cmd, "--allowed-tools")
+    assert flag_value(cmd, "--permission-mode") == "acceptEdits"
+    assert flag_value(cmd, "--tools") == "Read Edit Write Grep Glob"
+    allowed = flag_value(cmd, "--allowed-tools")
     assert "Edit" in allowed
     assert "Write" in allowed
 
@@ -1197,20 +1228,20 @@ def test_update_docs_invokes_claude_with_edit_permissions(tmp_path: Path) -> Non
 # --- pinned model / effort (reproducibility) ---
 
 
-def _capture_claude_cmd(
-    fn, tmp_path: Path, structured: object
-) -> list[str]:
+def _capture_claude_cmd(fn, tmp_path: Path, structured: object) -> list[str]:
     """Invoke ``fn()`` with claude mocked and return its argv."""
     capture: dict[str, Any] = {}
-    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch(
-             "functions.claude.subprocess.run",
-             _mock_subprocess_run_for_claude(structured, capture=capture),
-         ):
+    with (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch(
+            "functions.claude.subprocess.run",
+            _mock_subprocess_run_for_claude(structured, capture=capture),
+        ),
+    ):
         fn()
     return capture["cmd"]
 
@@ -1221,8 +1252,8 @@ def test_check_docs_pins_model_and_effort(tmp_path: Path) -> None:
         tmp_path,
         {"required_changes": []},
     )
-    assert _flag_value(cmd, "--model") == CLAUDE_MODEL
-    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
+    assert flag_value(cmd, "--model") == CLAUDE_MODEL
+    assert flag_value(cmd, "--effort") == CLAUDE_EFFORT
 
 
 def test_update_docs_pins_model_and_effort(tmp_path: Path) -> None:
@@ -1231,8 +1262,8 @@ def test_update_docs_pins_model_and_effort(tmp_path: Path) -> None:
         tmp_path,
         {"results": [], "summary": "edited 1 file"},
     )
-    assert _flag_value(cmd, "--model") == CLAUDE_MODEL
-    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
+    assert flag_value(cmd, "--model") == CLAUDE_MODEL
+    assert flag_value(cmd, "--effort") == CLAUDE_EFFORT
 
 
 # --- em-dashes added under docs/ (real git, mocked claude) ---
@@ -1292,14 +1323,7 @@ def _claude_edits(
         edits.pop(0)(repo)
         # Answers both the update report and the rewording report: the
         # rewording caller reads nothing from it.
-        structured = {"results": [], "summary": "done"}
-        mock = MagicMock()
-        mock.returncode = 0
-        mock.stdout = json.dumps(
-            {"type": "result", "result": "", "structured_output": structured}
-        )
-        mock.stderr = ""
-        return mock
+        return claude_answer({"results": [], "summary": "done"})
 
     return MagicMock(side_effect=_run)
 
@@ -1323,12 +1347,14 @@ def _replace(relative: str, old: str, new: str) -> Callable[[Path], None]:
 
 
 def _update(repo: Path, edits: list[Callable[[Path], None]], prompts: list[str]):
-    with patch("functions.docs.get_repo_root", return_value=repo), \
-         patch(
-             "functions.docs.get_code_diff",
-             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
-         ), \
-         patch("subprocess.run", _claude_edits(repo, edits, prompts)):
+    with (
+        patch("functions.docs.get_repo_root", return_value=repo),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+        ),
+        patch("subprocess.run", _claude_edits(repo, edits, prompts)),
+    ):
         return update_docs("BASE", "HEAD", (_blocking(),))
 
 
@@ -1340,15 +1366,27 @@ def test_em_dash_lines_cover_tracked_and_untracked_docs_only(
     ignored = repo / "docs" / "node_modules" / "dep.js"
     ignored.parent.mkdir()
     ignored.write_text(f"// ignored {EM_DASH} line\n")
-    (repo / "docs" / "image.bin").write_bytes(
-        b"\x00binary " + EM_DASH.encode() + b"\n"
-    )
+    (repo / "docs" / "image.bin").write_bytes(b"\x00binary " + EM_DASH.encode() + b"\n")
     (repo / "README.md").write_text(f"outside {EM_DASH} docs\n")
 
     assert set(_em_dash_lines(repo)) == {
         EmDashLine(file="docs/new.mdx", line=2, text=f"new {EM_DASH} line"),
         EmDashLine(file=_PAGE, line=3, text=f"An old line {EM_DASH} kept as is."),
     }
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\f", "\x85", "\r"])
+def test_em_dash_lines_keep_a_line_that_holds_a_unicode_line_break(
+    tmp_path: Path, separator: str
+) -> None:
+    # git grep ends a record at "\n" alone; Python's other line breaks are
+    # text of the line.
+    repo = _docs_repo(tmp_path)
+    (repo / _PAGE).write_text(f"# Page\n\nA {EM_DASH} b{separator}c\n")
+
+    assert _em_dash_lines(repo) == (
+        EmDashLine(file=_PAGE, line=3, text=f"A {EM_DASH} b{separator}c"),
+    )
 
 
 def test_em_dash_lines_is_empty_without_a_match(tmp_path: Path) -> None:

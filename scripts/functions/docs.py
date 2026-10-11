@@ -45,14 +45,14 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import TypeVar
 
 from .claude import run_claude
 from .cli import ReleaseError, console, need_cmd, run_with_error_handling
-from .repo import get_repo_root
-
+from .repo import get_repo_root, run_git
 
 # The directory the docs check owns end to end: the updater edits it, and the
 # release commits it onto a branch of its own when it finds it stale.
@@ -114,14 +114,27 @@ _DIFF_HEADER = re.compile(r'^diff --git "?a/.*? "?b/(.*?)"?$', re.MULTILINE)
 EM_DASH = "\u2014"
 _NO_EM_DASH_PATTERN = f"^[^{EM_DASH}]*$"
 
-SEVERITY_BLOCKING = "blocking"
-SEVERITY_MINOR = "minor"
 
-STATUS_IMPLEMENTED = "implemented"
-STATUS_ALREADY_COVERED = "already_covered"
+class Severity(StrEnum):
+    """How much a docs gap weighs: only a blocking gap can stop a release."""
 
-VERDICT_CONFIRMED = "confirmed"
-VERDICT_REFUTED = "refuted"
+    BLOCKING = "blocking"
+    MINOR = "minor"
+
+
+class UpdateStatus(StrEnum):
+    """What the updater did about one gap."""
+
+    IMPLEMENTED = "implemented"
+    ALREADY_COVERED = "already_covered"
+
+
+class Verdict(StrEnum):
+    """The second opinion on one blocking gap."""
+
+    CONFIRMED = "confirmed"
+    REFUTED = "refuted"
+
 
 # Schema for the check verdict, enforced CLI-side via --json-schema. There is
 # deliberately no up-to-date boolean: pass/fail is derived from the list, so
@@ -137,7 +150,7 @@ _CHECK_SCHEMA: dict = {
                 "properties": {
                     "file": {"type": "string"},
                     "change": {"type": "string", "pattern": _NO_EM_DASH_PATTERN},
-                    "severity": {"enum": [SEVERITY_BLOCKING, SEVERITY_MINOR]},
+                    "severity": {"enum": list(Severity)},
                 },
                 "required": ["file", "change", "severity"],
                 "additionalProperties": False,
@@ -153,7 +166,7 @@ _CHECK_SCHEMA: dict = {
 _CONFIRM_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "verdict": {"enum": [VERDICT_CONFIRMED, VERDICT_REFUTED]},
+        "verdict": {"enum": list(Verdict)},
         "evidence": {"type": "string"},
     },
     "required": ["verdict", "evidence"],
@@ -172,9 +185,7 @@ _UPDATE_SCHEMA: dict = {
                 "properties": {
                     "file": {"type": "string"},
                     "change": {"type": "string"},
-                    "status": {
-                        "enum": [STATUS_IMPLEMENTED, STATUS_ALREADY_COVERED]
-                    },
+                    "status": {"enum": list(UpdateStatus)},
                 },
                 "required": ["file", "change", "status"],
                 "additionalProperties": False,
@@ -200,7 +211,7 @@ _REWORD_SCHEMA: dict = {
 class RequiredChange:
     file: str
     change: str
-    severity: str
+    severity: Severity
     # 1-based number of the code diff part (`split_diff`) showing the change
     # this gap covers; the updater hands Claude that part when closing it.
     diff_part: int = 1
@@ -212,11 +223,11 @@ class CheckResult:
 
     @property
     def blocking(self) -> tuple[RequiredChange, ...]:
-        return tuple(c for c in self.changes if c.severity == SEVERITY_BLOCKING)
+        return tuple(c for c in self.changes if c.severity == Severity.BLOCKING)
 
     @property
     def minor(self) -> tuple[RequiredChange, ...]:
-        return tuple(c for c in self.changes if c.severity == SEVERITY_MINOR)
+        return tuple(c for c in self.changes if c.severity == Severity.MINOR)
 
 
 @dataclass(frozen=True)
@@ -231,7 +242,7 @@ class GapReview:
 class UpdateOutcome:
     file: str
     change: str
-    status: str
+    status: UpdateStatus
 
 
 @dataclass(frozen=True)
@@ -247,7 +258,7 @@ class UpdateResult:
         otherwise a malfunctioning run would read as a clean verdict.
         """
         return bool(self.results) and all(
-            r.status == STATUS_ALREADY_COVERED for r in self.results
+            r.status == UpdateStatus.ALREADY_COVERED for r in self.results
         )
 
 
@@ -269,17 +280,8 @@ class EmDashLine:
 
 
 def _run_git(args: list[str], cwd: Path) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"git {' '.join(args)} failed: {result.stderr.strip()}"
-        )
-    return result.stdout
+    """Run `git <args>` in *cwd*; a failure names the whole command."""
+    return run_git(args, f"git {' '.join(args)} failed", cwd=cwd)
 
 
 def _is_lock_file(path: str) -> bool:
@@ -346,7 +348,7 @@ def truncate_diff(diff: str) -> str:
         return diff
     return (
         diff[:_MAX_DIFF_CHARS]
-        + f"\n\n[diff truncated: original size {len(diff)} bytes]"
+        + f"\n\n[diff truncated: original size {len(diff)} characters]"
     )
 
 
@@ -424,8 +426,7 @@ def split_diff(diff: str, cap: int) -> tuple[DiffPart, ...]:
             size += len(section)
             continue
         parts.extend(
-            DiffPart(text=piece, paths=(path,))
-            for piece in _cut_section(section, cap)
+            DiffPart(text=piece, paths=(path,)) for piece in _cut_section(section, cap)
         )
     if pending:
         parts.append(_part_of(pending))
@@ -593,15 +594,16 @@ def _parse_check_response(payload: dict, diff_part: int = 1) -> CheckResult:
             )
         file = item.get("file")
         change = item.get("change")
-        severity = item.get("severity")
         if not isinstance(file, str) or not isinstance(change, str):
             raise ReleaseError(
                 f"claude verdict change entry missing file/change: {item!r}"
             )
-        if severity not in (SEVERITY_BLOCKING, SEVERITY_MINOR):
+        try:
+            severity = Severity(item.get("severity"))
+        except ValueError as err:
             raise ReleaseError(
                 f"claude verdict change entry has unknown severity: {item!r}"
-            )
+            ) from err
         if EM_DASH in change:
             raise ReleaseError(
                 f"claude verdict change entry holds an em-dash: {item!r}"
@@ -616,15 +618,16 @@ def _parse_check_response(payload: dict, diff_part: int = 1) -> CheckResult:
 
 def _parse_confirm_response(payload: dict) -> GapReview:
     """Validate the second opinion on a gap into a GapReview."""
-    verdict = payload.get("verdict")
-    if verdict not in (VERDICT_CONFIRMED, VERDICT_REFUTED):
-        raise ReleaseError(f"claude gap review has unknown verdict: {payload!r}")
+    try:
+        verdict = Verdict(payload.get("verdict"))
+    except ValueError as err:
+        raise ReleaseError(
+            f"claude gap review has unknown verdict: {payload!r}"
+        ) from err
     evidence = payload.get("evidence")
     if not isinstance(evidence, str):
-        raise ReleaseError(
-            f"claude gap review missing string 'evidence': {payload!r}"
-        )
-    return GapReview(confirmed=verdict == VERDICT_CONFIRMED, evidence=evidence)
+        raise ReleaseError(f"claude gap review missing string 'evidence': {payload!r}")
+    return GapReview(confirmed=verdict is Verdict.CONFIRMED, evidence=evidence)
 
 
 def _parse_update_response(payload: dict) -> UpdateResult:
@@ -647,15 +650,16 @@ def _parse_update_response(payload: dict) -> UpdateResult:
             )
         file = item.get("file")
         change = item.get("change")
-        status = item.get("status")
         if not isinstance(file, str) or not isinstance(change, str):
             raise ReleaseError(
                 f"claude update report entry missing file/change: {item!r}"
             )
-        if status not in (STATUS_IMPLEMENTED, STATUS_ALREADY_COVERED):
+        try:
+            status = UpdateStatus(item.get("status"))
+        except ValueError as err:
             raise ReleaseError(
                 f"claude update report entry has unknown status: {item!r}"
-            )
+            ) from err
         results.append(UpdateOutcome(file=file, change=change, status=status))
     return UpdateResult(results=tuple(results), summary=summary)
 
@@ -682,19 +686,25 @@ def _em_dash_lines(repo_root: Path) -> tuple[EmDashLine, ...]:
         ],
         cwd=repo_root,
         capture_output=True,
-        encoding="utf-8",
-        errors="replace",
+        check=False,
     )
+    # Decoded here and not in text mode: its newline translation turns a lone
+    # "\r" inside a docs line into a "\n" that git grep did not write.
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
     # git grep exits 1 when nothing matches.
-    if result.returncode == 1 and not result.stderr.strip():
+    if result.returncode == 1 and not stderr.strip():
         return ()
     if result.returncode != 0:
         raise ReleaseError(
-            f"git grep for em-dashes under '{DOCS_DIR}/' failed: "
-            f"{result.stderr.strip()}"
+            f"git grep for em-dashes under '{DOCS_DIR}/' failed: {stderr.strip()}"
         )
     lines: list[EmDashLine] = []
-    for record in result.stdout.splitlines():
+    # git grep ends each record with "\n" alone. str.splitlines would also
+    # split a docs line at a form feed or a Unicode line break inside it.
+    for record in stdout.split("\n"):
+        if not record:
+            continue
         file, line, text = record.split("\0", 2)
         lines.append(EmDashLine(file=file, line=int(line), text=text.strip()))
     return tuple(lines)
@@ -720,14 +730,10 @@ def _added_em_dash_lines(
 
 
 def _render_em_dash_lines(lines: tuple[EmDashLine, ...]) -> str:
-    return "\n".join(
-        f"- `{line.file}` line {line.line}: {line.text}" for line in lines
-    )
+    return "\n".join(f"- `{line.file}` line {line.line}: {line.text}" for line in lines)
 
 
-def _reword_added_em_dashes(
-    before: tuple[EmDashLine, ...], repo_root: Path
-) -> None:
+def _reword_added_em_dashes(before: tuple[EmDashLine, ...], repo_root: Path) -> None:
     """Remove the em-dashes an edit added under ``docs/``, or stop.
 
     The update prompt already forbids them; this is what guarantees none
@@ -814,20 +820,14 @@ def _run_at_once(jobs: Sequence[Callable[[], _Result]]) -> list[_Result]:
 
     with ThreadPoolExecutor(max_workers=_CHECK_CONCURRENCY) as pool:
         futures = [pool.submit(run, job) for job in jobs]
-    errors = [
-        error for future in futures if (error := future.exception()) is not None
-    ]
+    errors = [error for future in futures if (error := future.exception()) is not None]
     if errors:
         raise errors[0]
     # No job failed, so none was skipped.
-    return [
-        result for future in futures if (result := future.result()) is not None
-    ]
+    return [result for future in futures if (result := future.result()) is not None]
 
 
-def _judge_parts(
-    parts: tuple[DiffPart, ...], repo_root: Path
-) -> list[CheckResult]:
+def _judge_parts(parts: tuple[DiffPart, ...], repo_root: Path) -> list[CheckResult]:
     """Judge every part, several at once (`_run_at_once`); verdicts in part order."""
     return _run_at_once(
         [
@@ -875,7 +875,7 @@ def _confirm_blocking(
     opinion on them would only spend Claude's time.
     """
     blocking = tuple(
-        dict.fromkeys(c for c in changes if c.severity == SEVERITY_BLOCKING)
+        dict.fromkeys(c for c in changes if c.severity == Severity.BLOCKING)
     )
     if not blocking:
         return changes
@@ -981,8 +981,7 @@ def print_minor_changes(minor: tuple[RequiredChange, ...]) -> None:
     if not minor:
         return
     console.print(
-        f"[dim]{len(minor)} minor doc suggestion(s) noted "
-        f"(never block anything):[/dim]"
+        f"[dim]{len(minor)} minor doc suggestion(s) noted (never block anything):[/dim]"
     )
     for change in minor:
         console.print(f"  [dim]{change.file}: {change.change}[/dim]")

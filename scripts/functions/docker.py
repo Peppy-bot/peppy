@@ -10,7 +10,6 @@ from pathlib import Path
 
 from .cli import ReleaseError, console, need_cmd, prompt, run_with_error_handling
 
-
 DOCKER_HUB_ACCOUNT = "peppybot"
 DOCKER_PLATFORMS: list[str] = ["linux/amd64", "linux/arm64"]
 BUILDX_BUILDER_NAME = "peppy-multiplatform"
@@ -62,7 +61,9 @@ def _get_docker_hub_username() -> str | None:
     if auth_entry:
         try:
             decoded = base64.b64decode(auth_entry).decode("utf-8")
-        except Exception:
+        except (TypeError, ValueError):
+            # TypeError: an entry that is not a string. ValueError: bad
+            # base64 (binascii.Error) or bytes that are not UTF-8.
             return None
         username, _, _ = decoded.partition(":")
         return username or None
@@ -84,6 +85,7 @@ def _get_username_from_cred_store(creds_store: str) -> str | None:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
@@ -93,7 +95,7 @@ def _get_username_from_cred_store(creds_store: str) -> str | None:
 
     try:
         cred = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return None
 
     return cred.get("Username") or None
@@ -108,20 +110,23 @@ def _inspect_builder_platforms(builder_name: str) -> set[str]:
         ["docker", "buildx", "inspect", builder_name],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         return set()
 
     platforms: set[str] = set()
     for line in result.stdout.splitlines():
-        if "Platforms:" in line:
-            # Line format: "Platforms: linux/amd64, linux/arm64, ..."
-            _, _, value = line.partition("Platforms:")
-            for platform in value.split(","):
-                # Strip qualifiers like linux/arm64/v8 -> linux/arm64
-                parts = platform.strip().split("/")
-                if len(parts) >= 2:
-                    platforms.add(f"{parts[0]}/{parts[1]}")
+        # Line format: "Platforms: linux/amd64, linux/arm64, ..."
+        _, found, value = line.partition("Platforms:")
+        if not found:
+            continue
+        for platform in value.split(","):
+            # Strip qualifiers like linux/arm64/v8 -> linux/arm64
+            parts = platform.strip().split("/")
+            if len(parts) < 2:
+                continue
+            platforms.add(f"{parts[0]}/{parts[1]}")
     return platforms
 
 
@@ -139,16 +144,19 @@ def _ensure_buildx_builder() -> None:
         return
 
     if not platforms:
-        console.print(
-            f"Creating buildx builder [bold]{BUILDX_BUILDER_NAME}[/bold]..."
-        )
+        console.print(f"Creating buildx builder [bold]{BUILDX_BUILDER_NAME}[/bold]...")
         result = subprocess.run(
             [
-                "docker", "buildx", "create",
-                "--name", BUILDX_BUILDER_NAME,
-                "--driver", "docker-container",
+                "docker",
+                "buildx",
+                "create",
+                "--name",
+                BUILDX_BUILDER_NAME,
+                "--driver",
+                "docker-container",
                 "--bootstrap",
             ],
+            check=False,
         )
         if result.returncode != 0:
             raise ReleaseError(
@@ -180,6 +188,7 @@ def validate_docker_environment() -> None:
         ["docker", "buildx", "version"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise ReleaseError(
@@ -189,9 +198,7 @@ def validate_docker_environment() -> None:
 
     logged_in_user = _get_docker_hub_username()
     if logged_in_user is None:
-        raise ReleaseError(
-            "not logged into Docker Hub. Run 'docker login' first."
-        )
+        raise ReleaseError("not logged into Docker Hub. Run 'docker login' first.")
 
     if logged_in_user != DOCKER_HUB_ACCOUNT:
         raise ReleaseError(
@@ -220,9 +227,13 @@ def build_and_push_base_image(
     context_dir = base_images_dir / image.dockerfile_dir
 
     cmd: list[str] = [
-        "docker", "buildx", "build",
-        "--builder", BUILDX_BUILDER_NAME,
-        "--platform", ",".join(DOCKER_PLATFORMS),
+        "docker",
+        "buildx",
+        "build",
+        "--builder",
+        BUILDX_BUILDER_NAME,
+        "--platform",
+        ",".join(DOCKER_PLATFORMS),
         "--push",
     ]
     for tag in tags:
@@ -230,15 +241,13 @@ def build_and_push_base_image(
     cmd.append(str(context_dir))
 
     console.print(
-        f"Building and pushing [bold]{image.repo}[/bold] "
-        f"(tags: {', '.join(tags)})..."
+        f"Building and pushing [bold]{image.repo}[/bold] (tags: {', '.join(tags)})..."
     )
 
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
         raise ReleaseError(
-            f"docker buildx build failed for {image.repo} "
-            f"(exit {result.returncode})"
+            f"docker buildx build failed for {image.repo} (exit {result.returncode})"
         )
 
 

@@ -15,6 +15,8 @@ from functions.release_line import (
     verify_release_branch_state,
 )
 
+from .helpers import ancestry_resolver, unwrapped
+
 DEV_COMMIT = "1111111111111111111111111111111111111111"
 MAIN_COMMIT = "2222222222222222222222222222222222222222"
 REMOTE_DEV_COMMIT = "3333333333333333333333333333333333333333"
@@ -27,11 +29,6 @@ RELEASE_COMMIT = "4444444444444444444444444444444444444444"
 def _commit_resolver(commits: dict[str, str]):
     """Return a get_commit stub resolving the given revisions."""
     return lambda rev: commits[rev]
-
-
-def _ancestry_resolver(ancestry: dict[tuple[str, str], bool]):
-    """Return an is_ancestor stub answering the given (ancestor, descendant) pairs."""
-    return lambda ancestor, descendant: ancestry[(ancestor, descendant)]
 
 
 @patch("functions.release_line.get_current_branch", return_value="main")
@@ -71,67 +68,49 @@ def test_verify_release_branch_state_returns_the_dev_commit(
     mock_is_ancestor.assert_called_once_with(MAIN_COMMIT, DEV_COMMIT)
 
 
+@pytest.mark.parametrize(
+    ("ancestry", "message"),
+    [
+        ({(DEV_COMMIT, REMOTE_DEV_COMMIT): True}, "'dev' is behind origin/dev"),
+        (
+            {
+                (DEV_COMMIT, REMOTE_DEV_COMMIT): False,
+                (REMOTE_DEV_COMMIT, DEV_COMMIT): True,
+            },
+            "commits that are not on origin/dev",
+        ),
+        (
+            {
+                (DEV_COMMIT, REMOTE_DEV_COMMIT): False,
+                (REMOTE_DEV_COMMIT, DEV_COMMIT): False,
+            },
+            "'dev' and origin/dev have diverged",
+        ),
+    ],
+    ids=["behind", "unpushed-commits", "diverged"],
+)
 @patch("functions.release_line.is_ancestor")
 @patch("functions.release_line.get_commit")
 @patch("functions.release_line.fetch_remote_branches")
 @patch("functions.release_line.get_current_branch", return_value="dev")
-def test_verify_release_branch_state_rejects_dev_behind_remote(
+def test_verify_release_branch_state_refuses_dev_off_origin_dev(
     mock_branch: MagicMock,
     mock_fetch: MagicMock,
     mock_get_commit: MagicMock,
     mock_is_ancestor: MagicMock,
+    ancestry: dict[tuple[str, str], bool],
+    message: str,
 ) -> None:
-    remote_dev = "3333333333333333333333333333333333333333"
     mock_get_commit.side_effect = _commit_resolver(
-        {"HEAD": DEV_COMMIT, "origin/dev": remote_dev, "origin/main": MAIN_COMMIT}
+        {
+            "HEAD": DEV_COMMIT,
+            "origin/dev": REMOTE_DEV_COMMIT,
+            "origin/main": MAIN_COMMIT,
+        }
     )
-    mock_is_ancestor.side_effect = _ancestry_resolver({(DEV_COMMIT, remote_dev): True})
+    mock_is_ancestor.side_effect = ancestry_resolver(ancestry)
 
-    with pytest.raises(ReleaseError, match="'dev' is behind origin/dev"):
-        verify_release_branch_state()
-
-
-@patch("functions.release_line.is_ancestor")
-@patch("functions.release_line.get_commit")
-@patch("functions.release_line.fetch_remote_branches")
-@patch("functions.release_line.get_current_branch", return_value="dev")
-def test_verify_release_branch_state_rejects_unpushed_dev_commits(
-    mock_branch: MagicMock,
-    mock_fetch: MagicMock,
-    mock_get_commit: MagicMock,
-    mock_is_ancestor: MagicMock,
-) -> None:
-    remote_dev = "3333333333333333333333333333333333333333"
-    mock_get_commit.side_effect = _commit_resolver(
-        {"HEAD": DEV_COMMIT, "origin/dev": remote_dev, "origin/main": MAIN_COMMIT}
-    )
-    mock_is_ancestor.side_effect = _ancestry_resolver(
-        {(DEV_COMMIT, remote_dev): False, (remote_dev, DEV_COMMIT): True}
-    )
-
-    with pytest.raises(ReleaseError, match="commits that are not on origin/dev"):
-        verify_release_branch_state()
-
-
-@patch("functions.release_line.is_ancestor")
-@patch("functions.release_line.get_commit")
-@patch("functions.release_line.fetch_remote_branches")
-@patch("functions.release_line.get_current_branch", return_value="dev")
-def test_verify_release_branch_state_rejects_diverged_dev(
-    mock_branch: MagicMock,
-    mock_fetch: MagicMock,
-    mock_get_commit: MagicMock,
-    mock_is_ancestor: MagicMock,
-) -> None:
-    remote_dev = "3333333333333333333333333333333333333333"
-    mock_get_commit.side_effect = _commit_resolver(
-        {"HEAD": DEV_COMMIT, "origin/dev": remote_dev, "origin/main": MAIN_COMMIT}
-    )
-    mock_is_ancestor.side_effect = _ancestry_resolver(
-        {(DEV_COMMIT, remote_dev): False, (remote_dev, DEV_COMMIT): False}
-    )
-
-    with pytest.raises(ReleaseError, match="'dev' and origin/dev have diverged"):
+    with pytest.raises(ReleaseError, match=message):
         verify_release_branch_state()
 
 
@@ -202,7 +181,7 @@ def test_update_release_branch_fast_forwards_dev_behind_origin_dev(
     mock_get_commit.side_effect = _commit_resolver(
         {"HEAD": DEV_COMMIT, "origin/dev": REMOTE_DEV_COMMIT}
     )
-    mock_is_ancestor.side_effect = _ancestry_resolver(
+    mock_is_ancestor.side_effect = ancestry_resolver(
         {(DEV_COMMIT, REMOTE_DEV_COMMIT): True}
     )
 
@@ -237,7 +216,7 @@ def test_update_release_branch_refuses_dev_commits_origin_dev_lacks(
     mock_get_commit.side_effect = _commit_resolver(
         {"HEAD": DEV_COMMIT, "origin/dev": REMOTE_DEV_COMMIT}
     )
-    mock_is_ancestor.side_effect = _ancestry_resolver(
+    mock_is_ancestor.side_effect = ancestry_resolver(
         {
             (DEV_COMMIT, REMOTE_DEV_COMMIT): False,
             (REMOTE_DEV_COMMIT, DEV_COMMIT): remote_holds_dev,
@@ -255,7 +234,9 @@ def test_update_release_branch_refuses_dev_commits_origin_dev_lacks(
 def test_verify_publish_branch_state_accepts_dev_that_took_merges_since(
     mock_update: MagicMock, mock_is_ancestor: MagicMock
 ) -> None:
-    mock_is_ancestor.side_effect = _ancestry_resolver({(RELEASE_COMMIT, DEV_COMMIT): True})
+    mock_is_ancestor.side_effect = ancestry_resolver(
+        {(RELEASE_COMMIT, DEV_COMMIT): True}
+    )
 
     assert verify_publish_branch_state(RELEASE_COMMIT) == DEV_COMMIT
 
@@ -265,16 +246,17 @@ def test_verify_publish_branch_state_accepts_dev_that_took_merges_since(
 def test_verify_publish_branch_state_refuses_dev_without_the_release_commit(
     mock_update: MagicMock, mock_is_ancestor: MagicMock
 ) -> None:
-    mock_is_ancestor.side_effect = _ancestry_resolver(
+    mock_is_ancestor.side_effect = ancestry_resolver(
         {(RELEASE_COMMIT, DEV_COMMIT): False}
     )
 
     with pytest.raises(ReleaseError) as excinfo:
         verify_publish_branch_state(RELEASE_COMMIT)
 
-    message = " ".join(str(excinfo.value).split())
-    assert f"'dev' is at {DEV_COMMIT[:12]}, which does not hold {RELEASE_COMMIT[:12]}" in (
-        message
+    message = unwrapped(str(excinfo.value))
+    assert (
+        f"'dev' is at {DEV_COMMIT[:12]}, which does not hold {RELEASE_COMMIT[:12]}"
+        in (message)
     )
     assert "This publish stops before it writes anything" in message
 
@@ -306,4 +288,3 @@ def test_latest_release_tag_is_none_without_a_published_release(
     assert latest_release_tag(MagicMock(), RepoSlug("o", "r")) is None
 
     mock_fetch.assert_not_called()
-

@@ -109,11 +109,10 @@ def run_hub_set_check(
         # refresh, which also fills the caches mcp-hub's index check reads the
         # contracts from.
         peppy.run(("repo", "refresh", "--strict"))
-        failed = [
-            resolved.hub.name
-            for resolved in hub_set.hubs
-            if not _index_check_passes(peppy, resolved, work_dir / "hubs")
-        ]
+        failed: list[str] = []
+        for resolved in hub_set.hubs:
+            if not _index_check_passes(peppy, resolved, work_dir / "hubs"):
+                failed.append(resolved.hub.name)
         if failed:
             raise ReleaseError(
                 f"the repository index check of {', '.join(failed)} failed at "
@@ -152,7 +151,10 @@ class PeppyInstall:
         its exit status."""
         console.print(f"Running `{_command_line(arguments)}`...")
         result = subprocess.run(
-            [str(self.binary), *arguments], stdin=subprocess.DEVNULL, env=self.env
+            [str(self.binary), *arguments],
+            stdin=subprocess.DEVNULL,
+            env=self.env,
+            check=False,
         )
         return result.returncode
 

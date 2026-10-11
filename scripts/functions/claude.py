@@ -72,7 +72,7 @@ def run_claude(
     the final response through a validated structured-output tool call: a
     prose-only answer cannot reach the caller, and the parsed object arrives
     in the envelope's ``structured_output`` field. Callers still validate the
-    object's contents — the CLI is not pinned, so its enforcement is a
+    object's contents: the CLI is not pinned, so its enforcement is a
     convenience, not a contract.
 
     ``tools`` controls which built-in tools exist for the run: pass "" to
@@ -110,7 +110,7 @@ def run_claude(
     ticker.start()
     try:
         result = subprocess.run(
-            cmd, cwd=cwd, input=prompt, capture_output=True, text=True
+            cmd, cwd=cwd, input=prompt, capture_output=True, text=True, check=False
         )
     finally:
         stop.set()
@@ -125,7 +125,7 @@ def run_claude(
     except json.JSONDecodeError as e:
         raise ReleaseError(
             f"claude did not return valid JSON ({e}); stdout={result.stdout[:500]!r}"
-        )
+        ) from e
     if not isinstance(payload, dict):
         raise ReleaseError(f"claude response is not an object: {payload!r}")
     structured = payload.get("structured_output")

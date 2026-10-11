@@ -59,6 +59,8 @@ from .build import (
     BuildArtifact,
     _release_rustflags,
     build_and_package,
+    build_cache_root,
+    release_archive_name,
     release_dist_dir,
 )
 from .cli import (
@@ -81,6 +83,7 @@ from .github import (
     delete_draft_release,
     find_draft_releases,
     find_published_release,
+    get_release,
     github_api,
     github_repo_slug,
     parse_release_response,
@@ -92,8 +95,8 @@ from .lima import (
     GO_LINUX_AMD64_SHA256,
     GO_LINUX_ARM64_SHA256,
     GO_VERSION,
-    RELEASE_PLATFORM_SO,
-    SO_BUILD_STATE_MARKER,
+    PREBUILT_SO_FILES,
+    missing_prebuilt_so_files,
     require_prebuilt_peppylib_so,
 )
 from .release_docs_gate import verify_docs_gate
@@ -199,15 +202,6 @@ def _triple_arch(triple: str) -> str:
     return triple.split("-", 1)[0]
 
 
-def _build_cache_root() -> Path:
-    """The persistent cache the Rust build scripts share.
-
-    build-helpers' `cache_dir` roots it at `$HOME/.peppy/tmp` whatever
-    PEPPY_HOME says; `lima._prebuilt_peppylib_so_dir` resolves the same root.
-    """
-    return Path.home() / ".peppy" / "tmp"
-
-
 def _apptainer_cache_pattern(arch: str) -> str:
     """Glob for the apptainer cache of *arch* under the build cache root.
 
@@ -239,6 +233,7 @@ def _run_cargo_build(package: str, repo_root: Path, env: dict[str, str]) -> None
         ["cargo", "build", "-p", package, "--release", "--locked"],
         cwd=repo_root,
         env=env,
+        check=False,
     )
     if result.returncode != 0:
         raise ReleaseError(
@@ -289,6 +284,7 @@ def _require_unused_tag(tag: str) -> None:
         ["git", "ls-remote", "--tags", GIT_REMOTE, f"refs/tags/{tag}"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise ReleaseError(
@@ -330,7 +326,9 @@ def _draft_release_content(
     """
     previous_tag = latest_release_tag(client, slug)
     if previous_tag:
-        console.print(f"Listing changes since last release [bold]{previous_tag}[/bold]...")
+        console.print(
+            f"Listing changes since last release [bold]{previous_tag}[/bold]..."
+        )
     else:
         console.print(
             "[yellow]No previous published release found; "
@@ -428,16 +426,13 @@ def run_bindings(output_dir: Path) -> None:
     so_dir = require_prebuilt_peppylib_so()
     _write_tarball(
         output_dir / BINDINGS_ARCHIVE,
-        [
-            (so_dir / name, f"{BINDINGS_DIR_NAME}/{name}")
-            for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)
-        ],
+        [(so_dir / name, f"{BINDINGS_DIR_NAME}/{name}") for name in PREBUILT_SO_FILES],
     )
 
 
 def _single_apptainer_cache(arch: str) -> Path:
     """The one complete apptainer cache for *arch* under the build cache."""
-    root = _build_cache_root()
+    root = build_cache_root()
     caches = [
         cache
         for cache in sorted(root.glob(_apptainer_cache_pattern(arch)))
@@ -483,7 +478,7 @@ def _install_pinned_go(arch: str) -> Path:
     apptainers with the same Go whatever the runner image carries.
     """
     go_arch, sha256 = _GO_TARBALLS[arch]
-    go_root = _build_cache_root() / f"go-{GO_VERSION}-{go_arch}"
+    go_root = build_cache_root() / f"go-{GO_VERSION}-{go_arch}"
     go_bin = go_root / "bin"
     if (go_bin / "go").is_file():
         return go_bin
@@ -535,7 +530,7 @@ def run_apptainer(output_dir: Path) -> None:
 def _seed_apptainer_cache(provisioned_dir: Path, arch: str) -> Path:
     """Unpack the provisioned apptainer for *arch* where the build looks for it."""
     tree = _extract_tree(
-        provisioned_dir / apptainer_archive_name(arch), _build_cache_root()
+        provisioned_dir / apptainer_archive_name(arch), build_cache_root()
     )
     if not fnmatch.fnmatch(tree.name, _apptainer_cache_pattern(arch)):
         raise ReleaseError(
@@ -548,15 +543,9 @@ def _seed_apptainer_cache(provisioned_dir: Path, arch: str) -> Path:
 def _unpack_bindings(provisioned_dir: Path, destination: Path) -> Path:
     """Unpack the provisioned bindings and return the directory holding them."""
     so_dir = _extract_tree(provisioned_dir / BINDINGS_ARCHIVE, destination)
-    missing = [
-        name
-        for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)
-        if not (so_dir / name).is_file()
-    ]
+    missing = missing_prebuilt_so_files(so_dir)
     if missing:
-        raise ReleaseError(
-            f"the provisioned bindings lack {', '.join(missing)}"
-        )
+        raise ReleaseError(f"the provisioned bindings lack {', '.join(missing)}")
     return so_dir
 
 
@@ -597,7 +586,9 @@ def run_build(*, plan_path: Path, target: str, provisioned_dir: Path) -> None:
         artifact = build_and_package(plan.tag, target, repo_root)
 
     verify_all_releases(artifact.asset_path.parent, [target])
-    console.print(f"[green]Built and verified:[/green] {artifact.asset_path}", soft_wrap=True)
+    console.print(
+        f"[green]Built and verified:[/green] {artifact.asset_path}", soft_wrap=True
+    )
 
 
 # --- publish ---
@@ -609,7 +600,7 @@ def _stage_archives(archives_dir: Path, dist_dir: Path) -> list[BuildArtifact]:
     dist_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[BuildArtifact] = []
     for triple in RELEASE_TRIPLES:
-        name = f"peppy-{triple}.tgz"
+        name = release_archive_name(triple)
         source = archives_dir / name
         if not source.is_file():
             raise ReleaseError(f"the {triple} archive is missing: {source}")
@@ -699,7 +690,7 @@ def _upload_archives_and_publish(
                     f"left in place: https://github.com/{slug.full}/releases[/yellow]",
                     soft_wrap=True,
                 )
-        except Exception as cleanup_err:
+        except ReleaseError as cleanup_err:
             console.print(
                 f"[red]WARNING: Failed to delete draft release "
                 f"(id={draft.release_id}): {cleanup_err}[/red]\n"
@@ -898,16 +889,13 @@ def _write_release_notes(
     rather than from the plan alone.
     """
     console.print("Fetching release notes...")
-    body_html = fetch_release_body_html(client, release.release_id, slug)
-    release_details = github_api(
+    release_details = get_release(client, release.release_id, slug)
+    body_html = fetch_release_body_html(
         client,
-        "GET",
-        f"{slug.api_url}/releases/{release.release_id}",
+        release.release_id,
+        slug,
+        markdown_body=release_details.get("body") or "",
     )
-    if not isinstance(release_details, dict):
-        raise ReleaseError(
-            "unexpected GitHub API response for the release (expected JSON object)"
-        )
     notes_input = ReleaseNotesInput(
         tag=plan.tag,
         description=plan.content.description,
