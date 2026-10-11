@@ -165,9 +165,10 @@ pub(crate) async fn follow(
     let mut announced = false;
     loop {
         let now = members(&node_runner, &targets);
+        let current: HashSet<&FleetMember> = now.iter().collect();
         let mut touched = false;
         attached.retain(|member| {
-            let stays = now.contains(member);
+            let stays = current.contains(member);
             if !stays {
                 touched |= detach(&handle, &ingests, member);
             }

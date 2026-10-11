@@ -150,19 +150,20 @@ struct Codecs {
 }
 
 impl Codecs {
-    /// The codec of the side `key` names, laid out on first use.
+    /// The codec of `side`, laid out on first use.
     fn lay_out(
         &mut self,
-        key: String,
-        label: &str,
+        side: &MemberSide<'_>,
         format: &MessageFormat,
     ) -> Result<MessageCodec, ServeError> {
+        let key = side.memo_key();
         if let Some(codec) = self.laid_out.get(&key) {
             return Ok(codec.clone());
         }
+        let label = side.label();
         let codec =
-            MessageCodec::new(label, format.clone()).map_err(|source| ServeError::Codec {
-                member: label.to_owned(),
+            MessageCodec::new(&label, format.clone()).map_err(|source| ServeError::Codec {
+                member: label,
                 source,
             })?;
         self.laid_out.insert(key, codec.clone());
@@ -173,21 +174,40 @@ impl Codecs {
     /// payload at all.
     fn optional(
         &mut self,
-        key: String,
-        label: &str,
+        side: &MemberSide<'_>,
         format: Option<&MessageFormat>,
     ) -> Result<Option<MessageCodec>, ServeError> {
         match format.filter(|format| !format.0.is_empty()) {
-            Some(format) => self.lay_out(key, label, format).map(Some),
+            Some(format) => self.lay_out(side, format).map(Some),
             None => Ok(None),
         }
     }
 }
 
-/// The memo key of one message side of a member: the contract's pinned
-/// identity, the member, the side.
-fn side_key(slot: &BundleContractPin, member: &str, side: &str) -> String {
-    format!("{}:{}/{member}/{side}", slot.name, slot.tag)
+/// One message side of a contract member, as a catalog entry reaches it:
+/// both the memo key and the label of its codec derive from it, so the two
+/// always name the same side.
+struct MemberSide<'a> {
+    slot: &'a BundleContractPin,
+    target: &'a str,
+    member: &'a str,
+    side: &'static str,
+}
+
+impl MemberSide<'_> {
+    /// The memo key of the side: the contract's pinned identity, the
+    /// member, the side.
+    fn memo_key(&self) -> String {
+        format!(
+            "{}:{}/{}/{}",
+            self.slot.name, self.slot.tag, self.member, self.side
+        )
+    }
+
+    /// The label of the side's codec, which a layout error names.
+    fn label(&self) -> String {
+        format!("{}_{}_{}", self.target, self.member, self.side)
+    }
 }
 
 /// Prepares every exposure: for each entry of a contract target, the
@@ -197,6 +217,7 @@ pub(crate) fn prepare(
     exposures: Vec<ValidatedExposure>,
 ) -> Result<Vec<PreparedExposure>, ServeError> {
     let mut codecs = Codecs::default();
+    let no_fields = MessageFormat::default();
     let mut prepared = Vec::with_capacity(exposures.len());
     for exposure in exposures {
         let mut resources = Vec::with_capacity(exposure.bundle.resources.len());
@@ -211,9 +232,14 @@ pub(crate) fn prepare(
                 }
             };
             let topic = &bound.member;
-            let label = format!("{}_{}_topic", entry.target, entry.member);
-            let format = topic.message_format.clone().unwrap_or_default();
-            let codec = codecs.lay_out(side_key(slot, &entry.member, "topic"), &label, &format)?;
+            let side = MemberSide {
+                slot,
+                target: &entry.target,
+                member: &entry.member,
+                side: "topic",
+            };
+            let format = topic.message_format.as_ref().unwrap_or(&no_fields);
+            let codec = codecs.lay_out(&side, format)?;
             resources.push(PreparedResource {
                 name: entry.name.clone(),
                 binding: Binding::new(slot, &entry.member)?,
@@ -233,19 +259,22 @@ pub(crate) fn prepare(
                 }
             };
             let service = &bound.member;
-            let label = format!("{}_{}", entry.target, entry.member);
+            let member_side = |side| MemberSide {
+                slot,
+                target: &entry.target,
+                member: &entry.member,
+                side,
+            };
             tools.push(PreparedTool {
                 name: entry.name.clone(),
                 binding: Binding::new(slot, &entry.member)?,
                 client: ServiceClient::new(
                     codecs.optional(
-                        side_key(slot, &entry.member, "request"),
-                        &format!("{label}_request"),
+                        &member_side("request"),
                         service.request_message_format.as_ref(),
                     )?,
                     codecs.optional(
-                        side_key(slot, &entry.member, "response"),
-                        &format!("{label}_response"),
+                        &member_side("response"),
                         service.response_message_format.as_ref(),
                     )?,
                 ),
@@ -264,10 +293,14 @@ pub(crate) fn prepare(
                 }
             };
             let action = &bound.member;
-            let label = format!("{}_{}", entry.target, entry.member);
+            let member_side = |side| MemberSide {
+                slot,
+                target: &entry.target,
+                member: &entry.member,
+                side,
+            };
             let feedback = codecs.optional(
-                side_key(slot, &entry.member, "feedback"),
-                &format!("{label}_feedback"),
+                &member_side("feedback"),
                 action
                     .feedback_topic
                     .as_ref()
@@ -283,8 +316,7 @@ pub(crate) fn prepare(
                 binding: Binding::new(slot, &entry.member)?,
                 client: ActionClient::new(
                     codecs.optional(
-                        side_key(slot, &entry.member, "goal"),
-                        &format!("{label}_goal"),
+                        &member_side("goal"),
                         action
                             .goal_service
                             .as_ref()
@@ -292,8 +324,7 @@ pub(crate) fn prepare(
                     )?,
                     feedback,
                     codecs.optional(
-                        side_key(slot, &entry.member, "result"),
-                        &format!("{label}_result"),
+                        &member_side("result"),
                         action
                             .result_service
                             .as_ref()

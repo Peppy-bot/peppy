@@ -1,7 +1,7 @@
 //! The process: load the spec, plan the deployment, lay the codecs out,
 //! then run as a node and serve.
 
-use crate::bridges::{self, PreparedExposure};
+use crate::bridges::{self, PreparedExposure, PreparedTask, PreparedTool};
 use crate::daemon_bridge::{DaemonBridges, DaemonScopes, OwnDaemon};
 use crate::fleet;
 use daemon_config::daemon_interface::DaemonInterface;
@@ -11,7 +11,7 @@ use daemon_config::mcp_deployment::{
 };
 use message_codec::consumer::ConsumerIdentity;
 use peppy_mcp_catalog::BundleSurface;
-use peppy_mcp_runtime::{Clock, ExposureServer, ExposureSet};
+use peppy_mcp_runtime::{Clock, ExposureServer, ExposureServerBuilder, ExposureSet, FleetHandle};
 use peppylib::runtime::{EndpointBinding, NodeBuilder, NodeRunner, bind_preferred};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -183,37 +183,8 @@ async fn run(
             exposure.bundle.exposure.name, exposure.bundle.exposure.tag
         );
         let mut builder = ExposureServer::builder(exposure.bundle).with_clock(clock.clone());
-        for tool in exposure.tools {
-            let tool = Arc::new(tool);
-            let name = tool.name.clone();
-            let node_runner = Arc::clone(&node_runner);
-            let identity = identity.clone();
-            builder = builder.with_tool(name, move |call: peppy_mcp_runtime::ToolCall| {
-                let tool = Arc::clone(&tool);
-                let node_runner = Arc::clone(&node_runner);
-                let identity = identity.clone();
-                async move { bridges::call_tool(&tool, &node_runner, &identity, call).await }
-            });
-        }
-        for task in exposure.tasks {
-            let task = Arc::new(task);
-            let name = task.name.clone();
-            let node_runner = Arc::clone(&node_runner);
-            let identity = identity.clone();
-            builder =
-                builder.with_task(
-                    name,
-                    move |call: peppy_mcp_runtime::ToolCall,
-                          context: peppy_mcp_runtime::ActionContext| {
-                        let task = Arc::clone(&task);
-                        let node_runner = Arc::clone(&node_runner);
-                        let identity = identity.clone();
-                        async move {
-                            bridges::run_task(&task, &node_runner, &identity, call, context).await
-                        }
-                    },
-                );
-        }
+        builder = register_tools(builder, exposure.tools, &node_runner, &identity);
+        builder = register_tasks(builder, exposure.tasks, &node_runner, &identity);
         for tool in &exposure.daemon_tools {
             builder = builder.with_tool(tool.name.clone(), daemon.tool(tool)?);
         }
@@ -228,17 +199,7 @@ async fn run(
         let server = builder.build()?;
         match server.fleet() {
             Some(handle) => {
-                let problems = handle.problems();
-                if !problems.is_empty() {
-                    return Err(ServeError::Fleet {
-                        exposure: label,
-                        problems: problems
-                            .iter()
-                            .map(|problem| format!("  - {problem}"))
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    });
-                }
+                ensure_fleet_servable(&handle, label)?;
                 followers.push((targets, exposure.resources, handle));
             }
             None => {
@@ -330,4 +291,72 @@ async fn run(
         }
     });
     Ok(())
+}
+
+/// Registers a handler per tool of a contract target on `builder`: each
+/// call reaches the tool's service through the node, as `identity`.
+fn register_tools(
+    mut builder: ExposureServerBuilder,
+    tools: Vec<PreparedTool>,
+    node_runner: &Arc<NodeRunner>,
+    identity: &ConsumerIdentity,
+) -> ExposureServerBuilder {
+    for tool in tools {
+        let tool = Arc::new(tool);
+        let name = tool.name.clone();
+        let node_runner = Arc::clone(node_runner);
+        let identity = identity.clone();
+        builder = builder.with_tool(name, move |call: peppy_mcp_runtime::ToolCall| {
+            let tool = Arc::clone(&tool);
+            let node_runner = Arc::clone(&node_runner);
+            let identity = identity.clone();
+            async move { bridges::call_tool(&tool, &node_runner, &identity, call).await }
+        });
+    }
+    builder
+}
+
+/// Registers a handler per task of a contract target on `builder`: each
+/// call drives a goal of the task's action through the node, as `identity`.
+fn register_tasks(
+    mut builder: ExposureServerBuilder,
+    tasks: Vec<PreparedTask>,
+    node_runner: &Arc<NodeRunner>,
+    identity: &ConsumerIdentity,
+) -> ExposureServerBuilder {
+    for task in tasks {
+        let task = Arc::new(task);
+        let name = task.name.clone();
+        let node_runner = Arc::clone(node_runner);
+        let identity = identity.clone();
+        builder = builder.with_task(
+            name,
+            move |call: peppy_mcp_runtime::ToolCall, context: peppy_mcp_runtime::ActionContext| {
+                let task = Arc::clone(&task);
+                let node_runner = Arc::clone(&node_runner);
+                let identity = identity.clone();
+                async move {
+                    bridges::run_task(&task, &node_runner, &identity, call, context).await
+                }
+            },
+        );
+    }
+    builder
+}
+
+/// Refuses a per-robot exposure when the stack binds members its surface
+/// cannot serve, with every problem on a line of its own.
+fn ensure_fleet_servable(handle: &FleetHandle, exposure: String) -> Result<(), ServeError> {
+    let problems = handle.problems();
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(ServeError::Fleet {
+        exposure,
+        problems: problems
+            .iter()
+            .map(|problem| format!("  - {problem}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    })
 }

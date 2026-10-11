@@ -252,14 +252,7 @@ async fn a_feedback_less_goal_settles_on_its_completed_result() {
     let surface = ScriptedSurface::new();
 
     let (outcome, _context) = tokio::join!(drive(&mesh, &task, &surface), async {
-        let goal = provider
-            .next_goal(READINESS_TIMEOUT)
-            .await
-            .expect("the goal reaches the provider");
-        let context = goal
-            .accept(Payload::new())
-            .await
-            .expect("the provider accepts the goal");
+        let context = accepted_goal(&mut provider).await;
         context
             .complete(success())
             .await
@@ -278,14 +271,7 @@ async fn a_feedback_less_goal_settles_cancelled_once_the_provider_honors_the_can
     let surface = ScriptedSurface::new();
 
     let (outcome, _context) = tokio::join!(drive(&mesh, &task, &surface), async {
-        let goal = provider
-            .next_goal(READINESS_TIMEOUT)
-            .await
-            .expect("the goal reaches the provider");
-        let context = goal
-            .accept(Payload::new())
-            .await
-            .expect("the provider accepts the goal");
+        let context = accepted_goal(&mut provider).await;
         // The client cancels while the goal runs: the bridge forwards it,
         // and the provider settles the goal cancelled once it observes it.
         surface.cancel.cancel();
@@ -308,14 +294,7 @@ async fn a_goal_with_feedback_reports_it_and_settles_on_its_result() {
     let surface = ScriptedSurface::new();
 
     let (outcome, _context) = tokio::join!(drive(&mesh, &task, &surface), async {
-        let goal = provider
-            .next_goal(READINESS_TIMEOUT)
-            .await
-            .expect("the goal reaches the provider");
-        let context = goal
-            .accept(Payload::new())
-            .await
-            .expect("the provider accepts the goal");
+        let context = accepted_goal(&mut provider).await;
         context
             .publish_feedback(percent(&feedback, 50))
             .await
