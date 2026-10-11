@@ -1,9 +1,10 @@
 //! Decision logic for rebuilding peppylib's embedded native extensions.
 //!
-//! These are pure functions with no I/O so the policy can be unit tested. A
-//! `build.rs` cannot host its own `#[test]` (cargo never compiles a build
-//! script as a test target), so the logic lives here and the build script calls
-//! it.
+//! The rebuild decisions are pure functions with no I/O, so the policy can be
+//! unit tested. Only [`BuildProfile::from_env`] and [`cross_build_requested`]
+//! read the environment, which cargo and the caller set. A `build.rs` cannot
+//! host its own `#[test]` (cargo never compiles a build script as a test
+//! target), so the logic lives here and the build script calls it.
 
 /// The cargo build profile, parsed from the `PROFILE` env var that cargo sets
 /// for build scripts.
@@ -95,10 +96,9 @@ pub fn should_cross_compile(cross_build: bool, present: bool, stale: bool, force
 /// of the shared crates deserializes them with a different model. A debug
 /// build without `PEPPY_CROSS_BUILD` never rebuilds the Linux container
 /// bindings (see [`should_cross_compile`]), so after a shared-crate change
-/// the cache can
-/// hold Linux `.so` from older sources — embedding one puts the schema
-/// mismatch inside the container image, where it only surfaces as a baffling
-/// parse error when the node starts (e.g. `unknown field \`implements\``).
+/// the cache can hold Linux `.so` from older sources. Embedding one puts the
+/// schema mismatch inside the container image, where it only surfaces as a
+/// baffling parse error when the node starts (e.g. `unknown field \`implements\``).
 /// Excluding it instead makes the container build fail up front with the
 /// scaffolder's explicit "no embedded native extension" error.
 ///
