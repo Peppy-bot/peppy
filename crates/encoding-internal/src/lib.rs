@@ -2,11 +2,13 @@
 //!
 //! This crate compiles a [`config::node::MessageFormat`] into Cap'n Proto
 //! schema artifacts and Rust type mappings, and bundles the `capnp` compiler
-//! binary needed to do so (see `build.rs` and `tools/`). It lives outside
-//! `peppy-shared` because only `peppy`'s code generator depends on it.
+//! binary needed to do so (see `build.rs`; the binaries live in
+//! `peppy-shared/peppy-config-model/tools`). It lives outside `peppy-shared`
+//! because only crates of the `peppy` workspace (the code generator and
+//! `message-codec`) depend on it.
 
-pub mod facade;
-pub mod types;
+mod facade;
+mod types;
 pub mod wire_layout;
 
 pub use types::FunctionParam;
@@ -24,18 +26,16 @@ use capnpc::codegen_types::{Leaf, RustTypeInfo};
 use proc_macro2::{Ident, Span, TokenStream};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
 use std::str::FromStr;
 use tempfile::tempdir;
 
-use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
+use config::node::{ArraySchema, MessageFormat, PrimitiveSchema, SchemaType, TypeToken};
 use facade::CapnpFacade;
 use indexmap::IndexMap;
-use wire_layout::{SchemaNodes, StructLayout};
+use wire_layout::{SchemaNodes, StructLayout, join_path};
 
-/// The output_dir should point to the `src` of a Rust crate. A new `capnp` module will be
-/// created at the root of this directory with all the `capnp` files.
+/// `output_dir` is the `src` directory of a Rust crate: the call writes a `capnp.rs` module and
+/// a `capnp/` directory with the generated files at its root.
 pub fn compile_capnp<P, O>(capnp_files: &[P], output_dir: O) -> Result<()>
 where
     P: AsRef<Path>,
@@ -44,7 +44,7 @@ where
     CapnpFacade::new()?.compile_files(capnp_files, output_dir)
 }
 
-/// This struct helps tuning a MessageFormat into a capnp proto and its associated Rust types
+/// This struct turns a MessageFormat into a capnp proto and its associated Rust types
 pub struct MessageFormatMapper {
     schema_name: String,
     message_format: MessageFormat,
@@ -98,9 +98,6 @@ impl MessageFormatMapper {
         let mut schema = String::new();
         let mut schema_id =
             MessageFormatMapper::compute_schema_id(&self.schema_name, &self.message_format.0);
-        if schema_id == 0 {
-            schema_id = 1;
-        }
         schema_id |= 1; // ensure odd
         schema_id |= 1 << 63; // high bit set per capnp id recommendations
 
@@ -147,13 +144,10 @@ impl MessageFormatMapper {
                         *entry = rendered;
                     }
                     if let SchemaType::Object(object) = array.items.as_ref() {
+                        let element_key = format!("{current_key}[]");
                         for (field_name, field_schema) in &object.fields {
                             let sanitized = sanitize_field_name(field_name);
-                            let next_key = if current_key.is_empty() {
-                                format!("[].{sanitized}")
-                            } else {
-                                format!("{current_key}[].{sanitized}")
-                            };
+                            let next_key = join_path(&element_key, &sanitized);
                             override_array_types(&next_key, field_schema, mapping);
                         }
                     }
@@ -161,11 +155,7 @@ impl MessageFormatMapper {
                 SchemaType::Object(object) => {
                     for (field_name, field_schema) in &object.fields {
                         let sanitized = sanitize_field_name(field_name);
-                        let next_key = if current_key.is_empty() {
-                            sanitized
-                        } else {
-                            format!("{current_key}.{sanitized}")
-                        };
+                        let next_key = join_path(current_key, &sanitized);
                         override_array_types(&next_key, field_schema, mapping);
                     }
                 }
@@ -185,55 +175,51 @@ impl MessageFormatMapper {
         const FNV_OFFSET: u64 = 0xcbf29ce484222325;
         const FNV_PRIME: u64 = 0x100000001b3;
 
-        fn update(mut hash: u64, bytes: &[u8], prime: u64) -> u64 {
+        fn update(mut hash: u64, bytes: &[u8]) -> u64 {
             for byte in bytes {
                 hash ^= u64::from(*byte);
-                hash = hash.wrapping_mul(prime);
+                hash = hash.wrapping_mul(FNV_PRIME);
             }
             hash
         }
 
-        fn hash_usize(hash: u64, value: usize, prime: u64) -> u64 {
-            update(hash, &(value as u64).to_le_bytes(), prime)
+        fn hash_usize(hash: u64, value: usize) -> u64 {
+            update(hash, &(value as u64).to_le_bytes())
         }
 
-        fn hash_schema(mut hash: u64, schema: &SchemaType, prime: u64) -> u64 {
+        fn hash_schema(mut hash: u64, schema: &SchemaType) -> u64 {
             match schema {
-                SchemaType::Type(token) => {
-                    hash = update(hash, b"type", prime);
+                SchemaType::Type(token)
+                | SchemaType::Primitive(PrimitiveSchema { kind: token, .. }) => {
+                    hash = update(hash, b"type");
                     let (capnp_discriminant, _) = type_token_strings(token);
-                    hash = update(hash, capnp_discriminant.as_bytes(), prime);
-                }
-                SchemaType::Primitive(schema) => {
-                    hash = update(hash, b"type", prime);
-                    let (capnp_discriminant, _) = type_token_strings(&schema.kind);
-                    hash = update(hash, capnp_discriminant.as_bytes(), prime);
+                    hash = update(hash, capnp_discriminant.as_bytes());
                 }
                 SchemaType::Array(array) => {
-                    hash = update(hash, b"array", prime);
-                    hash = hash_schema(hash, array.items.as_ref(), prime);
+                    hash = update(hash, b"array");
+                    hash = hash_schema(hash, array.items.as_ref());
                     if let Some(len) = array.length {
-                        hash = hash_usize(hash, len, prime);
+                        hash = hash_usize(hash, len);
                     }
                 }
                 SchemaType::Object(object) => {
-                    hash = update(hash, b"object", prime);
-                    hash = hash_fields(hash, &object.fields, prime);
+                    hash = update(hash, b"object");
+                    hash = hash_fields(hash, &object.fields);
                 }
             }
             hash
         }
 
-        fn hash_fields(mut hash: u64, fields: &IndexMap<String, SchemaType>, prime: u64) -> u64 {
+        fn hash_fields(mut hash: u64, fields: &IndexMap<String, SchemaType>) -> u64 {
             for (key, value) in fields {
-                hash = update(hash, key.as_bytes(), prime);
-                hash = hash_schema(hash, value, prime);
+                hash = update(hash, key.as_bytes());
+                hash = hash_schema(hash, value);
             }
             hash
         }
 
-        let hash = update(FNV_OFFSET, schema_name.as_bytes(), FNV_PRIME);
-        hash_fields(hash, fields, FNV_PRIME)
+        let hash = update(FNV_OFFSET, schema_name.as_bytes());
+        hash_fields(hash, fields)
     }
 }
 
@@ -380,12 +366,9 @@ impl CapnpSchemaGenerator {
         depth: usize,
     ) -> Result<TypeResolution> {
         match schema {
-            SchemaType::Type(token) => Ok(TypeResolution {
+            SchemaType::Type(token)
+            | SchemaType::Primitive(PrimitiveSchema { kind: token, .. }) => Ok(TypeResolution {
                 type_name: self.capnp_type_for_token(token).to_string(),
-                nested: Vec::new(),
-            }),
-            SchemaType::Primitive(primitive) => Ok(TypeResolution {
-                type_name: self.capnp_type_for_token(&primitive.kind).to_string(),
                 nested: Vec::new(),
             }),
             SchemaType::Array(array) => {
@@ -567,11 +550,7 @@ fn collect_struct_fields(
             .get_name()?
             .to_string()
             .map_err(|err| Error::Encoding(format!("invalid field name encoding: {err}")))?;
-        let key = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}.{name}")
-        };
+        let key = join_path(prefix, &name);
 
         let field_type = match field
             .which()
@@ -656,6 +635,7 @@ mod tests {
     use super::*;
     use config::node::MessageFormat;
     use proc_macro2::TokenStream;
+    use std::path::PathBuf;
 
     fn canonicalize_tokens(tokens: &TokenStream) -> String {
         tokens
@@ -672,7 +652,7 @@ mod tests {
     fn params_to_map(params: &[FunctionParam]) -> std::collections::HashMap<String, String> {
         params
             .iter()
-            .map(|param| (param.ident().to_string(), canonicalize_tokens(param.ty())))
+            .map(|param| (param.ident.to_string(), canonicalize_tokens(&param.ty)))
             .collect()
     }
 

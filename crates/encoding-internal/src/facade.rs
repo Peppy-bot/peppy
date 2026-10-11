@@ -10,17 +10,17 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-/// Facade around the Cap'n Proto CLI binary.
-/// Provides helpers to locate the binary bundled with the crate or built at compile time
-/// and exposes higher-level operations such as compiling schemas.
+/// Facade around the Cap'n Proto CLI binary: resolves the binary (see [`CapnpFacade::new`]) and
+/// compiles schemas with it.
 #[derive(Debug, Clone)]
 pub struct CapnpFacade {
     capnp_path: PathBuf,
 }
 
 impl CapnpFacade {
-    /// Locate the Cap'n Proto binary either via runtime environment, compile-time build script,
-    /// or the pre-bundled tools shipped with the crate.
+    /// Resolves the Cap'n Proto binary: the `CAPNP_BINARY_PATH` override when it is set, else the
+    /// binary embedded at build time, extracted to `$PEPPY_HOME/bin/peppy_capnp_binary` on first
+    /// use.
     pub fn new() -> Result<Self> {
         let capnp_path = Self::resolve_capnp_binary()?;
         Ok(Self { capnp_path })
@@ -39,18 +39,7 @@ impl CapnpFacade {
         P: AsRef<Path>,
         O: AsRef<Path>,
     {
-        Self::compile_with_executable(capnp_files, output_dir.as_ref(), self.binary_path())
-    }
-
-    fn compile_with_executable<P>(
-        capnp_files: &[P],
-        output_dir: &Path,
-        capnp_executable: &Path,
-    ) -> Result<()>
-    where
-        P: AsRef<Path>,
-    {
-        let output_dir = output_dir.to_path_buf();
+        let output_dir = output_dir.as_ref();
         let capnp_output_dir = output_dir.join("capnp");
         std::fs::create_dir_all(&capnp_output_dir)?;
 
@@ -59,7 +48,7 @@ impl CapnpFacade {
             let capnp_path = capnp_file.as_ref();
 
             let mut command = CompilerCommand::new();
-            command.capnp_executable(capnp_executable);
+            command.capnp_executable(self.binary_path());
             command.output_path(&capnp_output_dir);
             command.default_parent_module(vec!["capnp".to_string()]);
 
@@ -244,7 +233,7 @@ impl CapnpFacade {
         // build embeds and still runs. A stale file left by an earlier install
         // (different capnp version, or a broken/wrong-arch binary) fails the
         // content comparison or the run probe and is re-extracted rather than
-        // trusted, which replaces the old "never overwrite" guard.
+        // trusted.
         if Self::matches_embedded(binary_path, binary_bytes)
             && Self::verify_runs(binary_path).is_ok()
         {
@@ -295,18 +284,10 @@ impl CapnpFacade {
             include!(concat!(env!("OUT_DIR"), "/embedded_capnp.rs"));
         }
 
-        let binary_bytes = embedded::CAPNP_BINARY.ok_or_else(|| {
-            Error::Encoding(format!(
-                "no bundled capnp binary available for {}/{}",
-                env::consts::OS,
-                env::consts::ARCH
-            ))
-        })?;
-
         let binary_path = daemon_config::consts::PeppyDirs::default()
             .bin_dir()
             .join("peppy_capnp_binary");
-        Self::install_bundled_binary(&binary_path, binary_bytes)
+        Self::install_bundled_binary(&binary_path, embedded::CAPNP_BINARY)
     }
 }
 

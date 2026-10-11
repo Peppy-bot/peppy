@@ -9,7 +9,7 @@ mod capnp_build {
     /// The binary is the single source of truth shipped with `build-helpers`
     /// in the sealed tree (`peppy-shared/peppy-config-model/tools`).
     /// build-helpers locates the tools dir as its own sibling, so it is always
-    /// present wherever the crate is: no cmake required.
+    /// present wherever the crate is.
     pub fn run() {
         let target = build_helpers::build_target_triple();
         let binary_path = build_helpers::bundled_capnp_for_embedding(&target)
@@ -21,7 +21,7 @@ mod capnp_build {
         let mut file = fs::File::create(&generated).unwrap();
         writeln!(
             file,
-            r#"pub const CAPNP_BINARY: Option<&[u8]> = Some(include_bytes!("{}"));"#,
+            r#"pub const CAPNP_BINARY: &[u8] = include_bytes!("{}");"#,
             binary_path.display()
         )
         .unwrap();
